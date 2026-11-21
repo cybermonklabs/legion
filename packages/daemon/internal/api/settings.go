@@ -196,8 +196,8 @@ type KubernetesSettings struct {
 	// SessionStore is the settled store's kind and nothing else of it: always one that keeps
 	// sessions in a database (ompsessions.Store.InDatabase), since `runtime: kubernetes` refuses
 	// "pvc" (readSessionStore).
-	SessionStore string                `json:"session_store"`
-	AgentSecrets *AgentSecretsSettings `json:"agent_secrets,omitempty"`
+	SessionStore string               `json:"session_store"`
+	AgentSecrets AgentSecretsSettings `json:"agent_secrets"`
 	// Plugins is the settled pair, whatever its source, absent while the daemon knows none.
 	Plugins *PluginsSettings `json:"plugins,omitempty"`
 	// Setup is the argv every role runs before each start of its Oh My Pi, `[]` while the
@@ -334,13 +334,13 @@ type RepositoryCacheSettings struct {
 }
 
 // AgentSecretsSettings is `runtime.kubernetes.agent_secrets` without `token_file`, the path of the
-// daemon's own login token. ExchangeAudience is absent where the block names none, so a deployment
-// that never set it reads exactly as before the key existed.
+// daemon's own login token. runtime: kubernetes requires the block and its exchange_audience
+// (config's checkKubernetesKeys), so every member is always set.
 type AgentSecretsSettings struct {
 	URL                string `json:"url"`
 	Audience           string `json:"audience"`
 	TokenExpirySeconds int    `json:"token_expiry_seconds"`
-	ExchangeAudience   string `json:"exchange_audience,omitempty"`
+	ExchangeAudience   string `json:"exchange_audience"`
 }
 
 // PluginsSettings is `runtime.kubernetes.plugins`.
@@ -720,9 +720,8 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 	for i, toleration := range block.Scheduling.Tolerations {
 		settings.Scheduling.Tolerations[i] = TolerationSettings{Key: toleration.Key, Operator: toleration.Operator, Value: toleration.Value, Effect: toleration.Effect}
 	}
-	if broker := block.AgentSecrets; broker != nil {
-		settings.AgentSecrets = &AgentSecretsSettings{URL: broker.URL, Audience: broker.Audience, TokenExpirySeconds: broker.TokenExpirySeconds, ExchangeAudience: broker.ExchangeAudience}
-	}
+	broker := block.AgentSecrets
+	settings.AgentSecrets = AgentSecretsSettings{URL: broker.URL, Audience: broker.Audience, TokenExpirySeconds: broker.TokenExpirySeconds, ExchangeAudience: broker.ExchangeAudience}
 	if plugins := block.Plugins; plugins != nil {
 		settings.Plugins = &PluginsSettings{PiLegion: pluginSourceOf(plugins.PiLegion), PiEnvoy: pluginSourceOf(plugins.PiEnvoy)}
 	}

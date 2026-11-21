@@ -296,9 +296,9 @@ const (
 	cacheTokenKey     = "LEGION_REPOSITORY_CACHE_TOKEN"
 )
 
-// envoyTokenKey is the launch secret that carries the daemon's Envoy bearer to every launch
-// (internal/daemon's launchSecrets), which a daemon that holds none (Options.ListenerBroker) names
-// in no launch.
+// envoyTokenKey is the launch secret name of a shared Envoy bearer, which the listener no longer
+// takes: a daemon whose roles trade their own broker tokens (Options.ListenerBroker) names it in no
+// launch, and New refuses one that does.
 const envoyTokenKey = "ENVOY_TOKEN"
 
 // The keys of a role's Secret that carry its GitHub credential beside the launcher token: each

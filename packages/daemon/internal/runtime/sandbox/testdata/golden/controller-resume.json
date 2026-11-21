@@ -110,6 +110,20 @@
                 "mountPath": "/var/run/legion/providers",
                 "name": "providers",
                 "readOnly": true
+              },
+              {
+                "mountPath": "/var/run/legion/agent-secrets-token",
+                "name": "agent-secrets-token",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/run/legion/agent-secrets",
+                "name": "agent-secrets-key-controller"
+              },
+              {
+                "mountPath": "/var/run/legion/agent-secrets-exchange",
+                "name": "agent-secrets-exchange",
+                "readOnly": true
               }
             ],
             "workingDir": "/legion"
@@ -203,6 +217,43 @@
                 }
               ],
               "secretName": "legion-legion-controller-controller-boot"
+            }
+          },
+          {
+            "name": "agent-secrets-token",
+            "projected": {
+              "defaultMode": 288,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "audience": "agent-secrets",
+                    "expirationSeconds": 3600,
+                    "path": "token"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory",
+              "sizeLimit": "1Mi"
+            },
+            "name": "agent-secrets-key-controller"
+          },
+          {
+            "name": "agent-secrets-exchange",
+            "projected": {
+              "defaultMode": 288,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "audience": "legion-broker-exchange",
+                    "expirationSeconds": 3600,
+                    "path": "token"
+                  }
+                }
+              ]
             }
           },
           {

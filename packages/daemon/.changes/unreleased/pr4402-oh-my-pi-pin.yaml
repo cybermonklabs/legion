@@ -34,7 +34,7 @@ body: |-
     `PI_CODING_AGENT_DIR`, `OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
     `OMP_SESSION_SQL_DSN_FILE`), one the runtime tells a Claude Code pane (`CLAUDE_CONFIG_DIR`,
     `CLAUDE_CODE_DISABLE_CRON`) or a resumed Oh My Pi pane (`OMP_SESSION_EXCLUSIVE`) after the
-    operator's variables, or a launch secret's pointer (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`).
+    operator's variables, or a launch secret's pointer (`NATS_NKEY_SEED_FILE`).
     Before, such a deployment booted: a key that places the session moved its panes' sessions off
     where the runtime places them, and the shim of a pane the runtime tells one of the other names
     refused to start over the key. The image build fails when the pinned `omp --help` lists no

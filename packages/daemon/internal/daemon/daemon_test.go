@@ -160,7 +160,7 @@ func randomSuffix(t *testing.T) string {
 // at bind time; the daemon still ends up serving a real, dialable address.
 func TestThePortsHandedToADaemonCannotBeTakenBeforeItBinds(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
-	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
+	onKubernetes(t, &cfg)
 	address := net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port))
 	if thief, err := net.Listen("tcp", address); err == nil {
 		_ = thief.Close()
@@ -2285,12 +2285,13 @@ func TestTheTmuxOptionsCarryTheTakeOver(t *testing.T) {
 }
 
 // Every launch secret's pointer is a pane variable the operator may not set
-// (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch.
+// (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch. The one
+// launch secret is the pane NATS nkey seed: no Envoy bearer goes to any launch.
 func TestEveryLaunchSecretsPointerIsRefusedAsAPaneVariable(t *testing.T) {
-	cfg := config.Config{EnvoyTokenFile: "/var/run/legion/ENVOY_TOKEN", NatsNkeySeedFile: "/var/run/legion/NATS_NKEY_SEED"}
+	cfg := config.Config{NatsNkeySeedFile: "/var/run/legion/NATS_NKEY_SEED"}
 	names := launchSecretNames(cfg, lookup(nil))
-	if len(names) != 2 {
-		t.Fatalf("launchSecretNames = %v, want both launch secrets of a daemon configured with each", names)
+	if !slices.Equal(names, []string{"NATS_NKEY_SEED"}) {
+		t.Fatalf("launchSecretNames = %v, want the one launch secret, NATS_NKEY_SEED, of a daemon configured with a seed", names)
 	}
 	for _, name := range names {
 		if runtime.PaneVariableRefusal(name+"_FILE", "/etc/acme/secret") == "" {

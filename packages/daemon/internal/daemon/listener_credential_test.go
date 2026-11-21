@@ -83,8 +83,8 @@ func (l *credentialListener) received() []listenerRequest {
 	return slices.Clone(l.requests)
 }
 
-// listenerBrokerConfig is a daemon of project EXAMPLE under runtime: kubernetes that holds no Envoy
-// bearer, beside the exchange audience every enrolled pod trades, as the loader takes it
+// listenerBrokerConfig is a daemon of project EXAMPLE under runtime: kubernetes, beside the
+// exchange audience every enrolled pod trades, as the loader takes it
 // (config.Config.ListenerPresentsBrokerToken).
 func listenerBrokerConfig(envoyURL string) config.Config {
 	return config.Config{
@@ -95,23 +95,23 @@ func listenerBrokerConfig(envoyURL string) config.Config {
 	}
 }
 
-// callListener makes, against the listener at cfg.EnvoyURL under credential, every call the daemon
-// makes of it, through the function the daemon makes each with: the outbox's publish
-// (listenerCredential.publisher), the supervisor's role lookup (roleHolderLookup) and clean stop
+// callListener makes, against the listener at cfg.EnvoyURL through transport, every call the
+// daemon makes of it, through the function the daemon makes each with: the outbox's publish
+// (notify.New over plan.listener), the supervisor's role lookup (roleHolderLookup) and clean stop
 // (cleanSessionStop), and the controller sweep's liveness probe (controllerProber).
-func callListener(t *testing.T, cfg config.Config, credential listenerCredential) {
+func callListener(t *testing.T, cfg config.Config, transport http.RoundTripper) {
 	t.Helper()
 	ctx := context.Background()
-	if err := credential.publisher(cfg.EnvoyURL).Publish(ctx, notify.RoleTopicPrefix+"legion-example-architect", "a notice", map[string]any{}, "dedupe-1"); err != nil {
+	if err := notify.New(cfg.EnvoyURL, transport).Publish(ctx, notify.RoleTopicPrefix+"legion-example-architect", "a notice", map[string]any{}, "dedupe-1"); err != nil {
 		t.Fatalf("the outbox's publish: %v", err)
 	}
-	if _, _, err := roleHolderLookup(cfg.EnvoyURL, credential)(ctx, "legion-example-controller"); err != nil {
+	if _, _, err := roleHolderLookup(cfg.EnvoyURL, transport)(ctx, "legion-example-controller"); err != nil {
 		t.Fatalf("the supervisor's role lookup: %v", err)
 	}
 	var inFlight sessionStopsInFlight
-	cleanSessionStop(&inFlight, cfg.EnvoyURL, credential, quietLogger())("ses-role")
+	cleanSessionStop(&inFlight, cfg.EnvoyURL, transport, quietLogger())("ses-role")
 	inFlight.wait()
-	if got := controllerProber(cfg, plan{project: "example", listener: credential}, quietLogger()).Probe(ctx, "ses-controller"); got != controller.Live {
+	if got := controllerProber(cfg, plan{project: "example", listener: transport}, quietLogger()).Probe(ctx, "ses-controller"); got != controller.Live {
 		t.Fatalf("the controller sweep's probe = %s, want live", got)
 	}
 }
@@ -165,20 +165,20 @@ func requireDPoP(t *testing.T, listenerURL string, request listenerRequest, toke
 	}
 }
 
-// TestPublishPresentsTheDaemonsBrokerToken: a daemon under runtime: kubernetes that holds no Envoy
-// bearer, beside runtime.kubernetes.agent_secrets.exchange_audience, trades its own pod identity at
-// the secrets broker once at boot and presents the token it gets, `Authorization: DPoP` beside a
-// proof of each request's own URL, on every call it makes of the listener: the outbox's publish,
-// the supervisor's role lookup and clean stop, and the controller sweep's probe. The control is a
-// daemon that holds the bearer: each of the same calls carries `Bearer <the file's token>` and no
-// proof, as at the merge base, and the broker is asked nothing.
+// TestPublishPresentsTheDaemonsBrokerToken: a daemon under runtime: kubernetes, beside
+// runtime.kubernetes.agent_secrets.exchange_audience, trades its own pod identity at the secrets
+// broker once at boot and presents the token it gets, `Authorization: DPoP` beside a proof of each
+// request's own URL, on every call it makes of the listener: the outbox's publish, the supervisor's
+// role lookup and clean stop, and the controller sweep's probe. The control is a daemon under
+// runtime: tmux: each of the same calls carries no Authorization and no proof, to the loopback
+// listener the loader holds it to, and the broker is asked nothing.
 func TestPublishPresentsTheDaemonsBrokerToken(t *testing.T) {
-	t.Run("no envoy_token_file, under exchange_audience", func(t *testing.T) {
+	t.Run("runtime: kubernetes, under exchange_audience", func(t *testing.T) {
 		broker := newCredentialBroker(t, mintsTheDaemonsToken)
 		listener := newCredentialListener(t)
 		cfg := listenerBrokerConfig(listener.URL)
 		var logged bytes.Buffer
-		credentials, err := settleCredentials(t.Context(), cfg, "", "", getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewTextHandler(&logged, nil)))
+		credentials, err := settleCredentials(t.Context(), cfg, "", getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewTextHandler(&logged, nil)))
 		if err != nil {
 			t.Fatalf("settleCredentials: %v", err)
 		}
@@ -200,27 +200,28 @@ func TestPublishPresentsTheDaemonsBrokerToken(t *testing.T) {
 		}
 	})
 
-	t.Run("control: envoy_token_file's bearer", func(t *testing.T) {
+	t.Run("control: runtime: tmux", func(t *testing.T) {
 		broker := newCredentialBroker(t, mintsTheDaemonsToken)
 		listener := newCredentialListener(t)
-		cfg := listenerBrokerConfig(listener.URL)
-		cfg.EnvoyTokenFile = "/var/run/legion/ENVOY_TOKEN"
+		cfg := config.Config{Project: "EXAMPLE", EnvoyURL: listener.URL, Runtime: config.Runtime{Name: "tmux"}}
 		var logged bytes.Buffer
-		credentials, err := settleCredentials(t.Context(), cfg, "", "envoy-bearer", getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewTextHandler(&logged, nil)))
+		credentials, err := settleCredentials(t.Context(), cfg, "", getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewTextHandler(&logged, nil)))
 		if err != nil {
 			t.Fatalf("settleCredentials: %v", err)
 		}
 		if strings.Contains(logged.String(), "Envoy listener credential") {
-			t.Fatalf("a daemon that holds the bearer logged %s, want no listener credential line, as it never logged one", logged.String())
+			t.Fatalf("a daemon under runtime: tmux logged %s, want no listener credential line: it presents none", logged.String())
 		}
 		callListener(t, cfg, credentials.listener)
 		for _, request := range listener.received() {
-			if got, proof := request.header.Get("Authorization"), request.header.Get("DPoP"); got != "Bearer envoy-bearer" || proof != "" {
-				t.Fatalf("%s %s carried Authorization %q and DPoP %q, want the file's bearer and no proof", request.method, request.path, got, proof)
+			_, authorized := request.header["Authorization"]
+			if _, proved := request.header["Dpop"]; authorized || proved {
+				t.Fatalf("%s %s carried Authorization %q and DPoP %q, want neither: the loopback listener asks for none",
+					request.method, request.path, request.header.Get("Authorization"), request.header.Get("DPoP"))
 			}
 		}
 		if trades := broker.trades.Load(); trades != 0 {
-			t.Fatalf("the broker was asked %d trades, want none: a daemon that holds the bearer trades nothing", trades)
+			t.Fatalf("the broker was asked %d trades, want none: a daemon under runtime: tmux trades nothing", trades)
 		}
 	})
 }
@@ -272,11 +273,11 @@ func TestTheDaemonTradesAgainWhenTheListenerSaysItsTokenIsNotActive(t *testing.T
 			}))
 			t.Cleanup(listener.Close)
 			cfg := listenerBrokerConfig(listener.URL)
-			credentials, err := settleCredentials(t.Context(), cfg, "", "", getenvOf(podIdentity(t, broker.url)), quietLogger())
+			credentials, err := settleCredentials(t.Context(), cfg, "", getenvOf(podIdentity(t, broker.url)), quietLogger())
 			if err != nil {
 				t.Fatalf("settleCredentials: %v", err)
 			}
-			publisher := credentials.listener.publisher(listener.URL)
+			publisher := notify.New(listener.URL, credentials.listener)
 			publish := func() error {
 				return publisher.Publish(t.Context(), notify.RoleTopicPrefix+"legion-example-architect", "a notice", map[string]any{}, "dedupe-1")
 			}
@@ -299,17 +300,17 @@ func TestTheDaemonTradesAgainWhenTheListenerSaysItsTokenIsNotActive(t *testing.T
 	}
 }
 
-// TestOneBrokerTokenServesDispatchAndTheListener: a daemon under dispatch_token_broker that also
-// holds no Envoy bearer trades its pod identity once, for the one session legion-daemon:EXAMPLE,
-// and presents that token to Dispatch and to the listener alike: one client, one trade, one
-// renewal (settleCredentials), not a second key and token of the same session for each server.
+// TestOneBrokerTokenServesDispatchAndTheListener: a daemon under dispatch_token_broker and runtime:
+// kubernetes trades its pod identity once, for the one session legion-daemon:EXAMPLE, and presents
+// that token to Dispatch and to the listener alike: one client, one trade, one renewal
+// (settleCredentials), not a second key and token of the same session for each server.
 func TestOneBrokerTokenServesDispatchAndTheListener(t *testing.T) {
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))
 	listener := newCredentialListener(t)
 	cfg := listenerBrokerConfig(listener.URL)
 	cfg.DispatchURL, cfg.DispatchTokenBroker = dispatchServer.URL, true
-	credentials, err := settleCredentials(t.Context(), cfg, "", "", getenvOf(podIdentity(t, broker.url)), quietLogger())
+	credentials, err := settleCredentials(t.Context(), cfg, "", getenvOf(podIdentity(t, broker.url)), quietLogger())
 	if err != nil {
 		t.Fatalf("settleCredentials: %v", err)
 	}
@@ -343,11 +344,11 @@ func TestTheDaemonsListenerTokenIsItsOwnDaemonToken(t *testing.T) {
 		cipherclient.MachineTokenFileVar: writeSecret(t, "daemon-exchange-token", rig.MintSubjectToken(t, ciphertest.DaemonExchangeAccount, "daemon-pod-uid")),
 	}
 	cfg := listenerBrokerConfig(listener.URL)
-	credentials, err := settleCredentials(t.Context(), cfg, "", "", getenvOf(env), quietLogger())
+	credentials, err := settleCredentials(t.Context(), cfg, "", getenvOf(env), quietLogger())
 	if err != nil {
 		t.Fatalf("settleCredentials: %v", err)
 	}
-	if err := credentials.listener.publisher(listener.URL).Publish(t.Context(), notify.RoleTopicPrefix+"legion-example-architect", "a notice", map[string]any{}, "dedupe-1"); err != nil {
+	if err := notify.New(listener.URL, credentials.listener).Publish(t.Context(), notify.RoleTopicPrefix+"legion-example-architect", "a notice", map[string]any{}, "dedupe-1"); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	// The boot reads the controller role first under the same token (listenerCredentialOf); the
@@ -392,68 +393,69 @@ func TestTheDaemonsListenerTokenIsItsOwnDaemonToken(t *testing.T) {
 	}
 }
 
-// TestNoEnvoyBearerIsHandedOutWithoutTheKey: a daemon configuration under runtime: kubernetes with
-// no envoy_token_file, beside agent_secrets.exchange_audience, loads, and names no Envoy bearer
-// among the secrets every launch carries, so no pod's Secret holds ENVOY_TOKEN and no container is
-// told ENVOY_TOKEN_FILE: each pod's sessions trade their own broker token with the exchange identity
-// the pod carries. The control is the same file with envoy_token_file: every launch carries the
-// bearer, as before.
+// TestNoEnvoyBearerIsHandedOutWithoutTheKey: a daemon configuration under runtime: kubernetes,
+// beside agent_secrets.exchange_audience, loads, and names no Envoy bearer among the secrets every
+// launch carries, so no pod's Secret holds ENVOY_TOKEN and no container is told ENVOY_TOKEN_FILE:
+// each pod's sessions trade their own broker token with the exchange identity the pod carries. The
+// control is the same file with envoy_token_file, which once handed every launch the bearer: the
+// loader refuses it, naming the exchange audience that replaces it.
 func TestNoEnvoyBearerIsHandedOutWithoutTheKey(t *testing.T) {
-	for name, tc := range map[string]struct {
-		line   string
-		bearer bool
-	}{
-		"no envoy_token_file":           {"", false},
-		"control: envoy_token_file set": {"envoy_token_file: ./envoy-token\n", true},
-	} {
-		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
-			for _, file := range []string{"envoy-token", "operator-token", "dispatch-token"} {
-				if err := os.WriteFile(filepath.Join(dir, file), []byte("placeholder-"+file+"\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			path := filepath.Join(dir, "legion.yaml")
-			if err := os.WriteFile(path, []byte(exchangeIdentityFile+tc.line), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := config.LoadForValidation(path, nil)
-			if err != nil {
-				t.Fatalf("load: %v", err)
-			}
-			lookup := environLookup([]string{})
-			names := launchSecretNames(cfg, lookup)
-			secrets, err := readLaunchSecrets(cfg, lookup)
-			if err != nil {
-				t.Fatalf("read the launch secrets: %v", err)
-			}
-			_, held := secrets["ENVOY_TOKEN"]
-			if slices.Contains(names, "ENVOY_TOKEN") != tc.bearer || held != tc.bearer {
-				t.Fatalf("every launch carries the launch secrets %v (read %d), want ENVOY_TOKEN among them: %v", names, len(secrets), tc.bearer)
-			}
-			if err := checkOperatorConfig(cfg, lookup); err != nil {
-				t.Fatalf("checkOperatorConfig: %v", err)
-			}
-			// The runtime is built from the same configuration: it hands no launch the bearer, and
-			// holds a launch into a kept pod that carries no exchange identity to that pod's round.
-			opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "example", sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup, quietLogger())
-			if err != nil {
-				t.Fatalf("sandboxOptions: %v", err)
-			}
-			if opts.ListenerBroker == tc.bearer || slices.Contains(opts.LaunchSecrets, "ENVOY_TOKEN") != tc.bearer {
-				t.Fatalf("the runtime's options carry ListenerBroker %v and launch secrets %v, want ListenerBroker %v and ENVOY_TOKEN among them: %v",
-					opts.ListenerBroker, opts.LaunchSecrets, !tc.bearer, tc.bearer)
-			}
-			if got := cfg.ListenerPresentsBrokerToken(); got == tc.bearer {
-				t.Fatalf("ListenerPresentsBrokerToken() = %v, want %v: the daemon presents its broker token exactly where it holds no bearer", got, !tc.bearer)
-			}
-		})
+	dir := t.TempDir()
+	for _, file := range []string{"envoy-token", "operator-token", "dispatch-token"} {
+		if err := os.WriteFile(filepath.Join(dir, file), []byte("placeholder-"+file+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
+	load := func(t *testing.T, body string) (config.Config, error) {
+		t.Helper()
+		path := filepath.Join(dir, "legion.yaml")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return config.LoadForValidation(path, nil)
+	}
+	t.Run("no envoy_token_file", func(t *testing.T) {
+		cfg, err := load(t, exchangeIdentityFile)
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		lookup := environLookup([]string{})
+		names := launchSecretNames(cfg, lookup)
+		secrets, err := readLaunchSecrets(cfg, lookup)
+		if err != nil {
+			t.Fatalf("read the launch secrets: %v", err)
+		}
+		if _, held := secrets["ENVOY_TOKEN"]; slices.Contains(names, "ENVOY_TOKEN") || held {
+			t.Fatalf("every launch carries the launch secrets %v (read %d), want no ENVOY_TOKEN among them", names, len(secrets))
+		}
+		if err := checkOperatorConfig(cfg, lookup); err != nil {
+			t.Fatalf("checkOperatorConfig: %v", err)
+		}
+		// The runtime is built from the same configuration: it hands no launch the bearer, and
+		// holds a launch into a kept pod that carries no exchange identity to that pod's round.
+		opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "example", sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup, quietLogger())
+		if err != nil {
+			t.Fatalf("sandboxOptions: %v", err)
+		}
+		if opts.AgentSecrets == nil || opts.AgentSecrets.ExchangeAudience == "" || slices.Contains(opts.LaunchSecrets, "ENVOY_TOKEN") {
+			t.Fatalf("the runtime's options carry agent secrets %+v and launch secrets %v, want the exchange audience and no ENVOY_TOKEN among them",
+				opts.AgentSecrets, opts.LaunchSecrets)
+		}
+		if !cfg.ListenerPresentsBrokerToken() {
+			t.Fatal("ListenerPresentsBrokerToken() = false, want true: the daemon's broker token is its listener credential")
+		}
+	})
+	t.Run("control: envoy_token_file set", func(t *testing.T) {
+		const want = "unknown key envoy_token_file: the Envoy listener takes no shared bearer any more"
+		if _, err := load(t, exchangeIdentityFile+"envoy_token_file: ./envoy-token\n"); err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Fatalf("load = %v, want the key refused: %q", err, want)
+		}
+	})
 }
 
 // exchangeIdentityFile is a configuration under runtime: kubernetes whose agent_secrets block sets
-// exchange_audience, and which names no envoy_token_file: TestNoEnvoyBearerIsHandedOutWithoutTheKey
-// appends one for its control. Its token files sit beside it.
+// exchange_audience: TestNoEnvoyBearerIsHandedOutWithoutTheKey appends envoy_token_file to it for
+// its control. Its token files sit beside it.
 const exchangeIdentityFile = `project: EXAMPLE
 postgres_dsn: postgres://legion@127.0.0.1:1/legion
 state_dir: ./state
@@ -531,7 +533,7 @@ func TestTheBootRefusesAListenerThatRefusesTheDaemonsToken(t *testing.T) {
 				_, _ = io.WriteString(w, given.body)
 			}))
 			t.Cleanup(listener.Close)
-			_, err := settleCredentials(t.Context(), listenerBrokerConfig(listener.URL), "", "", getenvOf(podIdentity(t, broker.url)), quietLogger())
+			_, err := settleCredentials(t.Context(), listenerBrokerConfig(listener.URL), "", getenvOf(podIdentity(t, broker.url)), quietLogger())
 			mu.Lock()
 			made := asked
 			mu.Unlock()

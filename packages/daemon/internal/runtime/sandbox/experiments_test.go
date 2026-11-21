@@ -154,7 +154,8 @@ func TestATreeInTwoExperimentsNamesEveryArmInTheFilesOrder(t *testing.T) {
 // writes alike, its system prompt file among them, but for one value: a launch names the files its
 // arms name, and a control arm names none. The one value is the process's spend attributes,
 // which name the control arms in legion.arms, so a call of a control tree reads as control rather
-// than as a tree in no experiment.
+// than as a tree in no experiment. The session id each launch chose is passed over
+// (withoutChosenSession): every launch draws its own.
 func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.T) {
 	r := twoExperimentRuntime(t, false)
 	control := workerSpec(t)
@@ -164,7 +165,7 @@ func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.
 		t.Errorf("a control tree's pod =\n%+v\nwant the one a tree in no experiment gets:\n%+v", got, want)
 	}
 	const arms = "," + runtime.SpendArmsAttribute + "=alpha%3Aoff%2Cbeta%3Aoff"
-	process := workerOf(t, r, control)
+	process := withoutChosenSession(workerOf(t, r, control))
 	process.Env = slices.Clone(process.Env)
 	named := 0
 	for i, entry := range process.Env {
@@ -176,7 +177,7 @@ func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.
 	if named != 1 {
 		t.Errorf("a control tree's process names %s %d times in %s, want once: %+v", arms, named, runtime.SpendAttributesVariable, process.Env)
 	}
-	if want := workerOf(t, r, none); !reflect.DeepEqual(process, want) {
+	if want := withoutChosenSession(workerOf(t, r, none)); !reflect.DeepEqual(process, want) {
 		t.Errorf("a control tree's process, its arms aside =\n%+v\nwant the one a tree in no experiment gets:\n%+v", process, want)
 	}
 	if got, want := launcherCommand(launchOf(t, r, control), r).Files, launcherCommand(launchOf(t, r, none), r).Files; !reflect.DeepEqual(got, want) {

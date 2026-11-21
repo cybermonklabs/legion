@@ -11,9 +11,10 @@ body: |-
 
   `dispatch_token_transition_file`, which the loader takes only beside the setting, names a file
   that holds the shared Dispatch token. The daemon never calls Dispatch with it. A launch into a
-  live pod built before the setting, which carries no exchange identity, gets that token as every
-  launch got it before. With no such file named, that launch is refused, naming the pod and the
-  update round that replaces it. The claim is charged nothing, and the launch is tried again every
+  live pod built before the setting, which carries no exchange identity, is refused whether or not
+  that file is named, naming the pod and the update round that replaces it: the role would hold no
+  credential for the Envoy listener, which takes no shared bearer, so no launch carries the
+  transition token. The claim is charged nothing, and the launch is tried again every
   minute. The update round opens over that pod even when no process of the issue runs in it, and
   it waits on no answer of the refused claim. Where no claim runs a process in the pod, the daemon
   replaces the pod through that claim, and the next try starts in the new pod. The replacement's

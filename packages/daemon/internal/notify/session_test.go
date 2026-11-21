@@ -12,20 +12,23 @@ import (
 	"time"
 )
 
-// The clean stop is one DELETE of the session's own key, with the listener's bearer, and it names
-// both of the conditions it holds under: the client instance whose registration it means to
-// remove (client_instance_id) and the moment the stop belongs to (if_not_registered_after). An
-// instance id is a client's own string, so it is escaped rather than written into the query raw.
-func TestDeleteSessionAsksTheSessionRouteWithTheBearerTheMomentAndTheInstance(t *testing.T) {
-	var method, path, query, bearer string
+// The clean stop is one DELETE of the session's own key, presenting no credential to the loopback
+// listener New's client calls, and it names both of the conditions it holds under: the client
+// instance whose registration it means to remove (client_instance_id) and the moment the stop
+// belongs to (if_not_registered_after). An instance id is a client's own string, so it is escaped
+// rather than written into the query raw.
+func TestDeleteSessionAsksTheSessionRouteWithTheMomentAndTheInstance(t *testing.T) {
+	var method, path, query string
+	var presented bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		method, path, query, bearer = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
+		_, presented = r.Header["Authorization"]
+		method, path, query = r.Method, r.URL.Path, r.URL.RawQuery
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 	goneAt := time.Now()
 
-	stopped, err := New(server.URL+"/", "envoy-bearer").DeleteSession(context.Background(), "ses_implementer",
+	stopped, err := New(server.URL+"/", http.DefaultTransport).DeleteSession(context.Background(), "ses_implementer",
 		DeleteConditions{ClientInstanceID: "pi/omp 1+1", NotRegisteredAfter: goneAt})
 	if err != nil {
 		t.Fatalf("DeleteSession: %v", err)
@@ -33,8 +36,8 @@ func TestDeleteSessionAsksTheSessionRouteWithTheBearerTheMomentAndTheInstance(t 
 	if !stopped.Deleted {
 		t.Fatalf("DeleteSession = %+v, want the registration taken as deleted", stopped)
 	}
-	if method != http.MethodDelete || path != "/v1/sessions/ses_implementer" || bearer != "Bearer envoy-bearer" {
-		t.Fatalf("%s %s with %q, want a DELETE of the session's key with the listener's bearer", method, path, bearer)
+	if method != http.MethodDelete || path != "/v1/sessions/ses_implementer" || presented {
+		t.Fatalf("%s %s presenting a credential %t, want a DELETE of the session's key with none", method, path, presented)
 	}
 	want := fmt.Sprintf("if_not_registered_after=%d&client_instance_id=pi%%2Fomp+1%%2B1", goneAt.UnixMilli())
 	if query != want {
@@ -56,7 +59,7 @@ func TestDeleteSessionLeavesOutAnInstanceTheEntryDoesNotName(t *testing.T) {
 	defer server.Close()
 	goneAt := time.Now()
 
-	if _, err := New(server.URL, "").DeleteSession(context.Background(), "ses_old_client",
+	if _, err := New(server.URL, http.DefaultTransport).DeleteSession(context.Background(), "ses_old_client",
 		DeleteConditions{NotRegisteredAfter: goneAt}); err != nil {
 		t.Fatalf("DeleteSession: %v", err)
 	}
@@ -76,7 +79,7 @@ func TestDeleteSessionReportsARegistrationTheListenerKept(t *testing.T) {
 	}))
 	defer server.Close()
 
-	stopped, err := New(server.URL, "").DeleteSession(context.Background(), "ses_relaunched",
+	stopped, err := New(server.URL, http.DefaultTransport).DeleteSession(context.Background(), "ses_relaunched",
 		DeleteConditions{ClientInstanceID: "inst_dead", NotRegisteredAfter: time.Now()})
 	if err != nil {
 		t.Fatalf("DeleteSession: %v", err)
@@ -110,7 +113,7 @@ func TestDeleteSessionTellsAnAlreadyGoneSessionFromARefusal(t *testing.T) {
 			}))
 			defer server.Close()
 
-			stopped, err := New(server.URL, "").DeleteSession(context.Background(), "ses_implementer",
+			stopped, err := New(server.URL, http.DefaultTransport).DeleteSession(context.Background(), "ses_implementer",
 				DeleteConditions{ClientInstanceID: "inst_dead", NotRegisteredAfter: time.Now()})
 			switch {
 			case tc.wantErr == "" && err != nil:
@@ -133,15 +136,17 @@ func TestDeleteSessionTellsAnAlreadyGoneSessionFromARefusal(t *testing.T) {
 // unknown selector and answers the full row. What the read answers is the entry's own client
 // instance and its last registration.
 func TestReadSessionRegistrationAsksTheRegistryForTheEntrysInstance(t *testing.T) {
-	var method, path, query, bearer string
+	var method, path, query string
+	var presented bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		method, path, query, bearer = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
+		_, presented = r.Header["Authorization"]
+		method, path, query = r.Method, r.URL.Path, r.URL.RawQuery
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, `{"session_id":"ses/dead","client_instance_id":"inst_dead","last_seen":1762560000000}`)
 	}))
 	defer server.Close()
 
-	registration, err := New(server.URL, "envoy-bearer").ReadSessionRegistration(context.Background(), "ses/dead")
+	registration, err := New(server.URL, http.DefaultTransport).ReadSessionRegistration(context.Background(), "ses/dead")
 	if err != nil {
 		t.Fatalf("ReadSessionRegistration: %v", err)
 	}
@@ -149,8 +154,8 @@ func TestReadSessionRegistrationAsksTheRegistryForTheEntrysInstance(t *testing.T
 	if registration != want {
 		t.Fatalf("ReadSessionRegistration = %+v, want %+v", registration, want)
 	}
-	if method != http.MethodGet || path != "/v1/registry/ses/dead" || bearer != "Bearer envoy-bearer" {
-		t.Fatalf("%s %s with %q, want a GET of the session's registry entry with the listener's bearer", method, path, bearer)
+	if method != http.MethodGet || path != "/v1/registry/ses/dead" || presented {
+		t.Fatalf("%s %s presenting a credential %t, want a GET of the session's registry entry with none", method, path, presented)
 	}
 	if query != "include=unresponsive&view=registration" {
 		t.Fatalf("query = %q, want both the unresponsive record and the registration view asked for", query)
@@ -167,7 +172,7 @@ func TestReadSessionRegistrationReadsA404AsNoRegistration(t *testing.T) {
 	}))
 	defer server.Close()
 
-	registration, err := New(server.URL, "").ReadSessionRegistration(context.Background(), "ses_gone")
+	registration, err := New(server.URL, http.DefaultTransport).ReadSessionRegistration(context.Background(), "ses_gone")
 	if err != nil {
 		t.Fatalf("ReadSessionRegistration = %v, want a registry holding none taken as no failure", err)
 	}
@@ -202,7 +207,7 @@ func TestReadSessionRegistrationReadsAnEntryPastTheRefusalBodyLimit(t *testing.T
 	}))
 	defer server.Close()
 
-	registration, err := New(server.URL, "").ReadSessionRegistration(context.Background(), "ses_busy")
+	registration, err := New(server.URL, http.DefaultTransport).ReadSessionRegistration(context.Background(), "ses_busy")
 	if err != nil {
 		t.Fatalf("ReadSessionRegistration of a %d-byte entry: %v", len(entry), err)
 	}
@@ -234,7 +239,7 @@ func TestReadSessionRegistrationTellsARefusalFromAnEntry(t *testing.T) {
 			}))
 			defer server.Close()
 
-			registration, err := New(server.URL, "").ReadSessionRegistration(context.Background(), "ses_implementer")
+			registration, err := New(server.URL, http.DefaultTransport).ReadSessionRegistration(context.Background(), "ses_implementer")
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("ReadSessionRegistration = %+v, %v, want a failure naming %q", registration, err, tc.wantErr)
 			}

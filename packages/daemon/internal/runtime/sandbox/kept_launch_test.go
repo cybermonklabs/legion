@@ -4,7 +4,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 
@@ -42,11 +41,11 @@ var (
 
 const keptOverlayFile = "/etc/legion-operator-roles/fallback.yml"
 
-// withBrokerAndOverlay enrols the runtime's pods with the secrets broker and gives the tester an
-// overlay of its own: the two drift facets a role's own start command names, through the shim's
-// agent-secrets flags (launcherCommand) and PI_CONFIG_FILES (roleOperatorEnv).
-func withBrokerAndOverlay(o *Options) {
-	o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
+// withTesterOverlay gives the tester an overlay of its own: a drift facet a role's own start
+// command names, through PI_CONFIG_FILES (roleOperatorEnv). The other such facet, the secrets
+// broker's enrollment, which the shim's agent-secrets flags name (launcherCommand), is in every
+// pod a launch builds; a test needs a pod built before it edited into one (builtWithout).
+func withTesterOverlay(o *Options) {
 	o.Pod.Volumes = append(o.Pod.Volumes, keptRolesVolume)
 	o.Pod.VolumeMounts = append(o.Pod.VolumeMounts, keptRolesMount)
 	o.RoleConfigFiles = map[claim.Role][]string{claim.RoleTester: {keptOverlayFile}}
@@ -106,17 +105,19 @@ func agentSecretsFlags(start shimwire.LauncherStart, r *Runtime) bool {
 
 // A launch that replaces the pod builds its role's start from the configuration as it now reads:
 // the pod it makes carries the broker's enrollment and the operator's overlay mount, so the start
-// names the shim's agent-secrets flags and the overlay. The degraded start is the kept pod's alone
+// names the shim's agent-secrets flags and the overlay, though the pod it replaces, built by an
+// older daemon (builtWithout), carried neither. The degraded start is the kept pod's alone
 // (keptPod) and must never outlive the pod it was built for — a role of the fresh pod that went
 // without the broker would stay without it until something else replaced that pod.
 func TestALaunchThatReplacesTheDriftedPodStartsItsRoleOnTheConfigurationNow(t *testing.T) {
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
+	g.builtWithout(loc.Sandbox.Name, agentSecretsVolume)
 	// The worker stream moved as well as the configuration: the pod's launchers dial an address
 	// this daemon does not serve and never redial, so no worker in it can be asked to push its work
 	// first (movedInPod), and the launch replaces the pod where it stands.
 	r2 := restartedOver(t, g, loc, func(o *Options) {
-		withBrokerAndOverlay(o)
+		withTesterOverlay(o)
 		moveStream(o)
 	})
 	fresh := resumeTester(t, g, r2, loc)
@@ -146,10 +147,10 @@ func TestALaunchThatReplacesTheDriftedPodStartsItsRoleOnTheConfigurationNow(t *t
 // for reasons that touch no start command — its reservation here — and a role of it must not be
 // started degraded for one of those.
 func TestARoleStartedInAKeptPodThatCarriesBothIsStartedWithBoth(t *testing.T) {
-	g := newRig(t, nil, withOptions(withBrokerAndOverlay))
+	g := newRig(t, nil, withOptions(withTesterOverlay))
 	loc := g.spawn(workerSpec(t))
 	r2 := restartedOver(t, g, loc, func(o *Options) {
-		withBrokerAndOverlay(o)
+		withTesterOverlay(o)
 		movedReservation(o)
 	})
 	if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
@@ -177,7 +178,7 @@ func TestARoleStartedInAKeptPodThatCarriesBothIsStartedWithBoth(t *testing.T) {
 func TestALaunchReplacesTheDriftedPodWhenItsStoredTemplateCannotBeRead(t *testing.T) {
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
-	r2 := restartedOver(t, g, loc, withBrokerAndOverlay)
+	r2 := restartedOver(t, g, loc, withTesterOverlay)
 	if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
 		t.Fatalf("the pod has drifted from nothing, so this case proves nothing")
 	}

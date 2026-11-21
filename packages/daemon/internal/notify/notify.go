@@ -176,24 +176,18 @@ type Publisher interface {
 // HTTPPublisher calls the Envoy listener's publish route.
 type HTTPPublisher struct {
 	baseURL string
-	token   string
 	client  *http.Client
 }
 
-// New creates a publisher for one Envoy listener. token is the listener's bearer
-// (`envoy_token_file`), sent on every publish; "" sends none, for a listener that requires none.
-func New(baseURL, token string) *HTTPPublisher {
-	return &HTTPPublisher{baseURL: strings.TrimRight(baseURL, "/"), token: token, client: &http.Client{Timeout: requestTimeout}}
-}
-
-// NewWithTransport creates a publisher for one Envoy listener whose every request goes through
-// transport, which presents the daemon's credential: its own broker token, `Authorization: DPoP`
-// beside a proof of the request's URL (cipherclient.NewTokenTransport), where the daemon holds no
-// Envoy bearer (config.Config.ListenerPresentsBrokerToken). The publisher sets no Authorization of
-// its own. It follows no redirect: a 3xx is the listener's answer, read as every other answer that
-// is not the route's is, so the token and a proof of it are sent to the listener's URL and to no
-// URL a redirect names.
-func NewWithTransport(baseURL string, transport http.RoundTripper) *HTTPPublisher {
+// New creates a publisher for one Envoy listener whose every request goes through transport,
+// which presents the daemon's credential: its own broker token, `Authorization: DPoP` beside a
+// proof of the request's URL (cipherclient.NewTokenTransport), under runtime: kubernetes
+// (config.Config.ListenerPresentsBrokerToken), or under runtime: tmux http.DefaultTransport, which
+// presents nothing to the loopback listener envoy_url names, since the listener takes no shared
+// bearer. The publisher sets no Authorization of its own. It follows no redirect: a 3xx is the
+// listener's answer, read as every other answer that is not the route's is, so a token and a proof
+// of it are sent to the listener's URL and to no URL a redirect names.
+func New(baseURL string, transport http.RoundTripper) *HTTPPublisher {
 	return &HTTPPublisher{baseURL: strings.TrimRight(baseURL, "/"), client: &http.Client{
 		Timeout: requestTimeout, Transport: transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -259,9 +253,6 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 		return false, fmt.Errorf("build notice publish request for %s: %w", topic, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if p.token != "" {
-		request.Header.Set("Authorization", "Bearer "+p.token)
-	}
 	response, err := p.client.Do(request)
 	if err != nil {
 		return false, fmt.Errorf("publish notice to %s: %w", topic, err)
@@ -389,9 +380,6 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	if err != nil {
 		return SessionRegistration{}, fmt.Errorf("build the registration read for %s: %w", session, err)
 	}
-	if p.token != "" {
-		request.Header.Set("Authorization", "Bearer "+p.token)
-	}
 	response, err := p.client.Do(request)
 	if err != nil {
 		return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
@@ -443,9 +431,6 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 	if err != nil {
 		return "", "", fmt.Errorf("build the role lookup for %s: %w", role, err)
 	}
-	if p.token != "" {
-		request.Header.Set("Authorization", "Bearer "+p.token)
-	}
 	response, err := p.client.Do(request)
 	if err != nil {
 		return "", "", fmt.Errorf("look up the holder of role %s: %w", role, err)
@@ -489,11 +474,11 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 }
 
 // RoleLookupRefused is a role lookup the listener answered the same way however often it is
-// asked (RoleHolder): a wrong bearer (401, 403), a claim record it cannot decode (500), a body read
-// whole that does not decode, or a 404 naming no holder under a reason it does not know. Status is
-// the answer's HTTP status and Reason what was wrong with it. Asking again changes nothing until
-// an operator fixes the listener or the daemon's bearer, so a caller that retries on a backoff
-// logs it as the fault it is rather than as a wait.
+// asked (RoleHolder): a credential it refuses (401, 403), a claim record it cannot decode (500), a
+// body read whole that does not decode, or a 404 naming no holder under a reason it does not know.
+// Status is the answer's HTTP status and Reason what was wrong with it. Asking again changes
+// nothing until an operator fixes the listener or the daemon's credential, so a caller that retries
+// on a backoff logs it as the fault it is rather than as a wait.
 type RoleLookupRefused struct {
 	Status int
 	Reason string
@@ -587,9 +572,6 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
 	if err != nil {
 		return SessionDeleted{}, fmt.Errorf("build the session delete for %s: %w", session, err)
-	}
-	if p.token != "" {
-		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -271,7 +270,6 @@ func TestANewGenerationStopsTheEarlierOneFirst(t *testing.T) {
 // GH_CONFIG_DIR, the volume as LEGION_GH_OWNERS_DIR and the image's real gh as LEGION_GH_PATH.
 func TestEveryRolesPrivateVolumesMountInItsContainerAlone(t *testing.T) {
 	opts := goldenOptions()
-	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	r, err := configure(opts)
 	if err != nil {
 		t.Fatal(err)

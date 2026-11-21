@@ -190,6 +190,7 @@ func TestMemoryGuardTheIssuePodsSettingsReachTheSandboxRuntime(t *testing.T) {
 	k := config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+		AgentSecrets: stubBroker(t),
 		MemoryGuard: config.MemoryGuardConfig{IssuePods: config.MemoryGuardPodConfig{
 			Enabled: true, ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250,
 		}},

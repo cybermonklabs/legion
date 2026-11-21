@@ -39,7 +39,6 @@ func rolesLocator(token claim.Token, uid string) runtime.Locator {
 // sum: 3 CPU and 19Gi, each requested in full, and an 80Gi disk limit over a 6Gi request.
 func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 	opts := goldenOptions()
-	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	r, err := configure(opts)
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +186,7 @@ func TestAnIssuePodServesItsOwnTestPostgres(t *testing.T) {
 	}
 	// An operator may not point that name anywhere, whether or not this deployment serves one.
 	refused := CheckPod(Pod{Env: map[string]string{launcher.TestPGVariable: "postgres://x@127.0.0.1:5433/postgres"}}, nil,
-		testOptions().Tools, []string{"ENVOY_TOKEN"}, nil, postgresStore, NoExchange)
+		testOptions().Tools, []string{"ENVOY_TOKEN"}, nil, postgresStore, false)
 	if refused == nil || !strings.Contains(refused.Error(), launcher.TestPGVariable) {
 		t.Errorf("CheckPod with %s in the pod env = %v, want it refused", launcher.TestPGVariable, refused)
 	}
@@ -456,9 +455,7 @@ func TestAnEndedPodOfTheEarlierLayoutReportsTheRolesOwnContainer(t *testing.T) {
 // role's own key directory is alive, and a generation the role's record says was told a moved
 // daemon URL is stale.
 func TestAnIssuePodsRoleIsReadFromItsClaimNotItsContainer(t *testing.T) {
-	broker := func(o *Options) {
-		o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-	}
+	enrolled := func(*Options) {}
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	podUnder := func(t *testing.T, edit func(*Options)) *corev1.Pod {
@@ -494,7 +491,7 @@ func TestAnIssuePodsRoleIsReadFromItsClaimNotItsContainer(t *testing.T) {
 		want    runtime.ObservationKind
 		detail  string
 	}{
-		{"an enrolled pod holding the role's own key directory", broker, nil, runtime.Alive, "role tester runs generation 1"},
+		{"an enrolled pod holding the role's own key directory", enrolled, nil, runtime.Alive, "role tester runs generation 1"},
 		{"a generation told a moved daemon URL", func(*Options) {}, func(o *Options) { o.DaemonURL = movedDaemonURL }, runtime.StaleAddress, "LEGION_DAEMON_URL"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -953,7 +950,7 @@ func TestCheckPodRefusesAMountARolesNamespaceHides(t *testing.T) {
 		"/var/run/legion/gh", "/var/run/legion/gh/x", "/var/run/legion/private", "/var/run/legion/state", "/var/run/legion/agent-secrets",
 		"/var/run/legion/home", "/var/run/legion/home/.config",
 	} {
-		if err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err == nil {
+		if err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil {
 			t.Errorf("a mount at %s passed, want it refused", path)
 		}
 	}
@@ -961,7 +958,7 @@ func TestCheckPodRefusesAMountARolesNamespaceHides(t *testing.T) {
 		"/tmp/cache", "/var/tmp/cache", "/run/lock/operator", "/var/lock/operator", "/dev/shm/operator", "/run/shm/operator", "/home/legion/.cache/operator",
 		"/run/operator", "/var/run/operator",
 	} {
-		if err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err != nil {
+		if err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
 			t.Errorf("a mount at %s was refused: %v; role-init carries it back", path, err)
 		}
 	}
@@ -984,12 +981,12 @@ func TestCheckPodRefusesAMountAtOrUnderARolesOwnDevices(t *testing.T) {
 		"/dev/pts": "/dev/pts", "/dev/pts/operator": "/dev/pts", "/dev/mqueue": "/dev/mqueue", "/dev/mqueue/x": "/dev/mqueue",
 		"/dev/ptmx": "/dev/ptmx", "/proc": "/proc", "/proc/sys": "/proc", "/proc/self/fd": "/proc",
 	} {
-		err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange)
+		err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false)
 		if err == nil || !strings.Contains(err.Error(), "overlaps "+device+", which every role's namespace in an issue pod replaces with a filesystem of its own") {
 			t.Errorf("a mount at %s = %v, want it refused naming %s", path, err, device)
 		}
 	}
-	if err := CheckPod(mountAt("/dev/operator"), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err != nil {
+	if err := CheckPod(mountAt("/dev/operator"), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
 		t.Errorf("a mount at /dev/operator was refused: %v; role-init replaces nothing there", err)
 	}
 }

@@ -140,10 +140,10 @@ func brokerConfig(url string) config.Config {
 	return config.Config{Project: "EXAMPLE", DispatchURL: url, DispatchTokenBroker: true}
 }
 
-// settledDispatch is the Dispatch transport boot settles for cfg (settleCredentials), with no Envoy
-// bearer: what openWorkflow's client sends through.
+// settledDispatch is the Dispatch transport boot settles for cfg (settleCredentials): what
+// openWorkflow's client sends through.
 func settledDispatch(ctx context.Context, cfg config.Config, dispatchToken string, getenv func(string) string, log *slog.Logger) (http.RoundTripper, error) {
-	settled, err := settleCredentials(ctx, cfg, dispatchToken, "", getenv, log)
+	settled, err := settleCredentials(ctx, cfg, dispatchToken, getenv, log)
 	return settled.dispatch, err
 }
 
@@ -290,7 +290,6 @@ func TestTheDaemonNeverSendsTheTransitionToken(t *testing.T) {
 	const transitionToken = "shared-transition-token-3a9f"
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
-	cfg.EnvoyTokenFile = writeSecret(t, "envoy-token", "envoy-bearer")
 	cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 	dispatchServer := newCredentialDispatch(t, daemonWhoami(cfg.Project))
 	cfg.DispatchURL, cfg.DispatchTokenBroker = dispatchServer.URL, true

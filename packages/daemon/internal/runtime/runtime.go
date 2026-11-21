@@ -179,9 +179,9 @@ var ErrSessionStore = errors.New("the session store could not be asked")
 
 // ErrAwaitingPodRound is a launch refused because the live pod it would keep cannot give its role a
 // credential it needs. Under dispatch_token_broker a launch carries no Dispatch token, and its role
-// trades its pod's exchange identity for one of its own; where the daemon holds no Envoy bearer
-// (no envoy_token_file), a launch carries no Envoy token, and its role trades that identity for its
-// listener credential too. This pod was built before that identity, and nothing stands in for it:
+// trades its pod's exchange identity for one of its own; the Envoy listener takes no shared bearer,
+// so a launch carries no Envoy token, and its role trades that identity for its listener
+// credential too. This pod was built before that identity, and nothing stands in for it:
 // for Dispatch, dispatch_token_transition_file, the shared token such a pod's launch carries
 // instead, is not set; for the listener there is no such token. Only the pod's update round, which
 // replaces it with a pod that carries the identity, cures it, and a launch never replaces a pod a

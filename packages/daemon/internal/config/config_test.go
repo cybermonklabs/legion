@@ -270,8 +270,7 @@ func TestLoadAllowsStage2ConfigWithoutWorkflowKeys(t *testing.T) {
 
 // Every key Stage 2 models, set to a value other than its default, lands in Config as written —
 // a relative path resolved against the file's directory, as the shipped loader resolves
-// `instructions`, `envoy_token_file`, `nats_nkey_seed_file`, and `operator_token_file`
-// (loadConfigFromFile, config.ts).
+// `instructions`, `nats_nkey_seed_file`, and `operator_token_file` (loadConfigFromFile, config.ts).
 func TestLoadReadsEveryStage2Key(t *testing.T) {
 	path := writeConfigFile(t, minimalFile+`port: 14000
 daemon_url: http://127.0.0.1:14000/
@@ -296,7 +295,6 @@ worker_wake_burst: 3
 operator_token_file: tokens/OPERATOR_TOKEN
 envoy_url: http://127.0.0.1:19020
 nats_urls: [nats://127.0.0.1:4222, nats://127.0.0.1:4223, nats://127.0.0.1:4222]
-envoy_token_file: /run/legion/ENVOY_TOKEN
 nats_nkey_seed_file: secrets/legion-pane.nk
 `)
 	dir := filepath.Dir(path)
@@ -335,7 +333,6 @@ nats_nkey_seed_file: secrets/legion-pane.nk
 	// A set, as the shipped `readStringArray` makes it (config.ts): the repeat is dropped, first
 	// occurrence kept. The launch prefix is argv and keeps its repeats (readArgv, config.ts).
 	want.NatsURLs = []string{"nats://127.0.0.1:4222", "nats://127.0.0.1:4223"}
-	want.EnvoyTokenFile = "/run/legion/ENVOY_TOKEN"
 	want.NatsNkeySeedFile = filepath.Join(dir, "secrets/legion-pane.nk")
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("Load =\n%+v\nwant\n%+v", cfg, want)
@@ -421,8 +418,8 @@ hooks:
 	}
 }
 
-// The broker's lines in the tests below: the setting on, and kubernetesFile's bearer file, which
-// the setting replaces.
+// The broker's lines in the tests below, each written onto kubernetesNoBroker, which names no
+// agent_secrets block of its own: the setting on, and the bearer file the setting replaces.
 const (
 	brokerOn          = "dispatch_token_broker: true\n"
 	dispatchTokenLine = "dispatch_token_file: /var/run/legion/DISPATCH_TOKEN\n"
@@ -438,19 +435,19 @@ const (
 // naming the key; with dispatch_url and the audience it loads, and that dispatch_url needs no
 // token file.
 func TestDispatchTokenBrokerNeedsThePodIdentity(t *testing.T) {
-	broker := kubernetesWith(dispatchTokenLine, brokerOn)
+	broker := kubernetesNoBrokerWith(dispatchTokenLine, brokerOn)
 	noURL := strings.Replace(broker, "dispatch_url: https://dispatch.internal.example\n", "", 1)
 	if noURL == broker {
 		t.Fatal("the broker file names no dispatch_url to take out")
 	}
 	const noAudience = "dispatch_token_broker needs runtime.kubernetes.agent_secrets.exchange_audience: under the setting a launch carries no Dispatch token, and each role trades its pod's exchange identity for its own, which no pod carries while exchange_audience is unset"
 	for name, tc := range map[string]struct{ body, want string }{
-		"beside dispatch_token_file": {kubernetesWith(dispatchTokenLine, dispatchTokenLine+brokerOn) + exchangeAudienceBlock,
+		"beside dispatch_token_file": {kubernetesNoBrokerWith(dispatchTokenLine, dispatchTokenLine+brokerOn) + exchangeAudienceBlock,
 			"dispatch_token_file and dispatch_token_broker are both set: the daemon's Dispatch credential is the bearer a file holds or its own pod identity traded at the secrets broker, never both"},
 		"without dispatch_url":                          {noURL + exchangeAudienceBlock, "dispatch_token_broker is set but dispatch_url is not"},
 		"with a broker that names no exchange_audience": {broker + "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile, noAudience},
 		"with no broker block at all":                   {broker, noAudience},
-		"a setting that is no boolean":                  {kubernetesWith(dispatchTokenLine, "dispatch_token_broker: yes please\n") + exchangeAudienceBlock, "dispatch_token_broker must be true or false"},
+		"a setting that is no boolean":                  {kubernetesNoBrokerWith(dispatchTokenLine, "dispatch_token_broker: yes please\n") + exchangeAudienceBlock, "dispatch_token_broker must be true or false"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
@@ -479,8 +476,8 @@ func TestDispatchTokenTransitionFileNeedsTheBroker(t *testing.T) {
 	const transition = "dispatch_token_transition_file: tokens/DISPATCH_TOKEN\n"
 	const refusal = "dispatch_token_transition_file is set but dispatch_token_broker is not true: the file holds the shared Dispatch token a pod built before dispatch_token_broker gets, so the daemon reads it only under that setting"
 	for name, body := range map[string]string{
-		"without dispatch_token_broker":    kubernetesWith(dispatchTokenLine, dispatchTokenLine+transition) + exchangeAudienceBlock,
-		"with dispatch_token_broker false": kubernetesWith(dispatchTokenLine, dispatchTokenLine+"dispatch_token_broker: false\n"+transition) + exchangeAudienceBlock,
+		"without dispatch_token_broker":    kubernetesNoBrokerWith(dispatchTokenLine, dispatchTokenLine+transition) + exchangeAudienceBlock,
+		"with dispatch_token_broker false": kubernetesNoBrokerWith(dispatchTokenLine, dispatchTokenLine+"dispatch_token_broker: false\n"+transition) + exchangeAudienceBlock,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, body), noEnv)
@@ -490,7 +487,7 @@ func TestDispatchTokenTransitionFileNeedsTheBroker(t *testing.T) {
 		})
 	}
 
-	path := writeConfigFile(t, kubernetesWith(dispatchTokenLine, brokerOn+transition)+exchangeAudienceBlock)
+	path := writeConfigFile(t, kubernetesNoBrokerWith(dispatchTokenLine, brokerOn+transition)+exchangeAudienceBlock)
 	cfg, err := LoadForValidation(path, noEnv)
 	if err != nil {
 		t.Fatalf("LoadForValidation: %v", err)
@@ -579,16 +576,17 @@ func TestLoadReadsProjectSlackChannels(t *testing.T) {
 	}
 }
 
-// slackChannelsFile is kubernetesFile with the project's slack_channels set to channels, under
-// `controller: daemon` when daemon is true and with an agent_secrets block when enrolled is.
+// slackChannelsFile is kubernetesNoBroker with the project's slack_channels set to channels, under
+// `controller: daemon` when daemon is true and with kubernetesFile's agent_secrets block when
+// enrolled is: without the block runtime: kubernetes refuses the file for its exchange_audience.
 func slackChannelsFile(channels string, daemon, enrolled bool) string {
-	body := kubernetesWith("  LEGSMOKE: {}\n",
+	body := kubernetesNoBrokerWith("  LEGSMOKE: {}\n",
 		"  LEGSMOKE: { slack_channels: "+channels+" }\n")
 	if daemon {
 		body = "controller: daemon\n" + body
 	}
 	if enrolled {
-		body += "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile
+		body += kubernetesBrokerLines
 	}
 	return body
 }
@@ -598,17 +596,21 @@ func slackChannelsFile(channels string, daemon, enrolled bool) string {
 // bot token (LEGION_SLACK_BOT_TOKEN, a shared agent secret) to a session with one. So a project
 // names Slack channels only where both hold, and anywhere else the loader refuses them, naming
 // why, rather than start a controller that hears mentions it can never answer. An empty list
-// names no channel.
+// names no channel. Under runtime: kubernetes the broker is required before any channel is read:
+// a file with no agent_secrets block is refused for its exchange_audience.
 func TestSlackChannelsNeedTheDaemonsControllerEnrolledWithTheBroker(t *testing.T) {
-	const why = "needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)"
+	const why = "needs controller: daemon under runtime: kubernetes: Slack replies need the daemon-launched controller, whose enrollment with the secrets broker (runtime.kubernetes.agent_secrets) grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)"
+	const noBroker = "runtime.kubernetes.agent_secrets.exchange_audience is required when runtime is kubernetes:" +
+		" the Envoy listener takes no shared bearer, so each pod's sessions trade broker tokens of their own through the identity this audience projects" +
+		" and the daemon presents the listener its own"
 	for _, tc := range []struct {
 		name, body, want string
 	}{
 		{"under tmux", strings.Replace(minimalFile, "DEMO: {}", "DEMO: { slack_channels: [C00000000] }", 1), "projects.DEMO.slack_channels " + why},
 		{"the operator's controller", slackChannelsFile("[C00000000]", false, true), "projects.LEGSMOKE.slack_channels " + why},
-		{"no broker", slackChannelsFile("[C00000000]", true, false), "projects.LEGSMOKE.slack_channels " + why},
-		{"neither", slackChannelsFile("[C00000000]", false, false), "projects.LEGSMOKE.slack_channels " + why},
-		{"an empty list", slackChannelsFile("[]", false, false), ""},
+		{"no broker", slackChannelsFile("[C00000000]", true, false), noBroker},
+		{"neither", slackChannelsFile("[C00000000]", false, false), noBroker},
+		{"an empty list", slackChannelsFile("[]", false, true), ""},
 		{"both", slackChannelsFile("[C00000000]", true, true), ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1321,11 +1323,6 @@ func TestLoadRefuses(t *testing.T) {
 			want: `nats_urls entry "nats-host" must be a valid URL`,
 		},
 		{
-			name: "envoy_token_file blank",
-			body: minimalFile + "envoy_token_file: \"\"\n",
-			want: "envoy_token_file must not be empty",
-		},
-		{
 			name: "nats_nkey_seed_file blank",
 			body: minimalFile + "nats_nkey_seed_file: \"\"\n",
 			want: "nats_nkey_seed_file must not be empty",
@@ -1819,7 +1816,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "tree_stop_timeout_seconds", line: "tree_stop_timeout_seconds: 60", class: modelled},
 		{key: "slow_command_timeout_seconds", line: "slow_command_timeout_seconds: 300", class: modelled},
 		{key: "envoy_url", line: "envoy_url: http://127.0.0.1:9020", class: modelled},
-		{key: "envoy_token_file", line: "envoy_token_file: /var/run/legion/ENVOY_TOKEN", class: modelled},
+		{key: "envoy_token_file", line: "envoy_token_file: /var/run/legion/ENVOY_TOKEN", class: tossed, wantPrefix: "unknown key envoy_token_file: the Envoy listener takes no shared bearer any more"},
 		{key: "nats_nkey_seed_file", line: "nats_nkey_seed_file: /var/run/legion/NATS_NKEY_SEED", class: modelled},
 		{key: "nats_daemon_nkey_seed_file", line: "nats_daemon_nkey_seed_file: /var/run/legion/NATS_DAEMON_NKEY_SEED", class: modelled},
 		{key: "nats_urls", line: "nats_urls: [nats://127.0.0.1:4222]", class: modelled},
@@ -1946,6 +1943,109 @@ func TestAWarnedKeyLoadsWithEveryOtherValueIntact(t *testing.T) {
 				if !strings.Contains(cfg.Warnings[0], want) {
 					t.Errorf("the warning %q does not say %q", cfg.Warnings[0], want)
 				}
+			}
+		})
+	}
+}
+
+// TestATmuxDaemonNamesALoopbackListener: a daemon under runtime: tmux holds no credential for the
+// Envoy listener — the listener takes no shared bearer, and a broker token of the daemon's own is
+// traded only under runtime: kubernetes — so every call it makes presents nothing, which only a
+// listener bound to loopback serves. Its envoy_url is refused at load unless the host as written is
+// loopback (localhost or a loopback address; no name is resolved), naming the key and the host but
+// never the value, whose userinfo may carry a credential. The default listener, and envoy_url under
+// runtime: kubernetes, where pods dial it and a loopback host is itself refused, are untouched.
+func TestATmuxDaemonNamesALoopbackListener(t *testing.T) {
+	const why = ", which is not a loopback host: under runtime: tmux the daemon presents the Envoy listener no credential," +
+		" and a listener off loopback answers a caller that presents none 401; name a loopback listener (envoy_url's default is http://127.0.0.1:9020)"
+	for _, tc := range []struct{ url, want string }{
+		{"http://envoy-listener.internal.example:9020", "envoy_url names envoy-listener.internal.example" + why},
+		{"http://legion@10.0.0.5:9020", "envoy_url names 10.0.0.5" + why},
+		{"http://0.0.0.0:9020", "envoy_url names 0.0.0.0" + why},
+	} {
+		t.Run("refused "+tc.url, func(t *testing.T) {
+			_, err := Load(writeConfigFile(t, minimalFile+"envoy_url: "+tc.url+"\n"), noEnv)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("Load took envoy_url %q under runtime: tmux with err %v; want %q", tc.url, err, tc.want)
+			}
+			if strings.Contains(err.Error(), "legion@") {
+				t.Errorf("the refusal %q holds the URL's userinfo", err)
+			}
+		})
+	}
+	for _, url := range []string{"", "http://127.0.0.1:19020", "http://127.0.0.2:9020", "http://localhost:9020", "http://localhost.:9020", "http://[::1]:9020"} {
+		t.Run("taken "+url, func(t *testing.T) {
+			body, want := minimalFile, "http://127.0.0.1:9020"
+			if url != "" {
+				body, want = body+"envoy_url: "+url+"\n", url
+			}
+			cfg, err := Load(writeConfigFile(t, body), noEnv)
+			if err != nil {
+				t.Fatalf("Load refused envoy_url %q under runtime: tmux: %v", url, err)
+			}
+			if cfg.EnvoyURL != want {
+				t.Errorf("EnvoyURL = %q, want %q", cfg.EnvoyURL, want)
+			}
+		})
+	}
+	t.Run("taken off loopback under runtime: kubernetes", func(t *testing.T) {
+		cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile), noEnv)
+		if err != nil {
+			t.Fatalf("LoadForValidation refused the kubernetes file: %v", err)
+		}
+		if want := "http://envoy-listener.internal.example:9020"; cfg.EnvoyURL != want {
+			t.Errorf("EnvoyURL = %q, want %q", cfg.EnvoyURL, want)
+		}
+	})
+}
+
+// TestEnvoyTokenFileIsRefusedNamingTheBrokerRoute: the Envoy listener takes no shared bearer (a
+// listener started with ENVOY_API_TOKEN refuses to start), so envoy_token_file, the file the daemon
+// read that bearer from to present it and to hand every pod and pane a copy, is refused wherever a
+// file sets it: in legion.yaml under either runtime, and in the controller's operator-side file,
+// whose copy reached the controller's session as ENVOY_TOKEN_FILE. Each refusal names what calls
+// the listener in the bearer's place, so the operator who meets it knows what to set instead: under
+// runtime: kubernetes the daemon's own broker token and its pods' sessions' own, both traded under
+// runtime.kubernetes.agent_secrets.exchange_audience; for the controller the broker token its
+// session trades with this machine's identity; and for a daemon on one host, or a controller beside
+// it, a loopback listener, which needs no credential.
+func TestEnvoyTokenFileIsRefusedNamingTheBrokerRoute(t *testing.T) {
+	const (
+		line   = "envoy_token_file: /var/run/legion/ENVOY_TOKEN\n"
+		daemon = "unknown key envoy_token_file: the Envoy listener takes no shared bearer any more: under runtime: kubernetes" +
+			" the daemon presents its own broker token (DPoP) and each pod's sessions trade their own, both under" +
+			" runtime.kubernetes.agent_secrets.exchange_audience; under runtime: tmux the daemon and its panes call a loopback" +
+			" listener (envoy_url's default, http://127.0.0.1:9020), which needs no credential; remove envoy_token_file from legion.yaml"
+		controller = "envoy_token_file is not read any more: the Envoy listener takes no shared bearer, so the controller's" +
+			" session presents the broker token it trades with this machine's own identity at the secrets broker its" +
+			" environment names (AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY), or calls a loopback listener, which needs" +
+			" no credential; remove envoy_token_file from the controller configuration — see deploy/kubernetes/daemon/controller.yaml.example"
+	)
+	for _, tc := range []struct {
+		name string
+		load func(t *testing.T) error
+		want string
+	}{
+		{"legion.yaml under runtime: tmux", func(t *testing.T) error {
+			_, err := Load(writeConfigFile(t, minimalFile+line), noEnv)
+			return err
+		}, daemon},
+		{"legion.yaml under runtime: kubernetes", func(t *testing.T) error {
+			_, err := LoadForValidation(writeConfigFile(t, line+kubernetesFile), noEnv)
+			return err
+		}, daemon},
+		{"controller.yaml", func(t *testing.T) error {
+			_, err := LoadController(controllerFile(t, requiredControllerKeys+line), "")
+			return err
+		}, controller},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.load(t)
+			if err == nil {
+				t.Fatalf("%s took envoy_token_file; want it refused: %s", tc.name, tc.want)
+			}
+			if err.Error() != tc.want {
+				t.Fatalf("%s refused envoy_token_file as\n%s\nwant\n%s", tc.name, err, tc.want)
 			}
 		})
 	}

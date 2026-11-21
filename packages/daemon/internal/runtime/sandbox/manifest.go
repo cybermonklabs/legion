@@ -69,12 +69,13 @@ const (
 	sessionWriterTokenVolume = "session-writer-token"
 )
 
-// The agent-secrets volumes: agentSecretsTokenVolume alone carries the projected token for the
-// broker's audience, and agentSecretsKeyVolume the memory-backed directory the client keeps its
-// key and enrollment id in. Neither exists when the runtime enrolls no pod.
-// agentSecretsExchangeVolume carries the projected token for the exchange's audience, the
-// identity a pod's sessions trade for a broker token; it exists only where the pod is enrolled and
-// the deployment sets that audience (AgentSecrets.ExchangeAudience).
+// The agent-secrets volumes, which every pod a launch builds carries: agentSecretsTokenVolume
+// alone carries the projected token for the broker's audience, and agentSecretsKeyVolume the
+// memory-backed directory the client keeps its key and enrollment id in.
+// agentSecretsExchangeVolume carries the projected token for the exchange's audience
+// (AgentSecrets.ExchangeAudience), the identity a pod's sessions trade for a broker token. A live
+// pod built before the enrollment or the exchange identity carries none of them or only the
+// first two (keptPod).
 const (
 	agentSecretsKeyVolume      = "agent-secrets-key"
 	agentSecretsTokenVolume    = "agent-secrets-token"
@@ -115,17 +116,17 @@ const podUser = 1000
 
 // runtimeOwned are the main container's variables the runtime sets itself, the whole of each
 // value: with the composed names (composed), whose value the operator begins and the runtime
-// finishes, and, where the deployment names an exchange audience, the exchange identity's two
-// (exchangeOwned), it is exactly what the container is told by the runtime under Dispatch's shared
-// bearer (TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime). Under
-// dispatch_token_broker a launch into a pod that carries an exchange identity is told
-// DISPATCH_TOKEN_BROKER (brokerOwned) in place of DISPATCH_TOKEN_FILE, which stays owned, since a
-// launch into a kept pod without that identity carries the transition token behind it. The shared
-// validator refuses a name of any of them in a spec's Env and as a secret's pointer
-// (Runtime.specOwned), and CheckPod refuses a runtime-owned one, or an exchange or broker one where
-// the deployment names the audience or sets the broker, in the operator's pod — a composed one is
-// the operator's to set, since composing is what the runtime does with it. The image probe's
-// container sets none of its own. The two CLAUDE_* names and claudelaunch.SessionVariable are told
+// finishes, and the exchange identity's two (exchangeOwned), it is exactly what the container is
+// told by the runtime under Dispatch's shared bearer
+// (TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime). Under dispatch_token_broker a
+// launch into a pod that carries an exchange identity is told DISPATCH_TOKEN_BROKER (brokerOwned)
+// in place of DISPATCH_TOKEN_FILE, which stays owned, since a launch into a kept pod without that
+// identity carries the transition token behind it. The shared validator refuses a name of any of
+// them in a spec's Env and as a secret's pointer (Runtime.specOwned), and CheckPod refuses a
+// runtime-owned or exchange one, or a broker one where the deployment sets the broker, in the
+// operator's pod — a composed one is the operator's to set, since composing is what the runtime
+// does with it. The image probe's container sets none of its own. The two CLAUDE_* names and
+// claudelaunch.SessionVariable are told
 // a Claude role alone, as the controller's Slack channels are the controller's, and owned in every
 // pod: an operator that could place a Claude Code worker's configuration directory, let the clock
 // prompt it or name another session for its launcher to keep would be undoing the launch
@@ -174,45 +175,36 @@ var runtimeOwned = func() map[string]bool {
 // is a change of its own.
 var composed = map[string]bool{runtime.SpendAttributesVariable: true}
 
-// runtimeOwnedOrComposed is every variable a launch spec may not set where the deployment names no
-// exchange audience (Runtime.specOwned): the runtime's own and the composed ones together, since
-// the shared refusal reads one set (runtime.ValidateSpawnSpec). Neither set changes after init, so
-// the union is built once here rather than per launch.
-var runtimeOwnedOrComposed = func() map[string]bool {
-	names := maps.Clone(runtimeOwned)
-	maps.Copy(names, composed)
-	return names
-}()
-
-// exchangeOwned are the exchange identity's two variables, which the runtime sets itself only
-// where the deployment names an exchange audience (runtime.kubernetes.agent_secrets.exchange_audience,
-// launch.trades). A deployment that names none tells no role either, so each stays the operator's
-// pod env's and a launch spec's to set, as it was before the key existed: they are no part of
-// runtimeOwned, and the reservations that take them (Runtime.specOwned, CheckPod) read whether the
-// deployment names the audience.
+// exchangeOwned are the exchange identity's two variables, which the runtime tells every role of
+// a pod that carries that identity (launch.trades), and so every role of every pod a launch
+// builds, since New requires runtime.kubernetes.agent_secrets.exchange_audience. A role of a kept
+// pod built before the identity is told neither, which is why they are a set of their own rather
+// than part of runtimeOwned, which every pod is told; the reservations (Runtime.specOwned,
+// CheckPod) take them always.
 var exchangeOwned = map[string]bool{machineIdentityVariable: true, machineTokenFileVariable: true}
 
-// runtimeOwnedComposedOrExchange is every variable a launch spec may not set where the deployment
-// names an exchange audience: runtimeOwnedOrComposed and exchangeOwned together, built once.
+// runtimeOwnedComposedOrExchange is every variable a launch spec may not set without
+// dispatch_token_broker (Runtime.specOwned): the runtime's own, the composed ones and the exchange
+// identity's two together, since the shared refusal reads one set (runtime.ValidateSpawnSpec).
+// None of the sets changes after init, so the union is built once here rather than per launch.
 var runtimeOwnedComposedOrExchange = func() map[string]bool {
-	names := maps.Clone(runtimeOwnedOrComposed)
+	names := maps.Clone(runtimeOwned)
+	maps.Copy(names, composed)
 	maps.Copy(names, exchangeOwned)
 	return names
 }()
 
 // brokerOwned is the one variable the runtime sets itself only where the deployment sets
-// dispatch_token_broker (Options.Dispatch.Broker), as exchangeOwned is only where it names an
-// exchange audience: a deployment without the setting tells no role DISPATCH_TOKEN_BROKER, so the
-// name stays the operator's pod env's and a launch spec's to set, as it was before the setting
-// existed. The runtime tells it, as 1, to every role of a pod that carries an exchange identity
-// under the setting (launch.brokersDispatch), and so never beside DISPATCH_TOKEN_FILE. It is no
-// address: a role started under another word holds its credential for its life and is never
-// relaunched for the word (handedAddresses leaves it out).
+// dispatch_token_broker (Options.Dispatch.Broker): a deployment without the setting tells no role
+// DISPATCH_TOKEN_BROKER, so the name stays the operator's pod env's and a launch spec's to set, as
+// it was before the setting existed. The runtime tells it, as 1, to every role of a pod that
+// carries an exchange identity under the setting (launch.brokersDispatch), and so never beside
+// DISPATCH_TOKEN_FILE. It is no address: a role started under another word holds its credential
+// for its life and is never relaunched for the word (handedAddresses leaves it out).
 var brokerOwned = map[string]bool{shimwire.DispatchTokenBrokerVariable: true}
 
 // runtimeOwnedComposedExchangeOrBroker is every variable a launch spec may not set under
-// dispatch_token_broker, which configure takes only beside an exchange audience:
-// runtimeOwnedComposedOrExchange and brokerOwned together, built once.
+// dispatch_token_broker: runtimeOwnedComposedOrExchange and brokerOwned together, built once.
 var runtimeOwnedComposedExchangeOrBroker = func() map[string]bool {
 	names := maps.Clone(runtimeOwnedComposedOrExchange)
 	maps.Copy(names, brokerOwned)
@@ -220,17 +212,13 @@ var runtimeOwnedComposedExchangeOrBroker = func() map[string]bool {
 }()
 
 // specOwned is every variable a launch spec may not set under r (runtime.ValidateSpawnSpec): the
-// runtime's own and the composed ones, the exchange identity's two where the deployment names
-// an exchange audience (exchangeOwned), and DISPATCH_TOKEN_BROKER where it sets
-// dispatch_token_broker as well (brokerOwned), as PodExchange reads the two.
+// runtime's own, the composed ones and the exchange identity's two, and DISPATCH_TOKEN_BROKER
+// where r sets dispatch_token_broker as well (brokerOwned), as CheckPod reads the setting.
 func (r *Runtime) specOwned() map[string]bool {
-	switch exchangeOf(r.agentSecrets, r.dispatch.Broker) {
-	case ExchangeAndBroker:
+	if r.dispatch.Broker {
 		return runtimeOwnedComposedExchangeOrBroker
-	case ExchangeIdentity:
-		return runtimeOwnedComposedOrExchange
 	}
-	return runtimeOwnedOrComposed
+	return runtimeOwnedComposedOrExchange
 }
 
 // slackChannelsVariable is the project's slack_channels as the runtime tells the controller it
@@ -299,22 +287,17 @@ const sessionWriterAudienceFlag = "--session-writer-audience"
 
 // legionVolumeNames are the volumes Legion puts in a pod, an issue pod's, the controller's or the
 // probe's, whose names the operator's volumes may not take: the shared ones, the role homes, the
-// test database's, and each launcher role's private ones. The agent-secrets volumes are reserved
-// whether or not this deployment enrolls, the workload identity token whether or not an issue pod
-// of it serves the metadata endpoint, the session writer token whether or not its session
-// database names a writer audience, and the test database's whether or not it sets
-// `runtime.kubernetes.test_postgres`: an operator's pod may never claim them. The exchange
-// identity's (agentSecretsExchangeVolume) is Legion's only where exchange says the deployment names
-// an exchange audience: one that names none keeps that name the operator's, as it was before the
-// key existed. Every launcher
-// role, the controller's included, has a key volume when the pod enrolls and a gh volume always.
-func legionVolumeNames(exchange bool) []string {
+// test database's, and each launcher role's private ones. The agent-secrets volumes, the exchange
+// identity's (agentSecretsExchangeVolume) among them, are in every pod a launch builds, the
+// workload identity token is reserved whether or not an issue pod of the deployment serves the
+// metadata endpoint, the session writer token whether or not its session database names a writer
+// audience, and the test database's whether or not it sets `runtime.kubernetes.test_postgres`: an
+// operator's pod may never claim them. Every launcher role, the controller's included, has a key
+// volume and a gh volume.
+func legionVolumeNames() []string {
 	names := []string{
-		issueVolume, provisionVolume, tempVolume, configVolume, providersVolume, agentSecretsTokenVolume, workloadIdentityTokenVolume,
-		sessionWriterTokenVolume, roleHomesVolume, roleProbeVolume, testPGVolume,
-	}
-	if exchange {
-		names = append(names, agentSecretsExchangeVolume)
+		issueVolume, provisionVolume, tempVolume, configVolume, providersVolume, agentSecretsTokenVolume, agentSecretsExchangeVolume,
+		workloadIdentityTokenVolume, sessionWriterTokenVolume, roleHomesVolume, roleProbeVolume, testPGVolume,
 	}
 	for _, role := range launcherRoles {
 		names = append(names, roleVolume("launcher", role), roleVolume("private", role), roleVolume(stateVolume, role), roleVolume(ghVolume, role),
@@ -326,10 +309,9 @@ func legionVolumeNames(exchange bool) []string {
 
 // legionMountPaths are where Legion mounts a volume in the containers the operator's mounts join,
 // the launcher container of either pod and the image probe's, or where a role's namespace binds
-// one: an operator's mount may be neither at, under, nor above one. AgentSecretsKeyDir and
-// AgentSecretsTokenDir are reserved whether or not this deployment enrolls, AgentSecretsExchangeDir
-// only where exchange says it names an exchange audience (one that names none keeps the path the
-// operator's, as it was before the key existed), GHConfigDir whether or
+// one: an operator's mount may be neither at, under, nor above one. AgentSecretsKeyDir,
+// AgentSecretsTokenDir and AgentSecretsExchangeDir are where every pod a launch builds mounts the
+// enrollment and the exchange identity, GHConfigDir is reserved whether or
 // not the pod is an issue's, FeedDir, which TreeRoot already covers, is named for the read-only
 // mount every issue pod's container carries there, RolesDir is where an issue pod mounts every
 // role's own volumes, which each role's namespace covers whole, HomeMountsDir is where an issue
@@ -338,14 +320,11 @@ func legionVolumeNames(exchange bool) []string {
 // for its role-namespace check, and TestPGLogFile is reserved whether or not the deployment
 // serves a test database: it is where each role's namespace binds the pod's test server log when
 // the pod serves one.
-func legionMountPaths(exchange bool) []string {
+func legionMountPaths() []string {
 	paths := []string{
 		TreeRoot, FeedDir, LauncherDir, LauncherPrivateDir, StateDir, xdgConfigHome, ProvidersDir,
-		AgentSecretsKeyDir, AgentSecretsTokenDir, GHConfigDir, RolesDir, HomeMountsDir, RoleProbeDir,
+		AgentSecretsKeyDir, AgentSecretsTokenDir, AgentSecretsExchangeDir, GHConfigDir, RolesDir, HomeMountsDir, RoleProbeDir,
 		TestPGLogFile,
-	}
-	if exchange {
-		paths = append(paths, AgentSecretsExchangeDir)
 	}
 	slices.Sort(paths)
 	return paths
@@ -443,14 +422,13 @@ type launch struct {
 // which a process that refused to start could not.
 type keptPod struct {
 	// enrolled is the enrollment decision (Runtime.enrollsIn) read of this pod when the launch
-	// began: the runtime enrols its pods and the pod carries that enrollment for the role, both
-	// the projected token volume and the role's own key volume, the two the shim's agent-secrets
-	// flags name and stat (carriesEnrollment, launcherCommand).
+	// began: the pod carries the enrollment for the role, both the projected token volume and the
+	// role's own key volume, the two the shim's agent-secrets flags name and stat
+	// (carriesEnrollment, launcherCommand).
 	enrolled bool
 	// trades is the exchange decision (Runtime.tradesIn) read of this pod when the launch began:
-	// it is enrolled, the runtime names an exchange audience, and the pod carries the exchange
-	// token that audience projects (carriesExchangeIdentity), the file the role's
-	// AGENT_SECRETS_MACHINE_TOKEN_FILE would name.
+	// it is enrolled and carries the exchange token the exchange audience projects
+	// (carriesExchangeIdentity), the file the role's AGENT_SECRETS_MACHINE_TOKEN_FILE would name.
 	trades bool
 	// overlays are the role's own overlay files (Options.RoleConfigFiles) the pod's container
 	// actually holds, in configuration order: the only ones its generation's PI_CONFIG_FILES may
@@ -503,10 +481,10 @@ func (l launch) leakChecker(r *Runtime) string {
 }
 
 // enrollsIn is the one decision whether a generation of role started now in a pod holds the
-// secrets broker: the runtime enrols its pods at all (runtime.kubernetes.agent_secrets), and the
-// pod that generation runs in carries that enrollment — the broker's projected token volume and
-// the role's own key volume (carriesEnrollment). A nil pod is a launch that builds the pod
-// itself, which carries the configuration as it now reads.
+// secrets broker: the pod that generation runs in carries the enrollment — the broker's projected
+// token volume and the role's own key volume (carriesEnrollment). A nil pod is a launch that
+// builds the pod itself, which carries the enrollment, since New requires
+// runtime.kubernetes.agent_secrets.
 //
 // Everything a generation's broker reaches reads this one answer, so its argv and its environment
 // can never disagree again (INFRA-484): the shim's three agent-secrets flags (launcherCommand)
@@ -525,7 +503,7 @@ func (l launch) leakChecker(r *Runtime) string {
 // an observation from the live pod; neither a kubelet nor an admission webhook takes a volume off
 // a pod, so the two read the same enrollment.
 func (r *Runtime) enrollsIn(pod *corev1.PodSpec, role claim.Role) bool {
-	return r.agentSecrets != nil && (pod == nil || carriesEnrollment(*pod, role))
+	return pod == nil || carriesEnrollment(*pod, role)
 }
 
 // enrolls is this launch's reading of that one decision: of the live pod it keeps, as the launch
@@ -539,15 +517,16 @@ func (l launch) enrolls(r *Runtime) bool {
 }
 
 // tradesIn is the one decision whether a generation of role started now in a pod holds an
-// identity the broker's exchange trades: it holds the broker (enrollsIn), the runtime names an
-// exchange audience (runtime.kubernetes.agent_secrets.exchange_audience), and the pod carries the
-// projected token for it (carriesExchangeIdentity). A nil pod is a launch that builds the pod
-// itself, which carries the configuration as it now reads. A role in a kept pod built before the
+// identity the broker's exchange trades: it holds the broker (enrollsIn) and the pod carries the
+// projected token for the exchange audience (carriesExchangeIdentity). A nil pod is a launch that
+// builds the pod itself, which carries that token, since New requires
+// runtime.kubernetes.agent_secrets.exchange_audience. A role in a kept pod built before the
 // audience was named is told no identity, so its broker clients keep the credential they had
 // rather than fail every trade on a token file that is not there, until the update round replaces
-// the pod (movedExchangeIdentity).
+// the pod (movedExchangeIdentity); a launch into such a pod is refused for that round
+// (listenerCredential).
 func (r *Runtime) tradesIn(pod *corev1.PodSpec, role claim.Role) bool {
-	return r.enrollsIn(pod, role) && r.agentSecrets.ExchangeAudience != "" && (pod == nil || carriesExchangeIdentity(*pod, r.agentSecrets))
+	return r.enrollsIn(pod, role) && (pod == nil || carriesExchangeIdentity(*pod, r.agentSecrets))
 }
 
 // trades is this launch's reading of that decision: of the live pod it keeps, as the launch read
@@ -791,9 +770,9 @@ func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime
 
 // prepare checks spec and resolves everything a launch needs from it, reading the prompt files on
 // the daemon's disk, so a launch that cannot be honoured is refused before any API call: the
-// shared refusal, over every name a spec may not set — the runtime's own, the composed ones and,
-// where the deployment names an exchange audience, the exchange identity's (runtime.ValidateSpawnSpec,
-// Runtime.specOwned) — then the sandbox's own. A secret named
+// shared refusal, over every name a spec may not set — the runtime's own, the composed ones and
+// the exchange identity's (runtime.ValidateSpawnSpec, Runtime.specOwned) — then the sandbox's
+// own. A secret named
 // for the provisioning token is refused, the one key the runtime writes whose pointer the worker
 // container is never told (the boot token's and the Dispatch bearer's pointers are runtime-owned,
 // so the shared refusal already covers them). prepare decides the pod's kind from the claim's role
@@ -1224,22 +1203,18 @@ func (r *Runtime) volumes(l launch) []corev1.Volume {
 		l.kind.mainVolumes(r), r.agentSecretsVolumes(l.roles), workloadIdentityVolumes(l), r.sessionWriterVolumes(), providers, r.pod.Volumes)
 }
 
-// agentSecretsVolumes are, for a pod the runtime enrolls with the secrets broker
-// (runtime.kubernetes.agent_secrets), one shared projected ServiceAccount token volume (the
-// admission policy permits one volume per audience) and one private memory key directory per role
-// of roles, the controller's included; none when the runtime enrolls no pod. Every role of every pod
-// enrolls, so the broker can grant a pod's agents the secrets the Legion daemon's service owns and
-// the shared ones, such as the controller's Slack bot token. Where the deployment names an exchange
-// audience (AgentSecrets.ExchangeAudience) a second shared projected volume follows them, the pod's
-// identity for the broker's exchange (exchangeTokenProjection). This builds the pod, so it reads
+// agentSecretsVolumes are the secrets broker's volumes of every pod (runtime.kubernetes.agent_secrets):
+// one shared projected ServiceAccount token volume (the admission policy permits one volume per
+// audience), one private memory key directory per role of roles, the controller's included, and a
+// second shared projected volume, the pod's identity for the broker's exchange
+// (exchangeTokenProjection, for AgentSecrets.ExchangeAudience). Every role of every pod enrolls,
+// so the broker can grant a pod's agents the secrets the Legion daemon's service owns and the
+// shared ones, such as the controller's Slack bot token. This builds the pod, so it reads
 // r.agentSecrets whole, as its mounts do (agentSecretsMounts); what a generation is handed reads
 // the enrollment and exchange decisions instead (enrollsIn, tradesIn), since the pod a launch
 // keeps is never rebuilt.
 func (r *Runtime) agentSecretsVolumes(roles []claim.Role) []corev1.Volume {
 	broker := r.agentSecrets
-	if broker == nil {
-		return nil
-	}
 	volumes := []corev1.Volume{{Name: agentSecretsTokenVolume, VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
 		DefaultMode: new(int32(0o440)),
 		Sources:     []corev1.VolumeProjection{{ServiceAccountToken: brokerTokenProjection(broker)}},
@@ -1249,13 +1224,10 @@ func (r *Runtime) agentSecretsVolumes(roles []claim.Role) []corev1.Volume {
 			EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory, SizeLimit: resource.NewQuantity(1<<20, resource.BinarySI)},
 		}})
 	}
-	if broker.ExchangeAudience != "" {
-		volumes = append(volumes, corev1.Volume{Name: agentSecretsExchangeVolume, VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
-			DefaultMode: new(int32(0o440)),
-			Sources:     []corev1.VolumeProjection{{ServiceAccountToken: exchangeTokenProjection(broker)}},
-		}}})
-	}
-	return volumes
+	return append(volumes, corev1.Volume{Name: agentSecretsExchangeVolume, VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+		DefaultMode: new(int32(0o440)),
+		Sources:     []corev1.VolumeProjection{{ServiceAccountToken: exchangeTokenProjection(broker)}},
+	}}})
 }
 
 // brokerTokenProjection is the ServiceAccount token a pod enrolled with broker projects for it: the
@@ -1341,48 +1313,35 @@ func exchangeTokenProjection(broker *AgentSecrets) *corev1.ServiceAccountTokenPr
 	return &corev1.ServiceAccountTokenProjection{Audience: broker.ExchangeAudience, ExpirationSeconds: new(int64(exchangeTokenExpirySeconds)), Path: AgentSecretsExchangeFile}
 }
 
-// exchangeTokenMounts is a container's read-only mount of the exchange token at
-// AgentSecretsExchangeDir where the pod carries one (agentSecretsVolumes), none otherwise.
-func exchangeTokenMounts(broker *AgentSecrets) []corev1.VolumeMount {
-	if broker == nil || broker.ExchangeAudience == "" {
-		return nil
-	}
-	return []corev1.VolumeMount{{Name: agentSecretsExchangeVolume, MountPath: AgentSecretsExchangeDir, ReadOnly: true}}
-}
+// exchangeTokenMount is a container's read-only mount of the exchange token every pod carries
+// (agentSecretsVolumes) at AgentSecretsExchangeDir.
+var exchangeTokenMount = corev1.VolumeMount{Name: agentSecretsExchangeVolume, MountPath: AgentSecretsExchangeDir, ReadOnly: true}
 
-// agentSecretsMounts are the controller's container's mounts of the agent-secrets volumes when it
-// enrolls with broker and runs the single-role form, none when broker is nil: the one configured
-// audience projection, the role's own key directory, and the exchange token where the deployment
-// names its audience. A container that runs the roles-dir form mounts each role's key directory
-// under the role's directory of RolesDir instead (rolesDirLayout), and the two tokens once for the
-// pod (podTokenMounts).
-func agentSecretsMounts(broker *AgentSecrets, role claim.Role) []corev1.VolumeMount {
-	if broker == nil {
-		return nil
-	}
-	return append([]corev1.VolumeMount{
+// agentSecretsMounts are the mounts of role's agent-secrets volumes of a container that runs the
+// launcher's single-role form, the controller's: the one configured audience projection, the
+// role's own key directory, and the exchange token. A container that runs the roles-dir form
+// mounts each role's key directory under the role's directory of RolesDir instead
+// (rolesDirLayout), and the two tokens once for the pod (podTokenMounts).
+func agentSecretsMounts(role claim.Role) []corev1.VolumeMount {
+	return []corev1.VolumeMount{
 		{Name: agentSecretsTokenVolume, MountPath: AgentSecretsTokenDir, ReadOnly: true},
 		{Name: roleVolume(agentSecretsKeyVolume, role), MountPath: AgentSecretsKeyDir},
-	}, exchangeTokenMounts(broker)...)
+		exchangeTokenMount,
+	}
 }
 
 // podTokenMounts are the projected tokens a container that runs the launcher's roles-dir form
 // mounts once for every role it runs, each read-only: the session writer token at
 // SessionWriterDir where the session database names a writer audience (sessionWriterVolumes),
-// under RolesDir, which no role's namespace shows; then, where the pod enrolls with the secrets
-// broker, the broker's token at AgentSecretsTokenDir and the exchange's where the deployment names
-// its audience (exchangeTokenMounts), which every role of the pod reads at those paths. No init
-// container mounts any of them.
+// under RolesDir, which no role's namespace shows; then the secrets broker's token at
+// AgentSecretsTokenDir and the exchange's (exchangeTokenMount), which every role of the pod reads
+// at those paths. No init container mounts any of them.
 func (r *Runtime) podTokenMounts() []corev1.VolumeMount {
 	var mounts []corev1.VolumeMount
 	if r.sessionWriterAudience() != "" {
 		mounts = append(mounts, corev1.VolumeMount{Name: sessionWriterTokenVolume, MountPath: SessionWriterDir, ReadOnly: true})
 	}
-	if r.agentSecrets != nil {
-		mounts = append(mounts, corev1.VolumeMount{Name: agentSecretsTokenVolume, MountPath: AgentSecretsTokenDir, ReadOnly: true})
-		mounts = append(mounts, exchangeTokenMounts(r.agentSecrets)...)
-	}
-	return mounts
+	return append(mounts, corev1.VolumeMount{Name: agentSecretsTokenVolume, MountPath: AgentSecretsTokenDir, ReadOnly: true}, exchangeTokenMount)
 }
 
 // providers are the providers Secret's volume and its read-only mount at ProvidersDir: the

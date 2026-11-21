@@ -720,7 +720,6 @@ postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
 bind: 10.0.0.5
 daemon_url: http://10.0.0.5:13370
 envoy_url: http://envoy-listener.internal.example:9020
-envoy_token_file: ./envoy-token
 operator_token_file: ./operator-token
 dispatch_url: https://dispatch.internal.example
 dispatch_token_file: ./dispatch-token
@@ -730,7 +729,9 @@ github_apps:
   review: { app_id: "2", private_key_command: "exit 1" }
 `
 
-// kubernetesCheckRuntime is the `runtime.kubernetes` block those keys go with.
+// kubernetesCheckRuntime is the `runtime.kubernetes` block those keys go with, its agent_secrets
+// block included: runtime: kubernetes requires its exchange_audience, since the broker tokens traded
+// under it are the daemon's and every pod's credential for the Envoy listener.
 const kubernetesCheckRuntime = `runtime:
   kubernetes:
     namespace: legion
@@ -740,6 +741,10 @@ const kubernetesCheckRuntime = `runtime:
     session_dsn_secret: SESSION_DSN
     kubeconfig: ./kubeconfig
     context: legion-daemon
+    agent_secrets:
+      url: https://secrets.internal.example
+      token_file: /var/run/legion/agent-secrets-token/token
+      exchange_audience: legion-broker-exchange
 `
 
 // checkConfigKubeconfig is the kubeconfig that block names: the context it names, and a server
@@ -1109,11 +1114,12 @@ func replaceLine(t *testing.T, path, prefix, line string) {
 	}
 }
 
-// `legion config check` reads every launch secret the way boot does (daemon.CheckStart): the Envoy
-// bearer's file, and the NATS nkey seed (natsauth.Seed: the key's file over both variables, a file
-// the daemon owns held to 0600, a user's nkey seed or nothing). A file boot
-// would refuse fails the check with boot's refusal, and one it would take passes, the OK line
-// naming the seed's public key and never the seed.
+// `legion config check` reads every launch secret the way boot does (daemon.CheckStart): the NATS
+// nkey seed (natsauth.Seed: the key's file over both variables, a file the daemon owns held to
+// 0600, a user's nkey seed or nothing). A file boot would refuse fails the check with boot's
+// refusal, and one it would take passes, the OK line naming the seed's public key and never the
+// seed. The Envoy bearer is no launch secret: the listener takes no shared one, so the check
+// refuses envoy_token_file whatever its file holds, as boot does.
 func TestConfigCheckReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 	legionState(t)
 	seed, public := testnkeys.User(t)
@@ -1125,9 +1131,9 @@ func TestConfigCheckReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 		mode     os.FileMode
 		refusal  func(path string) string
 	}{
-		{"a missing Envoy token file", envoyKey, "", 0, func(path string) string { return "envoy_token_file names " + path + ", which could not be read: " }},
-		{"a blank Envoy token file", envoyKey, " \n", 0o600, func(path string) string { return "envoy_token_file names " + path + ", which is empty\n" }},
-		{"an Envoy token file", envoyKey, "envoy-token\n", 0o600, nil},
+		{"an Envoy token file, which the loader refuses", envoyKey, "envoy-token\n", 0o600, func(string) string {
+			return "unknown key envoy_token_file: the Envoy listener takes no shared bearer any more"
+		}},
 		{"a missing seed file", seedKey, "", 0, func(path string) string { return "nats_nkey_seed_file names " + path + ", which could not be read: " }},
 		{"a seed file others can read", seedKey, seed + "\n", 0o644, func(path string) string {
 			return "nats_nkey_seed_file " + path + " is readable by its group or others (mode 0644); chmod 0600 it\n"
@@ -1272,7 +1278,6 @@ state_dir: %s
 bind: 10.0.0.5
 daemon_url: http://10.0.0.5:13370
 envoy_url: http://envoy-listener.internal.example:9020
-envoy_token_file: ./envoy-token
 operator_token_file: ./operator-token
 dispatch_url: https://dispatch.internal.example
 dispatch_token_file: ./dispatch-token
@@ -1289,9 +1294,13 @@ runtime:
     storage_class: gp2
     session_store: postgres
     session_dsn_secret: SESSION_DSN
+    agent_secrets:
+      url: https://secrets.internal.example
+      token_file: /var/run/legion/agent-secrets-token/token
+      exchange_audience: legion-broker-exchange
 %s`, filepath.Join(dir, "state"), command, command, tc.runtime)
 			config := filepath.Join(dir, "legion.yaml")
-			for name, contents := range map[string]string{config: body, "envoy-token": "envoy\n", "operator-token": "operator\n", "dispatch-token": "dispatch\n"} {
+			for name, contents := range map[string]string{config: body, "operator-token": "operator\n", "dispatch-token": "dispatch\n"} {
 				if !filepath.IsAbs(name) {
 					name = filepath.Join(dir, name)
 				}
@@ -1324,7 +1333,7 @@ func kubernetesCheckConfig(t *testing.T, extra string) string {
 		filepath.Join(dir, "state"), kubernetesCheckKeys, kubernetesCheckRuntime, extra)
 	config := filepath.Join(dir, "legion.yaml")
 	for name, contents := range map[string]string{
-		config: body, "envoy-token": "envoy\n", "operator-token": "operator\n", "dispatch-token": "dispatch\n",
+		config: body, "operator-token": "operator\n", "dispatch-token": "dispatch\n",
 		"kubeconfig": checkConfigKubeconfig,
 	} {
 		if !filepath.IsAbs(name) {
@@ -1338,31 +1347,30 @@ func kubernetesCheckConfig(t *testing.T, extra string) string {
 }
 
 // After Config OK, `legion config check` prints one line per deployment capability the file alone leaves
-// open (daemon.Deployment: secrets with no broker configured), each in the words boot logs it with
-// and naming the legion.yaml line that records a decision — and exits 0, because a gap is reported,
-// never refused. A decision quiets its row, and a configured broker's secrets row is boot's to
-// measure, so the check says nothing of it. The resource-limits row is never open on a Kubernetes
-// file: the loader fills both pods' reservations from the daemon's defaults, with or without a
-// `resources` block and whatever fields it sets (config.Reservation.Reserved); the tmux cases
-// (tmuxCapabilityGaps) are where it is open. Model fallback is the probe's, and pool capacity the
-// probe's run's, and neither is printed here.
+// open, each in the words boot logs it with and naming the legion.yaml line that records a decision
+// — and exits 0, because a gap is reported, never refused. On a Kubernetes file the file alone
+// leaves none open: runtime: kubernetes requires the agent_secrets block (for its
+// exchange_audience), so the secrets row is boot's to measure, and the check says nothing of it,
+// decided or not; and the resource-limits row is never open there either, since the loader fills
+// both pods' reservations from the daemon's defaults, with or without a `resources` block and
+// whatever fields it sets (config.Reservation.Reserved). The tmux cases (tmuxCapabilityGaps) are
+// where it is open. Model fallback is the probe's, and pool capacity the probe's run's, and neither
+// is printed here. What a Kubernetes file does print is a Burstable pod's line.
 func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 	legionState(t)
 	const issueSet = "    resources:\n      issue: {cpu: \"4\", memory: 24Gi}\n"
-	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
 	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 	for _, tc := range []struct{ name, extra, want string }{
-		{"no resources block, no broker: both pods at the defaults", "", secretsGap},
-		{"the issue pod with one field set, the other the default", "    resources: {issue: {memory: 12Gi}}\n", secretsGap},
-		{"the issue pod's disk bound set, its request the default", "    resources: {issue: {ephemeral_storage: 40Gi}}\n", secretsGap},
-		{"the issue pod set", issueSet, secretsGap},
-		{"the controller at its default under controller: daemon", issueSet + "controller: daemon\n", secretsGap},
-		{"a broker configured, whose login is boot's", issueSet + "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token}\n", ""},
+		{"no resources block: both pods at the defaults", "", ""},
+		{"the issue pod with one field set, the other the default", "    resources: {issue: {memory: 12Gi}}\n", ""},
+		{"the issue pod's disk bound set, its request the default", "    resources: {issue: {ephemeral_storage: 40Gi}}\n", ""},
+		{"the issue pod set", issueSet, ""},
+		{"the controller at its default under controller: daemon", issueSet + "controller: daemon\n", ""},
 		{"secrets decided", "capabilities:\n  decided:\n    secrets: \"dispatch://LEGION-205 enrolls pods later\"\n", ""},
 		{"the issue pod requesting less memory than its limit", "    resources: {issue: {memory: 32Gi, memory_request: 8Gi}}\n",
-			secretsGap + "resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed\n"},
+			"resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed\n"},
 		{"the controller requesting less cpu than its limit", "    resources: {controller: {cpu: 2, cpu_request: 500m}}\ncontroller: daemon\n",
-			secretsGap + "resources: Burstable (a request below the limit): the controller's pod; every other pod is Guaranteed\n"},
+			"resources: Burstable (a request below the limit): the controller's pod; every other pod is Guaranteed\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config := kubernetesCheckConfig(t, tc.extra)
@@ -1388,7 +1396,7 @@ func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 func TestStartCheckConfigTakesTheBrokerSettingWithNoIdentity(t *testing.T) {
 	legionState(t)
 	fixtureenv.Unset(t, "AGENT_SECRETS_URL", "AGENT_SECRETS_MACHINE_IDENTITY", "AGENT_SECRETS_MACHINE_TOKEN_FILE")
-	const exchange = "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token, exchange_audience: legion-broker-exchange}\n"
+	// kubernetesCheckRuntime carries the agent_secrets block, its exchange_audience included.
 	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 	const broker = "dispatch_token_broker: true\n"
 	const transition = broker + "dispatch_token_transition_file: ./transition-token\n"
@@ -1408,7 +1416,7 @@ func TestStartCheckConfigTakesTheBrokerSettingWithNoIdentity(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			config := kubernetesCheckConfig(t, exchange)
+			config := kubernetesCheckConfig(t, "")
 			dir := filepath.Dir(config)
 			rewrite(t, config, "dispatch_token_file: ./dispatch-token\n", tc.credential)
 			if tc.token {
@@ -1483,8 +1491,7 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 			var out, errb bytes.Buffer
 			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-			secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
-			want := demoCheckConfigOK + secretsGap + defaultCacheLine + tc.want
+			want := demoCheckConfigOK + defaultCacheLine + tc.want
 			if code != 0 || out.String() != want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 			}
@@ -1499,7 +1506,6 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 // derived bound; the defaults, and a tmux configuration (which runs no probe), print nothing.
 func TestConfigCheckNamesTheDerivedProbeBudget(t *testing.T) {
 	legionState(t)
-	secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
 	pluginsGap := "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 	budgetLine := "image probe: each attempt waits 660s: worker_boot_timeout_seconds (600) + 60s is above slow_command_timeout_seconds (300)\n"
 
@@ -1514,7 +1520,7 @@ func TestConfigCheckNamesTheDerivedProbeBudget(t *testing.T) {
 		}
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
-		if want := demoCheckConfigOK + secretsGap + budgetLine + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+		if want := demoCheckConfigOK + budgetLine + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 		}
 	})
@@ -1523,7 +1529,7 @@ func TestConfigCheckNamesTheDerivedProbeBudget(t *testing.T) {
 		config := kubernetesCheckConfig(t, "")
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
-		if want := demoCheckConfigOK + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+		if want := demoCheckConfigOK + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 		}
 	})
@@ -1547,13 +1553,12 @@ const defaultCacheLine = "repository cache: a 20Gi volume for each repository a 
 // requested in full and a lower request named under its limit, as a role's.
 func TestConfigCheckNamesTheRepositoryCache(t *testing.T) {
 	legionState(t)
-	secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
 	pluginsGap := "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 	config := kubernetesCheckConfig(t, "    repository_cache: {volume: 50Gi, refresh_minutes: 5, retain_hours: 24, resources: {cpu: \"2\", memory: 8Gi, memory_request: 4Gi}}\n")
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 	cache := "repository cache: a 50Gi volume for each repository a live record names, fetched from GitHub every 5 minutes, kept 24 hours after no live record names it; its container reserves cpu 2, memory 4Gi under 8Gi, ephemeral storage 1Gi under 2Gi\n"
-	if want := demoCheckConfigOK + secretsGap + cache + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+	if want := demoCheckConfigOK + cache + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 }

@@ -26,9 +26,15 @@ func metadataLines(pool, provider string) string {
 }
 
 // poolAudienceLines is a `runtime.kubernetes.agent_secrets` block whose member (audience or
-// exchange_audience) is the Workload Identity pool the metadata tests name.
+// exchange_audience) is the Workload Identity pool the metadata tests name. A block whose pool is
+// the broker's own audience names kubernetesFile's exchange audience beside it, which runtime:
+// kubernetes requires.
 func poolAudienceLines(member string) string {
-	return "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile + "      " + member + ": " + testWorkloadPool + "\n"
+	lines := "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile + "      " + member + ": " + testWorkloadPool + "\n"
+	if member == "audience" {
+		lines += "      exchange_audience: legion-broker-exchange\n"
+	}
+	return lines
 }
 
 // computeClassRequired is the refusal of a sandbox that runs an issue pod in a microVM and names no
@@ -209,7 +215,7 @@ func TestTheSandboxBlockRefusesEachShapeNamingItsKey(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+tc.block), noEnv)
+			_, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith(tc.block)), noEnv)
 			if err == nil {
 				t.Fatalf("LoadForValidation succeeded, want %q", tc.want)
 			}
@@ -285,7 +291,7 @@ func TestTheSandboxBlockSettlesEachAcceptedShape(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+tc.block), noEnv)
+			cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith(tc.block)), noEnv)
 			if err != nil {
 				t.Fatalf("LoadForValidation: %v", err)
 			}

@@ -20,7 +20,7 @@ import (
 )
 
 // Deployment is the deployment's capabilities as the configuration alone states them
-// (capabilities.Deployment): the decisions, the runtime, whether a broker is configured, the pods
+// (capabilities.Deployment): the decisions, the runtime, the pods
 // that reserve no CPU and memory (config.Reservation.Reserved) and the pods that request less cpu
 // or memory than their limit (config.Reservation.Burstable) — the issue pod, and the controller's
 // pod when the daemon launches it. What boot learns (the broker login, the probe, model fallback)
@@ -32,7 +32,6 @@ func Deployment(cfg config.Config) capabilities.Deployment {
 	if k == nil {
 		return d
 	}
-	d.AgentSecrets = k.AgentSecrets != nil
 	measure := func(pod capabilities.Pod, reservation config.Reservation) {
 		switch {
 		case !reservation.Reserved():

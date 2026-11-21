@@ -102,8 +102,8 @@ func TestTheTmuxBlockRefusesWhatTheRuntimeOwnsOrWhatHoldsAPassword(t *testing.T)
 			"runtime.tmux.pane_env names CLAUDE_CONFIG_DIR: the runtime sets it on every Claude Code pane itself, after the operator's variables"},
 		{"what holds a resumed Oh My Pi to its session", "runtime: {tmux: {pane_env: {OMP_SESSION_EXCLUSIVE: \"0\"}}}\n",
 			"runtime.tmux.pane_env names OMP_SESSION_EXCLUSIVE: the runtime sets it on every resumed Oh My Pi pane itself, after the operator's variables"},
-		{"the Envoy bearer's pointer", "runtime: {tmux: {pane_env: {ENVOY_TOKEN_FILE: /etc/acme/envoy}}}\n",
-			"runtime.tmux.pane_env names ENVOY_TOKEN_FILE: it points at the launch secret ENVOY_TOKEN, which the runtime hands every launch as a file of the launch's own"},
+		{"the NATS nkey seed's pointer", "runtime: {tmux: {pane_env: {NATS_NKEY_SEED_FILE: /etc/acme/seed}}}\n",
+			"runtime.tmux.pane_env names NATS_NKEY_SEED_FILE: it points at the launch secret NATS_NKEY_SEED, which the runtime hands every launch as a file of the launch's own"},
 		{"a URL with a password", "runtime: {tmux: {pane_env: {WIDGETS_DATABASE_URL: \"postgres://acme:" + password + "@db.internal.example/widgets\"}}}\n",
 			"runtime.tmux.pane_env names WIDGETS_DATABASE_URL: its value is a URL carrying a password: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line"},
 	} {

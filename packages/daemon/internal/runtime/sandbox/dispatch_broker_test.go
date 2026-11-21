@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -17,26 +16,64 @@ import (
 // exchange identity carries no Dispatch token: not in its start command's Files, which the
 // launcher writes into the generation's private directory, and so no DISPATCH_TOKEN_FILE in its
 // role's environment, which is told DISPATCH_TOKEN_BROKER=1 instead. A launch that keeps a pod
-// built before that identity carries the transition token as a launch carried the bearer before,
-// or, with none named, waits for the pod's update round (dispatch://INFRA-4425 R3, R4).
+// built before that identity, with no transition token named, waits for the pod's update round
+// (dispatch://INFRA-4425 R3, R4); with one named, it waits all the same, since its role would
+// hold no credential for the Envoy listener (listenerCredential).
 
 // testTransitionToken is the shared Dispatch token dispatch_token_transition_file holds.
 const testTransitionToken = "shared-transition-token-3a9f"
 
-// dispatchBearer is a deployment before the setting: Dispatch with the shared bearer, its pods
-// enrolled with the secrets broker and carrying no exchange identity.
+// dispatchBearer is a deployment before the setting: Dispatch with the shared bearer. Its pods
+// carry the exchange identity, as every pod a launch builds does; a test that needs a pod built
+// before the identity edits it so (builtWithout, exchangeIdentityVolume).
 func dispatchBearer(o *Options) {
-	o.AgentSecrets = &AgentSecrets{URL: keptBrokerURL, Audience: "agent-secrets", TokenExpiry: time.Hour}
 	o.DispatchURL, o.Dispatch = testDispatchURL, DispatchCredential{Bearer: "dispatch-bearer"}
 }
 
-// dispatchBroker is the same deployment with dispatch_token_broker on, beside the exchange
-// audience the setting needs, and transition as dispatch_token_transition_file's token ("" for no
-// such file).
+// dispatchBroker is the same deployment with dispatch_token_broker on, and transition as
+// dispatch_token_transition_file's token ("" for no such file).
 func dispatchBroker(transition string) func(*Options) {
 	return func(o *Options) {
-		o.AgentSecrets = &AgentSecrets{URL: keptBrokerURL, Audience: "agent-secrets", TokenExpiry: time.Hour, ExchangeAudience: testExchangeAudience}
 		o.DispatchURL, o.Dispatch = testDispatchURL, DispatchCredential{Broker: true, Transition: transition}
+	}
+}
+
+// beforeTheIdentity is a tester in a pod a daemon before dispatch_token_broker built
+// (dispatchBearer), edited into one built before the exchange identity (builtWithout).
+func beforeTheIdentity(t *testing.T) (*rig, runtime.Locator) {
+	t.Helper()
+	g := newRig(t, nil, withOptions(dispatchBearer))
+	loc := g.spawn(workerSpec(t))
+	g.builtWithout(loc.Sandbox.Name, exchangeIdentityVolume)
+	return g, loc
+}
+
+// wantAwaitingRound fails the test unless err, a launch's into the kept pod loc runs in, is the
+// refusal that waits for that pod's update round (runtime.AwaitingPodRound) naming the pod by its
+// locator, saying each of says, with before the start commands the pod's launcher had been sent
+// before that launch and nothing of the pod touched since g's actions were cleared.
+func wantAwaitingRound(t *testing.T, g *rig, loc runtime.Locator, err error, before int, says ...string) {
+	t.Helper()
+	if !errors.Is(err, runtime.ErrAwaitingPodRound) {
+		t.Fatalf("Resume = %v, want runtime.ErrAwaitingPodRound", err)
+	}
+	for _, want := range says {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not say %q", err, want)
+		}
+	}
+	var refusal *runtime.AwaitingPodRound
+	if !errors.As(err, &refusal) || refusal.Pod.Sandbox == nil || refusal.Pod.Sandbox.PodUID != loc.Sandbox.PodUID {
+		t.Fatalf("the refusal %v names no locator of the kept pod %s, want a runtime.AwaitingPodRound naming it", err, loc.Sandbox.PodUID)
+	}
+	if after := starts(g); after != before {
+		t.Errorf("the pod's launcher was sent %d start commands by the refused launch, want none", after-before)
+	}
+	if writes := g.writes(); len(writes) > 0 {
+		t.Errorf("the refused launch wrote %+v, want nothing of the pod touched", writes)
+	}
+	if pod := g.pod(loc.Sandbox.Name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
+		t.Errorf("the pod after the refusal is %v, want %s still running", pod, loc.Sandbox.PodUID)
 	}
 }
 
@@ -93,44 +130,9 @@ func TestNoDispatchBearerIsHandedOutWithTheBrokerKey(t *testing.T) {
 	checkGolden(t, "pod-with-dispatch-broker", brokerLaunch{Env: env, Files: slices.Sorted(maps.Keys(start.Files))})
 }
 
-// A launch that keeps a pod built before the setting, which carries no exchange identity, carries
-// the transition token as every launch carried the shared bearer before: as DISPATCH_TOKEN in its
-// start command's Files, which its role reads through DISPATCH_TOKEN_FILE, and with no
-// DISPATCH_TOKEN_BROKER, since its role has no identity to trade until the pod's update round
-// replaces the pod.
-func TestAKeptPodWithoutTheExchangeIdentityGetsTheTransitionToken(t *testing.T) {
-	g := newRig(t, nil, withOptions(dispatchBearer))
-	loc := g.spawn(workerSpec(t))
-	r2 := restartedOver(t, g, loc, dispatchBroker(testTransitionToken))
-	next := resumeTester(t, g, r2, loc)
-	if next.Sandbox.PodUID != loc.Sandbox.PodUID {
-		t.Fatalf("Resume replaced the pod; this test is about the pod a launch keeps")
-	}
-	if found := exchangeTokenVolumes(g.pod(loc.Sandbox.Name).Spec, testExchangeAudience); len(found) > 0 {
-		t.Fatalf("the kept pod projects %+v, so it does carry the identity and the case proves nothing", found)
-	}
-	start := lastStart(t, g, workerToken)
-	env := startEnv(start)
-	token, carried := start.Files[dispatchTokenKey]
-	if !carried && env[shimwire.DispatchTokenBrokerVariable] == "" {
-		t.Fatalf("the launch of %s at generation %d into pod %s, which carries no exchange identity, carries no Dispatch credential at all: no %s among its files %v and no %s",
-			workerToken, start.Generation, loc.Sandbox.Name, dispatchTokenKey, slices.Sorted(maps.Keys(start.Files)), shimwire.DispatchTokenBrokerVariable)
-	}
-	if token != testTransitionToken {
-		t.Errorf("the launch into the kept pod carries %s %q, want the transition token", dispatchTokenKey, token)
-	}
-	if want := generationDir(start.Generation) + "/" + dispatchTokenKey; env["DISPATCH_TOKEN_FILE"] != want {
-		t.Errorf("the launch tells its role DISPATCH_TOKEN_FILE=%q, want the generation's private %s", env["DISPATCH_TOKEN_FILE"], want)
-	}
-	if value, told := env[shimwire.DispatchTokenBrokerVariable]; told {
-		t.Errorf("the launch tells its role %s=%q, whose pod carries no identity to trade", shimwire.DispatchTokenBrokerVariable, value)
-	}
-}
-
 // A launch into a pod that carries an exchange identity never carries the transition token, with
 // dispatch_token_transition_file named: neither a launch that builds its pod, which carries the
-// identity whenever the deployment names an exchange audience, nor one that keeps a pod built with
-// it.
+// identity as every pod a launch builds does, nor one that keeps a pod built with it.
 func TestAPodWithTheExchangeIdentityNeverGetsTheTransitionToken(t *testing.T) {
 	g := newRig(t, nil, withOptions(dispatchBroker(testTransitionToken)))
 	loc := g.spawn(workerSpec(t))
@@ -158,40 +160,15 @@ func TestAPodWithTheExchangeIdentityNeverGetsTheTransitionToken(t *testing.T) {
 // what the supervisor keeps of a claim that records no process, and what the update round opens
 // over and replaces the pod through where no claim records one.
 func TestAKeptPodWithNoTransitionFileWaitsForItsRound(t *testing.T) {
-	g := newRig(t, nil, withOptions(dispatchBearer))
-	loc := g.spawn(workerSpec(t))
+	g, loc := beforeTheIdentity(t)
 	r2 := restartedOver(t, g, loc, dispatchBroker(""))
-	starts := func() int {
-		n := 0
-		for _, frame := range g.sent(workerToken) {
-			if _, ok := frame.(shimwire.LauncherStart); ok {
-				n++
-			}
-		}
-		return n
-	}
-	before := starts()
+	before := starts(g)
 	g.clearActions()
 	spec := workerSpec(t)
 	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
 	_, err := r2.Resume(g.ctx, &loc, spec)
-	if !errors.Is(err, runtime.ErrAwaitingPodRound) {
-		t.Fatalf("Resume = %v, want runtime.ErrAwaitingPodRound", err)
-	}
-	for _, want := range []string{"pod " + loc.Sandbox.Name + " carries no exchange identity", "dispatch_token_transition_file is not set", "its update round replaces it"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal %q does not say %q", err, want)
-		}
-	}
-	if after := starts(); after != before {
-		t.Errorf("the pod's launcher was sent %d start commands by the refused launch, want none", after-before)
-	}
-	if writes := g.writes(); len(writes) > 0 {
-		t.Errorf("the refused launch wrote %+v, want nothing of the pod touched", writes)
-	}
-	if pod := g.pod(loc.Sandbox.Name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
-		t.Errorf("the pod after the refusal is %v, want %s still running", pod, loc.Sandbox.PodUID)
-	}
+	wantAwaitingRound(t, g, loc, err, before,
+		"pod "+loc.Sandbox.Name+" carries no exchange identity", "dispatch_token_transition_file is not set", "its update round replaces it")
 	var refusal *runtime.AwaitingPodRound
 	if !errors.As(err, &refusal) {
 		t.Fatalf("the refusal %v names no pod by a locator, want a runtime.AwaitingPodRound", err)
@@ -217,13 +194,35 @@ func TestAKeptPodWithNoTransitionFileWaitsForItsRound(t *testing.T) {
 	}
 }
 
+// A launch that keeps a pod built before the exchange identity, with dispatch_token_transition_file
+// named, waits for that pod's update round all the same. dispatchCredential would hand it the
+// transition token, but listenerCredential, which runs after it, refuses it: the Envoy listener
+// takes no shared bearer, so the role of a pod with no identity to trade would hold no credential
+// for the listener at all. The refusal is runtime.ErrAwaitingPodRound naming the pod, before any
+// start carries the token and before anything of the pod is touched.
+func TestAKeptPodWithoutTheExchangeIdentityWaitsForItsRoundWithATransitionToken(t *testing.T) {
+	g, loc := beforeTheIdentity(t)
+	r2 := restartedOver(t, g, loc, dispatchBroker(testTransitionToken))
+	before := starts(g)
+	g.clearActions()
+	spec := workerSpec(t)
+	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
+	_, err := r2.Resume(g.ctx, &loc, spec)
+	wantAwaitingRound(t, g, loc, err, before,
+		"pod "+loc.Sandbox.Name+" carries no exchange identity", "the Envoy listener, which takes no shared bearer", "its update round replaces it")
+	for _, frame := range g.sent(workerToken) {
+		if start, ok := frame.(shimwire.LauncherStart); ok && start.Files[dispatchTokenKey] == testTransitionToken {
+			t.Errorf("the start of generation %d carries the transition token", start.Generation)
+		}
+	}
+}
+
 // The round replaces the pod through the locator the refusal named, as it replaces a pod through
 // the locator of a process there, and the claim's next launch builds the pod in its place, which
 // carries the exchange identity: that launch carries no Dispatch token at all, and tells its role
 // DISPATCH_TOKEN_BROKER=1 (dispatch://INFRA-4425 R4).
 func TestTheRoundReplacesThePodItsRefusalNamesAndTheNextLaunchTradesTheIdentity(t *testing.T) {
-	g := newRig(t, nil, withOptions(dispatchBearer))
-	loc := g.spawn(workerSpec(t))
+	g, loc := beforeTheIdentity(t)
 	r2 := restartedOver(t, g, loc, dispatchBroker(""))
 	spec := workerSpec(t)
 	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
@@ -268,6 +267,7 @@ func TestTheControllerLaunchCarriesNoDispatchToken(t *testing.T) {
 		g := newRig(t, nil, withOptions(dispatchBearer))
 		spec := controllerSpec(t)
 		loc := g.spawn(spec)
+		g.builtWithout(loc.Sandbox.Name, exchangeIdentityVolume)
 		r2 := secondRuntime(t, g, dispatchBroker(""))()
 		g.connectRunning(controllerToken, loc.Sandbox.Generation)
 		g.eventually("the controller's launcher to report its child to the restarted daemon", func() bool {

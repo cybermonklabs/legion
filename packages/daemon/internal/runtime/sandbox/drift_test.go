@@ -589,28 +589,38 @@ func TestAKeepVolumeChangeDriftsMicroVMPodsAlone(t *testing.T) {
 // named role's overlays, the secrets broker's enrollment, and the session store — are read by
 // PodDrift, and no observation of the pod names one any more: a role whose pod holds one keeps
 // running until it has answered its round, where a StaleAddress naming it would have the
-// supervisor repoint it mid-turn. A deployment that enrolls with the broker only now moves no
-// address of the running generation either: that generation runs in a pod carrying no enrollment,
-// so it was handed no AGENT_SECRETS_URL and is handed none now (Runtime.enrollsIn,
-// movedEnvironment). Each role of such a pod is Alive until its round replaces the pod.
+// supervisor repoint it mid-turn. A pod an older daemon built before the broker's enrollment moves
+// no address of the generation that daemon started there either: that generation runs in a pod
+// carrying no enrollment, so it was handed no AGENT_SECRETS_URL and is handed none now
+// (Runtime.enrollsIn, movedEnvironment). Each role of such a pod is Alive until its round replaces
+// the pod.
 func TestPodDriftReadsTheFacetsThatAreNoLongerStaleAddresses(t *testing.T) {
 	const overlay = "/etc/legion-operator-extra/fallback.yml"
 	for name, tc := range map[string]struct {
-		now  func(*Options)
-		says string
+		now func(*Options)
+		// before, when set, edits the pod and its generation's record after the launch into the
+		// ones an older daemon left.
+		before func(t *testing.T, g *rig, loc runtime.Locator)
+		says   string
 	}{
 		"a role's overlays": {now: func(o *Options) {
 			withOperatorMount(o)
 			o.RoleConfigFiles = map[claim.Role][]string{claim.RoleTester: {overlay}}
 		}, says: "role_config_files.tester " + overlay},
-		"the broker's enrollment": {now: func(o *Options) {
-			o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
+		// No runtime here builds a pod without the enrollment, which New requires, so the pod is
+		// edited into the one an older daemon built (builtWithout, recordedNoBroker).
+		"the broker's enrollment": {now: func(*Options) {}, before: func(t *testing.T, g *rig, loc runtime.Locator) {
+			g.builtWithout(loc.Sandbox.Name, agentSecretsVolume)
+			recordedNoBroker(t, g, loc)
 		}, says: agentSecretsTokenVolume},
 		"the session store": {now: func(o *Options) { o.SessionStore = cloudSQLStore }, says: "the session store"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, nil)
 			loc := g.spawn(workerSpec(t))
+			if tc.before != nil {
+				tc.before(t, g, loc)
+			}
 			r2 := secondRuntime(t, g, tc.now)()
 			g.connectRunning(workerToken, loc.Sandbox.Generation)
 			g.eventually("the tester's launcher to report its child to the restarted daemon", func() bool {

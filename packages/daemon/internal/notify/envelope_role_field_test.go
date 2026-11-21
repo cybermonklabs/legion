@@ -53,7 +53,7 @@ func TestPublishReadsAnEnvelopeAnswerThatCarriesTheRoleFieldAsWithoutIt(t *testi
 					_, _ = w.Write(body)
 				}))
 				defer server.Close()
-				publisher := New(server.URL, "")
+				publisher := New(server.URL, http.DefaultTransport)
 				payload := map[string]string{"kind": "pr-blocked"}
 				if tc.keep {
 					return publisher.PublishKept(context.Background(), topic, "pr-blocked on LEGION-2", payload, "legion-outbox:42")

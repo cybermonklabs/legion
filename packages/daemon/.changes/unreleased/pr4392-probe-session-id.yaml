@@ -14,5 +14,5 @@ body: |-
   daemon API contract before this check, and this check refuses an image of this contract that
   prints no `omp-session-id` mark. The cybermonklabs/oh-my-pi releases from
   v18.18.6-sami.20261117-074351 take the flag, the one this release's `.omp-pin` names among them,
-  so with the setting only a worker image built on an older pin is refused. Without the setting
-  nothing changes.
+  so only a worker image built on an older pin is refused. `runtime: kubernetes` requires the
+  setting, so every Kubernetes daemon makes this check.

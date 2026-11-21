@@ -24,8 +24,8 @@ const (
 	tokenFileVariable = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
 )
 
-// exchangeEnrolled is the broker enrollment of the root-enrolled golden with the exchange identity
-// turned on.
+// exchangeEnrolled is the secrets broker's enrollment with its exchange audience, the one
+// testOptions gives every runtime.
 func exchangeEnrolled() *AgentSecrets {
 	return &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour, ExchangeAudience: testExchangeAudience}
 }
@@ -43,21 +43,19 @@ func exchangeTokenVolumes(pod corev1.PodSpec, audience string) []corev1.Volume {
 	return found
 }
 
-// An enrolled pod of a deployment that sets agent_secrets.exchange_audience carries an identity the
-// broker's exchange trades for a broker token of its own: a projected token of its ServiceAccount
-// for that audience, an hour long, in a volume of its own, mounted read-only in the container every
-// role of the pod runs in, and each role is told AGENT_SECRETS_MACHINE_IDENTITY=kubernetes and
-// AGENT_SECRETS_MACHINE_TOKEN_FILE naming that token, beside the enrollment it already holds. An
-// issue pod and the project controller's pod both carry it. The root-exchange-identity golden pins
-// the issue pod's Sandbox byte for byte; its start command, which the golden does not hold, is read
-// here for the two variables.
+// Every pod a launch builds carries an identity the broker's exchange trades for a broker token of
+// its own (runtime.kubernetes.agent_secrets.exchange_audience, which New requires): a projected
+// token of its ServiceAccount for that audience, an hour long, in a volume of its own, mounted
+// read-only in the container every role of the pod runs in, and each role is told
+// AGENT_SECRETS_MACHINE_IDENTITY=kubernetes and AGENT_SECRETS_MACHINE_TOKEN_FILE naming that token,
+// beside the enrollment it already holds. An issue pod and the project controller's pod both carry
+// it. The root golden pins the issue pod's Sandbox byte for byte; its start command, which the
+// golden does not hold, is read here for the two variables.
 func TestAnEnrolledPodCarriesAnIdentityItCanTrade(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.agentSecrets = exchangeEnrolled()
-	checkGolden(t, "root-exchange-identity", manifestOf(t, r, rootSpec(t)))
 	for name, spec := range map[string]runtime.SpawnSpec{
 		"the root's issue pod":  rootSpec(t),
 		"a worker's issue pod":  workerSpec(t),
@@ -103,208 +101,88 @@ func TestAnEnrolledPodCarriesAnIdentityItCanTrade(t *testing.T) {
 	}
 }
 
-// With agent_secrets.exchange_audience unset — every deployment before it — no pod carries an
-// exchange identity and every Sandbox is the one it was before the key existed (R9): each golden
-// of manifestCases, the enrolled root's among them, is byte for byte unchanged, no pod projects a
-// ServiceAccount token for any audience but the enrollment's, and no role is told either variable.
-// A microVM case's metadata endpoint token (workloadIdentityTokenVolume), for the Workload Identity
-// pool's audience, is the endpoint's and no exchange identity
-// (TestAMicroVMPodWithMetadataMountsAProjectedTokenNoRoleSees pins it), so it is passed over.
-func TestNoIdentityWithoutTheKey(t *testing.T) {
-	r, err := configure(goldenOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, tc := range manifestCases(t) {
-		if tc.agentSecrets != nil && tc.agentSecrets.ExchangeAudience != "" {
-			continue
-		}
-		t.Run(name, func(t *testing.T) {
-			tc.apply(r)
-			checkGolden(t, name, manifestOf(t, r, tc.spec))
-			for _, v := range podOf(t, r, tc.spec).Volumes {
-				if v.Projected == nil || v.Name == workloadIdentityTokenVolume {
-					continue
-				}
-				for _, s := range v.Projected.Sources {
-					if s.ServiceAccountToken != nil && (r.agentSecrets == nil || s.ServiceAccountToken.Audience != r.agentSecrets.Audience) {
-						t.Errorf("volume %s projects a token for %q with the key unset", v.Name, s.ServiceAccountToken.Audience)
-					}
-				}
-			}
-			env := envOf(workerOf(t, r, tc.spec))
-			for _, name := range []string{identityVariable, tokenFileVariable} {
-				if value, told := env[name]; told {
-					t.Errorf("the role is told %s=%q with the key unset", name, value)
-				}
-			}
-		})
-	}
-}
-
-// A launch that keeps a pod built before the exchange identity was turned on starts its role as
-// that pod was built: the pod mounts no exchange token, so its role is told neither variable, and
-// trades nothing until the update round replaces the pod — a broker client told a token file that
-// is not there would fail every trade it tries, where one told of no identity keeps the credential
-// it had. The enrollment it does carry it is still told of.
-func TestAKeptPodWithoutTheExchangeTokenIsToldNoIdentity(t *testing.T) {
-	g := newRig(t, nil, withOptions(enrolledWith(keptBrokerURL)))
+// A launch that keeps a pod built before the exchange identity was turned on waits for that pod's
+// update round: the pod mounts no exchange token, so its role would have no identity to trade, and
+// the Envoy listener takes no shared bearer, so the role would hold no credential for the
+// listener at all. listenerCredential refuses the launch with runtime.ErrAwaitingPodRound naming
+// the pod, before any start reaches the pod and before anything of it is touched, and PodDrift
+// still names the exchange token the pod lacks, which is the drift its round replaces it for.
+func TestAKeptPodWithoutTheExchangeTokenWaitsForItsRound(t *testing.T) {
+	g := newRig(t, nil)
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
-	r2 := secondRuntime(t, g, func(o *Options) {
-		o.AgentSecrets = &AgentSecrets{URL: keptBrokerURL, Audience: "agent-secrets", TokenExpiry: time.Hour, ExchangeAudience: testExchangeAudience}
-	})()
-	g.connectRunning(workerToken, loc.Sandbox.Generation)
-	g.eventually("the tester's launcher to report its child to the restarted daemon", func() bool {
-		state, connected := r2.launchers.state(workerToken, loc.Sandbox.PodUID)
-		return connected && state.Child != nil
-	})
-	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
-	kept, err := r2.Resume(g.ctx, &loc, spec)
-	if err != nil {
-		t.Fatalf("Resume: %v", err)
-	}
-	if kept.Sandbox.PodUID != loc.Sandbox.PodUID {
-		t.Fatalf("Resume replaced the pod; this test is about the pod a launch keeps")
-	}
+	g.builtWithout(loc.Sandbox.Name, exchangeIdentityVolume)
+	r2 := restartedOver(t, g, loc, func(*Options) {})
 	if found := exchangeTokenVolumes(g.pod(loc.Sandbox.Name).Spec, testExchangeAudience); len(found) > 0 {
 		t.Fatalf("the kept pod projects %+v, so it does carry the identity and the case proves nothing", found)
 	}
-	env := startEnv(lastStart(t, g, workerToken))
-	for _, name := range []string{identityVariable, tokenFileVariable} {
-		if value, told := env[name]; told {
-			t.Errorf("the role's generation is told %s=%q while its pod mounts no exchange token", name, value)
-		}
-	}
-	if env["AGENT_SECRETS_URL"] != keptBrokerURL {
-		t.Errorf("the role's generation is told AGENT_SECRETS_URL=%q, want the enrollment its pod carries, %s", env["AGENT_SECRETS_URL"], keptBrokerURL)
-	}
+	before := starts(g)
+	g.clearActions()
+	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
+	_, err := r2.Resume(g.ctx, &loc, spec)
+	wantAwaitingRound(t, g, loc, err, before,
+		"pod "+loc.Sandbox.Name+" carries no exchange identity", "the Envoy listener, which takes no shared bearer", "its update round replaces it")
 	if drifted := driftOf(t, g.ctx, r2, loc); !slices.ContainsFunc(drifted, func(d string) bool { return strings.HasPrefix(d, agentSecretsExchangeVolume+" ") }) {
 		t.Errorf("PodDrift = %q, want the missing exchange token among it, so the update round replaces the pod", drifted)
 	}
 }
 
-// exchangeDeployments are the three ways a deployment can stand to the exchange identity: no
-// agent_secrets block, a block that names no exchange_audience — every deployment before the key
-// existed is one of these two — and a block that names one. exchanges is whether the exchange
-// identity's names are Legion's: only in the third.
-var exchangeDeployments = []struct {
-	name         string
-	agentSecrets func() *AgentSecrets
-	exchanges    bool
-}{
-	{"no agent_secrets block", func() *AgentSecrets { return nil }, false},
-	{"agent_secrets with no exchange_audience", func() *AgentSecrets {
-		return &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-	}, false},
-	{"exchange_audience set", exchangeEnrolled, true},
-}
-
 // The exchange identity's names — its two variables, its volume (agent-secrets-exchange) and the
-// directory its token is mounted at (/var/run/legion/agent-secrets-exchange) — are Legion's only
-// where the deployment names an exchange audience. A deployment that names none, with no
-// agent_secrets block or with a block that sets no exchange_audience, runs exactly as it did before
-// the key existed (R9): an operator's pod that takes one of them is accepted, and the pod a launch
-// builds carries it as the operator wrote it. A deployment that names an audience refuses that
-// pod, naming the piece of it that collides.
-func TestAnOperatorKeepsTheExchangeNamesWhileTheExchangeIsOff(t *testing.T) {
+// directory its token is mounted at (/var/run/legion/agent-secrets-exchange) — are Legion's in
+// every pod a launch builds, so an operator's pod that takes one of them is refused, naming the
+// piece of it that collides.
+func TestAnOperatorsPodMayNotTakeTheExchangeNames(t *testing.T) {
 	const operatorVolume = "operator-identity"
 	emptyDir := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
-	cases := []struct {
-		name    string
+	for name, tc := range map[string]struct {
 		pod     Pod
-		carried func(pod corev1.PodSpec, worker corev1.Container) bool
 		refused string
 	}{
-		{
-			name: "its own machine identity",
-			pod:  Pod{Env: map[string]string{identityVariable: "metadata"}},
-			carried: func(_ corev1.PodSpec, worker corev1.Container) bool {
-				return envOf(worker)[identityVariable] == "metadata"
-			},
-			refused: "runtime.kubernetes.pod.env sets AGENT_SECRETS_MACHINE_IDENTITY, which Legion's runtime sets in every enrolled pod under runtime.kubernetes.agent_secrets.exchange_audience",
+		"its own machine identity": {
+			pod:     Pod{Env: map[string]string{identityVariable: "metadata"}},
+			refused: "runtime.kubernetes.pod.env sets AGENT_SECRETS_MACHINE_IDENTITY, which Legion's runtime sets in every pod that carries the exchange identity (runtime.kubernetes.agent_secrets.exchange_audience)",
 		},
-		{
-			name: "its own machine token file",
-			pod:  Pod{Env: map[string]string{tokenFileVariable: "/etc/operator/identity/token"}},
-			carried: func(_ corev1.PodSpec, worker corev1.Container) bool {
-				return envOf(worker)[tokenFileVariable] == "/etc/operator/identity/token"
-			},
-			refused: "runtime.kubernetes.pod.env sets AGENT_SECRETS_MACHINE_TOKEN_FILE, which Legion's runtime sets in every enrolled pod under runtime.kubernetes.agent_secrets.exchange_audience",
+		"its own machine token file": {
+			pod:     Pod{Env: map[string]string{tokenFileVariable: "/etc/operator/identity/token"}},
+			refused: "runtime.kubernetes.pod.env sets AGENT_SECRETS_MACHINE_TOKEN_FILE, which Legion's runtime sets in every pod that carries the exchange identity (runtime.kubernetes.agent_secrets.exchange_audience)",
 		},
-		{
-			name: "a volume of the exchange identity's name",
-			pod:  Pod{Volumes: []corev1.Volume{{Name: agentSecretsExchangeVolume, VolumeSource: emptyDir}}},
-			carried: func(pod corev1.PodSpec, _ corev1.Container) bool {
-				return slices.ContainsFunc(pod.Volumes, func(v corev1.Volume) bool { return v.Name == agentSecretsExchangeVolume && v.EmptyDir != nil })
-			},
+		"a volume of the exchange identity's name": {
+			pod:     Pod{Volumes: []corev1.Volume{{Name: agentSecretsExchangeVolume, VolumeSource: emptyDir}}},
 			refused: "runtime.kubernetes.pod.volumes[0].name agent-secrets-exchange is a volume Legion puts in every pod",
 		},
-		{
-			name: "a mount where the exchange identity's token is mounted",
+		"a mount where the exchange identity's token is mounted": {
 			pod: Pod{
 				Volumes:      []corev1.Volume{{Name: operatorVolume, VolumeSource: emptyDir}},
 				VolumeMounts: []corev1.VolumeMount{{Name: operatorVolume, MountPath: AgentSecretsExchangeDir}},
 			},
-			carried: func(_ corev1.PodSpec, worker corev1.Container) bool {
-				return slices.ContainsFunc(worker.VolumeMounts, func(m corev1.VolumeMount) bool {
-					return m.Name == operatorVolume && m.MountPath == AgentSecretsExchangeDir
-				})
-			},
 			refused: "runtime.kubernetes.pod.volume_mounts[0].mount_path /var/run/legion/agent-secrets-exchange overlaps /var/run/legion/agent-secrets-exchange, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's",
 		},
-	}
-	for _, deployment := range exchangeDeployments {
-		for _, tc := range cases {
-			t.Run(deployment.name+"/"+tc.name, func(t *testing.T) {
-				opts := testOptions()
-				opts.AgentSecrets, opts.Pod = deployment.agentSecrets(), tc.pod
-				r, err := configure(opts)
-				if deployment.exchanges {
-					if want := "sandbox runtime: " + tc.refused; err == nil || err.Error() != want {
-						t.Fatalf("configure = %v, want %q", err, want)
-					}
-					return
-				}
-				if err != nil {
-					t.Fatalf("configure = %v, want the operator's pod accepted as it was before the key existed", err)
-				}
-				spec := workerSpec(t)
-				if !tc.carried(podOf(t, r, spec), workerOf(t, r, spec)) {
-					t.Errorf("the pod a launch builds does not carry %s as the operator wrote it", tc.name)
-				}
-			})
-		}
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := testOptions()
+			opts.Pod = tc.pod
+			if _, err := configure(opts); err == nil || err.Error() != "sandbox runtime: "+tc.refused {
+				t.Fatalf("configure = %v, want %q", err, "sandbox runtime: "+tc.refused)
+			}
+		})
 	}
 }
 
-// A launch spec may set the exchange identity's two variables where the deployment names no
-// exchange audience, as every spec could before the key existed (R9): the runtime tells no role
-// either, so the role is told the spec's value. Where it names one, the runtime tells each role
-// of an enrolled pod both, and a spec setting either is refused as one setting any variable the
-// runtime sets itself (runtime.ValidateSpawnSpec).
-func TestALaunchSpecMayNameTheExchangeVariablesWhileTheExchangeIsOff(t *testing.T) {
-	for _, deployment := range exchangeDeployments {
-		for name, value := range map[string]string{identityVariable: "metadata", tokenFileVariable: "/etc/operator/identity/token"} {
-			t.Run(deployment.name+"/"+name, func(t *testing.T) {
-				opts := testOptions()
-				opts.AgentSecrets = deployment.agentSecrets()
-				r, err := configure(opts)
-				if err != nil {
-					t.Fatal(err)
-				}
-				spec := workerSpec(t)
-				spec.Env[name] = value
-				if deployment.exchanges {
-					if _, err := r.prepare(spec); err == nil || !strings.Contains(err.Error(), "Env sets "+name+", which the runtime sets itself") {
-						t.Fatalf("prepare = %v, want the spec refused for setting %s", err, name)
-					}
-					return
-				}
-				if got := envOf(workerOf(t, r, spec))[name]; got != value {
-					t.Errorf("the role is told %s=%q, want the spec's %q", name, got, value)
-				}
-			})
-		}
+// A launch spec may not set the exchange identity's two variables: the runtime tells each role of
+// a pod that carries the identity both, and a spec setting either is refused as one setting any
+// variable the runtime sets itself (runtime.ValidateSpawnSpec).
+func TestALaunchSpecMayNotNameTheExchangeVariables(t *testing.T) {
+	r, err := configure(testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{identityVariable: "metadata", tokenFileVariable: "/etc/operator/identity/token"} {
+		t.Run(name, func(t *testing.T) {
+			spec := workerSpec(t)
+			spec.Env[name] = value
+			if _, err := r.prepare(spec); err == nil || !strings.Contains(err.Error(), "Env sets "+name+", which the runtime sets itself") {
+				t.Fatalf("prepare = %v, want the spec refused for setting %s", err, name)
+			}
+		})
 	}
 }

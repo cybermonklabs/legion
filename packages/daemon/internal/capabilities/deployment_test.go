@@ -22,7 +22,7 @@ import (
 
 // satisfied is a kubernetes deployment that satisfies every deployment row, with its image probed.
 var satisfied = Deployment{
-	Runtime: "kubernetes", Probed: true, AgentSecrets: true, SecretsLogin: "issued", ModelFallback: bootprobe.ModelFallbackOn,
+	Runtime: "kubernetes", Probed: true, SecretsLogin: "issued", ModelFallback: bootprobe.ModelFallbackOn,
 }
 
 // states is a report by capability.
@@ -370,11 +370,10 @@ func TestDeploymentRowsArePresentDecidedOrOpen(t *testing.T) {
 		detail     string
 	}{
 		{"tmux enrolls nothing", Deployment{Runtime: "tmux"}, Secrets, StatusOpen, "the tmux runtime enrolls no process with the secrets broker"},
-		{"no broker configured", Deployment{Runtime: "kubernetes"}, Secrets, StatusOpen, "runtime.kubernetes.agent_secrets is not configured"},
-		{"a login not yet issued", Deployment{Runtime: "kubernetes", AgentSecrets: true, SecretsLogin: "pending"}, Secrets, StatusOpen, "the agent-secrets login is pending, not issued"},
+		{"a login not yet issued", Deployment{Runtime: "kubernetes", SecretsLogin: "pending"}, Secrets, StatusOpen, "the agent-secrets login is pending, not issued"},
 		{"a login issued", satisfied, Secrets, StatusPresent, "every pod is enrolled with the agent-secrets broker runtime.kubernetes.agent_secrets names, and the daemon's login is issued"},
-		{"a decided broker gap", Deployment{Runtime: "kubernetes", Decided: decided}, Secrets, StatusDecided, "runtime.kubernetes.agent_secrets is not configured"},
-		{"a decision on a satisfied row is moot", Deployment{Runtime: "kubernetes", Probed: true, AgentSecrets: true, SecretsLogin: "issued", Decided: decided}, Secrets, StatusPresent, "every pod is enrolled with the agent-secrets broker runtime.kubernetes.agent_secrets names, and the daemon's login is issued"},
+		{"a decided broker gap", Deployment{Runtime: "kubernetes", SecretsLogin: "failed", Decided: decided}, Secrets, StatusDecided, "the agent-secrets login is failed, not issued"},
+		{"a decision on a satisfied row is moot", Deployment{Runtime: "kubernetes", Probed: true, SecretsLogin: "issued", Decided: decided}, Secrets, StatusPresent, "every pod is enrolled with the agent-secrets broker runtime.kubernetes.agent_secrets names, and the daemon's login is issued"},
 
 		{"fallback on", satisfied, ModelFallback, StatusPresent, "retry.modelFallback is true under the pod's Oh My Pi settings (read by the probe)"},
 		{"fallback off", Deployment{Runtime: "kubernetes", ModelFallback: bootprobe.ModelFallbackOff}, ModelFallback, StatusOpen, "retry.modelFallback is false under the pod's Oh My Pi settings (read by the probe)"},
@@ -456,10 +455,10 @@ func TestOpenAndLogNameTheGapsAlone(t *testing.T) {
 }
 
 // OpenFromConfiguration is what `legion config check` prints: the open rows the file alone
-// decides, each as Report renders it — secrets where no broker is configured, resource-limits where
-// a pod lacks a reservation — and never a configured broker's secrets row, whose login boot
-// measures, nor model fallback, which the probe or the plugin gate reads, nor pool capacity, which
-// the probe's run measures.
+// decides, each as Report renders it — resource-limits where a pod lacks a reservation, and under
+// tmux the secrets row, since tmux enrolls nothing — and never the Kubernetes secrets row, whose
+// login boot measures (runtime: kubernetes always names the broker), nor model fallback, which
+// the probe or the plugin gate reads, nor pool capacity, which the probe's run measures.
 func TestOpenFromConfigurationNamesTheGapsTheFileAloneDecides(t *testing.T) {
 	lacking := []Pod{PodIssue}
 	for _, tc := range []struct {
@@ -467,15 +466,13 @@ func TestOpenFromConfigurationNamesTheGapsTheFileAloneDecides(t *testing.T) {
 		deployment Deployment
 		want       []Name
 	}{
-		{"no broker, a pod lacking", Deployment{Runtime: "kubernetes", UnreservedPods: lacking}, []Name{Secrets, ResourceLimits}},
-		{"no broker, every pod reserved", Deployment{Runtime: "kubernetes"}, []Name{Secrets}},
-		{"a broker whose login is not issued, a pod lacking", Deployment{Runtime: "kubernetes", AgentSecrets: true, UnreservedPods: lacking}, []Name{ResourceLimits}},
-		{"a broker whose login is not issued, every pod reserved", Deployment{Runtime: "kubernetes", AgentSecrets: true}, nil},
-		{"a broker login failed", Deployment{Runtime: "kubernetes", AgentSecrets: true, SecretsLogin: "failed"}, nil},
-		{"fallback off alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, ModelFallback: bootprobe.ModelFallbackOff}, nil},
-		{"fallback unread alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, ModelFallback: bootprobe.ModelFallbackUnread}, nil},
-		{"fallback never read alone", Deployment{Runtime: "kubernetes", AgentSecrets: true}, nil},
-		{"a probe that waited on capacity alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, Probed: true, ProbeCapacityWaits: 1, ProbeCapacityReason: "the pool is full"}, nil},
+		{"a broker whose login is not issued, a pod lacking", Deployment{Runtime: "kubernetes", UnreservedPods: lacking}, []Name{ResourceLimits}},
+		{"a broker whose login is not issued, every pod reserved", Deployment{Runtime: "kubernetes"}, nil},
+		{"a broker login failed", Deployment{Runtime: "kubernetes", SecretsLogin: "failed"}, nil},
+		{"fallback off alone", Deployment{Runtime: "kubernetes", ModelFallback: bootprobe.ModelFallbackOff}, nil},
+		{"fallback unread alone", Deployment{Runtime: "kubernetes", ModelFallback: bootprobe.ModelFallbackUnread}, nil},
+		{"fallback never read alone", Deployment{Runtime: "kubernetes"}, nil},
+		{"a probe that waited on capacity alone", Deployment{Runtime: "kubernetes", Probed: true, ProbeCapacityWaits: 1, ProbeCapacityReason: "the pool is full"}, nil},
 		{"tmux", Deployment{Runtime: "tmux"}, []Name{Secrets, ResourceLimits}},
 		{"tmux, both decided", Deployment{Runtime: "tmux", Decided: map[Name]string{Secrets: "later", ResourceLimits: "one tree per node"}}, nil},
 	} {

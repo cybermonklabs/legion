@@ -502,17 +502,18 @@ func ompLine(version, sessionID string) string {
 // omp-session-id marks: every mark the probe otherwise requires, and neither of those two.
 const lineBeforeTheOmpMarks = "probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered agent-models=resolved capabilities=checked model-fallback=off daemon-api-version=3"
 
-// Under an exchange audience every new Oh My Pi role starts with --session-id, so the probe passes
-// only an image whose OK line says its Oh My Pi takes it: a help that lists no such flag, a help
-// the probe could not read, and an older image's line, which carries neither omp mark, are each
-// refused once, naming what the line says of the image's Oh My Pi (its version, or that its legion
-// reports none), the flag, the setting, why the setting needs the flag, and both remedies.
-func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *testing.T) {
+// Every new Oh My Pi role of a pod that carries the exchange identity, which every pod a launch
+// builds does, starts with --session-id, so the probe passes only an image whose OK line says its
+// Oh My Pi takes it: a help that lists no such flag, a help the probe could not read, and an older
+// image's line, which carries neither omp mark, are each refused once, naming what the line says of
+// the image's Oh My Pi (its version, or that its legion reports none), the flag, why the daemon
+// needs the flag, and the remedy.
+func TestProbeImageRefusesAnOhMyPiWithoutSessionID(t *testing.T) {
 	why := []string{
-		"runtime.kubernetes.agent_secrets.exchange_audience is set, so the daemon starts each new Oh My Pi role with --session-id <id> and resumes one by its recorded file with --resume <id>, " +
+		"the daemon starts each new Oh My Pi role of a pod that carries the exchange identity (runtime.kubernetes.agent_secrets.exchange_audience) with --session-id <id> and resumes one by its recorded file with --resume <id>, " +
 			"and an Oh My Pi without the flag stops at it (unknown flag: --session-id), so no role would start",
-		"use a worker image built with an Oh My Pi that takes --session-id (the cybermonklabs/oh-my-pi releases from v18.18.6-sami.20261117-074351) and a legion that reports it, " +
-			"or unset runtime.kubernetes.agent_secrets.exchange_audience — log tail: probe-image: OK",
+		"use a worker image built with an Oh My Pi that takes --session-id (the cybermonklabs/oh-my-pi releases from v18.18.6-sami.20261117-074351) and a legion that reports it" +
+			" — log tail: probe-image: OK",
 	}
 	for _, testCase := range []struct {
 		name, log string
@@ -528,7 +529,7 @@ func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *tes
 			"Succeeded, but its legion CLI predates the omp-session-id mark and reports no Oh My Pi version, so nothing shows that its Oh My Pi takes --session-id"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			g := newProbeRig(t, nil, exchangeKeyed())
+			g := newProbeRig(t, nil)
 			g.succeeds(testCase.log + "\n")
 
 			err := g.probe(probeOptions(t))
@@ -541,46 +542,24 @@ func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *tes
 	}
 }
 
-// An image whose Oh My Pi takes --session-id passes under an exchange audience, and the pass's log
-// line carries what the line says of that Oh My Pi. With no exchange audience nothing starts a role
-// with the flag, so the mark is never judged: a help that lists no such flag passes, under an
-// enrollment with no exchange audience as with none, and so does an older image's line with
-// neither mark, whose pass logs none.
-func TestProbeImagePassesAnOhMyPiThatTakesSessionIDOrNoExchangeAudience(t *testing.T) {
-	for _, testCase := range []struct {
-		name               string
-		option             rigOption
-		log                string
-		version, sessionID string
-	}{
-		{"--session-id taken under an exchange audience", exchangeKeyed(), ompLine("omp/18.18.6", bootprobe.SessionIDFlagTaken), "omp/18.18.6", bootprobe.SessionIDFlagTaken},
-		{"no --session-id and no agent secrets", withOptions(func(*Options) {}), ompLine("omp/18.18.6", bootprobe.SessionIDFlagAbsent), "omp/18.18.6", bootprobe.SessionIDFlagAbsent},
-		{"no --session-id under an enrollment with no exchange audience", withOptions(func(o *Options) {
-			o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-		}), ompLine("omp/18.18.6", bootprobe.SessionIDFlagAbsent), "omp/18.18.6", bootprobe.SessionIDFlagAbsent},
-		{"an older image's OK line, with neither mark, and no exchange audience", withOptions(func(*Options) {}), lineBeforeTheOmpMarks, "", ""},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			logged := &lockedLog{}
-			g := newProbeRig(t, nil, testCase.option, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
-			g.succeeds(testCase.log + "\n")
+// An image whose Oh My Pi takes --session-id passes, and the pass's log line carries what the line
+// says of that Oh My Pi.
+func TestProbeImagePassesAnOhMyPiThatTakesSessionID(t *testing.T) {
+	logged := &lockedLog{}
+	g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
+	g.succeeds(ompLine("omp/18.18.6", bootprobe.SessionIDFlagTaken) + "\n")
 
-			report, err := g.r.ProbeImage(g.ctx, probeOptions(t))
+	report, err := g.r.ProbeImage(g.ctx, probeOptions(t))
 
-			if err != nil {
-				t.Fatalf("ProbeImage = %v, want a pass", err)
-			}
-			if report.ModelFallback != "off" {
-				t.Errorf("report.ModelFallback = %q, want off", report.ModelFallback)
-			}
-			passed := fmt.Sprintf("model-fallback=off omp-version=%s omp-session-id=%s log=", testCase.version, testCase.sessionID)
-			if testCase.version == "" {
-				passed = `model-fallback=off omp-version="" omp-session-id="" log=`
-			}
-			if !strings.Contains(logged.String(), passed) {
-				t.Errorf("log = %s, want the pass's line carrying %q", logged.String(), passed)
-			}
-		})
+	if err != nil {
+		t.Fatalf("ProbeImage = %v, want a pass", err)
+	}
+	if report.ModelFallback != "off" {
+		t.Errorf("report.ModelFallback = %q, want off", report.ModelFallback)
+	}
+	passed := fmt.Sprintf("model-fallback=off omp-version=%s omp-session-id=%s log=", "omp/18.18.6", bootprobe.SessionIDFlagTaken)
+	if !strings.Contains(logged.String(), passed) {
+		t.Errorf("log = %s, want the pass's line carrying %q", logged.String(), passed)
 	}
 }
 

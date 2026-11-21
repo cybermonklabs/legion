@@ -276,14 +276,13 @@ type liveEnv struct {
 	// audience filled in, the operator's pod every launch carries; operatorConfigMap is the run's
 	// copy of the ConfigMap it names.
 	operatorPodFile, operatorConfigMap string
-	// The agent-secrets checks' inputs: the production broker, the sha256 of the automatic rule's
-	// dummy value, the checkout's agent-secrets binary, and the token file the script mints for
+	// The agent-secrets inputs: the production broker, the sha256 of the automatic rule's dummy
+	// value, the checkout's agent-secrets binary, and the token file the script mints for
 	// LEGION_E2E_AGENT_SECRETS_ACCOUNT, which the harness logs in with as the daemon does, no
-	// person approving it. No check here waits on a person:
-	// secrets-approval-ask asserts its pending request's approver is one owner rather than the
-	// shared marker and cancels the request itself. Every field here is read with os.Getenv,
-	// unlike the rest of liveEnv: unset is a blocked run of the secrets-* checks, never a refusal
-	// to start (secretsBlocked).
+	// person approving it. No check here waits on a person: secrets-approval-ask asserts its
+	// pending request's approver is one owner rather than the shared marker and cancels the
+	// request itself. Each is required, as the runtime requires the broker under runtime:
+	// kubernetes (New), and the script refuses to start without them.
 	agentSecretsURL, agentSecretsAutoSHA, agentSecretsBin, agentSecretsTokenFile string
 	// The scratch Postgres the script started, which every pod of the run keeps its sessions in:
 	// the file holding its URL at streamAdvertiseHost, which the script also wrote into the
@@ -340,10 +339,10 @@ func readLiveEnv(t *testing.T) liveEnv {
 		from:                  os.Getenv("LEGION_E2E_FROM"),
 		operatorPodFile:       get("LEGION_E2E_OPERATOR_POD"),
 		operatorConfigMap:     get("LEGION_E2E_OPERATOR_CONFIGMAP"),
-		agentSecretsURL:       os.Getenv("LEGION_E2E_AGENT_SECRETS_URL"),
-		agentSecretsAutoSHA:   os.Getenv("LEGION_E2E_AGENT_SECRETS_AUTO_SHA256"),
-		agentSecretsBin:       os.Getenv("LEGION_E2E_AGENT_SECRETS_BIN"),
-		agentSecretsTokenFile: os.Getenv("LEGION_E2E_AGENT_SECRETS_TOKEN_FILE"),
+		agentSecretsURL:       get("LEGION_E2E_AGENT_SECRETS_URL"),
+		agentSecretsAutoSHA:   get("LEGION_E2E_AGENT_SECRETS_AUTO_SHA256"),
+		agentSecretsBin:       get("LEGION_E2E_AGENT_SECRETS_BIN"),
+		agentSecretsTokenFile: get("LEGION_E2E_AGENT_SECRETS_TOKEN_FILE"),
 		sessionDSNFile:        get("LEGION_E2E_SESSION_DSN_FILE"),
 		sessionDBAddress:      get("LEGION_E2E_SESSION_DB_ADDRESS"),
 		sessionDSNLocalFile:   get("LEGION_E2E_SESSION_DSN_LOCAL_FILE"),
@@ -729,11 +728,10 @@ type liveRig struct {
 		gone       observed
 	}
 
-	// secrets is the broker client, nil when this run's inputs leave it unconfigured or the token
-	// login started in newLiveRig was refused (secretsBlocked). secretsBlockReason is empty exactly
-	// when secrets is set: it holds that refusal for secretsBlocked to report through the same
-	// SKIPPED-BLOCKED path a missing env var takes, since a login outcome discovered at rig setup has
-	// nowhere else to surface before any check runs.
+	// secrets is the broker client, nil when the token login started in newLiveRig was refused
+	// (secretsBlocked). secretsBlockReason is empty exactly when secrets is set: it holds that
+	// refusal for secretsBlocked to report through the SKIPPED-BLOCKED path, since a login outcome
+	// discovered at rig setup has nowhere else to surface before any check runs.
 	// enrollments is the harness's own enrollment of each claim's running pod, as the daemon's
 	// machine holds it; grants and requests are what checkSecretsAutomaticGrant records for
 	// checkSecretsCrossPodNegative to attack.
@@ -828,15 +826,13 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 	if r.dyn, err = dynamic.NewForConfig(own); err != nil {
 		fail("%v", err)
 	}
-	if agentSecretsBlockReason(env.agentSecretsURL, env.agentSecretsAutoSHA, env.agentSecretsBin, env.agentSecretsTokenFile) == "" {
-		// The run logs in as the daemon does, with the ServiceAccount token the script minted; no
-		// person approves it, and the client keeps logging in for as long as the run lasts.
-		client := &cipher.Client{URL: env.agentSecretsURL, TokenFile: env.agentSecretsTokenFile, Log: r.log}
-		if err := client.Start(r.ctx); err != nil {
-			r.secretsBlockReason = fmt.Sprintf("the token login was refused: %v", err)
-		} else {
-			r.secrets = client
-		}
+	// The run logs in as the daemon does, with the ServiceAccount token the script minted; no
+	// person approves it, and the client keeps logging in for as long as the run lasts.
+	client := &cipher.Client{URL: env.agentSecretsURL, TokenFile: env.agentSecretsTokenFile, Log: r.log}
+	if err := client.Start(r.ctx); err != nil {
+		r.secretsBlockReason = fmt.Sprintf("the token login was refused: %v", err)
+	} else {
+		r.secrets = client
 	}
 
 	if r.pod, err = readOperatorPod(env); err != nil {
@@ -981,9 +977,10 @@ func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 		RepositoryCache:       liveRepositoryCache(),
 		CacheRepositories:     r.cacheRepositories,
 	}
-	if r.env.agentSecretsURL != "" {
-		opts.AgentSecrets = &AgentSecrets{URL: r.env.agentSecretsURL, Audience: "agent-secrets", TokenExpiry: time.Hour}
-	}
+	// New requires the broker with its exchange audience, as the configuration's loader does under
+	// runtime: kubernetes: the Envoy listener takes no shared bearer, so a role reaches it only by
+	// trading its pod's exchange identity.
+	opts.AgentSecrets = &AgentSecrets{URL: r.env.agentSecretsURL, Audience: "agent-secrets", TokenExpiry: time.Hour, ExchangeAudience: testExchangeAudience}
 	return opts
 }
 

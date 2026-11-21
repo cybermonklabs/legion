@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -128,11 +127,7 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte("the-daemon's-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	secrets := config.AgentSecretsConfig{URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets", ExchangeAudience: "legion-broker-exchange"}
-	registrar := newRegistrar(secrets, &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()})
-	if registrar == nil {
-		t.Fatal("newRegistrar answered no registrar with exchange_audience set")
-	}
+	registrar := newRegistrar(&cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()})
 
 	project, _ := claim.ProjectToken("legion")
 	token, _ := claim.NewToken(project, "LEGION-840", claim.RoleTester)
@@ -254,8 +249,7 @@ func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logged syncBuffer
-	secrets := config.AgentSecretsConfig{URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets", ExchangeAudience: "legion-broker-exchange"}
-	registrar := newRegistrar(secrets, &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: slog.New(slog.NewTextHandler(&logged, nil))})
+	registrar := newRegistrar(&cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: slog.New(slog.NewTextHandler(&logged, nil))})
 
 	project, _ := claim.ProjectToken("legion")
 	token, _ := claim.NewToken(project, "LEGION-840", claim.RoleTester)

@@ -28,12 +28,12 @@ type storedRegistration struct {
 	lastSeen         time.Time
 }
 
-// askedRoute is what one of the listener's routes was asked: the method, path, query and bearer
-// of the last request to reach it, and how many reached it at all, so a test can show that one
-// stop is one request and that nothing is sent twice.
+// askedRoute is what one of the listener's routes was asked: the method, path, query and
+// Authorization of the last request to reach it, and how many reached it at all, so a test can
+// show that one stop is one request and that nothing is sent twice.
 type askedRoute struct {
-	method, path, query, bearer string
-	requests                    int
+	method, path, query, authorization string
+	requests                           int
 }
 
 // listenerRecorder is the pair of routes one clean stop uses — the registry read it makes first
@@ -67,7 +67,7 @@ func (l *listenerRecorder) server(t *testing.T) *httptest.Server {
 		if r.Method == http.MethodDelete {
 			asked = &l.delete
 		}
-		asked.method, asked.path, asked.query, asked.bearer = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
+		asked.method, asked.path, asked.query, asked.authorization = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
 		asked.requests++
 		if l.arrived != nil && l.read.requests+l.delete.requests == 1 {
 			close(l.arrived)
@@ -176,7 +176,7 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 	server := listener.server(t)
 	var inFlight sessionStopsInFlight
 	defer inFlight.wait()
-	stop := cleanSessionStop(&inFlight, server.URL, listenerCredential{bearer: "envoy-token"}, quietLogger())
+	stop := cleanSessionStop(&inFlight, server.URL, http.DefaultTransport, quietLogger())
 
 	stop("ses_dead")
 
@@ -191,14 +191,15 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 	}
 }
 
-// The stop is one DELETE of the dead session's key, with the listener's bearer, and it names both
-// of its conditions: the client instance the registry answered for that session, and the moment
-// the probe judged the process gone. One read, one delete, and nothing sent twice.
+// The stop is one DELETE of the dead session's key, presenting no credential to the loopback
+// listener, and it names both of its conditions: the client instance the registry answered for
+// that session, and the moment the probe judged the process gone. One read, one delete, and
+// nothing sent twice.
 func TestCleanSessionStopNamesTheEntrysInstanceAndTheProbesMoment(t *testing.T) {
 	listener := &listenerRecorder{held: storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)}}
 	server := listener.server(t)
 	var logged bytes.Buffer
-	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
+	stop := sessionStop{sessions: notify.New(server.URL, http.DefaultTransport), log: bufferedLogger(&logged)}
 	goneAt := time.Now()
 
 	stop.send("ses_dead", goneAt)
@@ -208,9 +209,9 @@ func TestCleanSessionStopNamesTheEntrysInstanceAndTheProbesMoment(t *testing.T) 
 			listener.read.method, listener.read.path, listener.read.requests)
 	}
 	if listener.delete.method != http.MethodDelete || listener.delete.path != "/v1/sessions/ses_dead" ||
-		listener.delete.bearer != "Bearer envoy-token" || listener.delete.requests != 1 {
-		t.Fatalf("the listener was asked %s %s with %q %d times, want one DELETE of the session's key with the bearer",
-			listener.delete.method, listener.delete.path, listener.delete.bearer, listener.delete.requests)
+		listener.delete.authorization != "" || listener.delete.requests != 1 {
+		t.Fatalf("the listener was asked %s %s with %q %d times, want one DELETE of the session's key with no credential",
+			listener.delete.method, listener.delete.path, listener.delete.authorization, listener.delete.requests)
 	}
 	conditions := listener.deleteConditions(t)
 	if got := conditions.Get("client_instance_id"); got != "inst_dead" {
@@ -236,7 +237,7 @@ func TestCleanSessionStopReportsARelaunchsRegistrationTheListenerKept(t *testing
 	}
 	server := listener.server(t)
 	var logged bytes.Buffer
-	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
+	stop := sessionStop{sessions: notify.New(server.URL, http.DefaultTransport), log: bufferedLogger(&logged)}
 
 	stop.send("ses_relaunched", time.Now())
 
@@ -265,7 +266,7 @@ func TestCleanSessionStopKeepsARelaunchThatRegisteredBeforeItsRead(t *testing.T)
 	listener := &listenerRecorder{held: storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: goneAt.Add(2 * time.Second)}}
 	server := listener.server(t)
 	var logged bytes.Buffer
-	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
+	stop := sessionStop{sessions: notify.New(server.URL, http.DefaultTransport), log: bufferedLogger(&logged)}
 
 	stop.send("ses_released", goneAt)
 
@@ -303,7 +304,7 @@ func TestCleanSessionStopKeptLineCarriesTheListenersOwnReason(t *testing.T) {
 	}
 	server := listener.server(t)
 	var logged bytes.Buffer
-	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
+	stop := sessionStop{sessions: notify.New(server.URL, http.DefaultTransport), log: bufferedLogger(&logged)}
 
 	stop.send("ses_relaunched", time.Now())
 
@@ -324,7 +325,7 @@ func TestCleanSessionStopDeletesOnTheMomentAloneWhenTheEntryNamesNoInstance(t *t
 	listener := &listenerRecorder{held: storedRegistration{lastSeen: time.Now().Add(-time.Second)}}
 	server := listener.server(t)
 	var logged bytes.Buffer
-	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
+	stop := sessionStop{sessions: notify.New(server.URL, http.DefaultTransport), log: bufferedLogger(&logged)}
 	goneAt := time.Now()
 
 	stop.send("ses_old_client", goneAt)
@@ -351,7 +352,7 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerHoldsNoRegistration(t *test
 	listener := &listenerRecorder{held: storedRegistration{absent: true}}
 	server := listener.server(t)
 	var logged bytes.Buffer
-	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
+	stop := sessionStop{sessions: notify.New(server.URL, http.DefaultTransport), log: bufferedLogger(&logged)}
 
 	stop.send("ses_already_gone", time.Now())
 
@@ -371,7 +372,7 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerRefusesTheRead(t *testing.T
 	listener := &listenerRecorder{readStatus: http.StatusInternalServerError}
 	server := listener.server(t)
 	var logged bytes.Buffer
-	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
+	stop := sessionStop{sessions: notify.New(server.URL, http.DefaultTransport), log: bufferedLogger(&logged)}
 
 	stop.send("ses_dead", time.Now())
 
@@ -394,7 +395,7 @@ func TestCleanSessionStopEndsAtItsOwnBudgetWhenTheListenerNeverAnswers(t *testin
 	listener := &listenerRecorder{heldRead: make(chan struct{}), arrived: make(chan struct{})}
 	server := listener.server(t)
 	var logged bytes.Buffer
-	stop := sessionStop{sessions: notify.New(server.URL, ""), log: bufferedLogger(&logged), budget: budget}
+	stop := sessionStop{sessions: notify.New(server.URL, http.DefaultTransport), log: bufferedLogger(&logged), budget: budget}
 
 	began := time.Now()
 	stop.send("ses_hung", time.Now())
@@ -434,7 +435,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 	}
 	server := listener.server(t)
 	var inFlight sessionStopsInFlight
-	stop := cleanSessionStop(&inFlight, server.URL, listenerCredential{bearer: "envoy-token"}, quietLogger())
+	stop := cleanSessionStop(&inFlight, server.URL, http.DefaultTransport, quietLogger())
 
 	returned := make(chan struct{})
 	go func() {
@@ -464,7 +465,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 // With no listener configured there is nothing to tell, and the machines are given no SessionGone
 // at all.
 func TestNoCleanSessionStopWithoutAListener(t *testing.T) {
-	if stop := cleanSessionStop(&sessionStopsInFlight{}, "", listenerCredential{}, quietLogger()); stop != nil {
+	if stop := cleanSessionStop(&sessionStopsInFlight{}, "", http.DefaultTransport, quietLogger()); stop != nil {
 		t.Fatal("a daemon with no Envoy listener was given a clean stop to call")
 	}
 }
@@ -483,7 +484,7 @@ func TestCleanSessionStopSentAfterTheFinalWaitBeganStillDeletesTheRegistration(t
 	}
 	server := listener.server(t)
 	var inFlight sessionStopsInFlight
-	stop := cleanSessionStop(&inFlight, server.URL, listenerCredential{bearer: "envoy-token"}, quietLogger())
+	stop := cleanSessionStop(&inFlight, server.URL, http.DefaultTransport, quietLogger())
 	// Nothing is counted yet, so the wait returns at once, and from here it has begun.
 	inFlight.wait()
 

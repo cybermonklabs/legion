@@ -25,8 +25,8 @@ var bursting = config.Reservation{CPU: "1", CPURequest: "1000m", Memory: "32Gi",
 // against 1Gi): a string compare would read it Burstable, a quantity compare reads it Guaranteed.
 var spelledApart = config.Reservation{CPU: "1", CPURequest: "1000m", Memory: "1Gi", MemoryRequest: "1024Mi"}
 
-// Deployment reads the configuration alone: the decisions, the runtime, whether a broker is
-// configured, the pods that reserve no CPU and memory — a pod lacking either quantity counts, the
+// Deployment reads the configuration alone: the decisions, the runtime, the pods that reserve no
+// CPU and memory — a pod lacking either quantity counts, the
 // issue pod first, and the controller's pod only under controller: daemon (a Kubernetes block the
 // loader settled holds both, so only a value built by hand names one) — and the pods that request
 // less than their limit, the controller's pod among them only under controller: daemon. A tmux
@@ -48,11 +48,11 @@ func TestDeploymentReadsTheConfigurationAlone(t *testing.T) {
 	}{
 		{"tmux", config.Config{Runtime: config.Runtime{Name: "tmux"}, Capabilities: config.Capabilities{Decided: decided}},
 			capabilities.Deployment{Runtime: "tmux", Decided: decided}},
-		{"nothing reserved, no broker", kubernetes(config.PodResources{}, nil, config.ControllerLaunchOperator),
+		{"nothing reserved", kubernetes(config.PodResources{}, nil, config.ControllerLaunchOperator),
 			capabilities.Deployment{Runtime: "kubernetes", Decided: decided, UnreservedPods: []capabilities.Pod{capabilities.PodIssue}}},
-		{"the issue pod reserved, a broker configured", kubernetes(config.PodResources{Issue: reserved},
+		{"the issue pod reserved", kubernetes(config.PodResources{Issue: reserved},
 			&config.AgentSecretsConfig{URL: "https://secrets.internal.example"}, config.ControllerLaunchOperator),
-			capabilities.Deployment{Runtime: "kubernetes", Decided: decided, AgentSecrets: true}},
+			capabilities.Deployment{Runtime: "kubernetes", Decided: decided}},
 		{"the issue pod missing one quantity, and the controller under controller: daemon", kubernetes(config.PodResources{Issue: config.Reservation{CPU: "2"}}, nil, config.ControllerLaunchDaemon),
 			capabilities.Deployment{Runtime: "kubernetes", Decided: decided, UnreservedPods: []capabilities.Pod{capabilities.PodIssue, capabilities.PodController}}},
 		{"both pods requesting less than their limits", kubernetes(config.PodResources{Issue: bursting, Controller: bursting}, nil, config.ControllerLaunchDaemon),

@@ -402,7 +402,6 @@ func stageShippedExample(t *testing.T, edit func(string) string) string {
 		config:           edit(string(example)),
 		"operator-token": "operator\n",
 		"dispatch-token": "dispatch\n",
-		"envoy-token":    "envoy\n",
 		// The context the example names, and nothing the check would dial.
 		"kubeconfig": `apiVersion: v1
 kind: Config

@@ -3,126 +3,114 @@ package sandbox
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// A launch that keeps a drifted pod leaves out the shim's agent-secrets flags when the pod carries
-// neither the broker's token volume nor the role's key directory (launcherCommand, launch.enrolls),
-// so the role starts and runs without the broker until the update round replaces its pod. Its
-// environment must say the same thing. AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR are how the
-// agent-secrets client finds a broker and the session's key — `skill://agent-secrets` has an agent
-// run the call through that client before it reports a resource unreachable — and
-// AGENT_SECRETS_KEY_DIR names /var/run/legion/agent-secrets, a directory the kept pod does
-// not mount.
-//
-// A role told it has a broker it has not, in a pod it cannot see is pending replacement, reads its
-// own failure as a missing grant and reports a secrets problem. The two variables belong with the
-// flags: a launch that enrols its role sets them, and one that does not, does not.
-func TestAKeptPodWithoutTheEnrollmentTellsItsRoleOfNoBroker(t *testing.T) {
-	g := newRig(t, nil)
-	spec := workerSpec(t)
-	loc := g.spawn(spec)
-	broker := AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-	r2 := secondRuntime(t, g, func(o *Options) { o.AgentSecrets = &broker })()
-	g.connectRunning(workerToken, loc.Sandbox.Generation)
-	g.eventually("the tester's launcher to report its child to the restarted daemon", func() bool {
-		state, connected := r2.launchers.state(workerToken, loc.Sandbox.PodUID)
-		return connected && state.Child != nil
-	})
-	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
-	kept, err := r2.Resume(g.ctx, &loc, spec)
-	if err != nil {
-		t.Fatalf("Resume: %v", err)
-	}
-	if kept.Sandbox.PodUID != loc.Sandbox.PodUID {
-		t.Fatalf("Resume replaced the drifted pod; this test is about the pod a launch keeps")
-	}
-	start := lastStart(t, g, workerToken)
-	if slices.Contains(start.Argv, "--agent-secrets-key-dir") {
-		t.Fatalf("the start carries the agent-secrets flags, so this pod does carry the enrollment and the case proves nothing")
-	}
-	env := startEnv(start)
-	for _, name := range []string{"AGENT_SECRETS_URL", "AGENT_SECRETS_KEY_DIR"} {
-		if value, named := env[name]; named && value != "" {
-			t.Errorf("the role's generation is told %s=%q while its start enrols it with nothing and its pod mounts no %s; an agent reads those two to decide it holds a broker",
-				name, value, roleVolume(agentSecretsKeyVolume, claim.RoleTester))
-		}
-	}
-}
-
-// keptBrokerURL is the secrets broker a deployment enrols with after its pods were made, and
-// movedBrokerURL where an operator moves that broker afterwards.
+// keptBrokerURL is the secrets broker every test's deployment enrols its pods with (testOptions),
+// and movedBrokerURL where an operator moves that broker afterwards.
 const (
 	keptBrokerURL  = "https://secrets.internal.example"
 	movedBrokerURL = "https://secrets-next.internal.example"
 )
 
-// enrolledWith enrols the runtime's pods with the secrets broker at url
-// (runtime.kubernetes.agent_secrets): the deployment change no pod created before it carries, so
-// a launch into such a pod keeps it and starts its role without the broker.
-func enrolledWith(url string) func(*Options) {
-	return func(o *Options) {
-		o.AgentSecrets = &AgentSecrets{URL: url, Audience: "agent-secrets", TokenExpiry: time.Hour}
+// beforeTheEnrollment is a tester in a pod an older daemon built before
+// runtime.kubernetes.agent_secrets, which carries neither the broker's token volume, nor the role's
+// key directory, nor the exchange identity (builtWithout, agentSecretsVolume), running the
+// generation that daemon started there, whose record names no broker URL (recordedNoBroker).
+func beforeTheEnrollment(t *testing.T) (*rig, runtime.SpawnSpec, runtime.Locator) {
+	t.Helper()
+	g := newRig(t, nil)
+	spec := workerSpec(t)
+	loc := g.spawn(spec)
+	g.builtWithout(loc.Sandbox.Name, agentSecretsVolume)
+	recordedNoBroker(t, g, loc)
+	return g, spec, loc
+}
+
+// recordedNoBroker rewrites loc's address record into the one an older daemon wrote for a
+// generation it started in a pod built before the enrollment, which it handed no broker:
+// AGENT_SECRETS_URL unset.
+func recordedNoBroker(t *testing.T, g *rig, loc runtime.Locator) {
+	t.Helper()
+	rewriteRecord(t, g, loc, func(record map[string]any) {
+		for _, address := range record["addresses"].([]any) {
+			if entry := address.(map[string]any); entry["variable"] == "AGENT_SECRETS_URL" {
+				entry["name"], entry["sha256"] = "(unset)", addressDigest("")
+			}
+		}
+	})
+}
+
+// A launch that keeps a pod built before the secrets broker's enrollment waits for that pod's
+// update round. Such a pod carries no exchange identity either, so its role would have no
+// identity to trade, and the Envoy listener takes no shared bearer: listenerCredential refuses the
+// launch with runtime.ErrAwaitingPodRound naming the pod, before any start reaches the pod — so no
+// role is told of a broker its pod does not mount — and before anything of the pod is touched.
+// PodDrift still names the broker's token volume the pod lacks, the drift its round replaces it
+// for.
+func TestAKeptPodWithoutTheEnrollmentWaitsForItsRound(t *testing.T) {
+	g, spec, loc := beforeTheEnrollment(t)
+	r2 := restartedOver(t, g, loc, func(*Options) {})
+	before := starts(g)
+	g.clearActions()
+	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
+	_, err := r2.Resume(g.ctx, &loc, spec)
+	wantAwaitingRound(t, g, loc, err, before,
+		"pod "+loc.Sandbox.Name+" carries no exchange identity", "the Envoy listener, which takes no shared bearer", "its update round replaces it")
+	if drifted := driftOf(t, g.ctx, r2, loc); !slices.ContainsFunc(drifted, func(d string) bool { return strings.HasPrefix(d, agentSecretsTokenVolume+" ") }) {
+		t.Errorf("PodDrift = %q, want the missing enrollment among it, so the update round replaces the pod", drifted)
 	}
 }
 
 // The record of a generation says what that generation was handed, never what the configuration
 // reads: the launch writes it on the issue Sandbox before the start (recordAddresses), and it is
-// the only account of the running process a later daemon has (movedEnvironment). A role started
-// in a kept pod that carries no enrollment is handed no broker at all — no agent-secrets flag, no
-// AGENT_SECRETS_URL — so its record must name that variable unset. A record claiming a broker for
-// it would describe a process that does not exist, and the variable left out of the record
-// entirely reads as moved ("(unrecorded)") the first time anything is compared.
-func TestAKeptPodWithoutTheEnrollmentRecordsNoBrokerForItsGeneration(t *testing.T) {
-	g := newRig(t, nil)
-	loc := g.spawn(workerSpec(t))
-	r2 := restartedOver(t, g, loc, enrolledWith(keptBrokerURL))
-	kept := resumeTester(t, g, r2, loc)
-	if kept.Sandbox.PodUID != loc.Sandbox.PodUID {
-		t.Fatalf("Resume replaced the drifted pod; this test is about the pod a launch keeps")
+// the only account of the running process a later daemon has (movedEnvironment). A launch into a
+// kept pod built before the enrollment is refused by listenerCredential before that write (the
+// Envoy listener takes no shared bearer, and the pod carries no exchange identity to trade), so it
+// starts no generation and writes no record: the record of the generation still running there is
+// left as it was.
+func TestAKeptPodWithoutTheEnrollmentKeepsTheRecordOfItsRunningGeneration(t *testing.T) {
+	g, spec, loc := beforeTheEnrollment(t)
+	held := g.sandbox(loc.Sandbox.Name).Annotations[addressesAnnotation(claim.RoleTester)]
+	r2 := restartedOver(t, g, loc, func(*Options) {})
+	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
+	if _, err := r2.Resume(g.ctx, &loc, spec); !strings.Contains(errString(err), "the Envoy listener, which takes no shared bearer") {
+		t.Fatalf("Resume = %v, want listenerCredential's refusal", err)
 	}
-	s := g.sandbox(loc.Sandbox.Name)
-	if s == nil {
-		t.Fatalf("the issue sandbox %s is absent", loc.Sandbox.Name)
+	if after := g.sandbox(loc.Sandbox.Name).Annotations[addressesAnnotation(claim.RoleTester)]; after != held {
+		t.Errorf("the refused launch rewrote the tester's address record from %s to %s, want it left as the running generation's", held, after)
 	}
 	var record addressRecord
-	if err := json.Unmarshal([]byte(s.Annotations[addressesAnnotation(claim.RoleTester)]), &record); err != nil {
-		t.Fatalf("read the tester's address record %q: %v", s.Annotations[addressesAnnotation(claim.RoleTester)], err)
+	if err := json.Unmarshal([]byte(held), &record); err != nil || record.Generation != loc.Sandbox.Generation {
+		t.Errorf("the tester's address record %s is not generation %d's (%v)", held, loc.Sandbox.Generation, err)
 	}
-	if record.Generation != kept.Sandbox.Generation {
-		t.Fatalf("the record is of generation %d, want the generation %d this launch started", record.Generation, kept.Sandbox.Generation)
+}
+
+// errString is err's text, "" for nil.
+func errString(err error) string {
+	if err == nil {
+		return ""
 	}
-	i := slices.IndexFunc(record.Addresses, func(a recordedAddress) bool { return a.Variable == "AGENT_SECRETS_URL" })
-	if i < 0 {
-		t.Fatalf("the record %+v names no AGENT_SECRETS_URL at all, which reads as (unrecorded) and so as moved", record.Addresses)
-	}
-	if held := record.Addresses[i]; held.Name != "(unset)" || held.SHA256 != addressDigest("") {
-		t.Errorf("the record holds AGENT_SECRETS_URL %+v, want it unset: the generation it records was started with no broker and its pod mounts no %s",
-			held, roleVolume(agentSecretsKeyVolume, claim.RoleTester))
-	}
+	return err.Error()
 }
 
 // Moving a broker a generation never held moves nothing of that generation. An observation
 // compares the record with what a generation started now in that same pod would be handed
-// (movedEnvironment), and that pod carries no enrollment, so both sides hold no broker URL and
-// the role reads Alive. Reading it StaleAddress instead would have the supervisor repoint the
-// role mid-turn, which the update round exists to prevent before its bound: the pod is replaced
-// once every worker in it has answered the update message, no turn runs and no claim's activity
-// report holds it (internal/daemon's roundEnd.holding), or at the round's bound.
+// (movedEnvironment), and a generation an older daemon started in a pod built before the
+// enrollment was handed no broker URL and recorded none, and the pod carries no enrollment, so
+// both sides hold no broker URL and the role reads Alive. Reading it StaleAddress instead would
+// have the supervisor repoint the role mid-turn, which the update round exists to prevent before
+// its bound: the pod is replaced once every worker in it has answered the update message, no turn
+// runs and no claim's activity report holds it (internal/daemon's roundEnd.holding), or at the
+// round's bound.
 func TestAKeptPodsGenerationIsNotStaleWhenTheBrokerItNeverHeldMoves(t *testing.T) {
-	g := newRig(t, nil)
-	loc := g.spawn(workerSpec(t))
-	r2 := restartedOver(t, g, loc, enrolledWith(keptBrokerURL))
-	kept := resumeTester(t, g, r2, loc)
-	if kept.Sandbox.PodUID != loc.Sandbox.PodUID {
-		t.Fatalf("Resume replaced the drifted pod; this test is about the pod a launch keeps")
-	}
-	r3 := restartedOver(t, g, kept, enrolledWith(movedBrokerURL))
-	if obs := readopt(t, g.ctx, r3, kept)[0]; obs.Kind != runtime.Alive {
+	g, _, loc := beforeTheEnrollment(t)
+	r2 := restartedOver(t, g, loc, func(o *Options) { o.AgentSecrets.URL = movedBrokerURL })
+	if obs := readopt(t, g.ctx, r2, loc)[0]; obs.Kind != runtime.Alive {
 		t.Errorf("%s (%s), want Alive: the operator moved the broker from %s to %s, and the tester's generation was handed neither",
 			obs.Kind, obs.Detail, keptBrokerURL, movedBrokerURL)
 	}

@@ -730,11 +730,14 @@ What each part is for:
   its key, and have the database reachable from the pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
-- **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
+- **`runtime.kubernetes.agent_secrets`** (required) enrolls every pod with the
   [Secrets Broker](/legion/broker/): `url` is the broker, and `token_file` is where the daemon's own
   projected ServiceAccount token for the broker's audience is mounted. The daemon logs in with that
   token at every start and keeps logging in; no person approves it, provided the broker's
-  `BROKER_SERVICE_LOGINS` names the daemon's ServiceAccount.
+  `BROKER_SERVICE_LOGINS` names the daemon's ServiceAccount. Its `exchange_audience` is required
+  too: the Envoy listener takes no shared bearer, so each pod's sessions trade broker tokens of
+  their own through the identity that audience projects, and the daemon trades its own pod
+  identity for the token it presents the listener.
 - **`runtime.kubernetes.setup`** (optional) is a command, as an argv, that every role, in its own
   namespaces, runs before each start of its Oh My Pi. It runs in the role's working directory with
   the role's environment, and its `git` answers `https://github.com` from the role's gh bundle:
@@ -1045,18 +1048,16 @@ Exposure checks: kept-pod drops from the launch log; the date any arm left the f
   openssl rand -hex 32 > operator-token && chmod 0600 operator-token
   ```
 
-- **The Dispatch and Envoy tokens** go in the files `dispatch_token_file` and `envoy_token_file`
-  name. The daemon hands each pod its own copy; no pod reads your files. With
-  `dispatch_token_broker: true` in place of `dispatch_token_file`, the daemon trades its own pod
-  identity at the secrets broker for a Dispatch token of its own, each role trades its pod's
-  identity for one of its own session, and a launch into a pod that carries that identity carries
-  no Dispatch token
+- **The Dispatch token** goes in the file `dispatch_token_file` names. The daemon hands each pod
+  its own copy; no pod reads your files. With `dispatch_token_broker: true` in place of
+  `dispatch_token_file`, the daemon trades its own pod identity at the secrets broker for a
+  Dispatch token of its own, each role trades its pod's identity for one of its own session, and a
+  launch into a pod that carries that identity carries no Dispatch token
   ([The daemon's own Dispatch credential](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#the-daemons-own-dispatch-credential-dispatch_token_broker)).
-  Under `runtime: kubernetes` with `runtime.kubernetes.agent_secrets.exchange_audience` set, you
-  may leave out `envoy_token_file` the same way: the daemon presents the listener a broker token of
-  its own, each role trades its pod's identity for one of its own session, and no launch carries an
-  Envoy token
-  ([The daemon's own Envoy credential](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#the-daemons-own-envoy-credential-no-envoy_token_file)).
+- **The Envoy listener** takes no token from you: it takes no shared bearer, and the daemon refuses
+  `envoy_token_file`. The daemon presents its own broker token, and each pod's sessions trade
+  their own, both under `runtime.kubernetes.agent_secrets.exchange_audience`
+  ([The daemon's own Envoy credential](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#the-daemons-own-envoy-credential)).
 - **The providers Secret**, `legion-<project>-providers` in the namespace (`<project>` lowercased
   with everything but letters and digits removed, `legion-widgets-providers` here), holds, under
   `session_store: postgres`, the key `session_dsn_secret` names, with the session database's

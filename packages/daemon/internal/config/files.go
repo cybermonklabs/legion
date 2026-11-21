@@ -37,7 +37,7 @@ func VariantInstructionsFile(stateDir, experiment string, variant Variant) strin
 }
 
 // ReadSecretPointer is the trimmed contents of the file a pointer key names — `variable` is the
-// key as the operator wrote it (`envoy_token_file`, `operator_token_file`), so the refusal reads
+// key as the operator wrote it (`dispatch_token_file`, `operator_token_file`), so the refusal reads
 // in their words. A set pointer is authoritative: a missing, unreadable, or blank file is a
 // refusal naming the key and the path, never a fallback to another source. The contents never
 // appear in an error.

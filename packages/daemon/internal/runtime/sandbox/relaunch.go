@@ -306,7 +306,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// Dispatch credential: none for a pod that carries an exchange identity, the transition token
 	// for a kept pod built before it, or a refusal, before anything of the pod is touched, that
 	// waits for that pod's update round (dispatchCredential). Its listener credential is settled
-	// the same way where the daemon holds no Envoy bearer (listenerCredential).
+	// the same way: a kept pod built before the identity waits for its round (listenerCredential).
 	if err := r.dispatchCredential(&l, pod); err != nil {
 		return runtime.Locator{}, err
 	}
@@ -549,21 +549,22 @@ func (r *Runtime) dispatchCredential(l *launch, pod *corev1.Pod) error {
 }
 
 // listenerCredential refuses a launch whose role would have no credential for the Envoy listener.
-// Where the daemon holds no Envoy bearer (Options.ListenerBroker), no launch carries ENVOY_TOKEN,
-// and each role trades its pod's exchange identity for a broker token of its own; a launch that
-// keeps a pod built before that identity (keptPod.trades) has neither, so its role could reach the
-// listener for nothing until the pod's update round replaced the pod. It is refused with
+// The listener takes no shared bearer, so no launch carries ENVOY_TOKEN (New), and each role trades
+// its pod's exchange identity for a broker token of its own, which every pod a launch builds
+// carries (runtime.kubernetes.agent_secrets.exchange_audience, which New requires); a launch that
+// keeps a pod built before that identity (keptPod.trades) has nothing to trade, so its role could
+// reach the listener for nothing until the pod's update round replaced the pod. It is refused with
 // runtime.AwaitingPodRound naming the pod, before anything of the pod is touched, and the
 // supervisor waits for that round, charging nothing, as dispatchCredential's refusal is waited out.
-// There is no transition token for the listener: a deployment that cannot wait for its rounds
-// keeps envoy_token_file until every pod carries the identity. As with dispatchCredential, pod is
-// read only for a launch that keeps it, and the controller's pod is never kept without the
-// identity.
+// There is no transition token for the listener, so a deployment waits for those rounds; this
+// refusal runs after dispatchCredential, so it holds such a launch even where that one handed it
+// the Dispatch transition token. As with dispatchCredential, pod is read only for a launch that
+// keeps it, and the controller's pod is never kept without the identity.
 func (r *Runtime) listenerCredential(l *launch, pod *corev1.Pod) error {
-	if !r.listenerBroker || l.trades(r) {
+	if l.trades(r) {
 		return nil
 	}
-	return r.awaitingPodRound(l, pod, "envoy_token_file is not set, so its role would hold no credential for the Envoy listener")
+	return r.awaitingPodRound(l, pod, "its role would hold no credential for the Envoy listener, which takes no shared bearer")
 }
 
 // awaitingPodRound is the refusal of a launch that keeps pod, which carries no exchange identity,

@@ -52,9 +52,11 @@ func lapsed(state string) string {
 		state + `","last_seen":` + strconv.FormatInt(probeNow.Add(-10*time.Minute).UnixMilli(), 10) + `,"claim_released":false}`
 }
 
-func newTestProber(url, token string, log *bytes.Buffer) *Prober {
+// newTestProber is a Prober over http.DefaultTransport, presenting no credential, as a daemon
+// under runtime: tmux reads its loopback listener.
+func newTestProber(url string, log *bytes.Buffer) *Prober {
 	return NewProber(ProberOptions{
-		EnvoyURL: url, EnvoyToken: token, Project: "demo", Log: slog.New(slog.NewTextHandler(log, nil)),
+		EnvoyURL: url, Transport: http.DefaultTransport, Project: "demo", Log: slog.New(slog.NewTextHandler(log, nil)),
 	})
 }
 
@@ -79,29 +81,31 @@ func cutAnswer(t *testing.T, status int, body string) string {
 }
 
 // Live while the listener names the registered session as the controller role's holder, which it
-// does only inside its own live window; the lookup is the project's controller token, with the
-// listener's bearer.
+// does only inside its own live window; the lookup is the project's controller token.
 func TestProbeIsLiveWhileTheSessionHoldsTheRole(t *testing.T) {
 	var log bytes.Buffer
 	l := &listener{status: http.StatusOK, body: holder("ses_ctl", probeNow.Add(-4*time.Minute))}
 	url := l.serve(t)
-	if got := newTestProber(url, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Live {
+	if got := newTestProber(url, &log).Probe(context.Background(), "ses_ctl"); got != Live {
 		t.Fatalf("Probe = %s, want live; log %s", got, log.String())
 	}
-	if l.path != "/v1/roles/legion-demo-controller" || l.bearer != "Bearer envoy-bearer" {
-		t.Fatalf("lookup = %s with %q, want the controller token with the listener's bearer", l.path, l.bearer)
+	if l.path != "/v1/roles/legion-demo-controller" {
+		t.Fatalf("lookup = %s, want the controller token", l.path)
 	}
 }
 
-func TestProbeSendsNoBearerWithoutAToken(t *testing.T) {
+// A Prober over http.DefaultTransport, the tmux daemon's, presents no credential: the listener
+// takes no shared bearer, and the loopback listener a daemon under runtime: tmux names asks for
+// none.
+func TestProbeOverTheDefaultTransportSendsNoCredential(t *testing.T) {
 	var log bytes.Buffer
 	l := &listener{status: http.StatusOK, body: holder("ses_ctl", probeNow)}
 	url := l.serve(t)
-	if got := newTestProber(url, "", &log).Probe(context.Background(), "ses_ctl"); got != Live {
+	if got := newTestProber(url, &log).Probe(context.Background(), "ses_ctl"); got != Live {
 		t.Fatalf("Probe = %s, want live", got)
 	}
 	if l.authorization {
-		t.Fatalf("the lookup carried Authorization %q with no token configured", l.bearer)
+		t.Fatalf("the lookup carried Authorization %q over http.DefaultTransport", l.bearer)
 	}
 }
 
@@ -115,21 +119,21 @@ func (p presenting) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(presented)
 }
 
-// A Prober given a Transport, the daemon's broker credential where it holds no Envoy bearer, sends
-// the lookup through it, so the listener sees what the transport sets and no bearer of the
-// Prober's own, and follows no redirect with it. The control is TestProbeIsLiveWhileTheSessionHoldsTheRole:
-// the bearer as it always was.
+// A Prober given a Transport, the daemon's broker credential under runtime: kubernetes, sends the
+// lookup through it, so the listener sees what the transport sets and nothing of the Prober's own,
+// and follows no redirect with it. The control is TestProbeSendsNoCredentialWithoutATransport: no
+// Authorization at all.
 func TestProbePresentsWhatItsTransportSets(t *testing.T) {
 	var log bytes.Buffer
 	l := &listener{status: http.StatusOK, body: holder("ses_ctl", probeNow)}
 	url := l.serve(t)
 	prober := NewProber(ProberOptions{
-		EnvoyURL: url, Transport: presenting("DPoP daemon-broker-token"), Project: "demo", Log: slog.New(slog.NewTextHandler(&log, nil)),
+		EnvoyURL: url, Transport: presenting("DPoP unknown"), Project: "demo", Log: slog.New(slog.NewTextHandler(&log, nil)),
 	})
 	if got := prober.Probe(context.Background(), "ses_ctl"); got != Live {
 		t.Fatalf("Probe = %s, want live; log %s", got, log.String())
 	}
-	if l.path != "/v1/roles/legion-demo-controller" || l.bearer != "DPoP daemon-broker-token" {
+	if l.path != "/v1/roles/legion-demo-controller" || l.bearer != "DPoP unknown" {
 		t.Fatalf("lookup = %s with %q, want the controller token with what the transport sets", l.path, l.bearer)
 	}
 
@@ -140,7 +144,7 @@ func TestProbePresentsWhatItsTransportSets(t *testing.T) {
 	}))
 	t.Cleanup(redirecting.Close)
 	redirected := NewProber(ProberOptions{
-		EnvoyURL: redirecting.URL, Transport: presenting("DPoP daemon-broker-token"), Project: "demo", Log: slog.New(slog.NewTextHandler(&log, nil)),
+		EnvoyURL: redirecting.URL, Transport: presenting("DPoP unknown"), Project: "demo", Log: slog.New(slog.NewTextHandler(&log, nil)),
 	})
 	if got := redirected.Probe(context.Background(), "ses_ctl"); got != Unknown || elsewhere.path != "" {
 		t.Fatalf("Probe of a listener answering 307 = %s, and the redirect's target saw %q; want unknown and no request there", got, elsewhere.path)
@@ -169,7 +173,7 @@ func TestProbeIsGone(t *testing.T) {
 			var log bytes.Buffer
 			l := &listener{status: tc.status, body: tc.body}
 			url := l.serve(t)
-			if got := newTestProber(url, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Gone {
+			if got := newTestProber(url, &log).Probe(context.Background(), "ses_ctl"); got != Gone {
 				t.Fatalf("Probe = %s, want gone; log %s", got, log.String())
 			}
 			for _, want := range tc.wantLogs {
@@ -189,7 +193,7 @@ func TestProbeIsUnknownForAnUnresponsiveHolder(t *testing.T) {
 	var log bytes.Buffer
 	l := &listener{status: http.StatusNotFound, body: lapsed("unresponsive")}
 	url := l.serve(t)
-	if got := newTestProber(url, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
+	if got := newTestProber(url, &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
 		t.Fatalf("Probe = %s, want unknown; log %s", got, log.String())
 	}
 	if !strings.Contains(log.String(), "unresponsive, not gone") {
@@ -203,7 +207,7 @@ func TestProbeIsUnknownForAnUnresponsiveHolder(t *testing.T) {
 func TestProbeIsUnknownForA404ItCouldNotRead(t *testing.T) {
 	var log bytes.Buffer
 	url := cutAnswer(t, http.StatusNotFound, lapsed("unresponsive"))
-	if got := newTestProber(url, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
+	if got := newTestProber(url, &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
 		t.Fatalf("Probe = %s, want unknown: the 404's body was cut off, and it named an unresponsive holder; log %s", got, log.String())
 	}
 	if !strings.Contains(log.String(), "could not be read to its end") {
@@ -215,22 +219,22 @@ func TestProbeIsUnknownForA404ItCouldNotRead(t *testing.T) {
 // the probe cannot read.
 func TestProbeIsUnknown(t *testing.T) {
 	for _, tc := range []struct {
-		name, token string
-		status      int
-		body        string
-		wantLog     string
+		name    string
+		status  int
+		body    string
+		wantLog string
 	}{
-		{name: "a server error", token: "envoy-bearer", status: http.StatusInternalServerError, body: `{"error":"kv"}`, wantLog: "500"},
-		{name: "an unauthorized lookup with no bearer", status: http.StatusUnauthorized, body: `{"error":"unauthorized"}`, wantLog: "no bearer token sent"},
-		{name: "a body that is not JSON", token: "envoy-bearer", status: http.StatusOK, body: "<html>", wantLog: "unreadable"},
-		{name: "a body with no holder", token: "envoy-bearer", status: http.StatusOK, body: `{"last_seen":1}`, wantLog: "unreadable"},
-		{name: "a last_seen that is not an integer", token: "envoy-bearer", status: http.StatusOK, body: `{"holder":"ses_ctl","last_seen":"now"}`, wantLog: "unreadable"},
+		{name: "a server error", status: http.StatusInternalServerError, body: `{"error":"kv"}`, wantLog: "500"},
+		{name: "an unauthorized lookup", status: http.StatusUnauthorized, body: `{"error":"unauthorized"}`, wantLog: "refused the controller role lookup"},
+		{name: "a body that is not JSON", status: http.StatusOK, body: "<html>", wantLog: "unreadable"},
+		{name: "a body with no holder", status: http.StatusOK, body: `{"last_seen":1}`, wantLog: "unreadable"},
+		{name: "a last_seen that is not an integer", status: http.StatusOK, body: `{"holder":"ses_ctl","last_seen":"now"}`, wantLog: "unreadable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var log bytes.Buffer
 			l := &listener{status: tc.status, body: tc.body}
 			url := l.serve(t)
-			if got := newTestProber(url, tc.token, &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
+			if got := newTestProber(url, &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
 				t.Fatalf("Probe = %s, want unknown", got)
 			}
 			if !strings.Contains(log.String(), tc.wantLog) {
@@ -243,7 +247,7 @@ func TestProbeIsUnknown(t *testing.T) {
 		server := httptest.NewServer(http.NotFoundHandler())
 		url := server.URL
 		server.Close()
-		if got := newTestProber(url, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
+		if got := newTestProber(url, &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
 			t.Fatalf("Probe = %s, want unknown", got)
 		}
 		if !strings.Contains(log.String(), "unreachable") {

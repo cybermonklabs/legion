@@ -350,12 +350,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	}
 	// The credentials the daemon's own calls present: to Dispatch, the bearer dispatch_token_file
 	// names, or under dispatch_token_broker the daemon's own pod identity traded at the secrets
-	// broker; to the Envoy listener, the bearer envoy_token_file names, or where it names none
-	// under runtime: kubernetes that same broker token. The first trade and Dispatch's reading of
-	// it wait out a broker or a Dispatch that does not answer, which the boot budget does not bound,
-	// as it does not bound the plugin gate.
+	// broker; to the Envoy listener, under runtime: kubernetes that same broker token, and under
+	// runtime: tmux nothing, to the loopback listener envoy_url names. The first trade and
+	// Dispatch's reading of it wait out a broker or a Dispatch that does not answer, which the boot
+	// budget does not bound, as it does not bound the plugin gate.
 	environ := o.environment()
-	settled, err := settleCredentials(ctx, cfg, plan.dispatchToken, plan.secrets["ENVOY_TOKEN"], func(name string) string {
+	settled, err := settleCredentials(ctx, cfg, plan.dispatchToken, func(name string) string {
 		value, _ := envValue(environ, name)
 		return value
 	}, log)
@@ -858,24 +858,24 @@ type credentials struct {
 	// dispatch is the transport every Dispatch call goes through (dispatchCredential); nil
 	// without dispatch_url.
 	dispatch http.RoundTripper
-	// listener is what every call to the Envoy listener presents (listenerCredentialOf).
-	listener listenerCredential
+	// listener is the transport every call to the Envoy listener goes through
+	// (listenerCredentialOf).
+	listener http.RoundTripper
 }
 
 // settleCredentials settles, at boot and before anything opens (run), the credentials the daemon's
 // own calls present: the transport every Dispatch call goes through (dispatchCredential), and what
 // every call to the Envoy listener presents (listenerCredentialOf). dispatchToken is the bearer
-// dispatch_token_file names and envoyToken the one envoy_token_file names, each "" where the
-// configuration names none (readBoot).
+// dispatch_token_file names, "" where the configuration names none (readBoot).
 //
 // Where either presents the daemon's own broker token — under dispatch_token_broker, or under
-// runtime: kubernetes with no envoy_token_file (config.Config.ListenerPresentsBrokerToken) — the
+// runtime: kubernetes (config.Config.ListenerPresentsBrokerToken) — the
 // daemon's own pod identity is traded at the secrets broker once (tradeBrokerCredential), and that
 // one client serves both: one key, one token of the session legion-daemon:<PROJECT> and one renewal
 // loop, whichever of the two needs it. The renewal starts only once every check here has passed,
 // so a boot that refuses leaves none running. These reads and the first trade are boot's alone,
 // never `legion config check`'s (readBoot).
-func settleCredentials(ctx context.Context, cfg config.Config, dispatchToken, envoyToken string, getenv func(string) string, log *slog.Logger) (credentials, error) {
+func settleCredentials(ctx context.Context, cfg config.Config, dispatchToken string, getenv func(string) string, log *slog.Logger) (credentials, error) {
 	broker, held, err := tradeBrokerCredential(ctx, cfg, getenv, log)
 	if err != nil {
 		return credentials{}, err
@@ -884,7 +884,7 @@ func settleCredentials(ctx context.Context, cfg config.Config, dispatchToken, en
 	if err != nil {
 		return credentials{}, err
 	}
-	listener, err := listenerCredentialOf(ctx, cfg, envoyToken, broker, log)
+	listener, err := listenerCredentialOf(ctx, cfg, broker, log)
 	if err != nil {
 		return credentials{}, err
 	}
@@ -896,15 +896,15 @@ func settleCredentials(ctx context.Context, cfg config.Config, dispatchToken, en
 }
 
 // brokerReason names what makes the daemon trade its own pod identity at the secrets broker, the
-// words each refusal of that trade opens with: dispatch_token_broker, a listener credential with
-// no bearer, or both; "" where nothing does, and the daemon trades nothing.
+// words each refusal of that trade opens with: dispatch_token_broker, the listener credential
+// runtime: kubernetes presents, or both; "" where nothing does, and the daemon trades nothing.
 func brokerReason(cfg config.Config) string {
 	var reasons []string
 	if cfg.DispatchTokenBroker {
 		reasons = append(reasons, "dispatch_token_broker is set")
 	}
 	if cfg.ListenerPresentsBrokerToken() {
-		reasons = append(reasons, "envoy_token_file is unset beside runtime.kubernetes.agent_secrets.exchange_audience")
+		reasons = append(reasons, "runtime.kubernetes.agent_secrets.exchange_audience is set")
 	}
 	return strings.Join(reasons, " and ")
 }
@@ -997,28 +997,20 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 
 // listenerCredentialLine is the boot's one line naming the daemon's broker token as the credential
 // its calls to the Envoy listener present (listenerCredentialOf): credential=broker and the session
-// the token names. It names no token. A daemon that presents the bearer, or none, logs nothing, as
-// it never has.
+// the token names. It names no token. A daemon that presents none logs nothing.
 const listenerCredentialLine = "legion daemon's Envoy listener credential"
 
-// listenerCredential is what every call of the daemon's to the Envoy listener presents: the
-// outbox's publishes, the supervisor's role lookups and clean stops, and the controller sweep's
-// probe (listenerCredentialOf).
-type listenerCredential struct {
-	// bearer is the token envoy_token_file holds, sent as `Authorization: Bearer`; "" sends none.
-	bearer string
-	// transport, when set, presents the daemon's own broker token on each request in its place.
-	transport http.RoundTripper
-}
-
-// listenerCredentialOf is cfg's listener credential: the bearer envoyToken, which envoy_token_file
-// holds, or "" where the file names none, which a daemon has always sent as no credential at all;
-// or, under runtime: kubernetes with no envoy_token_file (config.Config.ListenerPresentsBrokerToken),
-// broker's token, the daemon's own pod identity traded for its session legion-daemon:<PROJECT>
-// (tradeBrokerCredential), presented as `Authorization: DPoP` beside a proof of each request's URL
+// listenerCredentialOf is the transport every call of the daemon's to the Envoy listener goes
+// through: the outbox's publishes, the supervisor's role lookups and clean stops, and the
+// controller sweep's probe. Under runtime: kubernetes, which requires
+// agent_secrets.exchange_audience (config.Config.ListenerPresentsBrokerToken), it presents broker's
+// token, the daemon's own pod identity traded for its session legion-daemon:<PROJECT>
+// (tradeBrokerCredential), as `Authorization: DPoP` beside a proof of each request's URL
 // (cipherclient.NewTokenTransport). The listener takes that token for a Legion daemon's own: it may
 // make the clean stop of another session's registration, and its notices are not counted by the
-// sender limit, as the shared bearer's were not (packages/envoy/cmd/listener's daemonCaller).
+// sender limit (packages/envoy/cmd/listener's daemonCaller). Under runtime: tmux it is
+// http.DefaultTransport, which presents nothing: the listener takes no shared bearer, and the
+// loader holds envoy_url to a loopback listener (checkLoopbackListener), which asks for none.
 //
 // Under the broker the boot reads the project's controller role at the listener with that token
 // first, at the boot gate's pacing (readinessRetry), and waits out a listener that does not answer
@@ -1031,16 +1023,16 @@ type listenerCredential struct {
 // (the origin every proof names), gives every call; and a redirect or a body that is not the
 // listener's (a 404 it cannot read, say), which is a server at envoy_url that is not the listener.
 // Otherwise every listener call the daemon makes would fail for ever and no line would say why.
-func listenerCredentialOf(ctx context.Context, cfg config.Config, envoyToken string, broker *cipherclient.Client, log *slog.Logger) (listenerCredential, error) {
+func listenerCredentialOf(ctx context.Context, cfg config.Config, broker *cipherclient.Client, log *slog.Logger) (http.RoundTripper, error) {
 	if !cfg.ListenerPresentsBrokerToken() {
-		return listenerCredential{bearer: envoyToken}, nil
+		return http.DefaultTransport, nil
 	}
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
-		return listenerCredential{}, err
+		return nil, err
 	}
-	credential := listenerCredential{transport: cipherclient.NewTokenTransport(broker, http.DefaultTransport)}
-	lookup := credential.publisher(cfg.EnvoyURL).RoleHolder
+	transport := cipherclient.NewTokenTransport(broker, http.DefaultTransport)
+	lookup := notify.New(cfg.EnvoyURL, transport).RoleHolder
 	err = bootprobe.Run(ctx, "Envoy listener role lookup under the daemon's broker token", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
 		_, _, err := lookup(ctx, string(claim.ControllerToken(project)))
 		if refused := (*notify.RoleLookupRefused)(nil); errors.As(err, &refused) && refused.Status == http.StatusInternalServerError {
@@ -1049,11 +1041,11 @@ func listenerCredentialOf(ctx context.Context, cfg config.Config, envoyToken str
 		return err
 	}, bootTimeout, listenerUnanswered))
 	if err != nil {
-		return listenerCredential{}, fmt.Errorf("envoy_token_file is unset, so the daemon presents its broker token to the Envoy listener at envoy_url %s, which does not answer it as the listener: %w; the listener must take broker tokens (ENVOY_AGENT_SECRETS_URL and the settings beside it), and envoy_url must be its ENVOY_PUBLIC_URL, the origin every proof names",
+		return nil, fmt.Errorf("under runtime: kubernetes the daemon presents its broker token to the Envoy listener at envoy_url %s, which does not answer it as the listener: %w; the listener must take broker tokens (ENVOY_AGENT_SECRETS_URL and the settings beside it), and envoy_url must be its ENVOY_PUBLIC_URL, the origin every proof names",
 			cfg.EnvoyURL, err)
 	}
 	log.Info(listenerCredentialLine, "credential", "broker", "session", dispatch.DaemonSession(cfg.Project))
-	return credential, nil
+	return transport, nil
 }
 
 // listenerUnanswered is every failed role lookup the boot asks again: a listener that did not
@@ -1062,14 +1054,6 @@ func listenerCredentialOf(ctx context.Context, cfg config.Config, envoyToken str
 func listenerUnanswered(err error) bool {
 	var refused *notify.RoleLookupRefused
 	return !errors.As(err, &refused)
-}
-
-// publisher is the daemon's client of the Envoy listener at envoyURL, presenting c.
-func (c listenerCredential) publisher(envoyURL string) *notify.HTTPPublisher {
-	if c.transport != nil {
-		return notify.NewWithTransport(envoyURL, c.transport)
-	}
-	return notify.New(envoyURL, c.bearer)
 }
 
 // renewBrokerCredential renews the daemon's broker token off the request path until ctx ends, so a
@@ -1253,10 +1237,10 @@ type plan struct {
 	project       string
 	operatorToken string
 	secrets       map[string]string
-	// listener is what every call of the daemon's to the Envoy listener presents: the bearer
-	// secrets' ENVOY_TOKEN holds, or the daemon's own broker token. run sets it once boot has
+	// listener is the transport every call of the daemon's to the Envoy listener goes through:
+	// the daemon's own broker token, or under runtime: tmux nothing. run sets it once boot has
 	// settled the daemon's credentials (settleCredentials), before anything calls the listener.
-	listener listenerCredential
+	listener http.RoundTripper
 	// nats is the user the daemon's own NATS connection authenticates as (natsConnection); no launch
 	// carries its seed unless it is the pane seed.
 	nats         natsConnection
@@ -2139,10 +2123,11 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // once instead of holding its issue claims for the whole live window (dispatch://INFRA-392), and
 // a message to a released role raises the wake that brings it back rather than being stored for
 // a session nothing reads (the role claim stays until the listener's reaper frees it,
-// notify.HTTPPublisher.DeleteSession). It runs on the same client the daemon's notices go through
-// (listenerCredential.publisher), beside controllerProber, on the same base URL and credential: the
-// bearer, or the daemon's own broker token, which the listener takes for this stop of another
-// session's registration because it is a Legion daemon's (its daemonCaller).
+// notify.HTTPPublisher.DeleteSession). It runs on the same transport the daemon's notices go
+// through (plan.listener), beside controllerProber, on the same base URL: the daemon's own broker
+// token, which the listener takes for this stop of another session's registration because it is
+// a Legion daemon's (its daemonCaller), or under runtime: tmux none, to the loopback listener,
+// which asks for none.
 //
 // The machine calls it inside its own decision, under its lock, so the read and the delete run on
 // a goroutine of their own, on a context of their own that only cleanSessionStopBudget ends (send):
@@ -2176,11 +2161,11 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // session nothing beyond the wait it already had: the registration lapses on its own when its
 // record expires (the session bucket's maximum age, 5 minutes by default). With no listener
 // configured nothing is told.
-func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL string, credential listenerCredential, log *slog.Logger) func(string) {
+func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL string, transport http.RoundTripper, log *slog.Logger) func(string) {
 	if envoyURL == "" {
 		return nil
 	}
-	stop := sessionStop{sessions: credential.publisher(envoyURL), log: log}
+	stop := sessionStop{sessions: notify.New(envoyURL, transport), log: log}
 	return func(session string) {
 		goneAt := time.Now()
 		counted := inFlight.start()
@@ -2195,13 +2180,13 @@ func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL string, credentia
 
 // roleHolderLookup is the supervisor's read of a role's holder at the Envoy listener
 // (supervise.Deps.RoleHolder, notify.HTTPPublisher.RoleHolder), which a forget of a session its
-// claim does not hold asks before it clears anything (supervise's mayForget), presenting
-// credential. With no listener configured it is nil, and nothing is asked.
-func roleHolderLookup(envoyURL string, credential listenerCredential) func(ctx context.Context, role string) (holder, state string, err error) {
+// claim does not hold asks before it clears anything (supervise's mayForget), through transport.
+// With no listener configured it is nil, and nothing is asked.
+func roleHolderLookup(envoyURL string, transport http.RoundTripper) func(ctx context.Context, role string) (holder, state string, err error) {
 	if envoyURL == "" {
 		return nil
 	}
-	return credential.publisher(envoyURL).RoleHolder
+	return notify.New(envoyURL, transport).RoleHolder
 }
 
 // sessionStopsInFlight counts the clean stops of session registrations in flight

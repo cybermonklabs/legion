@@ -244,6 +244,29 @@ func TestProviderKeysMayNotNameAGhVariableEveryPaneSets(t *testing.T) {
 	}
 }
 
+// A provider key named ENVOY_TOKEN or ENVOY_TOKEN_FILE is refused by the loader under either
+// runtime, naming the broker route: the shim would export it into every agent's environment, where
+// the Envoy client presents it before the broker token its session trades, and the listener, which
+// takes no shared bearer, would refuse every call 401. A name that only begins the same way passes.
+func TestProviderKeysMayNotNameAnEnvoyBearer(t *testing.T) {
+	const why = ": the Envoy listener takes no shared bearer, and an agent's Envoy client presents an ENVOY_TOKEN or ENVOY_TOKEN_FILE" +
+		" in its environment before the broker token its session trades under runtime.kubernetes.agent_secrets.exchange_audience," +
+		" so the listener would refuse every call 401 (under runtime: tmux an agent calls the loopback listener with no credential); remove the key"
+	for _, name := range []string{"ENVOY_TOKEN", "ENVOY_TOKEN_FILE"} {
+		for runtimeName, file := range map[string]string{"tmux": minimalFile, "kubernetes": kubernetesFile} {
+			t.Run(name+" under "+runtimeName, func(t *testing.T) {
+				_, err := LoadForValidation(writeConfigFile(t, file+"provider_keys:\n  "+name+": "+name+"_TESTS\n"), noEnv)
+				if want := "provider_keys names " + name + why; err == nil || err.Error() != want {
+					t.Fatalf("LoadForValidation = %v, want %q", err, want)
+				}
+			})
+		}
+	}
+	if _, err := LoadForValidation(writeConfigFile(t, minimalFile+"provider_keys:\n  ENVOY_TOKENS_API_KEY: ENVOY_TOKENS_API_KEY_TESTS\n"), noEnv); err != nil {
+		t.Fatalf("LoadForValidation with a provider key that only begins as ENVOY_TOKEN does: %v", err)
+	}
+}
+
 // Under tmux a provider key may name a file (`file:/abs/path`) in place of a secretsd key, for a
 // host with no secretsd: the loader keeps the file's cleaned path beside a secretsd entry, in file
 // order, and the variable names stay refused as for any other entry.

@@ -37,13 +37,14 @@ const (
 
 // ProberOptions are what a Prober reads the listener with.
 type ProberOptions struct {
-	// EnvoyURL is the listener's base URL; EnvoyToken its bearer ("" sends none).
-	EnvoyURL, EnvoyToken string
-	// Transport, when set, carries every lookup and presents the daemon's credential itself: its
-	// own broker token, `Authorization: DPoP` beside a proof of the lookup's URL
-	// (cipherclient.NewTokenTransport), where the daemon holds no Envoy bearer
-	// (config.Config.ListenerPresentsBrokerToken). EnvoyToken is then "", and the Prober follows no
-	// redirect, so the token and its proof reach the listener's URL alone.
+	// EnvoyURL is the listener's base URL.
+	EnvoyURL string
+	// Transport carries every lookup and presents the daemon's credential itself: its own broker
+	// token, `Authorization: DPoP` beside a proof of the lookup's URL
+	// (cipherclient.NewTokenTransport), under runtime: kubernetes
+	// (config.Config.ListenerPresentsBrokerToken), or under runtime: tmux http.DefaultTransport,
+	// which presents nothing to the loopback listener, since the listener takes no shared bearer.
+	// The Prober follows no redirect, so a token and its proof reach the listener's URL alone.
 	Transport http.RoundTripper
 	// Project is the project token (claim.ProjectToken): the lookup is its controller token.
 	Project string
@@ -61,25 +62,19 @@ type ProberOptions struct {
 // other, so the daemon keeps no staleness window of its own to drift from it.
 type Prober struct {
 	lookup string
-	token  string
-	// presents is whether a lookup carries any credential: the bearer, or what the transport sets.
-	presents bool
-	log      *slog.Logger
-	client   *http.Client
+	log    *slog.Logger
+	client *http.Client
 }
 
 // NewProber is a Prober over opts.
 func NewProber(opts ProberOptions) *Prober {
 	p := &Prober{
-		lookup:   strings.TrimRight(opts.EnvoyURL, "/") + "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project))),
-		token:    opts.EnvoyToken,
-		presents: opts.EnvoyToken != "" || opts.Transport != nil,
-		log:      opts.Log,
-		client:   &http.Client{Timeout: probeTimeout},
-	}
-	if opts.Transport != nil {
-		p.client.Transport = opts.Transport
-		p.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		lookup: strings.TrimRight(opts.EnvoyURL, "/") + "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project))),
+		log:    opts.Log,
+		client: &http.Client{
+			Timeout: probeTimeout, Transport: opts.Transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
 	if p.log == nil {
 		p.log = slog.Default()
@@ -105,9 +100,6 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	if err != nil {
 		p.log.Warn("controller liveness: build the role lookup", "url", p.lookup, "error", err)
 		return Unknown
-	}
-	if p.token != "" {
-		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
@@ -137,11 +129,7 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		return Gone
 	}
 	if response.StatusCode != http.StatusOK {
-		reason := "the Envoy listener refused the controller role lookup"
-		if !p.presents {
-			reason += " with no bearer token sent"
-		}
-		p.log.Warn("controller liveness: "+reason, "url", p.lookup, "status", response.StatusCode)
+		p.log.Warn("controller liveness: the Envoy listener refused the controller role lookup", "url", p.lookup, "status", response.StatusCode)
 		return Unknown
 	}
 	var answer listenerwire.RoleHolder

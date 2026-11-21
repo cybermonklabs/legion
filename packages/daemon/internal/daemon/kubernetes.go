@@ -358,10 +358,8 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, cred
 	if err != nil {
 		return sandbox.Options{}, err
 	}
-	var agentSecrets *sandbox.AgentSecrets
-	if a := k.AgentSecrets; a != nil {
-		agentSecrets = &sandbox.AgentSecrets{URL: a.URL, Audience: a.Audience, TokenExpiry: time.Duration(a.TokenExpirySeconds) * time.Second, ExchangeAudience: a.ExchangeAudience}
-	}
+	a := k.AgentSecrets
+	agentSecrets := &sandbox.AgentSecrets{URL: a.URL, Audience: a.Audience, TokenExpiry: time.Duration(a.TokenExpirySeconds) * time.Second, ExchangeAudience: a.ExchangeAudience}
 	cache, err := repositoryCache(k.RepositoryCache)
 	if err != nil {
 		return sandbox.Options{}, err
@@ -396,10 +394,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, cred
 		Resources:  sandbox.PodResources{Issue: issue, Controller: controller},
 		DaemonURL:  cfg.DaemonURL, EnvoyURL: cfg.EnvoyURL, DispatchURL: cfg.DispatchURL,
 		Dispatch: credential,
-		// With no envoy_token_file, a role's listener credential is its pod's exchange identity,
-		// and a launch into a kept pod built before it waits for the pod's round.
-		ListenerBroker: cfg.ListenerPresentsBrokerToken(),
-		NATSURLs:       cfg.NatsURLs,
+		NATSURLs: cfg.NatsURLs,
 		// The controller this runtime launches is told the project's channels, and is relaunched
 		// when they change (sandbox's address record).
 		ControllerSlackChannels: cfg.Projects[cfg.Project].SlackChannels,
@@ -475,15 +470,15 @@ func providersSecrets(cfg config.Config, lookup func(string) (string, bool)) []s
 // the daemon logs in with its own projected ServiceAccount token (token_file) and keeps logging in
 // before each credential expires; no person approves any of it, a restart included. Every login
 // logs its own outcome (cipher.Client.Login); one that fails is retried by the client, and
-// pod enrollment waits for it. With the block's exchange_audience set, the same client is the
-// machines' Registrar too (newRegistrar), which registers each role's session for its pod; unset,
-// the Registrar is nil and no registration is ever made. The client itself is returned too,
+// pod enrollment waits for it. The same client is the machines' Registrar too (newRegistrar),
+// which registers each role's session for its pod. The client itself is returned too,
 // read-only, so the state route can show the login's current status (source.State,
 // cipher.Client.LoginStatus). Never part of launchSecrets, so no pod is ever handed the
-// daemon's key, token or credential. Nil, nil, nil without the block.
+// daemon's key, token or credential. Nil, nil, nil under runtime: tmux, which enrolls nothing;
+// runtime: kubernetes always names the block (config's checkKubernetesKeys).
 func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, supervise.Registrar, *cipher.Client) {
 	k := cfg.Runtime.Kubernetes
-	if k == nil || k.AgentSecrets == nil {
+	if k == nil {
 		return nil, nil, nil
 	}
 	// Every call this client makes to the broker carries a Proof header of its own, so a 3xx
@@ -497,7 +492,7 @@ func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, s
 	}
 	client := &cipher.Client{URL: k.AgentSecrets.URL, HTTP: broker, TokenFile: k.AgentSecrets.TokenFile, Log: log}
 	go func() { _ = client.Start(context.Background()) }()
-	return brokerEnroller{client: client}, newRegistrar(*k.AgentSecrets, client), client
+	return brokerEnroller{client: client}, newRegistrar(client), client
 }
 
 // brokerEnroller is cipher.Client as supervise.Enroller; an *cipher.APIError is a

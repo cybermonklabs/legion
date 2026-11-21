@@ -88,12 +88,10 @@ type Runtime struct {
 	streamURL, daemonURL, envoyURL string
 	dispatchURL                    string
 	dispatch                       DispatchCredential
-	// listenerBroker is Options.ListenerBroker.
-	listenerBroker  bool
-	natsURLs        []string
-	tools           Tools
-	pod             Pod
-	roleConfigFiles map[claim.Role][]string
+	natsURLs                       []string
+	tools                          Tools
+	pod                            Pod
+	roleConfigFiles                map[claim.Role][]string
 	// experimentVariants are every arm of every experiment the project declares
 	// (Options.ExperimentVariants), and variantFiles their overlay files as one list, in that
 	// same order: the union every reader that holds a pod or the deployment and no tree takes,
@@ -183,10 +181,9 @@ type Runtime struct {
 	observer *observer
 	// sessions is, by claim, the session the latest launch of it the runtime chose the session for
 	// (a Claude Code launch, or an Oh My Pi launch that trades) started or resumed under and the
-	// incarnation it started as (LaunchSession), kept only when agentSecrets names
-	// an exchange audience (nameSession): written once that launch's start is sent, and dropped
-	// with the watch's record when the process is let go or the claim's next launch begins
-	// (forget, forgetIf). Memory only; a restarted daemon answers none.
+	// incarnation it started as (LaunchSession, nameSession): written once that launch's start is
+	// sent, and dropped with the watch's record when the process is let go or the claim's next
+	// launch begins (forget, forgetIf). Memory only; a restarted daemon answers none.
 	sessions map[claim.Token]launchedSession
 	// dispatchTokenClaims is, by claim, the incarnation of its live generation whose start carried
 	// DISPATCH_TOKEN in its Files (DispatchTokens' LiveLaunches): set when a launch's start is sent,
@@ -357,12 +354,10 @@ func configureProber(opts Options) (*Runtime, error) {
 		return refuse("Dispatch.Bearer is given beside Dispatch.Broker: a launch's Dispatch credential is the shared bearer or its role's own trade at the secrets broker, never both")
 	case opts.Dispatch.Transition != "" && !opts.Dispatch.Broker:
 		return refuse("Dispatch.Transition is given without Dispatch.Broker: it is the shared token a launch into a pod built before the broker carries, which only Dispatch.Broker hands out")
-	case opts.Dispatch.Broker && (opts.AgentSecrets == nil || opts.AgentSecrets.ExchangeAudience == ""):
-		return refuse("Dispatch.Broker is set but AgentSecrets names no exchange audience: under the broker a launch carries no Dispatch token and its role trades its pod's exchange identity, which no pod carries without one")
-	case opts.ListenerBroker && (opts.AgentSecrets == nil || opts.AgentSecrets.ExchangeAudience == ""):
-		return refuse("ListenerBroker is set but AgentSecrets names no exchange audience: with no Envoy bearer a role reaches the listener only by trading its pod's exchange identity, which no pod carries without one")
-	case opts.ListenerBroker && slices.Contains(opts.LaunchSecrets, envoyTokenKey):
-		return refuse("ListenerBroker is set but LaunchSecrets names %s: a daemon that holds no Envoy bearer hands no launch one", envoyTokenKey)
+	case opts.AgentSecrets == nil || opts.AgentSecrets.ExchangeAudience == "":
+		return refuse("AgentSecrets names no exchange audience: the Envoy listener takes no shared bearer, so a role reaches it only by trading its pod's exchange identity, which no pod carries without one")
+	case slices.Contains(opts.LaunchSecrets, envoyTokenKey):
+		return refuse("LaunchSecrets names %s: the Envoy listener takes no shared bearer, so no launch carries one", envoyTokenKey)
 	case poolSet:
 		return refuse("scheduling node selector sets %s=%q: %s is the runtime's, which puts every pod on the %s pool the cluster's admission policy requires",
 			poolKey, pool, poolKey, poolValue)
@@ -389,31 +384,29 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("%v", err)
 		}
 	}
-	if a := opts.AgentSecrets; a != nil {
-		// The Workload Identity pool is the audience of the token a microVM pod's launcher
-		// exchanges for a Google one (workloadIdentityVolumes); empty, no pod carries that token.
-		// While an issue pod runs in a microVM the switch above has refused a nil MicroVM.
-		var workloadPool string
-		if opts.Sandbox.AnyMicroVM() && opts.Sandbox.MicroVM.Metadata != nil {
-			workloadPool = opts.Sandbox.MicroVM.Metadata.WorkloadPool
-		}
-		switch {
-		case a.URL == "":
-			return refuse("agent secrets: no broker URL")
-		case a.Audience == "":
-			return refuse("agent secrets: no token audience")
-		case a.TokenExpiry < 10*time.Minute || a.TokenExpiry > time.Hour:
-			return refuse("agent secrets: token expiry %s is not between %s and %s (the API server's floor and the cluster's admission cap)", a.TokenExpiry, 10*time.Minute, time.Hour)
-		case a.ExchangeAudience == a.Audience:
-			return refuse("agent secrets: the exchange audience is the enrollment's own, %q; the cluster projects one volume per audience", a.Audience)
-		case workloadPool != "" && a.Audience == workloadPool:
-			return refuse("agent secrets: the enrollment's audience is the Workload Identity pool's, %q, which the metadata endpoint's token holds; the cluster projects one volume per audience", workloadPool)
-		case workloadPool != "" && a.ExchangeAudience == workloadPool:
-			return refuse("agent secrets: the exchange audience is the Workload Identity pool's, %q, which the metadata endpoint's token holds; the cluster projects one volume per audience", workloadPool)
-		}
+	// The Workload Identity pool is the audience of the token a microVM pod's launcher exchanges
+	// for a Google one (workloadIdentityVolumes); empty, no pod carries that token. While an issue
+	// pod runs in a microVM the switch above has refused a nil MicroVM.
+	var workloadPool string
+	if opts.Sandbox.AnyMicroVM() && opts.Sandbox.MicroVM.Metadata != nil {
+		workloadPool = opts.Sandbox.MicroVM.Metadata.WorkloadPool
+	}
+	switch a := opts.AgentSecrets; {
+	case a.URL == "":
+		return refuse("agent secrets: no broker URL")
+	case a.Audience == "":
+		return refuse("agent secrets: no token audience")
+	case a.TokenExpiry < 10*time.Minute || a.TokenExpiry > time.Hour:
+		return refuse("agent secrets: token expiry %s is not between %s and %s (the API server's floor and the cluster's admission cap)", a.TokenExpiry, 10*time.Minute, time.Hour)
+	case a.ExchangeAudience == a.Audience:
+		return refuse("agent secrets: the exchange audience is the enrollment's own, %q; the cluster projects one volume per audience", a.Audience)
+	case workloadPool != "" && a.Audience == workloadPool:
+		return refuse("agent secrets: the enrollment's audience is the Workload Identity pool's, %q, which the metadata endpoint's token holds; the cluster projects one volume per audience", workloadPool)
+	case workloadPool != "" && a.ExchangeAudience == workloadPool:
+		return refuse("agent secrets: the exchange audience is the Workload Identity pool's, %q, which the metadata endpoint's token holds; the cluster projects one volume per audience", workloadPool)
 	}
 	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
-		exchangeOf(opts.AgentSecrets, opts.Dispatch.Broker)); err != nil {
+		opts.Dispatch.Broker); err != nil {
 		return refuse("%v", err)
 	}
 	for _, name := range opts.ProvidersSecrets {
@@ -442,7 +435,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		namespace: opts.Namespace, project: opts.Project, image: opts.Image, storageClass: opts.StorageClass,
 		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, sandboxConfig: opts.Sandbox, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
-		dispatch: opts.Dispatch, listenerBroker: opts.ListenerBroker, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
+		dispatch: opts.Dispatch, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
 		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,

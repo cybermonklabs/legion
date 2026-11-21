@@ -1693,15 +1693,15 @@ Each item below names an input and its default, then what it means.
   kept on every outcome and printed at exit:
   `transcript.log` (the whole run), `runtime.log` (the runtime's and the listener's JSON log lines), and the two namespace snapshots
 
-- `LEGION_E2E_AGENT_SECRETS_URL` — unset (the `secrets-*` checks report `SKIPPED-BLOCKED`)
+- `LEGION_E2E_AGENT_SECRETS_URL` — required
 
   the agent-secrets broker the run enrolls pods with
   — the **production** broker (Plan D, the broker design's AWS deployment plan), never a development slot (below).
-  The `secrets-*` checks run only when this input, `LEGION_E2E_AGENT_SECRETS_ACCOUNT` and `LEGION_E2E_AGENT_SECRETS_AUTO_SHA256` are all set, and each one of them left unset holds every `secrets-*` check at `SKIPPED-BLOCKED`.
+  The runtime refuses to start without the broker, since under `runtime: kubernetes` every pod trades its own exchange identity and the Envoy listener takes no shared bearer, so the script refuses to start while this input, `LEGION_E2E_AGENT_SECRETS_ACCOUNT` or `LEGION_E2E_AGENT_SECRETS_AUTO_SHA256` is unset.
   The stage is unattended: `secrets-approval-ask` makes one request for `LEGION_E2E_APPROVAL`, asserts the approver the broker names for it is that secret's single owner and not the shared marker `anyone`, and then cancels its own request, so no card waits on a person and none is left behind.
   The run's own broker login asks no one either: it logs in as the daemon does, with a token for `LEGION_E2E_AGENT_SECRETS_ACCOUNT`
 
-- `LEGION_E2E_AGENT_SECRETS_ACCOUNT` — unset
+- `LEGION_E2E_AGENT_SECRETS_ACCOUNT` — required
 
   `<namespace>/<name>` of a ServiceAccount of the proof's own that the production broker's `BROKER_SERVICE_LOGINS` lets log in as `legion-daemon` and that no pod runs as, never the production daemon's:
   each account holds one launcher credential, which every login moves to its own key, so a run logging in as a running daemon's account would take that daemon's credential, and the two would trade it for the whole run.
@@ -1709,10 +1709,9 @@ Each item below names an input and its default, then what it means.
   It mints an hour-long token for the account with the operator context (`kubectl create token … --audience agent-secrets --duration 1h`;
   the broker refuses a longer one) into an owner-only file it never prints, and mints it again every half hour while the run lasts;
   the harness logs in with that token, reading the file afresh at each login, as a daemon off the cluster does; no person approves it.
-  With this or any other `LEGION_E2E_AGENT_SECRETS_*` input unset, the harness starts no login and every `secrets-*` check reports `SKIPPED-BLOCKED`;
-  a refused login blocks them with the broker's answer, never fails the stage
+  A refused login blocks the `secrets-*` checks with the broker's answer, never fails the stage
 
-- `LEGION_E2E_AGENT_SECRETS_AUTO_SHA256` — unset
+- `LEGION_E2E_AGENT_SECRETS_AUTO_SHA256` — required
 
   the `sha256sum` of the dummy value Sami seeded into the production broker's secret store for `LEGION_E2E_AUTO` (`owner=shared`, `tier=agent`:
   every session and pod gets it automatically) — the harness never sees the value itself, only its hash

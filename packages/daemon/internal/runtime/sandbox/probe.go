@@ -1212,12 +1212,12 @@ var undefinedFlag = regexp.MustCompile(`(?:unknown flag|flag provided but not de
 // invalid seed exits 1 (natsauth.Seed), and a key the kubelet cannot mount never starts the
 // container, so only a CLI that predates the user line succeeds without one. Naming another is the
 // providers Secret holding another seed. An image whose CLI predates a flag the probe command
-// passes stops at the flags, and its Failed pod is refused naming the flag its CLI lacks. When the
-// runtime's agent secrets name an exchange audience, the line must also say the image's Oh My Pi
-// takes --session-id (bootprobe.SessionIDFlag: bootprobe.SessionIDFlagTaken), which every new Oh
-// My Pi role of such a deployment starts with: a help that lists no such flag, a help the probe
-// could not read, and a line from a CLI of this contract that predates the mark are each refused
-// (sessionIDRefusal); with none, the mark is never judged. The passing outcome's Report carries the
+// passes stops at the flags, and its Failed pod is refused naming the flag its CLI lacks. The
+// line must also say the image's Oh My Pi takes --session-id (bootprobe.SessionIDFlag:
+// bootprobe.SessionIDFlagTaken), which every new Oh My Pi role of a pod that carries the exchange
+// identity starts with: a help that lists no such flag, a help the probe could not read, and a
+// line from a CLI of this contract that predates the mark are each refused (sessionIDRefusal).
+// The passing outcome's Report carries the
 // line's model-fallback mark, which the daemon keeps; the pass's log line carries that mark and the
 // omp-version and omp-session-id marks.
 func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, logErr error, contract int) bootprobe.Outcome {
@@ -1294,7 +1294,7 @@ func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, lo
 		}
 	}
 	version, flag := bootprobe.OmpVersion(logTail), bootprobe.SessionIDFlag(logTail)
-	if r.agentSecrets != nil && r.agentSecrets.ExchangeAudience != "" && flag != bootprobe.SessionIDFlagTaken {
+	if flag != bootprobe.SessionIDFlagTaken {
 		return imageRefusal(digest, "%s — log tail: %s", sessionIDRefusal(name, version, flag), logTail)
 	}
 	report := bootprobe.ImageReport{ModelFallback: bootprobe.ModelFallback(logTail)}
@@ -1303,12 +1303,13 @@ func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, lo
 	return bootprobe.Outcome{Passed: true, Report: report}
 }
 
-// sessionIDRefusal is why judge refuses, under runtime.kubernetes.agent_secrets.exchange_audience,
-// probe pod name's OK line when its omp-session-id mark, flag, does not say the image's Oh My Pi
-// takes --session-id: what the line says of that Oh My Pi (flag and its omp-version mark,
-// version, each "" from a legion CLI that predates them), why the setting needs the flag, and the
-// remedy. Under the setting every new Oh My Pi role of a pod that carries the exchange identity
-// starts with `--session-id <id>`, and one it resumes by its recorded file with `--resume <id>`
+// sessionIDRefusal is why judge refuses probe pod name's OK line when its omp-session-id mark,
+// flag, does not say the image's Oh My Pi takes --session-id: what the line says of that Oh My Pi
+// (flag and its omp-version mark, version, each "" from a legion CLI that predates them), why the
+// daemon needs the flag, and the remedy. Every new Oh My Pi role of a pod that carries the
+// exchange identity, which every pod a launch builds does
+// (runtime.kubernetes.agent_secrets.exchange_audience, which New requires), starts with
+// `--session-id <id>`, and one it resumes by its recorded file with `--resume <id>`
 // (launch.agentArgv), and an Oh My Pi that does not define the flag stops at it (`Error: unknown
 // flag: --session-id`), so no role of any pod would start. Oh My Pi's version cannot say which it
 // is — every release of the fork's 18.18.6 line prints omp/18.18.6 — so the probe reads the flag
@@ -1329,10 +1330,9 @@ func sessionIDRefusal(name, version, flag string) string {
 	default:
 		what = fmt.Sprintf("its OK line for %s says omp-session-id=%s, where the daemon's probe requires %s", omp, flag, bootprobe.SessionIDFlagTaken)
 	}
-	return fmt.Sprintf("pod %s Succeeded, but %s; runtime.kubernetes.agent_secrets.exchange_audience is set, so the daemon starts each new Oh My Pi role with --session-id <id> "+
+	return fmt.Sprintf("pod %s Succeeded, but %s; the daemon starts each new Oh My Pi role of a pod that carries the exchange identity (runtime.kubernetes.agent_secrets.exchange_audience) with --session-id <id> "+
 		"and resumes one by its recorded file with --resume <id>, and an Oh My Pi without the flag stops at it (unknown flag: --session-id), so no role would start: "+
-		"use a worker image built with an Oh My Pi that takes --session-id (the cybermonklabs/oh-my-pi releases from v18.18.6-sami.20261117-074351) and a legion that reports it, "+
-		"or unset runtime.kubernetes.agent_secrets.exchange_audience", name, what)
+		"use a worker image built with an Oh My Pi that takes --session-id (the cybermonklabs/oh-my-pi releases from v18.18.6-sami.20261117-074351) and a legion that reports it", name, what)
 }
 
 // unreadableMounts is gVisor's wording when the container's mounts cannot be handed to the

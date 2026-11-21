@@ -387,8 +387,8 @@ func (r *Runtime) rolesDirLauncher(k podKind, l launch, resolved []corev1.EnvVar
 // names a writer audience (controllerPod.launcherContainer). command is the words that name the
 // form: --roles-dir RolesDir, then one --role per role. mounts are each role's own volumes under
 // its directory of RolesDir (roleDir), at the names of launcher's layout: its launcher token and
-// its gh files read-only, its private and state directories, and its agent-secrets key directory
-// where the pod enrolls with the secrets broker; then the role homes volume at RoleHomesDir
+// its gh files read-only, its private and state directories, and its agent-secrets key
+// directory; then the role homes volume at RoleHomesDir
 // (roleHomesVolumes), where role-init keeps each role's home overlay, temporary directories and
 // own config home. Nothing is mounted at the fixed paths a role reads its own at (GHConfigDir and
 // its siblings): role-init covers RolesDir in each role's namespaces and binds the role's own
@@ -403,10 +403,8 @@ func (r *Runtime) rolesDirLayout(roles []claim.Role) (command []string, mounts [
 			corev1.VolumeMount{Name: roleVolume(ghVolume, role), MountPath: dir + "/" + launcher.RoleGHDir, ReadOnly: true},
 			corev1.VolumeMount{Name: roleVolume("private", role), MountPath: dir + "/" + launcher.RolePrivateDir},
 			corev1.VolumeMount{Name: roleVolume(stateVolume, role), MountPath: dir + "/" + launcher.RoleStateDir},
+			corev1.VolumeMount{Name: roleVolume(agentSecretsKeyVolume, role), MountPath: dir + "/" + launcher.RoleAgentSecretsDir},
 		)
-		if r.agentSecrets != nil {
-			mounts = append(mounts, corev1.VolumeMount{Name: roleVolume(agentSecretsKeyVolume, role), MountPath: dir + "/" + launcher.RoleAgentSecretsDir})
-		}
 	}
 	return command, append(mounts, corev1.VolumeMount{Name: roleHomesVolume, MountPath: RoleHomesDir})
 }
@@ -586,9 +584,10 @@ func (controllerPod) initContainers(*Runtime, launch) []corev1.Container { retur
 // launcherContainer is the controller's pod's one container, `controller`. Where the session
 // database names no writer audience it is `legion launcher` in single-role mode, with the
 // controller's own launcher token, private directory, state directory and gh volume mounted at the
-// fixed paths it reads them at, the gh volume read-only, its key directory and the broker's token
-// when the pod enrolls, beside the pod's volume, the config home, the providers and the operator's
-// mounts. Where it names one, the container runs the roles-dir form instead (rolesDirContainer).
+// fixed paths it reads them at, the gh volume read-only, its key directory, the broker's token and
+// the exchange's (agentSecretsMounts), beside the pod's volume, the config home, the providers and
+// the operator's mounts. Where it names one, the container runs the roles-dir form instead
+// (rolesDirContainer).
 func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
 	if r.sessionWriterAudience() != "" {
 		return k.rolesDirContainer(r, l, resolved, providersMounts)
@@ -612,7 +611,7 @@ func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1
 		}, r.sessionProxyFlags()),
 		Env:             resolved,
 		WorkingDir:      l.workspace,
-		VolumeMounts:    slices.Concat(mounts, providersMounts, agentSecretsMounts(r.agentSecrets, role), r.pod.VolumeMounts),
+		VolumeMounts:    slices.Concat(mounts, providersMounts, agentSecretsMounts(role), r.pod.VolumeMounts),
 		Resources:       k.resources(r),
 		SecurityContext: restrictedContainer(),
 	}

@@ -38,8 +38,9 @@ func runtimeWithRoleFiles(t *testing.T, files map[claim.Role][]string) *Runtime 
 // A role role_config_files names is told its own overlays after the operator's in PI_CONFIG_FILES,
 // in order — the tester in its issue pod and the daemon-launched controller in its own — and the
 // shim's pod baseline hands that value to Oh My Pi untouched, as it does the operator's alone. A
-// role it does not name runs exactly the process, in exactly the pod, a daemon without the key
-// gives it, and so does a named role's pod: its overlays ride the start command.
+// role it does not name runs exactly the process, but for the session id each launch chose
+// (withoutChosenSession), in exactly the pod, a daemon without the key gives it, and so does a
+// named role's pod: its overlays ride the start command.
 func TestARoleIsToldItsOwnOverlaysAfterTheOperators(t *testing.T) {
 	with, without := runtimeWithRoleFiles(t, roleFiles), runtimeWithRoleFiles(t, nil)
 	operator := operatorPod().Env["PI_CONFIG_FILES"]
@@ -69,7 +70,7 @@ func TestARoleIsToldItsOwnOverlaysAfterTheOperators(t *testing.T) {
 		role string
 		spec func(*testing.T) runtime.SpawnSpec
 	}{{"architect", rootSpec}} {
-		if got, want := workerOf(t, with, tc.spec(t)), workerOf(t, without, tc.spec(t)); !reflect.DeepEqual(got, want) {
+		if got, want := withoutChosenSession(workerOf(t, with, tc.spec(t))), withoutChosenSession(workerOf(t, without, tc.spec(t))); !reflect.DeepEqual(got, want) {
 			t.Errorf("the %s's process with another role's overlays =\n%+v\nwant the one without the key:\n%+v", tc.role, got, want)
 		}
 		if got := envOf(workerOf(t, with, tc.spec(t)))["PI_CONFIG_FILES"]; got != operator {

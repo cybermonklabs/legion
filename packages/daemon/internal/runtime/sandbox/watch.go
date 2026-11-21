@@ -99,22 +99,17 @@ type launchedSession struct {
 
 // nameSession records the session l's launch, starting as loc, runs under where prepare chose it:
 // a Claude Code launch's (claudeInputs), and an Oh My Pi launch's that trades an exchange identity
-// (ompInputs), which its `--session-id <id>`, `--resume <id>` or `--resume=<id>` names. Only a
-// deployment that names exchange_audience registers a role's session, so only it keeps the record.
-// An Oh My Pi launch that trades nothing — a kept pod built before the exchange identity — has no
-// chosen id, since relaunch cleared it (l.omp is zero): its agent mints one and reports it at its
+// (ompInputs), which its `--session-id <id>`, `--resume <id>` or `--resume=<id>` names. An Oh My
+// Pi launch that trades nothing — a kept pod built before the exchange identity — has no chosen id,
+// since relaunch cleared it (l.omp is zero): its agent mints one and reports it at its
 // registration, and it leaves no record for the claim. The record goes when the process is let
 // go, with the watch's (forget, forgetIf).
 func (r *Runtime) nameSession(loc runtime.Locator, l launch) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	session := ""
-	switch {
-	case r.agentSecrets == nil || r.agentSecrets.ExchangeAudience == "":
-	case l.runsClaude():
+	session := l.omp.session
+	if l.runsClaude() {
 		session = l.claude.session
-	default:
-		session = l.omp.session
 	}
 	if session == "" {
 		delete(r.sessions, loc.Claim)

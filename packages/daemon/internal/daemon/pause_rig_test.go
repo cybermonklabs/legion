@@ -236,6 +236,9 @@ func newPauseEnvoy(t *testing.T, clock *waveClock) *pauseEnvoy {
 
 func (e *pauseEnvoy) serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	if answerRoleLookup(w, r) {
+		return
+	}
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/publish":
 		var body struct {
@@ -345,6 +348,7 @@ func newPauseDaemonRig(t *testing.T, tune func(*config.Config)) *pauseDaemonRig 
 		Kubeconfig: writeKubeconfig(t, "https://127.0.0.1:1", "test"), Resources: config.DefaultResources(),
 		RepositoryCache: config.DefaultRepositoryCache(),
 		IdleRelease:     config.IdleReleaseConfig{IdleMinutes: pauseRigIdleMinutes, BackstopMinutes: pauseRigBackstopMinutes},
+		AgentSecrets:    stubBroker(t),
 	}}
 	cfg.WorkerWakesPerMinute, cfg.WorkerWakeBurst = 8, 1
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon

@@ -2170,10 +2170,10 @@ test("the state golden carries the deployment's capability report", () => {
   expect(rows.secrets).toEqual({
     name: "secrets",
     status: "decided",
-    detail: "runtime.kubernetes.agent_secrets is not configured",
+    detail: "the agent-secrets login is failed, not issued",
     decision:
       "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret",
-    source: "configuration",
+    source: "boot",
   });
   expect(rows["resource-limits"]).toEqual({
     name: "resource-limits",

@@ -74,8 +74,9 @@ worker_wake_burst: 1                   # how many wakes may leave at once before
 operator_token_file: ./operator-token  # the operator's bearer, in a file only you can read
 dispatch_url: https://dispatch.example.com
 dispatch_token_file: ./dispatch-token
-envoy_url: http://envoy.example.com:9020
-envoy_token_file: ./envoy-token
+envoy_url: http://envoy.example.com:9020   # the listener's own ENVOY_PUBLIC_URL: the daemon's broker token's proof
+                                       # names it. No bearer goes with it: the listener takes no shared one,
+                                       # and envoy_token_file is refused (runtime.kubernetes.agent_secrets below)
 nats_urls: [nats://nats.example.com:4222]
 
 projects:
@@ -446,6 +447,15 @@ runtime:
     #                                  # nothing until a daemon hands it settings again (docs/kubernetes.md).
     kubeconfig: ./kubeconfig           # the daemon's own identity
     context: legion-daemon
+    agent_secrets:                     # required: the secrets broker every pod is enrolled with, and the
+      url: https://secrets.example.com # daemon's own login to it. The Envoy listener takes no shared bearer,
+      token_file: /var/run/legion/agent-secrets-token/token # so each pod's sessions trade broker tokens of
+      exchange_audience: legion-broker-exchange # their own through the identity exchange_audience projects
+                                       # (the broker's BROKER_EXCHANGE_K8S_AUDIENCE), and the daemon trades its
+                                       # own pod identity for its listener calls (AGENT_SECRETS_URL,
+                                       # AGENT_SECRETS_MACHINE_IDENTITY, AGENT_SECRETS_MACHINE_TOKEN_FILE in
+                                       # the daemon's own pod); token_file is the daemon's projected token for
+                                       # the broker's own audience (docs/kubernetes.md)
     # plugins:                         # the exact pi-legion/pi-envoy pair a stale-plugin relaunch installs
     #   pi_legion: 9.7.0               # into a kept pod from npm (bun add --exact), in place of the pod's
     #   pi_envoy: 9.6.1                # image's own copies. Each value is an exact version (never a dist-tag
@@ -539,12 +549,9 @@ runtime:
 
 # The daemon reports, at boot, in `legion state` and to the controller on every tick, each worker
 # capability the deployment's own configuration closes or leaves open (LEGION-578): the secrets
-# broker (runtime.kubernetes.agent_secrets), model fallback (retry.modelFallback in the operator's
-# overlay, read by the image probe) and every pod's reservation (resources above, which the
-# daemon's defaults fill for every pod, so that row is present on every Kubernetes deployment). A
-# gap never stops the daemon; it is yours to close, or to decide here, by name and with the reason,
-# which the report then shows in the gap's place. This example configures no broker, so it decides
-# that one.
-capabilities:
-  decided:
-    secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"
+# broker (runtime.kubernetes.agent_secrets, which this example configures), model fallback
+# (retry.modelFallback in the operator's overlay, read by the image probe) and every pod's
+# reservation (resources above, which the daemon's defaults fill for every pod, so that row is
+# present on every Kubernetes deployment). A gap never stops the daemon; it is yours to close, or
+# to decide here, by name and with the reason, which the report then shows in the gap's place:
+# capabilities: { decided: { model-fallback: "<why this deployment runs without one>" } }

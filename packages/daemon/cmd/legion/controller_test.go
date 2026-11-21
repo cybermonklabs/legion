@@ -330,7 +330,6 @@ func newControllerStart(t *testing.T, d *controllerDaemon, opts controllerOption
 		c.write("operator-token", contents, mode)
 	}
 	c.write("instructions.md", "Always be kind.\n", 0o600)
-	c.write("envoy-token", "envoy-bearer\n", 0o600)
 	c.write("dispatch-token", "dispatch-bearer\n", 0o600)
 	c.write("nats-seed", testnkeys.UserSeed(t)+"\n", 0o600)
 	lines := opts.lines
@@ -340,7 +339,6 @@ func newControllerStart(t *testing.T, d *controllerDaemon, opts controllerOption
 			"daemon_url: " + d.url,
 			"operator_token_file: ./operator-token",
 			"envoy_url: http://envoy.test:9020",
-			"envoy_token_file: envoy-token",
 			"nats_urls: [nats://a:4222, nats://b:4222]",
 			"nats_nkey_seed_file: ./nats-seed",
 			"dispatch_url: https://dispatch.test",
@@ -791,7 +789,6 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 		"DISPATCH_URL":                    "https://dispatch.test",
 		"DISPATCH_TOKEN_FILE":             filepath.Join(c.dir, "dispatch-token"),
 		"LEGION_CONTROLLER_SECRET_FILE":   filepath.Join(secrets, "legion-demo-controller"),
-		"ENVOY_TOKEN_FILE":                filepath.Join(c.dir, "envoy-token"),
 		"NATS_NKEY_SEED_FILE":             filepath.Join(c.dir, "nats-seed"),
 	}
 	for name := range want {
@@ -817,9 +814,16 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 			t.Errorf("%s carries the controller secret's value", name)
 		}
 	}
-	for _, name := range []string{"LEGION_CONTROLLER_SECRET", "ENVOY_TOKEN", "DISPATCH_TOKEN", "NATS_NKEY_SEED"} {
+	for _, name := range []string{"LEGION_CONTROLLER_SECRET", "DISPATCH_TOKEN", "NATS_NKEY_SEED"} {
 		if _, set := env[name]; set {
 			t.Errorf("%s is set; only its _FILE pointer may be", name)
+		}
+	}
+	// The listener takes no shared bearer, so the controller's session is handed none: its Envoy
+	// client presents the broker token it trades with this machine's identity, or nothing.
+	for _, name := range []string{"ENVOY_TOKEN", "ENVOY_TOKEN_FILE"} {
+		if value, set := added[name]; set {
+			t.Errorf("%s = %q; the controller's session is handed no Envoy bearer", name, value)
 		}
 	}
 	// Three lines: the probe, named before it runs so a prompt or a wait can be tied to it; the
@@ -1347,12 +1351,18 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 		c.refused(fmt.Sprintf("operator_token_file names %s, which is empty", c.tokenFile))
 		c.wantNoSecretRequest()
 	})
-	t.Run("a blank Envoy token file", func(t *testing.T) {
+	t.Run("an envoy_token_file, before any probe or request", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
-		c.write("envoy-token", "\n", 0o600)
-		c.refused(fmt.Sprintf("envoy_token_file names %s, which is empty", filepath.Join(c.dir, "envoy-token")))
+		written, err := os.ReadFile(c.config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.write("envoy-token", "envoy-bearer\n", 0o600)
+		c.write("controller.yaml", string(written)+"envoy_token_file: ./envoy-token\n", 0o600)
+		c.refused("envoy_token_file is not read any more: the Envoy listener takes no shared bearer")
 		c.wantNoSecretRequest()
+		c.wantNothingLaunchedOrWritten(c.defaultDir)
 	})
 	t.Run("a blank NATS nkey seed file", func(t *testing.T) {
 		d := newControllerDaemon(t)

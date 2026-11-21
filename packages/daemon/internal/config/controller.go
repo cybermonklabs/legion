@@ -19,10 +19,23 @@ const ControllerConfigExample = "deploy/kubernetes/daemon/controller.yaml.exampl
 // controllerKeys is every key the operator-side file may carry: the same names as legion.yaml, only
 // the ones the controller needs.
 var controllerKeys = []string{
-	"project", "daemon_url", "operator_token_file", "envoy_url", "envoy_token_file", "nats_urls",
+	"project", "daemon_url", "operator_token_file", "envoy_url", "nats_urls",
 	"nats_nkey_seed_file", "dispatch_url", "dispatch_token_file", "dispatch_token_broker",
 	"instructions", "omp_invocation", "omp_launch_prefix", "state_dir",
 }
+
+// envoyTokenFileRefusal is LoadController's refusal of `envoy_token_file`, the key whose file
+// reached the controller's session as ENVOY_TOKEN_FILE until the Envoy listener stopped taking a
+// shared bearer. With no such pointer the session's Envoy client presents the broker token it
+// trades with this machine's own identity wherever the operator's environment names a secrets
+// broker and an identity (envoySettings and brokerCredential, packages/envoy-client), and
+// otherwise no credential, which a loopback listener serves and no other does. The key has a
+// refusal of its own rather than the unknown key's, so an operator whose file predates the change
+// reads what replaced it.
+const envoyTokenFileRefusal = "envoy_token_file is not read any more: the Envoy listener takes no shared bearer, so the controller's" +
+	" session presents the broker token it trades with this machine's own identity at the secrets broker its" +
+	" environment names (AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY), or calls a loopback listener, which needs" +
+	" no credential; remove envoy_token_file from the controller configuration — see " + ControllerConfigExample
 
 // ControllerConfig is `legion controller start`'s operator-side file, settled. Every path is
 // absolute; an optional key the file leaves out is "" (or nil).
@@ -34,7 +47,6 @@ type ControllerConfig struct {
 	DaemonURL         string
 	OperatorTokenFile string
 	EnvoyURL          string
-	EnvoyTokenFile    string
 	NatsURLs          []string
 	// NatsNkeySeedFile is the NATS nkey user seed's file the controller's Oh My Pi reads through
 	// NATS_NKEY_SEED_FILE, "" when the file names none.
@@ -80,18 +92,22 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 	}
 	root := document.Content[0]
 	values := map[string]*yaml.Node{}
-	var unknown []string
+	var refused []string
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key := root.Content[i].Value
+		if key == "envoy_token_file" {
+			refused = append(refused, envoyTokenFileRefusal)
+			continue
+		}
 		if !slices.Contains(controllerKeys, key) {
-			unknown = append(unknown, fmt.Sprintf("unknown key %q in the controller configuration; legion controller start reads only %s — see %s",
+			refused = append(refused, fmt.Sprintf("unknown key %q in the controller configuration; legion controller start reads only %s — see %s",
 				key, strings.Join(controllerKeys, ", "), ControllerConfigExample))
 			continue
 		}
 		values[key] = root.Content[i+1]
 	}
-	if len(unknown) > 0 {
-		return ControllerConfig{}, errors.New(strings.Join(unknown, "; "))
+	if len(refused) > 0 {
+		return ControllerConfig{}, errors.New(strings.Join(refused, "; "))
 	}
 
 	configDir := filepath.Dir(path)
@@ -138,9 +154,6 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 	}
 	if len(cfg.NatsURLs) == 0 {
 		return ControllerConfig{}, errors.New("nats_urls is required in the controller configuration")
-	}
-	if cfg.EnvoyTokenFile, err = optionalPath("envoy_token_file"); err != nil {
-		return ControllerConfig{}, err
 	}
 	if cfg.NatsNkeySeedFile, err = optionalPath("nats_nkey_seed_file"); err != nil {
 		return ControllerConfig{}, err

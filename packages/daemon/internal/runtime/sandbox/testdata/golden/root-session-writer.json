@@ -133,6 +133,10 @@
                 "name": "state-architect"
               },
               {
+                "mountPath": "/var/run/legion/roles/architect/agent-secrets",
+                "name": "agent-secrets-key-architect"
+              },
+              {
                 "mountPath": "/var/run/legion/roles/planner/launcher",
                 "name": "launcher-planner",
                 "readOnly": true
@@ -149,6 +153,10 @@
               {
                 "mountPath": "/var/run/legion/roles/planner/state",
                 "name": "state-planner"
+              },
+              {
+                "mountPath": "/var/run/legion/roles/planner/agent-secrets",
+                "name": "agent-secrets-key-planner"
               },
               {
                 "mountPath": "/var/run/legion/roles/implementer/launcher",
@@ -169,6 +177,10 @@
                 "name": "state-implementer"
               },
               {
+                "mountPath": "/var/run/legion/roles/implementer/agent-secrets",
+                "name": "agent-secrets-key-implementer"
+              },
+              {
                 "mountPath": "/var/run/legion/roles/tester/launcher",
                 "name": "launcher-tester",
                 "readOnly": true
@@ -185,6 +197,10 @@
               {
                 "mountPath": "/var/run/legion/roles/tester/state",
                 "name": "state-tester"
+              },
+              {
+                "mountPath": "/var/run/legion/roles/tester/agent-secrets",
+                "name": "agent-secrets-key-tester"
               },
               {
                 "mountPath": "/var/run/legion/roles/reviewer/launcher",
@@ -205,6 +221,10 @@
                 "name": "state-reviewer"
               },
               {
+                "mountPath": "/var/run/legion/roles/reviewer/agent-secrets",
+                "name": "agent-secrets-key-reviewer"
+              },
+              {
                 "mountPath": "/var/run/legion/roles/merger/launcher",
                 "name": "launcher-merger",
                 "readOnly": true
@@ -223,12 +243,26 @@
                 "name": "state-merger"
               },
               {
+                "mountPath": "/var/run/legion/roles/merger/agent-secrets",
+                "name": "agent-secrets-key-merger"
+              },
+              {
                 "mountPath": "/var/run/legion/roles/.homes",
                 "name": "role-homes"
               },
               {
                 "mountPath": "/var/run/legion/roles/session-writer",
                 "name": "session-writer-token",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/run/legion/agent-secrets-token",
+                "name": "agent-secrets-token",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/run/legion/agent-secrets-exchange",
+                "name": "agent-secrets-exchange",
                 "readOnly": true
               }
             ],
@@ -798,6 +832,78 @@
           {
             "emptyDir": {},
             "name": "role-homes"
+          },
+          {
+            "name": "agent-secrets-token",
+            "projected": {
+              "defaultMode": 288,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "audience": "agent-secrets",
+                    "expirationSeconds": 3600,
+                    "path": "token"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory",
+              "sizeLimit": "1Mi"
+            },
+            "name": "agent-secrets-key-architect"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory",
+              "sizeLimit": "1Mi"
+            },
+            "name": "agent-secrets-key-planner"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory",
+              "sizeLimit": "1Mi"
+            },
+            "name": "agent-secrets-key-implementer"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory",
+              "sizeLimit": "1Mi"
+            },
+            "name": "agent-secrets-key-tester"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory",
+              "sizeLimit": "1Mi"
+            },
+            "name": "agent-secrets-key-reviewer"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory",
+              "sizeLimit": "1Mi"
+            },
+            "name": "agent-secrets-key-merger"
+          },
+          {
+            "name": "agent-secrets-exchange",
+            "projected": {
+              "defaultMode": 288,
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "audience": "legion-broker-exchange",
+                    "expirationSeconds": 3600,
+                    "path": "token"
+                  }
+                }
+              ]
+            }
           },
           {
             "name": "session-writer-token",

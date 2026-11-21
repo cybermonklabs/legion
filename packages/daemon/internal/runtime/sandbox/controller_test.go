@@ -47,12 +47,10 @@ func controllerSpec(t *testing.T) runtime.SpawnSpec {
 // provisions no workspace but holds the review App's GitHub credential like any workflow role's:
 // it runs no init container, since nothing on its volume needs preparing before the launcher
 // starts, and its labels name the controller and no tree or issue, so no tree's cleanup takes it
-// for one of the tree's issue pods. Where the runtime enrolls pods with the secrets broker it is
-// enrolled as every workflow role's launcher is, so its agent can be granted the secrets the
-// Legion daemon's service owns.
+// for one of the tree's issue pods. It is enrolled with the secrets broker as every workflow role's
+// launcher is, so its agent can be granted the secrets the Legion daemon's service owns.
 func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
 	opts := goldenOptions()
-	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	r, err := configure(opts)
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +164,6 @@ func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
 // fails here until it is decided for the controller.
 func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.T) {
 	opts := goldenOptions()
-	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	opts.DispatchURL, opts.Dispatch = "https://dispatch.internal.example", DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.ControllerSlackChannels = []string{"C00000000", "G00000001"}
 	r, err := configure(opts)
@@ -371,15 +368,12 @@ func TestTheControllersPodTakesItsOwnResources(t *testing.T) {
 // daemon restarted at the same addresses re-adopts it as it is, rather than replacing it at every
 // observation.
 func TestAControllerPodIsNotStaleWhileTheBrokersAddressHolds(t *testing.T) {
-	broker := func(o *Options) {
-		o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-	}
-	g := newRig(t, nil, withOptions(broker))
+	g := newRig(t, nil)
 	loc := g.spawn(controllerSpec(t))
 	if obs, err := g.r.Probe(g.ctx, loc); err != nil || obs.Kind != runtime.Alive {
 		t.Fatalf("Probe the controller right after its launch: %+v, %v; want Alive", obs, err)
 	}
-	r2 := secondRuntime(t, g, broker)()
+	r2 := secondRuntime(t, g, func(*Options) {})()
 	g.connectRunning(controllerToken, loc.Sandbox.Generation)
 	g.eventually("the controller's launcher to report its child to the restarted daemon", func() bool {
 		state, connected := r2.launchers.state(controllerToken, loc.Sandbox.PodUID)

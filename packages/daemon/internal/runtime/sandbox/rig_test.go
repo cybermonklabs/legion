@@ -72,8 +72,9 @@ var (
 var testLeakCheck = leakguard.Setting{Repository: ghrepo.MustParse("example-org/deployment"), ManifestSHA256: strings.Repeat("5e", 32)}
 
 // testOptions are the options every test starts from: production's shape — a store that keeps
-// sessions in a database included, which configure requires, here the postgres one with its URL key
-// — both pods' reservations at the daemon's defaults (reservations), the deployment's shared leak
+// sessions in a database included, which configure requires, here the postgres one with its URL key,
+// and the secrets broker's enrollment with its exchange audience, which configure requires too —
+// both pods' reservations at the daemon's defaults (reservations), the deployment's shared leak
 // check (testLeakCheck), with budgets short enough that a wait the test expects to end never slows
 // the suite.
 func testOptions() Options {
@@ -94,6 +95,7 @@ func testOptions() Options {
 			GH: "/usr/local/bin/gh", Git: "/usr/bin/git", JJ: "/usr/local/bin/jj", Legion: "/opt/legion/bin/legion",
 			AgentSecrets: "/opt/legion/bin/agent-secrets",
 		},
+		AgentSecrets:          &AgentSecrets{URL: keptBrokerURL, Audience: "agent-secrets", TokenExpiry: time.Hour, ExchangeAudience: testExchangeAudience},
 		BootTimeout:           2 * time.Second,
 		RegistrationIntervals: 3,
 		BusyBackoff:           time.Millisecond,
@@ -1083,6 +1085,65 @@ func (g *rig) sandbox(name string) *sandbox {
 		g.t.Fatal(err)
 	}
 	return s
+}
+
+// builtWithout edits the pod of the Sandbox name into the pod a daemon of an older release built,
+// which carried none of the volumes dropped names and so no container's mount of them: in the
+// Sandbox's stored pod template, which a launch reads what it keeps from (keptBy), and in the live
+// pod, which PodDrift reads, and waits until g's runtime's stores hold both edits. Such a pod —
+// one built before the secrets broker's enrollment (agentSecretsVolume) or its exchange identity
+// (exchangeIdentityVolume) — can still run in a cluster after the daemon is upgraded, and no
+// runtime this package configures builds one, since New requires both.
+func (g *rig) builtWithout(name string, dropped func(volume string) bool) {
+	g.t.Helper()
+	strip := func(spec *corev1.PodSpec) {
+		spec.Volumes = slices.DeleteFunc(spec.Volumes, func(v corev1.Volume) bool { return dropped(v.Name) })
+		for _, containers := range [][]corev1.Container{spec.InitContainers, spec.Containers} {
+			for i := range containers {
+				containers[i].VolumeMounts = slices.DeleteFunc(containers[i].VolumeMounts, func(m corev1.VolumeMount) bool { return dropped(m.Name) })
+			}
+		}
+	}
+	carries := func(spec corev1.PodSpec) bool {
+		return slices.ContainsFunc(spec.Volumes, func(v corev1.Volume) bool { return dropped(v.Name) })
+	}
+	s := g.sandbox(name)
+	if s == nil {
+		g.t.Fatalf("sandbox %s is absent", name)
+	}
+	if !carries(s.Spec.PodTemplate.Spec) {
+		g.t.Fatalf("sandbox %s's pod template carries none of the volumes to drop, so the edit proves nothing", name)
+	}
+	strip(&s.Spec.PodTemplate.Spec)
+	u, err := encodeSandbox(*s)
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	if err := g.dyn.Tracker().Update(sandboxGVR, u, testNamespace); err != nil {
+		g.t.Fatal(err)
+	}
+	pod := g.pod(name)
+	if pod == nil {
+		g.t.Fatalf("pod %s is absent", name)
+	}
+	g.update(pod, func(p *corev1.Pod) { strip(&p.Spec) })
+	g.eventually("the runtime's stores to hold the pod "+name+" built without the dropped volumes", func() bool {
+		stored, err := g.r.storedSandbox(name)
+		live := g.r.storedPod(name)
+		return err == nil && stored != nil && !carries(stored.Spec.PodTemplate.Spec) && live != nil && !carries(live.Spec)
+	})
+}
+
+// exchangeIdentityVolume is whether volume is the exchange identity's (agentSecretsExchangeVolume),
+// which a pod built before runtime.kubernetes.agent_secrets.exchange_audience lacks beside the
+// enrollment it carries (builtWithout).
+func exchangeIdentityVolume(volume string) bool { return volume == agentSecretsExchangeVolume }
+
+// agentSecretsVolume is whether volume is one of the secrets broker's: the enrollment's token, each
+// role's key directory, and the exchange identity's, none of which a pod built before
+// runtime.kubernetes.agent_secrets carries (builtWithout).
+func agentSecretsVolume(volume string) bool {
+	return volume == agentSecretsTokenVolume || volume == agentSecretsExchangeVolume || strings.HasPrefix(volume, agentSecretsKeyVolume+"-")
 }
 
 // initFailed is the classification of loc's verdict that only this package reads: whether a failed

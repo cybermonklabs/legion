@@ -57,9 +57,6 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 		{"an operator token file that is not there", func(c *config.Config, _ *overrides) {
 			c.OperatorTokenFile = filepath.Join(c.StateDir, "absent")
 		}, "operator_token_file names"},
-		{"an Envoy token file that is not there", func(c *config.Config, _ *overrides) {
-			c.EnvoyTokenFile = filepath.Join(c.StateDir, "absent")
-		}, "envoy_token_file names"},
 		{"a NATS nkey seed file that is not there", func(c *config.Config, _ *overrides) {
 			c.NatsNkeySeedFile = filepath.Join(c.StateDir, "absent")
 		}, "nats_nkey_seed_file names " + "{state}/absent, which could not be read"},
@@ -149,18 +146,15 @@ func TestRunBuildsTheRuntimeOverTheWorkerStream(t *testing.T) {
 
 // Every launch the daemon asks for carries what a pane needs and the claim does not: the role
 // prompt the operator gave, the claim's addressing, the operator's deployment instructions as
-// boot wrote them, the Envoy bearer as a secret, and the repository the issue's record names —
-// none here, a daemon with no workflow, so the runtime makes the issue's own directory its
-// workspace.
+// boot wrote them, and the repository the issue's record names — none here, a daemon with no
+// workflow, so the runtime makes the issue's own directory its workspace. It carries no secret: the
+// configuration names no NATS nkey seed, and no Envoy bearer goes to any launch, the listener
+// taking no shared one.
 func TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.InstructionsPath = filepath.Join(t.TempDir(), "instructions.md")
 	if err := os.WriteFile(cfg.InstructionsPath, []byte("Never push to main.\n"), 0o600); err != nil {
 		t.Fatalf("write the instructions: %v", err)
-	}
-	cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
-	if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
-		t.Fatalf("write the Envoy token: %v", err)
 	}
 	rt := fake.NewRuntime()
 	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
@@ -196,8 +190,8 @@ func TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven(t *testing.T) 
 	if want := "`notifications.role.legion-" + project + "-controller`"; !strings.Contains(spec.Prompt.Addressing, want) {
 		t.Errorf("the addressing %q does not name the controller %s", spec.Prompt.Addressing, want)
 	}
-	if !reflect.DeepEqual(spec.Secrets, map[string]string{"ENVOY_TOKEN": "envoy-bearer"}) {
-		t.Errorf("the launch's secrets = %v, want the Envoy bearer", spec.Secrets)
+	if len(spec.Secrets) != 0 {
+		t.Errorf("the launch's secrets = %v, want none: no NATS nkey seed is configured, and the listener takes no shared bearer", spec.Secrets)
 	}
 	if spec.Repository != (ghrepo.Repository{}) {
 		t.Errorf("the launch names repository %q, want none: the configuration names no project repository", spec.Repository)

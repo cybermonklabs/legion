@@ -19,7 +19,7 @@ import (
 // bounded: a holder with many capabilities is named as any other. Only a 404 naming no holder
 // under reason `unclaimed`, a role no claim names, is no holder; one naming no holder under any
 // other reason, and every other answer, is an error, which the forget refuses on too. The lookup is
-// one GET of the role with the listener's bearer.
+// one GET of the role, presenting no credential to the loopback listener New's client calls.
 //
 // The controls (the pull request records each run): RoleHolder answering a lapsed holder with no
 // state as no holder, as round 17 first did, fails the older listener's row; the 200 read within
@@ -55,21 +55,23 @@ func TestRoleHolderNamesEveryHolderTheListenerNames(t *testing.T) {
 		{"a 404 naming no holder and no reason", http.StatusNotFound, `{"error":"no such route"}`, "", "", refused},
 		{"a 200 naming no holder", http.StatusOK, `{"role":"legion-x"}`, "", "", refused},
 		{"an unreadable 404", http.StatusNotFound, `not json`, "", "", refused},
-		{"a wrong bearer", http.StatusUnauthorized, `{"error":"unauthorized"}`, "", "", refused},
+		{"a refused credential", http.StatusUnauthorized, `{"error":"unauthorized"}`, "", "", refused},
 		{"a claim record the listener cannot decode", http.StatusInternalServerError, `{"error":"envoy: the claim record of role legion-x is unreadable: …"}`, "", "", refused},
 		{"a listener whose bus does not answer", http.StatusServiceUnavailable, `{"error":"…"}`, "", "", transient},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var path, bearer string
+			var path string
+			var presented bool
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				path, bearer = r.URL.Path, r.Header.Get("Authorization")
+				_, presented = r.Header["Authorization"]
+				path = r.URL.Path
 				w.WriteHeader(tc.status)
 				_, _ = io.WriteString(w, tc.body)
 			}))
 			defer server.Close()
-			holder, state, err := New(server.URL, "envoy-bearer").RoleHolder(context.Background(), "legion-legion-legion-942-implementer")
-			if path != "/v1/roles/legion-legion-legion-942-implementer" || bearer != "Bearer envoy-bearer" {
-				t.Errorf("the lookup asked %q with %q, want the role's path with the listener's bearer", path, bearer)
+			holder, state, err := New(server.URL, http.DefaultTransport).RoleHolder(context.Background(), "legion-legion-legion-942-implementer")
+			if path != "/v1/roles/legion-legion-legion-942-implementer" || presented {
+				t.Errorf("the lookup asked %q presenting a credential %t, want the role's path with none", path, presented)
 			}
 			if tc.fails != "" {
 				var lookup *RoleLookupRefused
@@ -92,7 +94,7 @@ func TestRoleHolderNamesEveryHolderTheListenerNames(t *testing.T) {
 	t.Run("a listener it cannot reach", func(t *testing.T) {
 		server := httptest.NewServer(http.NotFoundHandler())
 		server.Close()
-		_, _, err := New(server.URL, "").RoleHolder(context.Background(), "legion-x")
+		_, _, err := New(server.URL, http.DefaultTransport).RoleHolder(context.Background(), "legion-x")
 		var lookup *RoleLookupRefused
 		if err == nil || errors.As(err, &lookup) {
 			t.Fatalf("RoleHolder of a closed listener = %v, want a plain error that asking again can clear", err)

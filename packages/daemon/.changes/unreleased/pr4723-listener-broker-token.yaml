@@ -2,9 +2,8 @@ kind: Added
 custom:
   Issue: pr4723
 body: |-
-  Under `runtime: kubernetes`, `envoy_token_file` may be left out where
-  `runtime.kubernetes.agent_secrets.exchange_audience` is set. No pod is then handed the Envoy
-  bearer, and each pod's sessions trade their own broker tokens. The daemon trades its own pod
+  Under `runtime: kubernetes`, beside `runtime.kubernetes.agent_secrets.exchange_audience`, no pod is
+  handed an Envoy bearer, and each pod's sessions trade their own broker tokens. The daemon trades its own pod
   identity at the secrets broker (`AGENT_SECRETS_URL`, `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes`,
   `AGENT_SECRETS_MACHINE_TOKEN_FILE`) for a token of the session `legion-daemon:<PROJECT>`. Every
   call it makes of the listener carries `Authorization: DPoP <token>` and a proof of the call's URL:
@@ -19,7 +18,6 @@ body: |-
   `envoy_url` and `ENVOY_PUBLIC_URL`. The boot then logs
   `legion daemon's Envoy listener credential` with `credential=broker` and the session. A launch
   into a pod built before `exchange_audience` was set, which carries no exchange identity, waits for
-  that pod's update round rather than start with no credential for the listener. A daemon that names
-  `envoy_token_file` sends its bearer byte for byte as before. The renewal's Error line is now
-  `legion daemon's broker credential renewal stopped`.
+  that pod's update round rather than start with no credential for the listener. The renewal's Error
+  line is now `legion daemon's broker credential renewal stopped`.
 time: 2026-11-21T02:44:40Z

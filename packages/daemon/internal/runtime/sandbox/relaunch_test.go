@@ -926,8 +926,11 @@ func TestResumeAfterAFailedPod(t *testing.T) {
 			start = s
 		}
 	}
+	// The pod the launch builds trades its exchange identity, so its Oh My Pi resumes by the id the
+	// recorded file's name gives (`--resume <id>`), and the start command names the file for the
+	// launcher's own lookup.
 	if start.Generation != 2 || start.Files[bootTokenKey] != "boot-g2" || start.ResumeFile != resumeSession ||
-		!slices.Contains(start.Argv, "--resume="+resumeSession) {
+		!slices.Equal(sessionWords(start.Argv), []string{"--resume", "0198"}) {
 		t.Fatalf("the relaunched role's start is generation %d resuming %q with argv %q, want generation 2 resuming the session", start.Generation, start.ResumeFile, start.Argv)
 	}
 }

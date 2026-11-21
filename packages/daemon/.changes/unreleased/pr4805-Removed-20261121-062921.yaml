@@ -1,0 +1,14 @@
+kind: Removed
+custom:
+  Issue: pr4805
+body: |-
+  `envoy_token_file` is removed: the Envoy listener takes no shared bearer. A `legion.yaml` that
+  names it is refused at load, under either runtime, and so is a `controller.yaml` for
+  `legion controller start`; each refusal names what replaces it. Under `runtime: kubernetes`,
+  `runtime.kubernetes.agent_secrets.exchange_audience` is now required: the daemon presents its own
+  broker token on every listener call, and each pod's sessions trade their own. No pod or pane is
+  handed `ENVOY_TOKEN`, and the controller's session is told no `ENVOY_TOKEN_FILE`; a `provider_keys`
+  entry of either name is refused at load. Under `runtime: tmux` the daemon and its panes present no
+  credential, so `envoy_url` must name a loopback listener: a host other than `localhost` or a
+  loopback address is refused at load.
+time: 2026-11-21T06:29:21Z

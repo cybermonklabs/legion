@@ -174,12 +174,21 @@ func issueSandboxOptions(t *testing.T, st sandbox.Store, log *slog.Logger) sandb
 		StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
 		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
+		AgentSecrets: testAgentSecrets(),
 		BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
 		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, servesLegion, ghrepo.Renames{}, legionInstalled, nil, log),
 		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, servesLegion, ghrepo.Renames{}, legionInstalled, nil, log),
 		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: log,
 		RepositoryCache: defaultRepositoryCache(t), CacheRepositories: noRepositories,
 	}
+}
+
+// testAgentSecrets is the secrets broker's enrollment with its exchange audience, which every
+// runtime: kubernetes configuration names (the loader requires it) and sandbox.New requires: the
+// Envoy listener takes no shared bearer, so a role reaches it only by trading its pod's exchange
+// identity.
+func testAgentSecrets() *sandbox.AgentSecrets {
+	return &sandbox.AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour, ExchangeAudience: "legion-broker-exchange"}
 }
 
 // issueSandboxRuntime is the real Sandbox runtime of project legion over api, which it serves,

@@ -35,7 +35,6 @@ func TestLoadControllerReadsEveryKey(t *testing.T) {
 daemon_url: http://daemon.test:13370/
 operator_token_file: operator-token
 envoy_url: http://envoy.test:9020
-envoy_token_file: ./envoy-token
 nats_urls: [nats://a:4222, nats://b:4222, nats://a:4222]
 nats_nkey_seed_file: secrets/legion-pane.nk
 dispatch_url: https://d.test/
@@ -56,7 +55,6 @@ state_dir: ./state
 		DaemonURL:         "http://daemon.test:13370",
 		OperatorTokenFile: filepath.Join(dir, "operator-token"),
 		EnvoyURL:          "http://envoy.test:9020",
-		EnvoyTokenFile:    filepath.Join(dir, "envoy-token"),
 		NatsURLs:          []string{"nats://a:4222", "nats://b:4222"},
 		NatsNkeySeedFile:  filepath.Join(dir, "secrets", "legion-pane.nk"),
 		DispatchURL:       "https://d.test",
@@ -123,7 +121,7 @@ func TestLoadControllerRefuses(t *testing.T) {
 	}{
 		{"a file that is not a mapping", "- a\n- b\n", "controller.yaml must be a mapping"},
 		{"an unknown key", requiredControllerKeys + "runtime: kubernetes\n",
-			`unknown key "runtime" in the controller configuration; legion controller start reads only project, daemon_url, operator_token_file, envoy_url, envoy_token_file, nats_urls, nats_nkey_seed_file, dispatch_url, dispatch_token_file, dispatch_token_broker, instructions, omp_invocation, omp_launch_prefix, state_dir — see deploy/kubernetes/daemon/controller.yaml.example`},
+			`unknown key "runtime" in the controller configuration; legion controller start reads only project, daemon_url, operator_token_file, envoy_url, nats_urls, nats_nkey_seed_file, dispatch_url, dispatch_token_file, dispatch_token_broker, instructions, omp_invocation, omp_launch_prefix, state_dir — see deploy/kubernetes/daemon/controller.yaml.example`},
 		{"no project", without("project"), "project is required in the controller configuration"},
 		{"no daemon_url", without("daemon_url"), "daemon_url is required in the controller configuration"},
 		{"no operator_token_file", without("operator_token_file"), "operator_token_file is required in the controller configuration"},
@@ -158,7 +156,7 @@ func TestLoadControllerRefuses(t *testing.T) {
 			"dispatch_url must be the dispatch service base URL, not the /mcp endpoint"},
 		{"a blank omp_invocation", requiredControllerKeys + "omp_invocation: \"\"\n", "omp_invocation must not be empty"},
 		{"an omp_launch_prefix that is not argv", requiredControllerKeys + "omp_launch_prefix: secrets\n", "omp_launch_prefix must be an array of non-empty strings"},
-		{"a blank path key", requiredControllerKeys + "envoy_token_file: \"\"\n", "envoy_token_file must not be empty"},
+		{"a blank path key", requiredControllerKeys + "nats_nkey_seed_file: \"\"\n", "nats_nkey_seed_file must not be empty"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := LoadController(controllerFile(t, tc.body), "")

@@ -8,9 +8,8 @@
 // its recorded PodUID and role-generation slot, hand the id to the shim over the stream, revoke on
 // Gone. The rig is live_test.go.
 //
-// secretsBlocked and shellJoin's real logic live in live_secrets_pure_test.go, which carries no
-// e2e build tag so ordinary `go test ./...` exercises it directly (live_secrets_unit_test.go);
-// secretsBlocked here is the thin e2e-tagged wrapper liveChecks' `blocked` field needs.
+// shellJoin's real logic lives in live_secrets_pure_test.go, which carries no e2e build tag so
+// ordinary `go test ./...` exercises it directly (live_secrets_unit_test.go).
 package sandbox
 
 import (
@@ -29,13 +28,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// secretsBlocked reports r.secretsBlockReason first — the broker refused the token login newLiveRig
-// ran — and falls back to agentSecretsBlockReason for a run whose inputs never attempted one at all.
+// secretsBlocked reports r.secretsBlockReason: the broker refused the token login newLiveRig ran.
+// Every broker input is required (readLiveEnv), so a refused login is the one way the secrets-*
+// checks are blocked rather than run.
 func secretsBlocked(r *liveRig) string {
-	if r.secretsBlockReason != "" {
-		return r.secretsBlockReason
-	}
-	return agentSecretsBlockReason(r.env.agentSecretsURL, r.env.agentSecretsAutoSHA, r.env.agentSecretsBin, r.env.agentSecretsTokenFile)
+	return r.secretsBlockReason
 }
 
 // ensureEnrolled enrolls c's running role process unless the harness already did for this

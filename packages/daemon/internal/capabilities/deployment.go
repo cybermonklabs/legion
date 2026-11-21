@@ -24,10 +24,9 @@ type Deployment struct {
 	// Probed is whether the worker image passed the daemon's probe (kubernetes), whose log carries
 	// every image row's evidence; the image rows then read present.
 	Probed bool
-	// AgentSecrets is whether runtime.kubernetes.agent_secrets is configured.
-	AgentSecrets bool
 	// SecretsLogin is the broker login's state (cipher.LoginState.State: "none", "issued" or
-	// "failed"); "" with no broker.
+	// "failed"); "" before boot reads it. runtime: kubernetes always names the broker
+	// (runtime.kubernetes.agent_secrets, which the loader requires).
 	SecretsLogin string
 	// UnreservedPods are the pods the daemon builds that reserve no CPU and memory, those whose
 	// entry under runtime.kubernetes.resources lacks CPU and memory requests and limits: the issue
@@ -289,8 +288,6 @@ func (d Deployment) measure(name Name) (bool, Source, string) {
 		switch {
 		case tmux:
 			return false, SourceConfiguration, "the tmux runtime enrolls no process with the secrets broker"
-		case !d.AgentSecrets:
-			return false, SourceConfiguration, "runtime.kubernetes.agent_secrets is not configured"
 		case d.SecretsLogin == "issued":
 			return true, SourceBoot, "every pod is enrolled with the agent-secrets broker runtime.kubernetes.agent_secrets names, and the daemon's login is issued"
 		default:

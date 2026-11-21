@@ -20,11 +20,12 @@ body: |-
   answer that names another pod or another key than the daemon sent ends them
   too, logged with the pod, the session and both values. The registration needs this release's
   broker, which binds and orders it; an earlier broker refuses the `thumbprint` and `generation`
-  fields. Set no `exchange_audience` until your daemon, its pods and its broker carry three more
-  changes: each role trading with a key of its own, since until then a role's own trade is refused;
-  each session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the daemon that
-  registered it, not only each registrar to the pods of its own daemon, since until then any
+  fields. `runtime: kubernetes` requires `exchange_audience`, so run this release only once its
+  daemon, its worker image and its broker all run this release or a later one: this release has each
+  role trade with a key of its own, has the daemon choose each role's session id rather than take its
+  agent's report, and has the broker bind each session name registered at
+  `POST /v1/oauth/exchange/pod-sessions` to the daemon that registered it, since before that any
   `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another
-  claim's session; and the daemon choosing each role's session id rather than taking its agent's
-  report. The daemon already holds each session id to the claim of its project that first recorded
-  it and registers no session another of its claims holds. Unset, no registration is made.
+  claim's session. The daemon already holds each session id to the claim of its project that first
+  recorded it and registers no session another of its claims holds. A daemon under `runtime: tmux`
+  makes no registration.

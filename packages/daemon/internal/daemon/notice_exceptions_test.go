@@ -597,7 +597,7 @@ func TestANoticeTheListenerIsDeniedToForwardFinishesUndelivered(t *testing.T) {
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateWorking, "ses_live")
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: notify.New(listener.URL, ""), supervisor: sup, project: "legion", now: time.Now}
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: notify.New(listener.URL, http.DefaultTransport), supervisor: sup, project: "legion", now: time.Now}
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, time.Now()))
 
 	if err := runner.RunOnce(context.Background()); err != nil {
@@ -1224,7 +1224,7 @@ func TestANoticeIsKeptWhileItsArchitectsSessionIsUnresponsive(t *testing.T) {
 	}))
 	defer server.Close()
 	refused := func() error {
-		return notify.New(server.URL, "").Publish(context.Background(), notify.RoleTopicPrefix+string(architect),
+		return notify.New(server.URL, http.DefaultTransport).Publish(context.Background(), notify.RoleTopicPrefix+string(architect),
 			noticeSummary(notice.Kind, row.Issue), notice, record.OutboxKey(row.ID))
 	}
 
@@ -1265,7 +1265,7 @@ func TestAnUnresponsiveArchitectsNoticeIsLoggedAsAWaitNotAFailedRow(t *testing.T
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "phase-finished", Role: claim.RolePlanner, Phase: phase.Planning}, clock))
 	var logged bytes.Buffer
 	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records,
-		notices: notify.New(server.URL, ""), supervisor: sup, project: "legion", now: func() time.Time { return clock }}
+		notices: notify.New(server.URL, http.DefaultTransport), supervisor: sup, project: "legion", now: func() time.Time { return clock }}
 
 	if err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)

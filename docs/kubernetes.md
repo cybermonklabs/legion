@@ -3847,7 +3847,8 @@ runtime:
 - A failed step prints one line that names it, and the command exits 0 in every case.
   So the role starts with the plugins its home already has, and its next start tries again.
 
-Under `runtime: kubernetes` it also requires `daemon_url`, `envoy_url`, `nats_urls`, `envoy_token_file` (unless `runtime.kubernetes.agent_secrets.exchange_audience` is set: [The daemon's own Envoy credential](#the-daemons-own-envoy-credential-no-envoy_token_file)), `operator_token_file`, `dispatch_url`, `github_apps` and `projects`.
+Under `runtime: kubernetes` it also requires `daemon_url`, `envoy_url`, `nats_urls`, `runtime.kubernetes.agent_secrets.exchange_audience` ([The daemon's own Envoy credential](#the-daemons-own-envoy-credential)), `operator_token_file`, `dispatch_url`, `github_apps` and `projects`.
+It refuses `envoy_token_file` under either runtime: the Envoy listener takes no shared bearer, so a Kubernetes daemon presents its own broker token, traded with its pod identity, and each pod's sessions trade their own through the identity `exchange_audience` projects; a tmux daemon and its panes present no credential, and the loader takes only an `envoy_url` whose host is `localhost` or a loopback address.
 It refuses `omp_invocation` and `omp_launch_prefix`: every pod runs the worker image's Oh My Pi.
 A `worker_backends` entry that puts a phase worker on `claude` is accepted here as it is under tmux:
 the worker image carries the claude-envoy plugin and Claude Code's pin, and such a role's pod installs the pinned Claude Code at launch, verifies it, and runs `legion claude-bridge -- <that
@@ -5012,8 +5013,9 @@ the `roles` container's own spec carries a single variable, `POD_UID` from the d
 So a `printenv` run by `kubectl exec` into the container finds none of them but `PATH`, which the worker image's own `ENV` sets (`packages/daemon/docker/worker.Dockerfile`) to the value the row below documents, so every process of the container carries it however it was started;
 one the role's own agent runs prints each of them the runtime sets, and exits 1 for the four it does not.
 They are an issue pod's role's; `<generation>` is the role's own generation counter, which differs between the roles of one pod and rises on each relaunch of that role in it, and every path under `/var/run/legion` is the role's own directory, bound there in its namespaces.
-`ENVOY_TOKEN_FILE` is stated where the daemon has an Envoy bearer, which configuration load requires of a `runtime: kubernetes` daemon unless `runtime.kubernetes.agent_secrets.exchange_audience` is set (`checkKubernetesKeys`, `packages/daemon/internal/config/kubernetes.go`; [The daemon's own Envoy credential](#the-daemons-own-envoy-credential-no-envoy_token_file)), and `DISPATCH_TOKEN_FILE` is stated because load refuses a daemon that sets no `dispatch_url` and a configured `dispatch_url` with no `dispatch_token_file` (`missingDispatchTokenFile`, `packages/daemon/internal/config/stage3.go`) unless `dispatch_token_broker` is true.
+`DISPATCH_TOKEN_FILE` is stated without condition because configuration load refuses a `runtime: kubernetes` daemon that sets no `dispatch_url` and a configured `dispatch_url` with no `dispatch_token_file` (`missingDispatchTokenFile`, `packages/daemon/internal/config/stage3.go`) unless `dispatch_token_broker` is true.
 Under that setting a role in a pod that carries the exchange identity is told `DISPATCH_TOKEN_BROKER=1` and no `DISPATCH_TOKEN_FILE` ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
+No role is told `ENVOY_TOKEN_FILE`: the listener takes no shared bearer, and each role's session trades its own broker token through the pod's exchange identity.
 
 | variable | value | renderer |
 | :--- | :--- | :--- |
@@ -5027,7 +5029,6 @@ Under that setting a role in a pod that carries the exchange identity is told `D
 | `LEGION_WORKSPACE` | `/legion/workspaces/<owner>/<repo>/<key-lower>` | `podkind.go`, over `workspace.Location`, `internal/workspace/provision.go` |
 | `LEGION_BOOT_TOKEN_FILE` | `/var/run/legion/private/g<generation>/LEGION_BOOT_TOKEN` | `launcherCommand`, `launcher.go` |
 | `LEGION_TERMINATION_GRACE_SECONDS` | the runtime sets it in no container; the pod's grace reaches the shim as its `--stop-grace` argument | `launcherCommand`, `launcher.go` |
-| `ENVOY_TOKEN_FILE` (when the daemon has an Envoy bearer) | `/var/run/legion/private/g<generation>/ENVOY_TOKEN` | `manifest.go` |
 
 `<owner>`, `<repo>`, `<key-lower>` and `<generation>` are the pod's own:
 the owner and repository of the issue's repository, the issue key in lower case, and the role's generation counter.
@@ -5060,7 +5061,9 @@ An operator-launched controller can differ:
 `legion controller start` points `DISPATCH_TOKEN_FILE` at the controller file's own `dispatch_token_file` (`controllerEnvironment`, `packages/daemon/cmd/legion/controller.go`), so it presents the token that file holds, which need not be the daemon's; under `dispatch_token_broker: true` in its place, the session is handed no bearer at all and trades this machine's identity at the broker for a DPoP-bound token of its own, and the start drops an inherited `DISPATCH_TOKEN` and `DISPATCH_TOKEN_FILE`, which it would otherwise present instead.
 Under either setting the start also sets `PERSON_SIGNIN_TRADE=off` in the controller's environment (`controllerPersonTradeVar`).
 The TypeScript client (`packages/cipher-client`, which pi-envoy, pi-legion, claude-envoy and the `dispatch` command use) then trades this machine's identity for the controller's own Dispatch credential under `dispatch_token_broker`, and for its Envoy credential where no bearer names one, even where the operator ran `agent-secrets login` on the machine, so no credential the controller trades at the broker acts in its operator's name.
-A bearer the controller is given is presented as it is at main: the token `dispatch_token_file` names, and an Envoy bearer from the operator's environment (`ENVOY_TOKEN`, `ENVOY_TOKEN_FILE`) or from the `envoy.json` under the HOME the controller keeps (`envoy.token`), each of which resolves before the broker route.
+The start hands the controller no Envoy bearer, and refuses a controller file that sets `envoy_token_file` (`LoadController`, `packages/daemon/internal/config/controller.go`): the listener takes no shared bearer, so the session's Envoy client presents the broker token it trades with this machine's identity, or no credential to a loopback listener.
+An Envoy bearer left in the operator's environment (`ENVOY_TOKEN`, `ENVOY_TOKEN_FILE`) or in the `envoy.json` under the HOME the controller keeps (`envoy.token`) still resolves before the broker route, and a listener that takes no shared bearer refuses it: remove it.
+A Dispatch bearer the controller is given is presented as it is at main: the token `dispatch_token_file` names.
 That client alone reads the setting, and its name lies outside `AGENT_SECRETS_*` because `agent-secrets NAME -- <cmd>` strips that prefix's variables from its child but for a few (`sessionIdentityVars`, `packages/envoy/cmd/cipher/main.go`), so a `dispatch` command the controller runs under `agent-secrets NAME --` keeps it.
 The setting does not change the controller's own `agent-secrets` secret reads: they are signed exactly as they would be without it.
 What the broker can already issue is [The Dispatch identity the broker can issue](#the-dispatch-identity-the-broker-can-issue).
@@ -7900,7 +7903,7 @@ This table is the retired TypeScript daemon's; for the pods Legion runs today se
 Startup refuses, naming the field, when:
 `runtime: kubernetes` is given without the block (`runtime.kubernetes is required when runtime is kubernetes: …`);
 `namespace` or `image` is missing; `image` is not pinned by digest;
-`daemon_url` is missing; `envoy_token_file` is missing while `runtime.kubernetes.agent_secrets.exchange_audience` is unset (`envoy_token_file is required when runtime is kubernetes: every pod receives the Envoy bearer unless runtime.kubernetes.agent_secrets.exchange_audience is set, …`; see [The daemon's own Envoy credential](#the-daemons-own-envoy-credential-no-envoy_token_file));
+`daemon_url` is missing; `runtime.kubernetes.agent_secrets.exchange_audience` is missing (`runtime.kubernetes.agent_secrets.exchange_audience is required when runtime is kubernetes: the Envoy listener takes no shared bearer, …`; see [The daemon's own Envoy credential](#the-daemons-own-envoy-credential)); `envoy_token_file` is set (`unknown key envoy_token_file: the Envoy listener takes no shared bearer any more: …`);
 `omp_launch_prefix` (or `LEGION_OMP_LAUNCH_PREFIX`) is set
 — provider keys come from the mounted Secret, so the prefix has no process to wrap;
 `session_store` is anything but `pvc`, `postgres` or `cloudsql-iam`;
@@ -8332,7 +8335,7 @@ each issue's pod (every role of it alike) and the image probe's.
   A shim from a worker image older than that frame forwards it to Oh My Pi, which refuses it;
   the daemon then logs `supervise: agent-secrets: the shim did not read its projected token again; waiting for its next hello` and enrolls on the shim's next hello:
   one its dropped connection redials with, or the claim's next generation, which an operator starts with `legion claims suspend` and then `legion claims resume` once the login reads `issued`.
-  `provider_keys` may not name an `AGENT_SECRETS_*` variable;
+  `provider_keys` may not name an `AGENT_SECRETS_*` variable, nor `ENVOY_TOKEN` or `ENVOY_TOKEN_FILE`: the Envoy listener takes no shared bearer, and an agent's Envoy client would present that variable before the broker token its session trades;
   `audience` (default `agent-secrets`) and `token_expiry_seconds` (default 3600, at most 3600, the cluster's admission cap) shape the one projected token every pod carries for the broker, alone in its volume beside the operator's middleman token.
 
 - With the block, the worker container mounts that token read-only at `/var/run/legion/agent-secrets-token/token`, a memory-backed key directory at `/var/run/legion/agent-secrets`, and is told `AGENT_SECRETS_URL` and `AGENT_SECRETS_KEY_DIR`;
@@ -8395,7 +8398,7 @@ each issue's pod (every role of it alike) and the image probe's.
   Resume the claim you suspended only once `GET /v1/roles/<contained claim>` names the contained claim's new session: a holder resumed before then can take the contained claim's role from a transcript the two claims share, since a resumed process claims the role its transcript last claimed while it holds none.
   The wait is the bound above, counted from the stopped process's last registration, so the answer of `GET /v1/roles/<token>`, not the clock, says when to forget.
   Stopping the contained claim's pod or pane by hand has the daemon send a clean stop of its session, which can end the registration of the rightful holder's process under the same id, and its role claims with it, until that process's next heartbeat, about 90 seconds later, when it registers again on its own.
-  A refusal because the listener refuses the lookup itself the same way every time (a wrong bearer's `401` or `403`, a claim record it cannot decode, an answer that does not decode) is a fault no suspend fixes: fix the listener or the daemon's Envoy bearer.
+  A refusal because the listener refuses the lookup itself the same way every time (a refused credential's `401` or `403`, a claim record it cannot decode, an answer that does not decode) is a fault no suspend fixes: fix the listener or the daemon's Envoy credential.
   The daemon's own retries of a claim in a new session, the workflow's and the controller keeper's, meet the same refusals: the keeper logs the wait for the role once at Warn, with the claim to suspend and the bound, and a refused lookup once at Error with the listener's status, and a workflow start logs them as a waiting row and as a failing one.
   A pod-session registration a daemon before the hold wrote for it (`exchange_audience`) is renewed by no daemon after, and the broker keeps it `oauthstore.PodSessionRetention`, 24 hours, past its last write.
   Once the line's statement makes such a claim the holder of its session, Dispatch is shown it as its role's holder at the next boot, or once the claim is suspended and resumed, since the statement writes no claim and the publication follows claim writes.
@@ -8697,7 +8700,7 @@ The Envoy listener answers that token `401`, because a verifier accepts it only 
 `dispatch_token_broker: true` in `legion.yaml` ends the one Dispatch token that the daemon and every role it starts share (dispatch://INFRA-4425).
 The daemon trades its own pod identity at the secrets broker for a token of its own, and each role in a pod that carries the exchange identity trades that identity for a token of its own session, so a launch into such a pod carries no Dispatch token.
 Without the setting nothing changes: the daemon and every launch carry the bearer `dispatch_token_file` names, and each request is the same byte for byte as before.
-The setting changes the Dispatch credential alone: the daemon and every pod present the Envoy bearer `envoy_token_file` names, as before, unless the file is left out ([The daemon's own Envoy credential](#the-daemons-own-envoy-credential-no-envoy_token_file)).
+The setting changes the Dispatch credential alone: the Envoy listener takes no shared bearer either way, and the daemon presents it the broker token it trades under `exchange_audience`, which `runtime: kubernetes` requires ([The daemon's own Envoy credential](#the-daemons-own-envoy-credential)).
 
 The loader takes the setting only under `runtime: kubernetes`, beside `dispatch_url` and `runtime.kubernetes.agent_secrets.exchange_audience`, and never beside `dispatch_token_file` (`resolveDispatchTokenBroker`, `packages/daemon/internal/config/stage3.go`).
 Each refusal names the setting.
@@ -8802,13 +8805,12 @@ Under the setting the daemon also logs `sandbox: live launches carrying a Dispat
 Remove `dispatch_token_transition_file` once `liveLaunchesWithDispatchToken` is `0`, and keep `dispatch_token_broker: true`.
 A generation started with the shared token keeps it until the generation ends, whether or not a new launch goes into its pod, and the launcher deletes the token's file with the generation.
 
-#### The daemon's own Envoy credential: no `envoy_token_file`
+#### The daemon's own Envoy credential
 
-A daemon under `runtime: kubernetes` may leave `envoy_token_file` out where `runtime.kubernetes.agent_secrets.exchange_audience` is set (`checkKubernetesKeys`, `packages/daemon/internal/config/kubernetes.go`).
-Then no pod is handed the Envoy bearer: a launch carries no `ENVOY_TOKEN`, and no role is told `ENVOY_TOKEN_FILE`.
+The Envoy listener takes no shared bearer, so a daemon under `runtime: kubernetes` must set `runtime.kubernetes.agent_secrets.exchange_audience`, and the loader refuses `envoy_token_file` under either runtime (`checkKubernetesKeys`, `packages/daemon/internal/config/kubernetes.go`; `tossedKeys`, `packages/daemon/internal/config/config.go`).
+No pod is handed an Envoy bearer: a launch carries no `ENVOY_TOKEN`, and no role is told `ENVOY_TOKEN_FILE`.
 Each role's Envoy client trades the pod's exchange identity for a broker token of the role's own session, as it does for Dispatch under `dispatch_token_broker`.
-Without `exchange_audience` the file is required, because no pod would have any credential for the listener.
-A daemon that names the file runs as before: it presents the bearer on its own calls and hands each pod a copy.
+A daemon under `runtime: tmux` presents no credential at all, and the loader takes only an `envoy_url` whose host is `localhost` or a loopback address (`checkLoopbackListener`, `packages/daemon/internal/config/config.go`).
 
 A pod's volumes are fixed when the pod is created, so a pod built before `exchange_audience` was set carries no exchange identity.
 A role relaunched into such a pod by a daemon that holds no bearer would have no credential for the listener at all, so that launch is refused before anything of the pod is touched: `pod <name> carries no exchange identity and envoy_token_file is not set, so its role would hold no credential for the Envoy listener; its update round replaces it` (`runtime.ErrAwaitingPodRound`; `listenerCredential`, `packages/daemon/internal/runtime/sandbox/relaunch.go`).
@@ -8819,9 +8821,9 @@ The daemon's own calls to the listener present its own broker token: the outbox'
 The token is traded with the same pod identity, the same broker client and the same renewal as the Dispatch credential above, for the session `legion-daemon:<PROJECT>` (`settleCredentials`).
 The daemon's pod therefore needs the identity variables and the `BROKER_EXCHANGE_ACCOUNTS` entry that `dispatch_token_broker` needs, with or without that setting.
 A daemon that sets both makes one trade at boot, and its Dispatch and listener calls present the same token.
-The first trade, its refusals and its renewal are those of the Dispatch credential: each refusal opens with `envoy_token_file is unset beside runtime.kubernetes.agent_secrets.exchange_audience`, or with both settings where both apply.
+The first trade, its refusals and its renewal are those of the Dispatch credential: each refusal opens with `runtime.kubernetes.agent_secrets.exchange_audience is set`, or with both settings where both apply.
 
-Each listener call carries `Authorization: DPoP <token>` and a proof of the call's URL (`cipherclient.NewTokenTransport`, `packages/envoy/cipherclient`), and follows no redirect (`notify.NewWithTransport`, `controller.ProberOptions.Transport`).
+Each listener call carries `Authorization: DPoP <token>` and a proof of the call's URL (`cipherclient.NewTokenTransport`, `packages/envoy/cipherclient`), and follows no redirect (`notify.New`, `controller.ProberOptions.Transport`).
 The listener checks that URL against its own `ENVOY_PUBLIC_URL`, so `envoy_url` must be that origin, and the listener must take broker tokens (`ENVOY_AGENT_SECRETS_URL` and the settings beside it, `packages/envoy/cmd/listener/brokerauth.go`); a listener without them answers the token `401`.
 So the boot, after its first trade, reads the project's controller role at the listener with the token.
 It waits out a listener that does not answer, or answers `429`, `502`, `503` or `504`, and no boot budget bounds that wait.
@@ -8829,7 +8831,7 @@ The boot goes on only on an answer the listener gives behind its credential chec
 Every other answer refuses the boot, naming `envoy_url` and `ENVOY_PUBLIC_URL` (`listenerCredentialOf`): a `401` or `403`, and a redirect or a body that is not the listener's, which is a server at `envoy_url` that is not the listener.
 Without that check, every listener call the daemon makes would fail and no line would say why.
 The boot then logs `legion daemon's Envoy listener credential` with `credential=broker` and the `session`, and never a token.
-A daemon that presents the bearer logs no such line.
+A daemon under `runtime: tmux` logs no such line.
 
 A listener answers a broker token that the broker no longer holds as live, one a revoke ended, `401` with `code` `BROKER_TOKEN_NOT_ACTIVE`, as Dispatch does (`refuseBrokerToken`, `packages/envoy/cmd/listener/apiauth.go`).
 The daemon's token transport drops that token, and its next call trades again, so a revoked token costs one failed call rather than every call until the renewal comes due.
@@ -9296,7 +9298,7 @@ It is read once at boot, and is never an environment variable or a flag.
 **The operator-side file.**
 `legion controller start` reads a small file of its own, never the daemon's `legion.yaml`, whose loader would run both GitHub Apps' `private_key_command` on your machine and demand keys the controller never uses.
 `deploy/kubernetes/daemon/controller.yaml.example` is the complete shape:
-the same key names as `legion.yaml`, only the fourteen the controller needs (`project`, `daemon_url`, `operator_token_file`, `envoy_url`, `envoy_token_file`, `nats_urls`, `nats_nkey_seed_file`, `dispatch_url`, `dispatch_token_file`, `dispatch_token_broker`, `instructions`, `omp_invocation`, `omp_launch_prefix`, `state_dir`;
+the same key names as `legion.yaml`, only the thirteen the controller needs (`project`, `daemon_url`, `operator_token_file`, `envoy_url`, `nats_urls`, `nats_nkey_seed_file`, `dispatch_url`, `dispatch_token_file`, `dispatch_token_broker`, `instructions`, `omp_invocation`, `omp_launch_prefix`, `state_dir`;
 `nats_nkey_seed_file` is the Go CLI's alone, which the TypeScript CLI refuses as unknown).
 Any other key is refused naming it and the example (`unknown key "runtime" in the
 controller configuration; legion controller start reads only … — see

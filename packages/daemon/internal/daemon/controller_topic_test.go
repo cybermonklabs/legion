@@ -149,7 +149,8 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 
 // noticeListener is the Envoy listener's publish route as the outbox uses it: it takes every
 // publish, but for the first refusals on a topic, which it answers 500 as a stream outage does
-// (packages/envoy/cmd/listener/api.go publishHandler).
+// (packages/envoy/cmd/listener/api.go publishHandler). It answers the boot's lookup of the
+// controller role too (answerRoleLookup), which a daemon under runtime: kubernetes makes.
 type noticeListener struct {
 	mu       sync.Mutex
 	refuse   map[string]int
@@ -172,6 +173,9 @@ func (l *noticeListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
+	if answerRoleLookup(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/publish" {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})

@@ -6,7 +6,6 @@ body: |-
   `/var/run/legion/agent-secrets-exchange/token`, with each role told
   `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE`. The key may
   not equal `audience`. Turning it on, or moving it, drifts every enrolled pod for its update round;
-  a role in a pod that lacks the token is told no identity. Set, the two variables, the volume name
+  a launch into a pod that lacks the token waits for that round. The two variables, the volume name
   `agent-secrets-exchange` and its mount path are Legion's, and an operator's pod or a launch spec
-  that takes one is refused by name. Unset, every pod is as before, and an operator's pod and a
-  launch spec may use those names as before.
+  that takes one is refused by name.

@@ -14,7 +14,7 @@ import (
 // and the path — never a fallback.
 func TestReadSecretPointer(t *testing.T) {
 	dir := t.TempDir()
-	good := filepath.Join(dir, "ENVOY_TOKEN")
+	good := filepath.Join(dir, "DISPATCH_TOKEN")
 	if err := os.WriteFile(good, []byte("  tok-123\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestReadSecretPointer(t *testing.T) {
 	}
 	absent := filepath.Join(dir, "ABSENT")
 
-	secret, err := ReadSecretPointer("envoy_token_file", good)
+	secret, err := ReadSecretPointer("dispatch_token_file", good)
 	if err != nil {
 		t.Fatalf("ReadSecretPointer: %v", err)
 	}
@@ -32,8 +32,8 @@ func TestReadSecretPointer(t *testing.T) {
 		t.Errorf("secret = %q, want the trimmed contents", secret)
 	}
 
-	if _, err := ReadSecretPointer("envoy_token_file", blank); err == nil ||
-		err.Error() != "envoy_token_file names "+blank+", which is empty" {
+	if _, err := ReadSecretPointer("dispatch_token_file", blank); err == nil ||
+		err.Error() != "dispatch_token_file names "+blank+", which is empty" {
 		t.Errorf("blank file: err = %v", err)
 	}
 

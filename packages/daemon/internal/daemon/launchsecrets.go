@@ -17,19 +17,15 @@ type launchSecret struct {
 	read func() (string, error)
 }
 
-// launchSecrets are the secrets every launch's spec carries, in name order: the Envoy bearer, when
-// the daemon has one, and the pane NATS nkey seed, when the configuration or the daemon's
-// environment (lookup) names one (natsauth.Seed). The daemon's own NATS connection authenticates
-// with that seed only when the daemon has no seed of its own (natsauth.DaemonSeed,
+// launchSecrets are the secrets every launch's spec carries: the pane NATS nkey seed, when the
+// configuration or the daemon's environment (lookup) names one (natsauth.Seed). No Envoy bearer is
+// among them: the listener takes no shared one, and each pod's sessions trade broker tokens of
+// their own (config.Config.ListenerPresentsBrokerToken). The daemon's own NATS connection
+// authenticates with that seed only when the daemon has no seed of its own (natsauth.DaemonSeed,
 // chooseNATSConnection), which no launch carries. Which of them there are is known from the
 // configuration and the environment alone, so checkOperatorConfig names them without reading a file.
 func launchSecrets(cfg config.Config, lookup func(string) (string, bool)) []launchSecret {
 	var secrets []launchSecret
-	if cfg.EnvoyTokenFile != "" {
-		secrets = append(secrets, launchSecret{"ENVOY_TOKEN", func() (string, error) {
-			return config.ReadSecretPointer("envoy_token_file", cfg.EnvoyTokenFile)
-		}})
-	}
 	if natsauth.Configured(cfg.NatsNkeySeedFile, lookup) {
 		secrets = append(secrets, launchSecret{natsauth.SeedVariable, func() (string, error) {
 			return natsauth.Seed(cfg.NatsNkeySeedFile, lookup)
@@ -67,11 +63,11 @@ func launchSecretNames(cfg config.Config, lookup func(string) (string, bool)) []
 // either runtime, a provider key may not name a launch secret, which every launch hands the agent
 // behind its `<NAME>_FILE` pointer alone (a tmux pane would refuse every launch; a pod's shim skips
 // the key). Under runtime: kubernetes, the operator's pod and provider keys are then held to the
-// Sandbox runtime's own refusals (sandbox.CheckPod), the exchange identity's names among them only
-// where runtime.kubernetes.agent_secrets names an exchange_audience, and DISPATCH_TOKEN_BROKER only
-// under dispatch_token_broker. CheckPod refuses a provider key named DISPATCH_TOKEN or
-// DISPATCH_TOKEN_FILE with or without dispatch_token_broker, and under it gives the broker's
-// reason: a shared Dispatch token.
+// Sandbox runtime's own refusals (sandbox.CheckPod), the exchange identity's names among them,
+// since the loader requires runtime.kubernetes.agent_secrets.exchange_audience, and
+// DISPATCH_TOKEN_BROKER only under dispatch_token_broker. CheckPod refuses a provider key named
+// DISPATCH_TOKEN or DISPATCH_TOKEN_FILE with or without dispatch_token_broker, and under it gives
+// the broker's reason: a shared Dispatch token.
 func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) error {
 	names := launchSecretNames(cfg, lookup)
 	for _, key := range cfg.ProviderKeys {
@@ -82,13 +78,8 @@ func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) 
 	if cfg.Runtime.Kubernetes == nil {
 		return nil
 	}
-	audience := ""
-	if broker := cfg.Runtime.Kubernetes.AgentSecrets; broker != nil {
-		audience = broker.ExchangeAudience
-	}
 	return sandbox.CheckPod(sandbox.Pod(cfg.Runtime.Kubernetes.Pod), providerSecretKeys(cfg.ProviderKeys),
-		workerImageTools, names, providersSecrets(cfg, lookup), cfg.Runtime.Kubernetes.SessionStore,
-		sandbox.ExchangeOf(audience, cfg.DispatchTokenBroker))
+		workerImageTools, names, providersSecrets(cfg, lookup), cfg.Runtime.Kubernetes.SessionStore, cfg.DispatchTokenBroker)
 }
 
 // environLookup is os.LookupEnv over environ, the daemon's environment or a test's.

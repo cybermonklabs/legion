@@ -266,16 +266,16 @@ func TestTheImageProbeReadsEveryWorkflowRolesMemoryOverlays(t *testing.T) {
 
 // A launch for an issue whose tree carries no memory group builds, under a deployment whose
 // project names the block, the pod a deployment that names none builds, byte for byte, and starts
-// exactly the process in it: the overlays reach only the roles of the trees the draw gave them, so
-// moving a project onto memory changes no other pod. Memory before the block and after it are the
-// same pod.
+// exactly the process in it, but for the session id each launch chose (withoutChosenSession): the
+// overlays reach only the roles of the trees the draw gave them, so moving a project onto memory
+// changes no other pod. Memory before the block and after it are the same pod.
 func TestNoMemoryBeforeOrAfterTheBlockBuildsTheSamePod(t *testing.T) {
 	with, without := memoryRuntime(t, memoryOverlays), memoryRuntime(t, nil)
 	spec := workerSpec(t)
 	if got, want := podOf(t, with, spec), podOf(t, without, spec); !reflect.DeepEqual(got, want) {
 		t.Errorf("a no-memory tree's pod under the block =\n%+v\nwant the one a daemon with no block builds:\n%+v", got, want)
 	}
-	if got, want := workerOf(t, with, spec), workerOf(t, without, spec); !reflect.DeepEqual(got, want) {
+	if got, want := withoutChosenSession(workerOf(t, with, spec)), withoutChosenSession(workerOf(t, without, spec)); !reflect.DeepEqual(got, want) {
 		t.Errorf("a no-memory tree's process under the block =\n%+v\nwant the one a daemon with no block starts:\n%+v", got, want)
 	}
 }

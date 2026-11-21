@@ -183,16 +183,17 @@ func TestADaemonLaunchedControllerWhoseReviewAppIsInstalledOnNoAccountIsToldItHa
 	const told = "Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."
 	for _, tc := range []struct {
 		name string
-		// runtime is the configuration's runtime block; nil keeps testConfig's, tmux.
-		runtime func(t *testing.T) config.Runtime
+		// kubernetes moves the configuration to runtime: kubernetes (onKubernetes); false keeps
+		// testConfig's tmux.
+		kubernetes bool
 	}{
 		{name: "tmux"},
-		{name: "kubernetes", runtime: func(t *testing.T) config.Runtime { return kubernetesConfig(t, "https://127.0.0.1:1").Runtime }},
+		{name: "kubernetes", kubernetes: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := workflowConfig(t, workflowNATS(t))
-			if tc.runtime != nil {
-				cfg.Runtime = tc.runtime(t)
+			if tc.kubernetes {
+				onKubernetes(t, &cfg)
 			}
 			cfg.ControllerLaunch = config.ControllerLaunchDaemon
 			rt := fake.NewRuntime()

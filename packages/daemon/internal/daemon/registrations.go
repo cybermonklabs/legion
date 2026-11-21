@@ -4,23 +4,18 @@ import (
 	"context"
 
 	"github.com/sjawhar/legion/daemon/internal/cipher"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// newRegistrar is the machines' Registrar (supervise.Deps.Registrar) for a deployment whose
-// runtime.kubernetes.agent_secrets block is a: the daemon's own agent-secrets client, which
-// registers each role's session for its pod at the broker's POST /v1/oauth/exchange/pod-sessions
-// under the daemon's own ServiceAccount token, bound to the thumbprint of the role's own key, and
-// writes it again, with the same thumbprint, every cipher.RegistrationRenewal while the
-// role's process lives; and which releases at POST /v1/oauth/exchange/pod-sessions/release the
-// session names an operator's release frees, before it frees them. Only a pod that carries an
-// exchange identity trades a token that the registration gates, so with exchange_audience unset it
-// is nil, and the daemon makes no registration or release call at all (R9).
-func newRegistrar(a config.AgentSecretsConfig, client *cipher.Client) supervise.Registrar {
-	if a.ExchangeAudience == "" {
-		return nil
-	}
+// newRegistrar is the machines' Registrar (supervise.Deps.Registrar) under runtime: kubernetes:
+// the daemon's own agent-secrets client, which registers each role's session for its pod at the
+// broker's POST /v1/oauth/exchange/pod-sessions under the daemon's own ServiceAccount token, bound
+// to the thumbprint of the role's own key, and writes it again, with the same thumbprint, every
+// cipher.RegistrationRenewal while the role's process lives; and which releases at POST
+// /v1/oauth/exchange/pod-sessions/release the session names an operator's release frees, before it
+// frees them. Every enrolled pod carries the exchange identity whose trade the registration gates,
+// since runtime: kubernetes requires runtime.kubernetes.agent_secrets.exchange_audience.
+func newRegistrar(client *cipher.Client) supervise.Registrar {
 	return brokerRegistrar{client: client}
 }
 

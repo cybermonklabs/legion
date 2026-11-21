@@ -1171,7 +1171,7 @@ func TestOutboxRoleMessageKeptForAnUnresponsiveHolder(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &outboxDispatch{}
-	runner := &outbox{notices: notify.New(server.URL, ""), dispatch: client, now: func() time.Time { return time.Date(2026, 9, 25, 3, 4, 5, 0, time.UTC) }}
+	runner := &outbox{notices: notify.New(server.URL, http.DefaultTransport), dispatch: client, now: func() time.Time { return time.Date(2026, 9, 25, 3, 4, 5, 0, time.UTC) }}
 
 	if err := runner.execute(context.Background(), row); !errors.Is(err, notify.ErrHolderUnresponsive) {
 		t.Fatalf("execute = %v, want the message kept for an unresponsive holder", err)

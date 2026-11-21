@@ -1,15 +1,10 @@
-// Ordinary, always-visible unit tests for the Stage 4a agent-secrets checks' pure logic
-// that live_secrets_pure_test.go defines with no e2e build tag: shellJoin's shell
-// quoting and agentSecretsBlockReason's blocking-reason string (what live_secrets_test.go's
-// secretsBlocked delegates to). The e2e-tagged checks these back (checkSecretsTwoPodsEnrolled and
-// friends) need a real cluster and a real broker and stay untestable here, exactly as the plan
-// anticipates (SKIPPED-BLOCKED without them).
+// Ordinary, always-visible unit tests for the Stage 4a agent-secrets checks' pure logic that
+// live_secrets_pure_test.go defines with no e2e build tag: shellJoin's shell quoting. The
+// e2e-tagged checks it backs (checkSecretsTwoPodsEnrolled and friends) need a real cluster and a
+// real broker and stay untestable here.
 package sandbox
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
 func TestShellJoin(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -26,40 +21,6 @@ func TestShellJoin(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if got := shellJoin(tc.args); got != tc.want {
 				t.Fatalf("shellJoin(%q) = %q, want %q", tc.args, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestAgentSecretsBlockReason(t *testing.T) {
-	const url, sha, bin, token = "https://secrets.internal.example", "deadbeef", "/bin/agent-secrets", "/tmp/agent-secrets-token"
-	for name, tc := range map[string]struct {
-		url, sha, bin, token string
-		wantBlocked          bool
-		wantNames            []string
-	}{
-		"everything set": {url, sha, bin, token, false, nil},
-		"everything unset": {
-			"", "", "", "", true,
-			[]string{"LEGION_E2E_AGENT_SECRETS_URL", "LEGION_E2E_AGENT_SECRETS_AUTO_SHA256", "LEGION_E2E_AGENT_SECRETS_BIN", "LEGION_E2E_AGENT_SECRETS_ACCOUNT"},
-		},
-		"only URL unset":     {"", sha, bin, token, true, []string{"LEGION_E2E_AGENT_SECRETS_URL"}},
-		"only sha unset":     {url, "", bin, token, true, []string{"LEGION_E2E_AGENT_SECRETS_AUTO_SHA256"}},
-		"only bin unset":     {url, sha, "", token, true, []string{"LEGION_E2E_AGENT_SECRETS_BIN"}},
-		"only account unset": {url, sha, bin, "", true, []string{"LEGION_E2E_AGENT_SECRETS_ACCOUNT"}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			got := agentSecretsBlockReason(tc.url, tc.sha, tc.bin, tc.token)
-			if (got != "") != tc.wantBlocked {
-				t.Fatalf("agentSecretsBlockReason(%q, %q, %q, %q) = %q, want blocked=%t", tc.url, tc.sha, tc.bin, tc.token, got, tc.wantBlocked)
-			}
-			for _, name := range tc.wantNames {
-				if !strings.Contains(got, name) {
-					t.Fatalf("reason %q does not name the unset %s", got, name)
-				}
-			}
-			if !tc.wantBlocked && got != "" {
-				t.Fatalf("reason = %q, want empty (nothing missing)", got)
 			}
 		})
 	}

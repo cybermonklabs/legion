@@ -42,17 +42,30 @@ import (
 )
 
 // kubernetesConfig is testConfig under runtime: kubernetes, its client a kubeconfig whose current
-// context points at server, and every role's reservation at the loader's defaults, as a loaded
-// configuration holds them.
+// context points at server, every role's reservation at the loader's defaults, the secrets broker
+// the loader requires there with the daemon pod's identity at it (stubBroker), and a listener that
+// answers the boot's role lookup (roleListener), as a loaded configuration and a daemon pod hold
+// them.
 func kubernetesConfig(t *testing.T, server string) config.Config {
 	t.Helper()
 	cfg := testConfig(t)
+	cfg.EnvoyURL = roleListener(t)
 	cfg.Runtime = config.Runtime{Name: "kubernetes", Kubernetes: &config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Kubeconfig: writeKubeconfig(t, server, "test"),
 		Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+		AgentSecrets: stubBroker(t),
 	}}
 	return cfg
+}
+
+// onKubernetes moves cfg to runtime: kubernetes as kubernetesConfig builds it, keeping everything
+// else of cfg: the runtime block, its broker with the daemon pod's identity, and the listener that
+// answers the boot's role lookup.
+func onKubernetes(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	k := kubernetesConfig(t, "https://127.0.0.1:1")
+	cfg.Runtime, cfg.EnvoyURL = k.Runtime, k.EnvoyURL
 }
 
 // defaultReservations are both pods' container requirements at the daemon's defaults, translated as
@@ -355,7 +368,7 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 			}
 		})
 	})
-	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
+	onKubernetes(t, &cfg)
 	tokens := &workflowTokenRecorder{}
 	record := &built{}
 	o := fakeRuntime(fake.NewRuntime(), record)
@@ -451,10 +464,6 @@ func TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
-			cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
-			if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
 			cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 			cfg.Bind, cfg.AdvertiseHost, cfg.WorkerStreamPort = tc.bind, tc.advertiseHost, 47381
 
@@ -502,7 +511,7 @@ func TestShimAddressSubstitutesAdvertiseHostsHostKeepingTheBoundPort(t *testing.
 // port reaches it: the port is the stream listener's own.
 func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
-	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
+	onKubernetes(t, &cfg)
 	cfg.Bind, cfg.AdvertiseHost = "0.0.0.0", "legion-daemon-legsmoke.legion.svc"
 	cfg.Port = holdPortOn(t, "0.0.0.0")
 	cfg.DaemonURL = "http://127.0.0.1:" + strconv.Itoa(cfg.Port)
@@ -647,6 +656,7 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 	k := config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+		AgentSecrets: stubBroker(t),
 	}
 	want := []string{"/bin/sh", "-c", "omp plugin install agent-skills"}
 	k.Setup = want
@@ -677,6 +687,7 @@ func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 	k := config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+		AgentSecrets: stubBroker(t),
 	}
 	k.Sandbox = config.SandboxConfig{
 		Type: config.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
@@ -782,7 +793,6 @@ state_dir: %s
 bind: 10.0.0.5
 daemon_url: http://10.0.0.5:13370
 envoy_url: http://envoy-listener.internal.example:9020
-envoy_token_file: ./envoy-token
 operator_token_file: ./operator-token
 dispatch_url: https://dispatch.internal.example
 dispatch_token_file: ./dispatch-token
@@ -802,12 +812,16 @@ runtime:
     session_dsn_secret: SESSION_DSN
     kubeconfig: ./kubeconfig
     context: legion-daemon
+    agent_secrets:
+      url: https://secrets.internal.example
+      token_file: /var/run/legion/agent-secrets-token/token
+      exchange_audience: legion-broker-exchange
     resources:
       controller: { cpu: "100000", memory: 1Gi }
 `, filepath.Join(dir, "state"))
 	path := filepath.Join(dir, "legion.yaml")
 	for name, contents := range map[string]string{
-		path: body, "envoy-token": "envoy\n", "operator-token": "operator\n", "dispatch-token": "dispatch\n",
+		path: body, "operator-token": "operator\n", "dispatch-token": "dispatch\n",
 		"kubeconfig": `apiVersion: v1
 kind: Config
 clusters: [{name: example, cluster: {server: "https://192.0.2.20:6443"}}]
@@ -873,13 +887,6 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 			want: "runtime.kubernetes.pod.volume_mounts[0].mount_path /var/run/legion/launcher overlaps /var/run/legion/launcher, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's",
 		},
 		{
-			name: "a provider key the Envoy bearer's pointer names",
-			change: func(cfg *config.Config) {
-				cfg.ProviderKeys = []config.ProviderKey{{Env: "ENVOY_TOKEN", Secret: "envoy"}}
-			},
-			want: "provider_keys names ENVOY_TOKEN, the launch secret every launch carries behind its ENVOY_TOKEN_FILE pointer: a provider key may not name a launch secret",
-		},
-		{
 			name: "a provider key the NATS nkey seed's pointer names",
 			change: func(cfg *config.Config) {
 				cfg.ProviderKeys = []config.ProviderKey{{Env: "NATS_NKEY_SEED", Secret: "seed"}}
@@ -924,10 +931,6 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
-			cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
-			if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
 			cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 			tc.change(&cfg)
 			if _, err := prepare(cfg, quietLogger(), overrides{environ: []string{}}); err == nil || err.Error() != tc.want {
@@ -938,14 +941,14 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 }
 
 // The daemon holds the operator's pod to the exchange identity's names, before its boot and for
-// `legion config check`, only where runtime.kubernetes.agent_secrets names an
-// exchange_audience. With no agent_secrets block, or one that names no exchange_audience, an
-// operator's AGENT_SECRETS_MACHINE_IDENTITY and AGENT_SECRETS_MACHINE_TOKEN_FILE, a volume named
-// agent-secrets-exchange and a mount at /var/run/legion/agent-secrets-exchange are the operator's,
-// as they were before the key existed (R9); with one, the first of them is refused by name.
-func TestTheDaemonLeavesTheExchangeNamesToTheOperatorWhileTheExchangeIsOff(t *testing.T) {
+// `legion config check`: runtime.kubernetes.agent_secrets names an exchange_audience under every
+// configuration the loader takes, so an operator's AGENT_SECRETS_MACHINE_IDENTITY is refused by
+// name, as Legion's runtime sets it in every pod that carries the exchange identity.
+func TestTheDaemonHoldsTheOperatorsPodToTheExchangeNames(t *testing.T) {
 	emptyDir := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
-	pod := config.PodConfig{
+	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 3600, ExchangeAudience: "legion-broker-exchange"}
+	cfg.Runtime.Kubernetes.Pod = config.PodConfig{
 		Env: map[string]string{"AGENT_SECRETS_MACHINE_IDENTITY": "metadata", "AGENT_SECRETS_MACHINE_TOKEN_FILE": "/etc/operator/identity/token"},
 		Volumes: []corev1.Volume{
 			{Name: "agent-secrets-exchange", VolumeSource: emptyDir},
@@ -953,29 +956,9 @@ func TestTheDaemonLeavesTheExchangeNamesToTheOperatorWhileTheExchangeIsOff(t *te
 		},
 		VolumeMounts: []corev1.VolumeMount{{Name: "operator-identity", MountPath: "/var/run/legion/agent-secrets-exchange"}},
 	}
-	enrolled := func(exchange string) *config.AgentSecretsConfig {
-		return &config.AgentSecretsConfig{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 3600, ExchangeAudience: exchange}
-	}
-	for name, tc := range map[string]struct {
-		agentSecrets *config.AgentSecretsConfig
-		want         string
-	}{
-		"no agent_secrets block":                  {nil, ""},
-		"agent_secrets with no exchange_audience": {enrolled(""), ""},
-		"exchange_audience set": {enrolled("legion-broker-exchange"),
-			"runtime.kubernetes.pod.env sets AGENT_SECRETS_MACHINE_IDENTITY, which Legion's runtime sets in every enrolled pod under runtime.kubernetes.agent_secrets.exchange_audience"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
-			cfg.Runtime.Kubernetes.AgentSecrets, cfg.Runtime.Kubernetes.Pod = tc.agentSecrets, pod
-			err := checkOperatorConfig(cfg, lookup(nil))
-			switch {
-			case tc.want == "" && err != nil:
-				t.Fatalf("checkOperatorConfig = %v, want the operator's pod accepted as it was before the key existed", err)
-			case tc.want != "" && (err == nil || err.Error() != tc.want):
-				t.Fatalf("checkOperatorConfig = %v, want %q", err, tc.want)
-			}
-		})
+	want := "runtime.kubernetes.pod.env sets AGENT_SECRETS_MACHINE_IDENTITY, which Legion's runtime sets in every pod that carries the exchange identity (runtime.kubernetes.agent_secrets.exchange_audience)"
+	if err := checkOperatorConfig(cfg, lookup(nil)); err == nil || err.Error() != want {
+		t.Fatalf("checkOperatorConfig = %v, want %q", err, want)
 	}
 }
 
@@ -1096,9 +1079,8 @@ func TestEveryDurationKeyReachesTheRuntimeOptionThatTakesIt(t *testing.T) {
 	}
 }
 
-// sandboxOptions carries runtime.kubernetes.agent_secrets straight into the runtime's Options,
-// nil when the configuration sets no block, and the worker image's agent-secrets binary is
-// always the tools path (Task 11 mounts it there whether or not the deployment enrolls).
+// sandboxOptions carries runtime.kubernetes.agent_secrets straight into the runtime's Options, and
+// the worker image's agent-secrets binary is always the tools path (Task 11 mounts it there).
 func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1") // the file's fixture (`:32-41`): testConfig under runtime: kubernetes
 	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
@@ -1114,11 +1096,6 @@ func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 	}
 	if opts.Tools.AgentSecrets != "/opt/legion/bin/agent-secrets" {
 		t.Fatalf("Tools.AgentSecrets = %q", opts.Tools.AgentSecrets)
-	}
-	cfg.Runtime.Kubernetes.AgentSecrets = nil
-	opts, _ = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
-	if opts.AgentSecrets != nil {
-		t.Fatalf("AgentSecrets = %+v without the block", opts.AgentSecrets)
 	}
 }
 
@@ -1152,7 +1129,7 @@ func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
 func TestNoCredentialMaterialReachesAPod(t *testing.T) {
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
-		URL: "https://s", TokenFile: filepath.Join(t.TempDir(), "token"), Audience: "agent-secrets", TokenExpirySeconds: 3600,
+		URL: "https://s", TokenFile: filepath.Join(t.TempDir(), "token"), Audience: "agent-secrets", TokenExpirySeconds: 3600, ExchangeAudience: "legion-broker-exchange",
 	}
 	for _, secret := range launchSecrets(cfg, lookup(nil)) {
 		if strings.HasPrefix(secret.name, "AGENT_SECRETS") {
@@ -1167,22 +1144,15 @@ func TestNoCredentialMaterialReachesAPod(t *testing.T) {
 		t.Fatalf("AgentSecrets = %+v, want only the URL, audience and token lifetime the pod's own client needs", opts.AgentSecrets)
 	}
 	enroller, registrar, client := newSecretsLogin(cfg, quietLogger())
-	if enroller == nil || client == nil {
-		t.Fatalf("enroller %v, client %v; want both", enroller, client)
-	}
-	if registrar != nil {
-		t.Fatalf("registrar %v with no exchange_audience, want none: no pod session is registered without the key", registrar)
+	if enroller == nil || registrar == nil || client == nil {
+		t.Fatalf("enroller %v, registrar %v, client %v; want all three", enroller, registrar, client)
 	}
 	if client.URL != "https://s" || client.TokenFile != cfg.Runtime.Kubernetes.AgentSecrets.TokenFile {
 		t.Fatalf("client = %+v, want only the configured URL and token file, never a key or a bearer", client)
 	}
-	cfg.Runtime.Kubernetes.AgentSecrets.ExchangeAudience = "legion-broker-exchange"
-	if _, registrar, client := newSecretsLogin(cfg, quietLogger()); registrar == nil || client == nil {
-		t.Fatalf("with exchange_audience: registrar %v, client %v; want both", registrar, client)
-	}
-	cfg.Runtime.Kubernetes.AgentSecrets = nil
+	cfg.Runtime = config.Runtime{Name: "tmux"}
 	if enroller, registrar, client := newSecretsLogin(cfg, quietLogger()); enroller != nil || registrar != nil || client != nil {
-		t.Fatalf("without the block: %v, %v, %v; want nil, nil, nil", enroller, registrar, client)
+		t.Fatalf("under runtime: tmux: %v, %v, %v; want nil, nil, nil", enroller, registrar, client)
 	}
 }
 

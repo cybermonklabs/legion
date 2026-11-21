@@ -1,2 +1,2 @@
 kind: Changed
-body: 'The loader''s refusal of `projects.<KEY>.slack_channels` without `controller: daemon` and `runtime.kubernetes.agent_secrets` no longer says the broker grants the Slack bot token only to the Legion daemon service''s own pods; it says the controller needs the enrollment that gets it the token.'
+body: 'The loader''s refusal of `projects.<KEY>.slack_channels` without `controller: daemon` under `runtime: kubernetes` no longer says the broker grants the Slack bot token only to the Legion daemon service''s own pods; it says the controller needs the enrollment that gets it the token.'

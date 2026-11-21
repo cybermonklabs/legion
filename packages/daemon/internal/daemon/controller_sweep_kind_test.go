@@ -36,14 +36,15 @@ var controllerSweepKindStub = []string{"/bin/sh", "-c", "exec sleep infinity", "
 
 // writeControllerSweepKindConfig writes the proof's legion.yaml, and the token files it names,
 // under dir: `controller: daemon` on runtime.kubernetes, the store at dsn, the worker stream bound
-// at streamHost, the worker image, and the cluster as kubeconfig's kubeContext. The hosts no stub
-// dials are documentation placeholders.
+// at streamHost, the worker image, the cluster as kubeconfig's kubeContext, and the agent_secrets
+// block runtime: kubernetes requires for its exchange_audience. The hosts no stub dials are
+// documentation placeholders, the broker's among them: the controller's stub dials nothing.
 func writeControllerSweepKindConfig(t *testing.T, dir, dsn, streamHost, image, kubeconfig, kubeContext string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range []string{"envoy-token", "operator-token", "dispatch-token"} {
+	for _, file := range []string{"operator-token", "dispatch-token"} {
 		if err := os.WriteFile(filepath.Join(dir, file), []byte("placeholder-"+file+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -55,7 +56,6 @@ state_dir: %[3]s
 bind: %[4]s
 daemon_url: http://%[4]s:13370
 envoy_url: http://envoy-listener.internal.example:9020
-envoy_token_file: ./envoy-token
 operator_token_file: ./operator-token
 dispatch_url: https://dispatch.internal.example
 dispatch_token_file: ./dispatch-token
@@ -75,6 +75,10 @@ runtime:
     context: %[7]s
     session_store: postgres
     session_dsn_secret: SESSION_DSN
+    agent_secrets:
+      url: https://secrets.internal.example
+      token_file: /var/run/legion/agent-secrets-token/token
+      exchange_audience: legion-broker-exchange
 `, controllerSweepKindProject, dsn, filepath.Join(dir, "state"), streamHost, image, kubeconfig, kubeContext)
 	path := filepath.Join(dir, "legion.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -113,12 +117,12 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 }
 
 // controllerSweepKindSpec is the project controller's launch as the proof makes it: the
-// controller's token and role, no issue, tree or repository, the launch secret the file's
-// envoy_token_file names, and prompt as its role prompt.
+// controller's token and role, no issue, tree or repository, no launch secret (the file names no
+// NATS nkey seed, and no launch carries an Envoy bearer), and prompt as its role prompt.
 func controllerSweepKindSpec(project, bootToken, prompt string) runtime.SpawnSpec {
 	return runtime.SpawnSpec{
 		Claim: claim.ControllerToken(project), Project: project, Role: claim.RoleController, Generation: 1, BootToken: bootToken,
-		Env: map[string]string{}, Secrets: map[string]string{"ENVOY_TOKEN": "placeholder-envoy-token"},
+		Env:    map[string]string{},
 		Prompt: runtime.PromptParts{RolePromptPaths: []string{prompt}},
 	}
 }

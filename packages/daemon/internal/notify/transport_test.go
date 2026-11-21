@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,19 +21,24 @@ func (p presentingTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 	return http.DefaultTransport.RoundTrip(presented)
 }
 
-// TestNewWithTransportPresentsWhatItsTransportSets: a publisher made with a transport sends every
-// call the daemon makes of the listener — the publish, the role lookup, the registration read and
-// the clean stop — through that transport, so each carries the Authorization the transport sets and
-// no bearer of the publisher's own. It follows no redirect: a 3xx is the listener's answer, never a
-// request to another URL with the daemon's token and a proof of it. The control is New with a
-// bearer: the same four calls carry `Bearer <token>`, as they always have.
-func TestNewWithTransportPresentsWhatItsTransportSets(t *testing.T) {
-	const presented = "DPoP daemon-broker-token"
+// TestAPublisherPresentsWhatItsTransportSets: a publisher sends every call the daemon makes of the
+// listener — the publish, the role lookup, the registration read and the clean stop — through its
+// transport, so each carries the Authorization the transport sets and nothing of the publisher's
+// own. It follows no redirect: a 3xx is the listener's answer, never a request to another URL with
+// the daemon's token and a proof of it. The control is a publisher over http.DefaultTransport, the
+// tmux daemon's client of its loopback listener: the same four calls carry no Authorization at
+// all, since the listener takes no shared bearer.
+func TestAPublisherPresentsWhatItsTransportSets(t *testing.T) {
+	const presented, none = "DPoP unknown", "(no Authorization)"
 	var mu sync.Mutex
 	seen := map[string]string{}
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization := none
+		if values, set := r.Header["Authorization"]; set {
+			authorization = strings.Join(values, ", ")
+		}
 		mu.Lock()
-		seen[r.Method+" "+r.URL.Path] = r.Header.Get("Authorization")
+		seen[r.Method+" "+r.URL.Path] = authorization
 		mu.Unlock()
 		switch r.Method {
 		case http.MethodGet:
@@ -80,15 +86,15 @@ func TestNewWithTransportPresentsWhatItsTransportSets(t *testing.T) {
 	}
 
 	t.Run("through the transport", func(t *testing.T) {
-		got := calls(t, NewWithTransport(listener.URL, presentingTransport{authorization: presented}))
+		got := calls(t, New(listener.URL, presentingTransport{authorization: presented}))
 		if !maps.Equal(got, want(presented)) {
 			t.Fatalf("the listener saw %v, want every call carrying %q and nothing else", got, presented)
 		}
 	})
-	t.Run("control: the bearer", func(t *testing.T) {
-		got := calls(t, New(listener.URL, "envoy-token"))
-		if !maps.Equal(got, want("Bearer envoy-token")) {
-			t.Fatalf("the listener saw %v, want every call carrying the bearer", got)
+	t.Run("control: no credential", func(t *testing.T) {
+		got := calls(t, New(listener.URL, http.DefaultTransport))
+		if !maps.Equal(got, want(none)) {
+			t.Fatalf("the listener saw %v, want every call carrying no Authorization", got)
 		}
 	})
 
@@ -101,7 +107,7 @@ func TestNewWithTransportPresentsWhatItsTransportSets(t *testing.T) {
 			http.Redirect(w, r, elsewhere.URL+r.URL.Path, http.StatusTemporaryRedirect)
 		}))
 		t.Cleanup(redirecting.Close)
-		if err := NewWithTransport(redirecting.URL, presentingTransport{authorization: presented}).Publish(context.Background(),
+		if err := New(redirecting.URL, presentingTransport{authorization: presented}).Publish(context.Background(),
 			RoleTopicPrefix+"legion-example-architect", "a notice", map[string]any{}, "dedupe-2"); err == nil {
 			t.Fatal("a publish the listener answered 307 succeeded, want the 307 read as the listener's refusal")
 		}

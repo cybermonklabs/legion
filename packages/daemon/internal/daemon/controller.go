@@ -293,11 +293,11 @@ func (s *supervision) endLaunchedRegistration(ctx context.Context, c supervise.C
 const controllerNotRegistered = "controller not registered; run legion controller start"
 
 // controllerProber is the sweep's read of the controller role at the Envoy listener, presenting
-// the credential every call of the daemon's to the listener presents (plan.listener): the bearer,
-// or the daemon's own broker token through its transport.
+// the credential every call of the daemon's to the listener presents (plan.listener): the daemon's
+// own broker token through its transport, or nothing.
 func controllerProber(cfg config.Config, p plan, log *slog.Logger) *controller.Prober {
 	return controller.NewProber(controller.ProberOptions{
-		EnvoyURL: cfg.EnvoyURL, EnvoyToken: p.listener.bearer, Transport: p.listener.transport, Project: p.project, Log: log,
+		EnvoyURL: cfg.EnvoyURL, Transport: p.listener, Project: p.project, Log: log,
 	})
 }
 

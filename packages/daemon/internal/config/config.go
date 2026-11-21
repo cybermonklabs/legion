@@ -9,7 +9,7 @@
 // also refuses what a pod could not run with: the `runtime.kubernetes` block's own values, and the
 // keys outside it every pod needs.
 //
-// Load reads the file and nothing it names: a path key (`instructions`, `envoy_token_file`,
+// Load reads the file and nothing it names: a path key (`instructions`,
 // `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
 // `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
@@ -142,9 +142,6 @@ type Config struct {
 	OperatorTokenFile string
 	EnvoyURL          string
 	NatsURLs          []string
-	// EnvoyTokenFile is the Envoy bearer's file, "" when none; every pane receives the token as
-	// a 0600 file of its own.
-	EnvoyTokenFile string
 	// NatsNkeySeedFile is the file holding the NATS nkey user seed every pane receives, and the
 	// daemon connects as when it has no seed of its own, "" when the file names none (natsauth.Seed
 	// then reads NATS_NKEY_SEED_FILE or NATS_NKEY_SEED from the daemon's environment).
@@ -345,12 +342,17 @@ const (
 
 // tossedKeys are the settings that no longer exist, mapped to why. A file carrying one is refused
 // rather than ignored: an operator who sets one expects it to act, and the daemon has nothing that
-// would.
+// would. `envoy_token_file`'s reason names what calls the listener in the shared bearer's place
+// under each runtime: the broker tokens traded under exchange_audience (checkKubernetesKeys), and
+// under tmux no credential to a loopback listener (checkLoopbackListener).
 var tossedKeys = map[string]string{
 	"worker_cap":                 "the running-worker cap no longer exists (LEGION-208 Requirement 8)",
 	"worker_idle_retire_seconds": `an idle window retires no worker: it releases the worker's issue pod, and the key for it is runtime.kubernetes.idle_release (idle_minutes, backstop_minutes), which suspends every claim of the released pod with the source released and brings them back on the next wake (INFRA-945)`,
 	"resync_interval_seconds":    `the mirror of Dispatch and GitHub as truth, and resync's drift healing, no longer exist (LEGION-208 Design, "Ported, and tossed")`,
 	"max_recursion_depth":        "no agent starts a worker or an architect: the daemon starts every phase worker and every child's architect, one per issue, and the admission cap bounds how many issues run, so there is no spawn recursion to bound",
+	"envoy_token_file": "the Envoy listener takes no shared bearer any more: under runtime: kubernetes the daemon presents its own broker token (DPoP)" +
+		" and each pod's sessions trade their own, both under " + agentSecretsKey + ".exchange_audience; under runtime: tmux the daemon and its panes" +
+		" call a loopback listener (envoy_url's default, " + defaultEnvoyURL + "), which needs no credential; remove envoy_token_file from legion.yaml",
 }
 
 // warnedKeys are the settings that no longer exist and that a file may carry all the same, mapped
@@ -406,7 +408,6 @@ type fileConfig struct {
 	OperatorTokenFile    *string
 	EnvoyURL             *string
 	NatsURLs             []string
-	EnvoyTokenFile       *string
 	NatsNkeySeedFile     *string
 	// NatsDaemonNkeySeedFile is `nats_daemon_nkey_seed_file`.
 	NatsDaemonNkeySeedFile *string
@@ -835,6 +836,12 @@ const providerKeysShape = "provider_keys must be a mapping of the variable OMP r
 // stop every pane.
 var paneGitHubEnv = []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH"}
 
+// envoyBearerEnv are the variables an agent's Envoy client reads a shared listener bearer from,
+// ahead of the broker token its session trades (envoySettings, packages/envoy-client). The
+// listener takes no shared bearer, so a provider key of either name, which the shim exports into
+// every agent's environment, would have the listener refuse every call 401; the loader refuses it.
+var envoyBearerEnv = []string{"ENVOY_TOKEN", "ENVOY_TOKEN_FILE"}
+
 // readProviderKeys is `provider_keys`: a mapping of the variable OMP reads to the key that holds
 // it, both sides environment variable names, or to `file:` and the absolute path of the file that
 // holds it, in file order. A variable named twice is refused rather than one entry silently
@@ -860,6 +867,11 @@ func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 		}
 		if slices.Contains(paneGitHubEnv, env) {
 			return nil, fmt.Errorf("%s names %s, which the daemon sets on every pane and pod (the role's GitHub App tokens are the gh files under LEGION_GH_OWNERS_DIR, GH_CONFIG_DIR its issue's owner's and LEGION_GH_PATH the real gh `legion gh` runs; GH_TOKEN, GITHUB_TOKEN and GH_HOST are emptied so nothing outranks them), so a provider key may not use that name", key, env)
+		}
+		if slices.Contains(envoyBearerEnv, env) {
+			return nil, fmt.Errorf("%s names %s: the Envoy listener takes no shared bearer, and an agent's Envoy client presents an ENVOY_TOKEN or ENVOY_TOKEN_FILE"+
+				" in its environment before the broker token its session trades under %s.exchange_audience, so the listener would refuse every call 401"+
+				" (under runtime: tmux an agent calls the loopback listener with no credential); remove the key", key, env, agentSecretsKey)
 		}
 		if seen[env] {
 			return nil, fmt.Errorf("%s names %s twice", key, env)
@@ -1216,19 +1228,20 @@ func checkProviderKeyFiles(file fileConfig) error {
 }
 
 // checkSlackChannels refuses a project's slack_channels unless the daemon launches the
-// controller (`controller: daemon`) enrolled with the secrets broker
-// (`runtime.kubernetes.agent_secrets`): the controller answers a mention with slack_post, whose
-// bot token, LEGION_SLACK_BOT_TOKEN, is a shared agent secret the broker grants a session with a
-// broker identity, which that enrollment gives the controller. Anywhere else the controller would
-// hear mentions it could never answer. Projects are checked in key order, so the refusal names the
-// same one every load.
+// controller (`controller: daemon`) under runtime: kubernetes, where every pod, the controller's
+// among them, is enrolled with the secrets broker (`runtime.kubernetes.agent_secrets`, which
+// checkKubernetesKeys requires before this runs): the controller answers a mention with
+// slack_post, whose bot token, LEGION_SLACK_BOT_TOKEN, is a shared agent secret the broker grants
+// a session with a broker identity, which that enrollment gives the controller. Anywhere else the
+// controller would hear mentions it could never answer. Projects are checked in key order, so the
+// refusal names the same one every load.
 func checkSlackChannels(cfg Config) error {
-	if cfg.ControllerLaunch == ControllerLaunchDaemon && cfg.Runtime.Kubernetes != nil && cfg.Runtime.Kubernetes.AgentSecrets != nil {
+	if cfg.ControllerLaunch == ControllerLaunchDaemon && cfg.Runtime.Kubernetes != nil {
 		return nil
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		if len(cfg.Projects[key].SlackChannels) > 0 {
-			return fmt.Errorf("projects.%s.slack_channels needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)", key)
+			return fmt.Errorf("projects.%s.slack_channels needs controller: daemon under runtime: kubernetes: Slack replies need the daemon-launched controller, whose enrollment with the secrets broker (runtime.kubernetes.agent_secrets) grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)", key)
 		}
 	}
 	return nil
@@ -1333,15 +1346,18 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 		cfg.OperatorTokenFile = underConfig(*file.OperatorTokenFile, configDir)
 	}
 	if file.EnvoyURL != nil {
-		if _, err := endpointURL(*file.EnvoyURL, "envoy_url"); err != nil {
+		parsed, err := endpointURL(*file.EnvoyURL, "envoy_url")
+		if err != nil {
 			return err
+		}
+		if file.Kubernetes == nil {
+			if err := checkLoopbackListener(parsed); err != nil {
+				return err
+			}
 		}
 		cfg.EnvoyURL = *file.EnvoyURL
 	}
 	cfg.NatsURLs = file.NatsURLs
-	if file.EnvoyTokenFile != nil {
-		cfg.EnvoyTokenFile = underConfig(*file.EnvoyTokenFile, configDir)
-	}
 	if file.NatsNkeySeedFile != nil {
 		cfg.NatsNkeySeedFile = underConfig(*file.NatsNkeySeedFile, configDir)
 	}
@@ -1349,4 +1365,23 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 		cfg.NatsDaemonNkeySeedFile = underConfig(*file.NatsDaemonNkeySeedFile, configDir)
 	}
 	return nil
+}
+
+// checkLoopbackListener refuses, under runtime: tmux, an envoy_url whose host is not loopback. A
+// tmux daemon holds no credential for the Envoy listener: the listener takes no shared bearer, and
+// the daemon trades a broker token of its own only under runtime: kubernetes, so every call it
+// makes presents nothing, which only a listener bound to loopback serves. The host is judged as
+// written and no name is resolved: localhost or a loopback address passes, and a name that resolves
+// to loopback elsewhere is refused, since the loader cannot tell it from a remote host. The refusal
+// names the host alone, never the value, whose userinfo may carry a credential.
+func checkLoopbackListener(envoyURL *url.URL) error {
+	host := envoyURL.Hostname()
+	if err := refuseNonASCIIHost("envoy_url host", host); err != nil {
+		return err
+	}
+	if isLoopbackHost(host) {
+		return nil
+	}
+	return fmt.Errorf("envoy_url names %s, which is not a loopback host: under runtime: tmux the daemon presents the Envoy listener no credential,"+
+		" and a listener off loopback answers a caller that presents none 401; name a loopback listener (envoy_url's default is %s)", host, defaultEnvoyURL)
 }

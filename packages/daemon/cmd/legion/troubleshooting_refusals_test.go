@@ -54,6 +54,9 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"<key> is required when runtime is kubernetes: …": func(t *testing.T) string {
 		return refusalFile{kubernetes: true, drop: []string{"nats_urls:"}}.refuse(t)
 	},
+	"envoy_url names <host>, which is not a loopback host: under runtime: tmux the daemon presents the Envoy listener no credential, …": func(t *testing.T) string {
+		return refusalFile{top: "envoy_url: http://envoy-listener.internal.example:9020\n"}.refuse(t)
+	},
 	"worker_stop_timeout_seconds must be at least 9 when runtime is kubernetes: …": func(t *testing.T) string {
 		return refusalFile{kubernetes: true, top: "worker_stop_timeout_seconds: 5\n"}.refuse(t)
 	},
@@ -414,7 +417,6 @@ func (f refusalFile) write(t *testing.T) string {
 	base := tmuxCheckKeys
 	if f.kubernetes {
 		base = kubernetesCheckKeys
-		beside["envoy-token"] = "envoy\n"
 		beside["dispatch-token"] = "dispatch\n"
 		beside["kubeconfig"] = checkConfigKubeconfig
 	}

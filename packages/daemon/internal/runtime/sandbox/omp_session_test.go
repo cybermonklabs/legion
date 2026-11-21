@@ -1,17 +1,17 @@
 package sandbox
 
 import (
+	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // recordedSessionID is the session id an Oh My Pi claim recorded at its registration, as a
@@ -53,7 +53,7 @@ func resumeAt(spec runtime.SpawnSpec, file, id string) runtime.SpawnSpec {
 // (SpawnSpec.ResumeSessionID) and no path, while its start command still names the recorded file
 // (ResumeFile), by which the launcher looks the session up before it starts the agent.
 func TestAnOhMyPiRoleStartsUnderTheIdItsDaemonChose(t *testing.T) {
-	g := newRig(t, nil, exchangeKeyed())
+	g := newRig(t, nil)
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
 	chosen, named := g.r.LaunchSession(loc)
@@ -102,8 +102,8 @@ func TestATradingLaunchResumesASessionRecordedWithNoFileByItsID(t *testing.T) {
 		byAgent bool
 		named   string
 	}{
-		{"through a launcher that looks the id up", []rigOption{exchangeKeyed(), withResumesBySession()}, false, resumeSessionID},
-		{"through the agent's own lookup", []rigOption{exchangeKeyed()}, true, ""},
+		{"through a launcher that looks the id up", []rigOption{withResumesBySession()}, false, resumeSessionID},
+		{"through the agent's own lookup", nil, true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newRig(t, nil, tc.options...)
@@ -131,27 +131,17 @@ func TestATradingLaunchResumesASessionRecordedWithNoFileByItsID(t *testing.T) {
 	}
 }
 
-// A claim that records a session id and no file is resumed by that id: a pod that trades and one
-// that trades nothing both start the resume with the one word `--resume=<id>` (agentArgv), and
-// neither refuses it, an id that begins with `-` included. Only the two-word `--resume <id>` is
-// refused for an id of a shape sessionIDFault names
-// (TestAResumedIdNoParserCanMisreadIsTheOnlyOnePassed), and such a claim records no file a
-// refusal could name.
+// A claim that records a session id and no file is resumed by that id: a pod that trades starts
+// the resume with the one word `--resume=<id>` (agentArgv), and does not refuse it, an id that
+// begins with `-` included. Only the two-word `--resume <id>` is refused for an id of a shape
+// sessionIDFault names (TestAResumedIdNoParserCanMisreadIsTheOnlyOnePassed), and such a claim
+// records no file a refusal could name.
 func TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot(t *testing.T) {
 	const id = "-" + resumeSessionID
-	untraded := newRig(t, nil, withResumesBySession())
-	first := untraded.spawn(workerSpec(t))
 	spec := byIDSpec(t)
 	spec.ResumeSession = id
-	if _, err := untraded.r.Resume(untraded.ctx, &first, spec); err != nil {
-		t.Fatalf("the control: a pod that trades nothing refuses the resume of session %q: %v", id, err)
-	}
-	if got, want := sessionWords(lastStart(t, untraded, workerToken).Argv), []string{"--resume=" + id}; !slices.Equal(got, want) {
-		t.Fatalf("the control: a pod that trades nothing names its session as %q, want %q", got, want)
-	}
-
-	g := newRig(t, nil, exchangeKeyed(), withResumesBySession())
-	first = g.spawn(workerSpec(t))
+	g := newRig(t, nil, withResumesBySession())
+	first := g.spawn(workerSpec(t))
 	resumed, err := g.r.Resume(g.ctx, &first, spec)
 	if err != nil {
 		t.Fatalf("a pod that trades refuses the resume of the recorded session %q, which it must start as `--resume=%s`: %v", id, id, err)
@@ -172,7 +162,7 @@ func TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot(t *tes
 func TestAnOldClaimResumesByTheIdInItsFileName(t *testing.T) {
 	const id = "0198f3a2-6b7c-7d8e-9f01-23456789abcd"
 	file := ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smoke-legion-208--/2026-09-23T12-00-00-000Z_" + id + ".jsonl"
-	g := newRig(t, nil, exchangeKeyed())
+	g := newRig(t, nil)
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
 	resumed, err := g.r.Resume(g.ctx, &loc, resumeAt(spec, file, ""))
@@ -214,7 +204,7 @@ func TestAnOldClaimResumesByTheIdInItsFileName(t *testing.T) {
 // refused for (TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot).
 func TestAResumedIdNoParserCanMisreadIsTheOnlyOnePassed(t *testing.T) {
 	dir := ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smoke-legion-208--/"
-	g := newRig(t, nil, exchangeKeyed())
+	g := newRig(t, nil)
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
 	for _, tc := range []struct{ name, file, id, fault string }{
@@ -243,127 +233,35 @@ func TestAResumedIdNoParserCanMisreadIsTheOnlyOnePassed(t *testing.T) {
 	}
 }
 
-// With exchange_audience unset — every deployment before it, with no agent_secrets block or with
-// one that names no audience — no Oh My Pi launch names a session id: each agent command is the one
-// it was before the runtime chose ids, `--resume=<file>` on the recorded session when it resumes
-// and no session word when it starts one, a resume a launch that trades is refused (a file whose
-// name gives no id and no recorded id, or a recorded id that reads as a flag) resumes by its file
-// as it always did, the runtime answers no session for any launch, and every golden of
-// manifestCases without the key is byte for byte as it was. A Claude Code launch's command is
-// claudelaunch's, which named its session before this change too, so it is passed over.
-func TestNothingChangesWithoutTheKey(t *testing.T) {
-	r, err := configure(goldenOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
-	pinned := manifestCases(t)
-	cases := maps.Clone(pinned)
-	cases["resume-unnamed"] = manifestCase{spec: resumeAt(workerSpec(t), unnamedSession, "")}
-	cases["resume-flag"] = manifestCase{spec: resumeAt(workerSpec(t), resumeSession, "--help")}
-	for name, tc := range cases {
-		if tc.agentSecrets != nil && tc.agentSecrets.ExchangeAudience != "" {
-			continue
-		}
-		t.Run(name, func(t *testing.T) {
-			tc.apply(r)
-			if _, golden := pinned[name]; golden {
-				checkGolden(t, name, manifestOf(t, r, tc.spec))
-			}
-			l := launchOf(t, r, tc.spec)
-			if l.runsClaude() {
-				return
-			}
-			var session []string
-			if tc.spec.ResumeSessionFile != "" {
-				session = []string{"--resume=" + tc.spec.ResumeSessionFile}
-			}
-			want := slices.Concat(r.agent, []string{"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "@default"},
-				session, []string{"--mode", "rpc", "--append-system-prompt", systemPromptPath(tc.spec.Generation)})
-			if got := l.agentArgv(r.agent); !slices.Equal(got, want) {
-				t.Errorf("the agent command is %q, want %q", got, want)
-			}
-			if start := launcherCommand(l, r); start.ResumeFile != tc.spec.ResumeSessionFile {
-				t.Errorf("the start command resumes %q, want %q", start.ResumeFile, tc.spec.ResumeSessionFile)
-			}
-		})
-	}
-	for name, option := range map[string]rigOption{
-		"no agent_secrets block":         withOptions(func(*Options) {}),
-		"a block that names no audience": withOptions(enrolledWith(keptBrokerURL)),
-	} {
-		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil, option)
-			spec := workerSpec(t)
-			loc := g.spawn(spec)
-			if words := sessionWords(lastStart(t, g, workerToken).Argv); len(words) != 0 {
-				t.Errorf("the fresh launch's agent command names its session as %q, want no session word", words)
-			}
-			if session, named := g.r.LaunchSession(loc); named {
-				t.Errorf("LaunchSession(%s) = %q, want none", loc.Incarnation, session)
-			}
-			for i, resume := range []struct{ file, id string }{{unnamedSession, ""}, {resumeSession, "--help"}} {
-				next := resumeAt(spec, resume.file, resume.id)
-				next.Generation, next.BootToken = uint64(2+i), fmt.Sprint("boot-tester-g", 2+i)
-				resumed, err := g.r.Resume(g.ctx, &loc, next)
-				if err != nil {
-					t.Fatalf("Resume from %s with the recorded id %q: %v, want its resume by the file", resume.file, resume.id, err)
-				}
-				if got, want := sessionWords(lastStart(t, g, workerToken).Argv), []string{"--resume=" + resume.file}; !slices.Equal(got, want) {
-					t.Errorf("the resume from %s with the recorded id %q names its session as %q, want %q", resume.file, resume.id, got, want)
-				}
-				loc = resumed
-			}
-			if recorded := launchSessions(g.r); len(recorded) != 0 {
-				t.Errorf("the runtime recorded %+v, want nothing", recorded)
-			}
-		})
-	}
-}
-
-// With exchange_audience set, a launch into a kept pod built before the exchange identity, which
-// carries no exchange token and so trades nothing (keptPod.trades), starts its Oh My Pi role as it
-// started before the runtime chose ids: the resumed role with `--resume=<file>` and no session id,
-// even where its claim recorded one, and a role started fresh in that pod with no session word at
-// all. The runtime records no chosen id for either, so the daemon registers the session the agent
-// reports at its registration, as it did before. Such a pod may run the Oh My Pi of an image older
-// than `--session-id`, which refuses a flag it does not know. A resume whose id is none a launch
-// that trades can pass — no id at all, or one that reads as a flag — needs no id here and resumes
-// by its file, where the same resume in a pod that trades, the control, is refused naming what it
-// lacks.
-func TestAKeptPodWithoutTheExchangeIdentityKeepsItsOhMyPiArgv(t *testing.T) {
-	g := newRig(t, nil, withOptions(enrolledWith(keptBrokerURL)))
+// A launch into a kept pod built before the exchange identity, which carries no exchange token and
+// so trades nothing (keptPod.trades), waits for that pod's update round whatever its Oh My Pi would
+// have started with. listenerCredential refuses it with runtime.ErrAwaitingPodRound naming the
+// pod, since the Envoy listener takes no shared bearer and the role would hold no credential for
+// it, before the launch's argv is settled (ompResumeRefusal) and before anything of the pod is
+// touched. That holds for a resume on the session id its claim recorded; for a resume whose id no
+// launch that trades can pass — no id at all, or one that reads as a flag — which the same resume
+// in a pod that trades, the control, is refused for naming what it lacks rather than for the
+// round; and for a role started fresh in that pod. No start reaches the pod and the runtime
+// records no session for any of them.
+func TestAnOhMyPiLaunchIntoAKeptPodWithoutTheExchangeIdentityWaitsForItsRound(t *testing.T) {
+	g := newRig(t, nil)
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
-	r2 := secondRuntime(t, g, func(o *Options) {
-		o.AgentSecrets = &AgentSecrets{URL: keptBrokerURL, Audience: "agent-secrets", TokenExpiry: time.Hour, ExchangeAudience: testExchangeAudience}
-	})()
-	g.connectRunning(workerToken, loc.Sandbox.Generation)
-	g.eventually("the tester's launcher to report its child to the restarted daemon", func() bool {
-		state, connected := r2.launchers.state(workerToken, loc.Sandbox.PodUID)
-		return connected && state.Child != nil
-	})
-	kept, err := r2.Resume(g.ctx, &loc, resumeAt(spec, resumeSession, recordedSessionID))
-	if err != nil {
-		t.Fatalf("Resume: %v", err)
+	g.builtWithout(loc.Sandbox.Name, exchangeIdentityVolume)
+	r2 := restartedOver(t, g, loc, func(*Options) {})
+	awaiting := func(what string, err error) {
+		t.Helper()
+		var refusal *runtime.AwaitingPodRound
+		if !errors.As(err, &refusal) || refusal.Pod.Sandbox == nil || refusal.Pod.Sandbox.PodUID != loc.Sandbox.PodUID ||
+			!strings.Contains(err.Error(), "the Envoy listener, which takes no shared bearer") {
+			t.Errorf("%s = %v, want listenerCredential's runtime.AwaitingPodRound naming the kept pod %s", what, err, loc.Sandbox.PodUID)
+		}
 	}
-	if kept.Sandbox.PodUID != loc.Sandbox.PodUID {
-		t.Fatalf("Resume replaced the pod; this test is about the pod a launch keeps")
-	}
-	if found := exchangeTokenVolumes(g.pod(loc.Sandbox.Name).Spec, testExchangeAudience); len(found) > 0 {
-		t.Fatalf("the kept pod projects %+v, so it does carry the identity and the case proves nothing", found)
-	}
-	start := lastStart(t, g, workerToken)
-	if got, want := sessionWords(start.Argv), []string{"--resume=" + resumeSession}; !slices.Equal(got, want) {
-		t.Errorf("the resumed role in the kept pod names its session as %q, want %q", got, want)
-	}
-	if start.ResumeFile != resumeSession {
-		t.Errorf("the start command resumes %q, want the recorded file %s", start.ResumeFile, resumeSession)
-	}
-	if session, named := r2.LaunchSession(kept); named {
-		t.Errorf("LaunchSession of the resumed role in the kept pod = %q, want none", session)
-	}
+	before := starts(g)
+	_, err := r2.Resume(g.ctx, &loc, resumeAt(spec, resumeSession, recordedSessionID))
+	awaiting("Resume on the recorded session id", err)
 
-	trading := newRig(t, nil, exchangeKeyed())
+	trading := newRig(t, nil)
 	tradingLoc := trading.spawn(workerSpec(t))
 	for i, tc := range []struct{ name, file, id, refusal string }{
 		{"a claim that recorded no id, whose file's name gives none", unnamedSession, "", unnamedSession},
@@ -371,14 +269,8 @@ func TestAKeptPodWithoutTheExchangeIdentityKeepsItsOhMyPiArgv(t *testing.T) {
 	} {
 		next := resumeAt(spec, tc.file, tc.id)
 		next.Generation, next.BootToken = uint64(3+i), fmt.Sprint("boot-tester-g", 3+i)
-		resumed, err := r2.Resume(g.ctx, &kept, next)
-		if err != nil {
-			t.Fatalf("%s: Resume into the kept pod = %v, want its resume by the file", tc.name, err)
-		}
-		if got, want := sessionWords(lastStart(t, g, workerToken).Argv), []string{"--resume=" + tc.file}; !slices.Equal(got, want) {
-			t.Errorf("%s: the resumed role in the kept pod names its session as %q, want %q", tc.name, got, want)
-		}
-		kept = resumed
+		_, err := r2.Resume(g.ctx, &loc, next)
+		awaiting(tc.name+": Resume into the kept pod", err)
 		if _, err := trading.r.Resume(trading.ctx, &tradingLoc, resumeAt(workerSpec(t), tc.file, tc.id)); err == nil || !strings.Contains(err.Error(), tc.refusal) {
 			t.Errorf("%s: the same resume in a pod that trades = %v, want a refusal naming %q", tc.name, err, tc.refusal)
 		}
@@ -386,17 +278,20 @@ func TestAKeptPodWithoutTheExchangeIdentityKeepsItsOhMyPiArgv(t *testing.T) {
 
 	reviewer := testSpec(t, otherToken, claim.RoleReviewer, testTree)
 	g.launcher(otherToken)
-	fresh, err := r2.Spawn(g.ctx, reviewer)
-	if err != nil {
-		t.Fatalf("Spawn the reviewer: %v", err)
+	_, err = r2.Spawn(g.ctx, reviewer)
+	awaiting("Spawn the reviewer into the kept pod", err)
+	if after := starts(g); after != before {
+		t.Errorf("the tester's launcher was sent %d start commands by the refused launches, want none", after-before)
 	}
-	if fresh.Sandbox.PodUID != loc.Sandbox.PodUID {
-		t.Fatalf("the reviewer's Spawn replaced the pod; this test is about the pod a launch keeps")
-	}
-	if words := sessionWords(lastStart(t, g, otherToken).Argv); len(words) != 0 {
-		t.Errorf("the role started fresh in the kept pod names its session as %q, want no session word", words)
+	for _, frame := range g.sent(otherToken) {
+		if start, ok := frame.(shimwire.LauncherStart); ok {
+			t.Errorf("the role started fresh in the kept pod was sent generation %d's start command, naming its session as %q, want none", start.Generation, sessionWords(start.Argv))
+		}
 	}
 	if recorded := launchSessions(r2); len(recorded) != 0 {
 		t.Errorf("the runtime recorded %+v for launches into the kept pod, want nothing", recorded)
+	}
+	if pod := g.pod(loc.Sandbox.Name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
+		t.Errorf("the pod after the refusals is %v, want %s still running", pod, loc.Sandbox.PodUID)
 	}
 }

@@ -40,7 +40,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -173,14 +172,14 @@ type releaseRig struct {
 }
 
 // newReleaseRig runs the tester of an issue pod in that pod under a daemon whose agent-secrets
-// block is set, with exchange_audience when exchange is true (newRegistrar), through its shim's
-// hello naming the role's own key and the pod's token, its agent's registration of releaseSession
-// and its ready. With exchange_audience the daemon registers the session for the pod at the broker,
-// and the pod's trade under it, proved with the role's key, is admitted. The operator then suspends
+// block names the exchange audience, as runtime: kubernetes requires (newRegistrar), through its
+// shim's hello naming the role's own key and the pod's token, its agent's registration of
+// releaseSession and its ready. The daemon registers the session for the pod at the broker, and
+// the pod's trade under it, proved with the role's key, is admitted. The operator then suspends
 // the claim, which stops the registration's renewal but leaves it live at the broker, and has the
 // claim forget releaseSession, so every name of that session is a name the operator's release
 // frees. The broker's carry check answers that nothing is carried (enrollsEveryPod).
-func newReleaseRig(t *testing.T, exchange bool) *releaseRig {
+func newReleaseRig(t *testing.T) *releaseRig {
 	t.Helper()
 	broker := newBrokerRig(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -210,14 +209,7 @@ func newReleaseRig(t *testing.T, exchange bool) *releaseRig {
 	if err := os.WriteFile(tokenFile, []byte(broker.MintAccountToken(t, ciphertest.DaemonAccount, time.Hour)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	secrets := config.AgentSecretsConfig{URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets"}
-	if exchange {
-		secrets.ExchangeAudience = "legion-broker-exchange"
-	}
-	registrar := newRegistrar(secrets, &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()})
-	if (registrar != nil) != exchange {
-		t.Fatalf("newRegistrar with exchange_audience %q answered %v", secrets.ExchangeAudience, registrar)
-	}
+	registrar := newRegistrar(&cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()})
 
 	logs, clock := &syncBuffer{}, &sleepClock{}
 	rt, conns := fake.NewRuntime(), fake.NewConns()
@@ -266,10 +258,8 @@ func newReleaseRig(t *testing.T, exchange bool) *releaseRig {
 	)
 	r := &releaseRig{t: t, ctx: ctx, broker: broker, proxy: proxy, st: st, token: token, key: key, logs: logs, clock: clock,
 		operatorAPI: api.NewServer("127.0.0.1", 0, api.Options{Supervisor: sup, OperatorToken: freshSessionOperatorToken, Log: quietLogger()}).Handler}
-	if exchange {
-		if err := r.trade(); err != nil {
-			t.Fatalf("the pod's trade under %s while the daemon's registration of it is live = %v, want it admitted", releaseSession, err)
-		}
+	if err := r.trade(); err != nil {
+		t.Fatalf("the pod's trade under %s while the daemon's registration of it is live = %v, want it admitted", releaseSession, err)
 	}
 	handle(
 		supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByOperator},
@@ -358,7 +348,7 @@ func (r *releaseRig) holds() []supervise.Hold {
 // broker frees the name and the pod's trade under it afterwards is admitted, which fails the test
 // naming the session.
 func TestAReleaseTellsTheBrokerBeforeItFreesTheNames(t *testing.T) {
-	r := newReleaseRig(t, true)
+	r := newReleaseRig(t)
 
 	released := r.freed(r.release())
 
@@ -392,7 +382,7 @@ func TestAReleaseTellsTheBrokerBeforeItFreesTheNames(t *testing.T) {
 // The control (the pull request records the run): ReleaseNames going on to free the names after
 // the broker did not release them frees them while the broker is down, which fails the test.
 func TestAReleaseTheBrokerDoesNotAnswerKeepsTheNames(t *testing.T) {
-	r := newReleaseRig(t, true)
+	r := newReleaseRig(t)
 	held := r.holds()
 	r.proxy.setDown(true)
 
@@ -437,25 +427,5 @@ func TestAReleaseTheBrokerDoesNotAnswerKeepsTheNames(t *testing.T) {
 	released := r.freed(r.release())
 	if !slices.Contains(released.Freed, api.ReleasedName{Kind: string(supervise.HoldSessionID), Name: releaseSession}) || slices.Contains(r.holds(), sessionHold) {
 		t.Fatalf("the release run again once the broker answers = %+v, want %s freed", released, releaseSession)
-	}
-}
-
-// TestAReleaseWithoutTheExchangeAsksNoBroker: a daemon whose agent-secrets block sets no
-// exchange_audience has no registrar (newRegistrar) and registers no pod session, so its release
-// frees the claim's names once the broker's carry check answers, as before the release route, and
-// makes no call to that route.
-func TestAReleaseWithoutTheExchangeAsksNoBroker(t *testing.T) {
-	r := newReleaseRig(t, false)
-
-	released := r.freed(r.release())
-
-	if !slices.Contains(released.Freed, api.ReleasedName{Kind: string(supervise.HoldSessionID), Name: releaseSession}) || released.Checked != supervise.CheckedByBroker {
-		t.Fatalf("the release answered %+v, want %s freed, checked %q", released, releaseSession, supervise.CheckedByBroker)
-	}
-	if slices.Contains(r.holds(), sessionHold) {
-		t.Fatalf("after the release the store still holds %s for the claim", releaseSession)
-	}
-	if calls, _ := r.proxy.seen(); slices.Contains(calls, http.MethodPost+" "+releaseRoute) {
-		t.Fatalf("the daemon with no exchange_audience called the broker %v, want no call to %s", calls, releaseRoute)
 	}
 }

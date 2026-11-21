@@ -20,12 +20,12 @@ func TestControllerTopicIsTheControllersNoticeSubject(t *testing.T) {
 	}
 }
 
+// A publisher made with New is the client of a loopback listener, which asks for no credential:
+// the listener takes no shared bearer, so the publish carries no Authorization at all.
 func TestHTTPPublisherSendsPayloadAndOutboxDedupeKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The Envoy listener answers an unauthenticated publish with 401 (packages/envoy/cmd/listener/apiauth.go).
-		if r.Header.Get("Authorization") != "Bearer envoy-bearer" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
+		if got, presented := r.Header["Authorization"]; presented {
+			t.Errorf("the publish carried Authorization %q; want none: the listener takes no shared bearer", got)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/publish" {
 			t.Fatalf("request = %s %s, want POST /v1/messages/publish", r.Method, r.URL.Path)
@@ -59,7 +59,7 @@ func TestHTTPPublisherSendsPayloadAndOutboxDedupeKey(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := New(server.URL, "envoy-bearer").Publish(context.Background(), "notifications.legion.LEGION.LEGION-208", "worker-died on LEGION-208", map[string]string{"kind": "worker-died"}, "legion-outbox:42"); err != nil {
+	if err := New(server.URL, http.DefaultTransport).Publish(context.Background(), "notifications.legion.LEGION.LEGION-208", "worker-died on LEGION-208", map[string]string{"kind": "worker-died"}, "legion-outbox:42"); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 }
@@ -74,7 +74,7 @@ func TestHTTPPublisherRefusalNamesTheListenerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := New(server.URL, "").Publish(context.Background(), "notifications.legion.LEGION.LEGION-208", "pr-blocked on LEGION-208", map[string]string{"kind": "pr-blocked"}, "legion-outbox:7")
+	err := New(server.URL, http.DefaultTransport).Publish(context.Background(), "notifications.legion.LEGION.LEGION-208", "pr-blocked on LEGION-208", map[string]string{"kind": "pr-blocked"}, "legion-outbox:7")
 	if err == nil || !strings.Contains(err.Error(), "nats: no response from stream") {
 		t.Fatalf("publish error = %v, want the listener's error body", err)
 	}
@@ -105,7 +105,7 @@ func TestHTTPPublisherTellsANoHolderRefusalFromAnyOther(t *testing.T) {
 			}))
 			defer server.Close()
 
-			err := New(server.URL, "").Publish(context.Background(), "notifications.role.legion-demo-controller", "held on DEMO-1", map[string]string{"kind": "held"}, "legion-outbox:9")
+			err := New(server.URL, http.DefaultTransport).Publish(context.Background(), "notifications.role.legion-demo-controller", "held on DEMO-1", map[string]string{"kind": "held"}, "legion-outbox:9")
 			if err == nil || !strings.Contains(err.Error(), tc.body) {
 				t.Fatalf("publish error = %v, want the listener's refusal %s", err, tc.body)
 			}
@@ -172,7 +172,7 @@ func TestHTTPPublisherPublishKeptTellsAKeptMessageFromADeliveredOne(t *testing.T
 			}))
 			defer server.Close()
 
-			kept, err := New(server.URL, "").PublishKept(context.Background(), "notifications.role.legion-demo-implementer",
+			kept, err := New(server.URL, http.DefaultTransport).PublishKept(context.Background(), "notifications.role.legion-demo-implementer",
 				"the end of DEMO-1's testing phase", "the end of DEMO-1's testing phase", "legion-outbox:11")
 			if kept != tc.kept {
 				t.Fatalf("kept publish kept = %t with %v, want %t", kept, err, tc.kept)
@@ -218,7 +218,7 @@ func TestHTTPPublisherTellsAnUnresponsiveHolderFromNoHolder(t *testing.T) {
 			}))
 			defer server.Close()
 
-			err := New(server.URL, "").Publish(context.Background(), "notifications.role.legion-demo-controller", "held on DEMO-1", map[string]string{"kind": "held"}, "legion-outbox:9")
+			err := New(server.URL, http.DefaultTransport).Publish(context.Background(), "notifications.role.legion-demo-controller", "held on DEMO-1", map[string]string{"kind": "held"}, "legion-outbox:9")
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("publish error = %v, want %v", err, tc.want)
 			}
@@ -271,7 +271,7 @@ func TestHTTPPublisherTellsTheConfirmedSendAnswersApart(t *testing.T) {
 			}))
 			defer server.Close()
 
-			err := New(server.URL, "").Publish(context.Background(), "notifications.role.legion-demo-architect", "held on DEMO-1", map[string]string{"kind": "held"}, "legion-outbox:9")
+			err := New(server.URL, http.DefaultTransport).Publish(context.Background(), "notifications.role.legion-demo-architect", "held on DEMO-1", map[string]string{"kind": "held"}, "legion-outbox:9")
 			if err == nil || !strings.Contains(err.Error(), tc.body) {
 				t.Fatalf("publish error = %v, want the listener's answer %s", err, tc.body)
 			}

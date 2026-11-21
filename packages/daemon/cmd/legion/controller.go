@@ -86,8 +86,8 @@ func newControllerStartCommand(stderr io.Writer) *cobra.Command {
 // but the probe is launched, until the daemon has answered: read the strict operator-side file;
 // refuse an operator token file others can read, then a stdin that is no terminal (stdinIsTerminal:
 // given a positional word there, Oh My Pi runs headless print mode, which would run the start
-// command after the mint revoked the running controller), a blank or unreadable Envoy token file,
-// a NATS nkey seed file that is blank, unreadable, or holds no nkey user seed, a configured
+// command after the mint revoked the running controller), a NATS nkey seed file that is blank,
+// unreadable, or holds no nkey user seed, a configured
 // `dispatch_url` whose file names neither of the two Dispatch credentials, a secrets broker that
 // refuses this machine's identity under `dispatch_token_broker` (controllerDispatchBroker) and a
 // blank or unreadable Dispatch token file under `dispatch_token_file`, an instructions file that
@@ -147,11 +147,6 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// under the state directory but the probe's own directory, removed again on a refusal: the
 	// daemon mints a fresh capability on every request and revokes the incumbent controller's, so
 	// a failure found here never cuts the running controller off for nothing.
-	if cfg.EnvoyTokenFile != "" {
-		if _, err := config.ReadSecretPointer("envoy_token_file", cfg.EnvoyTokenFile); err != nil {
-			return 0, err
-		}
-	}
 	if cfg.NatsNkeySeedFile != "" {
 		if _, err := natsauth.SeedFile(cfg.NatsNkeySeedFile); err != nil {
 			return 0, err
@@ -380,8 +375,11 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 // trade nothing turns Dispatch off saying so rather than falling back to a person's token. Under
 // every configuration PERSON_SIGNIN_TRADE=off (controllerPersonTradeVar) keeps every credential
 // the TypeScript client trades for the controller on this machine's identity and off the sign-in
-// the operator made, which the controller finds under the HOME it keeps. Later
-// pairs replace any inherited value of the same name.
+// the operator made, which the controller finds under the HOME it keeps. No Envoy bearer travels
+// at all, since the listener takes no shared one: the session's Envoy client presents the broker
+// token it trades with this machine's identity wherever the operator's environment names a
+// secrets broker and an identity, and otherwise no credential, which a loopback listener serves.
+// Later pairs replace any inherited value of the same name.
 func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh string) [][2]string {
 	bin := workerbin.LauncherDir(stateDir)
 	env := [][2]string{
@@ -414,9 +412,6 @@ func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh
 		}
 	}
 	env = append(env, [2]string{controllerSecretVariable + "_FILE", secretFile})
-	if cfg.EnvoyTokenFile != "" {
-		env = append(env, [2]string{"ENVOY_TOKEN_FILE", cfg.EnvoyTokenFile})
-	}
 	if cfg.NatsNkeySeedFile != "" {
 		env = append(env, [2]string{natsauth.SeedFileVariable, cfg.NatsNkeySeedFile})
 	}

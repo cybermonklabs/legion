@@ -165,7 +165,8 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 		Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
 		SessionStore: ompsessions.Store{Kind: ompsessions.StoreCloudSQLIAM,
 			Database: ompsessions.Database{Instance: "legion-test:us-central1:sessions", Name: idleRigDatabase(t, pool), User: idleRigUser(t, pool)}},
-		IdleRelease: config.IdleReleaseConfig{IdleMinutes: idleRigIdleMinutes, BackstopMinutes: idleRigBackstopMinutes},
+		IdleRelease:  config.IdleReleaseConfig{IdleMinutes: idleRigIdleMinutes, BackstopMinutes: idleRigBackstopMinutes},
+		AgentSecrets: stubBroker(t),
 	}}
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -602,6 +603,11 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 		return []string{strings.Split(liveRepo, "/")[0]}
 	}
 	opts.CacheRepositories = func() []ghrepo.Repository { return nil }
+	// The secrets broker's enrollment with its exchange audience, which sandbox.New requires (the
+	// loader requires the block under runtime: kubernetes). The rig's configuration names no
+	// agent_secrets block, so the daemon it boots starts no broker login and enrols no pod: the
+	// pods carry the volumes and their roles are told the variables, and nothing trades them.
+	opts.AgentSecrets = testAgentSecrets()
 	opts.Tools.Legion = idleRigLegionTool(r.t, tools)
 	opts.Agent = idleRigAgentTool(r.t, tools)
 	opts.DaemonURL = r.cfg.DaemonURL

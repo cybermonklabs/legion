@@ -4,7 +4,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,13 +16,12 @@ const (
 	testBrokerURL   = "https://secrets.internal.example"
 )
 
-// addressRuntime is a runtime with testOptions, Dispatch and the secrets broker configured, then
-// edited by edit (nil for none).
+// addressRuntime is a runtime with testOptions and Dispatch configured, beside the secrets broker
+// testOptions enrols every pod with, then edited by edit (nil for none).
 func addressRuntime(t *testing.T, edit func(*Options)) *Runtime {
 	t.Helper()
 	opts := testOptions()
 	opts.DispatchURL, opts.Dispatch = testDispatchURL, DispatchCredential{Bearer: "dispatch-bearer"}
-	opts.AgentSecrets = &AgentSecrets{URL: testBrokerURL, Audience: "agent-secrets", TokenExpiry: time.Hour}
 	if edit != nil {
 		edit(&opts)
 	}
@@ -98,10 +96,6 @@ func TestEachAddressARoleIsHandedIsComparedAlone(t *testing.T) {
 		"Dispatch configured only now": {
 			launched: func(o *Options) { o.DispatchURL, o.Dispatch = "", DispatchCredential{} },
 			want:     &movedAddress{"DISPATCH_URL", "(unset)", testDispatchURL},
-		},
-		"the secrets broker no longer configured": {
-			now:  func(o *Options) { o.AgentSecrets = nil },
-			want: &movedAddress{"AGENT_SECRETS_URL", testBrokerURL, "(unset)"},
 		},
 		"a path change is stale though both names are the same": {
 			launched: func(o *Options) { o.EnvoyURL = "http://192.0.2.9:9020/tenant/old" },

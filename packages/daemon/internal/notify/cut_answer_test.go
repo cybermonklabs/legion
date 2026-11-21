@@ -52,7 +52,7 @@ func TestAnAnswerCutOffMidBodyIsNoAnswer(t *testing.T) {
 			{"a 404", http.StatusNotFound, `{"error":"…","reason":"holder_lapsed","holder":"ses_s","holder_state":"unresponsive"}`},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				holder, state, err := New(cutAnswer(t, tc.status, tc.body), "").RoleHolder(ctx, "legion-x")
+				holder, state, err := New(cutAnswer(t, tc.status, tc.body), http.DefaultTransport).RoleHolder(ctx, "legion-x")
 				var refused *RoleLookupRefused
 				if err == nil || errors.As(err, &refused) {
 					t.Fatalf("RoleHolder of a cut %s = %q (%q), %v; want a plain error, no RoleLookupRefused", tc.name, holder, state, err)
@@ -64,7 +64,7 @@ func TestAnAnswerCutOffMidBodyIsNoAnswer(t *testing.T) {
 		}
 	})
 	t.Run("Publish", func(t *testing.T) {
-		err := New(cutAnswer(t, http.StatusNotFound, `{"error":"no live session holds the role","reason":"unclaimed"}`), "").
+		err := New(cutAnswer(t, http.StatusNotFound, `{"error":"no live session holds the role","reason":"unclaimed"}`), http.DefaultTransport).
 			Publish(ctx, "notifications.role.legion-x", "a notice", map[string]string{"k": "v"}, "key-1")
 		if err == nil || errors.Is(err, ErrNoHolder) || errors.Is(err, ErrHolderUnresponsive) {
 			t.Fatalf("Publish answered by a cut 404 = %v; want a plain error, no refusal kind", err)
@@ -74,7 +74,7 @@ func TestAnAnswerCutOffMidBodyIsNoAnswer(t *testing.T) {
 		}
 	})
 	t.Run("DeleteSession", func(t *testing.T) {
-		stopped, err := New(cutAnswer(t, http.StatusOK, `{"deleted":false,"reason":"the registration is newer than the stop"}`), "").
+		stopped, err := New(cutAnswer(t, http.StatusOK, `{"deleted":false,"reason":"the registration is newer than the stop"}`), http.DefaultTransport).
 			DeleteSession(ctx, "ses_s", DeleteConditions{NotRegisteredAfter: time.Now()})
 		if err == nil || stopped.Deleted {
 			t.Fatalf("DeleteSession answered by a cut 200 = %+v, %v; want an error and no delete reported", stopped, err)
@@ -142,7 +142,7 @@ func TestAnAnswerCutInsideAURLsUserNameNamesNoPartOfIt(t *testing.T) {
 				_, _ = w.Write([]byte(body))
 			}))
 			t.Cleanup(server.Close)
-			err := tc.call(New(server.URL, ""))
+			err := tc.call(New(server.URL, http.DefaultTransport))
 			if err == nil || !strings.Contains(err.Error(), "wwww") {
 				t.Fatalf("%s, the listener answering %d: %v; want an error naming the listener's answer", tc.name, tc.status, err)
 			}
@@ -161,7 +161,7 @@ func TestAnAnswerCutInsideAURLsUserNameNamesNoPartOfIt(t *testing.T) {
 		if ended[:len(ended)/2] != half {
 			t.Fatalf("the served half of the body ends %q, not inside the user name", ended[len(ended)/2-len(cutAt):len(ended)/2])
 		}
-		_, err := New(cutAnswer(t, http.StatusInternalServerError, ended), "").ReadSessionRegistration(ctx, "ses_s")
+		_, err := New(cutAnswer(t, http.StatusInternalServerError, ended), http.DefaultTransport).ReadSessionRegistration(ctx, "ses_s")
 		if err == nil || !strings.Contains(err.Error(), "wwww") {
 			t.Fatalf("ReadSessionRegistration, its answer's body ending on a read error: %v; want an error naming the listener's answer", err)
 		}

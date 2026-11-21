@@ -1,11 +1,11 @@
 package sandbox
 
 import (
+	"errors"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -157,7 +157,10 @@ func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
 //
 // The launch must therefore not start a role against configuration its pod cannot carry: either it
 // starts the role as the pod it is in was built (no new flag, no new overlay), or it does not
-// start that role in that pod at all.
+// start that role in that pod at all. A pod built before the enrollment is of the second kind: it
+// carries no exchange identity either, and the Envoy listener takes no shared bearer, so
+// listenerCredential refuses the launch with runtime.ErrAwaitingPodRound and no start reaches the
+// pod.
 func TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt(t *testing.T) {
 	const overlay = "/etc/legion-operator-roles/fallback.yml"
 	roles := corev1.Volume{Name: "operator-roles", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -165,26 +168,17 @@ func TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt(t *testing.T) {
 	}}}
 	for name, tc := range map[string]struct {
 		now func(*Options)
+		// edited, when set, edits the pod after its creation into the one an older daemon built
+		// (builtWithout), and refused holds the launch to listenerCredential's refusal.
+		edited  func(volume string) bool
+		refused bool
 		// check reports what the start names that the pod the role runs in cannot carry.
 		check func(t *testing.T, start map[string]string, argv []string, pod *corev1.Pod)
 	}{
 		"the secrets broker's enrollment": {
-			now: func(o *Options) {
-				o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-			},
-			check: func(t *testing.T, _ map[string]string, argv []string, pod *corev1.Pod) {
-				t.Helper()
-				if !slices.Contains(argv, "--agent-secrets-key-dir") {
-					return
-				}
-				held := func(name string) bool {
-					return slices.ContainsFunc(pod.Spec.Volumes, func(v corev1.Volume) bool { return v.Name == name })
-				}
-				if !held(agentSecretsTokenVolume) || !held(roleVolume(agentSecretsKeyVolume, claim.RoleTester)) {
-					t.Errorf("the start names the shim's agent-secrets flags %q, which stat their paths, while the pod it runs in carries neither %s nor %s",
-						argv[slices.Index(argv, "--agent-secrets-key-dir"):slices.Index(argv, "--agent-secrets-bin")+2], agentSecretsTokenVolume, roleVolume(agentSecretsKeyVolume, claim.RoleTester))
-				}
-			},
+			now:     func(*Options) {},
+			edited:  agentSecretsVolume,
+			refused: true,
 		},
 		"a named role's overlay": {
 			now: func(o *Options) {
@@ -208,6 +202,9 @@ func TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt(t *testing.T) {
 			g := newRig(t, nil)
 			spec := workerSpec(t)
 			loc := g.spawn(spec)
+			if tc.edited != nil {
+				g.builtWithout(loc.Sandbox.Name, tc.edited)
+			}
 			r2 := secondRuntime(t, g, tc.now)()
 			g.connectRunning(workerToken, loc.Sandbox.Generation)
 			g.eventually("the tester's launcher to report its child to the restarted daemon", func() bool {
@@ -219,6 +216,15 @@ func TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt(t *testing.T) {
 			}
 			spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
 			kept, err := r2.Resume(g.ctx, &loc, spec)
+			if tc.refused {
+				if !errors.Is(err, runtime.ErrAwaitingPodRound) || !strings.Contains(err.Error(), "the Envoy listener, which takes no shared bearer") {
+					t.Fatalf("Resume = %v, want listenerCredential's runtime.ErrAwaitingPodRound", err)
+				}
+				if start := lastStart(t, g, workerToken); start.Generation != loc.Sandbox.Generation {
+					t.Fatalf("the refused launch sent generation %d's start command, want none", start.Generation)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Resume: %v", err)
 			}

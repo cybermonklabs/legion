@@ -252,7 +252,7 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 	fixtureenv.Unset(t, stallLimitVariables...)
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(), appOwners: noAppOwners,
-		instructions: "/state/deployment-instructions.md", secrets: map[string]string{"ENVOY_TOKEN": "envoy-bearer"},
+		instructions: "/state/deployment-instructions.md", secrets: map[string]string{"NATS_NKEY_SEED": "SU-fixture-seed"},
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			t.Error("the controller's launch asked for a repository")
 			return ghrepo.MustParse("acme/widgets"), "main", nil

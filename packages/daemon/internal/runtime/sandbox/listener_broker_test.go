@@ -1,24 +1,14 @@
 package sandbox
 
 import (
-	"errors"
 	"maps"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
-
-// listenerBroker is a deployment whose daemon holds no Envoy bearer (Options.ListenerBroker):
-// envoy_token_file is left out beside the exchange audience, so every role in a pod built now trades
-// that pod's exchange identity for a broker token of its own, and no launch carries ENVOY_TOKEN.
-func listenerBroker(o *Options) {
-	o.AgentSecrets = &AgentSecrets{URL: keptBrokerURL, Audience: "agent-secrets", TokenExpiry: time.Hour, ExchangeAudience: testExchangeAudience}
-	o.ListenerBroker = true
-}
 
 // noEnvoyBearerSpec is the tester's launch at generation 2 on the session its running generation
 // recorded, as resumeTester makes it, from a daemon that holds no Envoy bearer: its secrets carry no
@@ -43,24 +33,18 @@ func starts(g *rig) int {
 	return n
 }
 
-// TestListenerBrokerNeedsTheExchangeIdentityAndNoBearer: the runtime refuses ListenerBroker beside
-// no exchange audience, where no role would have any credential for the listener, and beside an
-// ENVOY_TOKEN launch secret, which a daemon that holds no bearer never hands out. The control is
-// ListenerBroker with the exchange audience and no bearer, which configures.
-func TestListenerBrokerNeedsTheExchangeIdentityAndNoBearer(t *testing.T) {
+// TestNoLaunchSecretIsAnEnvoyBearer: the runtime refuses an ENVOY_TOKEN launch secret, which no
+// daemon hands out since the listener takes no shared bearer. The control is the same options with
+// no such secret, which configure.
+func TestNoLaunchSecretIsAnEnvoyBearer(t *testing.T) {
 	for name, tc := range map[string]struct {
 		move func(*Options)
 		want string
 	}{
-		"no exchange audience": {func(o *Options) {
-			o.AgentSecrets = &AgentSecrets{URL: keptBrokerURL, Audience: "agent-secrets", TokenExpiry: time.Hour}
-			o.ListenerBroker = true
-		}, "ListenerBroker is set but AgentSecrets names no exchange audience"},
-		"an Envoy bearer among the launch secrets": {func(o *Options) {
-			listenerBroker(o)
+		"an Envoy bearer": {func(o *Options) {
 			o.LaunchSecrets = []string{envoyTokenKey}
-		}, "ListenerBroker is set but LaunchSecrets names ENVOY_TOKEN"},
-		"control: the exchange audience and no bearer": {listenerBroker, ""},
+		}, "LaunchSecrets names ENVOY_TOKEN: the Envoy listener takes no shared bearer"},
+		"control: no bearer": {func(*Options) {}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			opts := goldenOptions()
@@ -80,50 +64,33 @@ func TestListenerBrokerNeedsTheExchangeIdentityAndNoBearer(t *testing.T) {
 }
 
 // TestAKeptPodWithNoEnvoyCredentialWaitsForItsRound: a role relaunched into a pod built before
-// the exchange identity, by a daemon that holds no Envoy bearer, would start with neither a bearer
-// nor an identity it can trade, and so could not reach the listener at all until the pod's update
-// round replaced the pod. That launch is refused before anything of the pod is touched, with
-// runtime.ErrAwaitingPodRound naming the pod, which the supervisor waits out charging nothing, as a
-// Dispatch launch under dispatch_token_broker with no transition token is. The control is the
-// same kept pod relaunched by a daemon that still holds the bearer: it starts, as before.
+// the exchange identity would start with no identity it can trade, and so could not reach the
+// listener at all until the pod's update round replaced the pod. listenerCredential refuses that
+// launch before anything of the pod is touched, with runtime.ErrAwaitingPodRound naming the pod,
+// which the supervisor waits out charging nothing, as a Dispatch launch under
+// dispatch_token_broker with no transition token is. The control is the same kept pod with the
+// identity, whose launch starts.
 func TestAKeptPodWithNoEnvoyCredentialWaitsForItsRound(t *testing.T) {
 	t.Run("no Envoy bearer", func(t *testing.T) {
-		g := newRig(t, nil, withOptions(dispatchBearer))
-		loc := g.spawn(workerSpec(t))
-		r2 := restartedOver(t, g, loc, listenerBroker)
+		g, loc := beforeTheIdentity(t)
+		r2 := restartedOver(t, g, loc, func(*Options) {})
 		before := starts(g)
 		g.clearActions()
 		_, err := r2.Resume(g.ctx, &loc, noEnvoyBearerSpec(t))
-		if !errors.Is(err, runtime.ErrAwaitingPodRound) {
-			t.Fatalf("Resume = %v, want runtime.ErrAwaitingPodRound", err)
-		}
-		for _, want := range []string{"pod " + loc.Sandbox.Name + " carries no exchange identity", "envoy_token_file is not set", "its update round replaces it"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("the refusal %q does not say %q", err, want)
-			}
-		}
-		var refusal *runtime.AwaitingPodRound
-		if !errors.As(err, &refusal) || refusal.Pod.Sandbox == nil || refusal.Pod.Sandbox.PodUID != loc.Sandbox.PodUID {
-			t.Fatalf("the refusal %v names no locator of the kept pod %s, want a runtime.AwaitingPodRound naming it", err, loc.Sandbox.PodUID)
-		}
-		if after := starts(g); after != before {
-			t.Errorf("the pod's launcher was sent %d start commands by the refused launch, want none", after-before)
-		}
-		if writes := g.writes(); len(writes) > 0 {
-			t.Errorf("the refused launch wrote %+v, want nothing of the pod touched", writes)
-		}
+		wantAwaitingRound(t, g, loc, err, before,
+			"pod "+loc.Sandbox.Name+" carries no exchange identity", "the Envoy listener, which takes no shared bearer", "its update round replaces it")
 	})
 
-	t.Run("control: the daemon holds the bearer", func(t *testing.T) {
+	t.Run("control: the same pod with the exchange identity", func(t *testing.T) {
 		g := newRig(t, nil, withOptions(dispatchBearer))
 		loc := g.spawn(workerSpec(t))
-		r2 := restartedOver(t, g, loc, dispatchBearer)
+		r2 := restartedOver(t, g, loc, func(*Options) {})
 		next := resumeTester(t, g, r2, loc)
 		if next.Sandbox.PodUID != loc.Sandbox.PodUID {
 			t.Fatalf("Resume replaced the pod; this case is about the pod a launch keeps")
 		}
-		if start := startSent(t, g, 2); start.Files["ENVOY_TOKEN"] != "envoy-bearer" {
-			t.Fatalf("the launch into the kept pod carries files %v, want the bearer as ENVOY_TOKEN", slices.Sorted(maps.Keys(start.Files)))
+		if start := startSent(t, g, 2); start.Files[bootTokenKey] != "boot-tester-g2" {
+			t.Fatalf("the launch into the kept pod carries files %v, want its own boot token", slices.Sorted(maps.Keys(start.Files)))
 		}
 	})
 }
@@ -133,7 +100,7 @@ func TestAKeptPodWithNoEnvoyCredentialWaitsForItsRound(t *testing.T) {
 // each start with no ENVOY_TOKEN among the start command's files and no ENVOY_TOKEN_FILE told to
 // the role, which trades the pod's identity for its own broker token instead.
 func TestAPodWithTheExchangeIdentityStartsWithNoEnvoyBearer(t *testing.T) {
-	g := newRig(t, nil, withOptions(listenerBroker))
+	g := newRig(t, nil)
 	spec := workerSpec(t)
 	spec.Secrets = maps.Clone(spec.Secrets)
 	delete(spec.Secrets, "ENVOY_TOKEN")
@@ -152,7 +119,7 @@ func TestAPodWithTheExchangeIdentityStartsWithNoEnvoyBearer(t *testing.T) {
 	}
 	wantNoEnvoyBearer("the launch that built its pod", lastStart(t, g, workerToken))
 
-	r2 := restartedOver(t, g, loc, listenerBroker)
+	r2 := restartedOver(t, g, loc, func(*Options) {})
 	next, err := r2.Resume(g.ctx, &loc, noEnvoyBearerSpec(t))
 	if err != nil {
 		t.Fatalf("Resume: %v", err)

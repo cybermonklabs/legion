@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -905,26 +904,20 @@ type dequeueListener struct {
 	refusals map[string]int
 }
 
-// dequeueEnvoyToken is the bearer the daemon of newDequeueRig presents to its Envoy listener.
-const dequeueEnvoyToken = "envoy-test-token"
-
-// newDequeueListener starts the listener and names it in cfg as Envoy's, with dequeueEnvoyToken as
-// the bearer the daemon presents to it. A request without that bearer is another process's: it is
-// answered 404 and logged (fromTheDaemon), and the listener records nothing of it.
+// newDequeueListener starts the listener and names it in cfg as Envoy's. The daemon presents its
+// loopback listener no credential, since the listener takes no shared bearer, so a request is the
+// daemon's only when it carries none and asks for a listener route; any other is another
+// process's: it is answered 404 and logged (toTheListener), and the listener records nothing of it.
 func newDequeueListener(t *testing.T, cfg *config.Config) *dequeueListener {
 	t.Helper()
 	l := &dequeueListener{notices: newNoticeListener(), held: map[string]bool{}, refusals: map[string]int{}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if fromTheDaemon(t, w, r, dequeueEnvoyToken) {
+		if toTheListener(t, w, r) {
 			l.ServeHTTP(w, r)
 		}
 	}))
 	t.Cleanup(server.Close)
 	cfg.EnvoyURL = server.URL
-	cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
-	if err := os.WriteFile(cfg.EnvoyTokenFile, []byte(dequeueEnvoyToken+"\n"), 0o600); err != nil {
-		t.Fatalf("write the Envoy token: %v", err)
-	}
 	return l
 }
 

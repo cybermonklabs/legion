@@ -190,16 +190,11 @@ type Options struct {
 	// Dispatch is the Dispatch credential a launch's role holds, configured exactly when
 	// DispatchURL is (DispatchCredential).
 	Dispatch DispatchCredential
-	// ListenerBroker is whether the daemon holds no Envoy bearer, so no launch carries ENVOY_TOKEN
-	// and each role reaches the listener with a broker token it trades for its pod's exchange
-	// identity (config.Config.ListenerPresentsBrokerToken). A launch that keeps a pod built before
-	// that identity has neither, and waits for the pod's update round (relaunch's
-	// listenerCredential).
-	ListenerBroker bool
 	// NATSURLs are ENVOY_NATS_URL, comma-joined; none leaves it unset.
 	NATSURLs []string
 	Tools    Tools
-	// AgentSecrets enrolls every pod with the secrets broker; nil enrolls none. See AgentSecrets.
+	// AgentSecrets enrolls every pod with the secrets broker and gives it the exchange identity;
+	// New refuses nil or an empty ExchangeAudience. See AgentSecrets.
 	AgentSecrets *AgentSecrets
 	// ControllerSlackChannels is the project's slack_channels, which the controller this runtime
 	// launches is told as LEGION_SLACK_CHANNELS, comma-joined and set even when empty, and which a
@@ -448,8 +443,8 @@ type PodResources struct {
 // Broker is dispatch_token_broker: a launch into a pod that carries an exchange identity
 // (launch.trades) carries no Dispatch token at all, and its role is told DISPATCH_TOKEN_BROKER=1,
 // under which its Dispatch client trades that identity at the secrets broker for a token of its
-// own session. It needs AgentSecrets.ExchangeAudience, so every pod a launch builds carries the
-// identity. Transition, given only with Broker, is the shared token
+// own session. Every pod a launch builds carries that identity, since New requires
+// AgentSecrets.ExchangeAudience. Transition, given only with Broker, is the shared token
 // dispatch_token_transition_file holds: a launch that keeps a live pod built before the identity
 // carries it as a launch carries Bearer, since a role of such a pod has no identity to trade until
 // its update round replaces the pod; with no Transition such a launch is refused, nothing of the
@@ -478,10 +473,12 @@ type DispatchTokens struct {
 
 // AgentSecrets is the secrets broker the runtime enrolls every pod with: the URL the
 // pod's `agent-secrets` client calls, and the audience and lifetime of the projected token each
-// pod carries for it. Nil enrolls none, and no pod carries the token, the key volume, the
-// variables, or the shim flags. ExchangeAudience, when set, is the audience of a second projected
-// token every enrolled pod carries, the identity the broker's exchange trades for a broker token
-// (runtime.kubernetes.agent_secrets.exchange_audience); empty, no pod carries one.
+// pod carries for it. ExchangeAudience is the audience of a second projected token every pod
+// carries, the identity the broker's exchange trades for a broker token
+// (runtime.kubernetes.agent_secrets.exchange_audience). New requires both: the Envoy listener
+// takes no shared bearer, so a role reaches it only by trading its pod's exchange identity. A
+// live pod built before the enrollment or the exchange identity still carries neither, and a
+// launch that keeps it reads what it carries (keptPod).
 type AgentSecrets struct {
 	URL, Audience    string
 	TokenExpiry      time.Duration

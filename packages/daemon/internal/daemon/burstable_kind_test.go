@@ -69,16 +69,18 @@ var burstableLiveCases = []struct {
 
 // writeBurstableLiveConfig writes the case's legion.yaml, and the token files it names, under
 // dir: the worker stream bound at streamHost, the worker image, the cluster as kubeconfig's
-// kubeContext, and extra appended to its runtime.kubernetes block (a `resources` block here, the
-// share proof's `pod` block in share_volumes_kind_test.go). Its project names no repository in the
-// file, which the loader refuses; the repository the proof launches on is the runtime's cache set
-// (burstableLiveRuntime). The hosts no stub dials are documentation placeholders.
+// kubeContext, the agent_secrets block runtime: kubernetes requires for its exchange_audience, and
+// extra appended to its runtime.kubernetes block (a `resources` block here, the share proof's
+// `pod` block in share_volumes_kind_test.go). Its project names no repository in the file, which
+// the loader refuses; the repository the proof launches on is the runtime's cache set
+// (burstableLiveRuntime). The hosts no stub dials are documentation placeholders, the broker's
+// among them.
 func writeBurstableLiveConfig(t *testing.T, dir, project, streamHost, image, kubeconfig, kubeContext, extra string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range []string{"envoy-token", "operator-token", "dispatch-token"} {
+	for _, file := range []string{"operator-token", "dispatch-token"} {
 		if err := os.WriteFile(filepath.Join(dir, file), []byte("placeholder-"+file+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -89,7 +91,6 @@ state_dir: %[2]s
 bind: %[3]s
 daemon_url: http://%[3]s:13370
 envoy_url: http://envoy-listener.internal.example:9020
-envoy_token_file: ./envoy-token
 operator_token_file: ./operator-token
 dispatch_url: https://dispatch.internal.example
 dispatch_token_file: ./dispatch-token
@@ -109,6 +110,10 @@ runtime:
     context: %[6]s
     session_store: postgres
     session_dsn_secret: SESSION_DSN
+    agent_secrets:
+      url: https://secrets.internal.example
+      token_file: /var/run/legion/agent-secrets-token/token
+      exchange_audience: legion-broker-exchange
 %[7]s`, project, filepath.Join(dir, "state"), streamHost, image, kubeconfig, kubeContext, extra)
 	path := filepath.Join(dir, "legion.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -171,8 +176,7 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 func burstableLiveSpec(project, issue string, token claim.Token, bootToken, prompt string) runtime.SpawnSpec {
 	return runtime.SpawnSpec{
 		Claim: token, Project: project, Tree: issue, Issue: issue, Role: claim.RoleArchitect, Generation: 1, BootToken: bootToken,
-		Secrets: map[string]string{"ENVOY_TOKEN": "placeholder-envoy-token"},
-		Prompt:  runtime.PromptParts{RolePromptPaths: []string{prompt}}, Repository: burstableLiveRepository, DefaultBranch: "master",
+		Prompt: runtime.PromptParts{RolePromptPaths: []string{prompt}}, Repository: burstableLiveRepository, DefaultBranch: "master",
 	}
 }
 

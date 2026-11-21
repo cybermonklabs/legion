@@ -4,7 +4,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 
@@ -49,14 +48,17 @@ func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testin
 	}}}
 	for name, tc := range map[string]struct {
 		// built is the configuration the controller's pod is created under, testOptions when nil,
-		// and now the one the restarted daemon reads. replaces holds the launch to replacing the
-		// pod itself, rather than to either way of bringing the controller onto the change.
+		// and now the one the restarted daemon reads. edited, when set, edits the pod after its
+		// creation into the one an older daemon built (builtWithout). replaces holds the launch to
+		// replacing the pod itself, rather than to either way of bringing the controller onto the
+		// change.
 		built, now func(*Options)
+		edited     func(volume string) bool
 		replaces   bool
 	}{
-		"the secrets broker's enrollment": {now: func(o *Options) {
-			o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-		}},
+		// A pod an older daemon built before runtime.kubernetes.agent_secrets, which New now
+		// requires: no runtime here builds one, so the pod is edited into it.
+		"the secrets broker's enrollment": {now: func(*Options) {}, edited: agentSecretsVolume},
 		"the controller's own overlay": {now: func(o *Options) {
 			o.Pod.Volumes = append(o.Pod.Volumes, roles)
 			o.Pod.VolumeMounts = append(o.Pod.VolumeMounts, corev1.VolumeMount{Name: roles.Name, MountPath: "/etc/legion-operator-roles", ReadOnly: true})
@@ -89,6 +91,9 @@ func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testin
 			g := newRig(t, nil, options...)
 			spec := controllerSpec(t)
 			loc := g.spawn(spec)
+			if tc.edited != nil {
+				g.builtWithout(loc.Sandbox.Name, tc.edited)
+			}
 			r2 := secondRuntime(t, g, tc.now)()
 			g.connectRunning(controllerToken, loc.Sandbox.Generation)
 			g.eventually("the controller's launcher to report its child to the restarted daemon", func() bool {

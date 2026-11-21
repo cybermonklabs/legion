@@ -94,7 +94,6 @@ func TestNewRefusesAPaneVariableThatMovesSessionsOrHoldsAPassword(t *testing.T) 
 		{"PI_CONFIG_DIR", ".elsewhere", "tmux runtime: pane variable PI_CONFIG_DIR: it decides where Oh My Pi keeps the session a resume reads, which the runtime places itself"},
 		{"CLAUDE_CONFIG_DIR", "/srv/claude", "tmux runtime: pane variable CLAUDE_CONFIG_DIR: the runtime sets it on every Claude Code pane itself, after the operator's variables"},
 		{"CLAUDE_CODE_DISABLE_CRON", "0", "tmux runtime: pane variable CLAUDE_CODE_DISABLE_CRON: the runtime sets it on every Claude Code pane itself, after the operator's variables"},
-		{"ENVOY_TOKEN_FILE", "/etc/acme/envoy", "tmux runtime: pane variable ENVOY_TOKEN_FILE: it points at the launch secret ENVOY_TOKEN, which the runtime hands every launch as a file of the launch's own"},
 		{"NATS_NKEY_SEED_FILE", "/etc/acme/seed", "tmux runtime: pane variable NATS_NKEY_SEED_FILE: it points at the launch secret NATS_NKEY_SEED, which the runtime hands every launch as a file of the launch's own"},
 		{"WIDGETS_DATABASE_URL", "postgres://acme:" + password + "@db.internal.example/widgets", "tmux runtime: pane variable WIDGETS_DATABASE_URL: its value is a URL carrying a password: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line"},
 	} {

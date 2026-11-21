@@ -17,17 +17,22 @@ import (
 const workerImage = "ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 // kubernetesFile is the smallest file `runtime: kubernetes` loads: every key a pod needs to reach
-// the daemon, Envoy, NATS, and Dispatch, and the required members of the block. The App
-// keys are commands that fail, so a passing LoadForValidation also shows it never ran them. The
-// block comes last, so a test appends a member of it by appending a four-space-indented line.
-const kubernetesFile = `project: LEGSMOKE
+// the daemon, Envoy, NATS, and Dispatch, the required members of the block, and its agent_secrets
+// block (kubernetesBrokerLines), without which no call to the Envoy listener carries a credential.
+// The App keys are commands that fail, so a passing LoadForValidation also shows it never ran them.
+// The block comes last, so a test appends a member of it by appending a four-space-indented line;
+// a test that writes an agent_secrets block of its own starts from kubernetesNoBroker instead.
+const kubernetesFile = kubernetesNoBroker + kubernetesBrokerLines
+
+// kubernetesNoBroker is kubernetesFile without its agent_secrets block, which runtime: kubernetes
+// refuses on its own (checkKubernetesKeys): the start of a file whose test writes that block itself.
+const kubernetesNoBroker = `project: LEGSMOKE
 state_dir: /var/lib/legion
 postgres_dsn: postgres://legion@127.0.0.1:5432/legion
 bind: 10.0.0.5
 daemon_url: http://10.0.0.5:13370
 envoy_url: http://envoy-listener.internal.example:9020
 nats_urls: [nats://nats.internal.example:4222]
-envoy_token_file: /var/run/legion/ENVOY_TOKEN
 operator_token_file: /var/run/legion/OPERATOR_TOKEN
 dispatch_url: https://dispatch.internal.example
 dispatch_token_file: /var/run/legion/DISPATCH_TOKEN
@@ -45,6 +50,13 @@ runtime:
     session_dsn_secret: SESSION_DSN
 `
 
+// kubernetesBrokerLines is kubernetesFile's runtime.kubernetes.agent_secrets block: the broker, the
+// daemon's own login token, and the exchange audience every enrolled pod's identity is projected
+// for. runtime: kubernetes requires the audience: the Envoy listener takes no shared bearer, so each
+// pod's sessions trade broker tokens of their own and the daemon presents the listener its own.
+const kubernetesBrokerLines = "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+	"      exchange_audience: legion-broker-exchange\n"
+
 // kubernetesWith is kubernetesFile with one line replaced; it panics when the line is not there,
 // so a table row cannot pass by editing nothing.
 func kubernetesWith(line, replacement string) string {
@@ -54,11 +66,38 @@ func kubernetesWith(line, replacement string) string {
 	return strings.Replace(kubernetesFile, line, replacement, 1)
 }
 
+// kubernetesNoBrokerWith is kubernetesNoBroker with one line replaced, for a test that writes its
+// own agent_secrets block; it panics when the line is not there, as kubernetesWith does.
+func kubernetesNoBrokerWith(line, replacement string) string {
+	if !strings.Contains(kubernetesNoBroker, line) {
+		panic("kubernetesNoBroker has no line " + line)
+	}
+	return strings.Replace(kubernetesNoBroker, line, replacement, 1)
+}
+
+// kubernetesFileWith is kubernetesFile with members appended to it, the last of its
+// runtime.kubernetes block's members and any top-level keys after them. Members that write an
+// agent_secrets block of their own replace kubernetesFile's, so the file names the block once and a
+// test of the block reads its own.
+func kubernetesFileWith(members string) string {
+	if strings.Contains(members, "    agent_secrets:") {
+		return kubernetesNoBroker + members
+	}
+	return kubernetesFile + members
+}
+
 // sessionStoreLines are kubernetesFile's session store: the postgres one, with its key.
 const sessionStoreLines = "    session_store: postgres\n    session_dsn_secret: SESSION_DSN\n"
 
 // withSessionStore is kubernetesFile with its session store replaced by lines.
 func withSessionStore(lines string) string { return kubernetesWith(sessionStoreLines, lines) }
+
+// withSessionStoreAndBroker is kubernetesNoBroker with its session store replaced by lines, for a
+// test whose lines write the agent_secrets block themselves; runtime: kubernetes requires the
+// block's exchange_audience, so the lines carry one.
+func withSessionStoreAndBroker(lines string) string {
+	return kubernetesNoBrokerWith(sessionStoreLines, lines)
+}
 
 // sessionStoreRefusal is the one answer a store that keeps sessions as files gets, an omitted key
 // included: a file session would die with the pod's disk.
@@ -67,7 +106,7 @@ const sessionStoreRefusal = "runtime.kubernetes.session_store must name a store 
 	" the next launch's resume fails on the missing file (internal/launcher's sessionWritten), and three such failures retire the claim"
 
 func TestLoadForValidationSettlesEveryMemberOfTheKubernetesBlock(t *testing.T) {
-	path := writeConfigFile(t, kubernetesFile+`    issue_volume: 30Gi
+	path := writeConfigFile(t, kubernetesFileWith(`    issue_volume: 30Gi
     kubeconfig: kube/legion-daemon
     context: legion-daemon@example
     setup: [/bin/sh, -c, 'omp plugin marketplace add acme/agent-skills']
@@ -78,7 +117,8 @@ func TestLoadForValidationSettlesEveryMemberOfTheKubernetesBlock(t *testing.T) {
       microvm:
         compute_class: example-microvm
         metadata:
-          workload_pool: `+testWorkloadPool+`
+          workload_pool: `)+
+		testWorkloadPool+`
           identity_provider: `+testIdentityProvider+`
     repository_cache:
       volume: 50Gi
@@ -198,6 +238,11 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 		MemoryGuard: DefaultMemoryGuard(),
 		// The file sets no volume_trim, so the whole block settles on the daemon's defaults.
 		VolumeTrim: DefaultVolumeTrim(),
+		// kubernetesFile's agent_secrets block, its audience and lifetime the defaults.
+		AgentSecrets: &AgentSecretsConfig{
+			URL: "https://secrets.internal.example", TokenFile: "/var/run/legion/agent-secrets-token/token",
+			Audience: "agent-secrets", TokenExpirySeconds: 3600, ExchangeAudience: "legion-broker-exchange",
+		},
 	}}
 	if cfg.Runtime.Name != want.Name || cfg.Runtime.Kubernetes == nil {
 		t.Fatalf("Runtime = %+v, want %q with its block", cfg.Runtime, want.Name)
@@ -215,7 +260,7 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 // ownership on, and the node mounts `-o ro`, only by the source's readOnly. A ConfigMap's source is
 // never touched.
 func TestLoadForValidationSetsAShareReadOnlyAtItsSourceUnlessAMountWritesIt(t *testing.T) {
-	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+`    pod:
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith(`    pod:
       volumes:
         - {name: ro-claim, persistent_volume_claim: {name: ro-claim}}
         - {name: rw-claim, persistent_volume_claim: {name: rw-claim}}
@@ -232,7 +277,7 @@ func TestLoadForValidationSetsAShareReadOnlyAtItsSourceUnlessAMountWritesIt(t *t
         - {volume: both, mount_path: /mnt/both-ro}
         - {volume: both, mount_path: /mnt/both-rw, read_only: false}
         - {volume: route, mount_path: /etc/legion-operator/route}
-`), noEnv)
+`)), noEnv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +306,7 @@ func TestLoadForValidationSetsAShareReadOnlyAtItsSourceUnlessAMountWritesIt(t *t
 // as written; in a pod the kubelet adds group read under the pod's fsGroup, so 0400 and 0 reach the
 // files as 0440.
 func TestLoadForValidationReadsAVolumesDefaultModeInOctal(t *testing.T) {
-	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+`    pod:
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith(`    pod:
       volumes:
         - {name: key, secret: {name: legion-acme-providers, items: [{key: MODEL_KEY, path: key}], default_mode: 0440}}
         - {name: mode-0400, secret: {name: legion-operator-creds, default_mode: 0o400}}
@@ -273,7 +318,7 @@ func TestLoadForValidationReadsAVolumesDefaultModeInOctal(t *testing.T) {
         - {name: ca, secret: {name: legion-operator-ca}}
         - {name: roles, config_map: {name: legion-operator-overlays}}
         - {name: null-mode, secret: {name: legion-operator-null, default_mode: ~}}
-`), noEnv)
+`)), noEnv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +420,7 @@ func TestAPodSettingOnlyItsCPUKeepsTheDefaultMemory(t *testing.T) {
 // rather than settling it to the limit, so the daemon renders a Burstable reservation; the field
 // the file leaves out still settles its request to its limit, and the pod reads Burstable.
 func TestAPodCanRequestLessMemoryThanItsLimit(t *testing.T) {
-	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    resources: {issue: {memory: 32Gi, memory_request: 8Gi}}\n"), noEnv)
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith("    resources: {issue: {memory: 32Gi, memory_request: 8Gi}}\n")), noEnv)
 	if err != nil {
 		t.Fatalf("LoadForValidation: %v", err)
 	}
@@ -395,7 +440,7 @@ func TestAPodCanRequestLessMemoryThanItsLimit(t *testing.T) {
 // The repository cache's reservation settles as a pod's: an explicit lower memory request is kept
 // under its limit, a raised cpu limit alone is requested in full, and the rest is the default's.
 func TestTheRepositoryCacheCanRequestLessMemoryThanItsLimit(t *testing.T) {
-	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    repository_cache: {resources: {cpu: \"2\", memory: 16Gi, memory_request: 4Gi}}\n"), noEnv)
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith("    repository_cache: {resources: {cpu: \"2\", memory: 16Gi, memory_request: 4Gi}}\n")), noEnv)
 	if err != nil {
 		t.Fatalf("LoadForValidation: %v", err)
 	}
@@ -423,7 +468,7 @@ func TestSettledRequestFallsBackToTheDefaultsRequest(t *testing.T) {
 // A file that raises a limit alone settles its request to that limit, never to the default's
 // smaller request: setting `memory: 24Gi` keeps the issue pod Guaranteed at 24Gi.
 func TestAPodRaisingALimitAloneStaysGuaranteed(t *testing.T) {
-	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    resources: {issue: {cpu: 4, memory: 24Gi}}\n"), noEnv)
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith("    resources: {issue: {cpu: 4, memory: 24Gi}}\n")), noEnv)
 	if err != nil {
 		t.Fatalf("LoadForValidation: %v", err)
 	}
@@ -469,7 +514,7 @@ func TestAPodRequestMustBeAQuantityNoGreaterThanItsLimit(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    resources: {"+tc.resources+"}\n"), noEnv)
+			_, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith("    resources: {")+tc.resources+"}\n"), noEnv)
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("LoadForValidation error = %v, want %q", err, tc.want)
 			}
@@ -490,7 +535,7 @@ func TestAPodsEphemeralStorageBoundSettlesFieldByField(t *testing.T) {
 		{"issue: {ephemeral_storage: 100Gi}", Reservation{CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "100Gi", EphemeralStorageRequest: "6Gi"}},
 		{"issue: {ephemeral_storage_request: 8Gi}", Reservation{CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "8Gi"}},
 	} {
-		cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    resources: {"+tc.resources+"}\n"), noEnv)
+		cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith("    resources: {")+tc.resources+"}\n"), noEnv)
 		if err != nil {
 			t.Fatalf("LoadForValidation %s: %v", tc.resources, err)
 		}
@@ -680,15 +725,15 @@ func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnot
 		},
 		{
 			name: "the broker's audience",
-			body: withSessionStore("    session_store: cloudsql-iam\n" +
+			body: withSessionStoreAndBroker("    session_store: cloudsql-iam\n" +
 				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
 				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
-				"      audience: \"" + testWriterAudience + "\"\n"),
+				"      audience: \"" + testWriterAudience + "\"\n      exchange_audience: legion-broker-exchange\n"),
 			want: brokerAudienceRefusal("audience"),
 		},
 		{
 			name: "the broker's exchange audience",
-			body: withSessionStore("    session_store: cloudsql-iam\n" +
+			body: withSessionStoreAndBroker("    session_store: cloudsql-iam\n" +
 				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
 				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
 				"      exchange_audience: \"" + testWriterAudience + "\"\n"),
@@ -696,15 +741,15 @@ func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnot
 		},
 		{
 			name: "the https: form on the broker's audience",
-			body: withSessionStore("    session_store: cloudsql-iam\n" +
+			body: withSessionStoreAndBroker("    session_store: cloudsql-iam\n" +
 				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
 				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
-				"      audience: \"https:" + testWriterAudience + "\"\n"),
+				"      audience: \"https:" + testWriterAudience + "\"\n      exchange_audience: legion-broker-exchange\n"),
 			want: brokerHTTPSAudienceRefusal("audience"),
 		},
 		{
 			name: "the https: form on the broker's exchange audience",
-			body: withSessionStore("    session_store: cloudsql-iam\n" +
+			body: withSessionStoreAndBroker("    session_store: cloudsql-iam\n" +
 				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
 				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
 				"      exchange_audience: \"https:" + testWriterAudience + "\"\n"),
@@ -777,12 +822,12 @@ func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnot
 // token in TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnotherForm is
 // the audience's alone, not the broker's block's or the operator's volume's.
 func TestConfigCheckTakesAWriterAudienceThatNoRoleReadableTokenCarries(t *testing.T) {
-	body := withSessionStore("    session_store: cloudsql-iam\n" +
+	body := withSessionStoreAndBroker("    session_store: cloudsql-iam\n" +
 		"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions," +
 		" user: legion-sessions@example-project.iam, impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com," +
 		" writer_audience: \"" + testWriterAudience + "\"}\n" +
 		"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
-		"      audience: \"https://secrets.internal.example\"\n" +
+		"      audience: \"https://secrets.internal.example\"\n      exchange_audience: legion-broker-exchange\n" +
 		"    pod:\n      volumes:\n        - name: operator-token\n" +
 		"          projected: {sources: [{service_account_token: {audience: model-gateway.example.com, expiration_seconds: 3600, path: token}}]}\n" +
 		"      volume_mounts:\n        - {volume: operator-token, mount_path: /var/run/operator}\n")
@@ -809,24 +854,24 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		},
 		{
 			name: "an unknown member",
-			body: kubernetesFile + "    frobnicate: 1\n",
+			body: kubernetesFileWith("    frobnicate: 1\n"),
 			want: "unknown key runtime.kubernetes.frobnicate",
 		},
 		{
 			name: "the removed gateway block",
-			body: kubernetesFile + "    gateway:\n      url: https://middleman.internal.example\n      audience: operator-audience\n      service_account: legion-worker\n      token_expiry_seconds: 600\n",
+			body: kubernetesFileWith("    gateway:\n      url: https://middleman.internal.example\n      audience: operator-audience\n      service_account: legion-worker\n      token_expiry_seconds: 600\n"),
 			want: "runtime.kubernetes.gateway was removed (LEGION-270): configure pods with runtime.kubernetes.pod (docs/kubernetes.md, Operator configuration)",
 		},
 		{
 			name: "a member named twice",
-			body: kubernetesFile + "    namespace: other\n",
+			body: kubernetesFileWith("    namespace: other\n"),
 			want: "runtime.kubernetes names namespace twice",
 		},
 		{
 			// A file on the daemon's disk reaches no pod: under kubernetes a provider key is a key of
 			// the providers Secret every pod mounts.
 			name: "a provider key naming a file",
-			body: kubernetesFile + "provider_keys: {GEMINI_API_KEY: \"file:/etc/legion/providers/gemini\"}\n",
+			body: kubernetesFileWith("provider_keys: {GEMINI_API_KEY: \"file:/etc/legion/providers/gemini\"}\n"),
 			want: "provider_keys.GEMINI_API_KEY names the file /etc/legion/providers/gemini, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret",
 		},
 		{
@@ -861,256 +906,256 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		},
 		{
 			name: "issue_volume not a quantity",
-			body: kubernetesFile + "    issue_volume: twenty gigs\n",
+			body: kubernetesFileWith("    issue_volume: twenty gigs\n"),
 			want: "runtime.kubernetes.issue_volume must be a positive Kubernetes quantity (e.g. 20Gi or 500m)",
 		},
 		{
 			// The runtime reads a zero volume as "use the default", so zero would be a silent 50Gi.
 			name: "issue_volume zero",
-			body: kubernetesFile + "    issue_volume: 0\n",
+			body: kubernetesFileWith("    issue_volume: 0\n"),
 			want: "runtime.kubernetes.issue_volume must be a positive Kubernetes quantity (e.g. 20Gi or 500m)",
 		},
 		{
 			name: "setup a string",
-			body: kubernetesFile + "    setup: omp plugin install agent-skills\n",
+			body: kubernetesFileWith("    setup: omp plugin install agent-skills\n"),
 			want: "runtime.kubernetes.setup must be an array of non-empty strings",
 		},
 		{
 			name: "setup a mapping",
-			body: kubernetesFile + "    setup: {command: omp}\n",
+			body: kubernetesFileWith("    setup: {command: omp}\n"),
 			want: "runtime.kubernetes.setup must be an array of non-empty strings",
 		},
 		{
 			name: "setup a word that is no string",
-			body: kubernetesFile + "    setup: [omp, 3]\n",
+			body: kubernetesFileWith("    setup: [omp, 3]\n"),
 			want: "runtime.kubernetes.setup must be an array of non-empty strings",
 		},
 		{
 			name: "setup an empty word",
-			body: kubernetesFile + "    setup: [omp, \"\"]\n",
+			body: kubernetesFileWith("    setup: [omp, \"\"]\n"),
 			want: "runtime.kubernetes.setup must be an array of non-empty strings",
 		},
 		{
 			name: "setup naming no command",
-			body: kubernetesFile + "    setup: []\n",
+			body: kubernetesFileWith("    setup: []\n"),
 			want: "runtime.kubernetes.setup must name a command: leave it out to run none",
 		},
 		{
 			name: "test_postgres a string",
-			body: kubernetesFile + "    test_postgres: yes please\n",
+			body: kubernetesFileWith("    test_postgres: yes please\n"),
 			want: "runtime.kubernetes.test_postgres must be true or false",
 		},
 		{
 			name: "test_postgres a mapping",
-			body: kubernetesFile + "    test_postgres: {on: true}\n",
+			body: kubernetesFileWith("    test_postgres: {on: true}\n"),
 			want: "runtime.kubernetes.test_postgres must be true or false",
 		},
 		{
 			name: "repository_cache volume zero",
-			body: kubernetesFile + "    repository_cache: {volume: 0}\n",
+			body: kubernetesFileWith("    repository_cache: {volume: 0}\n"),
 			want: "runtime.kubernetes.repository_cache.volume must be a positive Kubernetes quantity (e.g. 20Gi or 500m)",
 		},
 		{
 			name: "repository_cache retain_hours zero",
-			body: kubernetesFile + "    repository_cache: {retain_hours: 0}\n",
+			body: kubernetesFileWith("    repository_cache: {retain_hours: 0}\n"),
 			want: "runtime.kubernetes.repository_cache.retain_hours must be a positive integer",
 		},
 		{
 			name: "repository_cache refresh_minutes zero",
-			body: kubernetesFile + "    repository_cache: {refresh_minutes: 0}\n",
+			body: kubernetesFileWith("    repository_cache: {refresh_minutes: 0}\n"),
 			want: "runtime.kubernetes.repository_cache.refresh_minutes must be a positive integer",
 		},
 		{
 			name: "repository_cache an unknown member",
-			body: kubernetesFile + "    repository_cache: {size: 20Gi}\n",
+			body: kubernetesFileWith("    repository_cache: {size: 20Gi}\n"),
 			want: "unknown key runtime.kubernetes.repository_cache.size",
 		},
 		{
 			name: "repository_cache not a mapping",
-			body: kubernetesFile + "    repository_cache: 20Gi\n",
+			body: kubernetesFileWith("    repository_cache: 20Gi\n"),
 			want: "runtime.kubernetes.repository_cache must be a mapping",
 		},
 		{
 			name: "repository_cache ephemeral storage request past its limit",
-			body: kubernetesFile + "    repository_cache: {resources: {ephemeral_storage: 1Gi, ephemeral_storage_request: 2Gi}}\n",
+			body: kubernetesFileWith("    repository_cache: {resources: {ephemeral_storage: 1Gi, ephemeral_storage_request: 2Gi}}\n"),
 			want: "runtime.kubernetes.repository_cache.resources.ephemeral_storage_request 2Gi exceeds ephemeral_storage 1Gi",
 		},
 		{
 			name: "repository_cache memory request past its limit",
-			body: kubernetesFile + "    repository_cache: {resources: {memory: 4Gi, memory_request: 8Gi}}\n",
+			body: kubernetesFileWith("    repository_cache: {resources: {memory: 4Gi, memory_request: 8Gi}}\n"),
 			want: "runtime.kubernetes.repository_cache.resources.memory_request 8Gi exceeds memory 4Gi",
 		},
 		{
 			name: "repository_cache cpu request past the default limit",
-			body: kubernetesFile + "    repository_cache: {resources: {cpu_request: \"2\"}}\n",
+			body: kubernetesFileWith("    repository_cache: {resources: {cpu_request: \"2\"}}\n"),
 			want: "runtime.kubernetes.repository_cache.resources.cpu_request 2 exceeds cpu 1",
 		},
 		{
 			// The tree-volume layout's key (LEGION-632): refused naming the key that replaced it, not
 			// as a generic unknown key, so `legion config check` says what to edit.
 			name: "the tree-volume layout's tree_volume",
-			body: kubernetesFile + "    tree_volume: 30Gi\n",
+			body: kubernetesFileWith("    tree_volume: 30Gi\n"),
 			want: "runtime.kubernetes.tree_volume is now issue_volume: one volume per issue",
 		},
 		{
 			name: "kubeconfig blank",
-			body: kubernetesFile + "    kubeconfig: \"\"\n",
+			body: kubernetesFileWith("    kubeconfig: \"\"\n"),
 			want: "runtime.kubernetes.kubeconfig must not be empty",
 		},
 		{
 			name: "context blank",
-			body: kubernetesFile + "    kubeconfig: /home/legion/.kube/config\n    context: \" \"\n",
+			body: kubernetesFileWith("    kubeconfig: /home/legion/.kube/config\n    context: \" \"\n"),
 			want: "runtime.kubernetes.context must not be empty",
 		},
 		{
 			name: "context without a kubeconfig",
-			body: kubernetesFile + "    context: legion-daemon@example\n",
+			body: kubernetesFileWith("    context: legion-daemon@example\n"),
 			want: "runtime.kubernetes.context names a kubeconfig context, so it requires runtime.kubernetes.kubeconfig",
 		},
 		{
 			name: "scheduling not a mapping",
-			body: kubernetesFile + "    scheduling: [legion]\n",
+			body: kubernetesFileWith("    scheduling: [legion]\n"),
 			want: "runtime.kubernetes.scheduling must be a mapping",
 		},
 		{
 			name: "an unknown scheduling member",
-			body: kubernetesFile + "    scheduling: {affinity: {}}\n",
+			body: kubernetesFileWith("    scheduling: {affinity: {}}\n"),
 			want: "unknown key runtime.kubernetes.scheduling.affinity",
 		},
 		{
 			name: "node_selector not a mapping",
-			body: kubernetesFile + "    scheduling: {node_selector: [legion]}\n",
+			body: kubernetesFileWith("    scheduling: {node_selector: [legion]}\n"),
 			want: "runtime.kubernetes.scheduling.node_selector must be a mapping of strings",
 		},
 		{
 			name: "node_selector setting the Legion pool",
-			body: kubernetesFile + "    scheduling: {node_selector: {legion.dev/pool: other}}\n",
+			body: kubernetesFileWith("    scheduling: {node_selector: {legion.dev/pool: other}}\n"),
 			want: "runtime.kubernetes.scheduling.node_selector must not set legion.dev/pool: the runtime selects the Legion pool itself, and the cluster's admission policy requires its value",
 		},
 		{
 			name: "tolerations not an array",
-			body: kubernetesFile + "    scheduling: {tolerations: {key: spot}}\n",
+			body: kubernetesFileWith("    scheduling: {tolerations: {key: spot}}\n"),
 			want: "runtime.kubernetes.scheduling.tolerations must be an array",
 		},
 		{
 			name: "a toleration that is not a mapping",
-			body: kubernetesFile + "    scheduling: {tolerations: [spot]}\n",
+			body: kubernetesFileWith("    scheduling: {tolerations: [spot]}\n"),
 			want: "runtime.kubernetes.scheduling.tolerations[0] must be a mapping",
 		},
 		{
 			name: "a toleration with an unknown member",
-			body: kubernetesFile + "    scheduling: {tolerations: [{key: spot, operator: Exists, effect: NoSchedule, tolerationSeconds: 5}]}\n",
+			body: kubernetesFileWith("    scheduling: {tolerations: [{key: spot, operator: Exists, effect: NoSchedule, tolerationSeconds: 5}]}\n"),
 			want: "unknown key runtime.kubernetes.scheduling.tolerations[0].tolerationSeconds",
 		},
 		{
 			name: "a toleration with no key",
-			body: kubernetesFile + "    scheduling: {tolerations: [{operator: Exists, effect: NoSchedule}]}\n",
+			body: kubernetesFileWith("    scheduling: {tolerations: [{operator: Exists, effect: NoSchedule}]}\n"),
 			want: "runtime.kubernetes.scheduling.tolerations[0].key must not be empty",
 		},
 		{
 			name: "a toleration with an unknown operator",
-			body: kubernetesFile + "    scheduling: {tolerations: [{key: spot, operator: In, effect: NoSchedule}]}\n",
+			body: kubernetesFileWith("    scheduling: {tolerations: [{key: spot, operator: In, effect: NoSchedule}]}\n"),
 			want: "runtime.kubernetes.scheduling.tolerations[0].operator must be Equal or Exists",
 		},
 		{
 			name: "a toleration with an unknown effect",
-			body: kubernetesFile + "    scheduling: {tolerations: [{key: spot, operator: Exists, effect: Evict}]}\n",
+			body: kubernetesFileWith("    scheduling: {tolerations: [{key: spot, operator: Exists, effect: Evict}]}\n"),
 			want: "runtime.kubernetes.scheduling.tolerations[0].effect must be NoSchedule, NoExecute, or PreferNoSchedule",
 		},
 		{
 			name: "a toleration with a value under Exists",
-			body: kubernetesFile + "    scheduling: {tolerations: [{key: spot, operator: Exists, value: yes, effect: NoSchedule}]}\n",
+			body: kubernetesFileWith("    scheduling: {tolerations: [{key: spot, operator: Exists, value: yes, effect: NoSchedule}]}\n"),
 			want: "runtime.kubernetes.scheduling.tolerations[0].value must be omitted with operator Exists",
 		},
 		{
 			name: "priority_class blank",
-			body: kubernetesFile + "    scheduling: {priority_class: \"\"}\n",
+			body: kubernetesFileWith("    scheduling: {priority_class: \"\"}\n"),
 			want: "runtime.kubernetes.scheduling.priority_class must not be empty",
 		},
 		{
 			name: "resources not a mapping",
-			body: kubernetesFile + "    resources: [issue]\n",
+			body: kubernetesFileWith("    resources: [issue]\n"),
 			want: "runtime.kubernetes.resources must be a mapping of issue and controller to each pod's cpu and memory reservation",
 		},
 		{
 			// The TypeScript daemon's resource profiles are no pod.
 			name: "resources keyed by a profile",
-			body: kubernetesFile + "    resources: {small: {cpu: 500m}}\n",
+			body: kubernetesFileWith("    resources: {small: {cpu: 500m}}\n"),
 			want: `runtime.kubernetes.resources key "small" must be issue or controller`,
 		},
 		{
 			name: "a pod named twice",
-			body: kubernetesFile + "    resources: {issue: {}, issue: {}}\n",
+			body: kubernetesFileWith("    resources: {issue: {}, issue: {}}\n"),
 			want: "runtime.kubernetes.resources names issue twice",
 		},
 		{
 			name: "a pod's resources not a mapping",
-			body: kubernetesFile + "    resources: {issue: 500m}\n",
+			body: kubernetesFileWith("    resources: {issue: 500m}\n"),
 			want: "runtime.kubernetes.resources.issue must be a mapping of cpu and memory",
 		},
 		{
 			name: "a pod's resources with an unknown member",
-			body: kubernetesFile + "    resources: {issue: {claims: {}}}\n",
+			body: kubernetesFileWith("    resources: {issue: {claims: {}}}\n"),
 			want: "unknown key runtime.kubernetes.resources.issue.claims",
 		},
 		{
 			// The earlier shape's nested mappings (LEGION-632): each refused naming the one
 			// reservation that replaced them, never as a generic unknown key.
 			name: "a pod's requests mapping",
-			body: kubernetesFile + "    resources: {issue: {requests: {cpu: 500m, memory: 1Gi}}}\n",
+			body: kubernetesFileWith("    resources: {issue: {requests: {cpu: 500m, memory: 1Gi}}}\n"),
 			want: "runtime.kubernetes.resources.issue.requests is gone: a reservation is its cpu and memory limits, with cpu_request and memory_request below them where set",
 		},
 		{
 			name: "a pod's limits mapping",
-			body: kubernetesFile + "    resources: {controller: {cpu: 500m, limits: {memory: 2Gi}}}\ncontroller: daemon\n",
+			body: kubernetesFileWith("    resources: {controller: {cpu: 500m, limits: {memory: 2Gi}}}\ncontroller: daemon\n"),
 			want: "runtime.kubernetes.resources.controller.limits is gone: a reservation is its cpu and memory limits, with cpu_request and memory_request below them where set",
 		},
 		{
 			// The settled request is held to the settled limit, whichever side the file set.
 			name: "an ephemeral_storage_request past its ephemeral_storage",
-			body: kubernetesFile + "    resources: {issue: {ephemeral_storage_request: 81Gi}}\n",
+			body: kubernetesFileWith("    resources: {issue: {ephemeral_storage_request: 81Gi}}\n"),
 			want: "runtime.kubernetes.resources.issue.ephemeral_storage_request 81Gi exceeds ephemeral_storage 80Gi",
 		},
 		{
 			name: "an ephemeral_storage_request past the ephemeral_storage set beside it",
-			body: kubernetesFile + "    resources: {issue: {ephemeral_storage: 10Gi, ephemeral_storage_request: 11Gi}}\n",
+			body: kubernetesFileWith("    resources: {issue: {ephemeral_storage: 10Gi, ephemeral_storage_request: 11Gi}}\n"),
 			want: "runtime.kubernetes.resources.issue.ephemeral_storage_request 11Gi exceeds ephemeral_storage 10Gi",
 		},
 		{
 			name: "an ephemeral_storage that is no quantity",
-			body: kubernetesFile + "    resources: {issue: {ephemeral_storage: lots}}\n",
+			body: kubernetesFileWith("    resources: {issue: {ephemeral_storage: lots}}\n"),
 			want: "runtime.kubernetes.resources.issue.ephemeral_storage must be a positive Kubernetes quantity (e.g. 20Gi or 500m)",
 		},
 		{
 			name: "a zero ephemeral_storage_request",
-			body: kubernetesFile + "    resources: {issue: {ephemeral_storage_request: 0}}\n",
+			body: kubernetesFileWith("    resources: {issue: {ephemeral_storage_request: 0}}\n"),
 			want: "runtime.kubernetes.resources.issue.ephemeral_storage_request must be a positive Kubernetes quantity (e.g. 20Gi or 500m)",
 		},
 		{
 			name: "a quantity that is not one",
-			body: kubernetesFile + "    resources: {issue: {memory: lots}}\n",
+			body: kubernetesFileWith("    resources: {issue: {memory: lots}}\n"),
 			want: "runtime.kubernetes.resources.issue.memory must be a positive Kubernetes quantity (e.g. 20Gi or 500m)",
 		},
 		{
 			name: "a negative quantity",
-			body: kubernetesFile + "    resources: {issue: {cpu: -1}}\n",
+			body: kubernetesFileWith("    resources: {issue: {cpu: -1}}\n"),
 			want: "runtime.kubernetes.resources.issue.cpu must be a positive Kubernetes quantity (e.g. 20Gi or 500m)",
 		},
 		{
 			name: "the TypeScript role_profiles",
-			body: kubernetesFile + "    role_profiles: {tester: large}\n",
+			body: kubernetesFileWith("    role_profiles: {tester: large}\n"),
 			want: "unknown key runtime.kubernetes.role_profiles: an issue pod's reservation is runtime.kubernetes.resources.issue, its cpu and memory limits with optional lower cpu_request and memory_request, and a field absent there takes the daemon's default",
 		},
 		{
 			name: "skills_repository naming a repository",
-			body: kubernetesFile + "    skills_repository: acme/agent-skills\n",
+			body: kubernetesFileWith("    skills_repository: acme/agent-skills\n"),
 			want: "runtime.kubernetes.skills_repository was removed: a role installs its skills with Oh My Pi's own commands in runtime.kubernetes.setup (docs/kubernetes.md, Configuration); delete the key",
 		},
 		{
 			// describedMembers leaves a null member out, so the key written with no value is
 			// refused too, rather than read as unset.
 			name: "skills_repository with no value",
-			body: kubernetesFile + "    skills_repository:\n",
+			body: kubernetesFileWith("    skills_repository:\n"),
 			want: "runtime.kubernetes.skills_repository was removed: a role installs its skills with Oh My Pi's own commands in runtime.kubernetes.setup (docs/kubernetes.md, Configuration); delete the key",
 		},
 		{
@@ -1145,7 +1190,7 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		},
 		{
 			name: "session_database with the postgres store",
-			body: kubernetesFile + "    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam}\n",
+			body: kubernetesFileWith("    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam}\n"),
 			want: "runtime.kubernetes.session_database is not used when runtime.kubernetes.session_store is postgres; remove it",
 		},
 		{
@@ -1361,9 +1406,9 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			want: "nats_urls is required when runtime is kubernetes: every pod's Envoy client connects to NATS",
 		},
 		{
-			name: "envoy_token_file absent",
-			body: kubernetesWith("envoy_token_file: /var/run/legion/ENVOY_TOKEN\n", ""),
-			want: "envoy_token_file is required when runtime is kubernetes: every pod receives the Envoy bearer unless runtime.kubernetes.agent_secrets.exchange_audience is set, under which each pod's sessions trade their own broker token and the daemon presents its own",
+			name: "no agent_secrets block, so no exchange_audience",
+			body: kubernetesNoBroker,
+			want: "runtime.kubernetes.agent_secrets.exchange_audience is required when runtime is kubernetes: the Envoy listener takes no shared bearer, so each pod's sessions trade broker tokens of their own through the identity this audience projects and the daemon presents the listener its own",
 		},
 		{
 			name: "operator_token_file absent",
@@ -1390,12 +1435,12 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		},
 		{
 			name: "omp_invocation set",
-			body: kubernetesFile + "omp_invocation: mise x github:acme/omp@1 -- omp\n",
+			body: kubernetesFileWith("omp_invocation: mise x github:acme/omp@1 -- omp\n"),
 			want: "omp_invocation is not used when runtime is kubernetes: every pod runs the worker image's Oh My Pi; remove omp_invocation",
 		},
 		{
 			name: "omp_launch_prefix set",
-			body: kubernetesFile + "omp_launch_prefix: [env, OMP_PROFILE=legion, --]\n",
+			body: kubernetesFileWith("omp_launch_prefix: [env, OMP_PROFILE=legion, --]\n"),
 			want: "omp_launch_prefix is not used when runtime is kubernetes: every pod runs the worker image's Oh My Pi; remove omp_launch_prefix",
 		},
 		{
@@ -1405,325 +1450,325 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		},
 		{
 			name: "the pod block is not a mapping",
-			body: kubernetesFile + "    pod: [env]\n",
+			body: kubernetesFileWith("    pod: [env]\n"),
 			want: "runtime.kubernetes.pod must be a mapping",
 		},
 		{
 			name: "an unknown pod member",
-			body: kubernetesFile + "    pod:\n      containers: []\n",
+			body: kubernetesFileWith("    pod:\n      containers: []\n"),
 			want: "unknown key runtime.kubernetes.pod.containers",
 		},
 		{
 			name: "pod env is not a mapping",
-			body: kubernetesFile + "    pod:\n      env: [OPENAI_BASE_URL]\n",
+			body: kubernetesFileWith("    pod:\n      env: [OPENAI_BASE_URL]\n"),
 			want: "runtime.kubernetes.pod.env must be a mapping of variable to value",
 		},
 		{
 			name: "a pod variable that is no variable name",
-			body: kubernetesFile + "    pod:\n      env: {1PASSWORD: vault}\n",
+			body: kubernetesFileWith("    pod:\n      env: {1PASSWORD: vault}\n"),
 			want: `runtime.kubernetes.pod.env key "1PASSWORD" must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
 		},
 		{
 			name: "a pod variable whose value is no string",
-			body: kubernetesFile + "    pod:\n      env: {OPENAI_BASE_URL: {host: x}}\n",
+			body: kubernetesFileWith("    pod:\n      env: {OPENAI_BASE_URL: {host: x}}\n"),
 			want: "runtime.kubernetes.pod.env value for OPENAI_BASE_URL must be a string",
 		},
 		{
 			name: "a credential-shaped pod variable",
-			body: kubernetesFile + "    pod:\n      env: {ANTHROPIC_API_KEY: sk-ant}\n",
+			body: kubernetesFileWith("    pod:\n      env: {ANTHROPIC_API_KEY: sk-ant}\n"),
 			want: "runtime.kubernetes.pod.env sets ANTHROPIC_API_KEY, a credential-shaped name: a credential comes from a Secret, so mount one with runtime.kubernetes.pod.volumes or name its key in provider_keys",
 		},
 		{
 			name: "pod volumes are not a sequence",
-			body: kubernetesFile + "    pod:\n      volumes: {creds: {}}\n",
+			body: kubernetesFileWith("    pod:\n      volumes: {creds: {}}\n"),
 			want: "runtime.kubernetes.pod.volumes must be an array",
 		},
 		{
 			name: "a pod volume with no source",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: creds}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: creds}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0] must set exactly one of secret, config_map, projected, persistent_volume_claim, nfs",
 		},
 		{
 			name: "a pod volume with two sources",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: creds, secret: {name: a}, config_map: {name: b}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: creds, secret: {name: a}, config_map: {name: b}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0] must set exactly one of secret, config_map, projected, persistent_volume_claim, nfs",
 		},
 		{
 			name: "a pod volume naming a claim and an NFS export",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: share, persistent_volume_claim: {name: team-share}, nfs: {server: 10.0.0.2, path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: share, persistent_volume_claim: {name: team-share}, nfs: {server: 10.0.0.2, path: /share}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0] must set exactly one of secret, config_map, projected, persistent_volume_claim, nfs",
 		},
 		{
 			name: "a pod volume of another kind",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: scratch, empty_dir: {}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: scratch, empty_dir: {}}]\n"),
 			want: "unknown key runtime.kubernetes.pod.volumes[0].empty_dir",
 		},
 		{
 			name: "a host path, which Autopilot refuses",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: host, host_path: {path: /srv}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: host, host_path: {path: /srv}}]\n"),
 			want: "unknown key runtime.kubernetes.pod.volumes[0].host_path",
 		},
 		{
 			name: "a claim with no name",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: share, persistent_volume_claim: {}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: share, persistent_volume_claim: {}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].persistent_volume_claim.name is required",
 		},
 		{
 			name: "a claim name no claim can have",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: share, persistent_volume_claim: {name: Team_Share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: share, persistent_volume_claim: {name: Team_Share}}]\n"),
 			want: `runtime.kubernetes.pod.volumes[0].persistent_volume_claim.name "Team_Share" is no PersistentVolumeClaim's name: a claim is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters`,
 		},
 		{
 			name: "a claim that sets read_only on the source",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: share, persistent_volume_claim: {name: team-share, read_only: true}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: share, persistent_volume_claim: {name: team-share, read_only: true}}]\n"),
 			want: "unknown key runtime.kubernetes.pod.volumes[0].persistent_volume_claim.read_only",
 		},
 		{
 			name: "a claim that is not a mapping",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: share, persistent_volume_claim: team-share}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: share, persistent_volume_claim: team-share}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].persistent_volume_claim must be a mapping",
 		},
 		{
 			name: "an NFS export with no server",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {path: /share}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].nfs.server is required",
 		},
 		{
 			name: "an NFS server given as a URL",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 'nfs://nas.internal.example', path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: 'nfs://nas.internal.example', path: /share}}]\n"),
 			want: `runtime.kubernetes.pod.volumes[0].nfs.server "nfs://nas.internal.example" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server with a port",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 'nas.internal.example:2049', path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: 'nas.internal.example:2049', path: /share}}]\n"),
 			want: `runtime.kubernetes.pod.volumes[0].nfs.server "nas.internal.example:2049" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server with the export in it",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: '10.0.0.2:/share', path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: '10.0.0.2:/share', path: /share}}]\n"),
 			want: `runtime.kubernetes.pod.volumes[0].nfs.server "10.0.0.2:/share" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server in brackets",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: '[fd00::2]', path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: '[fd00::2]', path: /share}}]\n"),
 			want: `runtime.kubernetes.pod.volumes[0].nfs.server "[fd00::2]" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server in inet_aton's octal form",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 010.0.0.2, path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: 010.0.0.2, path: /share}}]\n"),
 			want: `runtime.kubernetes.pod.volumes[0].nfs.server "010.0.0.2" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server in inet_aton's short form",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 1.2.3, path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: 1.2.3, path: /share}}]\n"),
 			want: `runtime.kubernetes.pod.volumes[0].nfs.server "1.2.3" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server in inet_aton's hexadecimal form",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 0x0a000002, path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: 0x0a000002, path: /share}}]\n"),
 			want: `runtime.kubernetes.pod.volumes[0].nfs.server "0x0a000002" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server on the node's loopback",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 127.0.0.1, path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: 127.0.0.1, path: /share}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].nfs.server 127.0.0.1 is the node itself or no address: the node's kubelet mounts the share, so name the server's own address",
 		},
 		{
 			name: "an NFS server named localhost",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: LOCALHOST, path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: LOCALHOST, path: /share}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].nfs.server LOCALHOST is the node itself or no address: the node's kubelet mounts the share, so name the server's own address",
 		},
 		{
 			name: "an NFS server named localhost with the root's trailing dot",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: localhost., path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: localhost., path: /share}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].nfs.server \"localhost.\" must be an IP address or a DNS name, with no scheme, port, path or brackets",
 		},
 		{
 			name: "an NFS server of no address",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: '::', path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: '::', path: /share}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].nfs.server :: is the node itself or no address: the node's kubelet mounts the share, so name the server's own address",
 		},
 		{
 			name: "an NFS server with a dotted capital I",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: \"nas.\u0130nternal.example\", path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: \"nas.\u0130nternal.example\", path: /share}}]\n"),
 			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or an ASCII DNS name; got "nas.\u0130nternal.example"`,
 		},
 		{
 			name: "an NFS server with a Kelvin sign",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: \"\u212Aube.example\", path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: \"\u212Aube.example\", path: /share}}]\n"),
 			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or an ASCII DNS name; got "\u212aube.example"`,
 		},
 		{
 			name: "an NFS server as an IPv4-mapped IPv6 address",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: '::ffff:10.0.0.2', path: /share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: '::ffff:10.0.0.2', path: /share}}]\n"),
 			want: `runtime.kubernetes.pod.volumes[0].nfs.server "::ffff:10.0.0.2" is an IPv4 address in IPv6 form, which the kubelet mounts unbracketed and mount.nfs cannot parse: write 10.0.0.2`,
 		},
 		{
 			name: "an NFS export with no path",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 10.0.0.2}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: 10.0.0.2}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].nfs.path is required",
 		},
 		{
 			name: "an NFS export path that is relative",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 10.0.0.2, path: share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: 10.0.0.2, path: share}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].nfs.path share must be a clean absolute path",
 		},
 		{
 			name: "an NFS export path that is not clean",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 10.0.0.2, path: /share/../etc}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: 10.0.0.2, path: /share/../etc}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].nfs.path /share/../etc must be a clean absolute path",
 		},
 		{
 			name: "two volumes naming one claim",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: b, persistent_volume_claim: {name: team-share}}, {name: a, persistent_volume_claim: {name: team-share}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: b, persistent_volume_claim: {name: team-share}}, {name: a, persistent_volume_claim: {name: team-share}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[1].persistent_volume_claim.name team-share is the claim of runtime.kubernetes.pod.volumes[0] too: mount the one volume at each path (volume_mounts takes sub_path) instead of naming the claim twice",
 		},
 		{
 			name: "an NFS export that sets read_only on the source",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 10.0.0.2, path: /share, read_only: false}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: 10.0.0.2, path: /share, read_only: false}}]\n"),
 			want: "unknown key runtime.kubernetes.pod.volumes[0].nfs.read_only",
 		},
 		{
 			name: "a pod volume with no name",
-			body: kubernetesFile + "    pod:\n      volumes: [{secret: {name: a}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{secret: {name: a}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].name is required",
 		},
 		{
 			name: "a pod volume named twice",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: creds, secret: {name: a}}, {name: creds, config_map: {name: b}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: creds, secret: {name: a}}, {name: creds, config_map: {name: b}}]\n"),
 			want: "runtime.kubernetes.pod.volumes names creds twice",
 		},
 		{
 			name: "a Secret volume with no Secret",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: creds, secret: {items: [{key: a, path: a}]}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: creds, secret: {items: [{key: a, path: a}]}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].secret.name is required",
 		},
 		{
 			name: "an item with no path",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: operator-config, config_map: {name: legion-operator, items: [{key: models.yml}]}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: operator-config, config_map: {name: legion-operator, items: [{key: models.yml}]}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].config_map.items[0].path is required",
 		},
 		{
 			name: "a default_mode written in decimal",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: 440}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: 440}}]\n"),
 			want: modeRefusal("secret", `"440"`),
 		},
 		{
 			name: "a quoted default_mode written in decimal",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: key, config_map: {name: a, default_mode: \"288\"}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: key, config_map: {name: a, default_mode: \"288\"}}]\n"),
 			want: modeRefusal("config_map", `"288"`),
 		},
 		{
 			name: "a default_mode above 0777",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: 01000}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: 01000}}]\n"),
 			want: modeRefusal("secret", `"01000"`),
 		},
 		{
 			name: "a default_mode with a digit octal lacks",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: 0o448}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: 0o448}}]\n"),
 			want: modeRefusal("secret", `"0o448"`),
 		},
 		{
 			name: "a default_mode that is the octal prefix alone",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: \"0o\"}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: \"0o\"}}]\n"),
 			want: modeRefusal("secret", `"0o"`),
 		},
 		{
 			name: "a default_mode YAML reads as a float",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: 08}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: 08}}]\n"),
 			want: modeRefusal("secret", `"08"`),
 		},
 		{
 			name: "a default_mode with a digit separator",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: 0_440}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: 0_440}}]\n"),
 			want: modeRefusal("secret", `"0_440"`),
 		},
 		{
 			name: "a default_mode in hexadecimal",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: 0x120}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: 0x120}}]\n"),
 			want: modeRefusal("secret", `"0x120"`),
 		},
 		{
 			name: "a signed default_mode",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: -0440}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: -0440}}]\n"),
 			want: modeRefusal("secret", `"-0440"`),
 		},
 		{
 			name: "a plus-signed default_mode",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: +0440}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: +0440}}]\n"),
 			want: modeRefusal("secret", `"+0440"`),
 		},
 		{
 			name: "a default_mode that is a mapping",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: {mode: 0440}}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: key, secret: {name: a, default_mode: {mode: 0440}}}]\n"),
 			want: modeRefusal("secret", "a mapping"),
 		},
 		{
 			// Kubernetes sets the mode of a projected volume's files for the whole volume, never per
 			// source, so a projected source takes no default_mode.
 			name: "a default_mode on a projected source",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: token, projected: {sources: [{secret: {name: a, default_mode: 0440}}]}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: token, projected: {sources: [{secret: {name: a, default_mode: 0440}}]}}]\n"),
 			want: "unknown key runtime.kubernetes.pod.volumes[0].projected.sources[0].secret.default_mode",
 		},
 		{
 			name: "a projected volume with no sources",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: token, projected: {sources: []}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: token, projected: {sources: []}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].projected.sources must name at least one source",
 		},
 		{
 			name: "a projected source of another kind",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: token, projected: {sources: [{downward_api: {}}]}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: token, projected: {sources: [{downward_api: {}}]}}]\n"),
 			want: "unknown key runtime.kubernetes.pod.volumes[0].projected.sources[0].downward_api",
 		},
 		{
 			name: "a projected source of two kinds",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: token, projected: {sources: [{secret: {name: a}, config_map: {name: b}}]}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: token, projected: {sources: [{secret: {name: a}, config_map: {name: b}}]}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].projected.sources[0] must set exactly one of service_account_token, secret, config_map",
 		},
 		{
 			name: "a projected token with no path",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: token, projected: {sources: [{service_account_token: {audience: operator}}]}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: token, projected: {sources: [{service_account_token: {audience: operator}}]}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].projected.sources[0].service_account_token.path is required",
 		},
 		{
 			name: "a projected token that expires at once",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: token, projected: {sources: [{service_account_token: {path: token, expiration_seconds: 0}}]}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: token, projected: {sources: [{service_account_token: {path: token, expiration_seconds: 0}}]}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].projected.sources[0].service_account_token.expiration_seconds must be a positive integer",
 		},
 		{
 			name: "a projected token shorter than the API server issues",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: token, projected: {sources: [{service_account_token: {path: token, expiration_seconds: 599}}]}}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: token, projected: {sources: [{service_account_token: {path: token, expiration_seconds: 599}}]}}]\n"),
 			want: "runtime.kubernetes.pod.volumes[0].projected.sources[0].service_account_token.expiration_seconds must be at least 600: the API server issues no projected token for less than 10 minutes",
 		},
 		{
 			name: "a mount naming no volume",
-			body: kubernetesFile + "    pod:\n      volume_mounts: [{volume: creds, mount_path: /etc/legion-operator}]\n",
+			body: kubernetesFileWith("    pod:\n      volume_mounts: [{volume: creds, mount_path: /etc/legion-operator}]\n"),
 			want: "runtime.kubernetes.pod.volume_mounts[0].volume creds names no volume of runtime.kubernetes.pod.volumes",
 		},
 		{
 			name: "a mount with no path",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: creds, secret: {name: a}}]\n      volume_mounts: [{volume: creds}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: creds, secret: {name: a}}]\n      volume_mounts: [{volume: creds}]\n"),
 			want: "runtime.kubernetes.pod.volume_mounts[0].mount_path is required",
 		},
 		{
 			name: "a relative mount path",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: creds, secret: {name: a}}]\n      volume_mounts: [{volume: creds, mount_path: etc/legion-operator}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: creds, secret: {name: a}}]\n      volume_mounts: [{volume: creds, mount_path: etc/legion-operator}]\n"),
 			want: "runtime.kubernetes.pod.volume_mounts[0].mount_path etc/legion-operator must be a clean absolute path",
 		},
 		{
 			name: "a mount path that is not clean",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: creds, secret: {name: a}}]\n      volume_mounts: [{volume: creds, mount_path: /etc/x/../../var/run/legion/boot}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: creds, secret: {name: a}}]\n      volume_mounts: [{volume: creds, mount_path: /etc/x/../../var/run/legion/boot}]\n"),
 			want: "runtime.kubernetes.pod.volume_mounts[0].mount_path /etc/x/../../var/run/legion/boot must be a clean absolute path",
 		},
 		{
 			name: "two mounts at one path",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: creds, secret: {name: a}}, {name: operator-config, config_map: {name: b}}]\n" +
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: creds, secret: {name: a}}, {name: operator-config, config_map: {name: b}}]\n") +
 				"      volume_mounts: [{volume: creds, mount_path: /etc/legion-operator}, {volume: operator-config, mount_path: /etc/legion-operator}]\n",
 			want: "runtime.kubernetes.pod.volume_mounts[1].mount_path /etc/legion-operator is also runtime.kubernetes.pod.volume_mounts[0]'s",
 		},
 		{
 			name: "a mount's read_only is no boolean",
-			body: kubernetesFile + "    pod:\n      volumes: [{name: creds, secret: {name: a}}]\n      volume_mounts: [{volume: creds, mount_path: /etc/legion-operator, read_only: sometimes}]\n",
+			body: kubernetesFileWith("    pod:\n      volumes: [{name: creds, secret: {name: a}}]\n      volume_mounts: [{volume: creds, mount_path: /etc/legion-operator, read_only: sometimes}]\n"),
 			want: "runtime.kubernetes.pod.volume_mounts[0].read_only must be true or false",
 		},
 	} {
@@ -1822,7 +1867,7 @@ func operatorRoutePod(t *testing.T, audience, account string) string {
 // load: nothing expands the placeholder, and a pod carrying a token for its text would have every
 // model call refused.
 func TestLoadForValidationRefusesTheOperatorRouteWithItsAudienceUnfilled(t *testing.T) {
-	_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    pod:\n"+operatorRoutePod(t, "", "")), noEnv)
+	_, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith("    pod:\n")+operatorRoutePod(t, "", "")), noEnv)
 	if err == nil || !strings.Contains(err.Error(), `.service_account_token.audience "${MODEL_TOKEN_AUDIENCE}" is an unfilled placeholder`) {
 		t.Fatalf("LoadForValidation = %v, want the unfilled audience placeholder refused", err)
 	}
@@ -1834,7 +1879,7 @@ func TestLoadForValidationRefusesTheOperatorRouteWithItsAudienceUnfilled(t *test
 // gateway's audience put in, and the account placeholder left standing, is refused too: nothing
 // expands the placeholder, and the API server admits no pod for an account that does not exist.
 func TestLoadForValidationRefusesTheOperatorRouteWithItsAccountUnfilled(t *testing.T) {
-	_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    pod:\n"+operatorRoutePod(t, operatorRouteAudience, "")), noEnv)
+	_, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith("    pod:\n")+operatorRoutePod(t, operatorRouteAudience, "")), noEnv)
 	if err == nil || !strings.Contains(err.Error(), `runtime.kubernetes.pod.service_account "${POD_SERVICE_ACCOUNT}" is an unfilled placeholder: put the ServiceAccount the pods run as in its place`) {
 		t.Fatalf("LoadForValidation = %v, want the unfilled ServiceAccount placeholder refused", err)
 	}
@@ -1857,7 +1902,6 @@ postgres_dsn: postgres://legion:secret@127.0.0.1:5432/legion?sslmode=disable
 state_dir: /tmp/stage4b/state
 operator_token_file: /tmp/stage4b/operator-token
 envoy_url: http://envoy-listener.internal.example:9020
-envoy_token_file: /tmp/stage4b/envoy-token
 nats_urls:
   - nats://nats.internal.example:4222
 dispatch_url: https://dispatch.internal.example
@@ -1886,6 +1930,10 @@ runtime:
     session_dsn_secret: SESSION_DSN
     kubeconfig: /home/ubuntu/.kube/legion-daemon-production
     context: legion-daemon@example
+    agent_secrets:
+      url: https://secrets.internal.example
+      token_file: /var/run/legion/agent-secrets-token/token
+      exchange_audience: legion-broker-exchange
     pod:
 `+operatorRoutePod(t, operatorRouteAudience, operatorRouteAccount))
 
@@ -1912,7 +1960,8 @@ runtime:
 const agentSecretsTokenFile = "      token_file: /var/run/legion/agent-secrets-token/token\n"
 
 func TestAgentSecretsBlockSettlesWithDefaults(t *testing.T) {
-	path := writeConfigFile(t, kubernetesFile+"    agent_secrets:\n      url: https://secrets.internal.example\n"+agentSecretsTokenFile)
+	path := writeConfigFile(t, kubernetesFileWith("    agent_secrets:\n      url: https://secrets.internal.example\n")+agentSecretsTokenFile+
+		"      exchange_audience: legion-broker-exchange\n")
 	cfg, err := LoadForValidation(path, noEnv)
 	if err != nil {
 		t.Fatal(err)
@@ -1920,19 +1969,10 @@ func TestAgentSecretsBlockSettlesWithDefaults(t *testing.T) {
 	got := cfg.Runtime.Kubernetes.AgentSecrets
 	want := &AgentSecretsConfig{
 		URL: "https://secrets.internal.example", TokenFile: "/var/run/legion/agent-secrets-token/token", Audience: "agent-secrets", TokenExpirySeconds: 3600,
+		ExchangeAudience: "legion-broker-exchange",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("agent_secrets = %+v, want %+v", got, want)
-	}
-}
-
-func TestAgentSecretsBlockIsAbsentByDefault(t *testing.T) {
-	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile), noEnv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Runtime.Kubernetes.AgentSecrets != nil {
-		t.Fatalf("agent_secrets = %+v without the block", cfg.Runtime.Kubernetes.AgentSecrets)
 	}
 }
 
@@ -1960,7 +2000,7 @@ func TestAgentSecretsBlockRefusals(t *testing.T) {
 		"not a mapping": {"    agent_secrets: yes\n", "runtime.kubernetes.agent_secrets must be a mapping"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+tc.block), noEnv)
+			_, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith(tc.block)), noEnv)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err %v, want %q", err, tc.want)
 			}
@@ -1973,8 +2013,8 @@ func TestAgentSecretsBlockRefusals(t *testing.T) {
 // (BROKER_EXCHANGE_K8S_AUDIENCE). It lives inside the agent_secrets block, so a file that sets it
 // and names no broker is refused for the broker it names none of; it may not be empty, and it may
 // not be the enrollment's own audience, since the broker verifies the two at different routes and
-// the cluster admits one projected volume per audience. Unset, the block settles as it did before
-// the key existed.
+// the cluster admits one projected volume per audience. Set, it settles as written; unset, the
+// file is refused (TestKubernetesRequiresTheExchangeAudience).
 func TestExchangeAudienceNeedsAgentSecrets(t *testing.T) {
 	const tf = agentSecretsTokenFile
 	for name, tc := range map[string]struct{ block, want string }{
@@ -1985,18 +2025,17 @@ func TestExchangeAudienceNeedsAgentSecrets(t *testing.T) {
 			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both broker)"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+tc.block), noEnv)
+			_, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith(tc.block)), noEnv)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err %v, want %q", err, tc.want)
 			}
 		})
 	}
 	for name, tc := range map[string]struct{ block, want string }{
-		"set":   {"      exchange_audience: legion-broker-exchange\n", "legion-broker-exchange"},
-		"unset": {"", ""},
+		"set": {"      exchange_audience: legion-broker-exchange\n", "legion-broker-exchange"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    agent_secrets:\n      url: https://secrets.internal.example\n"+tf+tc.block), noEnv)
+			cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith("    agent_secrets:\n      url: https://secrets.internal.example\n")+tf+tc.block), noEnv)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2007,54 +2046,38 @@ func TestExchangeAudienceNeedsAgentSecrets(t *testing.T) {
 	}
 }
 
-// TestEnvoyTokenFileIsOptionalWithAgentSecrets: under runtime: kubernetes envoy_token_file may be
-// left out only where runtime.kubernetes.agent_secrets sets exchange_audience, which gives every
-// enrolled pod an identity its sessions trade for broker tokens of their own; the daemon then
-// presents its own broker token to the listener, and no pod is handed the Envoy bearer. Without the
-// block, or with a block that sets no exchange_audience, the file is required as before, since a pod
-// would have no credential for the listener at all. A file that sets both keeps the bearer.
-func TestEnvoyTokenFileIsOptionalWithAgentSecrets(t *testing.T) {
-	const (
-		bearer   = "envoy_token_file: /var/run/legion/ENVOY_TOKEN\n"
-		exchange = "      exchange_audience: legion-broker-exchange\n"
-		required = "envoy_token_file is required when runtime is kubernetes: every pod receives the Envoy bearer unless runtime.kubernetes.agent_secrets.exchange_audience is set"
-	)
-	block := "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile
+// TestKubernetesRequiresTheExchangeAudience: under runtime: kubernetes the loader refuses a file
+// whose agent_secrets block names no exchange_audience, or that has no such block. The Envoy
+// listener takes no shared bearer and envoy_token_file is refused, so the broker tokens each pod's
+// sessions trade through the identity that audience projects, and the one the daemon trades for
+// itself, are every credential a pod or the daemon holds for the listener: without the audience
+// no call to the listener carries one. With it, the daemon presents its broker token
+// (ListenerPresentsBrokerToken). A tmux daemon never does: it has no pod identity to trade, and
+// calls its loopback listener with no credential.
+func TestKubernetesRequiresTheExchangeAudience(t *testing.T) {
+	const required = "runtime.kubernetes.agent_secrets.exchange_audience is required when runtime is kubernetes:" +
+		" the Envoy listener takes no shared bearer, so each pod's sessions trade broker tokens of their own through the identity this audience projects" +
+		" and the daemon presents the listener its own"
 	for name, body := range map[string]string{
-		"no agent_secrets block":              kubernetesWith(bearer, ""),
-		"agent_secrets, no exchange_audience": kubernetesWith(bearer, "") + block,
+		"no agent_secrets block":              kubernetesNoBroker,
+		"agent_secrets, no exchange_audience": kubernetesNoBroker + "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, body), noEnv)
-			if err == nil || !strings.Contains(err.Error(), required) {
+			if err == nil || err.Error() != required {
 				t.Fatalf("err %v, want %q", err, required)
 			}
 		})
 	}
-	for name, tc := range map[string]struct {
-		body, want string
-		broker     bool
-	}{
-		"exchange_audience and no envoy_token_file": {kubernetesWith(bearer, "") + block + exchange, "", true},
-		"exchange_audience and envoy_token_file":    {kubernetesFile + block + exchange, "/var/run/legion/ENVOY_TOKEN", false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			cfg, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.EnvoyTokenFile != tc.want {
-				t.Fatalf("envoy_token_file settled as %q, want %q", cfg.EnvoyTokenFile, tc.want)
-			}
-			if got := cfg.ListenerPresentsBrokerToken(); got != tc.broker {
-				t.Fatalf("ListenerPresentsBrokerToken() = %v, want %v: the daemon presents its broker token to the listener exactly where it holds no Envoy bearer", got, tc.broker)
-			}
-		})
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile), noEnv)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// A tmux daemon with no envoy_token_file has no pod identity to trade, and sends the listener
-	// no credential, as it always has.
+	if !cfg.ListenerPresentsBrokerToken() {
+		t.Fatal("ListenerPresentsBrokerToken() = false under runtime: kubernetes with exchange_audience; want true: the daemon's broker token is its one listener credential")
+	}
 	if (Config{Runtime: Runtime{Name: "tmux"}}).ListenerPresentsBrokerToken() {
-		t.Fatal("a tmux daemon with no envoy_token_file presents a broker token to the listener; want none: it has no pod identity to trade")
+		t.Fatal("a tmux daemon presents a broker token to the listener; want none: it has no pod identity to trade")
 	}
 }
 
@@ -2067,7 +2090,7 @@ func TestAgentSecretsURLRefusalNamesNoCredential(t *testing.T) {
 		"https://secrets.example/#qtok77",
 		"https://tokuser9f3:hunter2pw%zz@secrets.example",
 	} {
-		_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    agent_secrets:\n      url: \""+raw+"\"\n"+agentSecretsTokenFile), noEnv)
+		_, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith("    agent_secrets:\n      url: \"")+raw+"\"\n"+agentSecretsTokenFile), noEnv)
 		if err == nil || !strings.Contains(err.Error(), "agent_secrets.url must be an absolute URL") {
 			t.Fatalf("url %q: err %v, want the url refused", raw, err)
 		}
@@ -2082,7 +2105,8 @@ func TestAgentSecretsURLRefusalNamesNoCredential(t *testing.T) {
 func TestLoopbackBrokerMayBePlainHTTP(t *testing.T) {
 	for _, url := range []string{"http://127.0.0.1:13380", "http://LOCALHOST:13380"} {
 		t.Run(url, func(t *testing.T) {
-			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    agent_secrets:\n      url: "+url+"\n"+agentSecretsTokenFile), noEnv)
+			_, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith("    agent_secrets:\n      url: ")+url+"\n"+agentSecretsTokenFile+
+				"      exchange_audience: legion-broker-exchange\n"), noEnv)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2092,7 +2116,7 @@ func TestLoopbackBrokerMayBePlainHTTP(t *testing.T) {
 
 // A mixed-case ASCII name passes: DNS names compare without regard to ASCII case.
 func TestNFSServerMayBeMixedCaseASCII(t *testing.T) {
-	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    pod:\n      volumes: [{name: nas, nfs: {server: NAS.Internal.Example, path: /share}}]\n"), noEnv)
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith("    pod:\n      volumes: [{name: nas, nfs: {server: NAS.Internal.Example, path: /share}}]\n")), noEnv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2117,7 +2141,7 @@ func TestPodURLHostMustBeASCII(t *testing.T) {
 			`bind must be an IP address or an ASCII DNS name; got "\u212aube.example"`},
 		"bind with a Kelvin sign beside advertise_host": {kubernetesWith("bind: 10.0.0.5", "bind: \"\u212Aube.example\"\nadvertise_host: legion-daemon.legion.svc"),
 			`bind must be an IP address or an ASCII DNS name; got "\u212aube.example"`},
-		"agent_secrets.url with a long s": {kubernetesFile + "    agent_secrets:\n      url: http://localho\u017Ft:13380\n" + agentSecretsTokenFile,
+		"agent_secrets.url with a long s": {kubernetesFileWith("    agent_secrets:\n      url: http://localho\u017Ft:13380\n") + agentSecretsTokenFile,
 			`runtime.kubernetes.agent_secrets.url host must be an IP address or an ASCII DNS name; got "localho\u017ft"`},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -2131,7 +2155,7 @@ func TestPodURLHostMustBeASCII(t *testing.T) {
 
 // Both keys of `runtime.kubernetes.plugins` settle when each is an exact version.
 func TestPluginsBlockSettlesBothKeys(t *testing.T) {
-	path := writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: 9.7.0\n      pi_envoy: 9.6.1\n")
+	path := writeConfigFile(t, kubernetesFileWith("    plugins:\n      pi_legion: 9.7.0\n      pi_envoy: 9.6.1\n"))
 	cfg, err := LoadForValidation(path, noEnv)
 	if err != nil {
 		t.Fatal(err)
@@ -2158,7 +2182,7 @@ func TestPluginsBlockIsAbsentByDefault(t *testing.T) {
 // Each of pi_legion and pi_envoy may instead be an absolute tarball path or an http(s) URL the
 // pod can read.
 func TestPluginsBlockAcceptsAPathAndAURL(t *testing.T) {
-	path := writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: /srv/plugins/pi-legion-9.7.0.tgz\n      pi_envoy: https://cache.internal.example/pi-envoy-9.6.1.tgz\n")
+	path := writeConfigFile(t, kubernetesFileWith("    plugins:\n      pi_legion: /srv/plugins/pi-legion-9.7.0.tgz\n      pi_envoy: https://cache.internal.example/pi-envoy-9.6.1.tgz\n"))
 	cfg, err := LoadForValidation(path, noEnv)
 	if err != nil {
 		t.Fatal(err)
@@ -2173,7 +2197,7 @@ func TestPluginsBlockAcceptsAPathAndAURL(t *testing.T) {
 // An upper-case scheme is accepted — url.Parse lowercases it — and stored in its canonical,
 // lower-case form: the one bunSpec (internal/runtime/sandbox/plugins.go) renders for the install.
 func TestPluginsBlockCanonicalizesAnUppercaseScheme(t *testing.T) {
-	path := writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: HTTPS://cache/pi-legion.tgz\n      pi_envoy: 9.6.1\n")
+	path := writeConfigFile(t, kubernetesFileWith("    plugins:\n      pi_legion: HTTPS://cache/pi-legion.tgz\n      pi_envoy: 9.6.1\n"))
 	cfg, err := LoadForValidation(path, noEnv)
 	if err != nil {
 		t.Fatal(err)
@@ -2205,7 +2229,7 @@ func TestPluginsBlockRefusals(t *testing.T) {
 		"not a mapping": {"    plugins: yes\n", "runtime.kubernetes.plugins must be a mapping"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+tc.block), noEnv)
+			_, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith(tc.block)), noEnv)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err %v, want %q", err, tc.want)
 			}
@@ -2216,7 +2240,7 @@ func TestPluginsBlockRefusals(t *testing.T) {
 // test_postgres settles true when the file sets it, so the runtime gives every issue pod's
 // launcher the server to start and every role of that pod its DSN.
 func TestTestPostgresSettlesFromTheFile(t *testing.T) {
-	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    test_postgres: true\n"), noEnv)
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFileWith("    test_postgres: true\n")), noEnv)
 	if err != nil {
 		t.Fatal(err)
 	}

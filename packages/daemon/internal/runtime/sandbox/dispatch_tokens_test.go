@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -16,12 +17,15 @@ import (
 // carried a Dispatch token, whichever daemon started them (Runtime.DispatchTokens).
 
 // beforeTheBroker is a tester and an implementer of two issues, each in a pod of its own that a
-// daemon before dispatch_token_broker built (dispatchBearer), so neither pod carries an exchange
-// identity.
+// daemon before dispatch_token_broker built (dispatchBearer), edited into pods built before the
+// exchange identity (builtWithout), so neither pod carries one.
 func beforeTheBroker(t *testing.T) (*rig, runtime.Locator, runtime.Locator) {
 	t.Helper()
 	g := newRig(t, nil, withOptions(dispatchBearer))
-	return g, g.spawn(workerSpec(t)), g.spawn(childSpec(t))
+	tester, implementer := g.spawn(workerSpec(t)), g.spawn(childSpec(t))
+	g.builtWithout(tester.Sandbox.Name, exchangeIdentityVolume)
+	g.builtWithout(implementer.Sandbox.Name, exchangeIdentityVolume)
+	return g, tester, implementer
 }
 
 // restartedUnder is a daemon restarted over g's running pods under move, with the launcher of each
@@ -45,23 +49,16 @@ func restartedUnder(t *testing.T, g *rig, move func(*Options), locs ...runtime.L
 	return r
 }
 
-// resumedInto is loc's claim resumed at generation 2 by r, on the session its running generation
-// recorded, into the pod it runs in: the launch fails the test if it replaces that pod.
-func resumedInto(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) runtime.Locator {
+// resumeOf is the launch of loc's claim at generation 2, on the session its running generation
+// recorded, into the pod it runs in.
+func resumeOf(t *testing.T, loc runtime.Locator) runtime.SpawnSpec {
 	t.Helper()
 	spec := workerSpec(t)
 	if loc.Claim == childToken {
 		spec = childSpec(t)
 	}
 	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-"+string(loc.Claim)+"-g2", resumeSession
-	next, err := r.Resume(g.ctx, &loc, spec)
-	if err != nil {
-		t.Fatalf("Resume %s: %v", loc.Claim, err)
-	}
-	if next.Sandbox.PodUID != loc.Sandbox.PodUID {
-		t.Fatalf("Resume %s replaced its pod %s; this test is about the pod a launch keeps", loc.Claim, loc.Sandbox.PodUID)
-	}
-	return next
+	return spec
 }
 
 // adoptedAndObserved adopts locs into r as a daemon's boot does (ReconcileOrphans), starts its
@@ -140,12 +137,16 @@ func logged(t *testing.T, logs *lockedLog, msg string) []map[string]any {
 	return records
 }
 
-// Two launches into kept pods built before the setting carry the transition token: each raises the
-// first count, the time of the last is when its start was sent, and both generations are live
-// carrying a token, which the transition line names beside the claim and the pod. A daemon
-// restarted over those pods counts both again from the record each start wrote, while the pods
-// still run, and none of its own boot's transition launches; replacing one pod by its update round
-// lets its process go, and the count falls to 1, then, with the other, to 0.
+// Two launches into kept pods built before the exchange identity, under
+// dispatch_token_transition_file, wait for their pods' update rounds: dispatchCredential would hand
+// each the transition token, but listenerCredential refuses each after it, since the Envoy
+// listener takes no shared bearer and a role of a pod with no identity to trade would hold no
+// credential for it. A refused launch sends no start, so neither raises the transition count, the
+// live count stays 0 on the daemon that refused them, and neither the transition line nor a live
+// count line is logged. A daemon restarted over those pods counts the generations an earlier daemon
+// started with the shared bearer from the record each start wrote, while the pods still run, and
+// no transition launch of its own boot; replacing one pod by its update round lets its process go,
+// and the count falls to 1, then, with the other, to 0.
 func TestTheDispatchTokenCountsFollowTheLaunches(t *testing.T) {
 	g, tester, implementer := beforeTheBroker(t)
 	logs := &lockedLog{}
@@ -157,44 +158,35 @@ func TestTheDispatchTokenCountsFollowTheLaunches(t *testing.T) {
 		t.Fatalf("a daemon that launched nothing yet counts %+v, want nothing", got)
 	}
 
-	keptTester := resumedInto(t, g, r2, tester)
-	keptImplementer := resumedInto(t, g, r2, implementer)
-	sent := *g.now.Load()
-	got := r2.DispatchTokens()
-	if got.TransitionLaunches != 2 || !got.LastTransitionLaunch.Equal(sent) || got.LiveLaunches != 2 {
-		t.Fatalf("after two launches into kept pods with no exchange identity the counts are %+v, want 2 transition launches, the last at %s, and 2 live launches carrying a Dispatch token",
-			got, sent.Format(time.RFC3339Nano))
+	for _, loc := range []runtime.Locator{tester, implementer} {
+		if _, err := r2.Resume(g.ctx, &loc, resumeOf(t, loc)); !errors.Is(err, runtime.ErrAwaitingPodRound) || !strings.Contains(err.Error(), "the Envoy listener, which takes no shared bearer") {
+			t.Fatalf("Resume %s = %v, want listenerCredential's runtime.ErrAwaitingPodRound", loc.Claim, err)
+		}
 	}
-	lines := logged(t, logs, "sandbox: a launch into a pod with no exchange identity carries the transition Dispatch token")
-	if len(lines) != 2 {
-		t.Fatalf("the runtime logged %d transition launches, want 2: %s", len(lines), logs.String())
+	if got := r2.DispatchTokens(); got != (DispatchTokens{}) {
+		t.Fatalf("after two refused launches into kept pods with no exchange identity the counts are %+v, want no transition launch and 0 live launches carrying a Dispatch token", got)
 	}
-	if last := lines[1]; last["claim"] != string(childToken) || last["pod"] != implementer.Sandbox.Name ||
-		last["transitionLaunches"] != float64(2) || last["liveLaunchesWithDispatchToken"] != float64(2) {
-		t.Errorf("the second transition line is %v, want the implementer's claim and pod with 2 transition launches and 2 live", last)
+	if lines := logged(t, logs, "sandbox: a launch into a pod with no exchange identity carries the transition Dispatch token"); len(lines) != 0 {
+		t.Errorf("the runtime logged %d transition launches for two refused launches, want none: %s", len(lines), logs.String())
 	}
-	var counts []any
-	for _, line := range logged(t, logs, "sandbox: live launches carrying a Dispatch token") {
-		counts = append(counts, line["count"])
-	}
-	if len(counts) != 2 || counts[0] != float64(1) || counts[1] != float64(2) {
-		t.Errorf("the runtime logged the live count as %v, want it at each change: 1, then 2", counts)
+	if lines := logged(t, logs, "sandbox: live launches carrying a Dispatch token"); len(lines) != 0 {
+		t.Errorf("the runtime logged the live count %d times for two refused launches, want never: %s", len(lines), logs.String())
 	}
 
-	r3 := restartedUnder(t, g, dispatchBroker(testTransitionToken), keptTester, keptImplementer)
-	observations := adoptedAndObserved(t, g, r3, keptTester, keptImplementer)
-	got = r3.DispatchTokens()
+	r3 := restartedUnder(t, g, dispatchBroker(testTransitionToken), tester, implementer)
+	observations := adoptedAndObserved(t, g, r3, tester, implementer)
+	got := r3.DispatchTokens()
 	if got.LiveLaunches != 2 {
-		t.Fatalf("after a restart the live launches carrying a Dispatch token number %d while both kept pods still run, want 2: the record each start wrote says it carried one", got.LiveLaunches)
+		t.Fatalf("after a restart the live launches carrying a Dispatch token number %d while both kept pods still run, want 2: the record each start of the shared bearer wrote says it carried one", got.LiveLaunches)
 	}
 	if got.TransitionLaunches != 0 || !got.LastTransitionLaunch.IsZero() {
 		t.Errorf("a restarted daemon that launched nothing counts %d transition launches, the last at %s, want none of its own boot",
 			got.TransitionLaunches, got.LastTransitionLaunch)
 	}
 
-	replacedByItsRound(t, g, r3, observations, keptTester)
+	replacedByItsRound(t, g, r3, observations, tester)
 	liveLaunches(t, r3, 1, "with the tester's pod replaced by its round")
-	replacedByItsRound(t, g, r3, observations, keptImplementer)
+	replacedByItsRound(t, g, r3, observations, implementer)
 	liveLaunches(t, r3, 0, "with both pods replaced by their rounds")
 }
 

@@ -151,13 +151,15 @@ func TestAnIssuePodMountsTheSessionWriterTokenWhereNoRoleSeesIt(t *testing.T) {
 // A microVM issue pod whose block names the metadata endpoint and whose session database names a
 // writer audience carries both tokens its launcher exchanges, each in a volume of its own for an
 // audience of its own — the metadata endpoint's for the Workload Identity pool, the session
-// proxy's for the writer audience — and no other projected token, since the admission policy
-// admits one volume per audience. Each is mounted read-only in the roles container at its own
-// directory of RolesDir, and the launcher is told both.
+// proxy's for the writer audience — beside the secrets broker's two every pod carries (its own
+// audience's and the exchange audience's), and no other projected token, since the admission
+// policy admits one volume per audience. Each is mounted read-only in the roles container at its
+// own directory of RolesDir, and the launcher is told both.
 func TestAMicroVMIssuePodCarriesTheWriterTokenBesideTheMetadataEndpointsToken(t *testing.T) {
 	r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}, func(o *Options) { o.SessionStore = cloudSQLWriterStore })
 	pod := podOf(t, r, rootSpec(t))
-	want := map[string][]string{testWorkloadPool: {workloadIdentityTokenVolume}, testWriterAudience: {sessionWriterTokenVolume}}
+	want := map[string][]string{testWorkloadPool: {workloadIdentityTokenVolume}, testWriterAudience: {sessionWriterTokenVolume},
+		"agent-secrets": {agentSecretsTokenVolume}, testExchangeAudience: {agentSecretsExchangeVolume}}
 	if got := projectedTokens(pod); !maps.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("the pod's projected tokens are %v, want exactly %v", got, want)
 	}
@@ -192,7 +194,8 @@ func TestAKeptVolumeMicroVMIssuePodCarriesTheWriterTokenUnderRolesDir(t *testing
 		t.Fatalf("the Sandbox claims %+v, not the kept volume, so this case proves nothing", s.Spec.VolumeClaimTemplates)
 	}
 	pod := s.Spec.PodTemplate.Spec
-	want := map[string][]string{testWorkloadPool: {workloadIdentityTokenVolume}, testWriterAudience: {sessionWriterTokenVolume}}
+	want := map[string][]string{testWorkloadPool: {workloadIdentityTokenVolume}, testWriterAudience: {sessionWriterTokenVolume},
+		"agent-secrets": {agentSecretsTokenVolume}, testExchangeAudience: {agentSecretsExchangeVolume}}
 	if got := projectedTokens(pod); !maps.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("the kept-volume pod's projected tokens are %v, want exactly %v", got, want)
 	}
@@ -405,7 +408,6 @@ func TestADaemonKeepsTheControllersPodItsOwnConfigurationBuiltInEitherLayout(t *
 		t.Run(name, func(t *testing.T) {
 			configured := func(o *Options) {
 				o.SessionStore = store
-				o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 				o.Pod.Volumes = append(o.Pod.Volumes, roles)
 				o.Pod.VolumeMounts = append(o.Pod.VolumeMounts, corev1.VolumeMount{Name: roles.Name, MountPath: podHome + "/operator-roles", ReadOnly: true})
 				o.RoleConfigFiles = map[claim.Role][]string{claim.RoleController: {overlay}}
@@ -460,7 +462,7 @@ func TestCheckPodRefusesTheSessionWriterTokensName(t *testing.T) {
 	for name, store := range map[string]ompsessions.Store{
 		"postgres": postgresStore, "cloudsql-iam": cloudSQLImpersonatingStore, "cloudsql-iam with a writer audience": cloudSQLWriterStore,
 	} {
-		if err := CheckPod(pod, nil, testOptions().Tools, []string{"ENVOY_TOKEN"}, nil, store, NoExchange); err == nil || err.Error() != want {
+		if err := CheckPod(pod, nil, testOptions().Tools, []string{"ENVOY_TOKEN"}, nil, store, false); err == nil || err.Error() != want {
 			t.Errorf("under %s, CheckPod = %v, want %q", name, err, want)
 		}
 	}

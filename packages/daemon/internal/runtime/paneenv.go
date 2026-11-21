@@ -48,9 +48,10 @@ const SessionExclusiveVariable = "OMP_SESSION_EXCLUSIVE"
 const SessionExclusiveValue = "1"
 
 // launchSecrets are every secret the daemon hands a launch in its spec (daemon.launchSecrets: the
-// Envoy bearer and the pane NATS nkey seed, each when the daemon has one), which a runtime gives
-// the agent as a file of the launch's own behind a `<NAME>_FILE` pointer it sets per launch.
-var launchSecrets = []string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}
+// pane NATS nkey seed, when the daemon has one), which a runtime gives the agent as a file of the
+// launch's own behind a `<NAME>_FILE` pointer it sets per launch. No Envoy bearer is among them:
+// the listener takes no shared one.
+var launchSecrets = []string{"NATS_NKEY_SEED"}
 
 // urlPassword is a URL whose userinfo carries a password, `scheme://user:password@`, anywhere in
 // a value: a database URL, a NATS URL with credentials, one of a comma-separated list of either.

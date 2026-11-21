@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -715,10 +714,6 @@ func TestARelaunchedProcessStillStaleIsChargedUntilWorkerDied(t *testing.T) {
 func TestPrepareResolvesThePluginPairFromTheConfiguration(t *testing.T) {
 	t.Run("kubernetes, the file names a pair", func(t *testing.T) {
 		cfg := kubernetesConfig(t, "https://127.0.0.1:1")
-		cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
-		if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
 		cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 		cfg.Runtime.Kubernetes.Plugins = &config.PluginsConfig{PiLegion: "9.7.0", PiEnvoy: "9.6.1"}
 
@@ -733,10 +728,6 @@ func TestPrepareResolvesThePluginPairFromTheConfiguration(t *testing.T) {
 	})
 	t.Run("kubernetes, the file names none", func(t *testing.T) {
 		cfg := kubernetesConfig(t, "https://127.0.0.1:1")
-		cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
-		if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
 		cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 
 		p, err := prepare(cfg, quietLogger(), overrides{environ: []string{}})

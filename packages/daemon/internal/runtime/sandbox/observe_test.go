@@ -80,8 +80,9 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		}
 		return status
 	}
-	// launchedUnder is a pod whose containers are the ones a runtime with testOptions edited by edit
-	// creates, as a daemon under that configuration left it running.
+	// launchedUnder is a pod whose containers and volumes are the ones a runtime with testOptions
+	// edited by edit creates, as a daemon under that configuration left it running: the volumes
+	// carry the secrets broker's enrollment its record names the broker URL of (recordUnder).
 	launchedUnder := func(edit func(*Options)) func(*corev1.Pod) {
 		opts := testOptions()
 		edit(&opts)
@@ -89,8 +90,8 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		containers := podOf(t, r, workerSpec(t)).Containers
-		return func(p *corev1.Pod) { p.Spec.Containers = containers }
+		spec := podOf(t, r, workerSpec(t))
+		return func(p *corev1.Pod) { p.Spec.Containers, p.Spec.Volumes = spec.Containers, spec.Volumes }
 	}
 	unmoved := func(*Options) {}
 	// withoutConnect drops the tester launcher's --connect and its address, as no pod this runtime

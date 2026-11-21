@@ -1,5 +1,5 @@
 # legion controller start --config controller.yaml [--daemon-url http://127.0.0.1:13370]
-# The operator-side file: the same key names as legion.yaml, only the fourteen keys the controller
+# The operator-side file: the same key names as legion.yaml, only the thirteen keys the controller
 # needs; any other key is refused naming it. Relative paths resolve against this file's directory
 # (no ~ expansion). The command also writes the controller's gh files (the review App's read-only
 # token for every owner that App is installed on, and for each owner a configured rename moved a
@@ -18,10 +18,12 @@ daemon_url: http://127.0.0.1:13370
 # The daemon's operator token (the value its own operator_token_file holds), in a file only you can
 # read (chmod 0600); a group- or world-readable file is refused before anything is fetched.
 operator_token_file: ./operator-token
-# The Envoy listener and NATS the controller talks to, and the listener's bearer (the providers
-# Secret's ENVOY_TOKEN). envoy_token_file is optional for a loopback dev listener.
+# The Envoy listener and NATS the controller talks to. No bearer goes with them: the listener takes
+# no shared one, and envoy_token_file is refused. The controller's session presents the broker token
+# it trades with this machine's own identity at the secrets broker its environment names
+# (AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY and the rest), or no credential where it has
+# none, which only a loopback listener serves.
 envoy_url: http://envoy-listener.example:9020
-envoy_token_file: ./envoy-token
 nats_urls:
   - nats://nats.example:4222
 # The NATS nkey user seed the controller's Envoy connection authenticates as (the providers

@@ -52,13 +52,12 @@ func TestConfigCheckRefusesARoleOverlayNoPodMountHolds(t *testing.T) {
 		"        - {name: operator-route, config_map: {name: legion-operator-route}}\n" +
 		"      volume_mounts:\n" +
 		"        - {volume: operator-route, mount_path: /etc/legion-operator}\n"
-	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
 	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 
 	config := kubernetesCheckConfig(t, pod+"role_config_files: {implementer: [/etc/legion-operator/fallback.yml], merger: [/etc/legion-operator/fallback.yml]}\n")
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
-	if want := demoCheckConfigOK + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+	if want := demoCheckConfigOK + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("a mounted overlay: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 

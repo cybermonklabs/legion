@@ -10,4 +10,4 @@ body: |-
   the call up to three times, one second and then two seconds apart, and logs each failure at
   Warn. When no attempt gets that `200`, the release frees nothing and answers `503` (no answer, a
   `5xx`, a `429`, or a `404` or `405` from an older broker) or `502` (any other `4xx`). Run it
-  again. A daemon with no `exchange_audience` registers no pod session and makes no such call.
+  again. A daemon under `runtime: tmux` registers no pod session and makes no such call.

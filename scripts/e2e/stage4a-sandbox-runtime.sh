@@ -104,9 +104,11 @@
 # STAGE4A_EVIDENCE_DIR where the transcript and the runtime's log go (default a
 # fresh /tmp directory, kept and printed).
 #
-# The secrets-* checks are optional and print CHECK <name>: SKIPPED-BLOCKED when
-# unconfigured: LEGION_E2E_AGENT_SECRETS_URL, LEGION_E2E_AGENT_SECRETS_AUTO_SHA256, and
-# LEGION_E2E_AGENT_SECRETS_ACCOUNT
+# The secrets inputs are required, as the runtime requires the broker: under runtime: kubernetes
+# every pod trades its own exchange identity for its credentials, since the Envoy listener takes no
+# shared bearer, so the runtime refuses to start without runtime.kubernetes.agent_secrets.
+# LEGION_E2E_AGENT_SECRETS_URL names the broker, LEGION_E2E_AGENT_SECRETS_AUTO_SHA256 the
+# automatic grant the secrets-* checks prove, and LEGION_E2E_AGENT_SECRETS_ACCOUNT
 # (<namespace>/<name> of a ServiceAccount of the proof's own, which the broker's
 # BROKER_SERVICE_LOGINS lets log in as legion-daemon and no pod runs as: each account holds one
 # launcher credential, so logging in as a running daemon's account would take that daemon's). The
@@ -218,6 +220,12 @@ gke-autopilot | eks) ;;
 esac
 case "$image" in *@sha256:*) ;; *) fail "LEGION_E2E_IMAGE must be the worker image pinned by digest (…@sha256:…), not '$image'" ;; esac
 [ -n "$storage_class" ] || fail "LEGION_E2E_STORAGE_CLASS is unset: name the issue volumes' StorageClass (the cluster has no default to fall back on)"
+[ -n "$agent_secrets_url" ] ||
+  fail "LEGION_E2E_AGENT_SECRETS_URL is unset: the runtime requires the secrets broker (runtime.kubernetes.agent_secrets), since the Envoy listener takes no shared bearer and every pod trades its own identity; name the broker"
+[ -n "$agent_secrets_auto_sha" ] ||
+  fail "LEGION_E2E_AGENT_SECRETS_AUTO_SHA256 is unset: the secrets-* checks prove the broker's automatic grant, which this names"
+[ -n "$agent_secrets_account" ] ||
+  fail "LEGION_E2E_AGENT_SECRETS_ACCOUNT is unset: the run logs in to the broker as the daemon does, with a token of this ServiceAccount (<namespace>/<name>)"
 pod_service_account=$(bash "$root/scripts/e2e/lib/pod-service-account.sh") ||
   fail "LEGION_E2E_POD_SERVICE_ACCOUNT is not a ServiceAccount name the operator route's pod.yml can carry (the reason is above)"
 case "$model_route" in
@@ -303,46 +311,39 @@ note "runtime identity: context $runtime_context in $runtime_kubeconfig ($runtim
 built=$(bash "$root/scripts/e2e/lib/built-from.sh" "$root") || fail "lib/built-from.sh could not read the source revision"
 while IFS= read -r line; do note "$line"; done <<<"$built"
 [ -z "$from" ] || note "STAGE4A_FROM=$from: a development run, never the proof"
-if [ -n "$agent_secrets_url" ]; then
-  note "agent-secrets: $agent_secrets_url"
-else
-  note "agent-secrets: none (the secrets-* checks report SKIPPED-BLOCKED)"
-fi
-agent_secrets_token_file=
-if [ -n "$agent_secrets_account" ]; then
-  # The run's login token: what the kubelet projects into the daemon's pod, minted here by the
-  # operator context for the broker's audience and written owner-only; never printed. The broker
-  # refuses a token that lives longer than an hour, so the run mints one every half hour, and its
-  # login reads the file afresh each time, as the daemon reads the kubelet's.
-  account_namespace=${agent_secrets_account%%/*}
-  account_name=${agent_secrets_account#*/}
-  [ -n "$account_namespace" ] && [ -n "$account_name" ] && [ "$account_namespace" != "$agent_secrets_account" ] ||
-    fail "LEGION_E2E_AGENT_SECRETS_ACCOUNT must be <namespace>/<name>, got $agent_secrets_account"
-  account_pods=$(timeout --foreground 300 kubectl --context "$operator" -n "$account_namespace" get pods \
-    -o jsonpath="{range .items[?(@.spec.serviceAccountName==\"$account_name\")]}{.metadata.name}{' '}{end}") ||
-    fail "the operator context could not list the pods of $account_namespace to check that no daemon runs as $agent_secrets_account"
-  [ -z "$account_pods" ] ||
-    fail "LEGION_E2E_AGENT_SECRETS_ACCOUNT $agent_secrets_account is the account pod(s) ${account_pods% } run as: a login as it would take that daemon's one launcher credential; list a ServiceAccount of the proof's own in BROKER_SERVICE_LOGINS and name it here"
-  agent_secrets_token_file=$work/agent-secrets-token
-  mint_agent_secrets_token() {
-    (
-      umask 077
-      timeout --foreground 300 kubectl --context "$operator" -n "$account_namespace" create token "$account_name" --audience agent-secrets --duration 1h >"$agent_secrets_token_file.next"
-    ) && mv -f "$agent_secrets_token_file.next" "$agent_secrets_token_file"
-  }
-  mint_agent_secrets_token || fail "the operator could not mint a token for $agent_secrets_account"
+note "agent-secrets: $agent_secrets_url"
+# The run's login token: what the kubelet projects into the daemon's pod, minted here by the
+# operator context for the broker's audience and written owner-only; never printed. The broker
+# refuses a token that lives longer than an hour, so the run mints one every half hour, and its
+# login reads the file afresh each time, as the daemon reads the kubelet's.
+account_namespace=${agent_secrets_account%%/*}
+account_name=${agent_secrets_account#*/}
+[ -n "$account_namespace" ] && [ -n "$account_name" ] && [ "$account_namespace" != "$agent_secrets_account" ] ||
+  fail "LEGION_E2E_AGENT_SECRETS_ACCOUNT must be <namespace>/<name>, got $agent_secrets_account"
+account_pods=$(timeout --foreground 300 kubectl --context "$operator" -n "$account_namespace" get pods \
+  -o jsonpath="{range .items[?(@.spec.serviceAccountName==\"$account_name\")]}{.metadata.name}{' '}{end}") ||
+  fail "the operator context could not list the pods of $account_namespace to check that no daemon runs as $agent_secrets_account"
+[ -z "$account_pods" ] ||
+  fail "LEGION_E2E_AGENT_SECRETS_ACCOUNT $agent_secrets_account is the account pod(s) ${account_pods% } run as: a login as it would take that daemon's one launcher credential; list a ServiceAccount of the proof's own in BROKER_SERVICE_LOGINS and name it here"
+agent_secrets_token_file=$work/agent-secrets-token
+mint_agent_secrets_token() {
   (
-    trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM
-    while :; do
-      sleep 1800 &
-      sleeper=$!
-      wait "$sleeper"
-      mint_agent_secrets_token || echo "   [operator] could not mint a fresh agent-secrets token for $agent_secrets_account; the run's logins fail once the last one expires"
-    done
-  ) &
-  agent_secrets_reminter=$!
-  note "[operator] minted a 1h agent-secrets token for $agent_secrets_account (owner-only file, not printed), minted again every 30 minutes"
-fi
+    umask 077
+    timeout --foreground 300 kubectl --context "$operator" -n "$account_namespace" create token "$account_name" --audience agent-secrets --duration 1h >"$agent_secrets_token_file.next"
+  ) && mv -f "$agent_secrets_token_file.next" "$agent_secrets_token_file"
+}
+mint_agent_secrets_token || fail "the operator could not mint a token for $agent_secrets_account"
+(
+  trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM
+  while :; do
+    sleep 1800 &
+    sleeper=$!
+    wait "$sleeper"
+    mint_agent_secrets_token || echo "   [operator] could not mint a fresh agent-secrets token for $agent_secrets_account; the run's logins fail once the last one expires"
+  done
+) &
+agent_secrets_reminter=$!
+note "[operator] minted a 1h agent-secrets token for $agent_secrets_account (owner-only file, not printed), minted again every 30 minutes"
 
 begin plugins
 # The stale-plugin-install checkpoint's own pack of this checkout's two plugins, through
