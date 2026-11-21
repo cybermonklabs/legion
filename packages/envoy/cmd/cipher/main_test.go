@@ -30,6 +30,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -312,6 +313,12 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				"request_id": "req-denied-listed", "state": "denied",
 				"secrets":  []map[string]string{{"name": name, "decision": "deny"}},
 				"grant_id": nil, "record_id": nil, "approver": nil, "detail": refusedDetail,
+			})
+		case "PROJECT_DENIED":
+			writeJSON(w, map[string]any{
+				"request_id": "req-denied-project", "state": "denied",
+				"secrets":  []map[string]string{{"name": name, "decision": "deny"}},
+				"grant_id": nil, "record_id": nil, "approver": nil, "detail": name + ": " + policy.ReasonProjectNotNamed,
 			})
 		case "JUDGE_REFUSED":
 			writeJSON(w, map[string]any{

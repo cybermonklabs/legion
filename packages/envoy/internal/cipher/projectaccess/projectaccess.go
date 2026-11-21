@@ -12,10 +12,11 @@
 //
 // Answers are cached CacheTTL per project and person and per person, aged from before each
 // question was sent, which bounds how long a person removed from a project's access list goes on
-// passing a check here; Visible asks again for an answer that aged past it while a list was
-// checked, and a slower answer never replaces one to a question asked later. A failure to reach
-// Dispatch is never cached and is never an answer: each caller decides what an outage means for
-// its own check.
+// passing a check here; Visible and States ask again for an answer that aged past it while a list
+// was read, a caller holding answers across further reads ages them again where it decides
+// (Stale), a question asked under Fresh skips the cache, and a slower answer never replaces one to
+// a question asked later. A failure to reach Dispatch is never cached and is never an answer: each
+// caller decides what an outage means for its own check.
 package projectaccess
 
 import (
@@ -85,6 +86,11 @@ var (
 	// projects that name them, so no caller reads it as any of the three, and none mints or
 	// enrolls through it.
 	ErrUnknownMemberKind = errors.New("projectaccess: dispatch answered a member kind this broker does not know")
+	// ErrUnknownVisibility is Dispatch answering a project's visibility as anything but
+	// VisibilityPublic or VisibilityPrivate, an answer with no visibility at all included. The
+	// broker cannot tell whether such a project is private, so no caller reads it as either: it
+	// is never kept, and each caller fails as it does when Dispatch cannot be asked.
+	ErrUnknownVisibility = errors.New("projectaccess: dispatch answered a project visibility this broker does not know")
 	// ErrUnchecked is ListAllowed's answer for an empty list whose person's member kind Dispatch
 	// could not be asked for: the list is allowed, as it is today, but unchecked, so the caller
 	// that goes on to mint or enroll logs that it did so. It wraps the failure it stands for.
@@ -101,11 +107,26 @@ func (e *NotVisibleError) Error() string { return ErrNotVisible.Error() + ": " +
 // Unwrap is ErrNotVisible.
 func (e *NotVisibleError) Unwrap() error { return ErrNotVisible }
 
+// ProjectNotFoundError is Access's answer for a project Dispatch does not hold: it is
+// ErrProjectNotFound (errors.Is), and it carries when the question it answers was asked, so a
+// caller whose decision rests on a project's absence ages that answer as it ages any other
+// (Stale). A source that keeps no clock answers a zero AskedAt, or ErrProjectNotFound alone.
+type ProjectNotFoundError struct {
+	Project string
+	AskedAt time.Time
+}
+
+func (e *ProjectNotFoundError) Error() string { return ErrProjectNotFound.Error() + ": " + e.Project }
+
+// Unwrap is ErrProjectNotFound.
+func (e *ProjectNotFoundError) Unwrap() error { return ErrProjectNotFound }
+
 // Answer is Dispatch's answer for one project and one person.
 type Answer struct {
 	// Project is the project's key.
 	Project string `json:"project"`
-	// Visibility is "public" or "private".
+	// Visibility is VisibilityPublic or VisibilityPrivate: *Client answers ErrUnknownVisibility
+	// for any other, and never an Answer.
 	Visibility string `json:"visibility"`
 	// Owner is the owner's login.
 	Owner string `json:"owner"`
@@ -119,14 +140,36 @@ type Answer struct {
 	// Repositories is every "owner/name" repository Dispatch maps to the project, renames
 	// included, nil when the answer carries none.
 	Repositories []string `json:"repositories"`
+	// SlackChannels is every Slack channel id the project's owner named, sorted, and empty for a
+	// project that names none (dispatch://INFRA-3862's #t-a-31). SlackChannelsPresent says
+	// whether the answer carried the key at all: a Dispatch from before that task carries none,
+	// and the broker fails closed on it rather than reading it as "no limit" (requests'
+	// AirlockSecret.Limited), so the two deploy in either order safely. Decoded through a
+	// pointer, which is the one way a missing key and an empty list read differently.
+	SlackChannels []string `json:"-"`
+	// SlackChannelsPresent is whether the answer carried slack_channels.
+	SlackChannelsPresent bool `json:"-"`
 	// AskedAt is when the question this answers was asked, read before it was sent, so an
 	// answer's age is never less than it truly is. *Client always sets it; a zero AskedAt is an
-	// answer from a source that keeps no clock, which Visible takes as fresh.
+	// answer from a source that keeps no clock, which Stale takes as fresh.
 	AskedAt time.Time `json:"-"`
+	// Missing is States' entry for a project Dispatch does not hold: Project and AskedAt are set
+	// beside it, and nothing else. Access never answers one; it answers a *ProjectNotFoundError.
+	Missing bool `json:"-"`
 }
 
+// The two visibilities Dispatch answers a project with.
+const (
+	VisibilityPublic  = "public"
+	VisibilityPrivate = "private"
+)
+
 // Private reports whether the project is private.
-func (a Answer) Private() bool { return a.Visibility == "private" }
+func (a Answer) Private() bool { return a.Visibility == VisibilityPrivate }
+
+// Public reports whether the project is public. A project is public only when Dispatch says so:
+// a caller reads no other visibility, an empty one included, as public.
+func (a Answer) Public() bool { return a.Visibility == VisibilityPublic }
 
 // Access is every question a broker reader asks Dispatch; *Client answers all three.
 type Access interface {
@@ -135,9 +178,10 @@ type Access interface {
 	Access(ctx context.Context, project, person string) (Answer, error)
 	// MemberKind is the person's member kind.
 	MemberKind(ctx context.Context, person string) (string, error)
-	// States answers one fact per key, for the caller that must resolve every answer before it
-	// opens a transaction: present for a project Dispatch holds, absent for one it does not. It
-	// is one call per key against the cache, not a batch route.
+	// States answers one Answer per key, for the caller that must resolve every answer before it
+	// opens a transaction: Missing for a project Dispatch does not hold. Each answer was asked
+	// less than CacheTTL before it returns. It is one call per key against the cache, not a batch
+	// route.
 	States(ctx context.Context, projects []string) (map[string]Answer, error)
 }
 
@@ -177,15 +221,36 @@ func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *
 	}
 }
 
+// freshKey marks a context whose questions are asked of Dispatch whatever the cache holds (Fresh).
+type freshKey struct{}
+
+// Fresh is ctx for questions Dispatch must answer now rather than the cache: Access and
+// MemberKind under it ask Dispatch even while the cache holds a young answer, and keep what it
+// answers as any other answer is kept. It is for a check that must see a change younger than
+// CacheTTL, as the model judge's approval does when it checks the project rule again before it
+// is written (requests.Machine.ApplyJudgeDecision): the run's own reads filled the cache well
+// inside CacheTTL, so a check that read them back could not see a project that turned private
+// while the model was asked.
+func Fresh(ctx context.Context) context.Context {
+	return context.WithValue(ctx, freshKey{}, true)
+}
+
+// fresh reports whether ctx is one Fresh made, or derived from one.
+func fresh(ctx context.Context) bool {
+	marked, _ := ctx.Value(freshKey{}).(bool)
+	return marked
+}
+
 // Access is Dispatch's answer for project and person, from the cache while it is younger than
-// CacheTTL. A person is asked about by their lowercase login; an empty person asks whether the
-// project is public. An answer is aged from before its question was sent, so a slow answer is
-// kept no longer than CacheTTL from the moment Dispatch could last have changed it.
+// CacheTTL, unless ctx is one Fresh made. A person is asked about by their lowercase login; an
+// empty person asks whether the project is public. An answer is aged from before its question was
+// sent, so a slow answer is kept no longer than CacheTTL from the moment Dispatch could last have
+// changed it.
 func (c *Client) Access(ctx context.Context, project, person string) (Answer, error) {
 	key := accessKey{project: project, person: record.CanonicalLogin(person)}
-	if cached, ok := c.cachedAnswer(key); ok {
+	if cached, ok := c.cachedAnswer(key); ok && !fresh(ctx) {
 		if cached.projectNotFound {
-			return Answer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, project)
+			return Answer{}, &ProjectNotFoundError{Project: project, AskedAt: cached.at}
 		}
 		return cached.answer, nil
 	}
@@ -194,23 +259,39 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 		query.Set("person", key.person)
 	}
 	asked := c.now()
-	var answer Answer
-	status, err := c.get(ctx, projectPath+url.PathEscape(project), query, &answer)
+	// The answer's own fields, and slack_channels beside them through a pointer, in one decode: a
+	// Dispatch from before dispatch://INFRA-3862's #t-a-31 carries no such key, and "no key" must
+	// read differently from "an empty list", which a []string alone could not say. Answer's own
+	// SlackChannels is json:"-", so the key reaches this field and no other.
+	var wire struct {
+		Answer
+		SlackChannels *[]string `json:"slack_channels"`
+	}
+	status, err := c.get(ctx, projectPath+url.PathEscape(project), query, &wire)
 	switch {
 	case err != nil:
 		return Answer{}, err
 	case status == http.StatusNotFound:
 		c.keepAnswer(key, cachedAnswer{projectNotFound: true, at: asked})
-		return Answer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, project)
+		return Answer{}, &ProjectNotFoundError{Project: project, AskedAt: asked}
+	}
+	answer := wire.Answer
+	// A visibility that is neither of the two is no answer: it is never kept, and no caller can
+	// read it as public, which is what a missing field would otherwise decode to beside Private.
+	if !answer.Public() && !answer.Private() {
+		return Answer{}, fmt.Errorf("%w: %q for %s", ErrUnknownVisibility, answer.Visibility, project)
+	}
+	if wire.SlackChannels != nil {
+		answer.SlackChannels, answer.SlackChannelsPresent = *wire.SlackChannels, true
 	}
 	answer.AskedAt = asked
 	c.keepAnswer(key, cachedAnswer{answer: answer, at: asked})
 	return answer, nil
 }
 
-// MemberKind is the person's member kind, from the cache while it is younger than CacheTTL: one of
-// MemberFull, MemberRestricted and MemberNone. Any other answer, an empty one included, is
-// ErrUnknownMemberKind naming it, never kept and never a failure to ask.
+// MemberKind is the person's member kind, from the cache while it is younger than CacheTTL, unless
+// ctx is one Fresh made: one of MemberFull, MemberRestricted and MemberNone. Any other answer, an
+// empty one included, is ErrUnknownMemberKind naming it, never kept and never a failure to ask.
 func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
 	person = record.CanonicalLogin(person)
 	if person == "" {
@@ -219,7 +300,7 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 	c.mu.Lock()
 	cached, ok := c.kinds[person]
 	c.mu.Unlock()
-	if ok && c.now().Sub(cached.at) < CacheTTL {
+	if ok && !fresh(ctx) && c.now().Sub(cached.at) < CacheTTL {
 		return cached.kind, nil
 	}
 	asked := c.now()
@@ -249,19 +330,39 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 	return answer.MemberKind, nil
 }
 
-// States answers each of projects Dispatch holds, as it is to a question naming no person, and
-// leaves out each it does not. Any other failure is the whole answer's.
+// States answers each of projects as it is to a question naming no person, and Missing for each
+// Dispatch does not hold. Any other failure is the whole answer's.
+//
+// The projects are asked one at a time, so, as in Visible, an answer that was young when the call
+// began can be older than CacheTTL by its end: a project read first and turned private while the
+// rest were read would otherwise be answered public past the bound. States asks again for each
+// such answer, going over the list at most maxRecheckPasses times, so every answer it returns was
+// asked less than CacheTTL before it returns, and a list whose answers still age out faster than
+// Dispatch answers them is a failure, never an aged answer.
 func (c *Client) States(ctx context.Context, projects []string) (map[string]Answer, error) {
 	states := make(map[string]Answer, len(projects))
-	for _, project := range projects {
-		answer, err := c.Access(ctx, project, "")
-		if errors.Is(err, ErrProjectNotFound) {
-			continue
+	pending := projects
+	for pass := 0; len(pending) > 0; pass++ {
+		if pass == maxRecheckPasses {
+			return nil, fmt.Errorf("projectaccess: the states of %d projects aged past %s while they were read", len(projects), CacheTTL)
 		}
-		if err != nil {
-			return nil, err
+		for _, project := range pending {
+			answer, err := c.Access(ctx, project, "")
+			var missing *ProjectNotFoundError
+			switch {
+			case errors.As(err, &missing):
+				answer = Answer{Project: project, Missing: true, AskedAt: missing.AskedAt}
+			case err != nil:
+				return nil, err
+			}
+			states[project] = answer
 		}
-		states[project] = answer
+		pending = nil
+		for _, project := range projects {
+			if Stale(c, states[project].AskedAt) {
+				pending = append(pending, project)
+			}
+		}
 	}
 	return states, nil
 }
@@ -340,52 +441,85 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 // Visible answers nil when person may see every one of projects, else a *NotVisibleError (which
 // is ErrNotVisible) naming the first it may not see. A project Dispatch does not hold is the same
 // refusal, so the text never says whether a project exists. Any other failure is returned as it
-// is, and is no refusal.
+// is, and is no refusal. It is VisibleAsOf without the time.
+func Visible(ctx context.Context, a Access, person string, projects []string) error {
+	_, err := VisibleAsOf(ctx, a, person, projects)
+	return err
+}
+
+// VisibleAsOf is Visible, answering beside a nil error when the oldest answer it passed was
+// asked: zero for an empty list and for a source that keeps no clock. A caller that reads more
+// before it decides ages its decision from it (Stale).
 //
 // The projects are asked one at a time, so an answer that was young when the check began can be
-// older than CacheTTL by its end. Visible asks again for each such answer before it returns, so
-// every answer it passes was asked less than CacheTTL before it returns: the bound the exchange's
-// mint rests on. It goes over the list at most maxRecheckPasses times, and a list whose answers
-// still age out faster than Dispatch answers them is a failure, not a pass.
-func Visible(ctx context.Context, a Access, person string, projects []string) error {
+// older than CacheTTL by its end. VisibleAsOf asks again for each such answer before it returns,
+// so every answer it passes was asked less than CacheTTL before it returns: the bound the
+// exchange's mint rests on. It goes over the list at most maxRecheckPasses times, and a list whose
+// answers still age out faster than Dispatch answers them is a failure, not a pass.
+func VisibleAsOf(ctx context.Context, a Access, person string, projects []string) (time.Time, error) {
 	asked := make(map[string]time.Time, len(projects))
 	pending := projects
 	for pass := 0; len(pending) > 0; pass++ {
 		if pass == maxRecheckPasses {
-			return fmt.Errorf("projectaccess: the answers for %s aged past %s while %d projects were checked", person, CacheTTL, len(projects))
+			return time.Time{}, fmt.Errorf("projectaccess: the answers for %s aged past %s while %d projects were checked", person, CacheTTL, len(projects))
 		}
 		for _, project := range pending {
 			answer, err := a.Access(ctx, project, person)
 			if errors.Is(err, ErrProjectNotFound) {
-				return &NotVisibleError{Project: project}
+				return time.Time{}, &NotVisibleError{Project: project}
 			}
 			if err != nil {
-				return err
+				return time.Time{}, err
 			}
 			if !answer.Visible {
-				return &NotVisibleError{Project: project}
+				return time.Time{}, &NotVisibleError{Project: project}
 			}
 			asked[project] = answer.AskedAt
 		}
 		pending = nil
-		now := time.Now()
-		if clocked, ok := a.(interface{ clock() time.Time }); ok {
-			now = clocked.clock()
-		}
 		for _, project := range projects {
-			if at := asked[project]; !at.IsZero() && now.Sub(at) >= CacheTTL {
+			if Stale(a, asked[project]) {
 				pending = append(pending, project)
 			}
 		}
 	}
-	return nil
+	var oldest time.Time
+	for _, at := range asked {
+		oldest = Oldest(oldest, at)
+	}
+	return oldest, nil
 }
 
-// maxRecheckPasses bounds how many times Visible goes over a list for answers that aged out
-// while it was checked.
+// maxRecheckPasses bounds how many times Visible and States go over a list for answers that aged
+// out while it was read.
 const maxRecheckPasses = 3
 
-// clock is the time c reads, for Visible to age c's answers by the same clock that stamped them.
+// Stale reports whether an answer to a question asked at asked is too old for a decision to rest
+// on: asked CacheTTL or longer ago, by a's own clock where a is a *Client and by the wall clock
+// otherwise. A zero asked is an answer from a source that keeps no clock, and is never stale. It
+// is the one statement of an answer's age, for Visible, States and every caller that holds
+// answers across further reads before it decides on them.
+func Stale(a Access, asked time.Time) bool {
+	if asked.IsZero() {
+		return false
+	}
+	now := time.Now()
+	if clocked, ok := a.(interface{ clock() time.Time }); ok {
+		now = clocked.clock()
+	}
+	return now.Sub(asked) >= CacheTTL
+}
+
+// Oldest is the earlier of two ask times, a zero one standing for none: the age of a decision
+// resting on both answers.
+func Oldest(a, b time.Time) time.Time {
+	if a.IsZero() || (!b.IsZero() && b.Before(a)) {
+		return b
+	}
+	return a
+}
+
+// clock is the time c reads, for Stale to age c's answers by the same clock that stamped them.
 func (c *Client) clock() time.Time { return c.now() }
 
 // ListAllowed is the one statement of the rule for a person's list, used by the exchange and by

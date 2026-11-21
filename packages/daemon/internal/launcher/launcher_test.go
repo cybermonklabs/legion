@@ -662,7 +662,7 @@ func newFleetDialed(t *testing.T, grace time.Duration, roles ...string) *fleet {
 // requireRoleNamespaces first.
 func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	t.Helper()
-	scratch := namespaceScratch(t)
+	scratch := namespaceScratch(t, "")
 	f := &fleet{
 		t: t, rolesDir: filepath.Join(scratch, "roles"), home: filepath.Join(scratch, "home"),
 		fixed: filepath.Join(scratch, "fixed"), result: make(chan error, 1), stderr: &lockedBuffer{},
@@ -1339,12 +1339,12 @@ func (d *sessionDialer) stallAt(addr string) {
 func (d *sessionDialer) Close() error { return nil }
 
 // build is the Config.SessionDialer a test passes: every generation of its launcher dials through
-// this very fake, and each build records the account it was given. A pod's roles start their
+// this very fake, and each build records the account its signer names. A pod's roles start their
 // generations concurrently, so the record is held under mu.
-func (d *sessionDialer) build(_ context.Context, account string) (sessionproxy.Dialer, error) {
+func (d *sessionDialer) build(_ context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.accounts = append(d.accounts, account)
+	d.accounts = append(d.accounts, signer.Account)
 	return d, nil
 }
 
@@ -1456,6 +1456,53 @@ func TestAPartlyNamedSessionDatabaseIsRefusedBeforeTheLauncherStarts(t *testing.
 				t.Fatalf("Run = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A writer audience is refused before the launcher does anything at all, each time with its
+// reason: named without the service account, which the writer token signs in only by
+// impersonating; in a form that is no workload identity provider's full resource name; and in
+// the single-role form, whose agent runs in the container's own namespaces, where the token would
+// be in its view. Named whole in the roles-dir form, it is accepted.
+func TestAWriterAudienceIsRefusedWithoutItsAccountInAnotherFormOrInTheSingleRoleForm(t *testing.T) {
+	noAccount := writerDatabase
+	noAccount.ImpersonateServiceAccount = ""
+	otherForm := writerDatabase
+	otherForm.WriterAudience = "projects/123456789012/locations/global/workloadIdentityPools/example-pool/providers/example-provider"
+	singleRole := Config{
+		Connect: "tcp://127.0.0.1:1", Token: "launcher-token", Sandbox: "legion-legion-legion-208",
+		Role: "tester", PodUID: "pod-1", PrivateDir: t.TempDir(),
+	}
+	rolesDir := Config{
+		Connect: "tcp://127.0.0.1:1", Sandbox: "legion-legion-legion-208", PodUID: "pod-1", RolesDir: t.TempDir(), Roles: []string{"tester"},
+	}
+	with := func(cfg Config, database ompsessions.Database) Config {
+		cfg.SessionDatabase = database
+		return cfg
+	}
+	for name, tc := range map[string]struct {
+		cfg  Config
+		want string
+	}{
+		"the audience alone": {with(rolesDir, ompsessions.Database{WriterAudience: testWriterAudience}),
+			"launcher: the session database is named in part: no --session-instance, no --session-database, no --session-user"},
+		"no service account": {with(rolesDir, noAccount),
+			"launcher: --session-writer-audience needs --session-impersonate-service-account: the writer token signs in to Cloud SQL only by impersonating that service account"},
+		"another form": {with(rolesDir, otherForm),
+			`launcher: --session-writer-audience "` + otherForm.WriterAudience + `" is not a workload identity provider's full resource name, ` + ompsessions.WriterAudienceForm},
+		"the single-role form": {with(singleRole, writerDatabase),
+			"launcher: --session-writer-audience needs the roles-dir form (--roles-dir): the single-role form runs its agent in the container's own namespaces, where the writer token would be in the agent's view"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// The connect address is one nothing listens on: a refused configuration must answer
+			// before the launcher dials anything.
+			if err := Run(context.Background(), tc.cfg); err == nil || err.Error() != tc.want {
+				t.Fatalf("Run = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if err := with(rolesDir, writerDatabase).validate(); err != nil {
+		t.Fatalf("the roles-dir form with the whole writer audience is refused: %v", err)
 	}
 }
 

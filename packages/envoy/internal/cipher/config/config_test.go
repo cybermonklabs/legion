@@ -2284,6 +2284,50 @@ func TestLoadReadsTheExchangeWorkflows(t *testing.T) {
 	}
 }
 
+// TestAPrivateProjectOnlyInItsPodsParsesTheSetting pins BROKER_PRIVATE_PROJECTS at load:
+// whitespace-separated project keys land in Config.PrivateProjects sorted, none when unset, and a
+// key that is no project key or a key named twice refuses the configuration, naming the setting
+// and the key. exchange.ParsePrivateProjects's own test holds the rest of the reading.
+func TestAPrivateProjectOnlyInItsPodsParsesTheSetting(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys := cfg.PrivateProjects.Keys(); keys != nil {
+		t.Fatalf("PrivateProjects.Keys() = %q, want nil when BROKER_PRIVATE_PROJECTS is unset", keys)
+	}
+	e := validEnv()
+	e["BROKER_PRIVATE_PROJECTS"] = " PRIV\n\tACME "
+	cfg, err = Load(env(e))
+	if err != nil {
+		t.Fatalf("BROKER_PRIVATE_PROJECTS naming two project keys: %v", err)
+	}
+	if got, want := cfg.PrivateProjects.Keys(), []string{"ACME", "PRIV"}; !slices.Equal(got, want) {
+		t.Fatalf("PrivateProjects.Keys() = %q, want %q", got, want)
+	}
+	if !cfg.PrivateProjects.Has("PRIV") || cfg.PrivateProjects.Has("OTHER") {
+		t.Fatalf("PrivateProjects.Has: PRIV %v, OTHER %v, want true and false", cfg.PrivateProjects.Has("PRIV"), cfg.PrivateProjects.Has("OTHER"))
+	}
+	// Each key a refusal must name is one BROKER_PRIVATE_PROJECTS does not hold, so the setting's
+	// name in the error cannot stand in for it: the repeated key is ACME, not PRIV.
+	for _, c := range []struct{ setting, key string }{
+		{"PRIV priv", strconv.Quote("priv")},
+		{"PRIV AC-ME", strconv.Quote("AC-ME")},
+		{"ACME PRIV ACME", "ACME"},
+	} {
+		e := validEnv()
+		e["BROKER_PRIVATE_PROJECTS"] = c.setting
+		cfg, err := Load(env(e))
+		if err == nil {
+			t.Errorf("BROKER_PRIVATE_PROJECTS = %q loaded PrivateProjects %q, want a refusal", c.setting, cfg.PrivateProjects.Keys())
+			continue
+		}
+		if !strings.Contains(err.Error(), "BROKER_PRIVATE_PROJECTS") || !strings.Contains(err.Error(), c.key) {
+			t.Errorf("BROKER_PRIVATE_PROJECTS = %q: err = %v, want a refusal naming the setting and %s", c.setting, err, c.key)
+		}
+	}
+}
+
 // TestLoadRefusesAHalfConfiguredGitHubIssuer pins that GitHub's issuer and audience are
 // both-or-neither, as the cluster's pair is: half a pair would register a token type whose tokens
 // could not be checked.

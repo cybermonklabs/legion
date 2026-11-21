@@ -50,6 +50,14 @@ type Row struct {
 	// Resolved are the "owner/name" repositories the project's issues resolve to, which the
 	// repository answer carries, sorted.
 	Resolved []string
+	// SlackChannels are the Slack channel ids the project's owner named. A real Dispatch always
+	// carries the key, empty when the project names none, so this stand-in does too — unless
+	// OmitSlackChannels, which is a Dispatch from before dispatch://INFRA-3862's #t-a-31 and
+	// carries no such key at all.
+	SlackChannels []string
+	// OmitSlackChannels makes this project's answer carry no slack_channels key, the shape a
+	// Dispatch from before #t-a-31 answers.
+	OmitSlackChannels bool
 }
 
 // Server is the stand-in: URL is its base, Token the one bearer it takes, and Account that bearer
@@ -95,6 +103,7 @@ func NewServer(t testing.TB, rows map[string]Row, people map[string]string) *Ser
 	s := &Server{Token: "dispatch-access-" + hex.EncodeToString(bearer[:]), rows: map[string]Row{}, people: map[string]string{}}
 	for key, row := range rows {
 		row.Listed, row.Repositories, row.Resolved = slices.Clone(row.Listed), slices.Clone(row.Repositories), slices.Clone(row.Resolved)
+		row.SlackChannels = slices.Clone(row.SlackChannels)
 		s.rows[key] = row
 	}
 	for login, kind := range people {
@@ -149,10 +158,21 @@ func (s *Server) SetStall(d time.Duration) {
 	s.stall = d
 }
 
+// SetRow makes Dispatch hold row for key from the next request on, as an owner's change of a
+// project's visibility or access list does, so a test can change Dispatch under a client whose
+// cache already holds the earlier answer.
+func (s *Server) SetRow(key string, row Row) {
+	row.Listed, row.Repositories, row.Resolved = slices.Clone(row.Listed), slices.Clone(row.Repositories), slices.Clone(row.Resolved)
+	row.SlackChannels = slices.Clone(row.SlackChannels)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rows[key] = row
+}
+
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.calls++
-	down, answer, stall := s.down, s.answer, s.stall
+	down, canned, stall := s.down, s.answer, s.stall
 	s.mu.Unlock()
 	if down {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "UNAVAILABLE", "error": "the stand-in is down"})
@@ -173,10 +193,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if answer != nil {
+	if canned != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(answer.status)
-		_, _ = w.Write([]byte(answer.body))
+		w.WriteHeader(canned.status)
+		_, _ = w.Write([]byte(canned.body))
 		return
 	}
 	person := r.URL.Query().Get("person")
@@ -207,7 +227,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		if list == nil {
 			list = []string{}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		answer := map[string]any{
 			"project":      key,
 			"visibility":   row.Visibility,
 			"owner":        row.Owner,
@@ -215,7 +235,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			"member_kind":  s.kind(person),
 			"visible":      s.visible(row, person),
 			"repositories": list,
-		})
+		}
+		if !row.OmitSlackChannels {
+			channels := row.SlackChannels
+			if channels == nil {
+				channels = []string{}
+			}
+			answer["slack_channels"] = channels
+		}
+		writeJSON(w, http.StatusOK, answer)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"code": "NOT_FOUND", "error": r.URL.Path})
 	}
