@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The edge listener's relay no longer loses a GitHub event of a session's repository during an
+  outage of the repository answer. While a project of the session has no fresh answer, the relay
+  withholds the event, counts it under
+  `envoy_edge_github_withheld_total{reason="answer_unknown"}` and marks the gap on the next frame
+  as before, but leaves the event unacknowledged: the session's consumer delivers it again 30
+  seconds later, the refresh interval, and the answer then standing decides it. A GitHub event
+  whose repository a fresh answer does not name is still acknowledged undelivered.
+time: 2026-11-21T08:57:00Z
+custom:
+    Issue: pr4730

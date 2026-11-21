@@ -1,0 +1,43 @@
+kind: Fixed
+body: |-
+  A session record and an interest row name the key they are stored under (`session_id`), and a
+  record that names another key, or names its key with no `machine_id`, no positive `updated_at`
+  or (a session record) no `projects`, reads as absent and is replaced by the next write at the
+  sequence it is really stored at, a delete or purge marker the server copied from another key
+  included. A server-written copy of one session's record or row under another session's key
+  therefore carries no scope. `SessionRegistry.PutWithin` refuses an entry that names no machine.
+  A session record of an earlier build, which names no key, is read as before on every listener,
+  and the edge reads it as no project's: it lists such a session to no one and answers a send to
+  it as to a missing session.
+  The edge listener hands a session a frame only of a project its token lists, as the session's
+  own message, or as a GitHub event of one of its projects' repositories (`edgeFrameVerdict`),
+  in its relay and in its relay socket, reading the token and never a stored record; a frame
+  whose relay header and envelope name different projects is withheld. Every other frame is
+  acknowledged undelivered and counted in
+  `envoy_edge_github_withheld_total{reason="project_not_held"}`, a metric that now counts frames
+  that are not GitHub's too. A relay socket with no fresh repository answer sends a GitHub event
+  back (`nak`) rather than away. A relay replica that admitted no registration of a session since
+  it started relays it nothing until the session registers through it again, and its messages
+  wait in its consumer; a replica forgets a session's admission once the session's record has
+  left its cache.
+  A record the server wrote at a key - a RePublish of another stream, whose body its writer chose,
+  or a direct get's copy - is no writer's record: a write or a delete the bucket refused at the
+  revision a direct get reported reads the key again from the stream's leader, with the headers it
+  is stored with, and replaces or deletes such a record at the sequence it is stored at, so every
+  registration of a session no longer answers 503 while one stands. The edge confirms each session
+  it would list, read or send to on another session's behalf by that leader read, and reads a
+  record the server wrote as absent.
+  A session's consumer filter built from its stored interest row (a relay restart, a repair, the
+  filter written after an unsubscribe, a delete or a prune) leaves out every topic reaching a
+  private stream subject that is not the session's own - another session's inbox, a
+  failed-delivery lane, another project's controller notice lane - as a registration does, reading
+  a controller role's claim record on each such build that names a notice lane.
+  The Legion agent registry's listings pass over an entry stored under a key it does not name, and
+  its session read answers not found for a session key holding another session's entry. The edge
+  shows a Legion agent only when the issue is one of the token's projects and the agent's session
+  is a session of that issue's project (a record bound to its key), so it shows no gone agent of
+  the token's own project either, and it shows an agent's replacement only when that is such a
+  session too.
+time: 2026-11-21T03:17:59Z
+custom:
+    Issue: pr4730
