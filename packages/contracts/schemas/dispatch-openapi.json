@@ -4778,7 +4778,7 @@
     },
     "/api/v1/github/app-installation/{owner}/{repo}": {
       "get": {
-        "description": "Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 400 INVALID_REPO_PROJECT, before GitHub is asked anything, when the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer than 100 characters (a trailing .git trimmed); 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure.",
+        "description": "Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 400 INVALID_REPOSITORY, before GitHub is asked anything, when the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer than 100 characters (a trailing .git trimmed); 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure.",
         "operationId": "getApiV1GithubAppInstallationByOwnerByRepo",
         "parameters": [
           {
@@ -5274,7 +5274,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
+        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
         "operationId": "postApiV1Issues",
         "parameters": [
           {
@@ -9752,7 +9752,7 @@
     },
     "/api/v1/projects": {
       "get": {
-        "description": "List projects. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope.",
+        "description": "List projects. A project with a default repository carries it as default_repo, and a project with none carries no default_repo. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope.",
         "operationId": "getApiV1Projects",
         "parameters": [
           {
@@ -10973,6 +10973,64 @@
           "person"
         ],
         "x-write-scope": "project"
+      }
+    },
+    "/api/v1/projects/{key}/default-repository": {
+      "put": {
+        "description": "Set or clear a project's default repository {repo}: \"owner/name\" sets it and null clears it. An issue of the project resolves to it when neither the issue nor an issue above it names a repository. A write of the value the project holds already changes nothing and appends no event; a change appends project.updated with the project row. A body without repo, or a repo that is not a repository GitHub could hold, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. The default belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. It declares no personal scope: the credential the deployment configured writes it, and so does a person.",
+        "operationId": "putApiV1ProjectsByKeyDefaultRepository",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectDefaultRepositoryInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDefaultRepository"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
       }
     },
     "/api/v1/projects/{key}/gated-steps": {
@@ -12250,7 +12308,7 @@
     },
     "/api/v1/settings/repo-projects": {
       "get": {
-        "description": "List GitHub repository to project mappings, each marked whether it is its project's default and what repository it was renamed to, null for one that was never renamed.",
+        "description": "Read only: the GitHub repository to project mappings as the last release left them, each marked whether it is its project's default and what repository it was renamed to, null for one that was never renamed. Nothing writes them: PUT /api/v1/projects/{key}/default-repository sets a project's default repository. The route stays for the Legion daemons that read it at boot, and the next release removes it.",
         "operationId": "getApiV1SettingsRepoProjects",
         "parameters": [
           {
@@ -12288,128 +12346,6 @@
           }
         },
         "x-auth": "any"
-      }
-    },
-    "/api/v1/settings/repo-projects/{owner}/{repo}": {
-      "put": {
-        "description": "Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. The path's owner and name are held to the characters GitHub allows, and a name that is . or .. or empty or longer than 100 characters (a trailing .git trimmed) is refused: such a path is 400 INVALID_REPO_PROJECT. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, \"\" clears it, and a pair that is not an owner and a name of the characters GitHub allows, or whose name is . or .. or longer than 100 characters (a trailing .git trimmed), a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT.",
-        "operationId": "putApiV1SettingsRepoProjectsByOwnerByRepo",
-        "parameters": [
-          {
-            "name": "owner",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "repo",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "session",
-            "in": "query",
-            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PutRepoProjectInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "default": {
-            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RepoProject"
-                }
-              }
-            }
-          }
-        },
-        "x-auth": "any",
-        "x-write-scope": "deployment"
-      },
-      "delete": {
-        "description": "Remove a repository mapping, whether or not an issue names the repository as its repo: an issue's own repository needs no mapping, so such an issue keeps it. An issue that resolved to the mapping as its project's default resolves to no repository until the project has another default. The path removes only the mapping stored under its own spelling, its two segments as unescaped and compared byte for byte: acme/x removes acme/x, and acme/x.git removes the mapping stored as acme/x.git and never acme/x, so the same DELETE sent again removes nothing more. A path naming no stored mapping removes nothing: 204, or 400 INVALID_ISSUE_REF where the path is no owner/name an issue reference takes.",
-        "operationId": "deleteApiV1SettingsRepoProjectsByOwnerByRepo",
-        "parameters": [
-          {
-            "name": "owner",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "repo",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "session",
-            "in": "query",
-            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ActorInput"
-              }
-            }
-          }
-        },
-        "responses": {
-          "default": {
-            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "204": {
-            "description": "No Content"
-          }
-        },
-        "x-auth": "any",
-        "x-write-scope": "deployment"
       }
     },
     "/api/v1/signins": {
@@ -17686,6 +17622,9 @@
             "type": "string"
           }
         },
+        "required": [
+          "project"
+        ],
         "type": "object"
       },
       "CreateMessageInput": {
@@ -17900,6 +17839,9 @@
             "type": "string"
           },
           "default_assignee": {
+            "type": "string"
+          },
+          "default_repo": {
             "type": "string"
           },
           "gated_steps": {
@@ -25587,6 +25529,9 @@
             "format": "date-time",
             "type": "string"
           },
+          "default_repo": {
+            "type": "string"
+          },
           "gated_steps": {
             "items": {
               "type": "string"
@@ -25638,6 +25583,53 @@
         },
         "required": [
           "assignee"
+        ],
+        "type": "object"
+      },
+      "ProjectDefaultRepository": {
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "repo": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "project",
+          "repo"
+        ],
+        "type": "object"
+      },
+      "ProjectDefaultRepositoryInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "description": "a GitHub repository as \"owner/name\"",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "repo"
         ],
         "type": "object"
       },
@@ -25754,39 +25746,6 @@
         },
         "required": [
           "state_url"
-        ],
-        "type": "object"
-      },
-      "PutRepoProjectInput": {
-        "properties": {
-          "actor": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Actor"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "default": {
-            "type": [
-              "null",
-              "boolean"
-            ]
-          },
-          "project": {
-            "type": "string"
-          },
-          "renamed_to": {
-            "type": [
-              "null",
-              "string"
-            ]
-          }
-        },
-        "required": [
-          "project"
         ],
         "type": "object"
       },

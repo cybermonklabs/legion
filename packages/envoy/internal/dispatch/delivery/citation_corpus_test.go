@@ -3,6 +3,8 @@ package delivery
 import (
 	"slices"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // corpusRow is one body of the differential corpus with the citations the default branch credits
@@ -51,7 +53,7 @@ type corpusRow struct {
 func TestCitedIssuesAgreesWithTheDefaultBranch(t *testing.T) {
 	for _, row := range citationCorpus {
 		t.Run(row.body, func(t *testing.T) {
-			got := citedIssues("acme/widgets", row.body)
+			got := citedIssues(refs.Renames{}, "acme/widgets", row.body)
 			if row.hostIsNotGitHub {
 				if len(got) != 0 {
 					t.Errorf("credits %v, whose authority is not github.com; the default branch credits %v and this change exists to refuse it", got, row.main)

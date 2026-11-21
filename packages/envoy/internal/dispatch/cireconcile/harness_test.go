@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -30,9 +31,10 @@ import (
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
-// The repository every test below reconciles. The row is what repo_projects holds, lower-cased
-// as every mapping is stored; gitHubOwner and gitHubName are what GitHub itself answers with, in
-// its own casing, and every record and every settlement is keyed by those rather than the row's.
+// The repository every test below reconciles. The row is what a project's default repository or
+// an issue's own holds, lower-cased as both are stored; gitHubOwner and gitHubName are what GitHub
+// itself answers with, in its own casing, and every record and every settlement is keyed by those
+// rather than the row's.
 const (
 	rowRepository    = "acme/widgets"
 	gitHubOwner      = "Acme"
@@ -84,6 +86,9 @@ type harness struct {
 	// issues counts the issues issueInRepository has recorded, so each one it records has a key
 	// and a number of its own without its caller passing them.
 	issues int
+	// defaults counts the projects seedProjectDefault has made, so each one it makes has a key of
+	// its own.
+	defaults int
 }
 
 // newHarness is the whole stack with the listener already running, which every test wants but
@@ -222,49 +227,62 @@ func (h *harness) replica() *Reconciler {
 	}
 }
 
-// mapRepository maps one repository to a project of its own, as Settings → Repositories does.
-func (h *harness) mapRepository(repository string) {
+// seedProjectDefault gives repository a project of its own whose default repository it is, as
+// PUT /api/v1/projects/{key}/default-repository sets it. A project has one default repository,
+// so each repository a test covers this way takes a project of its own.
+func (h *harness) seedProjectDefault(repository string) {
+	h.t.Helper()
+	h.defaults++
+	key := fmt.Sprintf("CIR%d", h.defaults)
+	if _, err := h.pool.Exec(h.ctx, `
+		insert into projects (key, name, default_assignee, default_repo) values ($1, 'CI reconcile', 'alice', $2)
+	`, key, repository); err != nil {
+		h.t.Fatalf("make %s the default repository of project %s: %v", repository, key, err)
+	}
+}
+
+// seedRenamePair records that the repository called repository was renamed to the full
+// `owner/name` renamedTo, as a repo_projects row with a renamed_to: that table is the one place
+// Dispatch holds a rename, and a person declared it, since GitHub answers 404 for the
+// installation of the name the repository was renamed away from. The harness's Reconciler then
+// takes the pairs read after the seed, as a boot reads them (store.ReadRepoRenames). The pair
+// covers no repository: a test that wants the old name read names it by a project's default
+// repository or an issue's own, as a row the boot's rename pass missed does.
+func (h *harness) seedRenamePair(repository, renamedTo string) {
+	h.t.Helper()
+	h.seedProject()
+	if _, err := h.pool.Exec(h.ctx, `
+		insert into repo_projects (repo, project, created_by, renamed_to)
+		values ($1, 'CIR', '{"kind":"system","id":"test"}'::jsonb, $2)
+	`, repository, renamedTo); err != nil {
+		h.t.Fatalf("record that %s is called %s today: %v", repository, renamedTo, err)
+	}
+	pairs, err := store.ReadRepoRenames(h.ctx, h.pool)
+	if err != nil {
+		h.t.Fatalf("read the rename pairs: %v", err)
+	}
+	h.reconciler.Renames = refs.NewRenames(pairs)
+}
+
+// seedProject makes the project CIR, which holds the issues issueInRepository records and the
+// rename pairs seedRenamePair records. It names no default repository, so no repository is
+// covered through it. It does nothing where the project is made already.
+func (h *harness) seedProject() {
 	h.t.Helper()
 	if _, err := h.pool.Exec(h.ctx, `
 		insert into projects (key, name, default_assignee) values ('CIR', 'CI reconcile', 'alice') on conflict (key) do nothing
 	`); err != nil {
 		h.t.Fatalf("seed the project: %v", err)
-	}
-	if _, err := h.pool.Exec(h.ctx, `
-		insert into repo_projects (repo, project, created_by)
-		values ($1, 'CIR', '{"kind":"system","id":"test"}'::jsonb)
-		on conflict (repo) do nothing
-	`, repository); err != nil {
-		h.t.Fatalf("map %s to a project: %v", repository, err)
-	}
-}
-
-// mapRenamedRepository maps one repository and records the full `owner/name` it is called today,
-// as Settings → Repositories does for a renamed repository: repo_projects.renamed_to is the one
-// place Dispatch holds a rename, and an operator declares it, since GitHub answers 404 for the
-// installation of the name the repository was renamed away from.
-func (h *harness) mapRenamedRepository(repository, renamedTo string) {
-	h.t.Helper()
-	h.mapRepository(repository)
-	if _, err := h.pool.Exec(h.ctx, `
-		update repo_projects set renamed_to = $2 where repo = $1
-	`, repository, renamedTo); err != nil {
-		h.t.Fatalf("record that %s is called %s today: %v", repository, renamedTo, err)
 	}
 }
 
 // issueInRepository records one issue naming repository as its own, as an issue write does: an
-// issue's repository is any `owner/name`, and no mapping has to name it (api/issue_repo.go,
-// migration 20261112004945_issue_repo_needs_no_mapping). The project is the one mapRepository
-// maps to, inserted here too so a test may record an issue without mapping anything, and
-// skipped where that helper has already made it.
+// issue's repository is any `owner/name`, and no project's default has to name it
+// (api/issue_repo.go, migration 20261112004945_issue_repo_needs_no_mapping). The issue is of the
+// project CIR, which names no default repository (seedProject).
 func (h *harness) issueInRepository(repository string) {
 	h.t.Helper()
-	if _, err := h.pool.Exec(h.ctx, `
-		insert into projects (key, name, default_assignee) values ('CIR', 'CI reconcile', 'alice') on conflict (key) do nothing
-	`); err != nil {
-		h.t.Fatalf("seed the project: %v", err)
-	}
+	h.seedProject()
 	h.issues++
 	key := fmt.Sprintf("CIR-%d", h.issues)
 	if _, err := h.pool.Exec(h.ctx, `
@@ -282,7 +300,7 @@ func (h *harness) listHead() {
 	h.github.setPullRequests(gitHubRepository, fakePull{number: 7, sha: headSHA})
 }
 
-// listHeads makes the stand-in answer with these open pull requests of the mapped repository,
+// listHeads makes the stand-in answer with these open pull requests of the harness's repository,
 // as listHead does for the one head most tests reconcile. The pass reads a repository's heads
 // in pull request number order whatever order they are given in here, which is what a test of
 // the cursor reads back out of the stand-in's own log of the requests it was sent.
@@ -398,7 +416,7 @@ func (h *harness) record() (state cistore.State, revision uint64, ok bool) {
 	return state, entry.Revision(), true
 }
 
-// recordOf is the record of any head of the mapped repository, and nil when the bucket holds
+// recordOf is the record of any head of the harness's repository, and nil when the bucket holds
 // none: record answers for the one head most tests reconcile, and a test of the cursor reads
 // heads the pass reached at other pages.
 func (h *harness) recordOf(pull fakePull, number int64) *cistore.State {

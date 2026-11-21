@@ -341,6 +341,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"people_pkey",
 		"projects_pkey",
 		"projects_key_check",
+		"projects_default_repo_check",
 		"repo_projects_pkey",
 		"repo_projects_project_fkey",
 		"issues_pkey",

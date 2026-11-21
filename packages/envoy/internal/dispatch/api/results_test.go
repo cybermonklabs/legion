@@ -20,7 +20,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -532,16 +534,45 @@ func issueInRepository(t *testing.T, handler http.Handler, project, repo, title 
 		map[string]string{"key": project, "name": title}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project %s: status=%d body=%s", project, response.Code, response.Body.String())
 	}
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+repo,
-		map[string]any{"project": project, "default": true}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map %s to %s: status=%d body=%s", repo, project, response.Code, response.Body.String())
-	}
+	setDefaultRepository(t, handler, project, repo)
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": project, "title": title, "spec": "A spec\n"}, "alice")
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create issue of %s: status=%d body=%s", project, response.Code, response.Body.String())
 	}
 	return decodeBody[model.Issue](t, response)
+}
+
+// renamedRepositoryStore is a database holding project and one rename pair, oldName renamed to
+// newName, both seeded by SQL as a release before this one left them, and the Renames a boot
+// reads from it after the seed. A test builds its server on both (testServerOptions.store and
+// renames), since a server reads the pairs once, as it is built.
+func renamedRepositoryStore(t *testing.T, project, oldName, newName string) (*store.Store, refs.Renames) {
+	t.Helper()
+	database := storetest.Open(t)
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into projects (key, name, default_assignee) values ($1, $1, 'alice');
+	`, project); err != nil {
+		t.Fatalf("seed project %s: %v", project, err)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into repo_projects (repo, project, created_by, renamed_to)
+		values ($1, $2, '{"kind":"user","id":"alice"}', $3)
+	`, oldName, project, newName); err != nil {
+		t.Fatalf("seed the pair %s -> %s: %v", oldName, newName, err)
+	}
+	return database, readRenames(t, database)
+}
+
+// readRenames is the rename pairs database holds, read as the boot reads them
+// (store.ReadRepoRenames).
+func readRenames(t *testing.T, database *store.Store) refs.Renames {
+	t.Helper()
+	pairs, err := store.ReadRepoRenames(context.Background(), database.Pool)
+	if err != nil {
+		t.Fatalf("read the rename pairs: %v", err)
+	}
+	return refs.NewRenames(pairs)
 }
 
 // resultsGitHub is a Dispatch holding an App key whose GitHub answers `handler`, with the
@@ -649,6 +680,21 @@ func resultsGitHubServed(
 	checkRuns http.HandlerFunc,
 ) (http.Handler, *store.Store, *server) {
 	t.Helper()
+	handler, database, _, served := newRegisteredTestServer(t, resultsGitHubOptions(t, repos, held, defaultBranch, answer, checkRuns))
+	return handler, database, served
+}
+
+// resultsGitHubOptions is the server resultsGitHubServed builds, as options a test can add to
+// before it builds the server itself: its own store and the rename pairs read from it
+// (renamedRepositoryStore).
+func resultsGitHubOptions(
+	t *testing.T,
+	repos, held map[string]bool,
+	defaultBranch string,
+	answer func(base, head string) (int, string),
+	checkRuns http.HandlerFunc,
+) testServerOptions {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
@@ -705,11 +751,10 @@ func resultsGitHubServed(
 		mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", checkRuns)
 	}
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
+	return testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: upstream,
-	})
-	return handler, database, served
+	}
 }
 
 // A result at a commit the repository of the check's issue does not hold is refused, and
@@ -823,28 +868,15 @@ func TestResultAtAnUnreadableRepositoryIsStoredAndComparesWithNothing(t *testing
 // The same refusal for an issue recorded under the name its repository was renamed away from.
 // GitHub answers 404 for the old name's installation and knows only the canonical one, so the
 // commit is asked about under the name the repository is called today, as the results read
-// asks (refs.CanonicalRepo): the commit the repository holds is stored, and the one it does
-// not is refused, naming the canonical repository. Asked under the old name, every such result
-// would be stored instead, since an unreadable repository refuses nothing.
+// asks (refs.Renames.Canonical, over the pairs the server was built with): the commit the
+// repository holds is stored, and the one it does not is refused, naming the canonical
+// repository. Asked under the old name, every such result would be stored instead, since an
+// unreadable repository refuses nothing. The pair is seeded by SQL before the server is built.
 func TestResultOfAnIssueUnderARepositorysOldNameIsRefusedAtTheCanonicalName(t *testing.T) {
-	handler, _ := resultsGitHubHolding(t, map[string]bool{"acme/gadgets": true},
-		map[string]bool{headCommit: true}, func(string, string) string { return "diverged" })
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects",
-		map[string]string{"key": "RESN", "name": "Renamed"}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create RESN: status=%d body=%s", response.Code, response.Body.String())
-	}
-	for _, mapping := range []struct {
-		repo string
-		body map[string]any
-	}{
-		{"acme/gadgets", map[string]any{"project": "RESN", "default": true}},
-		{"oldco/gadgets", map[string]any{"project": "RESN", "renamed_to": "acme/gadgets"}},
-	} {
-		if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+mapping.repo,
-			mapping.body, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("map %s: status=%d body=%s", mapping.repo, response.Code, response.Body.String())
-		}
-	}
+	options := resultsGitHubOptions(t, map[string]bool{"acme/gadgets": true}, map[string]bool{headCommit: true}, "main",
+		func(string, string) (int, string) { return http.StatusOK, "diverged" }, nil)
+	options.store, options.renames = renamedRepositoryStore(t, "RESN", "oldco/gadgets", "acme/gadgets")
+	handler, _, _ := newTestServer(t, options)
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RESN", "title": "Recorded under the old name", "spec": "A spec\n",
 			"repo": "oldco/gadgets"}, "alice"))
@@ -1287,7 +1319,7 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 
 // A pull request the issue links, open or merged, in a repository the issue does not resolve to
 // is one of the heads its `before_merge` checks compare their results with, as a pull request
-// attributed to the issue is (delivery.HeadsAttributedTo). The link is matched to the stored
+// attributed to the issue is (delivery.Attributor.HeadsAttributedTo). The link is matched to the stored
 // row by the row's repository and number, so the head the row holds is the head the read uses,
 // however a push moved it. A result at that head stands at it; a push that moves the head
 // leaves that result at another commit, as it does in the issue's own repository; and a result
@@ -1493,9 +1525,8 @@ func TestAfterMergeResultWithNoPullRequestFollowsTheDefaultBranch(t *testing.T) 
 		}
 		return "diverged"
 	})
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "RESD", "name": "Default"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": "RESD", "default": true}, "alice")
+	createTestProject(t, handler, "RESD")
+	setDefaultRepository(t, handler, "RESD", "acme/widgets")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RESD", "title": "Default branch", "spec": "A spec\n"}, "alice"))
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -1697,9 +1728,8 @@ func TestAfterMergeResultFallsBackWhenTheMergedRowNamesNoBaseBranch(t *testing.T
 // at another commit and no pass of them stands.
 func TestAfterMergeResultIsUnknownWhenTheAppCannotReadTheRepository(t *testing.T) {
 	handler, _ := resultsGitHub(t, map[string]bool{}, func(string, string) string { return "behind" })
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "RESU", "name": "Unknown"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/hidden",
-		map[string]any{"project": "RESU", "default": true}, "alice")
+	createTestProject(t, handler, "RESU")
+	setDefaultRepository(t, handler, "RESU", "acme/hidden")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RESU", "title": "Unreadable", "spec": "A spec\n"}, "alice"))
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -2102,8 +2132,8 @@ func TestBeforeMergeResultIsUnknownWhenDispatchCannotSeeTheRepository(t *testing
 		"a pre-merge result of a repository the App cannot read", model.CommitUnknown, false)
 
 	// An issue that resolves to no repository at all has nothing to compare with, and nothing
-	// left to read: createInteractionIssue creates the project itself, and nothing maps a
-	// repository to it.
+	// left to read: createInteractionIssue creates the project itself, with no default
+	// repository.
 	loose := createInteractionIssue(t, handler, "RESL", "No repository", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+loose.Key, "verification.md", twoChecks)
 	none := decodeBody[recordedResult](t, recordResult(t, handler, loose.Key, resultBody("k1", "pass", headCommit, nil)))
@@ -2184,9 +2214,8 @@ func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *test
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: upstream.URL,
 	})
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "REST", "name": "Through"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": "REST", "default": true}, "alice")
+	createTestProject(t, handler, "REST")
+	setDefaultRepository(t, handler, "REST", "acme/widgets")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "REST", "title": "Read through", "spec": "A spec\n"}, "alice"))
 	issueKey = issue.Key
@@ -2265,14 +2294,16 @@ func TestAResultAtTheHeadOfAPullRequestTitledAfterAnotherRepositorysIssueStandsA
 		model.CommitAtBasis, false)
 }
 
-// The same surface for a repository under two names. An issue is recorded under the name its
-// repository was renamed away from, and its pull request is on the name GitHub knows.
-// Dispatch holds both — repo_projects maps each, and the old name's row names what it was
-// renamed to — so the results route asks the App about the canonical name
-// (refs.CanonicalRepo) and the attribution holds the issue to it. Before that pair was read,
-// the App was asked about the old name, whose installation GitHub answers 404 for: the
-// read-through learned no pull request and Dispatch could see no repository at all, so the
-// result was unknown rather than placed at a head.
+// The same surface for a repository under two names. An issue's row names the old name of a
+// renamed repository, and its pull request is on the new name, the one GitHub knows. This build
+// stores the new name on every write (TestAnIssueWriteStoresARenamedRepositoryUnderItsNewName),
+// so the create stores acme/gadgets. The test then writes oldco/gadgets into the row by SQL, as a
+// build before this one writes it during a roll. The next boot's rename pass rewrites such a row.
+// The results route asks the App about the canonical name (refs.Renames.Canonical). The
+// Attributor that api.NewDeps builds of the same rename pairs holds the issue to its pull request
+// on the new name, so the result stands at its head. Before the route read the pairs, it asked
+// the App about the old name, whose installation GitHub answers 404 for: the read-through learned
+// no pull request, and the result was unknown rather than placed at a head.
 func TestAResultOfAnIssueRecordedUnderARepositorysOldNameStandsAtItsHead(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -2308,29 +2339,20 @@ func TestAResultOfAnIssueRecordedUnderARepositorysOldNameStandsAtItsHead(t *test
 	})
 	upstream := httptest.NewServer(mux)
 	t.Cleanup(upstream.Close)
+	database, renames := renamedRepositoryStore(t, "RENM", "oldco/gadgets", "acme/gadgets")
 	handler, _, _ := newTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: upstream.URL,
+		store:         database,
+		renames:       renames,
 	})
 
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects",
-		map[string]string{"key": "RENM", "name": "Renamed"}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create RENM: status=%d body=%s", response.Code, response.Body.String())
-	}
-	for _, mapping := range []struct {
-		repo string
-		body map[string]any
-	}{
-		{"acme/gadgets", map[string]any{"project": "RENM", "default": true}},
-		{"oldco/gadgets", map[string]any{"project": "RENM", "renamed_to": "acme/gadgets"}},
-	} {
-		if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+mapping.repo,
-			mapping.body, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("map %s: status=%d body=%s", mapping.repo, response.Code, response.Body.String())
-		}
-	}
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RENM", "title": "Recorded under the old name", "spec": "A spec\n", "repo": "oldco/gadgets"}, "alice"))
+	if tag, err := database.Pool.Exec(context.Background(),
+		`update issues set repo = $2 where key = $1`, issue.Key, "oldco/gadgets"); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("store %s under oldco/gadgets as a build before this one would: %v (%d rows)", issue.Key, err, tag.RowsAffected())
+	}
 	title = issue.Key + ": the work, on the new name"
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 
@@ -2435,11 +2457,8 @@ func TestChildsResultInItsOwnRepositoryStandsAtNoBasisOnTheParentsTab(t *testing
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: upstream.URL,
 	})
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "RESR", "name": "Two repos"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": "RESR", "default": true}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/gadgets",
-		map[string]any{"project": "RESR"}, "alice")
+	createTestProject(t, handler, "RESR")
+	setDefaultRepository(t, handler, "RESR", "acme/widgets")
 	parent := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RESR", "title": "Parent", "spec": "A spec\n"}, "alice"))
 	uploadDocument(t, handler, "/api/v1/issues/"+parent.Key, "verification.md", siblingChecks)
@@ -3025,7 +3044,7 @@ func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
 		func(string, string) string { return "diverged" })
 
 	// 1. An issue that resolves to no repository at all: createInteractionIssue creates the
-	// project itself, and nothing maps a repository to it.
+	// project itself, with no default repository.
 	loose := createInteractionIssue(t, handler, "NON1", "No repository", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+loose.Key, "verification.md", twoChecks)
 	adrift := decodeBody[recordedResult](t, recordResult(t, handler, loose.Key, resultBody("k1", "pass", headCommit, nil)))
@@ -3057,34 +3076,30 @@ func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
 	}
 
 	// 4. An issue that resolved to a repository, merged into a branch, and resolves to none
-	// now, its mapping deleted after the merge — the issue whose project mapping was removed,
-	// and the issue whose parent moved. This pins the deep review's finding on #3530: the
-	// merged row delivery.BaseBranchMergedFor reads by issue key alone goes on naming
+	// now, its project's default cleared after the merge — the issue whose project's default
+	// was removed, and the issue whose parent moved. This pins the deep review's finding on
+	// #3530: the merged row delivery.BaseBranchMergedFor reads by issue key alone goes on naming
 	// `integration/x`, so a branch walk chosen before anything tests the repository reached
 	// onNamedBranch with none and answered `unknown`/`read_failed` for every result, against
 	// what the surface's own rule says — an issue that resolves to no repository is never
 	// unknown, and a retry settles nothing here.
-	adopted := issueInRepository(t, handler, "NON4", "acme/widgets", "Mapping deleted after the merge")
+	adopted := issueInRepository(t, handler, "NON4", "acme/widgets", "Default cleared after the merge")
 	uploadDocument(t, handler, "/api/v1/issues/"+adopted.Key, "verification.md", twoChecks)
 	recordMerge(t, database, "acme/widgets", 41, adopted.Key, "integration/x")
 	orphaned := decodeBody[recordedResult](t,
 		recordResult(t, handler, adopted.Key, resultBody("k2", "pass", mergeCommit, nil)))
-	unmapped := dispatchRequest(t, handler, http.MethodDelete,
-		"/api/v1/settings/repo-projects/acme/widgets", nil, "alice")
-	if unmapped.Code != http.StatusNoContent {
-		t.Fatalf("delete the mapping of acme/widgets: status=%d body=%s", unmapped.Code, unmapped.Body.String())
-	}
+	setDefaultRepository(t, handler, "NON4", nil)
 	adoptedRead := readResults(t, handler, adopted.Key)
 	comparedNothing(t, adoptedRead, "k2", model.ReasonNoPullRequestOrBranch, model.PassStandsNo)
 	standsAt(t, adoptedRead, "k2", orphaned.Result.ID,
-		"an after-merge result of an issue whose repository mapping was deleted after its merge",
+		"an after-merge result of an issue whose project's default was cleared after its merge",
 		model.CommitOtherCommit, false)
 }
 
 // A resolve of the check's issue's repository that did not answer is a read of Dispatch's own
 // that said nothing, and never a verdict about the work. A parent chain that loops is how
 // that resolve fails on demand: refs.IssueRepository refuses a chain it cannot finish rather
-// than answer with the project's default mapping (refs.IssueRepoTerms), so every read of the
+// than answer with the project's default repository (refs.IssueRepoTerms), so every read of the
 // repository below it says it could not tell.
 //
 // This pins the deep review's finding on #3530: repositoryOf answered nil for two worlds —
@@ -3158,7 +3173,7 @@ func TestAResolveThatDidNotAnswerIsUnknownAndNotAVerdict(t *testing.T) {
 	t.Run("the pre-merge result at none of the heads held is unknown and not another commit", func(t *testing.T) {
 		// The `before_merge` arm of commitStands. The same issue's pre-merge check compares
 		// with the head of the merged pull request Dispatch holds for it, which the resolve
-		// has no part in (delivery.HeadsAttributedTo reads by issue key alone), and the result
+		// has no part in (delivery.Attributor.HeadsAttributedTo reads by issue key alone), and the result
 		// is at another commit. Whether that commit heads a pull request Dispatch has not
 		// learned turns on reading the repository, which is the read that did not answer.
 		compared := checkOf(t, looped, "k1").ComparedWith

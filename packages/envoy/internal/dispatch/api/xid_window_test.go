@@ -614,12 +614,7 @@ func xidWindowIssueCreateWithSpec(t *testing.T, f *xidFixture) {
 // (respondWithExistingExternalIssue), with its advice. It writes nothing: today its row lock gives
 // it an xid, and once the owner lock is advisory (plan M1) it may hold none at all.
 func xidWindowExistingExternalIssue(t *testing.T, f *xidFixture) {
-	if mapped := dispatchRequest(t, f.handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": xidProject,
-	}, "alice"); mapped.Code != http.StatusOK {
-		t.Fatalf("map the repository: status=%d body=%s", mapped.Code, mapped.Body.String())
-	}
-	body := map[string]any{"external": "owner/repo#41", "title": "Tracked upstream", "actor": sessionActor()}
+	body := map[string]any{"project": xidProject, "external": "owner/repo#41", "title": "Tracked upstream", "actor": sessionActor()}
 	if created := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues", body); created.Code != http.StatusCreated {
 		t.Fatalf("create the external issue: status=%d body=%s", created.Code, created.Body.String())
 	}

@@ -305,7 +305,7 @@ func startIntakeProcess(t *testing.T, pool *store.Pool, natsURL string, block fu
 	process.release = sync.OnceFunc(func() { close(held) })
 	t.Cleanup(process.release)
 
-	intake := newIntake(client, second.Pool, process.leases, github, events.NewBroker(), loadedSettingsCache(t, t.Context(), second.Pool))
+	intake := newIntake(client, second.Pool, process.leases, github, events.NewBroker(), loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	process.intake = intake
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

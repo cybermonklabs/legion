@@ -214,12 +214,6 @@ func TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList(t *testing.T) {
 func TestCreateIssueForcedExternalRecordsNoCheckThatNeverRan(t *testing.T) {
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
-	mapping := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "TEST",
-	}, "alice")
-	if mapping.Code != http.StatusOK {
-		t.Fatalf("map external repository: status=%d body=%s", mapping.Code, mapping.Body.String())
-	}
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
 		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe,
@@ -228,7 +222,7 @@ func TestCreateIssueForcedExternalRecordsNoCheckThatNeverRan(t *testing.T) {
 	// The same text as that open issue, which an unforced create of the project is refused for:
 	// the external create goes in unchecked, and `force` changes nothing it records.
 	response := createIssueRequest(t, handler, map[string]any{
-		"external": "owner/repo#41", "title": "Astrolabe calibration drifts after a reseat",
+		"external": "owner/repo#41", "project": "TEST", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe, "force": true,
 	})
 	created := requireCreatedIssue(t, response)

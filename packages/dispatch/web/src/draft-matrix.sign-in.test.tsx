@@ -299,7 +299,6 @@ function answerIssueReads(): () => void {
     spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
   ];
   answerRequests(
-    http.get("/api/v1/settings/repo-projects", () => Response.json([])),
     http.get("/api/v1/projects/:project/architecture-sources", () => Response.json([]))
   );
   return () => {

@@ -180,10 +180,6 @@ func TestAdvancesRelation(t *testing.T) {
 	// An issue that already stands under a parent, behind a blocker, in a repository and out of
 	// the architecture keeps every one of them when it states what it advances, and the event
 	// says that is all the write moved.
-	if mapped := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": "CORE"}, "alice"); mapped.Code != http.StatusOK && mapped.Code != http.StatusCreated {
-		t.Fatalf("map the repository to CORE: status=%d body=%s", mapped.Code, mapped.Body.String())
-	}
 	parent := createAdvancingIssue(t, handler, map[string]any{"project": "CORE", "title": "The parent", "force": true}, "alice")
 	blocker := createAdvancingIssue(t, handler, map[string]any{"project": "CORE", "title": "The blocker", "force": true}, "alice")
 	child := createAdvancingIssue(t, handler, map[string]any{

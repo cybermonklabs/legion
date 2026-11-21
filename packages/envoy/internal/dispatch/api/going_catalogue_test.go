@@ -36,7 +36,6 @@ var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/priorities/{id}",
 	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
 	"DELETE /api/v1/projects/{key}/legion/daemon",
-	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}",
 	"PATCH /api/v1/artifacts/{id}",
 	"PATCH /api/v1/comments/{id}",
 	"PATCH /api/v1/delivery/session-groups/{id}",
@@ -96,10 +95,10 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/me/threads/{id}/read",
 	"PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
 	"PUT /api/v1/projects/{key}/default-assignee",
+	"PUT /api/v1/projects/{key}/default-repository",
 	"PUT /api/v1/projects/{key}/gated-steps",
 	"PUT /api/v1/projects/{key}/legion/daemon",
 	"PUT /api/v1/settings/delivery",
-	"PUT /api/v1/settings/repo-projects/{owner}/{repo}",
 }
 
 // withThrowawayToolRoutes gives one tool a set of rows for the length of a test, so a build is

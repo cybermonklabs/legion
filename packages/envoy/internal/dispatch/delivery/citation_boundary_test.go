@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // TestCitedIssuesReadsAURLAsAURL holds the whole citation decision, not the expression that
@@ -125,7 +127,7 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 		{name: "inside CJK text with no space in it", body: "参照https://github.com/acme/widgets/issues/7です。", credit: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			urls := citedIssues(repo, row.body)
+			urls := citedIssues(refs.Renames{}, repo, row.body)
 			if row.credit {
 				if len(urls) != 1 || urls[0] != cited {
 					t.Errorf("citedIssues(%q, %q) = %v, want %s and nothing else", repo, row.body, urls, cited)
@@ -192,7 +194,7 @@ func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
 		{name: "another host's path, plain", body: "See https://example.test/github.com/acme/widgets/issues/7 here.", want: []string{seven}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if urls := citedIssues(repo, row.body); !slices.Equal(urls, row.want) {
+			if urls := citedIssues(refs.Renames{}, repo, row.body); !slices.Equal(urls, row.want) {
 				t.Errorf("citedIssues(%q, %q) = %v, want %v", repo, row.body, urls, row.want)
 			}
 		})
@@ -223,7 +225,7 @@ func TestCitedIssuesCostsNoMoreForACitationFarFromASpace(t *testing.T) {
 	byComma := prose + "," + strings.TrimSuffix(strings.Repeat(one+",", 200), ",")
 	timed := func(body string) time.Duration {
 		started := time.Now()
-		citedIssues(repo, body)
+		citedIssues(refs.Renames{}, repo, body)
 		return time.Since(started)
 	}
 	space, comma := timed(bySpace), timed(byComma)
@@ -245,19 +247,19 @@ func TestCitedIssuesReadsAHostNameOfAHostNamesLength(t *testing.T) {
 	const cited = "https://github.com/acme/widgets/issues/7"
 	t.Run("a citation after a word of 65,533 bytes", func(t *testing.T) {
 		body := strings.Repeat("a", 65533) + " https://github.com/acme/widgets/issues/7"
-		if urls := citedIssues(repo, body); len(urls) != 1 || urls[0] != cited {
+		if urls := citedIssues(refs.Renames{}, repo, body); len(urls) != 1 || urls[0] != cited {
 			t.Errorf("citedIssues over a 65,533-byte word = %v, want %s and nothing else", urls, cited)
 		}
 	})
 	t.Run("a host name of 65,533 bytes is no host name", func(t *testing.T) {
 		body := strings.Repeat("a", 65533) + "github.com/acme/widgets/issues/7"
-		if urls := citedIssues(repo, body); len(urls) != 0 {
+		if urls := citedIssues(refs.Renames{}, repo, body); len(urls) != 0 {
 			t.Errorf("citedIssues over a 65,533-byte host name = %v, want none", urls)
 		}
 	})
 	t.Run("more digits after the colon than a host name is long leaves no host", func(t *testing.T) {
 		body := "See https://github.com:" + strings.Repeat("4", 300) + "/acme/widgets/issues/7 here."
-		if urls := citedIssues(repo, body); len(urls) != 0 {
+		if urls := citedIssues(refs.Renames{}, repo, body); len(urls) != 0 {
 			t.Errorf("citedIssues over 300 digits after the colon = %v, want none: past a host name's length there is no host left to read", urls)
 		}
 	})

@@ -3952,48 +3952,32 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
-  test("checks the canonical project returned after Dispatch resolves an external reference", async () => {
-    const requests: string[] = [];
-    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const target = new URL(String(url));
-      requests.push(`${init?.method ?? "GET"} ${target.pathname}`);
-      if (target.pathname === "/api/v1/issues") {
-        expect(JSON.parse(String(init?.body))).toMatchObject({
-          project: "",
-          external: "owner/repo#42",
-        });
-        return response(
-          {
-            key: "LEGION-216",
-            title: "Architecture work",
-            project: "LEGION",
-            components: issueComponents("inherit", []),
-          },
-          201
-        );
-      }
-      if (target.pathname === "/api/v1/projects/LEGION/architecture-sources") {
-        return response([architectureSource("LEGION")]);
-      }
-      throw new Error(`unexpected request: ${target.pathname}`);
-    };
+  // Every create names its project, a create with external too, and the server refuses one that
+  // names none. So the executor refuses an empty project and sends nothing.
+  test("refuses an external create with an empty project before any request", async () => {
+    let requests = 0;
+    const fetchImpl = (() => {
+      requests += 1;
+      throw new Error("network must not be called");
+    }) as unknown as typeof fetch;
 
-    const result = await executeDispatchTool({
-      tool: "dispatch_issue",
-      args: { project: "", title: "Architecture work", external: "owner/repo#42" },
-      cwd: "/workspace",
-      host: "omp",
-      config,
-      env: {},
-      exec: repoExec("owner/repo"),
-      fetchImpl: fetchImpl as typeof fetch,
-    });
+    const error = await refusal(
+      executeDispatchTool({
+        tool: "dispatch_issue",
+        args: { project: "", title: "Architecture work", external: "owner/repo#42" },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl,
+      })
+    );
 
-    expect(result.text).toContain(architectureComponentsGuidance);
-    expect(requests).toEqual([
-      "POST /api/v1/issues",
-      "GET /api/v1/projects/LEGION/architecture-sources",
+    expect(error.problems).toEqual([
+      "--project: Too small: expected string to have >=1 characters",
     ]);
+    expect(requests).toBe(0);
   });
 
   test("does not guide an unassigned new issue when its project has no source", async () => {
@@ -5223,7 +5207,7 @@ describe("executeDispatchTool", () => {
     return { requests, fetchImpl: fetchImpl as typeof fetch };
   }
 
-  const refusal = (status: number, code: string, error: string) =>
+  const errorAnswer = (status: number, code: string, error: string) =>
     new Response(JSON.stringify({ code, error }), {
       status,
       headers: { "Content-Type": "application/json" },
@@ -5282,7 +5266,7 @@ describe("executeDispatchTool", () => {
 
   test("dispatch_issue_update leaves the issue open when the reason cannot be posted", async () => {
     const server = closingServer({
-      message: () => refusal(403, "FORBIDDEN", "token may not write to ACME"),
+      message: () => errorAnswer(403, "FORBIDDEN", "token may not write to ACME"),
       patch: () => {
         throw new Error("the close must not be sent");
       },
@@ -5400,7 +5384,7 @@ describe("executeDispatchTool", () => {
         5,
       ],
       [
-        () => refusal(500, "INTERNAL", "internal server error"),
+        () => errorAnswer(500, "INTERNAL", "internal server error"),
         `INTERNAL: internal server error (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
         5,
       ],
@@ -5469,7 +5453,7 @@ describe("executeDispatchTool", () => {
   test("dispatch_issue_update names the posted reason when the close fails after it", async () => {
     const server = closingServer({
       message: () => response({ id: "message-7", issue_key: "ACME-175" }),
-      patch: () => refusal(409, "ISSUE_CLAIMED", "claimed by session other"),
+      patch: () => errorAnswer(409, "ISSUE_CLAIMED", "claimed by session other"),
     });
 
     await expect(closeCall(server.fetchImpl)).rejects.toThrow(
@@ -5558,7 +5542,7 @@ describe("executeDispatchTool", () => {
           ] as const
       ),
       [
-        () => refusal(502, "HTTP_502", "Bad Gateway"),
+        () => errorAnswer(502, "HTTP_502", "Bad Gateway"),
         `HTTP_502: Bad Gateway (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
         5,
       ],
@@ -5594,7 +5578,7 @@ describe("executeDispatchTool", () => {
   // a step before it, the close was never sent, so the call fails and says the reason is there.
   test("dispatch_issue_update reads KEY_COMMITTED as a landing on the close, and a failure on the reason", async () => {
     const committed = () =>
-      refusal(409, "KEY_COMMITTED", "the write landed and its answer was lost");
+      errorAnswer(409, "KEY_COMMITTED", "the write landed and its answer was lost");
     const closed = closingServer({
       message: () => response({ id: "message-7", issue_key: "ACME-175" }),
       patch: committed,
@@ -5636,7 +5620,7 @@ describe("executeDispatchTool", () => {
       ". Dispatch finishes an attempt it received whatever this command does, so read the write " +
       "back before you send it again: a new command sends it under a new key.";
     const inFlight = () =>
-      refusal(409, "KEY_IN_FLIGHT", "an earlier request with this key is still running");
+      errorAnswer(409, "KEY_IN_FLIGHT", "an earlier request with this key is still running");
     // A KEY_IN_FLIGHT says Dispatch may still be running the close, so it is asked every 3 s at
     // most until 55 s rather than five times: 20 attempts.
     for (const [first, then, expected, attempts] of [

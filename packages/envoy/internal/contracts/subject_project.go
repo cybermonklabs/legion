@@ -126,7 +126,7 @@ func init() {
 			}
 			return NoProject, ""
 		}},
-		// A repository's events: the project is the one Dispatch maps the repository to.
+		// A repository's events: the name holds no project, so the reader gets the repository alone.
 		{family: "notifications.github.>", read: func(rest []string) (string, string) {
 			if len(rest) >= 2 {
 				return "", rest[0] + "/" + rest[1]

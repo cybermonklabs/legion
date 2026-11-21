@@ -252,9 +252,9 @@ export function progressText(progress: IssueProgress | undefined, sep: string): 
 }
 
 /** Which repository the issue targets and where it came from: its own, or resolved through its
- *  parent chain and the project's default mapping. A Dispatch server from before the repository
- *  fields sends neither field, and its answer is unknown, never none: none means the server
- *  resolved no repository. */
+ *  parent chain and the project's default repository. A Dispatch server from before the
+ *  repository fields sends neither field, and its answer is unknown, never none: none means the
+ *  server resolved no repository. */
 function repositoryLine(issue: {
   readonly repo?: string | null;
   readonly resolved_repo?: string | null;

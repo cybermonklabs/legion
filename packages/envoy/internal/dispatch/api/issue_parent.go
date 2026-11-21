@@ -165,9 +165,7 @@ func lockProjectIssueDependencies(ctx context.Context, tx pgx.Tx, project string
 // (TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks, issue_dependencies_test.go).
 //
 // The key is its own name rather than lockProjectIssueDependencies' namespace with a literal
-// second key, so a project whose key happens to hash to that literal cannot collide with it; the
-// two-key shape with a literal is the one refuseRepoRenameChain already uses for a
-// deployment-wide lock.
+// second key, so a project whose key happens to hash to that literal cannot collide with it.
 func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `
 		select pg_advisory_xact_lock(hashtext('dispatch-issue-dependencies-deployment'), 0)

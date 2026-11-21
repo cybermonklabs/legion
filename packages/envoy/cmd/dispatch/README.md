@@ -159,13 +159,11 @@ Each item below names a variable, then its purpose.
   that budget is no setting but one sixteenth of the Go memory limit, at least 64 MiB and at most 1 GiB, and 256 MiB when no limit is set.
   `/debug/vars` (Profiling, below) shows how near each cap a running process is.
 
-`DISPATCH_REPO_PROJECTS` optionally seeds repository-to-project settings at boot with comma-separated `owner/repo=KEY` entries.
-Each repository is read as a mapping's path is, lower-cased with one trailing `.git` trimmed, and held to the names GitHub allows as the settings route holds a mapping's path: an entry such as `acme/.git=KEY`, which reads as `acme/`, or `acme/..=KEY` is refused, naming the entry, and the boot with it.
-Existing dashboard mappings take precedence over this seed:
-it adds only a repository with no mapping, and announces each one it adds with `settings.repo_project.updated`, as a dashboard write does.
-Dispatch resolves every external issue through the stored mapping, then falls back to `DISPATCH_DEFAULT_PROJECT` when configured.
-An unmapped external repository without a default project is rejected.
-An issue created through the default also gets a `repo:owner/name` label.
+A project's default repository belongs to the project, and no setting holds it:
+`PUT /api/v1/projects/{key}/default-repository` sets or clears it, and so does Settings → Projects (Routes, below).
+An issue imported from GitHub (`POST /api/v1/issues` with `external`) names its project in `project`, as every other create does.
+No setting seeds a default repository or chooses the project of an import.
+A boot that still sets one of the two settings that did is refused, naming what replaced it (`removedSettings` in `cmd/dispatch/settings.go`).
 
 Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
 it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
@@ -239,7 +237,7 @@ a `GET` row declares nothing), in four classes:
 *a project's* — the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue;
 *a project the body names* — the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled;
 *the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on (or, for a delivery sent for a `role:` route, one sent for a role the listener's role lookup names it the live holder of, which a session that took the role from the one the delivery went to answers it by), and the caller-private `me` rows;
-and *the deployment's* — the project create, the repository-to-project map, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions.
+and *the deployment's* — the project create, a project's default repository, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions.
 `Register` wraps every mutating route in three checks (`internal/dispatch/api/project_scope.go`), which run after the caller is resolved and before the handler, so no route is left to check any of them for itself.
 
 The project check resolves the project the addressed object belongs to
@@ -253,7 +251,7 @@ Each resolver sends the raw path value to Postgres, as the handler behind it doe
 — Postgres's uuid parser takes a hyphen after any group of four digits, and a check that parsed ids in Go admitted those spellings unjudged.
 A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT`, naming the credential's project and the route:
 a credential that may write one project may not create another or change a setting that is not any project's.
-`POST /api/v1/issues` takes its project from the body, or from the repository an external ref names, rather than from its address, so its handler makes the same check, with the same refusal, the moment that project is settled
+`POST /api/v1/issues` takes its project from the body rather than from its address, so its handler makes the same check, with the same refusal, the moment that project is settled
 — before the ref is resolved to an issue already imported, and before anything is written.
 
 The session check holds the rows classed *the calling session's* whose path names a session
@@ -431,21 +429,23 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   It writes through the listener's own CI bucket, `envoy_ci_state`, which every pass binds afresh and none creates:
   the listener stays the one owner of that bucket's TTL and its copies, and a pass that finds no bucket says so and reads GitHub nothing.
 
-- A pass reads every repository it covers (`cireconcile.covered`): each one `repo_projects` maps,
-  and each one an issue names as its own `repo`, which needs no mapping.
+- A pass reads every repository it covers (`cireconcile.covered`): each project's default repository,
+  and each one an issue names as its own `repo`.
+  That is every repository an issue resolves to, since an issue resolves to its own repository, an ancestor's own, or its project's default.
   Each is read under the name it is called today
-  — its own name, or, where a mapping of that name names a rename, that mapping's `renamed_to` (`refs.CanonicalRepoSQL`)
+  — its own name, or, where a rename pair's old name is that name, the pair's new name (`refs.CanonicalRepoSQL`, over the pairs the boot read)
   — so a repository named under both an old and a new name is read once and a name it was renamed away from is never asked of GitHub, which answers 404 for that name's installation.
+  The boot's rename pass writes the new name into both columns (Database migrations, below), so this read changes a name only where a failed pass left the old one.
   It resolves each against GitHub (`GET /repos/{owner}/{repo}`) for the name and id GitHub itself gives it, and deduplicates by that id as well.
-  Every record it writes is keyed by GitHub's own owner and name, never the mapping's or the issue's, which are stored lower-cased:
+  Every record it writes is keyed by GitHub's own owner and name, never the project's or the issue's, which are stored lower-cased:
   a record keyed from either would be a second record of the same head on a second settlement subject.
-  A repository GitHub does not answer is named at WARN under the name the pass read it by, counted in `mappings_skipped` and passed over, so mappings renamed onto one repository are skipped once between them.
-  A mapped repository the App is not installed on is skipped the same way at every pass (`ci reconcile skipped a repository it holds no token for`), because a mapping without the App is a fault to mend: install the App, or remove the mapping.
+  A repository GitHub does not answer is named at WARN under the name the pass read it by, counted in `defaults_skipped` and passed over, so the names a rename joins into one repository are skipped once between them.
+  A project's default repository the App is not installed on is skipped the same way at every pass (`ci reconcile skipped a repository it holds no token for`), because a default without the App is a fault to mend: install the App, or change the project's default repository.
   A repository only an issue names that the App is not installed on is no fault: an issue's own repository is any `owner/name`, and Dispatch refuses that issue no work.
-  The pass counts it in `repositories_without_app`, never in `mappings_skipped`, and names it at INFO (`ci reconcile passed over a repository the App is not installed on`) only when it asks GitHub about it.
-  It holds GitHub's answer that the App is not installed for an hour (`cireconcile.AbsentAppRecheck`), for a mapped repository too, so it asks about such a repository once an hour and not once a pass.
+  The pass counts it in `repositories_without_app`, never in `defaults_skipped`, and names it at INFO (`ci reconcile passed over a repository the App is not installed on`) only when it asks GitHub about it.
+  It holds GitHub's answer that the App is not installed for an hour (`cireconcile.AbsentAppRecheck`), for a project's default repository too, so it asks about such a repository once an hour and not once a pass.
   The cost is that the repair can lag by up to an hour after an operator installs the App on a repository, which is accepted because the live webhook path carries the repository's new events meanwhile.
-  For a mapped repository the hold has a second cost: after an operator installs the App, the WARN and `mappings_skipped` of 1 also stand for up to an hour, until a pass asks GitHub again.
+  For a project's default repository the hold has a second cost: after an operator installs the App, the WARN and `defaults_skipped` of 1 also stand for up to an hour, until a pass asks GitHub again.
   The issues half reads the repositories of closed issues too: an open issue that names no repository works in the repository of the nearest issue above it, whatever the status of that issue.
 
 - A pass reads a repository's open heads in batches, over GraphQL: one query answers twenty open pull requests with every check suite and every check run of each one's head commit (`cireconcile.headsQuery`), and the pass asks for the next twenty with the cursor that answer carries until GitHub says there is no next page.
@@ -495,7 +495,7 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   Every other way a pass ends with no head reached leaves that floor as it was: a rate limit, even one GitHub answers as the deadline falls; its caller's cancellation or deadline; an order with no head in it.
 
 - A pass is bound at the interval its loop runs it on, so it always ends before the pass after it is due and always logs its one line.
-  The pass walks one stable order — the repositories a pass covers (`cireconcile.covered`: the ones `repo_projects` maps and the ones an issue names as its own), and within each its open pull requests by number — from the first repository to the last page of the last one, and keeps a cursor in it.
+  The pass walks one stable order — the repositories a pass covers (`cireconcile.covered`: the projects' default repositories and the ones an issue names as its own), and within each its open pull requests by number — from the first repository to the last page of the last one, and keeps a cursor in it.
   A pass starts at the cursor, reads to the end of the order and ends there rather than beginning the order again, and ends early when its deadline is up or at a rate limit.
   A pass cut short leaves the cursor at the first page or REST head it did not finish, which the pass after it takes up, so no head starves behind the heads the order holds before it; a pass that reaches the end of the order leaves the cursor at the start of it.
   One walk of the order, however many passes it takes, is a cycle, and only the pass that closes a cycle forgets what the cycle no longer lists, by what every pass of that cycle reached.
@@ -508,8 +508,8 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   A rate-limited answer is never a page to read another way: it stops the pass, where a refused page, and a page holding a pull request GitHub answered with no node or no head commit, send that page's heads to the REST fallback.
   The pass records no limit of its own beyond that: the App client records GitHub's own answer, as every process's App call does.
 
-- Every pass logs one INFO `msg="ci reconcile pass"` line: `list_pages`, `heads`, `head_requests`, `heads_not_modified`, `records`, `mappings_skipped`, `heads_too_large`, `rate_limited`, with `rate_limit_scope` and `rate_limit_until` when it stopped at one, and then `heads_known`, `requests`, `pace`, `first_head`, `last_head`, `cycle_complete`, `deadline_reached`, `graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `heads_unchanged`, `duration` and `repositories_without_app`.
-  `mappings_skipped` counts the repositories the pass skipped for a fault, each of them named at WARN, so a number above zero is something to mend;
+- Every pass logs one INFO `msg="ci reconcile pass"` line: `list_pages`, `heads`, `head_requests`, `heads_not_modified`, `records`, `defaults_skipped`, `heads_too_large`, `rate_limited`, with `rate_limit_scope` and `rate_limit_until` when it stopped at one, and then `heads_known`, `requests`, `pace`, `first_head`, `last_head`, `cycle_complete`, `deadline_reached`, `graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `heads_unchanged`, `duration` and `repositories_without_app`.
+  `defaults_skipped` counts the repositories the pass skipped for a fault, each of them named at WARN, so a number above zero is something to mend;
   `repositories_without_app` counts the repositories only an issue names that the App is not installed on, which is no fault and stays above zero for as long as an issue names one.
   `records` counts the records the pass changed, one for each head whose record a write of the pass changed, never one for each observation it wrote:
   a head's runs, its suites and its statuses all write the one record of that head (`cistore.Key`), so a pass that records a head's run and its suite reports 1;
@@ -1577,7 +1577,7 @@ A process that finds it held tries again
   A reconcile pass re-reads the pull request heads first, whether or not the deployment has delivery settings and outside the deploy repository's permission check (`Reconcile.runOnce`), since every deployment compares a recorded result with those heads;
   every other step of the pass is gated on the settings and on that check, so a deployment with no settings runs the head pass and nothing else.
 
-- The CI reconcile pass (`cireconcile.Interval`, lease `ci-reconcile`) runs every 5 minutes through `duty.RunLeased`, its first pass one interval after the start, and reads each open pull request's head of every repository `repo_projects` maps or an issue names as its own, recording every completed check run and completed check suite Envoy's listener record of that head lacks, and the head's commit statuses where the App's token holds Commit statuses (CI reconcile, above).
+- The CI reconcile pass (`cireconcile.Interval`, lease `ci-reconcile`) runs every 5 minutes through `duty.RunLeased`, its first pass one interval after the start, and reads each open pull request's head of every project's default repository and every repository an issue names as its own, recording every completed check run and completed check suite Envoy's listener record of that head lacks, and the head's commit statuses where the App's token holds Commit statuses (CI reconcile, above).
   A webhook GitHub never delivered leaves a head short of a check, and a head short of a check never settles, which no notification announces either.
   It needs NATS, whose `envoy_ci_state` bucket it binds and never creates, and the App private key; without either it is off and says so at start.
   The pass compares a `tester` or `architect` check run's `app.id` against `DISPATCH_REVIEWER_APP_ID`, and with that variable unset records no verdict check at all.
@@ -2701,7 +2701,7 @@ A later build that reads more event types reads `rules` to know which events to 
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
 this table holds open ones too, by any author and in any repository, one row per pull request.
-A row names the `repo` and `number`, the repository under the canonical name it is called today (`refs.CanonicalRepo`), so one repository stored under two names keeps one row and one attribution (`20261105075455_repo_projects_renamed_to`, below);
+A row names the `repo` and `number`, the repository under the canonical name it is called today (`refs.Renames.Canonical`, over the rename pairs the server read at boot), so one repository stored under two names keeps one row and one attribution (`20261105075455_repo_projects_renamed_to`, below);
 then the `head_sha` (on a merge, the final head of the merged work), the `head_ref` and `base_ref`, the `state` (`open`, `closed` or `merged`), the `issue_key` Dispatch's attribution picks and which of its five sources named it, the title and URL, the pull request's `updated_at` as the event reported it, and when the reconcile or a read-through last read it through the App.
 That key is the first issue the five sources name that resolves to the repository the pull request is in, not the first key they name (`attributionCandidates`, `attributionHeld` in `delivery/attribution.go`):
 a pull request titled after another repository's issue therefore keeps its own, and one no candidate of which resolves to its repository is attributed to nobody, with the source `none`, as is one whose head branch is in another repository (`headInOwnRepository`).
@@ -2715,7 +2715,7 @@ The head pass also takes every merged row credited to nobody that the rule the r
 — one no read of GitHub has reached, and one an older rule judged
 — and offers such a row once per rule version (`delivery.AttributionRuleVersion`, `20261105070440_pull_request_heads_attribution_rule` below):
 a `pull_request` envelope naming no head repository attributes nobody, a pull request merged under an older rule keeps whatever that rule concluded, and nothing else ever looks at a merged row again, so without that arm a result at such a merged head would stand at no basis for good.
-The row is written outside the reconcile by the `pull_request` envelope, and by the read-through made for a commit that heads no pull request Dispatch knows (`delivery.ReadThroughCommitPulls`):
+The row is written outside the reconcile by the `pull_request` envelope, and by the read-through made for a commit that heads no pull request Dispatch knows (`delivery.Attributor.ReadThroughCommitPulls`):
 a recorded result makes one, and so does the read of an issue's results, which spends at most one such read per repository and commit every `delivery.CommitPullReadStaleAfter` (`GET /api/v1/issues/{key}/results`, Routes below).
 `pull_request_heads_issue_head` answers the heads one issue's checks are compared with, `pull_request_heads_open_stale` the reconcile's open batch, `pull_request_heads_merged_unread` and `pull_request_heads_merged_rule` its merged arm
 — the first partial on `state`, `issue_key` and `checked_at`, the second on `state = 'merged'` and keyed by `attribution_rule` (`20261111060005_pull_request_heads_merged_rule`)
@@ -2811,6 +2811,49 @@ The listener holds the other half of a rename:
 Adding a nullable column with no default writes the catalog alone, so it holds `repo_projects` in `ACCESS EXCLUSIVE` for milliseconds and rewrites no row;
 the release before it neither reads nor writes the column and names its columns in every insert, so it keeps writing mappings while it still serves.
 Its census answers `0`.
+From the release of `20261119000230_projects_default_repo` (below) on, no route writes the column, and the server reads it once, at boot.
+
+Migration `20261119000230_projects_default_repo` gives `projects` a nullable `default_repo`, the project's default repository:
+the `owner/name` an issue of the project resolves to when neither the issue nor an issue above it names a repository (`refs.IssueRepoResolved`), and null for a project with none.
+Its check holds a value to the form `parseIssueRepo` writes, never empty and in lower case.
+In the same transaction it copies into the column the repository of each `repo_projects` row that carries `is_default`.
+`repo_projects_default_per_project` (`0113`) holds those rows to one for each project, so every issue resolves to the repository it resolved to before.
+The migration reads `repo_projects` and writes no row of it.
+So a Legion daemon that still reads `GET /api/v1/settings/repo-projects` at boot, and a build rolled back to the release before this one, find the rows as the migration left them.
+Neither of them sees a default that is set after the migration, which is on the project alone.
+A default that the release before this one writes to `repo_projects` while the release rolls stays in `repo_projects` alone, and this release does not read it.
+The release before this one names its own columns of `projects` in every read and write, so it serves on this schema, and a project it creates has no default repository.
+The `ALTER` holds `projects` in `ACCESS EXCLUSIVE` to commit, the copy included, over one row for each project, and the copy reads `repo_projects` under `ACCESS SHARE`.
+Its census counts the defaults the column's check would refuse, an empty name or one not in lower case, because the copy of one fails the migration and the boot with it.
+The copy itself counts for nothing, by the rule `0133` states: it fills a column only this release reads and changes no value any reader had.
+
+The same release ends every write of a rename pair, the `renamed_to` of a `repo_projects` row.
+The server reads the pairs once, at boot, after it migrates (`store.ReadRepoRenames`), with both names of each pair in lower case, and it reads no pair once the table is gone.
+It gives that one value, which nothing changes after the read (`refs.Renames`), to every reader of a repository name, so no other statement names `repo_projects` for a rename.
+A read that fails is logged at ERROR and counted as a failure of the pass below, and the server then serves with no pairs.
+
+Before it serves, the boot writes the new name of each pair in place of the old name in every stored repository field of Dispatch (`store.RewriteRenamedRepositories`, a boot task bounded at 30 s).
+It writes fourteen lines of fields in this order, each line in one transaction:
+`issues.repo`, `projects.default_repo`, `check_results.commit_repo`, `issue_external_links.url`, `pull_request_heads.repo` and `.url`, `branch_commits.repo`, `delivery_pull_requests.repo`, `.url` and `.attribution_cited_issues`, `delivery_runs.repo` and `.url` with `delivery_run_jobs.repo`, `delivery_run_warnings.repo`, `delivery_changes.repo`, `delivery_settings.deploy_repo` and `.excluded_repos`, `delivery_reconcile_progress.scope`, `architecture_sources.repo` and `ci_reconcile_passes.cursor_repository`.
+A name matches when its lower case is the pair's old name.
+A URL matches when its host is `github.com` or `www.github.com` and its first two path segments are the old `owner/name` in any case, and the pass writes the new `owner/name` there and keeps every other character.
+A scope of the delivery reconcile's progress matches where it holds the old name as a token.
+The transaction of each line takes the pass's one advisory lock (`repoRenameLockNamespace`, `0`) and a five-second `lock_timeout`, so two processes that boot at once take turns on each line, and the second finds nothing left to write.
+Where the new name gives a row the key of another row, the row under the new name stays, and the pass deletes the row under the old name and logs it at WARN with its table and key.
+The pass logs each field it writes at INFO with `field`, `from`, `to` and `rows`, and each line that fails at ERROR with its field, and it then goes on to the next line.
+It writes no other column, `updated_at` included, and appends no event.
+It never writes `repo_projects`, the event log, or the text of documents, comments, asks and messages, which keep their words.
+After its writes it counts the rows of those fields that still name an old name.
+It also counts them before its writes, and where that count finds none, it runs no line.
+A failure of that first count is not a failure of the pass, which then runs every line.
+Every boot logs one summary line, `dispatch: rewrote renamed repositories' old names`, with `pairs`, `rows`, `deleted`, `failures` and `left`:
+at INFO when `failures` and `left` are `0`, and at ERROR otherwise, with `left=unknown` where nothing counted the rows.
+A failure, a time-out included, does not stop the boot, and the next boot writes what is left.
+
+From the same release on, every write of such a field stores the new name (`refs.Renames.Canonical` and `CanonicalURL`):
+an issue's own repository and its external link URLs on a create and a patch, a project's default repository, the delivery settings' repositories, an architecture source's repository, and the issue URLs a pull request's body cites.
+The attribution of pull requests, the results read, the writers of `pull_request_heads`, the issue reference read (`GET /api/v1/issues/resolve`) and the CI reconcile still read the pairs (`refs.Renames`, `refs.CanonicalRepoSQL`).
+So a row that a failed pass left on an old name still attaches its pull requests.
 
 Migration `20261105112616_pull_request_heads_repo_head` creates `pull_request_heads_repo_head` on `pull_request_heads (lower(repo), head_sha)`, the index behind the question the results read asks before it reads GitHub about a commit:
 has any open or merged stored pull request this commit of this repository as its head, whatever issue it is attributed to (`delivery.HeadStoredAt`)?
@@ -4020,7 +4063,7 @@ Each item below names a path with its method and identity, then its purpose.
   - An attempt is one pass a loop runs under its lease, on the process that holds the lease (`duty.Exclusive`): one sweep, one import of every enabled source, one delivery reconcile pass or one CI reconcile pass.
     It opens in the function the lease runs and in nothing a route or a command also calls, so `envoy-dispatch redeliver-webhooks`, the Settings Refresh of a source and `dispatch architecture-sync` record nothing.
     It is recorded when the pass ends (`githubreads.Finish`), in place of the attempt before it:
-    nothing when the pass sent GitHub nothing and noted no failure (the sweep before NATS connects, a CI reconcile that binds no CI record writer or maps no repository, an architecture import with no enabled source, a delivery reconcile with no settings and no pull request head to re-read), nothing when this process's shutdown cut the pass short, `failed` when a failure was noted, and `succeeded` otherwise.
+    nothing when the pass sent GitHub nothing and noted no failure (the sweep before NATS connects, a CI reconcile that binds no CI record writer or covers no repository, an architecture import with no enabled source, a delivery reconcile with no settings and no pull request head to re-read), nothing when this process's shutdown cut the pass short, `failed` when a failure was noted, and `succeeded` otherwise.
     The write runs on a context of its own bounded at five seconds, so a CI reconcile pass that ends on its own bound is still recorded, and a failed write is logged at ERROR and changes nothing else of the pass.
     A CI reconcile pass can end `complete` in `ci_reconcile_passes` and record `failed` here: that row says how the pass ended, and this record says whether a GitHub read of it failed.
 
@@ -4047,7 +4090,7 @@ Each item below names a path with its method and identity, then its purpose.
   - A failure of the second kind is noted by each loop at each point where it gives up part of the GitHub read the deployment configured it to make, each a point where it already logs or records that failure;
     it counts whatever failed there, since a database error inside such a step ends that read too, and its cause is the loop's own error, which names the repository where there is one:
     the redelivery sweep where its listing of the App webhook's deliveries fails (`Sweep`), where GitHub refuses a redelivery request (`decide`, `RequestRefused`), and where a rate limit stops the sweep (`Report.RateLimitedUntil`);
-    the CI reconcile where a repository it reads gets no token, no answer to its identity read, a name that is not `owner/name` or no listing of its open pull requests, where a repository a project maps is one the App is not installed on (`appAbsent`, at every pass the fault stands for, the passes that hold GitHub's answer included), where a head cannot be read (`headFailed`, an answer too large included), where it reads none of a head's commit statuses (`statusesUnread`: any `errors` entry a query answers at or under the head commit's `status` field, whatever its type, and any failure of the REST status read but a rate limit and the pass's own end, a 403, 404 or 422, a 5xx, a transport error, an answer it cannot decode and a listing past its page bound included), and where a rate limit ends the pass, one in force at its start included (`Pass`), but not where the pass's own ending killed the read (`cutShort`);
+    the CI reconcile where a repository it reads gets no token, no answer to its identity read, a name that is not `owner/name` or no listing of its open pull requests, where a project's default repository is one the App is not installed on (`appAbsent`, at every pass the fault stands for, the passes that hold GitHub's answer included), where a head cannot be read (`headFailed`, an answer too large included), where it reads none of a head's commit statuses (`statusesUnread`: any `errors` entry a query answers at or under the head commit's `status` field, whatever its type, and any failure of the REST status read but a rate limit and the pass's own end, a 403, 404 or 422, a 5xx, a transport error, an answer it cannot decode and a listing past its page bound included), and where a rate limit ends the pass, one in force at its start included (`Pass`), but not where the pass's own ending killed the read (`cutShort`);
     the architecture import where a source's sync fails at one of its four steps that read GitHub, `resolve` (the installation token), `Ref`, `Dir` or `DirFiles` (`Importer.syncOnce`), which covers the App not installed on the repository, a missing Contents permission and a branch GitHub does not have, but not where `DirFiles` refuses a note over `notes.MaxFileSize` (`notes.ErrFileTooLarge`);
     and the delivery reconcile where the deploy repository's permission check fails (`DeliveryPermissions`), where a step that reads GitHub returns an error (`recordRead` in `Reconcile.runOnce`: the merged, partial and head pull request steps, both workflows' runs, and the attribution inputs of stored pull requests), and where it gives up one row of such a step after the answers it takes as data: a head it cannot re-read (`reconcilePullRequestHeads`), a head attributed without its commit messages (`attributeHead`), a partial pull request it cannot complete (`completePartialPullRequest`, a 403 included) and a stored pull request whose attribution inputs it cannot read (`readAttributionInputs`).
     One failed request can be noted twice, once by the client and once by the loop, and the cause is the first noted.
@@ -4263,7 +4306,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects` (GET; cookie, trusted header, or bearer)
 
-  List projects (`key`, `name`, `open_asks`, `gated_steps`, `created_at`), ordered by key.
+  List projects (`key`, `name`, `open_asks`, `gated_steps`, `created_at`, and `default_repo` for a project with a default repository), ordered by key.
   A project's default assignee is not listed: `GET /api/v1/settings/project-default-assignees`, which needs the `person` scope, is the one read of it.
 
 - `/api/v1/projects` (POST; cookie, trusted header, or bearer)
@@ -4277,29 +4320,29 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/settings/repo-projects` (GET; cookie, trusted header, or bearer)
 
-  List repository-to-project mappings, each with `default`, whether it is its project's default repository, and `renamed_to`, the `owner/name` the repository is called today, null for one that was never renamed.
+  Read only, and removed in the next release: the rows of `repo_projects` as the last release that wrote them left them, each with `default`, whether it was its project's default repository, and `renamed_to`, the `owner/name` the repository is called today, null for one that was never renamed.
+  Nothing writes the rows, and `PUT` and `DELETE` under this path answer the JSON `404 NOT_FOUND` of a route the process does not serve.
+  The route stays for the Legion daemons that read it at boot.
+  A default set through `PUT /api/v1/projects/{key}/default-repository` is not in it.
 
-- `/api/v1/settings/repo-projects/{owner}/{repo}` (PUT, DELETE; cookie, trusted header, or bearer)
+- `/api/v1/projects/{key}/default-repository` (PUT; cookie, trusted header, or bearer)
 
-  Create or replace, or remove, a repository mapping; PUT takes `{project, default?, renamed_to?}`, and `default: true` moves the project's one default to it.
-  PUT holds the path's owner and name to the characters GitHub allows, and refuses a name that is `.`, `..`, empty or longer than 100 characters once a trailing `.git` is trimmed (`acme/...git`, `acme/.git`), with `400 INVALID_REPO_PROJECT`, as it holds `renamed_to`; the stored name becomes the repository of the project's issues that name none, which delivery puts into GitHub paths.
-  DELETE removes the mapping stored under exactly the path's spelling, the two segments as the server unescapes them joined by `/`, compared byte for byte, and no other: a canonical path, lower case with no trailing `.git`, removes the mapping of that name, as before, and any other spelling removes only a mapping stored under that spelling.
-  So `DELETE /api/v1/settings/repo-projects/acme/x.git` removes `acme/x.git`, which a PUT of `acme/x.git.git` stores, and leaves `acme/x` beside it; `…/Acme/X` removes a mapping direct SQL stored as `Acme/X`; `…/acme/x.git.git` removes nothing unless a mapping is stored under that spelling; and the same request sent again removes nothing more.
-  A DELETE that removes nothing answers `204`, or `400 INVALID_ISSUE_REF` where its path is no `owner/name` reference at all.
-  A mapping stored under `acme/..` is removed only by a request that sends the dots percent-encoded and keeps them, `DELETE /api/v1/settings/repo-projects/acme/%2E%2E` from curl with `--path-as-is` or from a client that builds the path itself: a browser resolves `..` and `%2E%2E` as dot segments, so the dashboard's delete of such a mapping does not reach it; a `/` in a name is written `%2F`.
-  The CI reconcile's warning about such a mapping names the request that removes it (`removed_by`), the path that spells the mapping's own name, split at the first `/` that leaves neither half empty nor a lone `/`, with a `/` inside a half written `%2F` (`DELETE /api/v1/settings/repo-projects/%2Fa/b` removes a mapping direct SQL stored as `/a/b`); for a mapping no path spells — a name with no `/`, one whose only `/` begins or ends it (`/acme`, or `acme/`, which a PUT of `acme/.git` stored before the rule above), or one each of whose `/` leaves nothing or a lone `/` on one side (`acme//`) — it names no request and says the mapping is removed by SQL.
-  A `renamed_to` stored under such a name is no mapping's own name, so a removal of that name removes nothing: the warning names the PUT of the mapping it belongs to instead (`mended_by`), which mends it with a `renamed_to` GitHub allows, or `""` to clear it, and where that mapping's own name is one the PUT refuses or reads as another mapping's, it names that mapping's removal in the PUT's place (`removed_by`).
-  `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
-  absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
-  A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
-  `putRepoProject` in `internal/dispatch/api/repo_projects.go` gives the rules and the `settings.repo_project.updated` events.
+  Set or clear a project's default repository: `{"repo": "owner/name"}` sets it, and `{"repo": null}` clears it.
+  A bearer names its session in an optional `actor`.
+  An issue of the project resolves to the default when neither the issue nor an issue above it names a repository.
+  `repo` is read by the rule that reads an issue's own repository, and stored in lower case with no `.git`, under its new name where a rename pair renames it away.
+  The answer is `{project, repo}`, where `repo` is the default the project holds now, or `null` for none.
+  A write of the value the project holds already changes nothing and appends no event, and a change appends `project.updated` with the project row.
+  A body without `repo`, or a `repo` that is not a repository GitHub could hold, is `400 INVALID_PROJECT` naming `repo`, and an unknown project is `404 PROJECT_NOT_FOUND`.
+  The default belongs to the deployment, so a project-scoped credential is refused it with `403 PROJECT_SCOPE_DEPLOYMENT`, the project this path names included.
+  It needs no `person` scope: the credential the deployment configured writes it, and so does a person.
 
 - `/api/v1/projects/{key}/legion/daemon` (GET, PUT, DELETE; cookie, trusted header, or bearer)
 
   The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`; DELETE stops reading it, what the sampler already recorded staying.
   No route lists every project's daemon, since R26 of dispatch://INFRA-979's spec permits one cross-project read and this is not it: the Settings page's Legion section reads each project's.
   A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, a DELETE for a project that names no daemon `404 NOT_FOUND`, a key that is not a project key `400 INVALID_PROJECT`, and a project that does not exist `404 PROJECT_NOT_FOUND`.
-  The daemon points Dispatch at a host, so it belongs to the deployment rather than to the project it is addressed under, and a project-scoped credential is refused the PUT and the DELETE as it is a repository mapping, the project this path names included.
+  The daemon points Dispatch at a host, so it belongs to the deployment rather than to the project it is addressed under, and a project-scoped credential is refused the PUT and the DELETE as it is a project's default repository, the project this path names included.
   `internal/dispatch/api/settings_legion.go` gives the rest, including why neither write emits an event.
 
 - `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
@@ -4312,7 +4355,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository:
   `200 {installed}`, `false` when GitHub answers 404.
-  A path whose owner or name has a character GitHub does not allow, or whose name is `.`, `..`, empty or longer than 100 characters once a trailing `.git` is trimmed, is `400 INVALID_REPO_PROJECT`, and GitHub is asked nothing.
+  A path whose owner or name has a character GitHub does not allow, or whose name is `.`, `..`, empty or longer than 100 characters once a trailing `.git` is trimmed, is `400 INVALID_REPOSITORY`, and GitHub is asked nothing.
   `503 GITHUB_APP_UNCONFIGURED` when Dispatch holds no App key, `502 GITHUB_UNREADABLE` naming the repository and GitHub's error on any other failure.
   The Legion daemon asks it for every repository it serves, for `legion state`.
 
@@ -4567,12 +4610,13 @@ Each item below names a path with its method and identity, then its purpose.
 
   Create an issue and its primary document.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
-  `repo` (`owner/name`) is the issue's own repository, any repository at all, one its project maps, one another project maps, or one no project maps:
+  `repo` (`owner/name`) is the issue's own repository, which may be any repository at all:
   `400 INVALID_ISSUE` when it is not `owner/name`.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
   a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
   External references skip the check.
+  A create that names `external`, an import of a GitHub issue, names its `project` too: one with no `project`, or an empty one, is `400 INVALID_ISSUE` (`project is required when external is set`), and it writes nothing.
   A forced create records the issues it went past on its `issue.created` event, under `forced.past`.
   A spec whose ask block breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`, and a spec whose markdown makes more than 65,536 elements (weighed as Element weights below lists) is `413 CAP_EXCEEDED`, naming the line that passes the limit;
@@ -4786,7 +4830,7 @@ Each item below names a path with its method and identity, then its purpose.
   Each result carries `commit_stands`, where its own commit stands against those, `check_words_moved`, and `retracted` where a retraction stands against it.
 
   - A `before_merge` check is compared with every head Dispatch holds for the check's own issue: the head of an `open` pull request, and the final head of a `merged` one, attributed to that issue.
-    A pull request that the issue's external links name (`https://github.com/<owner>/<repo>/pull/<n>`) in a repository the issue does not resolve to counts as one attributed to it, since the attribution holds an issue to its own repository and can never give it that pull request (`delivery.HeadsAttributedTo`, `linkedPullRequestTerms`); its basis names that repository in `repo`.
+    A pull request that the issue's external links name (`https://github.com/<owner>/<repo>/pull/<n>`) in a repository the issue does not resolve to counts as one attributed to it, since the attribution holds an issue to its own repository and can never give it that pull request (`delivery.Attributor.HeadsAttributedTo`, `linkedPullRequestTerms`); its basis names that repository in `repo`.
     The link is matched to the stored row by repository and number, so a push that moves that pull request's head moves the basis, and one that closed without a merge is no basis.
     The owner and the name are read by the patterns every name GitHub allows is read by, an owner of a letter or digit and then up to 38 letters, digits, `-` and `_` (a managed user's `mona-cat_octo` among them) and a name of letters, digits, `.`, `-` and `_`, and a name of `.` or `..` alone names no pull request, so a link cannot send a read of GitHub up the path.
     A link to a pull request of the issue's own repository adds nothing: the attribution alone decides which pull requests of that repository are the issue's.
@@ -4796,7 +4840,7 @@ Each item below names a path with its method and identity, then its purpose.
   - A `default_branch` check is compared with that repository's default branch alone, whatever branch the pull request merged into.
 
   - A result of an `after_merge` or `default_branch` check whose commit the record route took to be of a repository the issue links a pull request in is compared in that repository:
-    the record route keeps that repository with the result (`check_results.commit_repo`, POST below), and the read asks that repository's branches, for `after_merge` the base branch of the merged linked pull request (`delivery.BaseBranchMergedIn`) and then its default branch, for `default_branch` its default branch alone; the branch the result stands at names that repository in `repo`.
+    the record route keeps that repository with the result (`check_results.commit_repo`, POST below), and the read asks that repository's branches, for `after_merge` the base branch of the merged linked pull request (`delivery.Attributor.BaseBranchMergedIn`) and then its default branch, for `default_branch` its default branch alone; the branch the result stands at names that repository in `repo`.
     Asked of the issue's own repository, GitHub answers `404` for such a commit.
     A `before_merge` result of that kind is read through that repository, below, for the same reason.
     Every other result keeps no repository and is compared as above.
@@ -4830,7 +4874,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Where the App can read that repository, a `before_merge` result whose commit heads no such pull request is read through GitHub itself before the answer is given, which is what makes a result recorded before its own pull request opened stand at that head once the pull request opens at its commit:
 
-  - One `GET /repos/{owner}/{repo}/commits/{sha}/pulls`, and every head GitHub names is written (`delivery.ReadThroughCommitPulls`).
+  - One `GET /repos/{owner}/{repo}/commits/{sha}/pulls`, and every head GitHub names is written (`delivery.Attributor.ReadThroughCommitPulls`).
     It asks the repository the result's `check_results.commit_repo` names where it names one, and the repository the issue resolves to otherwise: asked of the issue's own repository, a commit only a linked repository holds names no pull request on any read, and a linked pull request whose head reaches it after the record would never be learned.
 
   - Without that read it would stand at no basis for ever:
@@ -4884,7 +4928,7 @@ Each item below names a path with its method and identity, then its purpose.
     When GitHub does not say it does — it says that repository does not hold it, or its read did not answer — Dispatch reads the external links of the check's issue: each link of the form `https://github.com/<owner>/<repo>/pull/<n>` names that repository, and the repository counts when GitHub says one of those pull requests is open or merged (`delivery.PullRequestOpenOrMerged`).
     A pull request that closed without a merge does not make its repository count, and neither does one GitHub answers `404` or `410` for (a mistyped link, or a pull request since deleted), nor a repository the App is not installed on, nor one it cannot read (GitHub's `403` that is no rate limit, as `githubapp.RateLimit` reads one): each is GitHub's answer, not a failed read, and no retry changes it until someone gives the App the repository.
     One record reads at most 10 linked pull requests, one after another, and each distinct repository once, until one of its pull requests counts (`linkedPullRequestReads`); a link past the bound is left unread.
-    A link names a pull request only where the pattern the links are read by takes it (`delivery.LinkedPullRequests`): an owner that is a login GitHub serves, and a name of letters, digits, `.`, `-` and `_` that is neither `.` nor `..`; any other link, such as one whose owner is `-acme` or `my.org`, spends no read, and no refusal names it.
+    A link names a pull request only where the pattern the links are read by takes it (`delivery.Attributor.LinkedPullRequests`): an owner that is a login GitHub serves, and a name of letters, digits, `.`, `-` and `_` that is neither `.` nor `..`; any other link, such as one whose owner is `-acme` or `my.org`, spends no read, and no refusal names it.
     A link that pattern takes whose repository's name GitHub's naming rule then refuses (such as `acme/.git`, which is empty once `.git` is trimmed) does not count either: it spends one of the record's 10 reads, makes no GitHub request, and the refusal below names its repository as one whose links Dispatch set aside, which no grant of the App mends.
     Dispatch then asks GitHub whether each repository that counts holds the commit, and refuses a result at a commit that no repository it asked holds with `400 RESULT_COMMIT_UNKNOWN`, naming the commit, each `owner/repo` it asked, each linked pull request of a repository the App is not installed on or cannot read with its reason (`owner/repo#n (repository_unreadable)`), as a pull request it could not read, at most 10 of those and a count of the rest, or, where it read that pull request and could not read the commit, as the one in whose repository it could not read the commit, every one of those, since each spent one of the record's 10 reads, and that the App is to be granted that repository or a readable pull request linked, each repository whose links it set aside for the naming rule, and how many linked pull requests the bound left unread where it left any.
     So an issue whose work is in two repositories takes a result at the head of the pull request it links in the second repository, also while GitHub cannot answer for the first.

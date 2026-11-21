@@ -10,7 +10,7 @@ suggestions, artifacts, and durable event history. The Go server in
 `AuthGate` requests `GET /auth/whoami` and sends unauthenticated visitors to the
 Google sign-in flow. All application requests are same-origin. React Router serves
 the Inbox at `/`, an issue workspace at `/issues/:key/*`, and the
-repository-to-project settings page at `/settings`; TanStack Query and the live socket's events
+settings page at `/settings`; TanStack Query and the live socket's events
 feed keep the issue, Inbox, documents, and sidebar current.
 
 The desktop shell has a sidebar, issue content, and review margin. Issue content has Spec,
@@ -538,9 +538,9 @@ optional ones:
 - `FAKE_GITHUB_PORT`, the harness's fake GitHub, which the server reads as
   `DISPATCH_GITHUB_API_BASE`. The run gives it one repository holding one pull request whose
   title names the issue and one further commit beside that pull request's head, replacing every
-  repository the fake served: where `PROJECT` maps no default repository the reading section
-  seeds a repository of its own, maps it as `PROJECT`'s default and removes the mapping on exit;
-  where `PROJECT` maps one, the setup seeds that repository and maps nothing. The results of the
+  repository the fake served. Where `PROJECT` has no default repository, the reading section
+  seeds a repository of its own, sets it as `PROJECT`'s default and clears that default on exit.
+  Where `PROJECT` has one, the setup seeds that repository and sets nothing. The results of the
   check are then compared with that pull request's head, a result at the further commit — whose
   first twelve characters are the head's — stands at none of them, and a result at a commit the
   repository holds neither of is refused. Unset, one `SKIP: reading …` line stands in for the
@@ -557,9 +557,9 @@ It asks the issue's own repository first, and reads the links only where GitHub 
 Where a read of a linked pull request or of a linked repository does not answer and no repository is shown to hold the commit, it refuses the result `502 GITHUB_UNREADABLE`, and where its own read of the issue's links fails, it answers a server error, `500 INTERNAL`; either way it stores nothing, and the caller records the result again.
 One record reads at most 10 linked pull requests, each distinct repository once, and a refusal says how many links the bound left unread.
 The script links no pull request to any issue it writes, so no linked repository is asked about any result it records.
-Only GitHub's `422 No commit found for SHA` refuses, and the script reads `PROJECT`'s repository mappings once, in its setup, to know which of two runs it is.
-Where `PROJECT` maps no default repository, every result recorded outside the reading section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
-Where `PROJECT` already maps one, every issue the script writes resolves to that repository, so the setup reads that repository's default-branch head from GitHub with `gh` and every result is recorded at that head: no check stands down, and the run prints no `SKIP` for a recorded result.
+Only GitHub's `422 No commit found for SHA` refuses, and the script reads `PROJECT`'s default repository once, in its setup (`default_repo` on `GET /api/v1/projects`), to know which of two runs it is.
+Where `PROJECT` has no default repository, every result recorded outside the reading section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
+Where `PROJECT` already has one, every issue the script writes resolves to that repository, so the setup reads that repository's default-branch head from GitHub with `gh` and every result is recorded at that head: no check stands down, and the run prints no `SKIP` for a recorded result.
 A repository `gh` cannot read fails the run, naming it.
 Where `FAKE_GITHUB_PORT` is set the setup also gives that repository, that head, the look-alike and the pull request to the fake, since a server reading the fake asks the fake and not GitHub; a server reading the real GitHub needs no such seeding, and a fake-backed run proves this script's fixture and its count rather than a server talking to GitHub.
 Every other check runs either way, the `result` section's two refusals among them: a malformed field and an unknown check are refused before any commit is read.
@@ -635,11 +635,11 @@ document socket admits a person alone, so the sockets of `k1` sign that person i
 runs with NATS disabled, so no `pull_request` event stores a pull request head: the script stages
 each head with `psql` as one `pull_request_heads` row attributed to its issue, and gives the fake
 one repository holding the same pull requests and each head's check runs, replacing every
-repository the fake served. That repository is `PROJECT`'s default where it maps one, and
-otherwise one of the run's own, which nothing maps. It writes nine issues in `PROJECT` and closes
-every one of them, also when a check fails; on exit it deletes the rows it staged and empties the
-fake. Against `bun run dispatch:local`, with the URL, the fake GitHub's port and the database it
-prints:
+repository the fake served. That repository is `PROJECT`'s default where it has one, and
+otherwise one of the run's own, which is no project's default. It writes nine issues in
+`PROJECT` and closes every one of them, also when a check fails; on exit it deletes the rows it
+staged and empties the fake. Against `bun run dispatch:local`, with the URL, the fake GitHub's
+port and the database it prints:
 
 ```bash
 DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
