@@ -1,0 +1,5 @@
+kind: Changed
+body: GET /api/v1/search's description says the meaning leg never answers content its caller cannot see, and that once the deployment has swapped in its embeddings partitioned by project it reads only the vectors of the projects its caller sees and of no project, each project's vectors an index of their own, so content of a project the caller cannot see changes neither the hits nor the total; until the swap it reads one index over every project, as before.
+time: 2026-11-20T23:11:16.669737952Z
+custom:
+    Issue: pr4670

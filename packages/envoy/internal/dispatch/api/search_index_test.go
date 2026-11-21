@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
@@ -221,13 +222,17 @@ func TestTheCrossProjectQuestionStatementReadsTheHNSWIndex(t *testing.T) {
 // The fixture is the shape the measurement was taken on: one small project beside a crowd of
 // another project's windows, analyzed so the planner's statistics hold the difference.
 // enable_seqscan is off, as every plan test of this package reads its plan; enable_sort is left
-// on, because the exact sort is half of the plan under test.
+// on, because the exact sort is half of the plan under test. It runs on embeddings before the
+// swap (storetest.OpenUnpartitioned), the one graph both measured statements were written for:
+// the labelling is done before the swap, so the switch between them is a choice of that window
+// alone, and once embeddings is partitioned the project's own partition is the cut
+// (TestTheScopedMeaningStatementReadsTheProjectsPartitionAlone).
 func TestTheScopedMeaningStatementReadsTheProjectIndex(t *testing.T) {
 	const title, spec = "A title to embed for the scoped plan", "Body text."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
 	}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder, store: storetest.OpenUnpartitioned(t)})
 	createInteractionIssue(t, handler, "LOUD", "Another project's issue", "Body text.")
 	issue := createInteractionIssue(t, handler, "SARM", title, spec)
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "One remark, so the arm has a window to read."}, "alice")
@@ -287,6 +292,54 @@ func TestTheScopedMeaningStatementReadsTheProjectIndex(t *testing.T) {
 	if owner := limit.find(func(node planNode) bool { return node.Relation == "comments" }); owner == nil {
 		t.Errorf("the joined comment arm reads no comments row inside its limit, so the project it cuts its candidates by is not the owner's:\n%s",
 			planString(t, planJSON))
+	}
+}
+
+// Once embeddings is partitioned by project, a project-scoped meaning statement's comment arm
+// reads the project's own partition and nothing of the other project's, whose crowd of windows
+// sits in a partition of its own: `e.project_key = $2` prunes the plan to one partition, which is
+// the cut the project index made on the one graph (TestTheScopedMeaningStatementReadsTheProjectIndex).
+// The same fixture, on the table every deployment holds after its swap.
+func TestTheScopedMeaningStatementReadsTheProjectsPartitionAlone(t *testing.T) {
+	const title, spec = "A title to embed for the scoped plan", "Body text."
+	embedder := &fakeEmbedder{vectors: map[string][]float32{
+		issueEmbeddingText(title, spec): angledVector(0.9, 2),
+	}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	createInteractionIssue(t, handler, "LOUD", "Another project's issue", "Body text.")
+	issue := createInteractionIssue(t, handler, "SARM", title, spec)
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "One remark, so the arm has a window to read."}, "alice")
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.8, 3))
+	crowdCommentWindows(t, database, embedder, "LOUD", searchWindowCandidates+1, angledVector(0.9, 1))
+	processAllPending(t, database, embedder)
+	if _, err := database.Pool.Exec(context.Background(), "analyze embeddings"); err != nil {
+		t.Fatalf("analyze embeddings: %v", err)
+	}
+	recordEmbeddingProjectKeyFill(t, database, true)
+	root, planJSON := meaningPlanOf(t, database, embedder, meaningStatementAsSearchPicksIt(t, database, "SARM"),
+		"SARM", "set local enable_seqscan = off")
+	leg := root.find(func(node planNode) bool { return node.Alias == "meaning_comment_candidates" })
+	if leg == nil {
+		t.Fatalf("the plan has no node for meaning_comment_candidates:\n%s", planString(t, planJSON))
+	}
+	var partitions []string
+	var walk func(node planNode)
+	walk = func(node planNode) {
+		if node.Relation == "embeddings" {
+			partitions = append(partitions, node.Partition)
+		}
+		for _, child := range node.Plans {
+			walk(child)
+		}
+	}
+	walk(*leg)
+	if len(partitions) == 0 {
+		t.Fatalf("the scoped comment arm reads no embeddings at all, so this row proves nothing:\n%s", planString(t, planJSON))
+	}
+	for _, partition := range partitions {
+		if partition != "embeddings_project_sarm" {
+			t.Errorf("the scoped comment arm of SARM reads %q, want SARM's partition alone:\n%s", partition, planString(t, planJSON))
+		}
 	}
 }
 
@@ -368,7 +421,10 @@ func seesEveryRow(nodeType string) bool {
 // bitmap heap scan makes, or a filter - and the issue arm's test below asks which, so all three
 // are read, with the join filter a node that names no relation of its own carries. Relation is
 // the table a scan reads, which is how a test asks what stands inside an arm's own limit
-// (TestTheScopedMeaningStatementReadsTheProjectIndex) rather than above it.
+// (TestTheScopedMeaningStatementReadsTheProjectIndex) rather than above it. A scan of a partition
+// of embeddings reads as a scan of embeddings through the index of embeddings its index belongs
+// to (explaintest.PartitionParent), with Partition the partition it reads, so a test of the plan
+// reads the same nodes whether embeddings is partitioned yet or not.
 type planNode struct {
 	NodeType    string     `json:"Node Type"`
 	Alias       string     `json:"Alias,omitempty"`
@@ -379,6 +435,23 @@ type planNode struct {
 	Filter      string     `json:"Filter,omitempty"`
 	JoinFilter  string     `json:"Join Filter,omitempty"`
 	Plans       []planNode `json:"Plans,omitempty"`
+	Partition   string     `json:"-"`
+}
+
+// UnmarshalJSON decodes one node and the tree under it, each node of a partition of embeddings
+// read as embeddings (planNode says why).
+func (node *planNode) UnmarshalJSON(data []byte) error {
+	type plain planNode
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*node = planNode(decoded)
+	if table := explaintest.PartitionParent(node.Relation); table != node.Relation {
+		node.Partition, node.Relation = node.Relation, table
+	}
+	node.IndexName = explaintest.PartitionParentIndex(node.IndexName)
+	return nil
 }
 
 // conditions are every condition the node carries, in no particular order.

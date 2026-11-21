@@ -146,35 +146,80 @@ const changedEmbedderIdentity = "azure:example.services.ai.azure.com/embed-v-5-0
 // items there are stays the fresh state's, since dropping a vector removes no row.
 var scaleStates = []scaleState{
 	{name: "fresh", identity: configuredIdentity, prepare: []string{"vacuum (analyze) " + coverageScaleTables}},
-	{name: "third", identity: configuredIdentity, prepare: []string{updateOneRowOfPages("where ((ctid::text::point)[0])::int % 3 = 0"), "analyze embeddings"}},
-	{name: "all", identity: configuredIdentity, prepare: []string{updateOneRowOfPages(""), "analyze embeddings"}},
+	{name: "third", identity: configuredIdentity, prepare: []string{updateOneRowOfPages("embeddings", "where ((ctid::text::point)[0])::int % 3 = 0"), "analyze embeddings"}},
+	{name: "all", identity: configuredIdentity, prepare: []string{updateOneRowOfPages("embeddings", ""), "analyze embeddings"}},
 	{name: "stale", identity: configuredIdentity, lagging: true, prepare: []string{
 		"vacuum embeddings",
-		updateOneRowOfPages("where ((ctid::text::point)[0])::int % 2 = 0"),
+		updateOneRowOfPages("embeddings", "where ((ctid::text::point)[0])::int % 2 = 0"),
 		"analyze embeddings",
-		updateOneRowOfPages("where ((ctid::text::point)[0])::int % 2 = 1"),
+		updateOneRowOfPages("embeddings", "where ((ctid::text::point)[0])::int % 2 = 1"),
 	}},
 	{name: "embedder", identity: changedEmbedderIdentity, changeEmbedder: true},
 	{name: "embedder-analyzed", identity: changedEmbedderIdentity, prepare: []string{"analyze embeddings"}},
 }
 
-// updateOneRowOfPages updates one row of each heap page of embeddings that where selects (a WHERE
-// clause on the page's number, (ctid::text::point)[0]; empty for every page), setting
-// pending_since to its own value. The row's new version is one no vacuum has seen, so neither the
-// page that held the row nor the page its new version lands on is all-visible any more, and no
-// row's answer changes.
-func updateOneRowOfPages(where string) string {
-	return `update embeddings e set pending_since = e.pending_since
-		from (select distinct on ((ctid::text::point)[0]) ctid from embeddings ` + where + `
+// updateOneRowOfPages updates one row of each heap page of heap - the relation that stores the
+// rows of embeddings under test (corpusHeap) - that where selects (a WHERE clause on the page's
+// number, (ctid::text::point)[0]; empty for every page), setting pending_since to its own value.
+// The row's new version is one no vacuum has seen, so neither the page that held the row nor the
+// page its new version lands on is all-visible any more, and no row's answer changes.
+func updateOneRowOfPages(heap, where string) string {
+	return `update ` + heap + ` e set pending_since = e.pending_since
+		from (select distinct on ((ctid::text::point)[0]) ctid from ` + heap + ` ` + where + `
 		      order by (ctid::text::point)[0], ctid) s
 		where e.ctid = s.ctid`
 }
 
-// coverageVisibleShare reads the share of embeddings' pages the statistics record as all-visible:
+// coverageVisibleShare reads the share of heap's pages the statistics record as all-visible:
 // pg_class.relallvisible over relpages, which only VACUUM and ANALYZE set. The scale test logs it
 // in each state. A table with no page recorded counts as all-visible.
-const coverageVisibleShare = `select case when relpages > 0 then relallvisible::float8 / relpages else 1 end
-	from pg_class where oid = 'embeddings'::regclass`
+func coverageVisibleShare(heap string) string {
+	return `select case when relpages > 0 then relallvisible::float8 / relpages else 1 end
+	from pg_class where oid = '` + heap + `'::regclass`
+}
+
+// disableCorpusAutovacuum turns autovacuum off on the relation that will store the coverage
+// corpus's rows of embeddings, before the corpus is loaded, and answers that relation's name
+// (corpusHeap): embeddings itself while it is the one table it was, and the partition of project
+// CORPUS, which holds every row the corpus writes, once it is partitioned by project. A
+// partitioned table has no storage, so autovacuum's setting is each partition's; the partition is
+// made here by creating the corpus's project first, which the corpus script tolerates
+// (testdata/coverage_corpus.sql), and every partition there is gets the setting.
+func disableCorpusAutovacuum(t *testing.T, pool querier) string {
+	t.Helper()
+	mustExec(t, pool, `insert into projects (key, name, default_assignee) values ('CORPUS', 'Coverage corpus', 'corpus') on conflict (key) do nothing`)
+	mustExec(t, pool, `do $$
+		declare leaf record;
+		begin
+		  for leaf in select relid from pg_partition_tree('embeddings') where isleaf loop
+		    execute format('alter table %s set (autovacuum_enabled = false)', leaf.relid);
+		  end loop;
+		end $$`)
+	return corpusHeap(t, pool)
+}
+
+// corpusHeap is the relation that stores the coverage corpus's rows of embeddings: embeddings, or
+// the partition of project CORPUS once embeddings is partitioned by project.
+func corpusHeap(t *testing.T, pool querier) string {
+	t.Helper()
+	var partitioned bool
+	if err := pool.QueryRow(context.Background(), `select relkind = 'p' from pg_class where oid = 'embeddings'::regclass`).Scan(&partitioned); err != nil {
+		t.Fatalf("read whether embeddings is partitioned: %v", err)
+	}
+	if partitioned {
+		return "embeddings_project_corpus"
+	}
+	return "embeddings"
+}
+
+// heapIndex is the index of heap (corpusHeap) that belongs to index, an index of embeddings: index
+// itself on the one table, and the partition's own, embeddings_<role>_corpus, on the partition.
+func heapIndex(heap, index string) string {
+	if heap == "embeddings" {
+		return index
+	}
+	return index + "_" + strings.TrimPrefix(heap, "embeddings_project_")
+}
 
 // laggingVisibleShare is the least share of embeddings' pages (coverageVisibleShare) that the
 // statistics of a lagging table must record as all-visible while no page is: the scale test's
@@ -469,7 +514,7 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 			from pg_class where oid = 'embeddings'::regclass`).Scan(&measured.visible, &measured.pages, &size, &sizeText); err != nil {
 			t.Fatalf("%s: read embeddings' statistics: %v", stage, err)
 		}
-		if err := database.Pool.QueryRow(ctx, coverageVisibleShare).Scan(&measured.share); err != nil {
+		if err := database.Pool.QueryRow(ctx, coverageVisibleShare("embeddings")).Scan(&measured.share); err != nil {
 			t.Fatalf("%s: read the share of embeddings the statistics record as all-visible: %v", stage, err)
 		}
 		t.Logf("%s: the statistics record %d of embeddings' %d pages all-visible, a share of %.3f; database %s (%d bytes)",

@@ -246,11 +246,18 @@ const leftBound = `with bound as (select $1::text as kind, $2::text as id, $3::t
 //
 // The search names no store, so a table a later build adds is listed without anyone adding it
 // here. A bytea is searched for the texts' UTF-8 bytes, since its text form is hex, and a json
-// column for each text as json escapes it as well as raw. Two tables are not searched. Each row
+// column for each text as json escapes it as well as raw. Three tables are not searched. Each row
 // of text_trees is a cache of one text, keyed by that text's digest, which the run deletes for
 // every text it removes or rewrites (forgetTrees) and which belongs to whatever text it was read
 // from otherwise. graph_erasures is the erase's own record, which holds no erased text, and which
-// the run reads nothing of before it writes its row last.
+// the run reads nothing of before it writes its row last. embeddings_partitioned is the copy of
+// embeddings the boot's fill builds until it swaps it in (migrations 20261120105330 and
+// 20261120105818, store.PartitionEmbeddings): each of its rows is a row of embeddings, kept the
+// same by the mirror's trigger in the writer's transaction, so every row of it that holds an
+// erased text is listed under embeddings already, and whatever the run removes or rewrites of
+// embeddings the mirror removes or rewrites of it in the run's own transaction. Listed under its
+// own name it would read as left a row the run in fact removes, since derivedTables knows that
+// row by embeddings' name alone; after the swap no table holds that name.
 func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	if len(read.texts) == 0 {
 		return nil
@@ -289,7 +296,7 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 		windowKind, ownerKey, read.document.specIssue(), read.project, histories, textBlocks, textVersions, excerptBlocks}
 	held := map[string][]string{}
 	for _, column := range columns {
-		if column.schema == "public" && (column.table == "text_trees" || column.table == "graph_erasures") {
+		if column.schema == "public" && (column.table == "text_trees" || column.table == "graph_erasures" || column.table == "embeddings_partitioned") {
 			continue
 		}
 		var arms []string
@@ -458,7 +465,11 @@ func leftDerived(ctx context.Context, tx pgx.Tx) (map[string][]derivedRows, erro
 // as the text spells it, which is how graph-erase.sh finds its erased word in a search vector.
 // Each column comes with the key its table names a row by: its primary key, or where it has none
 // its first unique index over columns alone with no predicate, as artifact_versions'
-// (artifact_id, number) is.
+// (artifact_id, number) is. A partition is left out, because its parent's scan reads its rows
+// already: embeddings, partitioned by project (migration 20261120105330), lists each of its rows
+// once, under embeddings and by embeddings' own key (kind, id, project_key), and not a second
+// time under the partition the row is stored in, where derivedTables, which names the table its
+// writers write, does not know the row as the erased node's.
 func textColumns(ctx context.Context, tx pgx.Tx) ([]textColumn, error) {
 	rows, err := tx.Query(ctx, `
 		select c.table_schema, c.table_name, c.column_name, c.data_type, c.udt_name,
@@ -473,6 +484,7 @@ func textColumns(ctx context.Context, tx pgx.Tx) ([]textColumn, error) {
 		join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name
 		where t.table_type = 'BASE TABLE'
 		  and c.table_schema not in ('pg_catalog', 'information_schema') and c.table_schema not like 'pg_temp%'
+		  and not (select r.relispartition from pg_class r where r.oid = format('%I.%I', c.table_schema, c.table_name)::regclass)
 		  and c.data_type not in ('smallint', 'integer', 'bigint', 'numeric', 'real', 'double precision',
 		    'boolean', 'uuid', 'date', 'interval', 'time with time zone', 'time without time zone',
 		    'timestamp with time zone', 'timestamp without time zone', 'inet', 'cidr', 'macaddr',

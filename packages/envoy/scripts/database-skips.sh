@@ -78,6 +78,11 @@ github.com/sjawhar/envoy/internal/dispatch/api TestNearCopyRefusalReplay needs D
 github.com/sjawhar/envoy/internal/dispatch/api TestRelatedRecallOnDuplicates needs DISPATCH_RECALL_CORPUS, a corpus scripts/related-recall.sh writes
 github.com/sjawhar/envoy/internal/dispatch/api TestRelatedCheckLatencyOnRecallCorpus needs DISPATCH_RECALL_CORPUS and DISPATCH_RECALL_LATENCY_ISSUE
 github.com/sjawhar/envoy/internal/dispatch/api TestSearchLatencyOnCorpus needs DISPATCH_BENCH_DATABASE_URL, a restored corpus copy
+github.com/sjawhar/envoy/internal/dispatch/api TestBuildMeaningSearchBenchCorpus needs DISPATCH_BENCH_BUILD_URL, an empty database to build the production-size meaning-search bench corpus on
+github.com/sjawhar/envoy/internal/dispatch/api TestPartitionEmbeddingsOnBenchCorpus needs DISPATCH_BENCH_DATABASE_URL, a copy of that corpus
+github.com/sjawhar/envoy/internal/dispatch/api TestMeaningSearchOnBenchCorpus needs DISPATCH_BENCH_DATABASE_URL, a copy of that corpus
+github.com/sjawhar/envoy/internal/dispatch/api TestExactNearestOnBenchCorpus needs DISPATCH_BENCH_DATABASE_URL and DISPATCH_BENCH_EXACT_FILE, a copy of that corpus and the file to write
+github.com/sjawhar/envoy/internal/dispatch/api TestExplainMeaningSearchOnBenchCorpus needs DISPATCH_BENCH_DATABASE_URL, a copy of that corpus
 github.com/sjawhar/envoy/internal/dispatch/api TestStatementTimings is a measurement on the seeded database DISPATCH_BENCH_DATABASE_URL names (benchtime.Open), which CI leaves unset
 github.com/sjawhar/envoy/internal/dispatch/api TestRelatedTermsRefreshTiming is a measurement on that same seeded database (benchtime.Open)
 github.com/sjawhar/envoy/internal/dispatch/api TestGrowsLinearlyRejectsQuadraticFinalRungHelper is a subprocess helper, which its parent test starts with GROWS_LINEARLY_SLOW_FIRST set'

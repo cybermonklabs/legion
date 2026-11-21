@@ -282,6 +282,32 @@ func searchProjectVisible(project string, seen int) string {
 	return `(` + project + ` is null or ` + access.ProjectClause(project, searchParam(seen)) + `)`
 }
 
+// searchReaderPartitions is the partitions of embeddings a meaning arm reads: those of the
+// projects the reader sees, and the one of no project, which holds the rows of agent
+// conversations and the rows the labelling has not reached (embeddings_reader_partitions,
+// migration 20261120105330). embeddings is partitioned by its row's project, each partition one
+// HNSW graph, so an arm that reads only these walks graphs holding no vector of a project the
+// reader does not see. Walking one graph of every project, the walk could not reach the
+// reader's own rows once rows they may not see sat nearer the query than all of theirs, whatever
+// the scan's budgets (TestAMeaningSearchFindsWhatItWouldWithoutNearerHiddenVectors).
+//
+// It decides no row's visibility: the project rule (searchProjectVisible) and the registry's
+// predicate (refs.VisibleKind) stand beside it in every arm, unchanged, and decide what remains
+// in the partitions it reads - a project the reader sees, read by a reader who may not see one
+// of its documents, say. A reader who sees every project, the server and an open viewer of a
+// deployment that holds no private project, reads every partition, and the predicate is then
+// true of every row.
+//
+// The partitions are pruned when the statement is planned, which is why the list is a function
+// of the bound viewer alone: planned with the viewer's value (searchMeaningScan's
+// plan_cache_mode), the function is folded to a constant array and the planner drops every other
+// partition from the plan. A plan made without the value would read every partition, each walk
+// filtered to nothing, and pay that walk for each project the reader does not see.
+func searchReaderPartitions(seen int) string {
+	partitions := `embeddings_reader_partitions(` + searchParam(seen) + `::jsonb)`
+	return `(` + partitions + ` is null or e.project_key is null or e.project_key = any(` + partitions + `))`
+}
+
 // searchKeywordLegsSQL is search's own keyword legs, each arm ranked by ts_rank_cd with length
 // normalisation, rendered for the parameter a statement binds the acting credential at.
 var searchKeywordLegsSQL = searchKeywordLegs(func(searchColumn string) string {
@@ -594,14 +620,29 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //     clients give a request. So the server gives up before the client does, rather than an hour
 //     after, and the backend goes with the statement. A statement ended that way is SQLSTATE
 //     57014 (meaningStatementEnded), which each caller reports as its own timeout.
-//   - hnsw.ef_search: how many nearest vectors the HNSW index walks before the kind, project
-//     and model filters run. pgvector's default, 40, is spent on whichever kind holds the most
-//     vectors - the document windows, tens of thousands of them against one row per issue - so
-//     the issue and message arms are left with few candidates or none, and the project filter
-//     can take the rest. 400 keeps them, at a wider walk of the index paid once per query.
-//   - hnsw.iterative_scan: with it off, an arm whose kind filter rejects every one of those 400
-//     answers nothing at all; relaxed_order lets the scan carry on past them instead of stopping
-//     there. It does not promise the arm's LIMIT: measured on the load-test corpus, an arm forced
+//   - hnsw.ef_search: how many nearest vectors each HNSW graph's walk gathers before it returns
+//     its first row, 20 on embeddings partitioned by project and 400 on the one graph before the
+//     boot's fill swaps the partitioned table in (searchMeaningWidth). Each project's vectors are
+//     a graph of their own (searchReaderPartitions), and an arm that reads the index pays that
+//     walk once for each partition it reads, before the kind, project and model filters see a
+//     row: at 400 that was about 10 ms for each project a reader sees. 20 was measured on a bench
+//     of production's size (995,184 distinct vectors over 20 projects, two runs each way): a full
+//     member's meaning search, reading all 21 partitions, answered p50 1,491 and 1,482 ms at 20
+//     against 1,689 and 1,700 ms at 400 and 1,471 and 1,458 ms on the base's one graph, with
+//     recall@20 against an exact scan 0.988 and 0.993 at 20, 0.988 and 0.994 at 400, and 0.960
+//     and 0.949 on the one graph; 200, 100, 64 and 40 fell between, at the same recall. A
+//     restricted member reading one or two partitions read the same recall at every width from
+//     20 to 400, within two items of 800, and p50 within 4%, so the width does not depend on how
+//     many partitions a reader reads. The one graph keeps the base's 400 until the swap, since
+//     the same bench read it at 0.956 and 0.946 at 20, a loss on the table every reader reads for
+//     as long as the swap waits (store.ErrEmbeddingsSwapWaits). An arm whose kind filter rejects
+//     the vectors a walk gathered is not left at them: the scan goes on past the width
+//     (hnsw.iterative_scan, below).
+//   - hnsw.iterative_scan: with it off, an arm whose kind filter rejects every vector the walk
+//     gathered answers nothing at all; relaxed_order lets the scan carry on past them instead of stopping
+//     there. Measured on the same bench at ef_search 40, turning it off cut recall@20 to 0.896
+//     and 0.907 for a full member and to 0.906-0.917 for a restricted one. It does not promise
+//     the arm's LIMIT: measured on the load-test corpus, an arm forced
 //     through embeddings_cosine over 1,104 qualifying rows took 245 of them, and that number did
 //     not move at ef_search 40, 400 or 1,000, with iterative_scan relaxed_order or off, at
 //     work_mem 256MB or hnsw.scan_mem_multiplier 16 - so neither the LIMIT nor
@@ -611,13 +652,29 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //     would see is an inference from it rather than a measurement of it. Relaxed rather than
 //     strict: every arm re-ranks its rows by r (distinct on, then ranked), so nothing downstream
 //     reads the index's order.
+//   - plan_cache_mode: force_custom_plan, so each meaning statement is planned with the values
+//     it is run with. Every arm reads only the partitions of embeddings its reader may read
+//     (searchReaderPartitions), and the planner prunes the others from the plan only where it
+//     knows the reader: a generic plan, which pgx's cached statement settles on from its sixth
+//     run, keeps every partition and walks each graph the reader may not read, filtering every
+//     row it reaches. The price is a plan per search.
 //
 // Both meaning queries run in a transaction beginMeaningScan opens, and set them there.
 var searchMeaningScan = []string{
 	searchMeaningStatementBound,
-	`set local hnsw.ef_search = 400`,
+	searchMeaningWidth,
 	`set local hnsw.iterative_scan = relaxed_order`,
+	`set local plan_cache_mode = force_custom_plan`,
 }
+
+// searchMeaningWidth sets hnsw.ef_search for the transaction to the width of the table embeddings
+// is: 20 once it is partitioned by project, and the base's 400 on the one graph before the swap
+// (searchMeaningScan says why each). It reads which from the catalog in the transaction, one
+// lookup of embeddings' relation, so a transaction begun after the swap reads the new width and
+// one begun before it the old, whichever process runs it. The catalog is named by its schema, as
+// a statement's census reads a catalog read (TestEveryProjectReadBindsTheFragmentPerStatement).
+const searchMeaningWidth = `select set_config('hnsw.ef_search',
+	case when (select relkind from pg_catalog.pg_class where oid = 'embeddings'::regclass) = 'p' then '20' else '400' end, true)`
 
 // searchMeaningStatementBound is the first of those settings. It is named because two readers
 // outside the list need the very same string: the measurement of these statements, which has to
@@ -815,7 +872,10 @@ func (scope meaningProjectScope) candidateProject(column string) string {
 // binds over every arm, and the project rule over its own row's project (searchProjectVisible):
 // a candidate CTE cuts to its own limit by distance before anything downstream filters it, so a
 // node the acting person may not see would otherwise take a place in that cut and hide a node
-// they may.
+// they may. Each also reads only the partitions of embeddings its reader may read
+// (searchReaderPartitions), for the same reason one level down: an HNSW walk that meets the
+// vectors of a project the reader does not see spends its reach on them, and never reaches the
+// rows those vectors stand nearer the query than.
 func searchQueryMeaningBody(keywordLegs func(seen int) string, fused, exclude string, seen int, scope meaningProjectScope) string {
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
@@ -823,6 +883,7 @@ func searchQueryMeaningBody(keywordLegs func(seen int) string, fused, exclude st
     from embeddings e
     join issues i on i.key = e.id, q
    where e.kind = 'issue' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") + `
+     and ` + searchReaderPartitions(seen) + `
      and ` + searchProjectVisible("i.project_key", seen) + `
      and ` + refs.VisibleKind("issue", "i.key", searchParam(seen)) +
 		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
@@ -846,6 +907,7 @@ meaning_document_candidates as (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11` + scope.candidateProject("p.key") + `
+     and ` + searchReaderPartitions(seen) + `
      and ` + searchProjectVisible("p.key", seen) + `
      and ` + refs.VisibleKind("artifact", "a.ref_key", searchParam(seen)) +
 		searchRowFilters("i.status", "a.created_by", "v.created_at") + `
@@ -872,6 +934,7 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11` + scope.candidateProject("coalesce(i.project_key, p.key)") + `
+     and ` + searchReaderPartitions(seen) + `
      and ` + searchProjectVisible("coalesce(i.project_key, p.key)", seen) + `
      and ` + refs.VisibleKind("ask", "k.id::text", searchParam(seen)) +
 		searchRowFilters("i.status", "k.author", "k.created_at") + `
@@ -894,6 +957,7 @@ meaning_message_candidates as (
     join messages m on m.id = ` + windowItemUUID + `
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") + `
+     and ` + searchReaderPartitions(seen) + `
      and ` + searchProjectVisible("i.project_key", seen) + `
      and ` + refs.VisibleKind("message", "m.id::text", searchParam(seen)) +
 		searchRowFilters("i.status", "m.author", "m.created_at") + `
@@ -982,7 +1046,7 @@ totals as (
 // The depth asked for is still ten times the items the arm keeps (searchWindowCandidates), for
 // the reason that constant gives: one long thread's windows would otherwise fill the arm. What
 // the index delivers against it is its own: searchMeaningScan sets hnsw.iterative_scan to
-// relaxed_order, which lets an HNSW scan carry on past the first hnsw.ef_search = 400 vectors
+// relaxed_order, which lets an HNSW scan carry on past the first hnsw.ef_search vectors
 // rather than stopping there, and that is the whole of what it promises. It does not fill the
 // LIMIT - measured on the load-test corpus, this arm forced through embeddings_cosine over
 // 1,104 qualifying rows took 245, unmoved by every scan setting tried (the list beside
@@ -1022,6 +1086,7 @@ func searchMeaningCommentArm(scope meaningProjectScope, seen int) string {
     from embeddings e
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
 		scope.candidateProject(searchMeaningCommentProject) + `
+     and ` + searchReaderPartitions(seen) + `
      and ` + searchProjectVisible("e.project_key", seen) + `
      and ` + refs.VisibleKind("comment", windowItemUUID+`::text`, searchParam(seen)) + `
    order by e.embedding <=> $9::vector
@@ -1104,6 +1169,7 @@ func searchMeaningCommentArmJoined(seen int) string {
     left join projects p on p.key = a.project_key, q
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
 		meaningOneProjectJoined.candidateProject(searchMeaningCommentProject) + `
+     and ` + searchReaderPartitions(seen) + `
      and ` + searchProjectVisible(searchMeaningCommentProject, seen) + `
      and ` + refs.VisibleKind("comment", "c.id::text", searchParam(seen)) +
 		searchRowFilters("i.status", "c.author", "c.created_at") + `

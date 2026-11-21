@@ -13,7 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// CensusTableLimit is the largest pg_total_relation_size (table, indexes and TOAST) of an
+// CensusTableLimit is the largest pg_total_relation_size (table, indexes and TOAST, summed over a
+// partitioned table's partitions: tableBytesQuery) of an
 // existing table a pending migration may touch before Census refuses it. A migration's
 // statements lock the tables they name for as long as they run - a validating constraint scans
 // the whole table under ACCESS EXCLUSIVE - so a table this large is a migration that needs
@@ -93,7 +94,7 @@ type TableCensus struct {
 	// connects, or, for a dropped table's key, only for the catalog change.
 	Through string
 	Exists  bool
-	// Bytes is its pg_total_relation_size; Rows is its exact row count, read only when Bytes is
+	// Bytes is its size, tableBytesQuery's; Rows is its exact row count, read only when Bytes is
 	// within the limit.
 	Bytes int64
 	Rows  int64
@@ -339,10 +340,21 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 			entry.exemptionVoided = fmt.Sprintf("its statements are only %s, which would exempt it from the limit, but %s them", kinds, runsCode)
 		}
 		if migration.NonTransactional {
-			if _, err := concurrentIndex(migration.SQL); err == nil {
-				if runsCode == "" {
+			if index, err := concurrentIndex(migration.SQL); err == nil {
+				// Postgres builds no index concurrently on a partitioned table (SQLSTATE 0A000), so
+				// such a migration would fail the boot after the census admitted it: refused here, with
+				// the path that does build one.
+				partitioned, err := partitionedTable(ctx, tx, index.Relation.Schemaname, index.Relation.Relname)
+				if err != nil {
+					return nil, fmt.Errorf("census: %s: %w", migration.Name, err)
+				}
+				switch {
+				case partitioned:
+					entry.refuse("%s builds %s concurrently on %s, which is partitioned: Postgres builds no index concurrently on a partitioned table (SQLSTATE 0A000), so the boot would fail; until a runner mode builds one partition by partition, an index on it is a plain CREATE INDEX on the parent, a stop-the-world migration that writes of the table wait for (internal/dispatch/store/README.md)",
+						migration.Name, index.Idxname, index.Relation.Relname)
+				case runsCode == "":
 					entry.ConcurrentIndex = true
-				} else {
+				default:
 					entry.exemptionVoided = runsCode + " the concurrent index build"
 				}
 			}
@@ -429,6 +441,22 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 type lockBound struct {
 	setting           string
 	cancelsAutovacuum bool
+}
+
+// partitionedTable reads whether the table a concurrent index build names, in schema (empty for
+// the search path's) and table as the statement spells them, is a partitioned table. A table the
+// database does not hold is no partitioned table: the build itself names what is missing.
+func partitionedTable(ctx context.Context, tx pgx.Tx, schema, table string) (bool, error) {
+	name := pgx.Identifier{table}.Sanitize()
+	if schema != "" {
+		name = pgx.Identifier{schema, table}.Sanitize()
+	}
+	var partitioned bool
+	if err := tx.QueryRow(ctx, `select coalesce((select relkind = 'p' from pg_catalog.pg_class where oid = pg_catalog.to_regclass($1)), false)`,
+		name).Scan(&partitioned); err != nil {
+		return false, fmt.Errorf("read whether %s is partitioned: %w", name, err)
+	}
+	return partitioned, nil
 }
 
 // lockBoundOf reads entry's migration's lockBound. Postgres cancels an autovacuum holding a lock a
@@ -622,7 +650,7 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 		return fmt.Errorf("census: savepoint: %w", err)
 	}
 	defer nested.Rollback(ctx)
-	err = nested.QueryRow(ctx, "select pg_total_relation_size($1::oid)", oid).Scan(&table.Bytes)
+	err = nested.QueryRow(ctx, tableBytesQuery, oid).Scan(&table.Bytes)
 	if err == nil && touched.Through == "" {
 		if table.Bytes > options.TableLimit {
 			if entry.TableSizeExemption == "" && !entry.ConcurrentIndex {
@@ -668,6 +696,19 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 	}
 	return fmt.Errorf("census: read %s: %w", name, err)
 }
+
+// tableBytesQuery is the size of the table the census found by oid, which is what its limit is
+// held to: pg_total_relation_size (the table, its indexes and its TOAST), and for a partitioned
+// table the same summed over every table of its partition tree. A partitioned table holds no row
+// of its own, so pg_total_relation_size answers 0 for it however much its partitions hold, and a
+// migration that rewrites a partitioned table of gigabytes would read as touching nothing.
+// pg_partition_tree lists no table at all for a table that is not partitioned, which is why the
+// two are read apart rather than as one sum over the tree.
+const tableBytesQuery = `
+	select case when c.relkind = 'p'
+	            then (select coalesce(sum(pg_total_relation_size(tree.relid)), 0) from pg_partition_tree(c.oid) tree)::bigint
+	            else pg_total_relation_size(c.oid) end
+	  from pg_class c where c.oid = $1::oid`
 
 // tableQuery finds a touched table by name: its oid; its name as the row count names it; and
 // whether it is past its freeze age, so that autovacuum launches its vacuums of it to prevent

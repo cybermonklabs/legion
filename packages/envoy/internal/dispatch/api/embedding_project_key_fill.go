@@ -34,8 +34,9 @@ const embeddingProjectKeyFillLease = "embeddings-project-key-fill"
 var embeddingProjectKeyFillRetry = 5 * time.Minute
 
 // RunEmbeddingProjectKeyFill makes store.FillEmbeddingProjectKeys' pass under
-// embeddingProjectKeyFillLease, and keeps trying for that lease until the labelling is over,
-// whichever process finishes it. The boot starts it in the background (cmd/dispatch/main.go),
+// embeddingProjectKeyFillLease, and keeps trying for that lease until the labelling is over and
+// embeddings is the partitioned table (store.EmbeddingProjectKeyFillDone), whichever process
+// finishes it. The boot starts it in the background (cmd/dispatch/main.go),
 // which is where what it does and why it does not block the boot is written; this is the lease
 // around it. It lives here beside the other leased passes over the store rather than in store
 // itself, because duty's own tests read the store package, so a store that imported duty would
@@ -77,19 +78,38 @@ var embeddingProjectKeyFillRetry = 5 * time.Minute
 // shutdown is not a failure, since ctx ending is how every background pass stops. The one
 // failure it does not try again on is the progress row not being there to read - the row gone,
 // or the table it lives in gone (progressRowGone) - which is the loop's third way out.
-func RunEmbeddingProjectKeyFill(ctx context.Context, database *store.Store, leases duty.Leases) {
+//
+// A swap that waits for the fleet to serve this process's commit alone
+// (store.ErrEmbeddingsSwapWaits) is not a failure: the copy is done and the labelling with it, so
+// each later try makes only the partition half (store.PartitionEmbeddings), and each try that
+// still waits logs one line naming the commits it waits on. buildCommit is this process's own
+// (cmd/dispatch's main.buildCommit).
+func RunEmbeddingProjectKeyFill(ctx context.Context, database *store.Store, leases duty.Leases, buildCommit string) {
+	partitionOnly := false
 	for {
 		finished, gone := false, false
 		duty.Exclusive(ctx, leases, embeddingProjectKeyFillLease, time.Time{}, 0, func(ctx context.Context) {
 			// The rows it had labelled are on the failure line: every batch before the one that
 			// failed is committed and the cursor records them, so the count says how much of the
 			// pass the next try has left rather than how much it lost.
-			labelled, err := database.FillEmbeddingProjectKeys(ctx)
+			var labelled int64
+			var err error
+			if partitionOnly {
+				err = database.PartitionEmbeddings(ctx, buildCommit)
+			} else {
+				labelled, err = database.FillEmbeddingProjectKeys(ctx, buildCommit)
+			}
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
 				if gone = progressRowGone(err); gone {
+					return
+				}
+				if errors.Is(err, store.ErrEmbeddingsSwapWaits) {
+					partitionOnly = true
+					slog.Info("dispatch: embeddings stays unpartitioned for now: the copy is done, and the swap waits while the fleet holds a build of another commit (a registered process within the prune age, or a dashboard publish by that commit within the hour), since a build whose coverage pass inserts on (kind, id) cannot run over the partitioned table; meaning search reads the one graph at its old width meanwhile",
+						"waiting", err.Error(), "retry", embeddingProjectKeyFillRetry)
 					return
 				}
 				slog.Error("dispatch: the embeddings project_key fill failed", "error", err, "rows", labelled)
@@ -100,8 +120,8 @@ func RunEmbeddingProjectKeyFill(ctx context.Context, database *store.Store, leas
 		if finished || gone || ctx.Err() != nil {
 			return
 		}
-		// The try was skipped or it failed. Jittered, so two processes that booted together do
-		// not try in step for the length of the labelling.
+		// The try was skipped, it failed, or the swap waits. Jittered, so two processes that
+		// booted together do not try in step for the length of the labelling.
 		select {
 		case <-ctx.Done():
 			return

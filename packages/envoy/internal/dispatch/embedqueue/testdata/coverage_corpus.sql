@@ -16,7 +16,9 @@
 --     own docs/ and skills/ markdown through COPY FROM STDIN, so the texts compress and hash as
 --     Dispatch's do.
 --
--- It runs on a migrated database that holds no issue and no embeddings row, and commits once.
+-- It runs on a migrated database that holds no issue and no embeddings row, and commits once. The
+-- project CORPUS may be there already: a caller that needs its partition of embeddings before the
+-- load creates the project first (disableCorpusAutovacuum).
 --
 -- The texts. A window's text is 300 to 2,400 characters of the prose (itemblocks.WindowTextChars
 -- 1200 of block text plus up to 1200 of context), with the row's number after it so no two rows
@@ -47,11 +49,15 @@
 -- since no coverage statement reads it, and every other one is built again after the load
 -- from its own definition as the migrations left it (the two the coverage statement reads,
 -- embeddings_window_embedded and embeddings_window_unembedded, among them), which is faster than
--- keeping each up to date row by row. VACUUM and ANALYZE are the caller's, since VACUUM cannot
--- run inside a transaction. A vacuum sets the visibility map, whose states
--- TestCoverageStatementScale measures the coverage statement in (freshly vacuumed, and with the
--- statistics recording pages all-visible that no longer are), only where every commit near this
--- one in the commit log is flushed, so TestCoverageStatementScale makes its databases commit
+-- keeping each up to date row by row. On embeddings partitioned by project the same holds of the
+-- parent's indexes: the definition Postgres gives a partitioned table's index reads `ON ONLY`, which
+-- would build the parent's alone and leave every partition without it, so each is built again on
+-- the parent as a whole, and each partition's index it builds is named after the parent's as
+-- migration 20261120105330 names them (embeddings_<role>_<partition>). VACUUM and ANALYZE are the
+-- caller's, since VACUUM cannot run inside a transaction. A vacuum sets the visibility map, whose
+-- states TestCoverageStatementScale measures the coverage statement in (freshly vacuumed, and with
+-- the statistics recording pages all-visible that no longer are), only where every commit near
+-- this one in the commit log is flushed, so TestCoverageStatementScale makes its databases commit
 -- synchronously.
 
 begin;
@@ -148,7 +154,7 @@ begin
 end
 $$;
 
-insert into projects (key, name, default_assignee) values ('CORPUS', 'Coverage corpus', 'corpus');
+insert into projects (key, name, default_assignee) values ('CORPUS', 'Coverage corpus', 'corpus') on conflict (key) do nothing;
 
 insert into issues (key, project_key, number, title, created_by, rank, created_at, updated_at)
 select 'CORPUS-' || i, 'CORPUS', i,
@@ -283,9 +289,25 @@ from (
 do $$
 declare
   built record;
+  renamed record;
 begin
   for built in select definition from coverage_corpus_indexes where name <> 'embeddings_cosine' order by name loop
-    execute built.definition;
+    execute replace(built.definition, ' ON ONLY ', ' ON ');
+  end loop;
+  for renamed in
+    select child.oid::regclass as index,
+           'embeddings_' || regexp_replace(parent.relname, '^embeddings_', '') || '_' ||
+             regexp_replace(partition.relname, '^embeddings_(project_)?', '') as name
+      from pg_inherits link
+      join pg_class child on child.oid = link.inhrelid
+      join pg_class parent on parent.oid = link.inhparent
+      join pg_index x on x.indexrelid = child.oid
+      join pg_class partition on partition.oid = x.indrelid
+     where parent.oid in (select indexrelid from pg_index where indrelid = 'embeddings'::regclass)
+  loop
+    if renamed.index::text <> renamed.name then
+      execute format('alter index %s rename to %I', renamed.index, renamed.name);
+    end if;
   end loop;
 end
 $$;

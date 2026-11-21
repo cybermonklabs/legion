@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // endMeaningStatementsAt points searchMeaningScan's bound (searchMeaningStatementBound) at `at`
@@ -91,7 +94,10 @@ func holdMeaningStatements(t *testing.T, database *store.Store) (release func())
 // rather than from the list that set it: a search whose caller has gone cannot be cancelled while
 // the pool is full, since pgx cancels out of band and a CancelRequest needs a connection of its
 // own, so the statement has to end itself. The two index settings are read beside it: all three
-// reach a query the same way, and a list that lost one of them is read here too.
+// reach a query the same way, and a list that lost one of them is read here too. The width on
+// embeddings partitioned by project, hnsw.ef_search 20, is the one the production-size bench
+// chose (searchMeaningScan says with which numbers); pgvector's default is 40, so a list that
+// lost the setting fails here.
 //
 // The bound is local to the transaction, so the connection goes back to the pool without it.
 func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
@@ -103,17 +109,13 @@ func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var timeout, efSearch, iterativeScan string
-	if err := tx.QueryRow(ctx, `select current_setting('statement_timeout'), current_setting('hnsw.ef_search'),
-		current_setting('hnsw.iterative_scan')`).Scan(&timeout, &efSearch, &iterativeScan); err != nil {
-		t.Fatalf("read the settings the meaning transaction applies: %v", err)
-	}
+	timeout, efSearch, iterativeScan := meaningScanSettings(t, tx)
 	if timeout != "15s" {
 		t.Fatalf("statement_timeout = %q in a meaning query's transaction, want 15s: the server's own bound is what "+
 			"ends a search whose caller has gone, since pgx cannot deliver a cancellation when the pool is full", timeout)
 	}
-	if efSearch != "400" || iterativeScan != "relaxed_order" {
-		t.Fatalf("hnsw.ef_search = %q and hnsw.iterative_scan = %q, want 400 and relaxed_order", efSearch, iterativeScan)
+	if efSearch != "20" || iterativeScan != "relaxed_order" {
+		t.Fatalf("hnsw.ef_search = %q and hnsw.iterative_scan = %q, want 20 and relaxed_order: the width the bench chose for one HNSW graph a project", efSearch, iterativeScan)
 	}
 
 	if err := tx.Rollback(ctx); err != nil {
@@ -126,6 +128,50 @@ func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
 	if pooled == "15s" {
 		t.Fatalf("statement_timeout = %q outside the meaning transaction, want the server's own default: "+
 			"`set local` must not follow a pooled connection to the next request", pooled)
+	}
+}
+
+// meaningScanSettings reads, in tx, the statement bound and the two index settings a meaning
+// transaction sets.
+func meaningScanSettings(t *testing.T, tx pgx.Tx) (timeout, efSearch, iterativeScan string) {
+	t.Helper()
+	if err := tx.QueryRow(context.Background(), `select current_setting('statement_timeout'), current_setting('hnsw.ef_search'),
+		current_setting('hnsw.iterative_scan')`).Scan(&timeout, &efSearch, &iterativeScan); err != nil {
+		t.Fatalf("read the settings the meaning transaction applies: %v", err)
+	}
+	return timeout, efSearch, iterativeScan
+}
+
+// Until the boot's fill swaps the partitioned table in, embeddings is one graph over every
+// project, and a meaning transaction reads it at the base's width, hnsw.ef_search 400, so a
+// deployment whose swap waits (store.ErrEmbeddingsSwapWaits) searches as the release before it
+// did: the bench read the one graph at recall@20 0.960 and 0.949 at 400 and 0.956 and 0.946 at 20.
+// The same transaction on the same database reads 20 once the fill has swapped it, without a
+// process starting again: the width is read from the catalog in each transaction.
+func TestMeaningScanKeepsTheBaseWidthOnTheOneGraphUntilTheSwap(t *testing.T) {
+	_, database, deps := newTestServer(t, testServerOptions{store: storetest.OpenUnpartitioned(t)})
+	ctx := context.Background()
+	width := func() string {
+		t.Helper()
+		tx, err := directServer(deps).beginMeaningScan(ctx)
+		if err != nil {
+			t.Fatalf("begin the meaning scan: %v", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		_, efSearch, iterativeScan := meaningScanSettings(t, tx)
+		if iterativeScan != "relaxed_order" {
+			t.Fatalf("hnsw.iterative_scan = %q, want relaxed_order", iterativeScan)
+		}
+		return efSearch
+	}
+	if got := width(); got != "400" {
+		t.Errorf("hnsw.ef_search = %q on embeddings before the swap, want the base's 400 on the one graph", got)
+	}
+	if _, err := database.FillEmbeddingProjectKeys(ctx, ""); err != nil {
+		t.Fatalf("partition embeddings: %v", err)
+	}
+	if got := width(); got != "20" {
+		t.Errorf("hnsw.ef_search = %q once embeddings is partitioned, want 20", got)
 	}
 }
 

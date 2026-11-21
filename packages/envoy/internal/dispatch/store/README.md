@@ -32,8 +32,15 @@ a database that ran another branch's or an earlier commit's migration, or an edi
 `pgmigrate.CensusTableLimit` is 1 GiB of `pg_total_relation_size`, and the census refuses an ordinary migration that touches a table above it, unless every statement of it that touches the table is a bounded write: an insert of at most `pgmigrate.BoundedWriteRows` (1,000) literal rows, or an update of at most that many rows by their primary key (`../../../cmd/dispatch/README.md`, "Pre-deploy census"), which is how a later migration seeds rows into `graph_tuples` or `graph_nodes`.
 The concurrent mode above is the way through: `pgmigrate/census.go`'s `ConcurrentIndex` flag exempts a marked migration from the size limit by name, so a log that has grown past the limit is indexed by a migration whose whole body is one statement, in the shape `20261102233630_embeddings_window_owner.up.sql` uses:
 a first line of exactly `-- pgmigrate:non-transactional`, then one `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, non-unique and named.
-`graph_tuples` and `graph_nodes` are unpartitioned for that reason, and a later index on either is one such migration.
+`graph_tuples` and `graph_nodes` are unpartitioned for that reason, and a later index on either is one such migration; `embeddings` took its window index that way before it was partitioned, and takes none that way now (below).
 An enabled DDL event trigger voids the exemption, and a UNIQUE build is refused, so a unique key on a table that size needs a stop-the-world migration instead.
+
+**`embeddings` is partitioned by project, and takes no concurrent index.**
+Once a deployment's fill has swapped the partitioned table in (migration `20261120105330`, `store.PartitionEmbeddings`), Postgres builds no index concurrently on `embeddings` (SQLSTATE 0A000), and the census refuses a marked concurrent build on any partitioned table rather than exempting it.
+An index on it is built in three steps: `CREATE INDEX … ON ONLY embeddings`, which makes the parent's index, invalid and on no partition; `CREATE INDEX CONCURRENTLY` on each partition; and `ALTER INDEX … ATTACH PARTITION` of each partition's index to the parent's, which makes the parent's valid once every partition's is attached.
+The partitions are made per project at run time (`embeddings_project_<key>`), so their names are a deployment's own, and `CONCURRENTLY` runs in no transaction and no `DO` block: no migration file can take those steps, and no runner mode takes them yet.
+Until one does, an index on `embeddings` is a plain `CREATE INDEX` on the parent, which takes SHARE on every partition while it builds, so writes of `embeddings` wait for it: a stop-the-world migration, and its census is refused above the size limit.
+A later migration on `embeddings` also runs, on a database migrated before its first swap, on the unpartitioned table the swap then drops; storetest's template migrates in the order a deployment that swapped takes (`store.MigrateAroundTheSwap`), so CI runs it on the partitioned table.
 
 **A migration must leave the release before it able to read and write the schema.**
 A Dispatch release rolls, so the old build and the new build run against this schema at once, and nothing at boot refuses a schema newer than the binary knows.

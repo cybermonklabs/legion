@@ -54,25 +54,27 @@ func TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap(t 
 	}
 	t.Cleanup(database.Pool.Close)
 	// No autovacuum or autoanalyze of embeddings sets its visibility map or its statistics while
-	// the test makes the state.
-	mustExec(t, database.Pool, `alter table embeddings set (autovacuum_enabled = false)`)
+	// the test makes the state. heap is the relation whose pages hold the corpus's rows: the
+	// partition of project CORPUS on embeddings partitioned by project, where the visibility map
+	// and the statistics the planner prices a partition's scan by are that partition's own.
+	heap := disableCorpusAutovacuum(t, database.Pool)
 	loadSmallCoverageCorpus(t, database)
 	recordOnce(t, database)
 	mustExec(t, database.Pool, `vacuum (analyze) embeddings`)
 	var vacuumed float64
-	if err := database.Pool.QueryRow(ctx, coverageVisibleShare).Scan(&vacuumed); err != nil {
-		t.Fatalf("read the share of embeddings the statistics record as all-visible: %v", err)
+	if err := database.Pool.QueryRow(ctx, coverageVisibleShare(heap)).Scan(&vacuumed); err != nil {
+		t.Fatalf("read the share of %s the statistics record as all-visible: %v", heap, err)
 	}
 	if vacuumed < 0.99 {
-		t.Fatalf("the statistics record %.3f of embeddings as all-visible after its vacuum; the test needs every page", vacuumed)
+		t.Fatalf("the statistics record %.3f of %s as all-visible after its vacuum; the test needs every page", vacuumed, heap)
 	}
 
 	// Half the pages written, and an ANALYZE that records it.
-	mustExec(t, database.Pool, updateOneRowOfPages("where ((ctid::text::point)[0])::int % 2 = 0"))
+	mustExec(t, database.Pool, updateOneRowOfPages(heap, "where ((ctid::text::point)[0])::int % 2 = 0"))
 	mustExec(t, database.Pool, `analyze embeddings`)
 	var recorded float64
-	if err := database.Pool.QueryRow(ctx, coverageVisibleShare).Scan(&recorded); err != nil {
-		t.Fatalf("read the share of embeddings the statistics record as all-visible: %v", err)
+	if err := database.Pool.QueryRow(ctx, coverageVisibleShare(heap)).Scan(&recorded); err != nil {
+		t.Fatalf("read the share of %s the statistics record as all-visible: %v", heap, err)
 	}
 	if recorded < laggingVisibleShare {
 		t.Fatalf("the statistics record %.3f of embeddings as all-visible after half its pages were written; the test needs at least %g (laggingVisibleShare)",
@@ -80,7 +82,7 @@ func TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap(t 
 	}
 	// Then one row of every other page written, with no ANALYZE after it: no page is all-visible,
 	// and the statistics still record the share above.
-	mustExec(t, database.Pool, updateOneRowOfPages("where ((ctid::text::point)[0])::int % 2 = 1"))
+	mustExec(t, database.Pool, updateOneRowOfPages(heap, "where ((ctid::text::point)[0])::int % 2 = 1"))
 
 	var windows int64
 	if err := database.Pool.QueryRow(ctx, `select count(*) from embeddings where `+windowItems).Scan(&windows); err != nil {

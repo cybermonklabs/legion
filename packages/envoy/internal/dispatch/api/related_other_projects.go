@@ -33,6 +33,13 @@ import (
 // tests sit before the LIMIT, the scan never hands back a row the check must not offer, and such
 // a row never takes the place of a qualifying one.
 //
+// It reads the partitions of embeddings its writer sees and the one of no project alone
+// (searchReaderPartitions, $6), as every meaning arm of search does: each project's vectors are
+// a graph of their own, and a walk over the graph of a project the writer does not see spends
+// that budget on rows the project test then rejects, one partition walked for each hidden
+// project. The project test still decides which rows qualify; the partition list only keeps the
+// walk off graphs that hold none.
+//
 // The candidate CTE takes searchWindowCandidates windows, as the same-project ask arm does: one
 // ask holds more than one window. The rows at or above searchMeaningFloor are then folded to the
 // best window of each ask (distinct on), ordered by the score and cut to the depth every other
@@ -67,6 +74,7 @@ var relatedOtherProjectsSQL = `with candidates as (
      and coalesce(i.project_key, a.project_key) is not null
      and coalesce(i.project_key, a.project_key) <> $2
      and ` + access.ProjectClause("coalesce(i.project_key, a.project_key)", "$6") + `
+     and ` + searchReaderPartitions(6) + `
    order by e.embedding <=> $1::vector
    ` + searchWindowLimit + `
 ),

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -71,7 +72,14 @@ func newCorpusSearchHandler(t *testing.T, databaseURL string) http.Handler {
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate corpus database: %v", err)
 	}
+	return newCorpusServer(t, database, nil)
+}
 
+// newCorpusServer is the API server the corpus benches search: the routes over database, with
+// embedder configured where it is not nil, so its searches run the meaning statement too
+// (TestMeaningSearchOnBenchCorpus), and keywords alone where it is (TestSearchLatencyOnCorpus).
+func newCorpusServer(t *testing.T, database *store.Store, embedder embed.Embedder) http.Handler {
+	t.Helper()
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{
 		Store: database, Events: broker, ServerURL: "https://dispatch.example", Settle: time.Hour,
@@ -88,6 +96,7 @@ func newCorpusSearchHandler(t *testing.T, databaseURL string) http.Handler {
 		ServerURL:   "https://dispatch.example",
 		Docs:        documentService,
 		Events:      broker,
+		Embedder:    embedder,
 	})
 	if err != nil {
 		t.Fatalf("create corpus API dependencies: %v", err)

@@ -203,14 +203,21 @@ func m19ProjectSchema(t *testing.T, database *store.Store) *m19Schema {
 		identity[held.Relation][held.Column] = true
 	}
 	// A relation whose primary key is a kind and an id is a store of nodes: its kind and id are
-	// the address of the node each row is.
+	// the address of the node each row is. A partitioned table's unique key must hold its
+	// partition key, and one whose partition key may be null has no primary key at all, so a
+	// partitioned table's key is its unique constraint read without the partition key: embeddings,
+	// partitioned by project, is keyed unique nulls not distinct (kind, id, project_key), and is
+	// the store of nodes it was as (kind, id).
 	primary := map[string][]string{}
 	for _, held := range m19Rows[key](t, database, `
 		select k.conrelid::regclass::text, a.attname
 		from pg_constraint k
 		join lateral unnest(k.conkey) as child (number) on true
 		join pg_attribute a on a.attrelid = k.conrelid and a.attnum = child.number
-		where k.contype = 'p' and k.connamespace = 'public'::regnamespace`) {
+		left join pg_partitioned_table p on p.partrelid = k.conrelid
+		where k.connamespace = 'public'::regnamespace
+		  and (k.contype = 'p' or k.contype = 'u' and p.partrelid is not null)
+		  and not (p.partrelid is not null and child.number = any(p.partattrs::int2[]))`) {
 		primary[held.Relation] = append(primary[held.Relation], held.Column)
 	}
 	nodes := map[string]bool{}

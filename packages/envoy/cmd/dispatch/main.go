@@ -962,7 +962,7 @@ func main() {
 	// (api.RunEmbeddingProjectKeyFill, which says why the retry is written there and not taken
 	// from duty's loops). It is the one leased caller here that stops of its own accord, so its
 	// goroutine and its connection of the lease pool go back for good once the rows are labelled.
-	go api.RunEmbeddingProjectKeyFill(ctx, database, embeddingProjectKeyFillLeases)
+	go api.RunEmbeddingProjectKeyFill(ctx, database, embeddingProjectKeyFillLeases, buildCommit)
 	// A settlement a shutdown cut short, here or in the task this one replaces, runs without
 	// anyone opening its document. One process per period arms them (docs.RunSettlementResumption).
 	go documentService.RunSettlementResumption(ctx, settlementResumptionLeases)

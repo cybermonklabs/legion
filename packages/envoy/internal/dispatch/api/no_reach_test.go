@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // personNodesRoute is the one route the node and tuple store adds to the table: a person's own
@@ -1582,7 +1583,9 @@ func relationsOf(t *testing.T, database *store.Store, statements []recordedState
 	return slices.Sorted(maps.Keys(seen))
 }
 
-// planRelations reads every relation a plan names, however deep the plan nests.
+// planRelations reads every relation a plan names, however deep the plan nests, a partition of
+// embeddings as embeddings (explaintest.PartitionParent): which partitions a read plans is the
+// projects its reader sees, not its shape.
 func planRelations(plan json.RawMessage) []string {
 	var node any
 	if err := json.Unmarshal(plan, &node); err != nil {
@@ -1594,7 +1597,7 @@ func planRelations(plan json.RawMessage) []string {
 		switch typed := value.(type) {
 		case map[string]any:
 			if name, named := typed["Relation Name"].(string); named {
-				found = append(found, name)
+				found = append(found, explaintest.PartitionParent(name))
 			}
 			for _, key := range slices.Sorted(maps.Keys(typed)) {
 				walk(typed[key])

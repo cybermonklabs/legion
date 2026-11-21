@@ -407,12 +407,13 @@ var coverageCostProfiles = []struct{ name, settings string }{
 }
 
 // The coverage statement (coverageQuery), under planCoverage's settings, reads the window kinds by
-// one Bitmap Heap Scan of embeddings over a BitmapOr of the two window indexes, whatever the
-// planner estimates: its one window arm ORs the two indexes' predicates, each word for word, so the
-// planner proves that the two indexes together hold every row the arm selects, and that bitmap is
-// the one path to those rows the settings leave enabled (planCoverage). The blank test's regex is
-// then in that scan's recheck alone, which an exact bitmap never runs, and in no filter, which
-// runs on every row read.
+// one Bitmap Heap Scan of each heap that stores embeddings over a BitmapOr of the two window
+// indexes, whatever the planner estimates: embeddings itself, or once it is partitioned by project
+// each partition the seed wrote rows to, through that partition's own two window indexes. Its one
+// window arm ORs the two indexes' predicates, each word for word, so the planner proves that the
+// two indexes together hold every row the arm selects, and that bitmap is the one path to those
+// rows the settings leave enabled (planCoverage). The blank test's regex is then in that scan's
+// recheck alone, which an exact bitmap never runs, and in no filter, which runs on every row read.
 //
 // The plan is read on a seeded table of a few dozen rows (seedEveryCoverageState), as seeded and
 // again once embeddings is analyzed, under each of coverageCostProfiles. On such a table an
@@ -439,10 +440,11 @@ func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
 			if explaintest.SeqScansRelation(t, plan, "embeddings") {
 				t.Errorf("%s: the coverage statement's plan reads embeddings by a Seq Scan:\n%s", stage, plan)
 			}
-			var windows int
+			// The heap each window bitmap reads: the partition, or "" for embeddings itself.
+			windows := map[string]int{}
 			for _, scan := range explaintest.BitmapHeapScans(t, plan, "embeddings") {
 				if scan.OrOf("embeddings_window_embedded", "embeddings_window_unembedded") {
-					windows++
+					windows[scan.Scan.Partition]++
 				}
 			}
 			var textFilters []string
@@ -451,9 +453,15 @@ func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
 					textFilters = append(textFilters, node.Type+" (Filter: "+node.Filter+")")
 				}
 			}
-			if windows != 1 {
-				t.Errorf("%s: the coverage statement's plan holds %d Bitmap Heap Scans of embeddings over a BitmapOr of embeddings_window_embedded and embeddings_window_unembedded, want one:\n%s",
-					stage, windows, plan)
+			if len(windows) == 0 {
+				t.Errorf("%s: the coverage statement's plan holds no Bitmap Heap Scan of embeddings over a BitmapOr of embeddings_window_embedded and embeddings_window_unembedded:\n%s",
+					stage, plan)
+			}
+			for heap, scans := range windows {
+				if scans != 1 {
+					t.Errorf("%s: the coverage statement's plan holds %d Bitmap Heap Scans of %q over a BitmapOr of its two window indexes, want one:\n%s",
+						stage, scans, heap, plan)
+				}
 			}
 			if len(textFilters) > 0 {
 				t.Errorf("%s: the coverage statement tests windows' text in a filter of embeddings: %s\n%s", stage, strings.Join(textFilters, "; "), plan)

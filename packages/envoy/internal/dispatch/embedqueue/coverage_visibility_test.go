@@ -51,8 +51,9 @@ import (
 func TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	// No autovacuum sets the visibility map while the test reads it.
-	mustExec(t, database.Pool, `alter table embeddings set (autovacuum_enabled = false)`)
+	// No autovacuum sets the visibility map while the test reads it. heap is the relation whose
+	// pages hold the corpus's rows (disableCorpusAutovacuum says which).
+	heap := disableCorpusAutovacuum(t, database.Pool)
 	loadSmallCoverageCorpus(t, database)
 	recordOnce(t, database)
 
@@ -71,24 +72,21 @@ func TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible(t *tes
 
 	// One row of each page of embeddings updated, so no page is all-visible, and the statistics
 	// say so.
-	mustExec(t, single.Pool, `update embeddings e set pending_since = e.pending_since
-		from (select distinct on ((ctid::text::point)[0]) ctid from embeddings
-		      order by (ctid::text::point)[0], ctid) s
-		where e.ctid = s.ctid`)
+	mustExec(t, single.Pool, updateOneRowOfPages(heap, ""))
 	mustExec(t, single.Pool, `analyze embeddings`)
 	var visible, pages int64
-	if err := single.Pool.QueryRow(ctx, `select relallvisible::bigint, relpages::bigint from pg_class where oid = 'embeddings'::regclass`).Scan(&visible, &pages); err != nil {
-		t.Fatalf("read embeddings' statistics: %v", err)
+	if err := single.Pool.QueryRow(ctx, `select relallvisible::bigint, relpages::bigint from pg_class where oid = $1::regclass`, heap).Scan(&visible, &pages); err != nil {
+		t.Fatalf("read %s's statistics: %v", heap, err)
 	}
 	if pages == 0 || visible*4 > pages {
 		t.Fatalf("the statistics record %d of embeddings' %d pages all-visible; the test needs fewer than a quarter", visible, pages)
 	}
 
-	before := embeddingsScans(t, single)
+	before := embeddingsScans(t, single, heap)
 	if _, err := Coverage(ctx, single, configuredIdentity, everyProject); err != nil {
 		t.Fatalf("coverage: %v", err)
 	}
-	after := embeddingsScans(t, single)
+	after := embeddingsScans(t, single, heap)
 	if after.sequential != before.sequential {
 		t.Errorf("the report read embeddings by %d sequential scans with %d of its %d pages all-visible, running the blank test over every window's text; want none",
 			after.sequential-before.sequential, visible, pages)
@@ -101,25 +99,26 @@ func TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible(t *tes
 	}
 }
 
-// embeddingScans is how often embeddings was read by a sequential scan and each window index by
-// an index scan, as the statistics hold them.
+// embeddingScans is how often the corpus's heap was read by a sequential scan and each window
+// index by an index scan, as the statistics hold them.
 type embeddingScans struct {
 	sequential, embedded, unembedded int64
 }
 
 // embeddingsScans flushes the statistics of the one connection of single's pool, then reads
-// embeddings' scans from them in a statement of its own.
-func embeddingsScans(t *testing.T, single *store.Store) embeddingScans {
+// heap's scans (corpusHeap) and its two window indexes' from them in a statement of its own.
+func embeddingsScans(t *testing.T, single *store.Store, heap string) embeddingScans {
 	t.Helper()
 	ctx := context.Background()
 	mustExec(t, single.Pool, `select pg_stat_force_next_flush()`)
 	var scans embeddingScans
 	if err := single.Pool.QueryRow(ctx, `select
-		(select seq_scan from pg_stat_user_tables where relid = 'embeddings'::regclass),
-		(select idx_scan from pg_stat_user_indexes where indexrelid = 'embeddings_window_embedded'::regclass),
-		(select idx_scan from pg_stat_user_indexes where indexrelid = 'embeddings_window_unembedded'::regclass)`).
+		(select seq_scan from pg_stat_user_tables where relid = $1::regclass),
+		(select idx_scan from pg_stat_user_indexes where indexrelid = $2::regclass),
+		(select idx_scan from pg_stat_user_indexes where indexrelid = $3::regclass)`,
+		heap, heapIndex(heap, "embeddings_window_embedded"), heapIndex(heap, "embeddings_window_unembedded")).
 		Scan(&scans.sequential, &scans.embedded, &scans.unembedded); err != nil {
-		t.Fatalf("read embeddings' scans: %v", err)
+		t.Fatalf("read %s's scans: %v", heap, err)
 	}
 	return scans
 }

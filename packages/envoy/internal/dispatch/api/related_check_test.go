@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // relatedOwnerKeys is the issue each related item stands for, in order.
@@ -413,26 +414,31 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 	}
 }
 
-// pgvector's HNSW index hands back hnsw.ef_search nearest vectors (40 by default) before the
-// project filter runs. Sixty vectors of another project nearer than the project's own item fill
-// those 40, so without the check's wider ef_search the item is never seen. The vectors lie on one
-// arc from the query, so the index's graph links each to its neighbours along it and a wide
-// enough walk reaches them all; vectors that are all equally far from each other leave some
-// unreachable in a graph this small. The check's server here runs with sequential scans and sorts
+// pgvector's HNSW index hands back hnsw.ef_search nearest vectors (400 on the one graph before the
+// boot's fill swaps the partitioned table in, searchMeaningWidth) before the project filter runs.
+// More vectors of another project than that, all nearer than the project's own item, fill those
+// 400, so the item is seen only because the check's hnsw.iterative_scan carries the walk on past
+// them. The vectors lie on one arc from the query, so the index's graph links each to its
+// neighbours along it and a walk that goes on reaches them all; vectors that are all equally far
+// from each other leave some unreachable in a graph this small. The test runs on embeddings as the
+// migrations leave it (storetest.OpenUnpartitioned), one graph over every project, which is what a
+// meaning search reads until the swap; once embeddings is partitioned by project the other
+// project's vectors are in a graph of their own and crowd nothing (search_partitions_plan_test.go).
+// The check's server here runs with sequential scans and sorts
 // made costly, as a corpus large enough for the planner to choose the index does on its own (a
 // handful of test rows is otherwise read whole and sorted exactly,
 // TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan), and without JIT, which the disabled
 // plans' inflated costs would otherwise spend seconds compiling.
 func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t *testing.T) {
 	const text = "Find what this is about"
-	const nearer = 60
+	const nearer = 420
 	arc := func(angle float64) []float32 { return angledVector(math.Cos(angle), 1) }
 	vectors := map[string][]float32{text: queryVector(), "Our own distant cousin": arc(0.8)}
 	for index := range nearer {
-		vectors[fmt.Sprintf("Crowded neighbour %d", index)] = arc(0.005 * float64(index+1))
+		vectors[fmt.Sprintf("Crowded neighbour %d", index)] = arc(0.75 * float64(index+1) / nearer)
 	}
 	embedder := &fakeEmbedder{vectors: vectors}
-	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder, store: storetest.OpenUnpartitioned(t)})
 	createSuggestionProject(t, handler, "CROWD")
 	createSuggestionProject(t, handler, "MINE")
 	for index := range nearer {

@@ -200,7 +200,10 @@ var issueHasText = "(ascii(i.title) between 33 and 126 or " + somethingToEmbed(i
 // none, exactly as the trigger's embeddings_enqueue would insert it. ON CONFLICT DO NOTHING,
 // never DO UPDATE: a row a trigger inserts between this statement's read and its insert holds
 // text at least as fresh as what this statement read, and DO UPDATE would revert it to the older
-// text.
+// text. The conflict names no target, so it is met on whichever unique key embeddings carries:
+// (kind, id) before store.FillEmbeddingProjectKeys swaps the table partitioned by project in, and
+// (kind, id, project_key) after (migration 20261120105330); an issue's row is in its issue's
+// project, which is the project this insert gives it, so the two keys meet the same row.
 //
 // project_key is the issue's own, read through embeddings_owner_project_key (migration
 // 20261109120000) - the expression embeddings_enqueue itself writes, so this insert is still
@@ -213,7 +216,7 @@ var insertMissingIssues = `
 	from (` + issueItems + `) item
 	where not exists (select 1 from embeddings e where e.kind = $1::text and e.id = item.id)
 	limit $2
-	on conflict (kind, id) do nothing`
+	on conflict do nothing`
 
 // repairStaleIssues points up to $2 issue rows whose content_hash is not the hash of the issue's
 // current text (text changed with the trigger off, as a restore or replication does) at that

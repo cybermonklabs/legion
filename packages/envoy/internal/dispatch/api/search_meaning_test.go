@@ -1371,7 +1371,9 @@ func TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling(t *testing.T) {
 		"wibbleflorp":                   queryVector(),
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
 	}}
-	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	// The labelling's window comes before the swap: on the partitioned table the unlabel below
+	// moves each row into the partition of no project, whose label trigger labels it again.
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder, store: storetest.OpenUnpartitioned(t)})
 	issue := createInteractionIssue(t, handler, project, title, spec)
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "A remark to find."}, "alice")
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message to find."}, "alice")
@@ -1443,7 +1445,8 @@ func unlabelledFillWindow(t *testing.T, project string) (http.Handler, *store.St
 		"wibbleflorp":                   queryVector(),
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
 	}}
-	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	// Before the swap, as TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling says why.
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder, store: storetest.OpenUnpartitioned(t)})
 	issue := createInteractionIssue(t, handler, project, title, spec)
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "A remark to find."}, "alice")
 	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.9, 3))

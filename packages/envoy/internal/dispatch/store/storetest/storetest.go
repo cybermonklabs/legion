@@ -62,19 +62,40 @@ var shared struct {
 	dropFails []string
 }
 
-// openKey is the key of the template Open clones, which this tree's runner migrates
-// (migrateWithThisTree).
-const openKey = "this tree's runner (storetest.Open)"
+// openKey is the key of the template Open clones, which this tree's runner migrates around the
+// swap of embeddings (migrateAndPartition); unpartitionedKey is OpenUnpartitioned's, which the
+// runner migrates alone (migrateWithThisTree).
+const (
+	openKey          = "this tree's runner, embeddings partitioned (storetest.Open)"
+	unpartitionedKey = "this tree's runner, embeddings not yet partitioned (storetest.OpenUnpartitioned)"
+)
 
-// Open returns a store on a new database carrying every migration, dropped after t ends. It skips
-// t when DISPATCH_TEST_DATABASE_URL is unset.
+// Open returns a store on a new database carrying every migration, with embeddings partitioned by
+// project, dropped after t ends. It skips t when DISPATCH_TEST_DATABASE_URL is unset.
+//
+// embeddings is the table a deployment holds from its first boot of the release that partitions
+// it on (store.FillEmbeddingProjectKeys, which swaps the partitioned table in once its copy is
+// done), so that is the table a test reads and writes unless it asks for the one before
+// (OpenUnpartitioned): every plan guard over embeddings guards the plan production runs, and a
+// change that works on one shape alone fails here.
 func Open(t testing.TB) *store.Store {
 	t.Helper()
-	return OpenFrom(t, openKey, migrateWithThisTree)
+	return OpenFrom(t, openKey, migrateAndPartition)
 }
 
-// migrateWithThisTree migrates the database databaseURL names with this tree's runner: Open's
-// template. It closes its pool before it returns, so the template is left with no connection.
+// OpenUnpartitioned is Open for a database as a deployment holds it between this release's
+// migrations and its fill's swap: every migration applied and embeddings the table 0072 made,
+// with embeddings_partitioned beside it and 20261120105818's mirror writing both. It is for a
+// test of that window alone: the labelling, the copy, the swap itself, and what a read or a write
+// does while the copy runs.
+func OpenUnpartitioned(t testing.TB) *store.Store {
+	t.Helper()
+	return OpenFrom(t, unpartitionedKey, migrateWithThisTree)
+}
+
+// migrateWithThisTree migrates the database databaseURL names with this tree's runner:
+// OpenUnpartitioned's template. It closes its pool before it returns, so the template is left
+// with no connection.
 func migrateWithThisTree(databaseURL string) error {
 	ctx := context.Background()
 	database, err := store.Open(ctx, databaseURL)
@@ -83,6 +104,22 @@ func migrateWithThisTree(databaseURL string) error {
 	}
 	defer database.Pool.Close()
 	return database.Migrate(ctx)
+}
+
+// migrateAndPartition migrates the database databaseURL names as a deployment that ran the
+// release partitioning embeddings before a later one does (store.MigrateAroundTheSwap): every
+// migration through that release, the fill a boot starts, which on a database holding no row
+// copies nothing and swaps the partitioned embeddings in at once, and then every later
+// migration, on the partitioned table. Open's template, so a later migration that works on the
+// unpartitioned table alone fails here as it would fail a deployment's boot.
+func migrateAndPartition(databaseURL string) error {
+	ctx := context.Background()
+	database, err := store.Open(ctx, databaseURL)
+	if err != nil {
+		return fmt.Errorf("open the database: %w", err)
+	}
+	defer database.Pool.Close()
+	return database.MigrateAroundTheSwap(ctx)
 }
 
 // ready makes sure the package's TestMain runs Run, skips t when DISPATCH_TEST_DATABASE_URL is

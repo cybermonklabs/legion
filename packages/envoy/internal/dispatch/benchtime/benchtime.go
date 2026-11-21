@@ -67,9 +67,9 @@ type Statement struct {
 	SQL  string
 	Args []any
 	// Setup are the `set local` statements the caller runs the statement under, applied in the
-	// measuring transaction before the EXPLAIN. The related-item check's meaning query raises
-	// hnsw.ef_search to 400 for its own transaction, and a measurement under pgvector's default
-	// 40 would be of a statement production never runs.
+	// measuring transaction before the EXPLAIN. The related-item check's meaning query sets
+	// hnsw.ef_search and hnsw.iterative_scan for its own transaction (api's searchMeaningScan), and
+	// a measurement under pgvector's defaults would be of a statement production never runs.
 	Setup []string
 }
 

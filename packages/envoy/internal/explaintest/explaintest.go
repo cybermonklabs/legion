@@ -17,6 +17,9 @@
 // pin a plan with these checks, so they live here once rather than as a second (or third) hand
 // copy of the same recursive walk; it is an ordinary package rather than a _test.go file because
 // Go cannot share test-only code across packages (see internal/stacktest's identical reasoning).
+// Every check reads a node of a partition of embeddings as a node of embeddings and its index as
+// the index of embeddings it belongs to (PartitionParent), so a check written for the table before
+// the boot's fill partitions it holds the partitioned table to the same plan.
 package explaintest
 
 import (
@@ -65,12 +68,17 @@ type planNode struct {
 	// parent is the position in the walk of the node this one is directly under, -1 for the
 	// root, which the walk records as it descends (nodesUnder).
 	parent int
+	// partition and partitionIndex are the partition of embeddings the node reads and the index
+	// of that partition it reads through, as the plan names them, where RelationName and
+	// IndexName name embeddings and its index instead (nodesUnder); empty for every other node.
+	partition, partitionIndex string
 }
 
 // asNode is n as the exported checks answer it, its index condition empty where it carries none.
 func (n planNode) asNode() Node {
 	found := Node{
 		Type: n.NodeType, Relation: n.RelationName, Index: n.IndexName,
+		Partition: n.partition, PartitionIndex: n.partitionIndex,
 		CTE: n.CTEName, Alias: n.Alias, Subplan: n.subplan,
 		Loops: n.ActualLoops, Rows: n.ActualRows,
 		Filter: n.Filter, RecheckCond: n.RecheckCond,
@@ -112,7 +120,9 @@ func planNodes(t testing.TB, planJSON json.RawMessage) []planNode {
 // nodesUnder is that walk of one node and the tree below it, appended to nodes, the walk so far,
 // whose node at position parent the node is directly under (-1 for the root): a node whose
 // parent relationship is SubPlan begins a subplan, and every node under it belongs to that one,
-// since a plan under a subplan runs as often as the subplan does.
+// since a plan under a subplan runs as often as the subplan does. A node that reads a partition
+// of embeddings names embeddings and the index of embeddings its index belongs to
+// (PartitionParent, PartitionParentIndex), with the partition it reads kept beside them.
 func nodesUnder(t testing.TB, planJSON json.RawMessage, subplan string, parent int, nodes []planNode) []planNode {
 	t.Helper()
 	var node planNode
@@ -127,12 +137,52 @@ func nodesUnder(t testing.TB, planJSON json.RawMessage, subplan string, parent i
 	}
 	node.subplan = subplan
 	node.parent = parent
+	if table := PartitionParent(node.RelationName); table != node.RelationName {
+		node.partition, node.RelationName = node.RelationName, table
+	}
+	if index := PartitionParentIndex(node.IndexName); index != node.IndexName {
+		node.partitionIndex, node.IndexName = node.IndexName, index
+	}
 	position := len(nodes)
 	nodes = append(nodes, node)
 	for _, child := range node.Plans {
 		nodes = nodesUnder(t, child, subplan, position, nodes)
 	}
 	return nodes
+}
+
+// embeddingsPartition is a partition of embeddings as migration 20261120105330 names it: the
+// partition of no project, and embeddings_project_<the project key in lower case>.
+var embeddingsPartition = regexp.MustCompile(`^embeddings_(no_project|project_[a-z][a-z0-9]*)$`)
+
+// embeddingsPartitionIndex is an index of a partition of embeddings as that migration names it,
+// embeddings_<the role of embeddings' index it belongs to>_<the partition's suffix>
+// (embeddings_name_partition_indexes), one role for each index of embeddings: the HNSW graph,
+// the key, and the five partial indexes. An index added to embeddings adds its role here, and
+// store's TestEveryIndexOfAPartitionOfEmbeddingsReadsAsTheIndexItBelongsTo holds the list to the
+// catalog.
+var embeddingsPartitionIndex = regexp.MustCompile(
+	`^(embeddings_(?:cosine|key|kind_project|pending|window_embedded|window_owner|window_unembedded))_(?:no_project|[a-z][a-z0-9]*)$`)
+
+// PartitionParent is the table relation is a partition of, for a partition of embeddings, and
+// relation itself for every other name. embeddings is list-partitioned by project once the boot's
+// fill has swapped the partitioned table in (store.FillEmbeddingProjectKeys), and a plan then
+// reads a partition of it by the partition's name where it read embeddings before, so a check
+// that names embeddings reads the same nodes of either table.
+func PartitionParent(relation string) string {
+	if embeddingsPartition.MatchString(relation) {
+		return "embeddings"
+	}
+	return relation
+}
+
+// PartitionParentIndex is PartitionParent for an index: the index of embeddings that index, an
+// index of one of its partitions, belongs to, and index itself for every other name.
+func PartitionParentIndex(index string) string {
+	if match := embeddingsPartitionIndex.FindStringSubmatch(index); match != nil {
+		return match[1]
+	}
+	return index
 }
 
 // SeqScansRelation reports whether planJSON — one "Plan" node of `EXPLAIN (FORMAT JSON)`'s
@@ -247,20 +297,27 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 // node ran and Rows how many rows it answered each time; HeapFetches is how many rows an
 // index-only scan fetched from the heap, since the visibility map did not mark their pages
 // all-visible. Alias is the name the statement gives the relation the node reads, which a
-// condition of another node spells that relation's columns with.
+// condition of another node spells that relation's columns with. Partition and PartitionIndex
+// are the partition of embeddings a node reads and the partition's index it reads through, where
+// Relation and Index name embeddings and the index of embeddings that index belongs to
+// (PartitionParent); both are empty for a node of any other relation.
 type Node struct {
 	Type, Relation, Index, CTE, Alias, Subplan string
+	Partition, PartitionIndex                  string
 	Loops, Rows                                float64
 	Filter, IndexCond, RecheckCond             string
 	HeapFetches                                float64
 }
 
-// String names the node as a failure message cites it: its type, and whichever of the relation,
-// the index and the CTE it names.
+// String names the node as a failure message cites it: its type, whichever of the relation, the
+// index and the CTE it names, and the partition of embeddings it reads.
 func (n Node) String() string {
 	description := describeScan(n.Type, n.Relation, n.Index)
 	if n.CTE != "" {
 		description += " on " + n.CTE
+	}
+	if n.Partition != "" {
+		description += " (partition " + n.Partition + ")"
 	}
 	return description
 }

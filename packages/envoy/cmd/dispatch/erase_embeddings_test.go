@@ -53,6 +53,7 @@ func TestTheEraseTakesTheErasedTextOutOfTheEmbeddingStore(t *testing.T) {
 	// windows whether or not the erase did.
 	server := startDispatchProcessWithSettleDelay(t, databaseURL, time.Hour)
 	server.waitHealthy(t)
+	waitForPartitionedEmbeddings(t, database)
 	release := eraseHoldBlockIndex(t, database)
 	defer release()
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERE","name":"Erase embeddings"}`, http.StatusCreated)
@@ -122,16 +123,23 @@ func TestTheEraseTakesTheErasedTextOutOfTheEmbeddingStore(t *testing.T) {
 		t.Errorf("the embedding store holds %d window(s) and %d window state row(s) of the erased comment, want none",
 			commentWindows, commentState)
 	}
+	// embeddings is partitioned by project once the boot's fill has swapped it in
+	// (waitForPartitionedEmbeddings), so a row is named by the table's key, which holds the
+	// partition key, and under embeddings itself: never a second time under the partition it is
+	// stored in.
 	for _, windows := range held[1:] {
 		if rows := windowsHolding(t, database, windows.kind, windows.owner, secret); rows == 0 {
 			t.Errorf("the comment's erase took %s, which derive from their document", windows.what)
 		}
-		if !strings.Contains(report, "leave public.embeddings (kind, id)=("+refs.DocumentWindowKind+","+windows.owner+"#") {
+		if !strings.Contains(report, "leave public.embeddings (kind, id, project_key)=("+refs.DocumentWindowKind+","+windows.owner+"#") {
 			t.Errorf("the comment's erase does not list %s as rows it left:\n%s", windows.what, report)
 		}
 	}
-	if !strings.Contains(report, "leave public.embeddings (kind, id)=(issue,"+issue+")") {
+	if !strings.Contains(report, "leave public.embeddings (kind, id, project_key)=(issue,"+issue+",ERE)") {
 		t.Errorf("the comment's erase does not list the issue's row as a row it left:\n%s", report)
+	}
+	if strings.Contains(report, "leave public.embeddings_project_") {
+		t.Errorf("the comment's erase lists rows under a partition of embeddings as well as under embeddings:\n%s", report)
 	}
 
 	// The spec's block: the issue keeps a row, written again from what it now holds and waiting
@@ -170,6 +178,28 @@ func TestTheEraseTakesTheErasedTextOutOfTheEmbeddingStore(t *testing.T) {
 	places, searched := columnsHolding(t, database, secret)
 	if len(places) > 0 {
 		t.Errorf("after the erases the secret is still in %s (%d columns searched)", strings.Join(places, ", "), searched)
+	}
+}
+
+// waitForPartitionedEmbeddings waits until embeddings is the table partitioned by project, which
+// the boot's embeddings fill swaps in on a database that holds no row yet (store.partitionEmbeddings),
+// so that the erases run on the table a deployment runs on after its first boot of this release.
+func waitForPartitionedEmbeddings(t *testing.T, database *store.Store) {
+	t.Helper()
+	deadline := time.Now().Add(eraseLeaseWait)
+	for {
+		var partitioned bool
+		if err := database.Pool.QueryRow(context.Background(),
+			`select relkind = 'p' from pg_class where oid = 'embeddings'::regclass`).Scan(&partitioned); err != nil {
+			t.Fatalf("read whether embeddings is partitioned by project: %v", err)
+		}
+		if partitioned {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the boot's embeddings fill did not swap the partitioned table in within %s", eraseLeaseWait)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
