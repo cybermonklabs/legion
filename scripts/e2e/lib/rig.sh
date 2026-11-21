@@ -66,10 +66,13 @@ real_bin_path() {
 # included, and says what it waits for on entry and every 60 s while it does (polls and seconds),
 # so a healthy wait and a stall read differently to anyone watching a run's output. A poll that
 # never returns would hold the wait past its bound, so a caller's remote calls carry their own
-# timeouts.
+# timeouts. A COMMAND that is no function, builtin or program fails at once, naming it: each poll
+# hides its output, so its exit 127 would otherwise read as a wait that ran out.
 until_true() {
   local limit=$1 what=$2 polls=0 started=$SECONDS beat=$SECONDS
   shift 2
+  command -v -- "$1" >/dev/null 2>&1 ||
+    fail "until_true: $1 is no function, builtin or program, so waiting for $what could never end"
   note "waiting up to ${limit}s for $what"
   while ((SECONDS - started < limit)); do
     [ ! -s "$evidence/pane-endpoint-violation.txt" ] || fail "ABORT: $(cat "$evidence/pane-endpoint-violation.txt")"
