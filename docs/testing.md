@@ -13,6 +13,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 
 - A bounded wait is the module's `internal/testwait`.
   `Eventually` is the wait a test usually wants, a minute or the binary's own deadline less a second, at `Poll`, the package's own pace, failing with what it waited for; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` is that deadline clamp alone, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
+  `Remaining` is what is left of the binary's deadline less 30 s, for a hang guard that is not the test's subject, such as the acknowledgement window of a consumer whose window also bounds each store read a handling makes, and a wait for those acknowledgements (`packages/daemon/internal/intake`): a fixed bound there, a minute say, lets the machine decide whether a store read of 61 s is cut.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
 
 - A fixture that runs git or jj takes its runner and its `init` argv from `packages/daemon/internal/fixturegit`.
@@ -777,15 +778,18 @@ Two kinds of row keep an exact count.
   acknowledgement makes. The window is a hang guard then, and not a bet on timing: a redelivery
   the count would see needs the whole window to pass before that acknowledgement reaches the
   server. `TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction`
-  (`packages/daemon/internal/intake/no_transaction_test.go`) sets `spec.AckWait = time.Minute`
-  over a handler whose own work is about `consumerSpec`'s 200 ms on a loaded runner. The margin
-  is what this carve-out rests on: that work, and the acknowledgement's trip to the server, which
-  the campaign of dispatch://INFRA-1113 measured at 516.8 ms at its largest, come to about 717 ms
-  together, a factor of about 80 below a minute. The progress keeper is no part of
-  it. At a minute its period is 20 s (`spec.AckWait/3` in `consume.go`) and that handler
-  acknowledges in about 200 ms, so the keeper never reports for that message at all. The
-  carve-out ends where the margin closes, and a reader finds that out by measuring the handler's
-  work and the acknowledgement's trip again, not by reading this sentence.
+  (`packages/daemon/internal/intake/no_transaction_test.go`) sets `spec.AckWait` to
+  `testwait.Remaining(t)`, what is left of the test binary's deadline less 30 s, over a
+  handler whose own work is about `consumerSpec`'s 200 ms on a loaded runner. The margin is what
+  this carve-out rests on: that work, and the acknowledgement's trip to the server, which the
+  campaign of dispatch://INFRA-1113 measured at 516.8 ms at its largest, come to about 717 ms
+  together, far below the window. The window is no fixed span, because the same window bounds the
+  handler's store reads, and a fixed one, a minute say, cuts a read of 61 s and lets the machine
+  decide the count. The progress keeper is no part of it. Its period is a third of the window
+  (`spec.AckWait/3` in `consume.go`) and that handler acknowledges in about 200 ms, so the keeper
+  never reports for that message at all. The carve-out ends where the margin closes, and a reader
+  finds that out by measuring the handler's work and the acknowledgement's trip again, not by
+  reading this sentence.
 - A row whose subject is the broker's own delivery behaviour must count deliveries, because the
   count is what it proves. Such a row needs a window above the measured distribution of the first
   report of the progress keeper, the goroutine that reports a running handler in progress so that
