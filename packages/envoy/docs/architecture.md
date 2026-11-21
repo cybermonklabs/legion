@@ -526,7 +526,24 @@ writes when it did, and counts that hour from then instead, since the holder rea
 until then. A pass writes the record when it changed it (a new sequence, a missed floor, the
 record finished) and otherwise only once its last write is fifteen minutes old, so a record nothing
 moves costs four writes an hour however many listeners sweep it, and never ages out while a pass
-needs it. A role message is one whose topic is the role's, or whose `role` field names it. The copy
+needs it. A role message is one whose topic is the role's, or whose `role` field names it. A pass,
+the relay and the kept lane's walk tell it by one read (`readRoleFrame`): past a leading UTF-8 byte
+order mark, the message's top-level fields are split by their brackets and strings, at any depth,
+and only its `topic` and `role` fields are read, each by its exact key, the last of a repeated key
+winning, as the plugins' `JSON.parse` reads them. So a later `"TOPIC"` key, an event id written as
+a number, or a value nested deeper than the 10,000 levels `encoding/json` reads does not change
+what it is. The envelope is then read field by field, a field whose value its type does not take
+left unset, so the message is still copied whatever the listener's wire rules or the envelope's
+own say of it. An `urgency` or `source` word a newer build adds is kept in the copy, for the
+holder's reader to judge, and an `issued_at` written as `1795191371979.0` is read as that integer,
+while one written as a JSON string is left out, as `encoding/json` leaves it.
+An `expects_reply` word the envelope does not know is a value that field cannot hold, so the copy
+leaves it out, and the holder reads the message with no `expects_reply`. A message
+that is not a JSON object, or whose topic or `role` is not a string and names no role, is not
+copied: it stays for the previous holder's own consumer, as a message that is no role message
+does. The kept lane's walk ends a copy of that kind, which no listener copies there. The keep that
+meets a copy as a duplicate and the sweep's wake scan read a kept copy the same way as the walk, so
+a copy the walk forwards is held by the one and wakes its role in the other. The copy
 is the envelope without the forward mark, with the message's event id and a dedupe key of its own
 in the minted form (32 hex digits of the SHA-256 of the message's key and the frame's stream
 sequence, after `publish.` when the message's key has it, as the publish route's keys do, and after
@@ -549,8 +566,13 @@ session. It reads the claim from the role bucket for each frame that is a role m
 claim names another session, or none, it copies the frame to the role's kept lane as a pass does,
 acknowledges it only once the stream stored the copy, and logs `listener session relay copied a
 role message to the role's kept lane` with the session, the role, the holder and the event id. A
-claim read or a copy that failed gives the frame back with a delay, neither delivered nor
-acknowledged. A frame that is no role message costs the decode of its topic and role and nothing
+frame under such a claim that the listener's wire rules or the envelope's own refuse is copied the
+same way, with the values the copy keeps as above, and the walk forwards it. A frame whose role
+no read can tell (not a JSON object, or a topic or `role` that is not a string and names no role)
+is sent to the session whose subject holds it, as a frame that is no role message is. So the relay
+ends no message: every role message it tells is copied or delivered. A claim read or a copy that
+failed gives the frame back with a delay, neither delivered nor acknowledged. A frame that is no
+role message costs the read of its topic and role and nothing
 else. A forward to a holder from the role lane, the publish route or Dispatch's outbox whose
 resolution is 55 minutes old when its publish starts (`roles.ForwardFenceAge`, the keep window
 less one sweep interval) resolves the holder again first, so a forward the previous holder was

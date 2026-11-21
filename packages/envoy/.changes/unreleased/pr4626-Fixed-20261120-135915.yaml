@@ -1,0 +1,21 @@
+kind: Fixed
+body: |-
+  A role message no longer reaches a session that does not hold the role when a read of its
+  whole envelope refuses or misreads it. The session relay, a takeover pass and the kept lane's
+  walk now tell a role message by one read, the one the plugins' `JSON.parse` makes: past a
+  leading UTF-8 byte order mark, the top-level fields at any depth of nesting, and only `topic`
+  and `role`, each by its exact key. So a later `"TOPIC"` key, an event id written as a number,
+  or a value nested deeper than 10,000 levels no longer makes a role message look like none.
+  Its envelope is then read field by
+  field, so an `urgency`, `source` or `expects_reply` word a newer build adds, or an `issued_at`
+  written as `1795191371979.0`, no longer ends it: when the role's claim names another session,
+  or none, the relay copies it to the role's kept lane and the holder receives it, and a takeover
+  copies it to the next holder. An `expects_reply` word the listener does not know is left out
+  of the copy, and so is an `issued_at` written as a JSON string. A repeated keep and the
+  sweep's wake read a kept copy as the walk does, so a copy the walk forwards is held and wakes
+  its role. A message that is not a JSON object, or whose topic or `role` is not a string and
+  names no role, is still delivered to the session whose subject holds it, as before. A session
+  that holds the role still receives its role messages as before.
+time: 2026-11-20T13:59:15.526158537Z
+custom:
+    Issue: pr4626
