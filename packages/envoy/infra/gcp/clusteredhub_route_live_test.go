@@ -224,13 +224,41 @@ func withoutRouteVars(env []string) []string {
 }
 
 // routeServer is one nats-server on a rendered nats.conf whose routes and authorization are the
-// file's own: no command-line flag sets them, since nats-server's --cluster flag clears the
-// file's cluster authorization (server/opts.go, overrideCluster). Its copy of nats.conf names its
-// own route port and store, and the flags give it its client and monitoring ports and PID file.
+// file's own (writeRouteServerConf, routeServerArgs).
 type routeServer struct {
 	name                   string
 	client, monitor, route int
 	proc                   *cmdtest.Process
+}
+
+// writeRouteServerConf writes r's nats.conf and auth.conf into dir as one local server's, the
+// pod's store_dir and route port replaced by the server's own, on 127.0.0.1, and each of local's
+// keys by its value; the rendered file must set each once. The routes and the authorization stay
+// the file's: no command-line flag sets them, since nats-server's --cluster flag clears the file's
+// cluster authorization (server/opts.go, overrideCluster).
+func writeRouteServerConf(t *testing.T, r *clusteredHubRender, dir string, route int, local map[string]string) {
+	t.Helper()
+	replace := map[string]string{
+		`"store_dir": "/data"`: fmt.Sprintf(`"store_dir": %q`, filepath.Join(dir, "data")),
+		`"port": 6222`:         fmt.Sprintf(`"host": "127.0.0.1", "port": %d`, route),
+	}
+	maps.Copy(replace, local)
+	conf := r.natsConf
+	for old, value := range replace {
+		require.Equal(t, 1, strings.Count(conf, old), "the rendered nats.conf sets %s once", old)
+		conf = strings.Replace(conf, old, value, 1)
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "nats.conf"), []byte(conf), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, clusteredHubAuthConfKey), []byte(r.authConf), 0o600))
+}
+
+// routeServerArgs are r's nats container's arguments for a local server whose configuration
+// writeRouteServerConf wrote into dir: the pod's configuration directory dir, and its client and
+// monitoring ports and PID file, on 127.0.0.1.
+func routeServerArgs(t *testing.T, r *clusteredHubRender, dir string, client, monitor int) []string {
+	t.Helper()
+	return append(podArgs(t, stringList(t, r.container(t, "nats")["args"]), map[string]string{"/etc/nats-config/": dir + "/"}),
+		"-a", "127.0.0.1", "-p", strconv.Itoa(client), "-m", strconv.Itoa(monitor), "-P", filepath.Join(dir, "nats.pid"))
 }
 
 // startRouteServer starts a server named name on r's nats.conf and auth.conf, on the three ports
@@ -238,20 +266,9 @@ type routeServer struct {
 func startRouteServer(t *testing.T, r *clusteredHubRender, natsServer, name string, drawn []int, vars []string) *routeServer {
 	t.Helper()
 	dir := t.TempDir()
-	conf := r.natsConf
-	for old, local := range map[string]string{
-		`"store_dir": "/data"`: fmt.Sprintf(`"store_dir": %q`, filepath.Join(dir, "data")),
-		`"port": 6222`:         fmt.Sprintf(`"host": "127.0.0.1", "port": %d`, drawn[2]),
-	} {
-		require.Equal(t, 1, strings.Count(conf, old), "the rendered nats.conf sets %s once", old)
-		conf = strings.Replace(conf, old, local, 1)
-	}
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "nats.conf"), []byte(conf), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, clusteredHubAuthConfKey), []byte(r.authConf), 0o600))
-	args := append(podArgs(t, stringList(t, r.container(t, "nats")["args"]), map[string]string{"/etc/nats-config/": dir + "/"}),
-		"-a", "127.0.0.1", "-p", strconv.Itoa(drawn[0]), "-m", strconv.Itoa(drawn[1]), "-P", filepath.Join(dir, "nats.pid"))
+	writeRouteServerConf(t, r, dir, drawn[2], nil)
 	s := &routeServer{name: name, client: drawn[0], monitor: drawn[1], route: drawn[2]}
-	cmd := exec.Command(natsServer, args...)
+	cmd := exec.Command(natsServer, routeServerArgs(t, r, dir, drawn[0], drawn[1])...)
 	cmd.Env = append(withoutRouteVars(os.Environ()), append([]string{"SERVER_NAME=" + name}, vars...)...)
 	s.proc = startReady(t, name, cmd, listeningForRoutes(drawn[2]))
 	return s

@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -133,8 +132,7 @@ func newStagedHub(t *testing.T, renders map[string]*clusteredHubRender, natsServ
 	h.passwordVar, h.routesVar = "NATS_ROUTE_PASSWORD="+password, "NATS_ROUTE_URLS=["+strings.Join(urls, ", ")+"]"
 	for i := range 3 {
 		s := &stagedServer{name: fmt.Sprintf("%s-%d", r.release, i), dir: t.TempDir(), client: drawn[3*i], monitor: drawn[3*i+1], route: drawn[3*i+2]}
-		s.args = append(podArgs(t, stringList(t, r.container(t, "nats")["args"]), map[string]string{"/etc/nats-config/": s.dir + "/"}),
-			"-a", "127.0.0.1", "-p", strconv.Itoa(s.client), "-m", strconv.Itoa(s.monitor), "-P", filepath.Join(s.dir, "nats.pid"))
+		s.args = routeServerArgs(t, r, s.dir, s.client, s.monitor)
 		s.vars = []string{"SERVER_NAME=" + s.name, h.passwordVar, h.routesVar}
 		h.writeConf(t, s, "env")
 		h.servers = append(h.servers, s)
@@ -146,28 +144,18 @@ func newStagedHub(t *testing.T, renders map[string]*clusteredHubRender, natsServ
 	return h
 }
 
-// writeConf writes the stage's nats.conf, and auth.conf, into s's directory, with the pod's
-// store_dir and route port replaced by s's, and, at env, the chart's route URLs, which name the
-// pods by their headless Service, replaced by the three servers' route ports.
+// writeConf writes the stage's nats.conf, and auth.conf, into s's directory as its own
+// (writeRouteServerConf), and, at env, with the chart's route URLs, which name the pods by their
+// headless Service, replaced by the three servers' route ports.
 func (h *stagedHub) writeConf(t *testing.T, s *stagedServer, stage string) {
 	t.Helper()
-	r := h.renders[stage]
-	conf := r.natsConf
-	replace := map[string]string{
-		`"store_dir": "/data"`: fmt.Sprintf(`"store_dir": %q`, filepath.Join(s.dir, "data")),
-		`"port": 6222`:         fmt.Sprintf(`"host": "127.0.0.1", "port": %d`, s.route),
-	}
+	local := map[string]string{}
 	if stage == "env" {
 		for i, port := range h.routePorts {
-			replace[fmt.Sprintf("nats://%s-%d.%s-headless:6222", h.release, i, h.release)] = fmt.Sprintf("nats://127.0.0.1:%d", port)
+			local[fmt.Sprintf("nats://%s-%d.%s-headless:6222", h.release, i, h.release)] = fmt.Sprintf("nats://127.0.0.1:%d", port)
 		}
 	}
-	for old, local := range replace {
-		require.Equal(t, 1, strings.Count(conf, old), "the %s nats.conf sets %s once", stage, old)
-		conf = strings.Replace(conf, old, local, 1)
-	}
-	require.NoError(t, os.WriteFile(filepath.Join(s.dir, "nats.conf"), []byte(conf), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(s.dir, clusteredHubAuthConfKey), []byte(r.authConf), 0o600))
+	writeRouteServerConf(t, h.renders[stage], s.dir, s.route, local)
 }
 
 // start runs s on its arguments and route variables, in UTC, the zone of the hub's nats image,
