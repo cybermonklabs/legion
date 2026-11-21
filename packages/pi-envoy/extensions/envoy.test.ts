@@ -16019,10 +16019,23 @@ console.log(JSON.stringify(args));
 
         agent.push(directDispatchEnvelope("steer", "shell-command-shutdown-kill"));
         // The command itself, not the agent's copy of its report: nothing is sent until the
-        // command ends, and this one would run for ten minutes.
-        await until(() => existsSync(pidFile), "the command to be running", 10_000);
-        const pid = Number(readFileSync(pidFile, "utf8").trim());
-        expect(Number.isInteger(pid)).toBe(true);
+        // command ends, and this one would run for ten minutes. The shell creates `pid` when it
+        // opens it for `echo`, before `echo` writes to it, so the file can be there and empty; the
+        // pid is read once the file holds it as one whole line, as `echo` writes it. An empty read
+        // is pid 0, and `alive(0)` asks about this process's own group, not the command: Linux
+        // answers that it is there, and gVisor, which answers kill(0, 0) with the last answer of
+        // the group, can answer EPERM.
+        let written = "";
+        await until(
+          () => {
+            written = existsSync(pidFile) ? readFileSync(pidFile, "utf8") : "";
+            return /^\d+\n$/u.test(written);
+          },
+          "the command to write its pid",
+          10_000
+        );
+        const pid = Number(written);
+        expect(pid).toBeGreaterThan(0);
         // The command is still running: nothing but the shutdown below ends it.
         expect(alive(pid)).toBe(true);
 
