@@ -662,7 +662,8 @@ func (s *Server) launch(t testing.TB) {
 
 // startMargin is how long before the test's own deadline (go test's -timeout) awaitReady stops
 // waiting, so a server that never comes up fails its test, with its log, rather than the binary
-// panicking with every goroutine's stack.
+// panicking with every goroutine's stack. With less than twice that left, it stops halfway to the
+// deadline instead, so a short -timeout still leaves the start most of what remains.
 const startMargin = 30 * time.Second
 
 // awaitReady returns once srv, just started, accepts connections: the server's own readiness
@@ -671,23 +672,27 @@ const startMargin = 30 * time.Second
 // past the 30 s this wait once had, its log ending at the JetStream banner, and failed its test
 // before the test began. So it waits for as long as the test may run, until startMargin before
 // t's deadline when t has one, and with none for as long as the binary does. A server that logged
-// a fatal error, a listener it could not open, will never be ready, and fails at once.
+// a fatal error, a listener it could not open among them, fails its start at once, whether or not
+// its client listener came up.
 func awaitReady(t testing.TB, srv *natsserver.Server, log *logCapture) error {
 	deadline, bounded := time.Time{}, false
 	if timed, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
 		if deadline, bounded = timed.Deadline(); bounded {
-			deadline = deadline.Add(-startMargin)
+			deadline = deadline.Add(-min(startMargin, time.Until(deadline)/2))
 		}
 	}
-	for !srv.ReadyForConnections(retryInterval) {
+	for {
+		ready := srv.ReadyForConnections(retryInterval)
 		if log.fatalLogged() {
-			return errors.New("the server logged a fatal error, so it will never accept connections")
+			return errors.New("the server logged a fatal error")
+		}
+		if ready {
+			return nil
 		}
 		if bounded && time.Now().After(deadline) {
-			return fmt.Errorf("not ready %s before the test's deadline", startMargin)
+			return fmt.Errorf("not ready by %s, short of the test's deadline", deadline.Format(time.RFC3339))
 		}
 	}
-	return nil
 }
 
 // flagsMu serialises the calls that meet over natsserver.FlagSnapshot: ConfigureOptions sets it and

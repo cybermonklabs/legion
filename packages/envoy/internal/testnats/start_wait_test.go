@@ -32,13 +32,14 @@ func TestAServerThatCannotOpenAListenerFailsItsStartAtOnce(t *testing.T) {
 }
 
 // A failed start of the package's shared server fails the test that asked for it, with its own
-// reason, and the next test that asks starts the server afresh rather than fail on the earlier
-// test's start (sharedServer). Under load a JetStream start can fail where a later one succeeds,
-// and a failed start once failed every later test of the binary that asked. The row takes the
-// shared server aside, plants a failure in the next start (startShared), and asks twice: the first
-// asker fails naming the planted failure, and the second gets a server its client reaches. It
-// counts the starts, so a server some earlier test had started cannot pass for one the second
-// asker started.
+// reason, tears down what it set up, and the next test that asks starts the server afresh rather
+// than fail on the earlier test's start (sharedServer). Under load a JetStream start can fail where
+// a later one succeeds, and a failed start once failed every later test of the binary that asked.
+// The row takes the shared server aside, plants a failure in the next start (startShared) after it
+// registers a cleanup, as a real start registers its relay's and directory's, and asks twice: the
+// first asker fails naming the planted failure with that cleanup run, and the second gets a server
+// its client reaches. It counts the starts, so a server some earlier test had started cannot pass
+// for one the second asker started.
 func TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart(t *testing.T) {
 	sharedMu.Lock()
 	aside, asideCleanup := shared, sharedCleanup
@@ -55,9 +56,11 @@ func TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart(t *testing.T
 		shared, sharedCleanup = aside, asideCleanup
 	})
 	starts := 0
+	tornDown := false
 	startShared = func(t testing.TB, accounts int) *accountServer {
 		starts++
 		if starts == 1 {
+			t.Cleanup(func() { tornDown = true })
 			t.Fatalf("a planted failure of the shared server's start")
 		}
 		return startServer(t, accounts)
@@ -71,6 +74,9 @@ func TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart(t *testing.T
 	<-done
 	if !strings.Contains(first.message, "planted failure") {
 		t.Fatalf("the test whose start of the shared server failed reported %q, want the planted failure", first.message)
+	}
+	if !tornDown {
+		t.Fatal("the failed start of the shared server left the cleanup it registered unrun")
 	}
 	url := URL(t)
 	if starts != 2 {
