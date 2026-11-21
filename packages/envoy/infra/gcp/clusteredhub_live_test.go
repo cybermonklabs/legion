@@ -500,8 +500,7 @@ func (s *hubServer) commandArgs() []string {
 }
 
 // routeRemotesAt is the set of servers the /routez of the server whose monitoring port is
-// host:monitor names at the other end of its routes. Every live test reads a server's routes
-// through it, a hubServer at its own host (hubServer.routeRemotes).
+// host:monitor names at the other end of its routes, by the names they chose.
 func routeRemotesAt(host string, monitor int) (map[string]bool, error) {
 	var routez struct {
 		Routes []struct {

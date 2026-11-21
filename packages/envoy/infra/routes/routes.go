@@ -476,9 +476,10 @@ type server struct {
 // IP checks standing and no remote_id judged; each is Unknown, never Clean.
 //
 // What it cannot see: a process in a hub pod's own network namespace, such as the chart's config
-// reloader or its exporter, has that pod's IP or its loopback, so its route reads as the pod's, and
-// remote_id tells it apart only while it holds the route under an id other than its own pod's
-// server's, which it can send as its own.
+// reloader or its exporter, has that pod's IP, so a route it holds from that IP reads in /routez as
+// the pod's, and remote_id tells it apart only while it holds the route under an id other than its
+// own pod's server's, which it can send as its own; and it has the pod's loopback, from which the
+// log rule passes a route connection, since the check's own port-forward connects from it.
 func Check(ctx context.Context, src Source, rec Record) Report {
 	var r Report
 	pods, err := src.Pods(ctx)

@@ -1309,14 +1309,17 @@ reads with `--timestamps`.
   connection, so the check neither condemns nor clears any of these. Find what ran at that
   address, and treat the password as read unless it is accounted for. Exit 1 there would let any
   process that reaches 6222 force a rotation, whose `env` and `routes` applies open the routes to
-  it again. Two exceptions. During `env` and `routes`, a process that reaches 6222 can still force
-  exit 1 by a forged line in the server's form: a `Removed route` line with a password in it, or a
-  `Reloaded: cluster` line, which opens the window before that process's own route connections.
-  It times the line now and writes it once for each likely process id of the server's, within one
-  route name, so that one of them carries the id the check reads as the server's (above). And at
-  any stage, a process that can make the server log enough, such as with failed logins on its
-  client or route port, can rotate the log past its start line, which is exit 1 by the next rule,
-  since a rotated log can hide a process that read the password.
+  it again. The exceptions. During `env` and `routes`, a process that reaches 6222 can still force
+  exit 1 by a forged line in the server's form, in three ways: a `Removed route` line with a
+  password in it; a `Failed to reload server configuration` line at ERR, which the failed-reload
+  rule (below) counts whatever it says; or a `Reloaded: cluster` line, which opens the window before that
+  process's own route connections. It times the line now and writes it once for each likely
+  process id of the server's, within one route name, so that one of them carries the id the check
+  reads as the server's (above); a client can do the same at any stage through an auth service
+  that puts a newline it chose into its error text (above). And at any stage, a process that can
+  make the server log enough, such as with failed logins on its client or route port, can rotate
+  the log past its start line, which is exit 1 by the next rule, since a rotated log can hide a
+  process that read the password.
 - **The log reaches back to the `env` roll.** Each pod's `uid`, `restartCount` and `startedAt`
   are the ones `routes record` saved, its log begins with `Starting nats-server`
   (`server/server.go:2295`) in the logger's form, and the container runtime read that line from
