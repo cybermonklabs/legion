@@ -457,8 +457,8 @@ func (m GitHubApp) GiveBack(ctx context.Context, name, value string) {
 // and its token stays live until it lapses.
 // With req.Check it finds out whether that release could be served without serving it, and it
 // releases no token. For a narrowing that names repositories or read-only it makes the release's
-// calls in the same order, but for a token request that may have reached GitHub and failed, which
-// it does not send again (installationToken); it revokes each token GitHub answers with the moment
+// calls in the same order, but for a token request that was sent and got no answer, which it does
+// not send again (installationToken); it revokes each token GitHub answers with the moment
 // it has it, and answers Minted{} with the error the release would have answered, nil where the
 // release would have succeeded. For a narrowing to its owner alone it lists the App's
 // installations and asks GitHub for no token. Such a narrowing sends GitHub no access_tokens body,
@@ -472,8 +472,8 @@ func (m GitHubApp) GiveBack(ctx context.Context, name, value string) {
 // The value is the JSON object stored in the secret, decoded by ParseValue before anything else,
 // so a value it refuses is refused as the stored value even when the narrowing is refused too;
 // it is never part of an error. Every call it makes is retried under m.Retry, all of them
-// waiting from the one wait budget this mint starts, but for a check's token request that may have
-// reached GitHub and failed, which is not sent again. Every error wraps one of ErrMintStoredValue,
+// waiting from the one wait budget this mint starts, but for a check's token request that was sent
+// and got no answer, which is not sent again. Every error wraps one of ErrMintStoredValue,
 // ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream; the refusal of an App with no
 // installation on the account also wraps ErrMintNoInstallation, which is inside ErrMintRefused and
 // which the broker's narrowing check reads.
@@ -676,12 +676,14 @@ func (m GitHubApp) installations(ctx context.Context, mint *mintRetry, jwt strin
 // (giveBackUnusable) before the request is sent again or the failure is answered: mintCall calls
 // giveBackHook for an answer it could not read whole, and this gives back one that does not
 // decode. check is whether this is a check's request (MintRequest.Check), which is not sent again
-// once an attempt may have reached GitHub and failed - any failure but one known to come before a
-// connection, a name that did not resolve, a failed dial, a proxy's refused tunnel or a
+// once an attempt was sent and got no answer - any failure with no answer but one known to come
+// before a connection, a name that did not resolve, a failed dial, a proxy's refused tunnel or a
 // certificate the broker did not trust (mintCall's resendLost, mintAttempt): GitHub may have
 // received it whole and minted a token nobody will use, which nothing can name, and sending it
-// again would mint another for a verdict alone. An attempt that failed before a connection minted
-// nothing, and a check sends it again as any call is sent again. A release sends either again,
+// again would mint another for a verdict alone. An attempt GitHub answered with a failure, a 5xx,
+// a 408 or a rate limit, names no token, and a check sends it again as any call is sent again,
+// revoking the token a later attempt mints as it revokes every token it gets; so does an attempt
+// that failed before a connection, which minted nothing. A release sends each of them again,
 // since its caller is waiting for the token itself, and each attempt GitHub served whose answer
 // it loses leaves its token live until it lapses. appID names the App in the lines a give-back
 // logs.

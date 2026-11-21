@@ -30,25 +30,26 @@ type MintRequest struct {
 	// Check asks the minter whether it could serve this request, without serving it; only the
 	// github-app minter reads it. A check of a narrowing that names repositories or read-only
 	// mints exactly what a release would mint, by the same calls in the same order but for a
-	// token request that may have reached GitHub and failed, which it does not send again where a
+	// token request that was sent and got no answer, which it does not send again where a
 	// release does, so such a request that GitHub served leaves one token live at GitHub, which
-	// nothing can name, until it lapses; a token request known to have failed before a connection
-	// (a name that did not resolve, a failed dial, a proxy's refused tunnel, a certificate the
-	// broker did not trust) is sent again. It releases no token: it sends GitHub the revoke of
-	// every token GitHub answers it with as soon as GitHub answers, among them a token whose
-	// answer it cannot use (cut off, past its cap, undecodable, with no expiry) wherever the part
-	// that arrived names it, and answers Minted{} with the error the release would have answered,
-	// nil where the release would have succeeded. The revoke of a whole answer's token runs under
-	// the caller's context; the revoke of a token whose answer it cannot use runs to a bound of its
-	// own, as a release's does, since the check's own bound is the likeliest thing to have cut that
-	// answer off. A revoke GitHub does not confirm is logged and leaves its token live until it
-	// lapses. A check of a narrowing to its owner alone mints nothing: it lists the App's
-	// installations and answers from that list alone, the refusal of an account with no
-	// installation or nil, since GitHub's answer to a token request with no access_tokens body can
-	// refuse the App but never the narrowing (GitHubApp.Mint). So a caller learns the verdict
-	// before it spends anything on the release itself. Check without GitHubNarrowing is a
-	// programming error: there is nothing to find out about a release the broker already makes
-	// owner-wide, and the minter refuses it before it asks GitHub anything.
+	// nothing can name, until it lapses. A token request GitHub answered with a failure (a 5xx, a
+	// 408, a rate limit), whose answer names no token, and one known to have failed before a
+	// connection (a name that did not resolve, a failed dial, a proxy's refused tunnel, a
+	// certificate the broker did not trust) are sent again. It releases no token: it sends GitHub
+	// the revoke of every token GitHub answers it with as soon as GitHub answers, among them a
+	// token whose answer it cannot use (cut off, past its cap, undecodable, with no expiry)
+	// wherever the part that arrived names it, and answers Minted{} with the error the release
+	// would have answered, nil where the release would have succeeded. The revoke of a whole
+	// answer's token runs under the caller's context; the revoke of a token whose answer it cannot
+	// use runs to a bound of its own, as a release's does, since the check's own bound is the
+	// likeliest thing to have cut that answer off. A revoke GitHub does not confirm is logged and
+	// leaves its token live until it lapses. A check of a narrowing to its owner alone mints
+	// nothing: it lists the App's installations and answers from that list alone, the refusal of
+	// an account with no installation or nil, since GitHub's answer to a token request with no
+	// access_tokens body can refuse the App but never the narrowing (GitHubApp.Mint). So a caller
+	// learns the verdict before it spends anything on the release itself. Check without
+	// GitHubNarrowing is a programming error: there is nothing to find out about a release the
+	// broker already makes owner-wide, and the minter refuses it before it asks GitHub anything.
 	Check bool
 }
 

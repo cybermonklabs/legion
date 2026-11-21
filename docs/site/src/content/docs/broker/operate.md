@@ -1945,13 +1945,15 @@ failed while the caller's request was still open. The broker does not retry a `4
 `408` and no rate limit, a call whose request its caller ended, an answer larger than the minter
 reads, or a `2xx` or `3xx` answer other than the one the call asked for. One more call is not
 retried: the GitHub token request that the check of a `github_app` narrowing before the approval
-request makes, once it failed in any way but one known to come before a connection, since GitHub
-may have received it whole and minted a token that the check will never hold, whatever the
-broker's own write reported. The same call that failed before a connection, because its name did
-not resolve, its connection or a proxy's tunnel could not be made, or the broker did not trust
-GitHub's certificate, minted nothing and is retried as any other call is. A TLS record error or
-alert after the handshake counts as a failure after the request went out; a TLS failure during
-the handshake comes before a connection, so the call is retried.
+request makes, once it was sent and got no answer, since GitHub may have received it whole and
+minted a token that the check will never hold, whatever the broker's own write reported. The same
+call that GitHub answered, a `5xx`, a `408` or a rate limit, is retried as any other call is: its
+answer names no token, and the check revokes the token a later attempt mints, as it revokes every
+token it gets. The same call that failed before a connection, because its name did not resolve,
+its connection or a proxy's tunnel could not be made, or the broker did not trust GitHub's
+certificate, minted nothing and is retried too. A TLS record error or alert after the handshake
+counts as a failure after the request went out; a TLS failure during the handshake comes before
+a connection, so the call is retried.
 The revokes of a give-back, which return to GitHub a token a release minted and handed to nobody
 (after a release that failed, and after every session release of a github-app name behind the
 airlock), are made once each and never retried, so they take nothing from the retry budget below.
