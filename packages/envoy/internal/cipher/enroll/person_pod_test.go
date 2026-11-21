@@ -577,10 +577,9 @@ func TestAPersonPodLoginIsListedAndRevokedAsItsPersonsOwn(t *testing.T) {
 }
 
 // newPersonPodProjectsRig is newPersonPodRig on the schema this release ships, whose service holds
-// a client of a Dispatch stand-in in which ada is a member of kind kind. PRIV is private, owned by
-// grace, and its access list names ada. ELSE is private, owned by grace, and names nobody else.
-// PUB is public, which a restricted member does not see, since such a member sees only the
-// projects that name them. It answers the stand-in too, so that a test can take it down.
+// a client of a Dispatch stand-in in which ada is a full member. PRIV is private, owned by grace,
+// and its access list names ada. ELSE is private, owned by grace, and names nobody else. PUB is
+// public. It answers the stand-in too, so that a test can take it down.
 //
 // The tests of the projects a person's pod names run on this one schema, and not on both as the
 // tests of the login do. Their rule, checkProjects, reads the list the pod names and the person
@@ -588,14 +587,14 @@ func TestAPersonPodLoginIsListedAndRevokedAsItsPersonsOwn(t *testing.T) {
 // schemas differ only in whether the pods of one account share one credential row
 // (IssueTokenLoginTx), and the login's upsert writes the person as the row's operator on both.
 // So a second schema would run the same rule on the same input.
-func newPersonPodProjectsRig(t *testing.T, kind string) (podRig, *projectaccesstest.Server) {
+func newPersonPodProjectsRig(t *testing.T) (podRig, *projectaccesstest.Server) {
 	t.Helper()
 	r := newPersonPodRig(t, shippedPersonPodSchema)
 	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
 		"PRIV": {Visibility: "private", Owner: gracePerson, Listed: []string{adaPerson}},
 		"ELSE": {Visibility: "private", Owner: gracePerson},
 		"PUB":  {Visibility: "public", Owner: gracePerson},
-	}, map[string]string{adaPerson: kind})
+	}, map[string]string{adaPerson: projectaccess.MemberFull})
 	r.svc.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 	return r, dispatch
 }
@@ -615,7 +614,7 @@ func (r podRig) enrollNaming(t *testing.T, cred Credential, account, podUID stri
 // session gets the same refusals. (A restricted member's pod enrolls nothing at all:
 // TestARestrictedMembersLauncherEnrollsNothing.)
 func TestAPersonsPodNamingAProjectItsPersonCannotSeeIsRefused(t *testing.T) {
-	r, _ := newPersonPodProjectsRig(t, projectaccess.MemberFull)
+	r, _ := newPersonPodProjectsRig(t)
 	cred := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)
 	for _, c := range []struct {
 		projects []string
@@ -638,7 +637,7 @@ func TestAPersonsPodNamingAProjectItsPersonCannotSeeIsRefused(t *testing.T) {
 // with no project, as before. Her next pod names PUB and PRIV, which she sees, and it is enrolled
 // with both, as her session naming them would be.
 func TestAFullMembersPodEnrollsAsBefore(t *testing.T) {
-	r, _ := newPersonPodProjectsRig(t, projectaccess.MemberFull)
+	r, _ := newPersonPodProjectsRig(t)
 	first := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)
 	enr, err := r.enrollNaming(t, first, adaPodAccount, "pod-uid-ada")
 	if err != nil || enr.Projects != nil {
@@ -658,7 +657,7 @@ func TestAFullMembersPodEnrollsAsBefore(t *testing.T) {
 // a broker with no client of Dispatch's project access, her pod naming PRIV is refused
 // ErrProjectsUnchecked.
 func TestAPersonsPodNamingProjectsIsRefusedWhileDispatchCannotCheckThem(t *testing.T) {
-	r, dispatch := newPersonPodProjectsRig(t, projectaccess.MemberFull)
+	r, dispatch := newPersonPodProjectsRig(t)
 	dispatch.SetDown(true)
 	cred := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)
 	for _, projects := range [][]string{{"PRIV"}, nil} {

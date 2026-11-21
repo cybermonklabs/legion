@@ -211,10 +211,10 @@ func TestAPersonsPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 	cli := buildAgentSecrets(t)
 
 	// brokerAsking starts a broker whose project-access client asks a Dispatch stand-in that
-	// calls ada a member of kind kind, and answers the broker's base URL and the stand-in.
-	brokerAsking := func(kind string) (string, *projectaccesstest.Server) {
+	// calls ada a full member, and answers the broker's base URL and the stand-in.
+	brokerAsking := func() (string, *projectaccesstest.Server) {
 		t.Helper()
-		dispatch := projectaccesstest.NewServer(t, rows, map[string]string{personPodPerson: kind})
+		dispatch := projectaccesstest.NewServer(t, rows, map[string]string{personPodPerson: projectaccess.MemberFull})
 		tokenFile := filepath.Join(t.TempDir(), "dispatch-access-token")
 		writeWhole(t, tokenFile, dispatch.Token+"\n")
 		broker := startBroker(t, brokerOptions{Env: append([]string{
@@ -235,7 +235,7 @@ func TestAPersonsPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 		}
 		return "http://" + broker.Addr, dispatch
 	}
-	base, dispatch := brokerAsking(projectaccess.MemberFull)
+	base, dispatch := brokerAsking()
 
 	// enrol runs the real client as ada's pod podUID against the broker at base: `enroll --pod`
 	// with the pod's projected token mounted as a file, into a key directory of its own, with env

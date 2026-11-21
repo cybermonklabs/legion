@@ -27,13 +27,13 @@ const (
 )
 
 // newPersonPodProjectsServer is newTestServer with bob's account mapped to bob and a client of a
-// Dispatch stand-in in which bob is a member of kind kind, and PRIV is private and its access list
-// names bob.
-func newPersonPodProjectsServer(t *testing.T, kind string) *testServer {
+// Dispatch stand-in in which bob is a full member, and PRIV is private and its access list names
+// bob.
+func newPersonPodProjectsServer(t *testing.T) *testServer {
 	t.Helper()
 	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
 		"PRIV": {Visibility: "private", Owner: testApprover, Listed: []string{projectsPodPerson}},
-	}, map[string]string{projectsPodPerson: kind})
+	}, map[string]string{projectsPodPerson: projectaccess.MemberFull})
 	return newTestServerWith(t, func(d *api.Deps) {
 		d.Enroll.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 		d.Enroll.ServiceLogins[projectsPodAccount] = projectsPodService
@@ -82,7 +82,7 @@ func (p bobsPod) enrol(t *testing.T, ts *testServer, projects []string) (int, []
 // its operator and PRIV as its projects. So the route takes a pod's projects and gives them to the
 // rule that checks a person's pod against its person.
 func TestAPersonsPodEnrollsNamingItsProjects(t *testing.T) {
-	ts := newPersonPodProjectsServer(t, projectaccess.MemberFull)
+	ts := newPersonPodProjectsServer(t)
 
 	pod := logInBobsPod(t, ts, "pod-uid-bob-priv")
 	status, body := pod.enrol(t, ts, []string{"PRIV"})
