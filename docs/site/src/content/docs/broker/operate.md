@@ -1037,12 +1037,13 @@ deployment whose sign-in broke. What an operator reads from each field:
   endpoint to redeem an invalid code with the broker's client credentials. The status of the
   answer alone decides. `ready` is the provider refusing that code (`invalid_grant` at a refusal's
   status, a `4xx` that is no `408` or `429`), which it does only for a client it accepts.
-  `client_rejected` is the provider refusing at a refusal's status for any other reason or none
-  (`invalid_client`, another OAuth error, or no error at all): nobody can sign in, since the client
-  id, its secret or its registration is wrong. `issuer_unreachable` is a check with no verdict on
-  the client: a provider that could not be asked or could not answer (`408`, `429` or a `5xx`,
-  whatever OAuth error its body named), or one that answered with no refusal (a `2xx` naming an
-  error, or a `3xx`). The check's log line says which. A check neither answers a person nor stops
+  `client_rejected` is the provider refusing the check's request (a random code, no redirect URI,
+  no verifier) at a refusal's status for any other reason or none (`invalid_client`, another OAuth
+  error, or no error at all); a wrong client id or secret is the usual cause, and the log line
+  names the status and the error. `issuer_unreachable` is a check with no verdict on the client:
+  an outage (`408`, `429` or a `5xx`, whatever OAuth error its body named, an answer cut off before
+  its body arrived whole, or no answer), or an answer that is no refusal (a `2xx` naming an error,
+  or a `3xx`). The check's log line says which. A check neither answers a person nor stops
   the broker: it writes this row, and it logs only a change. When it finds `client_rejected` or
   `issuer_unreachable` and its pod did not log that state last, it logs `broker: the sign-in client
   check`. When it finds `ready` after such a line, it logs `broker: the sign-in client check finds
@@ -1641,7 +1642,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `secret store store=<store> credentials=<source>` | At startup, once the store is built: `aws-secrets-manager` under the AWS SDK's credential chain (`aws-sdk`), `gcp-secret-manager` under Application Default Credentials (`application-default`), or either name over `BROKER_FAKE_SECRETS_FILE` (`fake secrets file`). |
 | `approval sign-in on issuer=<issuer> client_id=<client id> domain=<domain>` | At startup: the approval page signs people in through that client, holding each person to that Workspace domain ([Approval sign-in](#approval-sign-in)). The client's secret is never logged. |
 | `approval sign-in off detail=…` | At startup, in place of the line above: `BROKER_SIGNIN=off`, so the broker serves no approval page and denies at once a request a person would approve ([A broker that signs nobody in](#a-broker-that-signs-nobody-in)). No sign-in client check runs. |
-| `broker: the sign-in client check state=<state> issuer=<issuer> error=…` | At WARN, from the check each pod takes at startup and every hour after, when it finds a state other than `ready` that the pod did not log last: the provider refused the broker's client (`state=client_rejected`, so nobody can sign in) or could not be asked (`state=issuer_unreachable`). A check that finds the state the pod logged last, or finds the client ready with no such line before it, logs nothing, so a provider that stays away for a day is one line. Every check writes its answer to `GET /signin/status`. |
+| `broker: the sign-in client check state=<state> issuer=<issuer> error=…` | At WARN, from the check each pod takes at startup and every hour after, when it finds a state other than `ready` that the pod did not log last: the provider refused the check's request (`state=client_rejected`; a wrong client id or secret is the usual cause, and `error` names the status and the OAuth error), or the check got no verdict (`state=issuer_unreachable`: an outage, a `5xx`, `408`, `429` or no answer, or an answer that is no refusal, a `2xx` or `3xx`). A check that finds the state the pod logged last, or finds the client ready with no such line before it, logs nothing, so a provider that stays away for a day is one line. Every check writes its answer to `GET /signin/status`. |
 | `broker: the sign-in client check finds the client ready again issuer=<issuer> was=<state>` | At INFO: the first check that finds the client ready after the line above. `was` is the state that line named. |
 | `broker: the sign-in client check was not written state=<state> error=…` | At WARN: a check could not write its answer to Postgres after the check before it wrote, so `GET /signin/status` answers the last answer written. The checks after it log nothing more until one writes. |
 | `broker: the sign-in client check is written again state=<state>` | At INFO: the first check that writes its answer after the line above. |
