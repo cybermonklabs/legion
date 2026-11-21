@@ -1,17 +1,23 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // uploadBase is the token an upload replacing a document names: the one the document carries
@@ -74,8 +80,7 @@ func artifactIDNamed(tb testing.TB, handler http.Handler, ownerPath, name string
 	return ""
 }
 
-// uploadBaseHandler is a server whose settlement is held back for the test's duration. Every
-// replacement it takes names the token of the version it replaces, which no setting decides.
+// uploadBaseHandler is a server whose settlement is held back for the test's duration.
 func uploadBaseHandler(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -242,7 +247,10 @@ func TestAMemberNeitherUploadShapeDeclaresIsIgnoredAndAMisspelledTokenIsRefused(
 }
 
 // A token the document has moved past is refused, and the refusal says where the document stands
-// and how to read its token again.
+// and how to read its token again. It names the field the token goes in and no flag of a command,
+// since the caller may have sent its token straight to the route from a `dispatch` whose
+// `artifact` has no flag for one (INFRA-4980). This is the control of the no-token replacement
+// below: a token that is named is still checked, inside the write's lock, and refused 409.
 func TestUploadNamingABaseBehindTheDocumentIsRefusedAndWritesNothing(t *testing.T) {
 	handler, database := uploadBaseHandler(t)
 	issue := createArtifactIssue(t, handler)
@@ -274,8 +282,11 @@ func TestUploadNamingABaseBehindTheDocumentIsRefusedAndWritesNothing(t *testing.
 	if conflict.Current.Version == nil || *conflict.Current.Version != versionsBefore {
 		t.Fatalf("the refusal's current.version = %v, want the document's version %d: %s", conflict.Current.Version, versionsBefore, refused.Body.String())
 	}
-	if !strings.Contains(conflict.Error, "dispatch doc-read") || !strings.Contains(conflict.Error, "--precondition-json") {
-		t.Fatalf("the refusal = %q, want it to say the current token comes from `dispatch doc-read` and to upload again with it", conflict.Error)
+	if !strings.Contains(conflict.Error, "dispatch doc-read") || !strings.Contains(conflict.Error, "precondition") {
+		t.Fatalf("the refusal = %q, want it to say the current token comes from `dispatch doc-read` and to upload again naming it as the precondition", conflict.Error)
+	}
+	if strings.Contains(conflict.Error, "--precondition-json") {
+		t.Fatalf("the refusal = %q, want it to name no flag of a command", conflict.Error)
 	}
 	if len(conflict.Mismatches) != 1 || conflict.Mismatches[0].Scope != "document" ||
 		conflict.Mismatches[0].Expected != stale["document"] ||
@@ -290,31 +301,112 @@ func TestUploadNamingABaseBehindTheDocumentIsRefusedAndWritesNothing(t *testing.
 	}
 }
 
-// A replacement that names no token at all is refused, and writes nothing: every replacement
-// says which version it replaces.
-func TestUploadReplacingADocumentWithNoTokenIsRefused(t *testing.T) {
-	handler, database := uploadBaseHandler(t)
+// unguardedReplacementSample is the sample line of the no-token replacement counter in a /metrics
+// body, "" when the body holds none: the counter carries no label, so it has one series, which
+// appears with the first replacement it counts.
+func unguardedReplacementSample(t *testing.T, registry *metrics.Registry) string {
+	t.Helper()
+	for line := range strings.Lines(scrape(t, registry)) {
+		if strings.HasPrefix(line, unguardedReplacementsMetric+" ") {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
+}
+
+// uploadFromClient posts one upload to the issue as alice, its User-Agent the one a client's
+// runtime sends: the inline body `dispatch artifact --content-file` sends when form is nil, else
+// the multipart form `--path` sends, with form as its fields and content as its file.
+func uploadFromClient(t *testing.T, handler http.Handler, issueKey, userAgent string, body map[string]any, form map[string]string, content string) *httptest.ResponseRecorder {
+	t.Helper()
+	var request *http.Request
+	if form == nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("encode the upload: %v", err)
+		}
+		request = httptest.NewRequest(http.MethodPost, "/api/v1/issues/"+issueKey+"/artifacts", bytes.NewReader(encoded))
+		request.Header.Set("Content-Type", "application/json")
+	} else {
+		encoded, bodyType, err := apitest.MultipartUpload(form, form["name"], "text/markdown", []byte(content))
+		if err != nil {
+			t.Fatalf("encode the upload: %v", err)
+		}
+		request = httptest.NewRequest(http.MethodPost, "/api/v1/issues/"+issueKey+"/artifacts", encoded)
+		request.Header.Set("Content-Type", bodyType)
+	}
+	request.Header.Set("X-Dispatch-User", "alice")
+	request.Header.Set("User-Agent", userAgent)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+// INFRA-4980: a replacement that names no token is taken, as every replacement was before #3000,
+// because no deployed `dispatch` client can name a token on `dispatch artifact`; #3000 refused it
+// 400 PRECONDITION_REQUIRED and wrote nothing, which refused every agent's replacement of a
+// document. Both shapes a client uploads in are driven, the inline body and the multipart form.
+// Each one stored is counted on /metrics and logged with its caller and the User-Agent its client
+// sent, so the refusal can come back once no client sends one without a token. A replacement
+// naming the live token is checked and taken and is not counted, and a first upload replaces
+// nothing and is not counted either.
+func TestUploadReplacingADocumentWithNoTokenIsTakenCountedAndLogged(t *testing.T) {
+	logs := &storetest.LockedLog{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
+	registry := metrics.New()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, metrics: registry})
 	issue := createArtifactIssue(t, handler)
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
-	current := readDocumentPrecondition(t, handler, artifactID)
-	versionsBefore := uploadedVersionCount(t, database, artifactID)
+	if sample := unguardedReplacementSample(t, registry); sample != "" {
+		t.Fatalf("after a first upload the counter reads %q, want no replacement counted", sample)
+	}
 
-	answer := postUpload(t, handler, issue.Key, map[string]any{"name": "notes.md", "content": "# Notes\n\nafter\n"})
-	if answer.Code != http.StatusBadRequest {
-		t.Fatalf("an upload naming no token = %d (want 400), body=%s", answer.Code, answer.Body.String())
+	for _, upload := range []struct {
+		shape, userAgent, markdown string
+		form                       map[string]string
+	}{
+		{shape: "inline", userAgent: "Bun/1.2.19", markdown: "# Notes\n\ninline\n"},
+		{shape: "multipart", userAgent: "Bun/1.2.20", markdown: "# Notes\n\nform\n", form: map[string]string{"name": "notes.md"}},
+	} {
+		versionsBefore := uploadedVersionCount(t, database, artifactID)
+		answer := uploadFromClient(t, handler, issue.Key, upload.userAgent,
+			map[string]any{"name": "notes.md", "content": upload.markdown}, upload.form, upload.markdown)
+		if answer.Code != http.StatusCreated {
+			t.Fatalf("the %s replacement naming no token = %d (want 201), body=%s", upload.shape, answer.Code, answer.Body.String())
+		}
+		if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore+1 {
+			t.Fatalf("the %s replacement naming no token left %d versions, want %d", upload.shape, after, versionsBefore+1)
+		}
+		if read := readDocumentPrecondition(t, handler, artifactID); read.Markdown != upload.markdown {
+			t.Fatalf("the document after the %s replacement naming no token = %q, want %q", upload.shape, read.Markdown, upload.markdown)
+		}
 	}
-	code, text := refusalOf(t, answer)
-	if code != "PRECONDITION_REQUIRED" {
-		t.Fatalf("an upload naming no token answered code %q, want PRECONDITION_REQUIRED: %s", code, answer.Body.String())
+
+	guarded := postUpload(t, handler, issue.Key, map[string]any{
+		"name": "notes.md", "content": "# Notes\n\nguarded\n", "precondition": uploadBase(t, handler, artifactID),
+	})
+	if guarded.Code != http.StatusCreated {
+		t.Fatalf("the replacement naming the live token = %d (want 201), body=%s", guarded.Code, guarded.Body.String())
 	}
-	if !strings.Contains(text, "dispatch doc-read") || !strings.Contains(text, "--precondition-json") {
-		t.Fatalf("the refusal = %q, want it to say the token comes from `dispatch doc-read` and to upload again with it", text)
+
+	if sample, want := unguardedReplacementSample(t, registry), unguardedReplacementsMetric+" 2"; sample != want {
+		t.Fatalf("the counter reads %q, want %q: the two replacements naming no token, and not the one naming a token", sample, want)
 	}
-	if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore {
-		t.Fatalf("the refused upload wrote: %d versions, want the %d standing before it", after, versionsBefore)
+	var lines []string
+	for line := range strings.Lines(logs.String()) {
+		if strings.Contains(line, unguardedReplacementMessage) {
+			lines = append(lines, line)
+		}
 	}
-	if read := readDocumentPrecondition(t, handler, artifactID); read.Token != current.Token {
-		t.Fatalf("document after the refused upload = %s, want the token it had, %s", read.Token, current.Token)
+	if len(lines) != 2 {
+		t.Fatalf("%d lines logged the replacements naming no token, want 2: %s", len(lines), logs.String())
+	}
+	for index, userAgent := range []string{"Bun/1.2.19", "Bun/1.2.20"} {
+		for _, want := range []string{"artifact=" + artifactID, "caller_kind=user", "caller=alice", "user_agent=" + userAgent} {
+			if !strings.Contains(lines[index], want) {
+				t.Fatalf("the log line of replacement %d = %q, want it to hold %q", index+1, lines[index], want)
+			}
+		}
 	}
 }
 
@@ -492,11 +584,13 @@ func TestRepairingUploadNamingABaseIsRefused(t *testing.T) {
 }
 
 // Two uploads race for one new name. Once the first has committed, the second is a replacement of
-// the document the first created, which is what the race resolves to: the handler that loses sees
-// a document that exists, so it must name the token of the version it replaces. They are
-// driven in sequence through the one handler, which is that outcome.
-func TestSecondUploadOfARacedNewNameMustNameItsBase(t *testing.T) {
-	handler, database := uploadBaseHandler(t)
+// the document the first created, which is what the race resolves to. It names no token, so it is
+// taken unchecked and counted, as every replacement naming none is until every deployed client
+// sends one (INFRA-4980). They are driven in sequence through the one handler, which is that
+// outcome.
+func TestSecondUploadOfARacedNewNameIsAReplacement(t *testing.T) {
+	registry := metrics.New()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, metrics: registry})
 	issue := createArtifactIssue(t, handler)
 
 	first := postUpload(t, handler, issue.Key, map[string]any{"name": "raced.md", "content": "# Raced\n\nfirst\n"})
@@ -509,14 +603,14 @@ func TestSecondUploadOfARacedNewNameMustNameItsBase(t *testing.T) {
 	versionsBefore := uploadedVersionCount(t, database, artifactID)
 
 	second := postUpload(t, handler, issue.Key, map[string]any{"name": "raced.md", "content": "# Raced\n\nsecond\n"})
-	if second.Code != http.StatusBadRequest {
-		t.Fatalf("the upload that lost the race = %d (want 400), body=%s", second.Code, second.Body.String())
+	if second.Code != http.StatusCreated {
+		t.Fatalf("the upload that lost the race = %d (want 201), body=%s", second.Code, second.Body.String())
 	}
-	if code, _ := refusalOf(t, second); code != "PRECONDITION_REQUIRED" {
-		t.Fatalf("the upload that lost the race answered code %q, want PRECONDITION_REQUIRED: %s", code, second.Body.String())
+	if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore+1 {
+		t.Fatalf("the upload that lost the race left %d versions, want %d", after, versionsBefore+1)
 	}
-	if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore {
-		t.Fatalf("the refused upload wrote: %d versions, want the %d standing before it", after, versionsBefore)
+	if sample, want := unguardedReplacementSample(t, registry), unguardedReplacementsMetric+" 1"; sample != want {
+		t.Fatalf("the counter reads %q, want %q: the second upload is a replacement naming no token", sample, want)
 	}
 }
 
