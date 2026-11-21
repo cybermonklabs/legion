@@ -1,0 +1,5 @@
+kind: Added
+body: The chain read's types (IssueChain and its parts) and the dispatch_chain tool.
+time: 2026-11-21T09:56:08.670184759Z
+custom:
+    Issue: pr3142

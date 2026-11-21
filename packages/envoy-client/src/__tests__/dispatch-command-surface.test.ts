@@ -14,6 +14,7 @@ import {
   artifactBody,
   askBody,
   askReadBody,
+  chainBody,
   checkResultRecordedBody,
   commentBody,
   constraintBody,
@@ -233,6 +234,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "results" && method === "POST") return response(checkResultRecordedBody(), 201);
     if (rest === "results") return response(issueResultsBody());
     if (rest === "coverage") return response(coverageBody());
+    if (rest === "chain") return response(chainBody());
     if (rest === "handoffs") return response([]);
     if (segments[4] === "handoffs" && method === "POST") return response(handoffBody(), 201);
     if (segments[4] === "handoffs") return response(handoffBody());

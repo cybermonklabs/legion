@@ -156,7 +156,8 @@ type deliveryWindowQuery struct {
 	Deployed []string `query:"deployed"`
 }
 
-// issueResultsQuery is GET /api/v1/issues/{key}/results's query.
+// issueResultsQuery is the query of GET /api/v1/issues/{key}/results and of GET
+// /api/v1/issues/{key}/chain, which judges the chain's checks as the results read judges them.
 type issueResultsQuery struct {
 	// At replaces what every check of the issue is compared with by this one commit, 40
 	// lowercase hex characters; any other value is 400 INVALID_QUERY. The only read of GitHub it
@@ -743,6 +744,7 @@ var routeShapes = map[string]routeShape{
 		Request: checkResultRetractionInput{},
 	},
 	"GET /api/v1/issues/{key}/coverage": {Status: http.StatusOK, Response: model.IssueCoverage{}},
+	"GET /api/v1/issues/{key}/chain":    {Status: http.StatusOK, Response: model.IssueChain{}, Params: issueResultsQuery{}},
 	"GET /api/v1/issues/{key}/tree":     {Status: http.StatusOK, Response: model.IssueTreeRead{}, Params: issueTreeQuery{}},
 	"POST /api/v1/issues/{key}/messages": {
 		Status: http.StatusCreated, Response: shapedMessage{}, Request: createMessageInput{}, Advice: writeAdvice{},

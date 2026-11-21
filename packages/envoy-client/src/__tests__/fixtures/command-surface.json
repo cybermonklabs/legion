@@ -1,5 +1,5 @@
 {
-  "commands": 48,
+  "commands": 49,
   "refusals": 31,
   "runs": [
     {
@@ -198,6 +198,36 @@
         "Asked 01234567-0000-4000-8000-000000000001 on DSP-1 (urgency med): Which way should the release go?",
         "No related-item check was made: the server sent no check result. Search before you rely on this being new: dispatch search --project DSP --query 'Release ships Friday'",
         "You follow this ask: its answer and replies reach you directly."
+      ]
+    },
+    {
+      "tool": "dispatch_chain",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/chain",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "DSP-1: 1 requirements, 1 decisions, 1 checks, 1 results, each check compared as dispatch results compares it.",
+        "Requirement r1, proved: The workspace opens natively.",
+        "  Decision d1: The workspace is native.",
+        "  Check k1, proved: The workspace opens natively.",
+        "Check k1 of DSP-1, under r1, serving r1: The workspace opens natively.",
+        "  A pass stands: yes, from implementer.",
+        "  Result 01234567-0000-4000-8000-000000000001: pass by implementer at 1111111111111111111111111111111111111111. That commit is the head of pull request #2712. The check's words did not move after it. It proves the check.",
+        "    The role recorded no reading.",
+        "Gaps: none."
       ]
     },
     {

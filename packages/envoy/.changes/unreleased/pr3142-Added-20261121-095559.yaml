@@ -1,0 +1,5 @@
+kind: Added
+body: GET /api/v1/issues/{key}/chain answers an issue's chain from each decision to the requirement it shaped, the checks that serve it and their results, with each gap and each unproven check named.
+time: 2026-11-21T09:55:59.970526015Z
+custom:
+    Issue: pr3142

@@ -2081,6 +2081,44 @@ export const dispatchToolSpecs = [
     }),
   },
   {
+    name: "dispatch_chain",
+    example: { issue: "DSP-1" },
+    description:
+      "Print the chain of an issue, from each decision to the result that proves what it shaped, " +
+      "in one read of the issue's tree. The first line is `<KEY>: <n> requirements, <n> " +
+      "decisions, <n> checks, <n> results, judged at <commit>.`, or ends `each check compared as " +
+      "dispatch results compares it.` where no commit is named. Then each requirement of the " +
+      "issue prints `Requirement <id>, proved: <words>` or `Requirement <id>, unproven: <words>`, " +
+      "one line `  Decision <id>: <words>` for each decision that shaped it, `  Decision ask <id>: " +
+      "<question> The answer: <answer>` for a person's, or `  No decision " +
+      "shaped it.`, and one line `  Check <id>, proved: <words>` or `  Check <id>, unproven: " +
+      "<words>` for each check that serves it, through its serves pointer and never its place in " +
+      "the tree, or `  No check serves it.`: a check that serves three requirements prints under " +
+      "each of the three and is one check. Then each check prints once, `Check <id> of <KEY>, " +
+      "under <parent>, serving <ids>: <words>`, where the parent is its one place in the tree, " +
+      "then its `A pass stands:` line as dispatch results prints it, then why it is unproven where " +
+      "it is, then each result you may see, newest first: `  Result <id>: <verdict> by <role> at " +
+      "<commit>. <where that commit stands>. <whether the check's words moved after it>. It proves " +
+      "the check.` or `It proves nothing.`, and its reading. A result proves its check only where " +
+      "it passed, its commit is one of the commits the check is compared with, the check's words " +
+      "did not move after it and no retraction stands against it; any other result is evidence, " +
+      "and the check's unproven line names the result and what it lacks. Then each plan task " +
+      "prints `Plan task <id> of <KEY>, under <parent>, serving <ids>: <words>`, and the gaps " +
+      "follow: a requirement no decision shaped, a requirement no check serves, a check with no " +
+      "result, and a check or a plan task that serves nothing, one `- <line>` each after " +
+      "`Gaps:`, or `Gaps: none.` " +
+      ISSUE_REFERENCE,
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_REFERENCE),
+      at: z
+        .string()
+        .describe(
+          "One commit of 40 lowercase hex characters, which every check is judged against, as dispatch results --at judges them."
+        )
+        .optional(),
+    }),
+  },
+  {
     name: "dispatch_artifact",
     example: { issue: "DSP-1", name: "design.md", content: "# Design\n" },
     description:

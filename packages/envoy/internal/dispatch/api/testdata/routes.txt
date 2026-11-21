@@ -94,6 +94,7 @@ POST /api/v1/issues/{key}/artifacts/{slug}/versions any
 GET /api/v1/issues/{key}/artifacts/{slug}/versions/{number} any
 GET /api/v1/issues/{key}/asks any
 POST /api/v1/issues/{key}/asks any
+GET /api/v1/issues/{key}/chain any
 DELETE /api/v1/issues/{key}/claim any
 POST /api/v1/issues/{key}/claim any
 GET /api/v1/issues/{key}/collaborators any

@@ -6323,6 +6323,60 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/issues/{key}/chain": {
+      "get": {
+        "description": "The chain of the issue from each decision to the result that proves what it shaped, read in one read of the issue's tree over the tuples as the caller may see it, writing and storing nothing: {issue, at, requirements, decisions, checks, plan_tasks, results, gaps}. Every node is listed once under its one store id, and every hop names its far end by that id. A requirement is a requirement node of the issue's tree, with its words, its node state and its parent, and it names the decisions whose shaped tuple reaches it and the checks and plan tasks whose serves tuple does, never the nodes placed under it, so a check serving three requirements is one entry of checks that all three name; a check or a plan task at node state proposed or overtaken serves nothing. A decision is an agent's decision block, with its words, or an ask a person answered, with its question and the answer, each with the requirements it shaped. A check is each check node of the issue's tree and each check of an issue under it whose serves names one of the issue's requirements, with its words, its parent (its one placement, its part_of, read apart from what it serves), the requirements it serves, and, as GET /api/v1/issues/{key}/results answers it over the results the caller may see, its version and digest, compared_with, compared_nothing and pass_stands; proved is pass_stands yes, and a check not proved says in unproven why: no_result, compared_nothing, and for a result failed, retracted, check_words_moved, other_commit or commit_unknown. A plan task is each plan_task node of the issue's tree and each one of an issue under it that serves one of the issue's requirements, with its words, its node state, its parent and the requirements it serves. Each result is the results read's, with commit_stands, check_words_moved and retracted, the walk back from it (its check, the requirements that check serves, the decisions that shaped those) and proves, whether it is a pass whose commit stands at a basis under the check's words now with no retraction against it; a result reserved for its author is answered to that author alone. ?at=\u003ccommit\u003e compares every check with that one commit, as the results read's ?at= does, and at echoes it, null where none was named; a value that is not 40 lowercase hex characters is 400 INVALID_QUERY. gaps is each thing the chain lacks, {kind, node, line}: no_decision and no_check of a requirement, no_result of a check, and serves_nothing of a check or a plan task whose serves names nothing; a node at proposed or overtaken raises none. 404 NOT_FOUND for no such issue.",
+        "operationId": "getApiV1IssuesByKeyChain",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "at",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueChain"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/issues/{key}/claim": {
       "post": {
         "description": "Claim the issue for the calling session (or human): records who is working it. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names a live holder (or a human one, whose claim has no session to end); a caller whose credential holds the person scope may pass {force: true} to take it anyway, and one that does not is 403 OAUTH_SCOPE_REQUIRED. 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry.",
@@ -23444,6 +23498,465 @@
           "asked_of_by",
           "asked_of_at",
           "last_reply"
+        ],
+        "type": "object"
+      },
+      "IssueChain": {
+        "properties": {
+          "at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/IssueChainCheck"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/IssueChainDecision"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "gaps": {
+            "items": {
+              "$ref": "#/components/schemas/IssueChainGap"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "issue": {
+            "type": "string"
+          },
+          "plan_tasks": {
+            "items": {
+              "$ref": "#/components/schemas/IssueChainPlanTask"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "requirements": {
+            "items": {
+              "$ref": "#/components/schemas/IssueChainRequirement"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/IssueChainResult"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "issue",
+          "at",
+          "requirements",
+          "decisions",
+          "checks",
+          "plan_tasks",
+          "results",
+          "gaps"
+        ],
+        "type": "object"
+      },
+      "IssueChainCheck": {
+        "properties": {
+          "block_id": {
+            "type": "string"
+          },
+          "compared_nothing": {
+            "enum": [
+              "no_pull_request_or_branch",
+              "repository_unreadable",
+              "read_failed"
+            ],
+            "type": "string"
+          },
+          "compared_with": {
+            "items": {
+              "$ref": "#/components/schemas/CheckBasis"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueTreeParent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pass_stands": {
+            "$ref": "#/components/schemas/CheckPassStands"
+          },
+          "proved": {
+            "type": "boolean"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "serves": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "live",
+              "gone",
+              "proposed",
+              "settled",
+              "overtaken"
+            ],
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "unproven": {
+            "items": {
+              "$ref": "#/components/schemas/IssueChainUnproven"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "integer"
+          },
+          "when": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "block_id",
+          "ref",
+          "issue",
+          "text",
+          "when",
+          "state",
+          "parent",
+          "serves",
+          "version",
+          "sha256",
+          "compared_with",
+          "pass_stands",
+          "results",
+          "proved",
+          "unproven"
+        ],
+        "type": "object"
+      },
+      "IssueChainDecision": {
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "block_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "block",
+              "ask"
+            ],
+            "type": "string"
+          },
+          "shaped": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "text",
+          "shaped"
+        ],
+        "type": "object"
+      },
+      "IssueChainGap": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "no_decision",
+              "no_check",
+              "no_result",
+              "serves_nothing"
+            ],
+            "type": "string"
+          },
+          "line": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "node",
+          "line"
+        ],
+        "type": "object"
+      },
+      "IssueChainPlanTask": {
+        "properties": {
+          "block_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueTreeParent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ref": {
+            "type": "string"
+          },
+          "serves": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "state": {
+            "enum": [
+              "live",
+              "gone",
+              "proposed",
+              "settled",
+              "overtaken"
+            ],
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "block_id",
+          "ref",
+          "issue",
+          "text",
+          "state",
+          "parent",
+          "serves"
+        ],
+        "type": "object"
+      },
+      "IssueChainRequirement": {
+        "properties": {
+          "block_id": {
+            "type": "string"
+          },
+          "checks": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "decisions": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueTreeParent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plan_tasks": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "proved": {
+            "type": "boolean"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "live",
+              "gone",
+              "proposed",
+              "settled",
+              "overtaken"
+            ],
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "block_id",
+          "ref",
+          "text",
+          "state",
+          "parent",
+          "decisions",
+          "checks",
+          "plan_tasks",
+          "proved"
+        ],
+        "type": "object"
+      },
+      "IssueChainResult": {
+        "properties": {
+          "check": {
+            "type": "string"
+          },
+          "decisions": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "proves": {
+            "type": "boolean"
+          },
+          "requirements": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "result": {
+            "$ref": "#/components/schemas/CheckResult"
+          }
+        },
+        "required": [
+          "result",
+          "check",
+          "proves",
+          "requirements",
+          "decisions"
+        ],
+        "type": "object"
+      },
+      "IssueChainUnproven": {
+        "properties": {
+          "reason": {
+            "enum": [
+              "no_result",
+              "compared_nothing",
+              "failed",
+              "retracted",
+              "check_words_moved",
+              "other_commit",
+              "commit_unknown"
+            ],
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
         ],
         "type": "object"
       },

@@ -1,0 +1,5 @@
+kind: Added
+body: 'dispatch chain --issue KEY prints an issue''s chain: each requirement with its decisions, its checks and each check''s standing, and each gap.'
+time: 2026-11-21T09:56:20.8181862Z
+custom:
+    Issue: pr3142

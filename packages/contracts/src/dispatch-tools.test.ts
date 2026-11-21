@@ -191,6 +191,7 @@ const validCalls = {
     commit: "1111111111111111111111111111111111111111",
   },
   dispatch_results: { issue: "DSP-1" },
+  dispatch_chain: { issue: "DSP-1" },
   dispatch_artifact: { issue: "DSP-1", name: "design.pdf", path: "design.pdf" },
   dispatch_read: { issue: "DSP-1" },
   dispatch_search: { query: "astrolabe" },
@@ -319,6 +320,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_review",
       "dispatch_result",
       "dispatch_results",
+      "dispatch_chain",
       "dispatch_artifact",
       "dispatch_read",
       "dispatch_search",
@@ -822,6 +824,16 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ issue: "acme/infra#12" }).success).toBe(true);
     expect(schema.safeParse({ issue: "DSP-1", task: "default" }).success).toBe(false);
     expect(schema.safeParse({ issue: 1 }).success).toBe(false);
+  });
+
+  test("dispatch_chain takes one issue and an optional commit to judge at", () => {
+    const schema = schemaFor("dispatch_chain");
+
+    expect(schema.safeParse({ issue: "DSP-1" }).success).toBe(true);
+    expect(
+      schema.safeParse({ issue: "DSP-1", at: "1111111111111111111111111111111111111111" }).success
+    ).toBe(true);
+    expect(schema.safeParse({ issue: "DSP-1", at: 1 }).success).toBe(false);
   });
 
   test("dispatch_project takes a key and a name and nothing else", () => {

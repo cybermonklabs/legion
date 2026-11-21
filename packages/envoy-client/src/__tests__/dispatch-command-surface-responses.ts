@@ -289,6 +289,80 @@ export function coverageBody() {
   };
 }
 
+/** `GET /api/v1/issues/{key}/chain`: one requirement a decision shaped, the one check that serves
+ *  it, which stands under it, and that check's one result, whose pass stands; no gap. */
+export function chainBody() {
+  const requirement = `${ISSUE}/spec#r1`;
+  const decision = `${ISSUE}/spec#d1`;
+  const check = `${ISSUE}/spec#k1`;
+  return {
+    issue: ISSUE,
+    at: null,
+    requirements: [
+      {
+        id: requirement,
+        block_id: "r1",
+        ref: `dispatch://${ISSUE}/spec#b-r1`,
+        text: "The workspace opens natively.",
+        state: "live",
+        parent: { kind: "issue", id: ISSUE, supertag: "issue", first_line: "Native workspace" },
+        decisions: [decision],
+        checks: [check],
+        plan_tasks: [],
+        proved: true,
+      },
+    ],
+    decisions: [
+      {
+        kind: "block",
+        id: decision,
+        block_id: "d1",
+        text: "The workspace is native.",
+        shaped: [requirement],
+      },
+    ],
+    checks: [
+      {
+        id: check,
+        block_id: "k1",
+        ref: `dispatch://${ISSUE}/artifact/verification-md#b-k1`,
+        issue: ISSUE,
+        text: "The workspace opens natively.",
+        when: "before_merge",
+        state: "live",
+        parent: {
+          kind: "block",
+          id: requirement,
+          supertag: "requirement",
+          first_line: "The workspace opens natively.",
+        },
+        serves: [requirement],
+        version: 1,
+        sha256: CHECK_SHA256,
+        compared_with: [checkBasisBody()],
+        pass_stands: { answer: "yes", roles: ["implementer"] },
+        results: [UUID],
+        proved: true,
+        unproven: [],
+      },
+    ],
+    plan_tasks: [],
+    results: [
+      {
+        result: checkResultBody({
+          commit_stands: { answer: "at_basis", basis: checkBasisBody() },
+          check_words_moved: false,
+        }),
+        check,
+        proves: true,
+        requirements: [requirement],
+        decisions: [decision],
+      },
+    ],
+    gaps: [],
+  };
+}
+
 export function handoffBody() {
   return {
     id: UUID,

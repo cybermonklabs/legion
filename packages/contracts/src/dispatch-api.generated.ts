@@ -1548,6 +1548,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/chain": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The chain of the issue from each decision to the result that proves what it shaped, read in one read of the issue's tree over the tuples as the caller may see it, writing and storing nothing: {issue, at, requirements, decisions, checks, plan_tasks, results, gaps}. Every node is listed once under its one store id, and every hop names its far end by that id. A requirement is a requirement node of the issue's tree, with its words, its node state and its parent, and it names the decisions whose shaped tuple reaches it and the checks and plan tasks whose serves tuple does, never the nodes placed under it, so a check serving three requirements is one entry of checks that all three name; a check or a plan task at node state proposed or overtaken serves nothing. A decision is an agent's decision block, with its words, or an ask a person answered, with its question and the answer, each with the requirements it shaped. A check is each check node of the issue's tree and each check of an issue under it whose serves names one of the issue's requirements, with its words, its parent (its one placement, its part_of, read apart from what it serves), the requirements it serves, and, as GET /api/v1/issues/{key}/results answers it over the results the caller may see, its version and digest, compared_with, compared_nothing and pass_stands; proved is pass_stands yes, and a check not proved says in unproven why: no_result, compared_nothing, and for a result failed, retracted, check_words_moved, other_commit or commit_unknown. A plan task is each plan_task node of the issue's tree and each one of an issue under it that serves one of the issue's requirements, with its words, its node state, its parent and the requirements it serves. Each result is the results read's, with commit_stands, check_words_moved and retracted, the walk back from it (its check, the requirements that check serves, the decisions that shaped those) and proves, whether it is a pass whose commit stands at a basis under the check's words now with no retraction against it; a result reserved for its author is answered to that author alone. ?at=<commit> compares every check with that one commit, as the results read's ?at= does, and at echoes it, null where none was named; a value that is not 40 lowercase hex characters is 400 INVALID_QUERY. gaps is each thing the chain lacks, {kind, node, line}: no_decision and no_check of a requirement, no_result of a check, and serves_nothing of a check or a plan task whose serves names nothing; a node at proposed or overtaken raises none. 404 NOT_FOUND for no such issue. */
+    get: operations["getApiV1IssuesByKeyChain"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/claim": {
     parameters: {
       query?: never;
@@ -5678,6 +5695,95 @@ export interface components {
       urgency: string;
       waiting_on?: string;
       waiting_on_person?: string;
+    };
+    IssueChain: {
+      at: null | string;
+      checks: components["schemas"]["IssueChainCheck"][] | null;
+      decisions: components["schemas"]["IssueChainDecision"][] | null;
+      gaps: components["schemas"]["IssueChainGap"][] | null;
+      issue: string;
+      plan_tasks: components["schemas"]["IssueChainPlanTask"][] | null;
+      requirements: components["schemas"]["IssueChainRequirement"][] | null;
+      results: components["schemas"]["IssueChainResult"][] | null;
+    };
+    IssueChainCheck: {
+      block_id: string;
+      /** @enum {string} */
+      compared_nothing?: "no_pull_request_or_branch" | "repository_unreadable" | "read_failed";
+      compared_with: components["schemas"]["CheckBasis"][] | null;
+      id: string;
+      issue: string;
+      parent: components["schemas"]["IssueTreeParent"] | null;
+      pass_stands: components["schemas"]["CheckPassStands"];
+      proved: boolean;
+      ref: string;
+      results: string[] | null;
+      serves: string[] | null;
+      sha256: string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      text: string;
+      unproven: components["schemas"]["IssueChainUnproven"][] | null;
+      version: number;
+      when: string;
+    };
+    IssueChainDecision: {
+      answer?: string;
+      block_id?: string;
+      id: string;
+      /** @enum {string} */
+      kind: "block" | "ask";
+      shaped: string[] | null;
+      text: string;
+    };
+    IssueChainGap: {
+      /** @enum {string} */
+      kind: "no_decision" | "no_check" | "no_result" | "serves_nothing";
+      line: string;
+      node: string;
+    };
+    IssueChainPlanTask: {
+      block_id: string;
+      id: string;
+      issue: string;
+      parent: components["schemas"]["IssueTreeParent"] | null;
+      ref: string;
+      serves: string[] | null;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      text: string;
+    };
+    IssueChainRequirement: {
+      block_id: string;
+      checks: string[] | null;
+      decisions: string[] | null;
+      id: string;
+      parent: components["schemas"]["IssueTreeParent"] | null;
+      plan_tasks: string[] | null;
+      proved: boolean;
+      ref: string;
+      /** @enum {string} */
+      state: "live" | "gone" | "proposed" | "settled" | "overtaken";
+      text: string;
+    };
+    IssueChainResult: {
+      check: string;
+      decisions: string[] | null;
+      proves: boolean;
+      requirements: string[] | null;
+      result: components["schemas"]["CheckResult"];
+    };
+    IssueChainUnproven: {
+      /** @enum {string} */
+      reason:
+        | "no_result"
+        | "compared_nothing"
+        | "failed"
+        | "retracted"
+        | "check_words_moved"
+        | "other_commit"
+        | "commit_unknown";
+      result?: string;
     };
     IssueCheckResults: {
       checks: components["schemas"]["CheckBlock"][] | null;
@@ -11557,6 +11663,41 @@ export interface operations {
       };
     };
   };
+  getApiV1IssuesByKeyChain: {
+    parameters: {
+      query?: {
+        at?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueChain"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV1IssuesByKeyClaim: {
     parameters: {
       query?: {
@@ -16389,6 +16530,14 @@ export type InboxRow = components["schemas"]["InboxRow"];
 export type Issue = components["schemas"]["Issue"];
 export type IssueAdvance = components["schemas"]["IssueAdvance"];
 export type IssueAskRow = components["schemas"]["IssueAskRow"];
+export type IssueChain = components["schemas"]["IssueChain"];
+export type IssueChainCheck = components["schemas"]["IssueChainCheck"];
+export type IssueChainDecision = components["schemas"]["IssueChainDecision"];
+export type IssueChainGap = components["schemas"]["IssueChainGap"];
+export type IssueChainPlanTask = components["schemas"]["IssueChainPlanTask"];
+export type IssueChainRequirement = components["schemas"]["IssueChainRequirement"];
+export type IssueChainResult = components["schemas"]["IssueChainResult"];
+export type IssueChainUnproven = components["schemas"]["IssueChainUnproven"];
 export type IssueCheckResults = components["schemas"]["IssueCheckResults"];
 export type IssueChild = components["schemas"]["IssueChild"];
 export type IssueClaim = components["schemas"]["IssueClaim"];

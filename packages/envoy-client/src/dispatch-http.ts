@@ -49,6 +49,7 @@ import type {
   HandoffSummary,
   InboxRow,
   Issue,
+  IssueChain,
   IssueCheckResults,
   IssueConstraints,
   IssueCoverage,
@@ -1924,6 +1925,19 @@ export class DispatchClient {
    *  one `gaps` line per gap. Nothing is ever refused for a gap. */
   async issueCoverage(key: string): Promise<IssueCoverage> {
     return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(key), "coverage"]);
+  }
+
+  /** `GET /api/v1/issues/{key}/chain`: the issue's chain from each decision to the result that
+   *  proves what it shaped, each node once under its id, with the gaps. `at` judges every check
+   *  against that one commit, as `issueResults` does; without it each check is compared as the
+   *  results read compares it. */
+  async issueChain(issue: string, at?: string): Promise<IssueChain> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "chain"],
+      undefined,
+      at === undefined ? undefined : { at }
+    );
   }
 
   /** `GET /api/v1/comments/{id}/blocks`: the comment's current blocks with their ids, text,

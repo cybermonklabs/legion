@@ -6,6 +6,7 @@ import {
   openAsksCommand,
   resolveAskCommand,
 } from "./asks";
+import { chainCommand } from "./chain";
 import type { CommandContext, DispatchToolResult, SessionContext } from "./context";
 import {
   commentCommand,
@@ -111,6 +112,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_review: acting(reviewCommand),
   dispatch_result: acting(resultCommand),
   dispatch_results: acting(resultsCommand),
+  dispatch_chain: acting(chainCommand),
   dispatch_artifact: acting(artifactCommand),
   dispatch_handoff_write: acting(handoffWriteCommand),
   dispatch_handoff_read: acting(handoffReadCommand),

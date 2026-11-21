@@ -43,7 +43,7 @@ function isComparisonReason(reason: string): reason is keyof typeof COMPARISON_R
 /** `reason` in words, naming `repo` where the server names the repository the answer is about.
  *  A reason this build has no words for is printed as the server gave it, with that repository
  *  beside it in parentheses, so the answer still says which repository it is about. */
-function reasonText(reason: string, repo?: string): string {
+export function reasonText(reason: string, repo?: string): string {
   if (isComparisonReason(reason)) return COMPARISON_REASONS[reason](repo);
   return repo === undefined ? reason : `${reason} (${repo})`;
 }
@@ -98,7 +98,7 @@ function basisPlace(basis: CheckBasis): string {
 /** The first of R4's two facts: where one result's commit stands against what its check compared
  *  with. A Dispatch server that does not answer it says so rather than reading as another
  *  commit. An answer a linked repository decided names it (`repo`). */
-function commitStandsText(stands: CheckResult["commit_stands"]): string {
+export function commitStandsText(stands: CheckResult["commit_stands"]): string {
   if (stands === undefined) {
     return "Where that commit stands is not known: this Dispatch server does not say";
   }
@@ -135,7 +135,7 @@ function checkWordsText(check: CheckBlock, result: CheckResult): string {
 }
 
 /** R5 for one check: whether a pass of it stands, and from which roles. */
-function passStandsText(pass: CheckPassStands | undefined): string {
+export function passStandsText(pass: CheckPassStands | undefined): string {
   if (pass === undefined)
     return "Whether a pass stands is not known: this Dispatch server does not say";
   if (pass.answer === "yes") {
