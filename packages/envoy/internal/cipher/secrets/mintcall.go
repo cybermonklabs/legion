@@ -66,7 +66,7 @@ func (e *mintStatusError) refused() bool {
 }
 
 // mintTransportError is an attempt that got no answer it could read: the call failed, or the
-// read of its body did. It is named by its class alone (transportFailure) and wraps
+// read of its body did. It is named by its class alone (TransportFailure) and wraps
 // ErrMintUpstream.
 type mintTransportError struct {
 	what, who, class string
@@ -166,7 +166,7 @@ func serverWait(header http.Header, rateLimited bool, now time.Time) (time.Durat
 // and is sent again as any failed call is. what names the call and who the upstream in its
 // errors. No error quotes the request, the answer or the transport's own text: Go's HTTP client
 // quotes a malformed status line, and a status line or body can echo the credential the request
-// carried, so a failed call is named by its class alone (transportFailure). A status other than
+// carried, so a failed call is named by its class alone (TransportFailure). A status other than
 // want is a *mintStatusError, returned with the body, so a caller can read the upstream's own
 // reason from it; an answer whose body was read in part, or past limit, is returned with as much
 // of it as was read; every other failure wraps ErrMintUpstream. answered, where it is not nil,
@@ -232,12 +232,12 @@ func mintAttempt(client *http.Client, request *http.Request, attempt int, now fu
 	response, err := client.Do(sent)
 	if err != nil {
 		noConnection := tracesConnections(client) && askedConnection.Load() && !gotConnection.Load()
-		return nil, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), sent: !noConnection && !beforeConnection(err)}
+		return nil, &mintTransportError{what: what, who: who, class: TransportFailure(request.Context(), err), sent: !noConnection && !beforeConnection(err)}
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return body, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), read: true, sent: true, status: response.StatusCode}
+		return body, &mintTransportError{what: what, who: who, class: TransportFailure(request.Context(), err), read: true, sent: true, status: response.StatusCode}
 	}
 	if int64(len(body)) > limit {
 		return body[:limit], &mintOversizeError{what: what, who: who, limit: limit, status: response.StatusCode}
@@ -348,13 +348,14 @@ func beforeConnection(err error) bool {
 	return false
 }
 
-// transportFailure names the class of a failed call or body read, never its text: the request was
+// TransportFailure names the class of a failed call or body read, never its text: the request was
 // cancelled or ran out of time, the upstream's name did not resolve, its TLS handshake failed, it
 // answered with a TLS alert or met one this side sent (tlsalert.In, which reads the *net.OpError
 // crypto/tls returns one as over TCP: its Op is no dial's), it could not be reached, or its answer
 // ended early. Any other failure, such as a status line that is not HTTP, "gave no usable HTTP
-// answer".
-func transportFailure(ctx context.Context, err error) string {
+// answer". The minters name their failed calls by it, and so does the group reader
+// (groups.Reader), whose calls carry the reader account's token.
+func TransportFailure(ctx context.Context, err error) string {
 	var dns *net.DNSError
 	var op *net.OpError
 	var certificate *tls.CertificateVerificationError
