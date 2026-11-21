@@ -20,6 +20,7 @@ import {
   watchRecord,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
+import { waitFor } from "./channel-session-harness"
 
 const ownerModule = resolve(import.meta.dir, "../src/codex/codex-owner.ts")
 
@@ -93,8 +94,20 @@ describe("the owner of a codex process's Envoy session", () => {
     const directory = join(root, "c")
     await registerServer(directory, 101, "s101")
     const abort = new AbortController()
-    const probe = probeOf({ 101: "s101", [process.pid]: "me" })
+    const table = probeOf({ 101: "s101", [process.pid]: "me" })
+    // A look decides whether to publish, then asks the probe whether server 101 still runs. 101's
+    // entry stays first throughout, so the asks about it count the looks, and the row waits for
+    // looks, never for a time.
+    let looks = 0
+    const probe: ProcessProbe = {
+      ...table,
+      signal: (pid) => {
+        if (pid === 101) looks += 1
+        table.signal(pid)
+      },
+    }
     const published: number[] = []
+    const state = () => `${looks} looks, published ${published.join(", ") || "nothing"}`
     const waited = waitForOwnership(
       directory,
       process.pid,
@@ -104,16 +117,33 @@ describe("the owner of a codex process's Envoy session", () => {
       10,
       probe,
     )
-    await Bun.sleep(30)
-    expect(published).toHaveLength(1)
-    rmSync(join(directory, `${published[0]}.json`))
-    await Bun.sleep(50)
-    // Published again, behind the live server that published first, and reported, so the server
-    // can remove it when it stops.
-    expect(published).toHaveLength(2)
-    expect(published[1]).toBeGreaterThan(1)
-    expect(readdirSync(directory)).toContain(`${published[1]}.json`)
-    abort.abort()
+    // The wait ends before the abort below only if the server owns, and its looks end with it; a
+    // wait for looks then stops too, so the assertions say what went wrong.
+    let ended = false
+    void waited.then(() => {
+      ended = true
+    })
+    try {
+      // The first look publishes; the second finds the entry there and publishes nothing more.
+      await waitFor(async () => looks >= 2 || ended, "two looks", state)
+      expect(published).toHaveLength(1)
+      rmSync(join(directory, `${published[0]}.json`))
+      // A look under way may have read the directory before the removal. The next finds the entry
+      // gone and publishes it again, and the one after finds it there.
+      const removed = looks
+      await waitFor(
+        async () => looks >= removed + 3 || ended,
+        "three looks after the removal",
+        state,
+      )
+      // Published again, behind the live server that published first, and reported, so the server
+      // can remove it when it stops.
+      expect(published).toHaveLength(2)
+      expect(published[1]).toBeGreaterThan(1)
+      expect(readdirSync(directory)).toContain(`${published[1]}.json`)
+    } finally {
+      abort.abort()
+    }
     expect(await waited).toBeUndefined()
   })
 
@@ -191,8 +221,12 @@ describe("watching the record", () => {
       (next, ended) => seen.push([next.session_id, ended]),
       50,
     )
-    await Bun.sleep(100)
-    stop()
+    try {
+      // The watch reads the record once at once; nothing moves the record after that.
+      await waitFor(async () => seen.length > 0, "the watch's first look")
+    } finally {
+      stop()
+    }
     expect(seen[0]).toEqual(["s-1", true])
   })
 })
