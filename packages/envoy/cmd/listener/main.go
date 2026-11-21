@@ -1634,6 +1634,13 @@ func main() {
 	if len(cfg.EdgeProjects) > 0 {
 		repositories = newEdgeRepositories(brokerConfig.BrokerURL, brokerConfig.account(), cfg.EdgeProjects, newEdgeWithheldCounter(met), logger)
 		relays.repositories = repositories
+		// The first read of every project's answer is made before /v1 serves, so a relay socket
+		// this replica opens judges a GitHub frame by a fresh answer from its first frame, rather
+		// than waiting for the refresh loop, which starts only after the durable binding. A read
+		// that fails keeps no answer, each read is bounded (edgeRepositoryReadTimeout), and a
+		// socket answers a GitHub frame it cannot judge nak (relaySocket.withhold), so the relay
+		// sends it again.
+		repositories.refresh(context.Background())
 	}
 	// The parts a shutdown ends, gathered once: every end of a start that serves /v1 passes them
 	// to shutdownListener.

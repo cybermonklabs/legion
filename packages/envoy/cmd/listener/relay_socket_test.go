@@ -133,7 +133,10 @@ func TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted(t *testing.T) {
 		t.Errorf("the replica holds %d subscriptions after two refused subs, want the %d it held before", now, held)
 	}
 	publisher := testnats.Connect(t, rig.owner.url)
-	stray := &natsgo.Msg{Subject: bus.DeliverSubject(other), Reply: bus.RelayReplyPrefix + "stray.1", Data: []byte(`{"stray":true}`), Header: natsgo.Header{}}
+	// The frame names an event of the token's project, which the edge's rule passes to this
+	// socket (edgeFrameVerdict), so only the socket's subscriptions keep it away.
+	stray := &natsgo.Msg{Subject: bus.DeliverSubject(other), Reply: bus.RelayReplyPrefix + "stray.1", Data: []byte(`{"stray":true}`),
+		Header: natsgo.Header{relayHeaderSubject: {"notifications.dispatch.issue." + relaySocketProject + "." + relaySocketProject + "-1.comment.created"}}}
 	if err := publisher.PublishMsg(stray); err != nil {
 		t.Fatalf("publish a frame for %s: %v", other, err)
 	}
@@ -924,9 +927,9 @@ func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
 }
 
 // Headers: msg.headers is always present, a JSON object mapping each header name as
-// NATS carries it, its case kept, to every one of its values in order, and {} when the message
-// carries none. Control: the headers read one value per name (Header.Get); the repeated values are
-// lost and the row fails naming them.
+// NATS carries it, its case kept, to every one of its values in order, and the relay's
+// Envoy-Subject alone when the message carries no header of its own. Control: the headers read one
+// value per name (Header.Get); the repeated values are lost and the row fails naming them.
 func TestARelaySocketCarriesEveryValueOfAHeaderInOrder(t *testing.T) {
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_headers"
@@ -947,10 +950,10 @@ func TestARelaySocketCarriesEveryValueOfAHeaderInOrder(t *testing.T) {
 		}
 	}
 
-	publishRelayFrame(t, rig.owner.url, session, nil)
-	bare := client.next(5 * time.Second)
-	if !strings.Contains(bare.raw, `"headers":{}`) {
-		t.Fatalf("a frame of a message with no headers is %s, want \"headers\":{}", bare.raw)
+	bare := publishRelayFrame(t, rig.owner.url, session, nil)
+	frame = client.next(5 * time.Second)
+	if subjects := frame.Headers[relayHeaderSubject]; len(frame.Headers) != 1 || !slices.Equal(subjects, bare.Header.Values(relayHeaderSubject)) {
+		t.Fatalf("a frame of a message carrying only the relay's header is %s, want exactly %s %v", frame.raw, relayHeaderSubject, bare.Header.Values(relayHeaderSubject))
 	}
 }
 

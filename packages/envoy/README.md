@@ -195,20 +195,36 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   A release that fails refuses the registration with the retryable `503`, and nothing of it is stored; the `503` names the claim record the bus answered and the release could not read or free, or says the bus did not answer. It renews only the session's claims of roles of its token's projects.
   A claimant made live again is handed the kept messages of its token's projects' roles alone.
 
-- **Sends**: `POST /v1/messages/send` reaches only a session whose registering token listed one of the sender's projects.
-  Any other target gets the `404` of a session no listener has heard of, and no wake is reported (`edgeScope.hides`).
+- **Sends**: `POST /v1/messages/send` reaches only a session whose registering token listed one of the sender's projects, confirmed by its newest record on the session bucket's stream, read from the stream's leader with its headers (`edgeScope.showsConfirmed`): a record the server wrote, such as a RePublish of another stream at the session's key, reads as absent.
+  Any other target, and one the session registry reads as gone, gets the `404` of a session no listener has heard of, and no wake is reported (`edgeScope.hidesConfirmed`); a confirmation read that did not answer is the bus-unavailable `503`.
 
 - **Reads**: `GET /v1/sessions`, `GET /v1/registry/{session_id}` and the three `/v1/legion/agents` reads answer only the sessions and Legion agents of the token's projects, each session with only those projects' roles and topics (`edgeScope`);
   any other session gets the `404` of an unknown one.
+  Each session shown is confirmed by its stored record as a send's target is.
+  A Legion agent is shown only when its session is a session of its issue's project, a record bound to its key, so a gone agent of the token's own project is not shown either; its replacement is shown only when that is such a session too (`edgeScope.showsAgentConfirmed`).
   A session's own `GET /v1/interests/{session_id}` shows the topics of its token's projects alone.
   `GET /v1/interests/` and another session's `GET /v1/interests/{session_id}` get `403 session_not_in_project`, and a write of the Legion agent registry gets `403 legion_registry_not_written`.
+
+- **Frames**: the relay and the relay socket each hand a session a frame only of a project its token lists, as the session's own message, or as a GitHub event the rule above passes (`edgeFrameVerdict`, `cmd/listener/edge_frames.go`).
+  The relay holds a session to the token its replica admitted the session's registration or role claim on, which it keeps in memory, and the socket to the token it was opened with; neither reads a stored record, so no session entry, interest row, role claim or consumer filter widens what reaches the session.
+  A message on the session's own agent subject is judged by the topic its envelope names: a send or a dead letter to the session passes, and a forward, such as a role's message forwarded to the claim's holder, passes only for a project of the token.
+  Every frame withheld this way is acknowledged undelivered and counted in `envoy_edge_github_withheld_total` under `reason="project_not_held"`.
+  A relay replica that admitted no registration or role claim of the session since it started relays it nothing until the session registers through it again, at its next heartbeat, and its messages wait in its consumer.
+  A role claim through a replica renews the session's record there and so moves the session's relay to that replica, which admits the session on the claim's own token as a registration does, so its messages keep reaching it.
+  A replica forgets a session's admission once the session's record has left its cache and the admission is older than one prune pass (30 s), so it keeps no list for a session that deregistered or lapsed.
 
 Every edge refusal's body is `listenerwire.EdgeRefusal`, whose comment in `listenerwire/listenerwire.go` names each reason and says how a client reads a refused registration's `refused` list.
 
 Every listener that checks broker tokens records the registering token's projects on the session's entry in `envoy_sessions` (`session.SessionEntry.Projects`).
 The edge's send and read rules read that record, and no answer of the API carries it.
 
-On every listener, a role's name is read as the claim it names by `contracts.RoleClaimOf`, whose comment says which project each name works for and which key it gets (`store.RoleClaimKeyOf` is that key).
+A session record and an interest row each name the key they are stored under (`session_id`), which every writer sets.
+The server itself stores a record when a request names a key's subject as its reply subject, so a record that names another key, or names its key with no `machine_id`, no positive `updated_at` or (a session record) no `projects`, is no registration and reads as absent on every listener (`session.DecodeEntry`, the store's `boundInterest`).
+The next write of such a record replaces it at the stream sequence it is really stored at.
+A session record that names no key was written by an earlier build: every listener, the edge included, reads it as before for its sweeps, reapers and role routes, and the edge reads it as no project's (`edgeScope.shows`), so it lists such a session to no one and answers a send to it as to a missing session until the session's own listener writes the key.
+A role claim that renews such a record writes the projects of the claim's own token, as a registration does, and never the record's: written back under its key, the record's projects would read as the session's own registration of them.
+
+On every listener, a role claim's key is `store.RoleClaimKeyOf` of the name it was claimed under, and that function's comment says which key each name gets.
 A free-form role under a project (`PRIV.lead-reviewer`) is that project's own claim, keyed `<project>.<role>`, beside the claim of the same name under no project;
 every other name keeps its bare role name as its key.
 `POST /v1/roles/set` refuses with `400`, naming both projects, a Legion role under any project but the one its own name gives, and the edge's role and publish rules read a role's project by that function too.

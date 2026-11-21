@@ -1143,6 +1143,12 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// gives back a frame whose copy did not store, so a redelivery marks the entry and a move
 		// or a restart before the session's next frame still sends the mark.
 		if withhold, reason := m.edgeWithholds(sessionID, msg); withhold {
+			if reason == withheldNotAdmitted {
+				// A frame of a session this replica admitted no registration of is left
+				// unacknowledged, for the consumer to deliver it again once the session registers
+				// here; never acknowledged away.
+				continue
+			}
 			if reason == withheldAnswerUnknown {
 				mark, err := m.noteRepositoryGap(ctx, sessionID)
 				if err != nil {
@@ -1249,15 +1255,24 @@ func (m *sessionRelays) forgetRepositoryGap(sessionID string) {
 	delete(m.repositoryGaps, sessionID)
 }
 
-// edgeWithholds reports whether an edge listener withholds msg from sessionID, and why. Every
-// other listener withholds nothing. A withheld message is acknowledged (acknowledgeWithheld) or
-// given back (giveBackWithheld) by the relay loop, which decides which.
+// edgeWithholds reports whether an edge listener withholds msg from sessionID, and why: a frame
+// reaches the session only for a project of the token it was admitted on, as its own message, or
+// as a GitHub event whose own repository a fresh answer of its token's projects names
+// (edgeFrameVerdict). The projects are the token's this replica admitted the session's
+// registration on (edgeAdmissions), never the session's stored record, so no record the bus can
+// forge widens them; a session this replica admitted no registration of withholds every frame
+// unacknowledged (withheldNotAdmitted). Every other listener withholds nothing. A withheld message
+// is acknowledged (acknowledgeWithheld) or given back (giveBackWithheld) by the relay loop, which
+// decides which.
 func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) (bool, string) {
 	if m.repositories == nil {
 		return false, ""
 	}
-	entry, _ := m.sessions.Lookup(sessionID)
-	return m.repositories.relayVerdict(entry.Projects, msg.Subject, msg.Data)
+	projects, admitted := m.delivery.admissions.of(sessionID)
+	if !admitted {
+		return true, withheldNotAdmitted
+	}
+	return edgeFrameVerdict(m.repositories, sessionID, projects, msg.Subject, msg.Data)
 }
 
 // acknowledgeWithheld acknowledges msg, a GitHub event the edge withholds from sessionID for

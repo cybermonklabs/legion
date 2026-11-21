@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The edge listener names no role holder whose registering token lists none of the caller's
+  projects. Such a role, held live or lapsed, reads as one no claim holds: `GET /v1/roles/<role>`
+  answers `404 unclaimed` with no holder, process, state, last registration or claim revision, a
+  role send's answers through `POST /v1/messages/publish` name no holder, state or last
+  registration for it, and the `409` of a claim of it names no holder. Before, the edge left out
+  only such a holder's directory, machine, host, title and capabilities.
+time: 2026-11-21T09:05:04Z
+custom:
+    Issue: pr4730

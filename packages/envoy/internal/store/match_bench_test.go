@@ -1,7 +1,6 @@
 package store
 
 import (
-	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -11,6 +10,7 @@ import (
 // benchmarkRegistry is a registry whose cache holds sessions sessions of machine "bench", each
 // following what a working session follows: its own agent subject, one Dispatch issue (twenty
 // sessions share each), one pull request of one of twenty repositories, and one Slack thread.
+// Each is a row of its key (interestFixture).
 func benchmarkRegistry(b *testing.B, sessions int) *Registry {
 	b.Helper()
 	r := &Registry{index: newSubjectIndex()}
@@ -19,7 +19,7 @@ func benchmarkRegistry(b *testing.B, sessions int) *Registry {
 	defer r.mu.Unlock()
 	for i := range sessions {
 		sessionID := fmt.Sprintf("ses_bench_%05d", i)
-		value, err := json.Marshal(Interest{
+		value := interestFixture(b, sessionID, Interest{
 			SessionID: sessionID,
 			MachineID: "bench",
 			Topics: []string{
@@ -29,9 +29,6 @@ func benchmarkRegistry(b *testing.B, sessions int) *Registry {
 				fmt.Sprintf("notifications.slack.T1.C%d.thread.%d.>", i%10, i),
 			},
 		})
-		if err != nil {
-			b.Fatalf("encode %s: %v", sessionID, err)
-		}
 		if err := r.cache.Delivered(kvwatch.Entry{Key: sessionID, Value: value, Revision: 1}); err != nil {
 			b.Fatalf("deliver %s: %v", sessionID, err)
 		}

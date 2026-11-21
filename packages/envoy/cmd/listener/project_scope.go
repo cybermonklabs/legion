@@ -42,8 +42,11 @@ package main
 //     answered as to a missing session (edgeScope.hides).
 //   - Reads: the session list, the registry, the session rows' roles and topics and the Legion
 //     agent routes answer only sessions, roles, topics and agents of the token's projects
-//     (edgeScope); the interest list and another session's interests are 403, and the Legion
-//     agent registry is not written here.
+//     (edgeScope), each session shown confirmed by its stored record read from the stream's leader
+//     (edgeScope.showsConfirmed, session.SessionRegistry.StoredByWriter), so a record the server
+//     wrote at a session's key reads as no session's, and a read that did not answer is the
+//     bus-unavailable 503; the interest list and another session's interests are 403, and the
+//     Legion agent registry is not written here.
 //   - The start: refused beside every other credential, beside Dispatch's principal, beside
 //     webhooks, and without the broker-token settings (validateEdgeMode).
 //
@@ -169,12 +172,16 @@ func edgeScopeOf(r *http.Request, repositories *edgeRepositories) *edgeScope {
 	return &edgeScope{projects: projects, repositories: repositories}
 }
 
-// shows reports whether the scope shows the session whose entry is entry: the token that
-// registered it (session.SessionEntry.Projects) lists one of the scope's projects. An entry no
-// token's list was recorded on, one an earlier build wrote among them, is no project's. A nil
-// scope shows every session.
+// shows reports whether the scope shows the session whose entry is entry: its record names its own
+// key (session.SessionEntry.SessionID) and the token that registered it
+// (session.SessionEntry.Projects) lists one of the scope's projects. An entry no token's list was
+// recorded on, one an earlier build wrote among them, is no project's, and so is one that names no
+// key: a record naming no key cannot be told from another session's record the server copied under
+// this one, so the edge grants no project on it (session.DecodeEntry reads such a record with no
+// SessionID). The cache alone cannot say the record is a writer's; showsConfirmed adds the leader
+// read that does. A nil scope shows every session.
 func (s *edgeScope) shows(entry session.SessionEntry) bool {
-	return s == nil || slices.ContainsFunc(entry.Projects, func(project string) bool { return slices.Contains(s.projects, project) })
+	return s == nil || (entry.SessionID != "" && slices.ContainsFunc(entry.Projects, func(project string) bool { return slices.Contains(s.projects, project) }))
 }
 
 // hides reports whether the scope answers a session read as entry with err as one no listener has
@@ -183,6 +190,49 @@ func (s *edgeScope) shows(entry session.SessionEntry) bool {
 // route answers it as every listener does. A nil scope hides nothing.
 func (s *edgeScope) hides(entry session.SessionEntry, err error) bool {
 	return s != nil && (errors.Is(err, nats.ErrKeyNotFound) || (err == nil && !s.shows(entry)))
+}
+
+// showsConfirmed is shows, and for a session it would show, confirmed by the session's newest
+// message on the bucket's stream, read from the stream's leader with the headers stored with it
+// (session.SessionRegistry.StoredByWriter): a record the server wrote at the session's key - a
+// RePublish of another stream naming the key's subject, whose body that stream's writer chose -
+// reads as a record naming its key, a machine, a time and any projects it likes, so an entry that
+// would grant the session is granted only when the leader's newest message is a writer's. A message
+// the server wrote, or none, reads as no session's, and so does a key the leader refused or held no
+// message for (nats.ErrKeyNotFound, bus.ErrRefused). A read that did not answer is returned as its
+// error, not as an absence, so a caller answers the bus-unavailable 503 it answers for any read
+// that did not answer, never the 404 of a session it does not show nor a silent drop from a list. A
+// nil scope shows every session, and an entry it would not show, both cost no read.
+func (s *edgeScope) showsConfirmed(ctx context.Context, sessions *session.SessionRegistry, entry session.SessionEntry) (bool, error) {
+	if s == nil {
+		return true, nil
+	}
+	if !s.shows(entry) {
+		return false, nil
+	}
+	return sessions.StoredByWriter(ctx, entry.SessionID)
+}
+
+// hidesConfirmed is hides with showsConfirmed's leader read: a session the scope does not show,
+// confirmed by its stored record, and one the bucket holds no record of (nats.ErrKeyNotFound), are
+// hidden as a session no listener has heard of (unknownSession). A read that did not answer, the
+// confirmation's own among them, is returned as its error, not as hidden, so the route answers the
+// bus-unavailable 503. A nil scope hides nothing.
+func (s *edgeScope) hidesConfirmed(ctx context.Context, sessions *session.SessionRegistry, entry session.SessionEntry, err error) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	if errors.Is(err, nats.ErrKeyNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, nil
+	}
+	shown, confErr := s.showsConfirmed(ctx, sessions, entry)
+	if confErr != nil {
+		return false, confErr
+	}
+	return !shown, nil
 }
 
 // roles is the roles among roles, each named by its claim's key, that work for one of the scope's
@@ -219,6 +269,78 @@ func (s *edgeScope) agents(agents []legionagents.Agent) []legionagents.Agent {
 		return agents
 	}
 	return slices.DeleteFunc(agents, func(agent legionagents.Agent) bool { return !s.showsAgent(agent) })
+}
+
+// showsAgentConfirmed is showsAgent with the agent's session confirmed by its stored record: the
+// issue the entry works is of one of the scope's projects, and the entry's session is a session of
+// that issue's project, confirmed by its stored record (sessionInProject, through
+// session.SessionRegistry.StoredByWriter), so a record the server wrote reads as no session. An
+// entry is a record any writer of the registry's bucket can store, naming any session under any
+// issue, so the issue it names says nothing of whose session it names: a chosen entry naming an
+// in-house session under an outside project's issue would otherwise show that session's id, a title
+// its writer chose and its live state to the outside session. Its replacement (replaced_by,
+// replaced_at) is read from the other entries of its role token, records of the same kind, so it is
+// shown only when it too is a session of that project, and answered as none otherwise. A
+// confirmation read that did not answer is returned as its error, so the route answers the
+// bus-unavailable 503. A nil scope shows every entry.
+func (s *edgeScope) showsAgentConfirmed(ctx context.Context, sessions *session.SessionRegistry, agent legionagents.Agent) (legionagents.Agent, bool, error) {
+	if s == nil {
+		return agent, true, nil
+	}
+	project, ok := contracts.IssueProject(agent.Issue)
+	if !ok || !slices.Contains(s.projects, project) {
+		return legionagents.Agent{}, false, nil
+	}
+	shown, err := sessionInProject(ctx, sessions, agent.SessionID, project)
+	if err != nil {
+		return legionagents.Agent{}, false, err
+	}
+	if !shown {
+		return legionagents.Agent{}, false, nil
+	}
+	if agent.ReplacedBy != nil {
+		replaced, err := sessionInProject(ctx, sessions, *agent.ReplacedBy, project)
+		if err != nil {
+			return legionagents.Agent{}, false, err
+		}
+		if !replaced {
+			agent.ReplacedBy, agent.ReplacedAt = nil, nil
+		}
+	}
+	return agent, true, nil
+}
+
+// agentsConfirmed is agents with each entry's session confirmed (showsAgentConfirmed), in their
+// order, without those it shows not. A confirmation read that did not answer ends the listing with
+// its error, which the route answers as the bus-unavailable 503. A nil scope returns agents as it
+// is.
+func (s *edgeScope) agentsConfirmed(ctx context.Context, sessions *session.SessionRegistry, agents []legionagents.Agent) ([]legionagents.Agent, error) {
+	if s == nil {
+		return agents, nil
+	}
+	shown := agents[:0]
+	for _, agent := range agents {
+		agent, ok, err := s.showsAgentConfirmed(ctx, sessions, agent)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			shown = append(shown, agent)
+		}
+	}
+	return shown, nil
+}
+
+// sessionInProject reports whether sessionID's entry in sessions is a session of project, confirmed
+// by its stored record (session.SessionRegistry.StoredByWriter): the cached entry names its own key
+// and lists project, and the stream's leader confirms its newest message is a writer's. A read that
+// did not answer is returned as its error.
+func sessionInProject(ctx context.Context, sessions *session.SessionRegistry, sessionID, project string) (bool, error) {
+	entry, _ := sessions.Lookup(sessionID)
+	if entry.SessionID == "" || !slices.Contains(entry.Projects, project) {
+		return false, nil
+	}
+	return sessions.StoredByWriter(ctx, entry.SessionID)
 }
 
 // holder is result, the resolution of a role's holder, as the scope answers it: whole for a holder

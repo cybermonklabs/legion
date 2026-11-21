@@ -17,7 +17,22 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
+// ErrEntryUnbound is a stored session record that is not the registration of the key it is stored
+// under (DecodeEntry): one naming another key or the empty key, or naming its key with no machine,
+// registration time or projects. Every reader reads it as no record.
+var ErrEntryUnbound = errors.New("the session record is not the registration of its key")
+
 type SessionEntry struct {
+	// SessionID is the key the record is written under, which every writer sets (PutWithin). A
+	// record naming another key is read as absent (DecodeEntry): it is not that session's
+	// registration but a copy of another session's, which the server itself stores when a request
+	// names the key's subject as its reply subject, so a direct get of one session's record can
+	// lay that session's machine and projects over another's key. It is empty only on a record
+	// an earlier build wrote, which names no key and is read as before by every reader here; a
+	// reader that grants a session's scope across a project reads such an entry as no project's
+	// (cmd/listener's sessionOfProjects). An entry naming no key encodes none, so it reads as
+	// such a record and never as one naming the empty key, which every reader refuses.
+	SessionID string `json:"session_id,omitempty"`
 	// Port is always 0 for an entry this build writes: a registration naming a serving port is
 	// refused (cmd/listener's subscribeHandler), and no delivery opens a connection to a
 	// session. The field is kept because every released client parses it in the listener's
@@ -111,6 +126,55 @@ type SessionEntry struct {
 	// the entry it replaces (PutWithin). It is the registry's own record: no answer of the
 	// listener's API carries it.
 	RepositoryGap string `json:"repository_gap,omitempty"`
+}
+
+// storedEntry is a session record as DecodeEntry reads it: the entry, with the key it names and
+// its projects kept raw, so a record naming the empty key or null is told apart from one naming no
+// key at all, and one naming null projects from one naming none. The outer fields are the
+// shallower of the two tagged session_id and projects, so they are the ones decoded.
+type storedEntry struct {
+	SessionEntry
+	SessionID json.RawMessage `json:"session_id"`
+	Projects  json.RawMessage `json:"projects"`
+}
+
+// DecodeEntry reads value, stored under key in the session bucket, as key's registration. A value
+// naming a key (session_id) is that registration only when the key it names is key, and it names
+// a machine (machine_id), a registration time (updated_at above 0) and its projects (the projects
+// key present, null or a list), which every registration this build writes names; any other is
+// refused with an error wrapping ErrEntryUnbound. The server itself stores such a value when a
+// request names key's subject as its reply subject: a direct get's copy of another session's
+// record, or of the session's own interest row, which names its key, machine and time but no
+// projects. A value naming no key is what every build before SessionEntry.SessionID wrote: it is
+// read exactly as before, and its entry's SessionID is empty, which a reader of a session's scope
+// reads as no project's. A value that is not JSON is the decode error itself, as before. A field
+// this build does not know is no refusal: a newer build's record must not read as gone here for
+// the length of a rolling deploy.
+func DecodeEntry(key string, value []byte) (SessionEntry, error) {
+	var stored storedEntry
+	if err := json.Unmarshal(value, &stored); err != nil {
+		return SessionEntry{}, err
+	}
+	entry := stored.SessionEntry
+	if stored.Projects != nil {
+		if err := json.Unmarshal(stored.Projects, &entry.Projects); err != nil {
+			return SessionEntry{}, err
+		}
+	}
+	if stored.SessionID == nil {
+		return entry, nil
+	}
+	switch {
+	case json.Unmarshal(stored.SessionID, &entry.SessionID) != nil || entry.SessionID != key:
+		return SessionEntry{}, fmt.Errorf("%w: stored under %s, it names session %s", ErrEntryUnbound, key, stored.SessionID)
+	case entry.MachineID == "":
+		return SessionEntry{}, fmt.Errorf("%w: stored under %s, it names no machine", ErrEntryUnbound, key)
+	case entry.UpdatedAt <= 0:
+		return SessionEntry{}, fmt.Errorf("%w: stored under %s, it names no registration time", ErrEntryUnbound, key)
+	case stored.Projects == nil:
+		return SessionEntry{}, fmt.Errorf("%w: stored under %s, it names no projects", ErrEntryUnbound, key)
+	}
+	return entry, nil
 }
 
 // TmuxPlace is a session's pane and the window and tmux session holding it, as the listener's
@@ -568,7 +632,12 @@ func (c sessionCache) CompleteRead(kvwatch.Read) {
 }
 
 // decodeLocked is the row a put record of the bucket, delivered or read, leaves in the cache, with
-// its local expiry measured from the record's Created (expiryFor).
+// its local expiry measured from the record's Created (expiryFor). A record that is not the
+// registration of its key (DecodeEntry) is an error, as
+// one that does not decode is: the copy keeps no row for it and evicts the row it held
+// (kvwatch.Rows.Decode), its caller logs it, and every read answers the session as having no
+// record — Lookup gone, Get and Refresh nats.ErrKeyNotFound, List without it — so no reader takes
+// another session's machine or projects from a record copied under this key.
 //
 // A record older than the row the copy removed at its deadline needs no test of its own here: the
 // copy keeps that key's revision in its fence when it removes a row for the cache's own reasons
@@ -577,8 +646,8 @@ func (c sessionCache) CompleteRead(kvwatch.Read) {
 // does keep is answered absent once it is past its deadline (Get) and removed at it (expireDue).
 // Callers hold r.mu.
 func (r *SessionRegistry) decodeLocked(entry kvwatch.Entry) (*cachedSession, bool, error) {
-	var item SessionEntry
-	if err := json.Unmarshal(entry.Value, &item); err != nil {
+	item, err := DecodeEntry(entry.Key, entry.Value)
+	if err != nil {
 		return nil, false, err
 	}
 	return &cachedSession{entry: item, expiresAt: r.expiryFor(entry.Created, item.UpdatedAt)}, true, nil
@@ -798,16 +867,30 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 // the bucket's entry read again (readEntry) and entry written over it with that entry's mark,
 // until the write lands or ctx ends (writeEntryAt's stop rule). Every other field is entry's, so
 // against another listener's write it is last-writer-wins, as it always was.
+//
+// The entry is written naming sessionID (SessionEntry.SessionID) and stamped with this moment, so
+// every reader reads it as sessionID's registration (DecodeEntry). A caller that writes back an
+// entry it read keeps that entry's Projects only where the entry names sessionID already: one
+// naming no key may be another session's record the server copied under this one, and this write
+// would bind its projects to sessionID (cmd/listener's roleSetHandler). An entry naming no machine
+// is refused with ErrEntryUnbound and nothing is written: every reader would read it as no record,
+// while this registry's own copy held it until its watcher delivered it.
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
+	if entry.MachineID == "" {
+		return fmt.Errorf("write session %s to the bucket: %w: the entry names no machine", sessionID, ErrEntryUnbound)
+	}
+	entry.SessionID = sessionID
 	// Several live processes can hold the same session (shared on-disk state) - a harness can
 	// keep a session's state on shared disk - and each heartbeats a claim of its own. The route
 	// follows whichever wrote last, and this write stamps the entry with the moment it was made,
 	// so a reader weighing the route's freshness (ClaimStaleAfter) reads the latest heartbeat.
 	entry.UpdatedAt = r.now().UnixMilli()
-	// The copy's entry is at the fence's revision whenever the copy holds one, since the copy
-	// stores an entry only at or past its fence and moves the fence with it
-	// (kvwatch.Copy.FenceFor). A fence of another epoch reads 0, and a key the copy holds no
-	// entry of is no entry to carry a mark from, so either is read from the bucket first.
+	// The gap mark the session is owed (SessionEntry.RepositoryGap) is carried from the entry this
+	// write replaces, never from this registry's copy where that copy trails the bucket. The copy's
+	// entry is at the fence's revision whenever the copy holds one, since the copy stores an entry
+	// only at or past its fence and moves the fence with it (kvwatch.Copy.FenceFor). A fence of
+	// another epoch reads 0, and a key the copy holds no entry of is no entry to carry a mark from,
+	// so either is read from the bucket first, and the write is fenced on the revision it read.
 	r.mu.RLock()
 	kv, epoch := r.watcher.Handle()
 	replaced, cached := r.cache.Get(sessionID)
@@ -1087,6 +1170,29 @@ func (r *SessionRegistry) RefreshFromLeader(ctx context.Context, sessionID strin
 		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}
 	return r.applyRead(sessionID, epoch, got, err)
+}
+
+// StoredByWriter reports whether sessionID's newest message on the session bucket's stream, read
+// from the stream's leader with the headers the stream stored with it (bus.KeyValue.NewestFromLeader),
+// is a record a writer stored: a put carrying none of the headers the server writes
+// (bus.WrittenByServer). A message the server wrote - a direct get's copy of another key's record,
+// or a RePublish of another stream naming the key's subject, whatever body that stream was given -
+// can read as a record of sessionID (DecodeEntry) naming any projects, and neither the watcher's
+// entries nor a direct get carry the headers that tell it apart. A key the stream holds no message
+// for, or whose newest message is a delete or purge marker, is no writer's record either. It is the
+// edge listener's confirmation of a session it is about to show or send to across what a cached
+// entry says (cmd/listener's edgeSessionShown); every other reader has no use for its cost, a read
+// the leader alone answers.
+func (r *SessionRegistry) StoredByWriter(ctx context.Context, sessionID string) (bool, error) {
+	kv, _ := r.watcher.Handle()
+	newest, err := kv.NewestFromLeader(ctx, sessionID)
+	switch {
+	case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, bus.ErrRefused):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("read session %s from the bucket's stream leader: %w", sessionID, err)
+	}
+	return newest.Operation() == nats.KeyValuePut && !bus.WrittenByServer(newest), nil
 }
 
 // applyRead is what Refresh and RefreshFromLeader both do with the read they made: got and err

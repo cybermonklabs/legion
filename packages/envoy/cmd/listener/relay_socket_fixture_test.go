@@ -510,15 +510,24 @@ func relayFrameReceipt(session string) string {
 }
 
 // publishRelayFrame publishes, on session's relay subject, a message shaped as a relay frame -
-// its receipt subject a receipt of session's (relayFrameReceipt) - carrying header, and answers it.
+// its receipt subject a receipt of session's (relayFrameReceipt) - carrying header and the relay's
+// Envoy-Subject, set on header itself. The subject and the envelope are an event of
+// relaySocketProject, which the edge's rule (edgeFrameVerdict) passes to a socket of any session
+// whose token lists it, so a row that holds a frame away from a socket holds it there by the
+// socket's subscriptions alone.
 func publishRelayFrame(t *testing.T, url, session string, header natsgo.Header) *natsgo.Msg {
 	t.Helper()
 	conn := testnats.Connect(t, url)
+	if header == nil {
+		header = natsgo.Header{}
+	}
+	subject := "notifications.dispatch.issue." + relaySocketProject + "." + relaySocketProject + "-1.comment.created"
+	header.Set(relayHeaderSubject, subject)
 	msg := &natsgo.Msg{
 		Subject: bus.DeliverSubject(session),
 		Reply:   relayFrameReceipt(session),
 		Header:  header,
-		Data:    []byte(`{"row":"` + t.Name() + `"}`),
+		Data:    marshalListenerEnvelope(t, listenerTestEnvelope(subject, "row-"+t.Name())),
 	}
 	if err := conn.PublishMsg(msg); err != nil {
 		t.Fatalf("publish a frame for %s: %v", session, err)
@@ -549,13 +558,16 @@ func (rig *relaySocketRig) dialStalled(t *testing.T, session, token string) (*we
 }
 
 // flood publishes n relay frames of 512 KiB on session's relay subject, far more than a
-// connection's buffers hold when n is in the tens, and returns once the server holds them.
+// connection's buffers hold when n is in the tens, and returns once the server holds them. Each
+// names an event of relaySocketProject as its stored subject, which the edge's rule passes
+// (edgeFrameVerdict), so each is written to the socket.
 func flood(t *testing.T, url, session string, n int) {
 	t.Helper()
 	publisher := testnats.Connect(t, url)
 	data := bytes.Repeat([]byte("x"), 512<<10)
+	header := natsgo.Header{relayHeaderSubject: {"notifications.dispatch.issue." + relaySocketProject + "." + relaySocketProject + "-1.comment.created"}}
 	for i := range n {
-		if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: relayFrameReceipt(session), Data: data}); err != nil {
+		if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: relayFrameReceipt(session), Header: header, Data: data}); err != nil {
 			t.Fatalf("publish frame %d: %v", i, err)
 		}
 	}
