@@ -364,15 +364,23 @@ older broker opened, is refused `403 NOT_APPROVER`, saying why, and their revoke
 machine login `404 NOT_FOUND`. Their own machine logins and the grants of their own sessions stay
 theirs. While Dispatch cannot say what kind of member a person is, those lists leave such rows
 out, the machine-login page and its revoke hold the person to their own logins, so a lost
-machine's login can still be ended there, such a dismissal or deny is refused
-`503 MEMBER_KIND_UNCHECKABLE`, and the approval page shows no request (`503`). The revoke of a
-grant by the person it names as its approver goes ahead while Dispatch does not answer (a timeout,
-a failed connection, or a `502`, `503` or `504`), since a revoke only takes access away; every
-other revoke as an approver then, and every revoke while Dispatch answers anything else the broker
-cannot read, such as a refusal of the broker's own account or a kind this broker does not know, is
-refused `503 MEMBER_KIND_UNCHECKABLE`. A revoke of a grant of one's own session asks nothing.
-Each member-kind read a route Dispatch relays makes ends within 2 seconds, inside the 5 that
-Dispatch waits for the broker. The broker's rate
+machine's login can still be ended there, while a service's login is out of reach there until
+Dispatch answers and what remains is cluster access (delete the service's pods, or remove its
+account from `BROKER_SERVICE_LOGINS` and redeploy the broker), such a dismissal or deny is refused
+`503 MEMBER_KIND_UNCHECKABLE`, and the approval page shows no request (`503`). While Dispatch does
+not answer at all (a timeout, a failed connection,
+a gateway's `502`, `503` or `504`, or Dispatch's own `DATABASE_UNAVAILABLE` or
+`OIDC_ISSUER_UNAVAILABLE`), a grant's revoke goes ahead where nobody else could end it, since a
+revoke only takes access away: by the person the grant names as its approver, and by any of its
+approvers, a member of its group or anyone, when its session acts for no person, as a service's
+pod does. A grant on a person's session has that person to end it, so every other revoke as an
+approver then is refused `503 MEMBER_KIND_UNCHECKABLE`, and so is every revoke while Dispatch
+answers anything else the broker cannot read: a refusal of the broker's own account, a kind this
+broker does not know, another code of Dispatch's, a certificate that does not verify or a name
+that does not resolve. A revoke of a grant of one's own session asks nothing. Each member-kind read
+a route Dispatch relays makes ends within 2 seconds, inside the 5 that Dispatch waits for the
+broker, and so does the approval page's; a revoke's read of a grant's project is not bounded so.
+The broker's rate
 limiter caps how often anyone can start a machine login, per source address and per named person,
 and how often anyone can try a token login: per source address before the token is verified, and
 per account once it is. A token login the broker could not complete (a 5xx, such as while its

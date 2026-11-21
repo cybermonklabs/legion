@@ -157,11 +157,13 @@ The page then shows, under **What happened**, what became of each request it dec
 | `unavailable: the secrets broker could not ask Dispatch whether you may see this request, …` | Dispatch did not answer whether you may see the request, so nothing was decided and it stays pending. The line names the request by its record id, not by its secrets. Decide it once Dispatch answers. |
 | `still pending; it was not decided: Dispatch called you a restricted member, who decides no secret request.` | Dispatch called you a restricted member when you decided: someone an access list admitted from outside the deployment's sign-in domain, who is no approver of a secret ([Machine login](/legion/broker/concepts/#machine-login)). Nothing was decided. |
 
-The page shows no request at all to a person Dispatch calls a restricted member: it answers
-`Dispatch calls you a restricted member, who decides no secret request, so this page shows you
-none.` (`403`), whatever request it names. While the broker cannot learn from Dispatch what kind of
-member you are, it answers `The secrets broker could not ask Dispatch whether you may decide secret
-requests, so it shows you none and decides none. Try again shortly.` (`503`). Either page lets you
+The page shows no request at all to a person Dispatch calls a restricted member: it answers `A
+person Dispatch calls a restricted member is no approver of a secret, and Dispatch calls you one,
+so this page shows you no secret request.` (`403`), whatever request it names. While the broker
+cannot learn from Dispatch within 2 seconds what kind of member you are, it answers `The secrets
+broker could not ask Dispatch whether you may decide secret requests, so this page shows you none,
+nor what became of a decision you made. Try again shortly.` (`503`): a decision you made before
+stands, and the same address shows what became of it once Dispatch answers. Either page lets you
 sign in as someone else.
 
 A decision is accepted only from the page itself, within an hour of opening it, while your sign-in

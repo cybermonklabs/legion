@@ -20,18 +20,23 @@ body: |-
   operator, stay theirs whatever Dispatch answers. While Dispatch cannot say what kind of member a
   person is, their lists leave those rows out, logged once per person per 30 seconds (`an
   approver's list leaves out every row it holds the person as an approver of`), their
-  machine-login list and revoke hold them to their own logins, logged at WARN (`a machine-login
-  route holds the person to their own logins`), so anyone can still end a lost machine's login,
-  their dismissal or deny is refused `503 MEMBER_KIND_UNCHECKABLE`, with nothing written, and the
-  approval page shows them no request (`503`). The revoke of a grant by the person it names as its
-  approver goes ahead while Dispatch does not answer at all (a timeout, a failed connection, or a
-  `502`, `503` or `504`), logged at WARN (`a revoke as the grant's approver goes ahead though
-  Dispatch could not say whether the person is a restricted member`), since a revoke only takes
-  access away and one refused through an outage would delay ending a grant that leaks; every other
-  revoke as an approver then, as a member of the grant's group or as anyone, and every revoke while
+  machine-login list and revoke hold them to their own logins, logged at WARN once per person per
+  minute (`a machine-login route holds the person to their own logins`), so anyone can still end a
+  lost machine's login while a service's login waits for Dispatch or for cluster access, their
+  dismissal or deny is refused `503 MEMBER_KIND_UNCHECKABLE`, with nothing written, and the
+  approval page shows them no request (`503`). While Dispatch does not answer at all (a timeout, a
+  failed connection, a gateway's `502`, `503` or `504`, or Dispatch's own `DATABASE_UNAVAILABLE`
+  or `OIDC_ISSUER_UNAVAILABLE`), a grant's revoke goes ahead where nobody else could end it, logged
+  at WARN (`a revoke as the grant's approver goes ahead though Dispatch could not say whether the
+  person is a restricted member`): by the person the grant names as its approver, and through its
+  group or as anyone when the grant's session acts for no person, such as a service's pod, since a
+  revoke only takes access away and one refused through an outage would delay ending a grant that
+  leaks. A grant on a person's session has that person to end it, so a revoke of it through its
+  group or as anyone is then refused `503 MEMBER_KIND_UNCHECKABLE`, and so is every revoke while
   Dispatch answers what the broker cannot read (a refused account, a kind this broker does not
-  know, another status, a body that does not decode), is refused `503 MEMBER_KIND_UNCHECKABLE`.
-  Every member-kind read a route Dispatch relays makes ends within 2 seconds, so a Dispatch that
+  know, another status or code, a body that does not decode, a certificate that does not verify, a
+  name that does not resolve) and every revoke whose caller hung up. Every member-kind read a
+  route Dispatch relays makes, and the approval page's, ends within 2 seconds, so a Dispatch that
   does not answer leaves the route its answer rather than holding it past the 5 seconds Dispatch
   waits. With `BROKER_PROJECT_ACCESS_URL` unset the broker asks nothing and behaves as before.
 time: 2026-11-21T14:07:07Z
