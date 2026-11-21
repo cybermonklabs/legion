@@ -373,18 +373,27 @@ function spelled(address: string): string {
 // onlyTheLoopbackHolder is a row's whole check that listening_holders counts only the socket on
 // 127.0.0.1:PORT: PROGRAM, another process, listens on OTHER at a port the kernel chooses and
 // prints it, and this test process then listens on 127.0.0.1 with that port. That order cannot
-// itself collide: the other order, 127.0.0.1 first, failed when a third process already held OTHER
-// at the port the kernel then gave 127.0.0.1. A port some process already holds on 127.0.0.1, or
-// on every address, refuses this listen, and the row takes another from a new process, up to five
-// times. Both LISTEN rows are read from /proc/net/tcp before the walk, which must name this test
-// process alone.
+// meet the collision the row is about: the other order, 127.0.0.1 first, failed when a third
+// process already held OTHER at the port the kernel then gave 127.0.0.1. No order removes the
+// reverse, a port the kernel gives OTHER that some process already listens on at 127.0.0.1 (or on
+// every address), since the box's processes share one network namespace: that refuses this listen,
+// and the row takes a fresh port from a new process until 3 s have gone (the row's 5 s less 2 s for
+// the walk and its teardown), then fails naming every port 127.0.0.1 refused, a failure of its
+// setup and not of listening_holders. Both LISTEN rows are read from /proc/net/tcp before the walk,
+// which must name this test process alone.
 async function onlyTheLoopbackHolder(name: string, program: string[], other: string) {
   const work = join(dir, name);
   mkdirSync(work);
   let listener: { port: number; stop(closeActiveConnections?: boolean): void } | undefined;
   const refused: string[] = [];
+  const deadline = Date.now() + 3000;
   try {
-    for (let attempt = 0; attempt < 5 && listener === undefined; attempt++) {
+    while (listener === undefined) {
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `no port free on both ${other} and 127.0.0.1 within 3 s: ${refused.length} ports tried, each refused on 127.0.0.1, so listening_holders was not run (${refused.join("; ")})`
+        );
+      }
       const holder = Bun.spawn(ownGroup(program), {
         cwd: dir,
         env: { PATH: process.env.PATH ?? "" },
@@ -403,11 +412,10 @@ async function onlyTheLoopbackHolder(name: string, program: string[], other: str
       try {
         listener = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
       } catch (error) {
-        refused.push(`127.0.0.1:${port}: ${(error as Error).message}`);
+        refused.push(`${port}: ${(error as Error).message}`);
         holder.kill("SIGKILL");
       }
     }
-    expect({ refused, listening: listener !== undefined }).toEqual({ refused, listening: true });
     const port = listener?.port ?? 0;
     const hex = port.toString(16).toUpperCase().padStart(4, "0");
     const listening = readFileSync("/proc/net/tcp", "utf8")
