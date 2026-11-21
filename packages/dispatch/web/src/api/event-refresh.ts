@@ -1522,12 +1522,13 @@ function projectDocumentSlug(event: DispatchEvent): string | undefined {
  * neither an issue nor a project document. An issue's event is on the issue or on something it
  * owns - a comment, an ask, a message, a document and its blocks - each written under
  * `dispatch://<KEY>`, with `/` or `#` next. The issue's own address, `dispatch://<KEY>`, is
- * named by the issue's title and by nothing else, since the names read names an issue by its
- * title alone and every other target by its own words, a document by its name and a block by its
- * text (the server's `refs.TargetNames`). So a write that changes the title (`issue.updated`) is
- * on that one address, and every other event is on the addresses under it and never on that one,
- * since none of them changes the title: a child's page cites its parent by its bare address, and
- * a new version of the parent's spec leaves the name of that address as it was. A project
+ * named by the issue's title and its status and by nothing else, since the names read names an
+ * issue by its title and its status alone and every other target by its own words, a document by
+ * its name and a block by its text (the server's `refs.TargetNames`). So a write of the issue
+ * itself (`issue.updated`, `issue.closed`) is on that one address, and every other event is on
+ * the addresses under it and never on that one, since none of them changes the title or the
+ * status: a child's page cites its parent by its bare address, and a new version of the parent's
+ * spec leaves the name of that address as it was. A project
  * document's event is on the document or on an ask, a comment or a block of it, each written
  * under `dispatch://<PROJECT>/artifact/<slug>`, with `@`, `/` or `#` next. An event whose payload
  * carries that slug (`projectDocumentSlug`) is on those addresses, and one that names the
@@ -1537,7 +1538,7 @@ function projectDocumentSlug(event: DispatchEvent): string | undefined {
 function eventAddresses(event: DispatchEvent): ((address: string) => boolean) | undefined {
   if (event.issue_key !== null) {
     const issue = buildDispatchReference({ key: event.issue_key, kind: "issue" });
-    if (event.type === "issue.updated") {
+    if (event.type === "issue.updated" || event.type === "issue.closed") {
       return (address) => address === issue;
     }
     return (address) => address !== issue && addressUnder(address, issue, "/#");
@@ -1584,10 +1585,12 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * (`useIssueTree`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
  * addresses it names, so a page that comes to hold another set reads again under a key of its
  * own: only a change of words under the same address needs a rule.
- * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or
- * naming none, as an older server sends it) renames the issue's own address, since a names read
- * names an issue by its title, so it refreshes the reads naming that address, and only those
- * (`eventAddresses`).
+ * An issue's write that changes its title or its status (`issue.updated` naming `title`,
+ * `status` or `closed_at` among its changes - a reopen among them - or naming none, as an older
+ * server sends it, and every `issue.closed`) renames the issue's own address, since a names read
+ * names an issue by its title and answers its status beside it (INFRA-4009 R8: a status change
+ * costs the reads a title change costs), so it refreshes the reads naming that address, and only
+ * those (`eventAddresses`).
  * A document's creation (`artifact.created`) gives words to an address a page cited before the
  * document existed, its rename (`artifact.renamed`) moves the name the read answers for an
  * address to the document, and its removal (`artifact.removed`) makes every address to it and to
@@ -1634,10 +1637,16 @@ function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
     case "artifact.version":
     case "ask.edited":
     case "comment.edited":
+    case "issue.closed":
       return [namesReadsNaming(event)];
     case "issue.updated": {
       const changes = issueChanges(event);
-      return changes === undefined || changes.has("title") ? [namesReadsNaming(event)] : [];
+      return changes === undefined ||
+        changes.has("title") ||
+        changes.has("status") ||
+        changes.has("closed_at")
+        ? [namesReadsNaming(event)]
+        : [];
     }
     default:
       return [];
