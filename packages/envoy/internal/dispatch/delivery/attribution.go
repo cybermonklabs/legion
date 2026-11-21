@@ -123,11 +123,19 @@ const (
 	// may carry is still github.com, and measuring those digits against 65535 would only lose
 	// citations to a typo.
 	maxHostName = 253
+	// citationReach is the most of a body before an issue path that citesGitHubIssue reads: up to
+	// maxHostName digits of a port, the colon before them, and up to maxHostName bytes of the run
+	// before that (authorityBefore). readCitedIssues hands each decision no more of the body than
+	// that and the path itself, so citesGitHubIssue, as it is or as a later change makes it, reads
+	// no more than citationReach bytes before a path however long the body is.
+	citationReach = 2*maxHostName + 1
 )
 
-// citesGitHubIssue says whether the issue path running from pathAt to end belongs to a URL whose
-// host is github.com. It asks one question, and it is the question the alert this file was
-// changed for asks: what is the host of the URL this path hangs off?
+// citesGitHubIssue says whether the issue path running from pathAt to the end of text belongs
+// to a URL whose host is github.com. text is the part of a body that ends where the path does and
+// starts at most citationReach bytes before the path (readCitedIssues). It asks one question, and
+// it is the question the alert this file was changed for asks: what is the host of the URL this
+// path hangs off?
 //
 // authorityBefore answers it by reading the run of host bytes immediately before the path, and
 // that read is what refuses most of the names that look like github.com: `@` and `%` are no host
@@ -145,21 +153,22 @@ const (
 // writes; a rule for the bytes before the host credited some of those shapes and dropped others,
 // which is why there is none. So a citation inside another URL's path, query or fragment is
 // credited here as it is there, and what this change does to attribution is to refuse a host
-// that is not github.com and to credit a host spelled in any case or carrying a port.
-func citesGitHubIssue(body string, pathAt, end int) bool {
-	host := authorityBefore(body, pathAt)
+// that is not github.com and to credit a host spelled in any case or carrying a port. work counts
+// the call and the bytes before the path it was handed (citationWork).
+func citesGitHubIssue(text string, pathAt int, work *citationWork) bool {
+	work.decides(pathAt)
+	host := authorityBefore(text, pathAt)
 	if host < 0 {
 		return false
 	}
-	parsed, err := url.Parse("//" + body[host:end])
+	parsed, err := url.Parse("//" + text[host:])
 	return err == nil && strings.EqualFold(parsed.Hostname(), "github.com") &&
-		parsed.EscapedPath() == body[pathAt:end]
+		parsed.EscapedPath() == text[pathAt:]
 }
 
 // authorityBefore is where the authority owning the path at pathAt begins, or -1 where no host
 // stands before the path at all. It reads the port's digits and then the run of host bytes, each
-// bounded by a host name's length, so one match costs the same constant whatever the body holds
-// around it and a body of any size costs its own length plus that constant per match.
+// bounded by a host name's length, so it reads no byte more than citationReach before the path.
 func authorityBefore(body string, pathAt int) int {
 	at := pathAt
 	digits := at
@@ -183,6 +192,26 @@ func isDigitByte(b byte) bool { return b >= '0' && b <= '9' }
 
 func isHostByte(b byte) bool {
 	return isDigitByte(b) || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b == '.' || b == '-'
+}
+
+// citationWork counts the calls of citesGitHubIssue and the bytes before its path each was
+// handed: in all, and the most for one path. The two cost tests count it instead of timing the
+// call (attribution_test.go, citation_boundary_test.go): each path's decision is handed at most
+// citationReach bytes before it, where a reader that walked back to the nearest space would need
+// the body back to that space. Production counts nothing: citedIssues passes a nil
+// *citationWork, whose method returns at once.
+type citationWork struct {
+	decisions             int
+	before, longestBefore int
+}
+
+// decides counts one call of citesGitHubIssue handed pathAt bytes before its path.
+func (w *citationWork) decides(pathAt int) {
+	if w != nil {
+		w.decisions++
+		w.before += pathAt
+		w.longestBefore = max(w.longestBefore, pathAt)
+	}
 }
 
 func attributionInputsFrom(facts attributionFacts) AttributionInputs {
@@ -210,13 +239,22 @@ func appendUnique(list []string, values ...string) []string {
 // citedIssues is every GitHub issue body cites, as https://github.com/<owner>/<repo>/issues/<n>,
 // in the order the citations appear; a bare #N names an issue of repo.
 func citedIssues(repo, body string) []string {
+	return readCitedIssues(repo, body, nil)
+}
+
+// readCitedIssues is citedIssues, counting into work what each path's decision is handed
+// (citationWork). Only the cost tests pass a work; citedIssues passes nil. Each decision gets the
+// body from citationReach bytes before the path to the path's end, the most it reads, so its
+// cost is bounded per path whatever the body holds before it.
+func readCitedIssues(repo, body string, work *citationWork) []string {
 	type citation struct {
 		at  int
 		url string
 	}
 	citations := []citation{}
 	for _, match := range githubIssuePath.FindAllStringSubmatchIndex(body, -1) {
-		if !citesGitHubIssue(body, match[0], match[1]) {
+		from := max(0, match[0]-citationReach)
+		if !citesGitHubIssue(body[from:match[1]], match[0]-from, work) {
 			continue
 		}
 		citations = append(citations, citation{match[0], "https://github.com/" + body[match[2]:match[3]] + "/" + body[match[4]:match[5]] + "/issues/" + body[match[6]:match[7]]})
