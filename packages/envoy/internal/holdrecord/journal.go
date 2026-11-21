@@ -86,7 +86,9 @@ var (
 
 // CommandRelease is `hold release`, which every workflow admits once the record is complete, or
 // while every entry but `hold set`'s and its own is a `stop` that left nothing changed
-// (LeftUnchanged) or that stop's `intent`, so nothing changed.
+// (LeftUnchanged) or that stop's `intent`, so nothing changed. It trusts each stop's record, which
+// by LeftUnchanged's rule names what every run of its command in the hold left, so it never moves
+// the row over a change a crashed run made outside the journal.
 const CommandRelease = "hold release"
 
 // CommandSet is `hold set`, the first command of every workflow. Its `intent` is the one entry
@@ -115,9 +117,12 @@ const CommandProve = "hold prove"
 // deletes the cohort (DeleteCohort) and moves the row, and writes no entry.
 const CommandAbort = "hold abort"
 
-// LeftUnchanged is what a stop records (AppendStopLeft) when its command changed nothing outside
-// the journal before it failed; a rerun's stop records what every run of the command left, a run
-// cut after its intent included. Only stops that record it leave a hold that CommandRelease can
+// LeftUnchanged is what a stop records (AppendStopLeft) when no run of its command in this hold
+// changed anything outside the journal: it records `unchanged` only when this run changed nothing,
+// and no earlier run of the command in this hold recorded a change or ended with no entry (an
+// intent with no stop or done after it, a run cut by a crash, whose change no entry records).
+// Otherwise the stop names what those runs left, or that what a run cut after its intent left is
+// unknown, which counts as changed. Only stops that record it leave a hold that CommandRelease can
 // end without completion; a stop that records anything else, or nothing (AppendStop), counts as
 // changed, and the way out is CommandAbort.
 const LeftUnchanged = "unchanged"

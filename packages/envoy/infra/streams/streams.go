@@ -1,19 +1,16 @@
 // Package streams is envoy-infra's streams commands: every JetStream stream Envoy declares
 // (internal/streamset) is made at deploy time by the operator, since beside the NATS auth service no
 // other client may create or change one (natsgrant.ForCallout) and every start there only reads its
-// streams (bus.StreamsOperatorMadeEnvVar). Four functions, one per word of `envoy-infra streams`.
-// Check and Ensure are this package's own words (Command). Update and Census run inside a hold:
-// the writer hold registers `streams update` and `streams census` as its held commands, runs these
-// functions inside a hold of their workflow, and writes the hold journal's intent, done and stop
-// entries.
+// streams (bus.StreamsOperatorMadeEnvVar). Three functions, one per word of `envoy-infra streams`.
+// Check is this package's own word (Command). Update and Census run inside a hold: the writer hold
+// registers `streams update` and `streams census` as its held commands, runs these functions
+// inside a hold of their workflow, and writes the hold journal's intent, done and stop entries.
 //
 //   - Check, run by each deploy, unattended, as the measurement job's user: it reads each declared
 //     stream and reports what drifted, naming the stream, and sends no create and no update.
-//   - Ensure, as the operator outside a hold: it makes ENVOY_MEASURE, the one unprotected stream,
-//     when it is missing, and brings it to its declared settings, its copies among them, when it
-//     drifts; it touches no other stream.
-//   - Update, as the operator inside a hold: it makes a missing protected stream with the build's
-//     configuration and raises one by today's reconcile rules, and stops on any other difference.
+//   - Update, as the operator inside a hold: it makes a missing protected stream, or a missing
+//     ENVOY_MEASURE, with the build's configuration and raises one by today's reconcile rules, and
+//     stops on any other difference.
 //   - Census, as the operator inside a hold: it lists every stream and consumer and removes what the
 //     declared set does not name, and puts back the configuration of a declared stream a read
 //     through another stream could use (Census).
@@ -41,7 +38,7 @@ import (
 type Phase func(ctx context.Context) (natsgrant.OperatorPhase, error)
 
 // ErrWrongPhase is an operator command refused because the hold row is not in the command's phase:
-// Ensure runs only while it is released, Update and Census only while it is held.
+// Update and Census run only while it is held.
 var ErrWrongPhase = errors.New("the hold row is not in this command's phase")
 
 // requirePhase reads the row through phase and refuses, naming both phases, unless it is want.
@@ -204,55 +201,17 @@ func Check(ctx context.Context, conn *nats.Conn, settings streamset.Settings) Re
 	return report
 }
 
-// Ensure makes ENVOY_MEASURE on conn with the build's configuration when it is missing, and brings
-// a deployed one that drifts (streamset.Drift: fewer copies than the deployment's count, or any
-// other difference) to that configuration with one update, at the greater of its copies and the
-// deployment's, so check's shortfall has a repair. It touches no other stream. It runs as the
-// operator outside a hold, whose grant (natsgrant.Operator of OperatorPhaseReleased) holds the
-// create, the info and the update of ENVOY_MEASURE alone of all stream calls, and it refuses to run
-// unless phase reads the hold row released (ErrWrongPhase). An update the server refuses, such as a
-// storage change nats-server cannot make in place, is a failure naming the stream.
-func Ensure(ctx context.Context, conn *nats.Conn, settings streamset.Settings, phase Phase) (Report, error) {
-	if err := requirePhase(ctx, "streams ensure", phase, natsgrant.OperatorPhaseReleased); err != nil {
-		return Report{}, err
-	}
-	measure, _ := streamset.Find(streamset.Declared(settings), streamset.MeasureStream)
-	var report Report
-	info, err := streamInfo(ctx, conn, measure.Name)
-	switch {
-	case err == nil:
-		drift := streamset.Drift(measure, info)
-		if len(drift) == 0 {
-			return report, nil
-		}
-		config := measure.Config
-		config.Replicas = max(config.Replicas, info.Config.Replicas)
-		if _, err := request(ctx, conn, "$JS.API.STREAM.UPDATE."+measure.Name, config); err != nil {
-			report.Failures = append(report.Failures, Finding{Stream: measure.Name, What: differences(drift) + ": the update was refused: " + err.Error()})
-			return report, nil
-		}
-		report.Changes = append(report.Changes, Finding{Stream: measure.Name, What: "brought to the build's configuration: " + differences(drift)})
-		return report, nil
-	case !errors.Is(err, streamset.ErrStreamNotFound):
-		report.Unknown = append(report.Unknown, err.Error())
-		return report, nil
-	}
-	if _, err := request(ctx, conn, "$JS.API.STREAM.CREATE."+measure.Name, measure.Config); err != nil {
-		report.Failures = append(report.Failures, Finding{Stream: measure.Name, What: "the create was refused: " + err.Error()})
-		return report, nil
-	}
-	report.Changes = append(report.Changes, Finding{Stream: measure.Name, What: "made"})
-	return report, nil
-}
-
-// Update makes every protected stream of the declared set that is missing on conn, with the
-// build's configuration, and raises each that is there by today's reconcile rules
+// Update makes every protected stream of the declared set, and ENVOY_MEASURE, that is missing on
+// conn, with the build's configuration, and raises each that is there by today's reconcile rules
 // (streamset.Ensure): the notification stream's subjects only added, its limits only raised and
-// its envoy_stream_id kept; a bucket's copies raised and the session bucket's age set. It stops, naming
-// the stream and the setting, at the first stream with any other difference
-// (streamset.Difference.Raise), which only a census or a restore puts right. It runs as the
-// operator inside a hold, whose grant holds those creates and updates, and refuses to run unless
-// phase reads the hold row held (ErrWrongPhase). The barrier and ENVOY_MEASURE are not its.
+// its envoy_stream_id kept; a bucket's copies raised and the session bucket's age set;
+// ENVOY_MEASURE's copies raised. It stops, naming the stream and the setting, at the first stream
+// with any other difference (streamset.Difference.Raise), which only a census or a restore puts
+// right. It runs as the operator inside a hold, whose grant holds those creates and updates, and
+// refuses to run unless phase reads the hold row held (ErrWrongPhase). No grant outside a hold
+// holds a stream create or update, ENVOY_MEASURE's included: a create or an update carries a
+// configuration of the caller's choosing, whose republish could write any subject, so this is
+// ENVOY_MEASURE's one maker. The barrier is not its.
 func Update(ctx context.Context, conn *nats.Conn, settings streamset.Settings, phase Phase) (Report, error) {
 	if err := requirePhase(ctx, "streams update", phase, natsgrant.OperatorPhaseHeld); err != nil {
 		return Report{}, err
@@ -263,7 +222,7 @@ func Update(ctx context.Context, conn *nats.Conn, settings streamset.Settings, p
 	}
 	var report Report
 	for _, stream := range streamset.Declared(settings) {
-		if !stream.Protected || stream.Transient {
+		if stream.Transient || !(stream.Protected || stream.Name == streamset.MeasureStream) {
 			continue
 		}
 		info, err := streamInfo(ctx, conn, stream.Name)

@@ -8,10 +8,9 @@ body: |-
   and buckets and makes, raises or reconciles none. It runs no keeper and leaves the session bucket's
   age as it is. A missing stream stops the start, naming the stream and `envoy-infra streams update`.
   `0` or unset keeps today's behaviour, and any other value refuses startup. The new `envoy-infra
-  streams` command has two words: `check`, which reads and writes nothing, and `ensure` (hold row
-  `released`), which makes a missing `ENVOY_MEASURE` and brings a deployed one to its declared
-  settings. Its package also holds `Update`, which makes and raises the protected streams by a
-  start's own rules, and `Census`, which removes every undeclared stream and consumer. The writer
+  streams check` reads every declared stream and writes nothing. Its package also holds `Update`,
+  which makes and raises the protected streams and `ENVOY_MEASURE` by a start's own rules, and
+  `Census`, which removes every undeclared stream and consumer. The writer
   hold runs these two as its held commands `streams update` and `streams census`. `gcp:ClusteredNatsHub` and `gcp:Dispatch` take
   `streamsOperatorMade`, default `false`, which renders the variable on their listener and Dispatch
   containers. The dev stack's `--callout` mode makes its streams as natsd's own admin user. Without a

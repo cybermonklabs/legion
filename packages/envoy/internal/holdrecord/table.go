@@ -306,7 +306,9 @@ func (t table) Decide(d Done, req modelRequest) error {
 // which a crashed release leaves, and, with SetCommand, hold set's, whose restart and barrier
 // change no stored data. With WayOut a command's stop that recorded LeftUnchanged, and the intent
 // it ends, change nothing either; a stop that recorded anything else, or nothing, a done entry
-// and an intent no stop ends all count as changes.
+// and an intent no stop ends all count as changes. It reads each stop's record as written: by
+// LeftUnchanged's rule a stop records what every run of its command left, so a crashed run's
+// change is in its rerun's stop, which the model checks (releasedOverAChange).
 func (t table) unchanged(ops []Operation) bool {
 	latest := map[string]Operation{}
 	for _, o := range ops {

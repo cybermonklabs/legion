@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/kvrecords"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -618,16 +619,18 @@ func streamConfig(t *testing.T, nc *nats.Conn, stream string) map[string]any {
 	return info.Config
 }
 
-// The operator's grant outside a hold reads every info the hold's first step and a backup read,
-// takes a backup, reads what consumer-names status reads, and creates the one unprotected stream,
-// ENVOY_MEASURE; it creates, changes and deletes no protected stream, its consumer creates are
-// refused, and the retired hold bucket is not reachable. Each refused request gets no answer, and
-// the server reports the publish it refused, by subject.
+// The operator's grant outside a hold is reads only. It reads every info the hold's first step
+// reads, backs up KV_envoy_session_consumers as a records-only copy read message by message
+// (kvrecords.Write), each walked message with its sequence, headers and time, and reads what
+// consumer-names status reads. It writes nothing: a snapshot delivered to a protected key, and a
+// create of an absent ENVOY_MEASURE whose republish targets a protected key followed by a publish
+// the grant holds, are each refused, and the key is unchanged; it creates, changes and deletes no
+// protected stream, its consumer creates are refused, and the retired hold bucket is not reachable.
+// Each refused request gets no answer, and the server reports the publish it refused, by subject.
 //
-// It fails when released's grant loses a read the backup needs: without the stream's info the
-// backup stops at its first step (LoadStream), and without the chunk acknowledgements it stalls
-// (each control below, run by hand, names the subject); and when released's grant admits a write
-// of a protected stream.
+// It fails when released's grant holds a write again: run by hand against the grant that held
+// STREAM.SNAPSHOT and STREAM.CREATE.ENVOY_MEASURE, the snapshot writes the protected key and the
+// test fails naming it. And it fails when released loses a read the records copy needs.
 func TestTheReleasedOperatorReadsAndBacksUp(t *testing.T) {
 	r := newOperatorRig(t, nil)
 	r.setPhase(t, natsgrant.OperatorPhaseReleased)
@@ -635,22 +638,40 @@ func TestTheReleasedOperatorReadsAndBacksUp(t *testing.T) {
 	r.makeStreams(t, 20, 1024, 0)
 	_, err := js.AddConsumer(bus.Stream, &nats.ConsumerConfig{Name: "session-a", AckPolicy: nats.AckExplicitPolicy, InactiveThreshold: time.Hour})
 	require.NoError(t, err)
+	// A retired session's record, deleted: its DEL marker is a stored message with headers, which
+	// the copy must keep.
+	recordsBucket, err := js.KeyValue(sessionConsumers)
+	require.NoError(t, err)
+	_, err = recordsBucket.Put("s-ses_retired", []byte(`{"name":"session-retired"}`))
+	require.NoError(t, err)
+	require.NoError(t, recordsBucket.Delete("s-ses_retired"))
 
 	operator := r.connectOperator(t, hourLong(operatorAccount))
 	requireOperatorDecision(t, r.decisions.after(t, operatorName, 0), natsgrant.OperatorPhaseReleased)
 
-	// The backup first, so a grant without a read it needs fails the test inside the backup, at the
-	// step that needs it.
-	backup, err := backupStream(operator.Conn, kvBucket(bus.SessionBucket))
-	require.NoError(t, err, "the released operator's backup of %s; the server sent:\n%s", kvBucket(bus.SessionBucket), operator.errs)
-	require.EqualValues(t, 20, backup.messages)
-	require.Greater(t, len(backup.data), 2*snapshotChunk, "the backup was one chunk, so no acknowledgement was asked for")
+	// The records copy first, so a grant without a read it needs fails the test inside it.
+	dir := filepath.Join(t.TempDir(), "consumer-names")
+	manifest, err := kvrecords.Write(t.Context(), operator.Conn, sessionConsumers, dir)
+	require.NoError(t, err, "the released operator's records copy of %s; the server sent:\n%s", kvBucket(sessionConsumers), operator.errs)
+	_, records, err := kvrecords.Read(dir)
+	require.NoError(t, err)
+	want := storedMessages(t, adminNC, kvBucket(sessionConsumers))
+	require.Equal(t, len(want), manifest.Records)
+	require.Len(t, records, len(want), "the copy holds %d of the %d stored messages", len(records), len(want))
+	for index, record := range records {
+		require.Equal(t, want[index].Seq, record.Seq, "record %d's sequence", index)
+		require.Equal(t, want[index].Subject, record.Subject, "sequence %d's subject", record.Seq)
+		require.True(t, want[index].Time.Equal(record.Time), "sequence %d stored at %s, the record says %s", record.Seq, want[index].Time, record.Time)
+		require.Equal(t, string(want[index].Header), string(record.Headers.Block()), "sequence %d's headers", record.Seq)
+		require.Equal(t, string(want[index].Data), string(record.Data), "sequence %d's data", record.Seq)
+	}
+	require.True(t, slices.ContainsFunc(records, func(record kvrecords.Record) bool { return len(record.Headers) > 0 }),
+		"no record carries headers, so the copy's headers went untested")
+
 	succeeds(t, operator.Conn, "$JS.API.INFO", nil)
 	for _, stream := range append([]string{bus.Stream, kvBucket(sessionConsumers)}, mapped(copiedBuckets, kvBucket)...) {
 		succeeds(t, operator.Conn, "$JS.API.STREAM.INFO."+stream, nil)
 	}
-
-	succeeds(t, operator.Conn, "$JS.API.STREAM.MSG.GET."+kvBucket(sessionConsumers), map[string]any{"seq": 1})
 	var names struct {
 		Consumers []string `json:"consumers"`
 	}
@@ -658,9 +679,26 @@ func TestTheReleasedOperatorReadsAndBacksUp(t *testing.T) {
 	require.Contains(t, names.Consumers, "session-a")
 	succeeds(t, operator.Conn, "$JS.API.CONSUMER.INFO."+bus.Stream+".session-a", nil)
 
-	succeeds(t, operator.Conn, "$JS.API.STREAM.CREATE.ENVOY_MEASURE",
-		map[string]any{"name": "ENVOY_MEASURE", "subjects": []string{"envoy.measure.>"}, "storage": "file", "num_replicas": 1})
-	succeeds(t, operator.Conn, "$JS.API.STREAM.INFO.ENVOY_MEASURE", nil)
+	// The two writes released's grant once held, each aimed at a protected key of its own, so a
+	// failure names which one wrote.
+	snapshotVictim, measureVictim := putProtectedKey(t, js, "victim-snapshot"), putProtectedKey(t, js, "victim-measure")
+	snapshot := map[string]any{"deliver_subject": snapshotVictim.subject, "no_consumers": true, "chunk_size": snapshotChunk}
+	measure := map[string]any{"name": "ENVOY_MEASURE", "subjects": []string{"$JS.API.STREAM.INFO.ENVOY_MEASURE"}, "no_ack": true,
+		"storage": "memory", "num_replicas": 1, "republish": map[string]any{"src": "$JS.API.STREAM.INFO.ENVOY_MEASURE", "dest": measureVictim.subject}}
+	_, _ = operator.Request("$JS.API.STREAM.SNAPSHOT."+kvBucket(bus.InterestBucket), encoded(t, snapshot), time.Second)
+	_, _ = operator.Request("$JS.API.STREAM.CREATE.ENVOY_MEASURE", encoded(t, measure), time.Second)
+	require.NoError(t, operator.Publish("$JS.API.STREAM.INFO.ENVOY_MEASURE", []byte("chosen by the released operator")))
+	require.NoError(t, operator.Flush())
+	snapshotVictim.checkUnchanged(t, js)
+	measureVictim.checkUnchanged(t, js)
+	if t.Failed() {
+		t.FailNow()
+	}
+	operator.refused(t, "$JS.API.STREAM.SNAPSHOT."+kvBucket(bus.InterestBucket), snapshot)
+	operator.refused(t, "$JS.API.STREAM.CREATE.ENVOY_MEASURE", measure)
+	absent := answered(t, operator.Conn, "$JS.API.STREAM.INFO.ENVOY_MEASURE", nil)
+	require.NotNil(t, absent.Error, "ENVOY_MEASURE exists after the released operator's refused create: %s", absent.raw)
+	require.Equal(t, 10059, absent.Error.ErrCode, "the info of the absent ENVOY_MEASURE: %s", absent.raw)
 
 	sessions := streamConfig(t, adminNC, kvBucket(bus.SessionBucket))
 	for _, request := range []struct {
@@ -671,6 +709,7 @@ func TestTheReleasedOperatorReadsAndBacksUp(t *testing.T) {
 		{"$JS.API.STREAM.CREATE." + kvBucket(bus.LegionAgentBucket), map[string]any{"name": kvBucket(bus.LegionAgentBucket)}},
 		{"$JS.API.STREAM.UPDATE." + kvBucket(bus.SessionBucket), sessions},
 		{"$JS.API.STREAM.DELETE." + kvBucket(bus.SessionBucket), nil},
+		{"$JS.API.STREAM.SNAPSHOT." + kvBucket(sessionConsumers), map[string]any{"deliver_subject": operator.NewRespInbox()}},
 		{"$JS.API.CONSUMER.CREATE." + bus.Stream + ".x", map[string]any{"stream_name": bus.Stream, "config": map[string]any{"name": "x"}}},
 		{retiredHoldBucketKV, []byte("released")},
 	} {
@@ -678,7 +717,138 @@ func TestTheReleasedOperatorReadsAndBacksUp(t *testing.T) {
 	}
 	info, err := js.StreamInfo(kvBucket(bus.SessionBucket))
 	require.NoError(t, err, "the released operator's refused delete removed %s", kvBucket(bus.SessionBucket))
-	require.EqualValues(t, 20, info.State.Msgs)
+	require.EqualValues(t, 22, info.State.Msgs, "KV_envoy_sessions holds other than its 20 entries and the two victim keys")
+}
+
+// protectedKey is a key of envoy_sessions, a protected bucket, that the admin puts, and which no
+// write outside a hold may change.
+type protectedKey struct {
+	subject  string
+	sequence uint64
+	value    string
+}
+
+// putProtectedKey puts key in envoy_sessions as the admin and reads back where it is stored.
+func putProtectedKey(t *testing.T, js nats.JetStreamContext, key string) protectedKey {
+	t.Helper()
+	kv, err := js.KeyValue(bus.SessionBucket)
+	require.NoError(t, err)
+	sequence, err := kv.Put(key, []byte("put by the admin"))
+	require.NoError(t, err)
+	return protectedKey{subject: "$KV." + bus.SessionBucket + "." + key, sequence: sequence, value: "put by the admin"}
+}
+
+// checkUnchanged checks that the key's last stored message stays the admin's put for three
+// seconds, past the time a snapshot's chunks or a republish reach it, and fails the test naming
+// the key and what was stored over it, going on, so a test checking two keys names both.
+func (k protectedKey) checkUnchanged(t *testing.T, js nats.JetStreamContext) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		msg, err := js.GetLastMsg(kvBucket(bus.SessionBucket), k.subject)
+		require.NoError(t, err, "read %s", k.subject)
+		if msg.Sequence != k.sequence || string(msg.Data) != k.value {
+			t.Errorf("the protected key %s was written: sequence %d (%q) became sequence %d (%q, headers %v)",
+				k.subject, k.sequence, k.value, msg.Sequence, msg.Data, msg.Header)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// staticUserEntry is one nkey user of a lone server's configuration, holding exactly grant.
+func staticUserEntry(nkey string, grant natsgrant.Permissions) string {
+	quoted := func(subjects []string) string {
+		out := make([]string, len(subjects))
+		for index, subject := range subjects {
+			out[index] = fmt.Sprintf("%q", subject)
+		}
+		return strings.Join(out, ", ")
+	}
+	return fmt.Sprintf("{ nkey: %q, permissions: { publish: { allow: [%s] }, subscribe: { allow: [%s] } } }",
+		nkey, quoted(grant.Publish), quoted(grant.Subscribe))
+}
+
+// The measurement job's grant makes no stream: on a lone server, a user holding exactly
+// natsgrant.Measure() is refused the create of ENVOY_MEASURE, whose republish would have targeted
+// a key of envoy_sessions, and is refused the publish that stream would have captured; the key is
+// unchanged. A create carries a configuration of the caller's choosing, and a republish in it
+// writes any subject from the stream's own sender.
+//
+// Run by hand, the control is Measure() as it was, holding STREAM.CREATE.ENVOY_MEASURE and
+// envoy-measure.>: the create is answered, the publish is republished onto the key, and the test
+// fails naming the key.
+func TestTheMeasureUserMakesNoStream(t *testing.T) {
+	adminSeed, adminKey := testnats.User(t)
+	measureSeed, measureKey := testnats.User(t)
+	config := "jetstream {}\nauthorization {\n  users = [\n    " +
+		staticUserEntry(adminKey, natsgrant.Permissions{Publish: []string{">"}, Subscribe: []string{">"}}) + "\n    " +
+		staticUserEntry(measureKey, natsgrant.Measure()) + "\n  ]\n}\n"
+	_, url := testnats.StartConfig(t, config, []string{"-js"}, false)
+	admin, err := testnats.ConnectSeed(t, url, adminSeed)
+	require.NoError(t, err)
+	t.Cleanup(admin.Close)
+	js, err := admin.JetStream()
+	require.NoError(t, err)
+	_, err = js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bus.SessionBucket})
+	require.NoError(t, err)
+	victim := putProtectedKey(t, js, "victim")
+
+	errs := &serverErrors{}
+	measure, err := testnats.ConnectSeed(t, url, measureSeed, nats.CustomInboxPrefix("_INBOX_envoy_measure"), nats.ErrorHandler(errs.handle))
+	require.NoError(t, err)
+	t.Cleanup(measure.Close)
+	o := &operatorConn{Conn: measure, errs: errs}
+	create := map[string]any{"name": "ENVOY_MEASURE", "subjects": []string{"envoy-measure.x"}, "storage": "memory", "num_replicas": 1,
+		"republish": map[string]any{"src": "envoy-measure.x", "dest": victim.subject}}
+	_, _ = measure.Request("$JS.API.STREAM.CREATE.ENVOY_MEASURE", encoded(t, create), time.Second)
+	require.NoError(t, measure.Publish("envoy-measure.x", []byte("chosen by the measurement user")))
+	require.NoError(t, measure.Flush())
+	victim.checkUnchanged(t, js)
+	if t.Failed() {
+		t.FailNow()
+	}
+	o.refused(t, "$JS.API.STREAM.CREATE.ENVOY_MEASURE", create)
+	want := `Permissions Violation for Publish to "envoy-measure.x"`
+	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, want, func() bool { return errs.seen(want) })
+	_, err = js.StreamInfo("ENVOY_MEASURE")
+	require.ErrorIs(t, err, nats.ErrStreamNotFound, "the measurement user made ENVOY_MEASURE")
+}
+
+// storedMessage is one message as the server stores it, read back with STREAM.MSG.GET.
+type storedMessage struct {
+	Subject string    `json:"subject"`
+	Seq     uint64    `json:"seq"`
+	Header  []byte    `json:"hdrs"`
+	Data    []byte    `json:"data"`
+	Time    time.Time `json:"time"`
+}
+
+// storedMessages is every message stream stores, in sequence order, read through nc one sequence
+// at a time, a sequence the server no longer stores (10037) left out.
+func storedMessages(t *testing.T, nc *nats.Conn, stream string) []storedMessage {
+	t.Helper()
+	var info struct {
+		State struct {
+			FirstSeq uint64 `json:"first_seq"`
+			LastSeq  uint64 `json:"last_seq"`
+		} `json:"state"`
+	}
+	require.NoError(t, json.Unmarshal(succeeds(t, nc, "$JS.API.STREAM.INFO."+stream, nil).raw, &info))
+	var messages []storedMessage
+	for seq := max(info.State.FirstSeq, 1); seq <= info.State.LastSeq; seq++ {
+		answer := answered(t, nc, "$JS.API.STREAM.MSG.GET."+stream, map[string]uint64{"seq": seq})
+		if answer.Error != nil {
+			require.Equal(t, 10037, answer.Error.ErrCode, "%s sequence %d: %s", stream, seq, answer.raw)
+			continue
+		}
+		var got struct {
+			Message storedMessage `json:"message"`
+		}
+		require.NoError(t, json.Unmarshal(answer.raw, &got))
+		messages = append(messages, got.Message)
+	}
+	return messages
 }
 
 // mapped is each of in through f.
@@ -732,19 +902,21 @@ func TestThePrepareOperatorRaisesThresholdsAndWritesTheCohort(t *testing.T) {
 	operator.refused(t, "$JS.API.STREAM.LIST", nil)
 }
 
-// The operator's grant while a hold is set: KV_envoy_sessions is created, updated, deleted, and
-// restored from the backup taken under released with every message; the stream and consumer lists
-// the writer census reads are answered; consumer-names cleanup deletes a retired consumer; and a
-// create of a stream the grant does not name, the unnamed consumer create and a filtered consumer
-// create on ENVOY_NOTIFICATIONS each get no answer and a permissions violation. The user expires at
-// most 10 minutes after its decision, and a held connection is closed at its expiry: its reconnect
-// after the row is written released is decided with released's grant alone.
+// The operator's grant while a hold is set: KV_envoy_sessions is snapshotted, deleted, created,
+// updated, deleted again and restored from that snapshot with every message; ENVOY_MEASURE is
+// created; the stream and consumer lists the writer census reads are answered; consumer-names
+// cleanup deletes a retired consumer; and a create of a stream the grant does not name, the unnamed
+// consumer create and a filtered consumer create on ENVOY_NOTIFICATIONS each get no answer and a
+// permissions violation. The user expires at most 10 minutes after its decision, and a held
+// connection is closed at its expiry: its reconnect after the row is written released is decided
+// with released's grant alone.
 //
-// Before the row turns held, the same create of KV_envoy_sessions, the cleanup's delete and the
-// stream list are each refused under prepare: each row's control is its step under the phase
-// before it. Run by hand, a grant holding $JS.API.STREAM.CREATE.> creates KV_other and fails the
-// test naming it, and a grant without the restore's chunk subject refuses the first chunk and fails
-// it naming the deliver subject.
+// Before the row turns held, the same snapshot is refused under released and under prepare, and
+// the create of KV_envoy_sessions, the create of ENVOY_MEASURE, the cleanup's delete and the stream
+// list are each refused under prepare: each row's control is its step under the phase before it.
+// Run by hand, a grant holding $JS.API.STREAM.CREATE.> creates KV_other and fails the test naming
+// it, and a grant without the restore's chunk subject refuses the first chunk and fails it naming
+// the deliver subject.
 func TestTheHeldOperatorGetsTheFullList(t *testing.T) {
 	r := newOperatorRig(t, nil)
 	r.setPhase(t, natsgrant.OperatorPhaseReleased)
@@ -756,21 +928,23 @@ func TestTheHeldOperatorGetsTheFullList(t *testing.T) {
 	require.NoError(t, err)
 	sessions := kvBucket(bus.SessionBucket)
 	created := streamConfig(t, adminNC, sessions)
+	measure := map[string]any{"name": "ENVOY_MEASURE", "subjects": []string{"envoy.measure.>"}, "storage": "file", "num_replicas": 1}
 
 	// The first token lives a few seconds, so the held user's expiry closes the connection below;
 	// every later one an hour.
 	reader := &tokenLives{account: operatorAccount, lives: []time.Duration{time.Hour, time.Hour, time.Hour, 4 * time.Second, time.Hour}}
 	operator := r.connectOperator(t, reader)
 	requireOperatorDecision(t, r.decisions.after(t, operatorName, 0), natsgrant.OperatorPhaseReleased)
-	backup, err := backupStream(operator.Conn, sessions)
-	require.NoError(t, err)
-	require.EqualValues(t, 20, backup.messages)
+	snapshot := map[string]any{"deliver_subject": operator.NewRespInbox(), "no_consumers": true, "chunk_size": snapshotChunk}
+	operator.refused(t, "$JS.API.STREAM.SNAPSHOT."+sessions, snapshot)
 
 	r.setPhase(t, natsgrant.OperatorPhasePrepare)
 	seen := r.decisions.count(operatorName)
 	operator.reconnect(t)
 	requireOperatorDecision(t, r.decisions.after(t, operatorName, seen), natsgrant.OperatorPhasePrepare)
+	operator.refused(t, "$JS.API.STREAM.SNAPSHOT."+sessions, snapshot)
 	operator.refused(t, "$JS.API.STREAM.CREATE."+sessions, created)
+	operator.refused(t, "$JS.API.STREAM.CREATE.ENVOY_MEASURE", measure)
 	operator.refused(t, "$JS.API.CONSUMER.DELETE."+bus.Stream+".retired-1", nil)
 	operator.refused(t, "$JS.API.STREAM.LIST", nil)
 
@@ -779,6 +953,10 @@ func TestTheHeldOperatorGetsTheFullList(t *testing.T) {
 	operator.reconnect(t)
 	requireOperatorDecision(t, r.decisions.after(t, operatorName, seen), natsgrant.OperatorPhaseHeld)
 
+	backup, err := backupStream(operator.Conn, sessions)
+	require.NoError(t, err, "the held operator's snapshot of %s; the server sent:\n%s", sessions, operator.errs)
+	require.EqualValues(t, 20, backup.messages)
+	succeeds(t, operator.Conn, "$JS.API.STREAM.CREATE.ENVOY_MEASURE", measure)
 	succeeds(t, operator.Conn, "$JS.API.STREAM.DELETE."+sessions, nil)
 	succeeds(t, operator.Conn, "$JS.API.STREAM.CREATE."+sessions, created)
 	updated := streamConfig(t, operator.Conn, sessions)

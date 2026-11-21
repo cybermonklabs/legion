@@ -41,10 +41,11 @@ type Settings struct {
 func (s Settings) replicas() int { return max(s.Replicas, 1) }
 
 // MeasureStream is ENVOY_MEASURE, a stream on subjects of its own, envoy-measure.>, which no
-// grant publishes on. The operator makes it outside a hold (envoy-infra streams ensure), and no
-// other client makes, changes or removes it: its configuration would be the caller's choosing. It
-// is the one stream that is not protected, and its copies are held to the deployment's count like
-// every other stream's (Drift).
+// grant publishes on. The operator makes and raises it inside a hold (envoy-infra streams update,
+// Update), and no other client makes, changes or removes it: its configuration would be the
+// caller's choosing. It is the one stream that is not protected (Protected: the writer hold does
+// not hold it), and its copies are held to the deployment's count like every other stream's
+// (Drift).
 const MeasureStream = "ENVOY_MEASURE"
 
 // measureMaxBytes is MeasureStream's byte limit: it stores nothing, and an account may require one.
@@ -380,7 +381,7 @@ func sourceNames(sources []*nats.StreamSource) []string {
 // create and reconcile (bus.EnsureNotificationStream: subjects only added, limits only raised, its
 // id kept), a bucket by its program's own open (bus.EnsureKeyValue, which makes it or raises its
 // copies) and, for the session bucket, its age (bus.SetKeyValueMaxAge), and MeasureStream by a
-// create when it is missing. conn must be a connection no client beside the auth service owns
+// create when it is missing and a raise of its copies when it has fewer. conn must be a connection no client beside the auth service owns
 // (bus.StreamsOperatorMadeEnvVar), whose grant holds the creates and updates: the operator's inside
 // a hold (envoy-infra streams update), or a test's or a dev stack's own admin user. A transient
 // stream is the hold's own to make, and is refused.
@@ -392,11 +393,18 @@ func Ensure(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, stre
 		_, err := bus.EnsureNotificationStream(ctx, conn, js, stream.Config)
 		return err
 	case stream.Bucket == nil:
-		if _, err := js.StreamInfo(stream.Name, nats.Context(ctx)); !errors.Is(err, nats.ErrStreamNotFound) {
+		info, err := js.StreamInfo(stream.Name, nats.Context(ctx))
+		if errors.Is(err, nats.ErrStreamNotFound) {
+			config := stream.Config
+			_, err = js.AddStream(&config, nats.Context(ctx))
 			return err
 		}
-		config := stream.Config
-		_, err := js.AddStream(&config, nats.Context(ctx))
+		if err != nil || info.Config.Replicas >= stream.Config.Replicas {
+			return err
+		}
+		raised := info.Config
+		raised.Replicas = stream.Config.Replicas
+		_, err = js.UpdateStream(&raised, nats.Context(ctx))
 		return err
 	}
 	if _, err := bus.EnsureKeyValue(ctx, conn, js, stream.Bucket); err != nil {

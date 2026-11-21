@@ -199,66 +199,45 @@ func TestStreamsCheckListsNoSubjects(t *testing.T) {
 	require.Positive(t, seen, "no STREAM.INFO request was seen, so the check above read nothing")
 }
 
-// ensure, as the operator outside a hold (natsgrant.Operator of OperatorPhaseReleased), makes a
-// missing ENVOY_MEASURE with the build's configuration, and the same grant refuses a create of
-// KV_envoy_roles with a publish permissions violation and no answer. It refuses to run under any
-// phase but released, changing nothing.
-func TestStreamsEnsureCreatesOnlyTheMeasureStream(t *testing.T) {
-	h := startHub(t, 1, natsgrant.Operator(natsgrant.OperatorPhaseReleased))
-	errs := make(chan error, 16)
-	conn := h.connect(t, operatorInbox, errs)
+// update, as the operator inside a hold, makes and raises ENVOY_MEASURE too, its one maker now
+// that no grant outside a hold holds its create or update: a missing one is made with the build's
+// configuration, and one found at one copy on a hub whose deployment keeps three is raised to
+// three, each with that one write of ENVOY_MEASURE, after which check reports nothing of it. A
+// second update finds nothing to make or raise and sends nothing.
+func TestStreamsUpdateMakesAndRaisesTheMeasureStream(t *testing.T) {
+	h := startHub(t, 3, natsgrant.Operator(natsgrant.OperatorPhaseHeld))
+	settings := streamset.Settings{Replicas: 3}
+	h.makeDeclared(t, settings)
+	measure, _ := streamset.Find(streamset.Declared(settings), streamset.MeasureStream)
+	h.writes.Take(t)
+	conn := h.connect(t, operatorInbox, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
 
-	_, err := streams.Ensure(t.Context(), conn, streamset.Settings{}, phase(natsgrant.OperatorPhaseHeld))
-	require.ErrorIs(t, err, streams.ErrWrongPhase)
-	require.ErrorContains(t, err, "held")
-	require.Empty(t, h.writes.Take(t), "ensure under another phase asked for a write")
-
-	report, err := streams.Ensure(t.Context(), conn, streamset.Settings{}, phase(natsgrant.OperatorPhaseReleased))
+	report, err := streams.Update(ctx, conn, settings, phase(natsgrant.OperatorPhaseHeld))
 	require.NoError(t, err)
 	require.Equal(t, 0, report.ExitCode(), "%v", report.Lines())
 	require.Equal(t, []string{"$JS.API.STREAM.CREATE." + streamset.MeasureStream}, h.writes.Take(t))
-	info, err := h.js.StreamInfo(streamset.MeasureStream)
-	require.NoError(t, err)
-	measure, _ := streamset.Find(streamset.Declared(streamset.Settings{}), streamset.MeasureStream)
-	require.Empty(t, streamset.Drift(measure, streamset.Info{StreamInfo: *info}))
+	info := testnats.AwaitStreamCopies(t, h.js, streamset.MeasureStream, 3)
+	require.Empty(t, streamset.Drift(measure, streamset.Info{StreamInfo: *info}), "update made ENVOY_MEASURE unlike the build's configuration")
 
-	roles, _ := streamset.Find(streamset.Declared(streamset.Settings{}), "KV_"+bus.RoleClaimBucket)
-	_, err = conn.Request("$JS.API.STREAM.CREATE.KV_"+bus.RoleClaimBucket, mustJSON(t, roles.Config), 2*time.Second)
-	require.Error(t, err, "the released operator's create of KV_envoy_roles was answered")
-	awaitPublishViolation(t, errs, "$JS.API.STREAM.CREATE.KV_"+bus.RoleClaimBucket)
-	_, err = h.js.StreamInfo("KV_" + bus.RoleClaimBucket)
-	require.ErrorIs(t, err, natsgo.ErrStreamNotFound, "the released operator made KV_envoy_roles")
-}
-
-// ensure, as the operator outside a hold, brings a deployed ENVOY_MEASURE to its declared
-// settings: found at one copy on a hub whose deployment keeps three, it is updated, with the one
-// update call of ENVOY_MEASURE, to three copies, and check then reports nothing of it. A second
-// ensure finds nothing to bring and sends nothing.
-func TestStreamsEnsureRaisesTheMeasureStreamsCopies(t *testing.T) {
-	h := startHub(t, 3, natsgrant.Operator(natsgrant.OperatorPhaseReleased))
-	settings := streamset.Settings{Replicas: 3}
-	measure, _ := streamset.Find(streamset.Declared(settings), streamset.MeasureStream)
+	require.NoError(t, h.js.DeleteStream(streamset.MeasureStream))
 	oneCopy := measure.Config
 	oneCopy.Replicas = 1
-	_, err := h.js.AddStream(&oneCopy)
+	_, err = h.js.AddStream(&oneCopy)
 	require.NoError(t, err)
 	h.writes.Take(t)
-	conn := h.connect(t, operatorInbox, nil)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
-	report, err := streams.Ensure(ctx, conn, settings, phase(natsgrant.OperatorPhaseReleased))
+	report, err = streams.Update(ctx, conn, settings, phase(natsgrant.OperatorPhaseHeld))
 	require.NoError(t, err)
 	require.Equal(t, 0, report.ExitCode(), "%v", report.Lines())
 	require.Equal(t, []string{"$JS.API.STREAM.UPDATE." + streamset.MeasureStream}, h.writes.Take(t))
-	info := testnats.AwaitStreamCopies(t, h.js, streamset.MeasureStream, 3)
-	require.Equal(t, 3, info.Config.Replicas, "ensure left ENVOY_MEASURE below the deployment's copies")
-	require.Empty(t, streamset.Drift(measure, streamset.Info{StreamInfo: *info}), "ENVOY_MEASURE still drifts after ensure")
+	info = testnats.AwaitStreamCopies(t, h.js, streamset.MeasureStream, 3)
+	require.Equal(t, 3, info.Config.Replicas, "update left ENVOY_MEASURE below the deployment's copies")
 
-	report, err = streams.Ensure(ctx, conn, settings, phase(natsgrant.OperatorPhaseReleased))
+	report, err = streams.Update(ctx, conn, settings, phase(natsgrant.OperatorPhaseHeld))
 	require.NoError(t, err)
 	require.Equal(t, []string{"CLEAN"}, report.Lines())
-	require.Empty(t, h.writes.Take(t), "a second ensure sent a write")
+	require.Empty(t, h.writes.Take(t), "a second update sent a write")
 }
 
 // update, as the operator inside a hold (natsgrant.Operator of OperatorPhaseHeld), makes a missing

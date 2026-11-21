@@ -1625,11 +1625,8 @@ envoy_infra_go:
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/internal/weborigin/*'
-  # envoy-infra streams reads the declared stream set, and ensure reads the writer hold's row
-  # through holdrecord, verified by signedrecord.
+  # envoy-infra streams reads the declared stream set.
   - 'packages/envoy/internal/streamset/*'
-  - 'packages/envoy/internal/holdrecord/*'
-  - 'packages/envoy/internal/bus/signedrecord/*'
   - '.github/actions/pull-test-images/**'
   - '.github/scripts/go-tagged-tests.sh'
   # The writer hold's tests (writerhold/holdtest) run the broker's hold routes and the NATS auth
@@ -2626,6 +2623,7 @@ envoy_go_race:
   - '!packages/envoy/internal/bus/norace_test.go'
   - '!packages/envoy/internal/bus/session_consumer_scan_live_test.go'
   - '!packages/envoy/internal/bus/stream_max_consumers_live_test.go'
+  - '!packages/envoy/internal/bus/kvrecords/**/*_test.go'
   - '!packages/envoy/internal/bus/signedrecord/**/*_test.go'
   - '!packages/envoy/internal/cipher/answer/**/*_test.go'
   - '!packages/envoy/internal/cipher/api/**/*_test.go'

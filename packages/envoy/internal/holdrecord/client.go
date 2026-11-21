@@ -447,7 +447,11 @@ func (c *Client) AppendStop(ctx context.Context, holdID, command, reason string)
 
 // AppendStopLeft is AppendStop that also records what the command left: LeftUnchanged when it
 // changed nothing outside the journal, or what it changed (a recreate that deleted the bucket
-// before it failed names the bucket). An empty left is refused.
+// before it failed names the bucket). By LeftUnchanged's rule, left covers every run of the
+// command in this hold: LeftUnchanged only when this run changed nothing and no earlier run of it
+// recorded a change or ended with no entry (a run cut after its intent); otherwise left names what
+// those runs left. The caller knows its earlier runs (the journal holds their entries) and folds
+// what they left in; the journal records left as given. An empty left is refused.
 func (c *Client) AppendStopLeft(ctx context.Context, holdID, command, reason, left string) error {
 	if left == "" {
 		return fmt.Errorf("holdrecord: %s's stop names nothing it left: give LeftUnchanged or what it changed", command)
