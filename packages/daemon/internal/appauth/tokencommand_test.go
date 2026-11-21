@@ -538,23 +538,27 @@ func TestTheInstallationReadOfARefusedNarrowingIsAnErrorAndNotNotInstalled(t *te
 }
 
 // `agent-secrets` exits 75 while its request still waits for approval: transient, never the
-// configuration's answer.
+// configuration's answer, and a grant that waits (ErrApprovalPending, Pending).
 func TestTokenModeAPendingApprovalIsTransient(t *testing.T) {
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: "echo 'still waiting for approval' >&2; exit 75"}}, Options{})
 	var transient *TransientError
-	if _, err := tokens.Token(context.Background(), Implement, "acme"); !errors.As(err, &transient) || errors.Is(err, ErrNotInstalled) {
-		t.Fatalf("Token on exit 75 = %v, want a transient error", err)
+	_, err := tokens.Token(context.Background(), Implement, "acme")
+	if !errors.As(err, &transient) || errors.Is(err, ErrNotInstalled) || !errors.Is(err, ErrApprovalPending) || !Pending(err) {
+		t.Fatalf("Token on exit 75 = %v, want a transient error that is ErrApprovalPending", err)
 	}
 }
 
 // A human-tier profile's grant is reused, and its waiting request joined, only for the same
 // target, so while the review App's request for one owner waits on a person, the request for a
 // second owner is refused REQUEST_PENDING, `agent-secrets` exiting 1. That refusal is no answer
-// about the App or the owner: it is transient, as exit 75 is, so the second owner's lease is asked
-// for again once the first request is decided, rather than failing the role's bundles. The
-// stand-in answers the first owner's release and refuses the second's as the broker does; any
-// other exit 1 stays the configuration's answer, and so does the refusal's text from a command
-// that exits otherwise, which is no refusal `agent-secrets` made.
+// about the App or the owner: it is transient, as exit 75 is, and a grant that waits
+// (ErrApprovalPending). It is not GitHub's trouble, so it holds no other owner's permission read
+// (internal/daemon's reviewAppClient); it is no answer about the installation either, so a gh
+// bundle that needs the second owner fails as it does on GitHub's trouble (credential.go's
+// leaveOutReason) and is minted again at its next refresh. The stand-in answers the first owner's
+// release and refuses the second's as the broker does; any other exit 1 stays the configuration's
+// answer, and so does the refusal's text from a command that exits otherwise, which is no refusal
+// `agent-secrets` made.
 func TestTokenModeAPendingRequestOfAnotherTargetIsTransient(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	command := fmt.Sprintf(`case "$LEGION_GITHUB_OWNER" in
@@ -572,13 +576,13 @@ esac`, now.Add(time.Hour).Format(time.RFC3339))
 	}
 	var transient *TransientError
 	_, err := tokens.Token(context.Background(), Review, "beta")
-	if !errors.As(err, &transient) || errors.Is(err, ErrNotInstalled) || !strings.Contains(err.Error(), "REQUEST_PENDING") {
-		t.Fatalf("Token(beta) while another target's request waits = %v, want a transient error carrying REQUEST_PENDING", err)
+	if !errors.As(err, &transient) || errors.Is(err, ErrNotInstalled) || !strings.Contains(err.Error(), "REQUEST_PENDING") || !errors.Is(err, ErrApprovalPending) || !Pending(err) {
+		t.Fatalf("Token(beta) while another target's request waits = %v, want a transient ErrApprovalPending carrying REQUEST_PENDING", err)
 	}
-	if _, err := tokens.Token(context.Background(), Review, "gamma"); err == nil || errors.As(err, &transient) {
+	if _, err := tokens.Token(context.Background(), Review, "gamma"); err == nil || errors.As(err, &transient) || Pending(err) {
 		t.Fatalf("Token(gamma) refused UNKNOWN_SECRET = %v, want the configuration's answer, not a transient error", err)
 	}
-	if _, err := tokens.Token(context.Background(), Review, "delta"); err == nil || errors.As(err, &transient) {
+	if _, err := tokens.Token(context.Background(), Review, "delta"); err == nil || errors.As(err, &transient) || Pending(err) {
 		t.Fatalf("Token(delta), REQUEST_PENDING's text from a command that exited 3 = %v, want the configuration's answer, not a transient error", err)
 	}
 }

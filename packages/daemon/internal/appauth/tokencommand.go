@@ -102,6 +102,30 @@ const exitRefused = 1
 // caller's next attempt joins it.
 var ErrCommandPending = errors.New("token_command is still running")
 
+// ErrApprovalPending is a token_command that ended on the secrets broker's request waiting on a
+// person: `agent-secrets` exited 75 (exitPending), or the broker refused it REQUEST_PENDING
+// (brokerRequestPending). Its TransientError carries the command's own failure, which reads as
+// this error too (approvalPending).
+var ErrApprovalPending = errors.New("the secrets broker's request waits on a person's approval")
+
+// approvalPending is a token_command's failure that ErrApprovalPending names, with the failure's
+// own text.
+type approvalPending struct{ err error }
+
+func (e approvalPending) Error() string        { return e.err.Error() }
+func (e approvalPending) Unwrap() error        { return e.err }
+func (e approvalPending) Is(target error) bool { return target == ErrApprovalPending }
+
+// Pending reports a token_command's grant that waits rather than an answer of GitHub's: the
+// command still running past its caller's deadline (ErrCommandPending), or the broker's request
+// waiting on a person (ErrApprovalPending). Each is a TransientError, since a later run may
+// pass, but it is about one owner's grant at the broker, never GitHub's rate limit or its own
+// trouble, so a caller that holds every owner's GitHub calls on GitHub's trouble holds none on it
+// (internal/daemon's reviewAppClient).
+func Pending(err error) bool {
+	return errors.Is(err, ErrCommandPending) || errors.Is(err, ErrApprovalPending)
+}
+
 // releasedInstallation is one installation of a token_command's release.
 type releasedInstallation struct {
 	owner     string
@@ -211,9 +235,9 @@ func (m *Manager) recordOwners(role AppRole, installations map[string]releasedIn
 // execTokenCommand runs app's token_command once, under ctx, for the request's owner and read.
 // A run ctx ended, one that exited 75 (`agent-secrets`' request still waiting for approval), and
 // one the broker refused REQUEST_PENDING (another target's request of the same profile still
-// waiting, brokerRequestPending) are transient; one that exited otherwise, printed too much, or
-// printed no release is the configuration's answer. Its stderr reaches the daemon's and the error
-// with every GitHub token redacted.
+// waiting, brokerRequestPending) are transient, the last two read as ErrApprovalPending too; one
+// that exited otherwise, printed too much, or printed no release is the configuration's answer.
+// Its stderr reaches the daemon's and the error with every GitHub token redacted.
 func (m *Manager) execTokenCommand(ctx context.Context, app config.GitHubApp, request mintRequest) (map[string]releasedInstallation, error) {
 	field := tokenCommandField(request.role)
 	runCtx, cancel := context.WithCancel(ctx)
@@ -256,7 +280,7 @@ func (m *Manager) execTokenCommand(ctx context.Context, app config.GitHubApp, re
 			failed = fmt.Errorf("%s failed (%s): %s", field, end, message)
 		}
 		if end.ExitedWith(exitPending) || (end.ExitedWith(exitRefused) && strings.Contains(stderr.String(), brokerRequestPending)) {
-			return nil, &TransientError{Err: failed}
+			return nil, &TransientError{Err: approvalPending{err: failed}}
 		}
 		return nil, failed
 	}
