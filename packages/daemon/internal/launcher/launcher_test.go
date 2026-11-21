@@ -200,14 +200,20 @@ func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.Launc
 	return state
 }
 
+// next reads the launcher's next frame. Its deadline is a hang guard alone, the test binary's own
+// less a margin: a generation that runs a while sends no frame until it ends (a role start that
+// restores a released workspace with git and jj first, say), so a deadline of a fixed few seconds
+// failed such a case on a loaded machine with nothing wrong. A launcher that never sends the frame
+// fails here, the guard named beside the read's error.
 func (g *roleConn) next() shimwire.Frame {
 	g.t.Helper()
-	if err := g.conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	guard := testwait.Bounded(g.t, 3*time.Minute, 10*time.Second)
+	if err := g.conn.SetReadDeadline(time.Now().Add(guard)); err != nil {
 		g.t.Fatal(err)
 	}
 	line, err := g.reader.ReadBytes('\n')
 	if err != nil {
-		g.t.Fatal(err)
+		g.t.Fatalf("the launcher's next frame: %v (a read waits up to %s, the hang guard)", err, guard)
 	}
 	frame, err := shimwire.Decode(line)
 	if err != nil {
@@ -886,14 +892,17 @@ func TestARolesExitIsReportedWithTheShimsOwnStatus(t *testing.T) {
 // so. A launcher that stopped the roles one after another would leave the second without its
 // SIGTERM while the first waits, so the first would be killed at the end of its grace and never
 // finish. The launcher must then leave within one stop grace of the moment the case lets the
-// handlers finish: all that is left by then is the roles' teardown, under a second even on a
-// loaded machine, so a launcher that waits a grace on anything past its roles fails here. The case
-// once held the whole stop to 2.5 s for two handlers of 1.5 s each, which a loaded machine broke
-// with the roles stopped together: the handlers ended 1.5 s after the stop, and the roles'
-// teardown after them took the rest (3.4 s in all on a loaded dev box).
+// handlers finish, so a launcher that waits a grace on anything past its roles fails here.
+//
+// The grace is the test binary's own deadline less a margin, three minutes at most, so that bound
+// is a hang guard too, and the verdict is the order of events above. The case once gave the
+// fleet a grace of 6 s: the roles' teardown after their handlers end is all that is left, but on a
+// loaded dev box under the race detector it took longer than 6 s with nothing wrong
+// (2026-11-21), and before that a stop held to 2.5 s for two handlers of 1.5 s each broke
+// the same way (3.4 s in all on a loaded dev box).
 func TestTheContainersStopEndsEveryRoleWithinOneStopGrace(t *testing.T) {
 	requireRoleNamespaces(t)
-	const grace = 6 * time.Second
+	grace := testwait.Bounded(t, 3*time.Minute, 10*time.Second)
 	f := newFleet(t, grace, "tester", "reviewer")
 	const handler = `trap 'printf termed > /tmp/termed; while [ ! -e /tmp/go ]; do /bin/sleep 0.01; done; printf done > /tmp/finished; exit 0' TERM
 printf ready > /tmp/ready
