@@ -356,7 +356,7 @@ func TestARefusedPodLoginExitsAndNamesTheIdentity(t *testing.T) {
 	if code := cmdEnroll([]string{"--pod", "--service", testPodService, "--pod-token-file", tokenFile, "--out", t.TempDir()}, &stdout, &stderr); code != 1 {
 		t.Fatalf("exit %d, want 1 (stderr %q)", code, stderr.String())
 	}
-	for _, want := range []string{testPodAccount, testPodUID, "403", "ACCOUNT_NOT_LISTED", "could not log in"} {
+	for _, want := range []string{testPodAccount, testPodUID, "HTTP 403", "ACCOUNT_NOT_LISTED", "could not log in"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("stderr %q does not name %q", stderr.String(), want)
 		}
@@ -448,7 +448,7 @@ func TestARefusedEnrolmentLeavesTheRefusalBesideTheKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s after a refused enrolment: %v", enrollmentErrorFile, err)
 	}
-	for _, want := range []string{"POD_SELF_ENROLL_ONLY", "403", testPodUID} {
+	for _, want := range []string{"POD_SELF_ENROLL_ONLY", "HTTP 403", testPodUID} {
 		if !strings.Contains(recorded, want) {
 			t.Fatalf("%s holds %q, which does not name %q", enrollmentErrorFile, recorded, want)
 		}
