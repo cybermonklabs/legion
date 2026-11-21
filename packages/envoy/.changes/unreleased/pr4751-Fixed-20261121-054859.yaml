@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  The listener starts and serves while the issuer `ENVOY_OIDC_ISSUER` names, or Google's for
+  `ENVOY_OIDC_GOOGLE_AUDIENCE`, cannot be read. It read both discovery documents before it served,
+  30 seconds each, and exited when either read failed, so a listener restarted during an outage of
+  either issuer served nobody, the shared token, the webhooks and `/healthz` included. Each issuer
+  is now read in the background from the start (at once, then after a wait that doubles from one
+  second up to thirty) and on the first token that needs it. Until it is read, a projected
+  service-account token or a Google identity token is answered `503` with `Retry-After: 1`, never
+  `401`, and everything else is served. A failed round is logged
+  `oidc: discover the issuer; retrying in the background` at ERROR at most once a minute per
+  issuer, and the first success `oidc: discovered the issuer` once.
+time: 2026-11-21T05:48:59Z
+custom:
+    Issue: pr4751
