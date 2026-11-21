@@ -333,6 +333,69 @@ func TestCodeFlowExchangeTheCallerLeftIsNoIssuerOutage(t *testing.T) {
 	}
 }
 
+// leaveAfterAnswer is a transport that ends its caller's context once the token endpoint's answer,
+// or the failure to get one, is in hand: a browser that leaves the callback just as the issuer
+// answers. It reads the answer's body first, so the exchange still reads the answer whole.
+type leaveAfterAnswer struct {
+	base  http.RoundTripper
+	leave context.CancelFunc
+}
+
+func (l leaveAfterAnswer) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := l.base.RoundTrip(request)
+	if response != nil {
+		body, readErr := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if readErr != nil {
+			l.leave()
+			return nil, readErr
+		}
+		response.Body = io.NopCloser(bytes.NewReader(body))
+	}
+	l.leave()
+	return response, err
+}
+
+// A code exchange reads the caller as gone only when its failure's cause is the caller's own
+// context ending before any answer came. An issuer that answered an outage, or failed with no
+// answer, just as the caller left is still an issuer that could not answer, and so is one that
+// outlasted the token request's own timeout, whose error also matches context.DeadlineExceeded
+// though the caller is still there.
+func TestCodeFlowExchangeReadsTheCallerGoneOnlyFromItsOwnContext(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		fail func(issuer *oidctest.Issuer)
+		// leave ends the caller's context once the answer is in hand; otherwise the flow's token
+		// request times out first.
+		leave bool
+	}{
+		{"a 503 answered as the caller leaves", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "invalid_grant") }, true},
+		{"no answer as the caller leaves", func(i *oidctest.Issuer) { i.DropToken() }, true},
+		{"an answer past the token request's timeout", func(i *oidctest.Issuer) { i.DelayToken(5 * time.Second) }, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			issuer, flow := newCodeFlowForDomain(t, flowDomain)
+			if err := flow.Discover(context.Background()); err != nil {
+				t.Fatalf("Discover: %v", err)
+			}
+			c.fail(issuer)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client := *flow.http
+			if c.leave {
+				client.Transport = leaveAfterAnswer{base: http.DefaultTransport, leave: cancel}
+			} else {
+				client.Timeout = 200 * time.Millisecond
+			}
+			flow.http = &client
+			_, err := flow.Exchange(ctx, flowRedirect, "a-code", "a-nonce")
+			if !errors.Is(err, ErrIssuerUnavailable) || errors.Is(err, context.Canceled) {
+				t.Fatalf("Exchange against %s: err = %v, want ErrIssuerUnavailable and not context.Canceled", c.name, err)
+			}
+		})
+	}
+}
+
 func TestCodeFlowRefreshReadsThePersonsCurrentClaims(t *testing.T) {
 	issuer, flow := newCodeFlowFor(t)
 	issuer.SignInAs(personClaims("dispatch-members"))

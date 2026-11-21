@@ -254,8 +254,11 @@ func (f *CodeFlow) Exchange(ctx context.Context, redirectURL, code, nonce string
 // Refresh reads them. Every other answer is the endpoint answering and fails the exchange as that
 // answer, never as the issuer unavailable: a refusal, a 4xx with or without an OAuth error (whose
 // code, when it names one, is the caller's reason), and a 2xx or 3xx that names an error or holds
-// no token. An exchange whose own ctx ended before any answer came (the browser left the callback)
-// fails with ctx's error, since the issuer was not shown unable to answer.
+// no token. An exchange that got no answer because its own ctx ended (the browser left the
+// callback) fails with ctx's error, since the issuer was not shown unable to answer: the failure's
+// cause is that ctx's end, errors.Is the error ctx.Err names. A cause read from the error alone
+// would not do, since the token request's own timeout fails with an error that also matches
+// context.DeadlineExceeded (net/http's timeoutError) while the caller is still there.
 func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string, options ...oauth2.AuthCodeOption) (Session, error) {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
@@ -267,7 +270,7 @@ func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string
 		switch status := last.status(); {
 		case status != 0 && !oauthrefusal.Outage(status):
 			return Session{}, fmt.Errorf("oidc: exchange code: %w", err)
-		case status == 0 && ctx.Err() != nil:
+		case status == 0 && callerGone(ctx, err):
 			return Session{}, fmt.Errorf("oidc: exchange code: %w: %w", ctx.Err(), err)
 		}
 		return Session{}, fmt.Errorf("oidc: exchange code: %w: %w", ErrIssuerUnavailable, err)
@@ -280,6 +283,13 @@ func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string
 		return Session{}, ErrNonce
 	}
 	return session, nil
+}
+
+// callerGone reports whether err, a request's failure with no answer, came of ctx ending: ctx has
+// ended, and err matches the error that names how.
+func callerGone(ctx context.Context, err error) bool {
+	cause := ctx.Err()
+	return cause != nil && errors.Is(err, cause)
 }
 
 // OnlineSignIn is one sign-in in online mode, the values the caller generated for it and keeps
