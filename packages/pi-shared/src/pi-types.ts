@@ -343,13 +343,15 @@ export interface AgentEndMessage {
  * `message_start`, `message_end` and `turn_end` alike) or from `prompt_result.status`.
  */
 export interface AgentEndEvent {
-  /** Set when OMP has already scheduled a continuation, so the turn is not settling: a
-   * background job's follow-up sets it, with `awaitingAsyncWork`; a steered run's non-terminal
-   * end does not, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
+  /** Set when OMP goes on with the run after this end: a retry or a hook's continuation it has
+   * already scheduled, so the turn is not settling, or, with `awaitingAsyncWork`, a background
+   * job's result it waits for, after a turn that has settled. A steered run's non-terminal end
+   * does not set it, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
   readonly willContinue?: boolean;
   /** Set with `willContinue` when the turn ends while a background job runs or its result waits to
-   * be delivered (`agent-session.ts:5936-5943` at the pinned tag): the pane is idle until the
-   * job's result starts the next run. */
+   * be delivered (`agent-session.ts:6012-6015` at the pinned tag), which OMP reaches only after
+   * each of its retries and continuations has declined the turn: the pane is idle until the job's
+   * result starts the next run. */
   readonly awaitingAsyncWork?: boolean;
   /** The run's messages; the last assistant entry says how the run ended. */
   readonly messages?: readonly AgentEndMessage[];

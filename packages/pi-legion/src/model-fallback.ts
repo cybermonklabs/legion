@@ -92,8 +92,10 @@ export interface ModelFallback {
    * says whether a content filter is what it walked for. */
   readonly armFromEvent: (event: RetryFallbackAppliedEvent, ctx: ModelFallbackContext) => void;
   /** The host's `agent_end`: a turn that has settled, which the provider ended cleanly, with a
-   * content filter, or with some other failure. It makes no return: a return the timer found the
-   * pane too busy for is made at the timer's first firing on an idle pane (`maybeRestore`). */
+   * content filter, or with some other failure. That is every end but one the host goes on from
+   * itself; an end that waits only on a background job's result has settled. It makes no return:
+   * a return the timer found the pane too busy for is made at the timer's first firing on an idle
+   * pane (`maybeRestore`). */
   readonly turnSettled: (event: AgentEndEvent, ctx: ModelFallbackContext) => Promise<void>;
   /**
    * The return to the model the session fell back from, which this runner makes in one place:
@@ -456,9 +458,13 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
   };
 
   const settled = async (event: AgentEndEvent, ctx: ModelFallbackContext): Promise<void> => {
-    // The host is about to retry this turn itself, so it has not settled; acting on it would step
-    // the session down twice (`session/agent-session.ts:5902-5910` at the pinned tag).
-    if (event.willContinue === true) return;
+    // The host is about to go on with this turn itself, with a retry or a hook's continuation, so
+    // it has not settled; acting on it would step the session down twice
+    // (`session/agent-session.ts:5902-5910` at the pinned tag). An end that waits only on a
+    // background job's result (`awaitingAsyncWork`) has settled: the host reaches it only after
+    // each of its own retries and continuations has declined the turn (`:6012-6015`), and the
+    // job's result starts the next turn on the model this end leaves the session on.
+    if (event.willContinue === true && event.awaitingAsyncWork !== true) return;
     const applied = appliedThisTurn;
     appliedThisTurn = undefined;
     const outcome = classifyTurnEnd(event);
