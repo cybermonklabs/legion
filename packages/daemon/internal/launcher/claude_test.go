@@ -716,12 +716,12 @@ func TestAClaudeSaveTakesEverySaveThatMayHaveLandedAsSavedWhenTheRowMovedToIt(t 
 // in the launcher, its container's PID 1, so it never waits on what a role put at their paths and
 // never reads more of them than it needs. A fifo where a resume restores the transcript, where a
 // save opens it, or at the transcript's .legion-saved marker (SavedMarkerSuffix), which a fresh
-// transcript's first save writes, is refused at once in words naming it and left a fifo, where a
-// plain open would wait for a writer (a reader, for the marker's write-only open) for as long as
-// none comes. A file longer than its row, here the row, one more line and a 64 MiB hole, is taken
-// as an extension of the row and left as it is, with no more of it read than one byte past the
-// row: the restore allocates a small fraction of what a read of the whole file would hold in
-// memory.
+// transcript's first save writes, is refused in words naming it and left a fifo (refusesFifo),
+// where a plain open would wait for a writer (a reader, for the marker's write-only open) for as
+// long as none comes. A file longer than its row, here the row, one more line and a 64 MiB hole,
+// is taken as an extension of the row and left as it is, with no more of it read than one byte
+// past the row: the restore allocates a small fraction of what a read of the whole file would
+// hold in memory.
 func TestAClaudeRestoreAndSaveRefuseAFifoAndReadNoFurtherThanTheRow(t *testing.T) {
 	ctx := context.Background()
 	_, dsnFile := testdb.DSNFile(t, "legion_launcher_keeper_test")
@@ -812,11 +812,12 @@ func TestAClaudeRestoreAndSaveRefuseAFifoAndReadNoFurtherThanTheRow(t *testing.T
 }
 
 // refusesFifo makes a fifo at path and fails the test unless call, the keeper's step that opens
-// path (what names it in the failures), refuses it at once in words naming it and leaves it a
-// fifo. A call that has not answered in ten seconds, as a plain open of a fifo waits for a writer
-// (a write-only one for a reader), fails the test rather than hold its binary: the fifo is then
-// opened read-write, which releases either open, and the call is let end before the test's
-// directory is removed.
+// path (what names it in the failures), refuses it in words naming it and leaves it a fifo. The
+// verdict is that refusal, and its wait has no span of its own (testwait.Answer): a call that
+// waits on the fifo, as a plain open of one waits for a writer (a write-only one for a reader),
+// fails the test by name at the test binary's deadline, left blocked in that open, where it
+// touches nothing a later row uses. A clock of ten seconds once stood in for that guard, and
+// failed a call that was merely slow.
 func refusesFifo(t *testing.T, path, what string, call func() error) {
 	t.Helper()
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
@@ -824,23 +825,7 @@ func refusesFifo(t *testing.T, path, what string, call func() error) {
 	}
 	answer := make(chan error, 1)
 	go func() { answer <- call() }()
-	var err error
-	select {
-	case err = <-answer:
-	case <-time.After(10 * time.Second):
-		t.Cleanup(func() {
-			// Read-write and without blocking, so this open needs no reader waiting on it.
-			if fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0); err == nil {
-				_ = syscall.Close(fd)
-			}
-			select {
-			case <-answer:
-			case <-time.After(10 * time.Second):
-				t.Errorf("%s still waits on %s after the fifo was opened", what, path)
-			}
-		})
-		t.Fatalf("%s has not answered in 10s: it waits on the fifo %s", what, path)
-	}
+	err := testwait.Answer(t, what+" over the fifo "+path, answer)
 	if want := path + " is a fifo"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("%s answered %v, want a refusal saying %q", what, err, want)
 	}
