@@ -123,3 +123,81 @@ func TestCheckEditsHoldsTheFirstReplacesLineOfAChain(t *testing.T) {
 		})
 	}
 }
+
+// A third edit of a file. The version shipped as original; the first edit declares it, and the
+// base, the second edit, declares both. A head must begin its replaces lines with the base's, in
+// their order, then the base file's own identity, name and checksum both. A database the first
+// edit's release created from empty records the version's first identity and the first edit's
+// text, and the base accepts it; a head that drops the first edit's line refuses it at its next
+// boot. A database whose row records the base file's own identity, as the base accepts, is refused
+// by a head that names the base's text only under another file name. CheckEdits refuses both heads,
+// naming the line, and accepts one that keeps every line, which Reconcile accepts on both rows: on
+// each row CheckEdits judges the head as Reconcile judges that database under it. A head that moves
+// a line, a revert to the first edit's text and a head that puts another line before the base's own
+// refuse no database, since Reconcile reads the lines as a set, but every edit keeps the lines
+// before it in their order (Migration.RecordedIdentity), so CheckEdits refuses them too, naming
+// the line. Each refusal gives the lines to begin with.
+func TestCheckEditsHoldsEveryReplacesLineOfTheBase(t *testing.T) {
+	const name = "0002_second.up.sql"
+	declares := func(lines ...Identity) string {
+		var text strings.Builder
+		for _, line := range lines {
+			text.WriteString("-- replaces: " + line.String() + "\n")
+		}
+		return text.String()
+	}
+	originalIdentity := Identity{Name: name, Checksum: sha256Hex("create table second (id integer)")}
+	firstEdit := "create table second (id integer, note text)\n" + declares(originalIdentity)
+	firstEditIdentity := Identity{Name: name, Checksum: sha256Hex(firstEdit)}
+	baseText := "create table second (id integer, note text, at timestamptz)\n" + declares(originalIdentity, firstEditIdentity)
+	baseIdentity := Identity{Name: name, Checksum: sha256Hex(baseText)}
+	thirdEdit := "create table second (id integer, note text, at timestamptz)\n-- a third edit\n"
+	kept := thirdEdit + declares(originalIdentity, firstEditIdentity, baseIdentity)
+	base := map[string]string{name: baseText}
+	firstEditRow := Recorded{Version: 2, Identity: originalIdentity, Applied: firstEditIdentity.Checksum}
+	baseRow := Recorded{Version: 2, Identity: baseIdentity, Applied: baseIdentity.Checksum}
+	for _, row := range []Recorded{firstEditRow, baseRow} {
+		if _, err := Reconcile(loadSet(t, base), []Recorded{row}); err != nil {
+			t.Fatalf("the base's Reconcile of %+v = %v; want it accepted", row, err)
+		}
+	}
+	keep := "make its first replaces lines these, in this order: -- replaces: " + originalIdentity.String() + ", -- replaces: " + firstEditIdentity.String() + " and -- replaces: " + baseIdentity.String()
+	isHead := func(head string) string { return name + " is " + name + " sha256:" + sha256Hex(head) }
+	dropped := thirdEdit + declares(originalIdentity, baseIdentity)
+	elsewhere := thirdEdit + declares(originalIdentity, firstEditIdentity, Identity{Name: "0002_different.up.sql", Checksum: baseIdentity.Checksum})
+	for rowName, tc := range map[string]struct {
+		head    string
+		row     Recorded
+		refused []string
+	}{
+		"the first edit's line dropped":                                     {head: dropped, row: firstEditRow, refused: []string{isHead(dropped), "drops the base's replaces line -- replaces: " + firstEditIdentity.String(), keep}},
+		"every line of the base kept, in its order":                         {head: kept, row: firstEditRow},
+		"the base's own text named under another file name":                 {head: elsewhere, row: baseRow, refused: []string{isHead(elsewhere), "names the text of the base's own identity -- replaces: " + baseIdentity.String() + " only under another file name", keep}},
+		"every line of the base kept, against a row of the base's identity": {head: kept, row: baseRow},
+	} {
+		t.Run(rowName, func(t *testing.T) {
+			declared := 1
+			if len(tc.refused) > 0 {
+				declared = 0
+			}
+			checkEdits(t, base, map[string]string{name: tc.head}, 0, declared, tc.refused...)
+			if _, err := Reconcile(loadSet(t, map[string]string{name: tc.head}), []Recorded{tc.row}); (err != nil) != (len(tc.refused) > 0) {
+				t.Errorf("the head's Reconcile of %+v = %v; want refused %t, as CheckEdits judges the head", tc.row, err, len(tc.refused) > 0)
+			}
+		})
+	}
+	outOfPlace := func(what string, line Identity) string {
+		return "does not keep " + what + " -- replaces: " + line.String() + " at its place in the base's order"
+	}
+	for rowName, tc := range map[string]struct {
+		head, refused string
+	}{
+		"the first edit's line moved after the base's":    {head: thirdEdit + declares(originalIdentity, baseIdentity, firstEditIdentity), refused: outOfPlace("the base's replaces line", firstEditIdentity)},
+		"a revert to the first edit's text":               {head: firstEdit, refused: outOfPlace("the base's replaces line", firstEditIdentity)},
+		"another line put before the base's own identity": {head: thirdEdit + declares(originalIdentity, firstEditIdentity, Identity{Name: name, Checksum: sha256Hex("another text")}, baseIdentity), refused: outOfPlace("the base's own identity", baseIdentity)},
+	} {
+		t.Run(rowName, func(t *testing.T) {
+			checkEdits(t, base, map[string]string{name: tc.head}, 0, 0, tc.refused, keep)
+		})
+	}
+}

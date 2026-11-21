@@ -91,7 +91,7 @@ func TestAnArgumentAFormDoesNotTakeIsNotEchoed(t *testing.T) {
 // TestAProjectsListThatIsNoListIsNotEchoed: --projects is the flag form of AGENT_SECRETS_PROJECTS,
 // and a value it cannot hold is where a credential pasted in the wrong place shows up, so enroll
 // --helper and register refuse it naming the flag and the rule, and never the value, as
-// brokerclient.TradeProjects does for the variable (whose own test holds that).
+// cipherclient.TradeProjects does for the variable (whose own test holds that).
 func TestAProjectsListThatIsNoListIsNotEchoed(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	const secret = "hunter2pw-projects-9b3e"
