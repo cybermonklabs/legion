@@ -64,6 +64,75 @@ the hand-back after its answer responds to that turn. A round with more arrivals
 plus one is flagged. `scripts/e2e/lib/design-gate-approval-requests.jq` reads the same arrivals
 for the stage 4b proof.
 
+## Cross-project basis census
+
+`cross-project-basis-census.ts` reads two lists for the named projects from Dispatch's event log.
+The first is each spec-approval ask on a root whose chain, read up to its first issue of another
+project, reaches an issue whose spec held a person's approval of its latest version when the ask
+opened: a person was asked to approve a design that an approved issue of another project already
+held. The second is each design gate step that an ancestor of another project opened: each
+message whose first line is exactly `Design gate opened on an ancestor's approval.` and whose line
+`- The ancestor is KEY.` names an issue of another project than the one the message is on. That
+message is the daemon's `basisOpenedMessage` (`packages/daemon/internal/workflow/gate_basis.go`),
+and its first spec reference is the root's own, so the census reads the ancestor from that line.
+
+```bash
+bun scripts/dispatch/cross-project-basis-census.ts \
+  --project LEGION \
+  --project ACME \
+  --from 2026-11-07T00:00:00Z \
+  --to 2026-11-21T00:00:00Z \
+  --pair LEGION-12=ACME-6
+```
+
+`--project` is required and repeats: the asks and the messages on the issues of each named
+project are counted. The census reads them as Dispatch's events state them:
+
+- A spec-approval ask is the first `ask.opened` of an approval request whose document is the
+  issue's primary document, the `primary_artifact_id` its issue events name.
+- A root is an issue whose every ancestor of its own project is `done`, read up its `parent` chain
+  as the issue events left each issue when the ask opened. The read ends at the first ancestor of
+  another project.
+- A spec holds a person's approval of its latest version when its newest review
+  (`artifact.approved` or `artifact.changes_requested`) is an approval by an actor of kind `user`
+  of its latest version: the highest version an `artifact.version` named by then, or 1, the
+  version a spec is made at with its issue, which no event names. This is the check the daemon's
+  `register_gate` makes of a basis.
+
+Without `--events-file`, `--from` and `--to` are both required. The script pages
+`GET /api/v1/events/log` from the first event at or after `--from`, which a doubling and then a
+halving search of the log's ids finds one event a read, 1,000 events a page, until an event at or
+after `--to`. The asks and the messages counted are the window's. The chains and the approvals
+they are read against are each issue's whole history (`GET /api/v1/issues/{key}/events`), read
+for each ask's issue and for each issue its chain reaches, eight issues at a time, so a parent set
+or an approval given before the window is read as it stood. Dispatch is resolved as for the ask
+census above.
+
+`--events-file PATH` reads a saved log instead, one event to a line as the event log route serves
+it, such as the `dispatch-events.jsonl` an end-to-end run keeps. `--from` and `--to`, when given,
+only narrow the asks and the messages counted; the whole file is read for the chains and the
+approvals. A chain that reaches an issue the log holds no issue event of stops the run and names
+the issue, in both modes.
+
+`--pair ROOT=ANCESTOR` repeats. For each pair it prints every spec-approval ask on the root in the
+window: whether the ancestor was on the root's chain, the ancestor spec's latest version and newest
+review when the ask opened, and the answer or the closing the log holds for the ask. Then it prints
+each opening on the root that names the ancestor. So a reading can say, for each named root,
+whether its gate opened on the other project's approval and, where it did not, what the
+ancestor's spec held.
+
+`--json` prints `{asks, openings, pairs}` as one JSON object on stdout and nothing else.
+
+`__tests__/cross-project-basis-census.test.ts` runs the census on
+`__fixtures__/cross-project-basis-census.json`, the whole event log of a scratch Dispatch built from
+this repository. The log holds an ask under an approved issue of another project, which is listed;
+an ask under an approved issue of the same project, one under an issue of another project that no
+person approved, and one under an issue a person approved at an older version than its latest,
+none of which is listed; and a message in `basisOpenedMessage`'s format whose ancestor is of
+another project, which is listed, beside one whose ancestor is of the same project, which is not.
+That Dispatch refused a parent of another project, so the fixture's links across projects were
+written in its database and reach the log in the `issue.updated` of a label write.
+
 ## Display read census
 
 `display-read-census.ts` reads every stored text of a Dispatch deployment through its API and
