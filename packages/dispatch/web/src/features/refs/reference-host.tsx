@@ -29,8 +29,8 @@ export function hostLinksReferences(host: ReferenceHost): boolean {
   return host === "record";
 }
 
-/** Whether `host` draws a reference at all - its title, its hover card and the cards under a
- *  body that is nothing but references. A host that can hold no markup, and a diff, draw the
+/** Whether `host` draws a reference at all - its name, its hover card and the card under a body
+ *  that is one reference and nothing else. A host that can hold no markup, and a diff, draw the
  *  characters their text holds instead. */
 export function hostDrawsMarkup(host: ReferenceHost): boolean {
   return host === "record" || host === "control";
