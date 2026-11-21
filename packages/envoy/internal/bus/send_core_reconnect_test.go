@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -313,6 +314,123 @@ func TestAReleasedAttemptIsNotSentAgainByAReconnectDuringItsDrain(t *testing.T) 
 	trace = trace[strings.LastIndex(trace, "Starting nats-server"):]
 	if resent := strings.Count(trace, "<<- [SUB "+subject+" "+queue+" "); resent != 0 {
 		t.Fatalf("the server restarted during the drain received the drained attempt's subscription %d times; it holds a queue-group member the client no longer reads", resent)
+	}
+}
+
+// A released attempt's drain is not cut by the late callback of the reconnect it began after.
+// nats.go queues a reconnect's callback (onReconnect, which reports the connection event) under the
+// connection's lock, and the PONG of a flush needs that lock too, so the flush can return, sendCore
+// release its attempt and the drain begin on the reconnected session before that callback has run.
+// The event the callback then reports wakes the drain's watch (watchDrain), whose channel was taken
+// before it, but the session it reports is the one the drain began in: an unsubscribe there would
+// drop what that session delivered to the attempt.
+//
+// As in TestSendCoreGivesNoVerdictAndDrainsASendItsConnectionReconnectedUnder, a restart inside the
+// send leaves the attempt with two messages, the handler holding the first, and sendCore drains it.
+// Here the client's callback goroutine is also held, in a disconnect hook, until sendCore has
+// returned, so the reconnect's callback runs after the drain began. Once it has run, the handler
+// is let go and must be handed both messages.
+func TestALateReconnectCallbackDoesNotCutAReleasedAttemptsDrain(t *testing.T) {
+	const (
+		subject = "notifications.>"
+		queue   = "send-core-late-callback"
+		topic   = "notifications.team.send-core-late-callback"
+	)
+	seed, public := testnats.User(t)
+	granting := testnats.SubscribeGrantConfig(public, subject, "_INBOX.>")
+	server, uri := testnats.StartConfig(t, granting, []string{"-DV", "-js"}, false)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	var conn *nats.Conn
+	client, err := Connect([]string{uri}, WithBeforeCoreSendFlush(func() {
+		reconnects := conn.Stats().Reconnects
+		server.Restart(t, granting)
+		testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect inside the send", func() bool {
+			return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > reconnects
+		})
+		if err := conn.Flush(); err != nil {
+			t.Fatalf("flush the reconnected connection: %v", err)
+		}
+		publisher, err := Dial("send-core-publisher", []string{uri}, os.LookupEnv)
+		if err != nil {
+			t.Fatalf("connect the publisher: %v", err)
+		}
+		defer publisher.Close()
+		for range 2 {
+			if err := publisher.Publish(topic, []byte("{}")); err != nil {
+				t.Fatalf("publish %s: %v", topic, err)
+			}
+		}
+		if err := publisher.Flush(); err != nil {
+			t.Fatalf("flush the publishes: %v", err)
+		}
+	}))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	conn = client.Conn
+	// nats.go runs its callbacks on one goroutine, in order, so the reconnect's callback waits
+	// behind the restart's disconnect callback, which this hook holds until unhold.
+	held := make(chan struct{})
+	unhold := sync.OnceFunc(func() { close(held) })
+	t.Cleanup(unhold)
+	client.AddDisconnectHook(func() {
+		select {
+		case <-held:
+		case <-time.After(30 * time.Second):
+		}
+	})
+	var callbackBegan atomic.Bool
+	callbackRan := make(chan struct{})
+	ran := sync.OnceFunc(func() { close(callbackRan) })
+	onReconnect := conn.ReconnectHandler()
+	conn.SetReconnectHandler(func(nc *nats.Conn) {
+		callbackBegan.Store(true)
+		onReconnect(nc)
+		ran()
+	})
+	release := make(chan struct{})
+	let := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(let)
+	handled := make(chan string, 2)
+	handler := func(msg *nats.Msg) {
+		<-release
+		handled <- msg.Subject
+	}
+
+	start := conn.Stats().Reconnects
+	sub, _, err := client.sendCore(recoverableSubscription{transport: coreSubscription, subject: subject, queue: queue, handler: handler}, conn, client.js, start)
+	if callbackBegan.Load() {
+		t.Fatal("the reconnect's callback began before sendCore returned; the drain did not begin before it and the test proves nothing")
+	}
+	trace := server.Log()
+	trace = trace[strings.LastIndex(trace, "Starting nats-server"):]
+	if delivered := strings.Count(trace, "->> [MSG "+topic+" "); delivered != 2 {
+		t.Fatalf("the restarted server delivered %d messages on %s, want 2; the test proves nothing", delivered, topic)
+	}
+	if !errors.Is(err, errSendSuperseded) || sub != nil {
+		t.Fatalf("sendCore answered error %v, subscription %v; want errSendSuperseded and no subscription, the drain this test needs", err, sub)
+	}
+	unhold()
+	select {
+	case <-callbackRan:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the reconnect's callback never ran; the test proves nothing")
+	}
+	// The watch wakes at the event the callback reported; this gives it the time to act on it
+	// before the handler is let go. A watch slower than this could let a cut drain pass here,
+	// never fail one that is kept.
+	time.Sleep(200 * time.Millisecond)
+	let()
+	for n := range 2 {
+		select {
+		case got := <-handled:
+			if got != topic {
+				t.Fatalf("the handler was handed %s, want %s", got, topic)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the handler was handed %d of the 2 messages the new server delivered to the attempt; the late callback of the reconnect the drain began after ended the drain", n)
+		}
 	}
 }
 

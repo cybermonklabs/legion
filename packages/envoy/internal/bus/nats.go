@@ -1105,15 +1105,16 @@ func (c *Client) registerSubscription(next recoverableSubscription, conn *nats.C
 // connection's list for its flush's round trip and then passes of 100 ms, until the handler has
 // taken what was buffered. The drop itself releases that flush (processOpError clears the pending
 // flush calls), so what holds the window open past it is a handler still inside a delivery, which
-// is what a drain is for. So the drain is watched (watchDrain): at the client's next connection
-// event, while the handle is still valid, the watch unsubscribes it, and the resend finds nothing
-// to send. That event is taken (ConnectionChanged) before the Connected() read below, which is
-// that method's contract, so a drop between the read and the drain wakes the watch rather than
-// being missed by it. The returned handle keeps its meaning: a caller waiting for the drain's end
-// waits for the handle to turn invalid, which is what an unsubscribe by the watch leaves it. What
-// the handler had not yet been handed is dropped with the drain, which is the price of leaving
-// the durable free: those deliveries were buffered against a link that is gone, and the server
-// redelivers them to whoever binds the durable next.
+// is what a drain is for. So the drain is watched (watchDrain): at the first connection event after
+// which the connection no longer reads the session the drain began in, while the handle is still
+// valid, the watch unsubscribes it, and the resend finds nothing to send. The watch's first event
+// is taken (ConnectionChanged) before the connection's state is read below, which is that method's
+// contract, so a drop between the read and the drain wakes the watch rather than being missed by
+// it. The returned handle keeps its meaning: a caller waiting for the drain's end waits for the
+// handle to turn invalid, which is what an unsubscribe by the watch leaves it. What the handler had
+// not yet been handed is dropped with the drain, which is the price of leaving the durable free:
+// those deliveries were buffered against a link that is gone, and the server redelivers them to
+// whoever binds the durable next.
 func (c *Client) DrainSubscription(sub *nats.Subscription) (*nats.Subscription, error) {
 	if sub == nil {
 		return nil, nil
@@ -1134,16 +1135,18 @@ func (c *Client) DrainSubscription(sub *nats.Subscription) (*nats.Subscription, 
 	// Taken before the state it guards is read, so that an event between the two still wakes the
 	// watch below.
 	changed := c.ConnectionChanged()
-	if !c.Connected() {
+	conn := c.Connection()
+	if conn == nil || conn.Status() != nats.CONNECTED {
 		if err := active.Unsubscribe(); err != nil {
 			return nil, err
 		}
 		return nil, nil
 	}
+	reconnects := reconnectsOf(conn)
 	if err := active.Drain(); err != nil {
 		return nil, err
 	}
-	go c.watchDrain(active, changed)
+	go c.watchDrain(active, conn, reconnects, changed)
 	return active, nil
 }
 
@@ -1153,15 +1156,28 @@ func (c *Client) DrainSubscription(sub *nats.Subscription) (*nats.Subscription, 
 // holds to its flush's round trip plus passes of 100 ms.
 const drainWatchStep = 10 * time.Millisecond
 
-// watchDrain turns the drain DrainSubscription (or releaseAttempt) began on a live link into an unsubscribe at the
-// client's next connection event, while the handle is still valid: a drain still in the
-// connection's subscription list when a reconnect lands is re-sent by resendSubscriptions and then
-// dropped by checkDrained with no UNSUB ever written, which is what DrainSubscription's doc
-// describes. An unsubscribe takes the subscription out of that list, so the resend finds nothing.
-// changed is the channel taken before DrainSubscription's Connected() read, so a drop between that
-// read and the drain wakes the watch too. With one NATS URL there is room for it: doReconnect
-// queues the disconnect callback this channel reports and then waits a full ReconnectWait (1 s)
-// before the resend.
+// watchDrain turns the drain DrainSubscription (or releaseAttempt) began on a live link into an
+// unsubscribe once that link has dropped or reconnected, while the handle is still valid: a drain
+// still in the connection's subscription list when a reconnect lands is re-sent by
+// resendSubscriptions and then dropped by checkDrained with no UNSUB ever written, which is what
+// DrainSubscription's doc describes. An unsubscribe takes the subscription out of that list, so the
+// resend finds nothing. changed is the channel taken before the caller read conn's state, so a
+// drop between that read and the drain wakes the watch too. With one NATS URL there is room for
+// it: doReconnect queues the disconnect callback this channel reports and then waits a full
+// ReconnectWait (1 s) before the resend.
+//
+// The session the drain began in is conn read CONNECTED with reconnects as its count, both read
+// after changed was taken and before the drain. A wake does not by itself say that session ended:
+// nats.go queues a reconnect's callback, which reports the event (onReconnect), under the
+// connection's lock and runs it later on its callback goroutine, so a flush that waited for that
+// lock can return, and a drain begin, on the reconnected session before the callback has run. The
+// event it then reports is that reconnect, one the drain began after, and an unsubscribe there
+// would drop what the session delivered to the drain. So at each wake the watch takes the next
+// channel first and then reads conn's status and then its count, in sendCore's order: it
+// unsubscribes when conn no longer reads CONNECTED or its count has moved, and goes on watching
+// otherwise. nats.go counts a reconnect and re-sends the subscriptions under one hold of the
+// connection's lock, so a resend the drain is in shows as a moved count; a connection the client
+// replaced is closed, so it no longer reads CONNECTED.
 //
 // The watch ends with the drain, so it is never a goroutine parked for the life of the process.
 // The drain always ends: checkDrained opens with nc.Flush(), which carries the client's flush
@@ -1173,12 +1189,16 @@ const drainWatchStep = 10 * time.Millisecond
 // would have, and checkDrained's pass then asks for a delete the server answers not found, which
 // reaches the async error callback; Dispatch's intakes bind durables they add themselves, which
 // nats.go deletes for neither.
-func (c *Client) watchDrain(active *nats.Subscription, changed <-chan struct{}) {
+func (c *Client) watchDrain(active *nats.Subscription, conn *nats.Conn, reconnects uint64, changed <-chan struct{}) {
 	step := time.NewTicker(drainWatchStep)
 	defer step.Stop()
 	for {
 		select {
 		case <-changed:
+			changed = c.ConnectionChanged()
+			if conn.Status() == nats.CONNECTED && reconnectsOf(conn) == reconnects {
+				continue
+			}
 			if active.IsValid() {
 				// Its error would be the handle's own end -- the drain ended between the read and
 				// here, or the connection closed under it -- which is all this watch waits for.
@@ -1512,24 +1532,26 @@ func (c *Client) sendCore(registration recoverableSubscription, conn *nats.Conn,
 // has taken what it holds, and a reconnect in that time sends it again, after which checkDrained
 // removes it with no UNSUB ever written (resendSubscriptions, checkDrained). That would leave the
 // server a member of the queue group that the client no longer reads, taking a share of the
-// group's messages. So the drain is watched, as DrainSubscription's is (watchDrain): at the
-// client's next connection event, while the subscription is still valid, the watch unsubscribes it,
-// and the reconnect's resend finds nothing to send. The event is taken (ConnectionChanged) before
-// the status is read, so a drop between the read and the drain wakes the watch too. On a
-// connection that does not read CONNECTED it unsubscribes it at once, for the same reason. Either
-// way, the messages it still holds when it is unsubscribed are lost with the session that
-// delivered them.
+// group's messages. So the drain is watched, as DrainSubscription's is (watchDrain): once the
+// connection no longer reads the session the drain began in, while the subscription is still
+// valid, the watch unsubscribes it, and the reconnect's resend finds nothing to send. The watch's
+// first event is taken (ConnectionChanged) before the status is read, so a drop between the read
+// and the drain wakes the watch too; the count is read after the status, and both before the
+// drain, as sendCore reads them. On a connection that does not read CONNECTED it unsubscribes it
+// at once, for the same reason. Either way, the messages it still holds when it is unsubscribed
+// are lost with the session that delivered them.
 func (c *Client) releaseAttempt(conn *nats.Conn, sub *nats.Subscription) {
 	changed := c.ConnectionChanged()
 	if conn.Status() != nats.CONNECTED {
 		_ = sub.Unsubscribe()
 		return
 	}
+	reconnects := reconnectsOf(conn)
 	if err := sub.Drain(); err != nil {
 		_ = sub.Unsubscribe()
 		return
 	}
-	go c.watchDrain(sub, changed)
+	go c.watchDrain(sub, conn, reconnects, changed)
 }
 
 // reconnectsOf is conn's reconnect count, 0 for no connection: the session of a subscription's
