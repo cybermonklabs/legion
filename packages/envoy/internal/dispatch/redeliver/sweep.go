@@ -98,10 +98,9 @@ const (
 	// next one. Three intervals cover those.
 	Lookback = maxBackoff + 3*Interval
 
-	// retention is the bucket's TTL, GitHub's own horizon: past three days GitHub neither lists
-	// nor redelivers an attempt, so nothing older is worth remembering, and a delivery still
-	// failing that long after its first failed attempt is expired.
-	retention = 72 * time.Hour
+	// retention is the bucket's TTL, GitHub's own horizon (bus.WebhookRedeliveryRetention, which
+	// says why it is three days).
+	retention = bus.WebhookRedeliveryRetention
 	// cursorOverlap is how far before its cursor a sweep starts, and it covers two things. One is
 	// the clock skew between sweepers, the margin claimDeadline's comment calls far above it. The
 	// other is the most an entry nothing has acted on can fall behind the cursor of the sweep that

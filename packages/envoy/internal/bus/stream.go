@@ -76,6 +76,10 @@ const (
 	// reaches (ListenerBuckets): only the auth service grants its calls, so a hub that runs none
 	// refuses both its write and its read, which both sides read as no project being private.
 	PrivateProjectsBucket = "envoy_private_projects"
+	// SessionConsumersBucket records each listener session's consumer name on the notification
+	// stream (envoy-infra consumer-names). The NATS writer hold protects it: only the operator
+	// writes it, and only inside a hold (envoy-infra hold).
+	SessionConsumersBucket = "envoy_session_consumers"
 )
 
 // ListenerBuckets reports the KV buckets envoy-listener opens, in the order its NATS grant lists
@@ -91,6 +95,48 @@ const (
 // Each call returns a fresh slice, so no caller changes another's list.
 func ListenerBuckets() []string {
 	return []string{InterestBucket, RoleClaimBucket, SessionBucket, KnownSessionBucket, LegionAgentBucket, CIStateBucket, DPoPProofBucket}
+}
+
+// CopiedBuckets are the buckets a listener keeps a watcher-fed copy of (internal/kvwatch): the
+// interest and role-claim buckets (internal/store), the session registry and the known-session
+// store (internal/session), and the CI state bucket (internal/cistore). No program of a
+// deployment creates one (EnsureKeyValue, CreateCopiedBucketsOn): a write one of them acknowledged
+// is lost when it is deleted and created again, and its writer was told it landed, so the operator
+// alone creates them, with `envoy-infra buckets`: its create, recreate and check only once every
+// writer has ended (CreateCopiedBucket), and its break-glass create while writers run, since that
+// creates only a bucket the server reports missing (CreateMissingCopiedBucket), which loses nothing
+// to a create. Each call returns a fresh slice.
+func CopiedBuckets() []string {
+	return []string{InterestBucket, RoleClaimBucket, SessionBucket, KnownSessionBucket, CIStateBucket}
+}
+
+// The ages the copied buckets are created with: the session registry's record lifetime, which
+// ENVOY_SESSION_MAX_AGE changes on a running bucket (session.BucketMaxAge); a known session's
+// 30-day record (session.KnownSessionRetention); and a pull request commit's CI record, a week.
+// The interest and role-claim buckets keep their records until they are deleted.
+const (
+	SessionBucketMaxAge      = 5 * time.Minute
+	KnownSessionBucketMaxAge = 30 * 24 * time.Hour
+	CIStateBucketMaxAge      = 7 * 24 * time.Hour
+)
+
+// CopiedBucketConfig is the configuration a copied bucket (CopiedBuckets) is created with, at
+// replicas copies: file storage, and the age above where it has one. It answers false for any
+// other bucket.
+func CopiedBucketConfig(bucket string, replicas int) (nats.KeyValueConfig, bool) {
+	config := nats.KeyValueConfig{Bucket: bucket, Replicas: replicas, Storage: nats.FileStorage}
+	switch bucket {
+	case InterestBucket, RoleClaimBucket:
+	case SessionBucket:
+		config.TTL = SessionBucketMaxAge
+	case KnownSessionBucket:
+		config.TTL = KnownSessionBucketMaxAge
+	case CIStateBucket:
+		config.TTL = CIStateBucketMaxAge
+	default:
+		return nats.KeyValueConfig{}, false
+	}
+	return config, true
 }
 
 // NotificationTopicPrefix begins every notification topic: the subjects the stream carries, the
@@ -110,6 +156,13 @@ const ExceptionTopicPrefix = NotificationTopicPrefix + "envoy.exceptions."
 // only on a released claim of its own project.
 const LegionWakeTopic = NotificationTopicPrefix + "legion.wake"
 
+// WebhookRedeliveryRetention is the webhook redelivery bucket's TTL, GitHub's own horizon: past
+// three days GitHub neither lists nor redelivers an attempt, so nothing older is worth
+// remembering, and a delivery still failing that long after its first failed attempt is expired
+// (internal/dispatch/redeliver). The operator makes the bucket with it too (internal/streamset),
+// which is why it lives here, beside the bucket's name, and not in Dispatch's code.
+const WebhookRedeliveryRetention = 72 * time.Hour
+
 // DispatchDeliveryDurable is the stream's durable consumer Dispatch's delivery intake binds, over
 // every GitHub notification (internal/dispatch/delivery).
 const DispatchDeliveryDurable = "delivery-events"
@@ -117,6 +170,41 @@ const DispatchDeliveryDurable = "delivery-events"
 // DispatchJobDurable is the stream's durable consumer Dispatch's job intake binds, over a deploy
 // run's job events (internal/dispatch/delivery).
 const DispatchJobDurable = "delivery-jobs"
+
+// DispatchDeliveryFilter is the subject Dispatch's delivery intake consumes: every GitHub
+// notification. DispatchJobFilter is the job intake's: a deploy run's job events.
+const (
+	DispatchDeliveryFilter = NotificationTopicPrefix + "github.>"
+	DispatchJobFilter      = NotificationTopicPrefix + "github.*.*.job.>"
+)
+
+// DispatchDeliveryConsumer is the shape of Dispatch's delivery intake's durable: its name, one
+// push consumer over every GitHub notification, delivered to a reply inbox of its own and
+// acknowledged one message at a time. Dispatch's intake builds its durable on it, adding its ack
+// wait, pending bound and generation (internal/dispatch/delivery), and the operator's census keeps
+// a consumer of that name only while it has this shape (packages/envoy/infra/streams), so the two
+// cannot drift apart.
+func DispatchDeliveryConsumer() nats.ConsumerConfig {
+	return nats.ConsumerConfig{
+		Durable:        DispatchDeliveryDurable,
+		DeliverSubject: nats.NewInbox(),
+		FilterSubject:  DispatchDeliveryFilter,
+		AckPolicy:      nats.AckExplicitPolicy,
+	}
+}
+
+// DispatchJobConsumer is the shape of Dispatch's job intake's durable, as DispatchDeliveryConsumer
+// is the delivery intake's: one push consumer over a deploy run's job events, starting at new
+// messages.
+func DispatchJobConsumer() nats.ConsumerConfig {
+	return nats.ConsumerConfig{
+		Durable:        DispatchJobDurable,
+		DeliverSubject: nats.NewInbox(),
+		FilterSubject:  DispatchJobFilter,
+		DeliverPolicy:  nats.DeliverNewPolicy,
+		AckPolicy:      nats.AckExplicitPolicy,
+	}
+}
 
 // ListenerDurable is the durable consumer of the stream that the listener of machine machineID
 // binds. A space in the machine id is a hyphen in the name.
@@ -1038,6 +1126,49 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		}
 	}
 	return update.sent.Subjects, nil
+}
+
+// ErrStreamNotMade is a stream or a bucket a start beside the auth service
+// (StreamsOperatorMadeEnvVar) found missing: such a start makes no stream, since the auth service
+// answers no client but the operator with a stream create (natsgrant.ForCallout), and the
+// operator makes it at deploy time. The error wrapping it names the stream.
+var ErrStreamNotMade = errors.New("the operator makes every stream: run envoy-infra streams update")
+
+// streamNotMade is the error of a start beside the auth service that found stream missing: it
+// names the stream and the setting, and wraps ErrStreamNotMade, which names the operator's
+// command, and answer, the server's own.
+func streamNotMade(stream string, answer error) error {
+	return fmt.Errorf("%s is missing, and a start beside the auth service (%s=1) makes no stream: %w (%w)", stream, StreamsOperatorMadeEnvVar, ErrStreamNotMade, answer)
+}
+
+// readOperatorMadeStream is ensureStreamWithConfig for a client beside the auth service
+// (StreamsOperatorMadeEnvVar): it reads the stream, sent again while the server leaves the read
+// unanswered (readAgain), and returns the subjects it carries, and a stream it finds missing is
+// streamNotMade. It writes nothing: no create, no reconcile, no role-lane migration. The stream's
+// configuration is the operator's (envoy-infra streams update), so cfg and defaultsAnUnsetCap,
+// which decide what a reconcile writes, are not read. A start (atStart) that finds the stream with
+// no leader, as a raise the deploy just made leaves it, waits for one, as ensureStreamWithConfig
+// does, since a write sent now draws no answer.
+func readOperatorMadeStream(ctx context.Context, js nats.JetStreamContext, _ *nats.StreamConfig, _ bool, at streamEnsure) ([]string, error) {
+	ctx, cancel := hangGuard(ctx, startHangGuard)
+	defer cancel()
+	ctx = withReadLimit(ctx)
+	read := Stream + " STREAM.INFO"
+	info, err := readAgain(ctx, read, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) })
+	switch {
+	case errors.Is(err, nats.ErrStreamNotFound):
+		return nil, streamNotMade(Stream, err)
+	case unanswered(err) || ctx.Err() != nil:
+		return nil, namedRequest(read, err)
+	case err != nil:
+		return nil, err
+	}
+	if leaderless(info) && at == atStart {
+		if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
+			return nil, err
+		}
+	}
+	return info.Config.Subjects, nil
 }
 
 // newerBuild reports whether info's stream carries the settings of a newer build, one that stamped

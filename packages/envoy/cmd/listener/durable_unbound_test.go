@@ -13,6 +13,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -62,13 +63,14 @@ func bindBoundDurable(t *testing.T, client *bus.Client, consumer string, handler
 // setupUnboundDurableFixture is the listener a recreated durable or a stalled rewatch is tested
 // against, built on client: handler bound to the durable, both registries open with their caches
 // ready, and the listenerDeps /healthz reads. The client is the caller's, so a test that needs one
-// of its own, with a clock for the bus's reconnect reporting, connects it and hands it over. It
+// of its own, with a clock for the bus's reconnect reporting, connects it and hands it over; its
+// connection is marked as a fixture's (bustest.Fixture), so the registries create their buckets. It
 // returns a get() that serves one /healthz request, which is every piece the tests against this
 // listener share.
 func setupUnboundDurableFixture(t *testing.T, client *bus.Client, consumer string, handler natsgo.MsgHandler) func() (int, map[string]any) {
 	t.Helper()
 	bindBoundDurable(t, client, consumer, handler)
-	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), bustest.Fixture(client.Conn), store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
@@ -87,10 +89,10 @@ func setupUnboundDurableFixture(t *testing.T, client *bus.Client, consumer strin
 		t.Fatalf("wait for session cache: %v", err)
 	}
 	state := &atomic.Pointer[listenerDeps]{}
-	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: consumer})
+	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil, nil), consumer: consumer})
 	get := func() (int, map[string]any) {
 		recorder := httptest.NewRecorder()
-		healthzHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		healthzHandler(state, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var body map[string]any
 		_ = json.Unmarshal(recorder.Body.Bytes(), &body)
 		return recorder.Code, body

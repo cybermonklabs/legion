@@ -153,7 +153,7 @@ func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) 
 	}
 	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
 		Bucket:   bus.DPoPProofBucket,
-		TTL:      spentProofRetention,
+		TTL:      ciphertoken.SpentProofRetention,
 		Storage:  nats.FileStorage,
 		Replicas: replicas,
 	})
@@ -220,20 +220,6 @@ func listenerSourceAddress(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// spentProofRetention is how long one spent proof's record is kept: the whole window the proof it
-// records can still be presented in, and a minute more.
-//
-// A proof is accepted while now is between its 'iat' less ciphertoken.ProofClockSkew and its
-// 'iat' plus ciphertoken.ProofLifespan plus that skew, so a proof recorded now can be presented
-// again for at most two skews and a lifespan from this moment, whatever its 'iat'. The extra
-// minute covers the skew between the listener that recorded it and the one that reads it, as the
-// margin on Dispatch's own record of the same thing does (store.jtiRetentionMargin).
-//
-// It is the bucket's TTL rather than a per-key one because every key means the same thing and
-// lives the same span: nothing reads a record back, so a key whose window has passed says
-// nothing, and letting it expire costs no delete.
-const spentProofRetention = 2*ciphertoken.ProofClockSkew + ciphertoken.ProofLifespan + time.Minute
-
 // spentProofs is the listener's rfc9449.DPoPReplayStorage: one key per proof already spent, in
 // the KV bucket every listener of a deployment shares (bus.DPoPProofBucket), so a proof captured
 // from one listener cannot be presented to another inside its window. The listener has no
@@ -257,7 +243,7 @@ type spentProofs struct {
 // the pair is the same length whatever they were.
 //
 // exp is not read: it dates the end of one proof's window on the clock of the listener that
-// checked it, and every key here lives spentProofRetention, which is that window's longest.
+// checked it, and every key here lives ciphertoken.SpentProofRetention, which is that window's longest.
 func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _, htu string, _ time.Time) (bool, error) {
 	key := sha256.Sum256([]byte(jti + "\x00" + htu))
 	// Bounded ends the wait with the request, as every other bucket call this listener makes

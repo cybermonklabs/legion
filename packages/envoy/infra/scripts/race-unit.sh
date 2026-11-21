@@ -4,7 +4,8 @@
 # The race build of envoy-infra's unit tests: the one command envoy-infra-go's unit step runs and
 # ci-caches.yaml's envoy-infra fill compiles into the build cache that step restores.
 #
-#   race-unit.sh run       go test -count=1 -race over PACKAGES (envoy-infra-go's unit step)
+#   race-unit.sh run       go test -count=1 -timeout 40m -race over PACKAGES (envoy-infra-go's
+#                          unit step; the writer hold's rows take longer than go test's 10 m)
 #   race-unit.sh compile   go test -c -o /dev/null -race over PACKAGES (the fill's arm64 leg)
 #
 # PACKAGES is every package of the module, from `go list ./...`, less those EXCLUDE matches: the
@@ -29,7 +30,7 @@ if [ "$#" -ne 1 ]; then
 	exit 2
 fi
 case "$1" in
-run) flags=(-count=1) ;;
+run) flags=(-count=1 -timeout 40m) ;;
 compile) flags=(-c -o /dev/null) ;;
 *)
 	echo "usage: $0 run|compile" >&2

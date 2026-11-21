@@ -570,6 +570,8 @@ RULES = {
         (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:318")),
     f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1331")),
+    f"{DAEMON}/internal/daemon/idle_rig_listener_test.go": [
+        run(ENVOY, ["./cmd/listener", "./internal/testnats/cmd/fixturebuckets"], "internal/daemon/idle_rig_listener_test.go:52 testbuild.EnvoyBinary, and :53 testbuild.ProvisionFixtureBuckets (internal/testbuild/testbuild.go:169), which run go build ./cmd/listener and ./internal/testnats/cmd/fixturebuckets in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     # The harness main's #2780 added under the e2e tag for the two agent proofs it brought
     # (claim_compaction_live_test.go and provider_error_retry_live_test.go): it builds the
     # `legion` their panes run and packs both Oh My Pi plugins into the run's own profile. No job
@@ -593,7 +595,7 @@ RULES = {
         Read(path, "internal/daemon/supervision_test.go:1254 Glob ../stream/*.go, and :1263 parses each file it finds but the test files (:1260)")
         for path in files_but_tests(f"{DAEMON}/internal/stream")],
     f"{DAEMON}/internal/intake/redelivered_test.go": [
-        run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
+        run(ENVOY, ["./cmd/listener", "./cmd/dispatch", "./internal/testnats/cmd/fixturebuckets"], "internal/intake/redelivered_test.go:337-338 testbuild.EnvoyBinary, and :103 testbuild.ProvisionFixtureBuckets (internal/testbuild/testbuild.go:169), which run go build ./cmd/listener, ./cmd/dispatch and ./internal/testnats/cmd/fixturebuckets in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),
     f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:139")),
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
@@ -827,6 +829,8 @@ RULES = {
     f"{ENVOY}/cmd/listener/pod_grace_period_test.go": reads(
         (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:23"),
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
+    f"{ENVOY}/cmd/listener/single_node_compose_test.go": reads(
+        (f"{ENVOY}/deploy/compose/single-node.compose.yml", "cmd/listener/single_node_compose_test.go:17")),
     f"{ENVOY}/cmd/spec-check/cifiles_test.go": reads(
         (f"{ENVOY}/.changes/unreleased/pr4183-Added-20261116-091606.yaml",
          "cmd/spec-check/cifiles_test.go:641 reads that one fragment under ../..")),
@@ -1171,6 +1175,51 @@ def ceiling_run(job):
 def ceiling_reads(job):
     """pg-connection-ceiling.sh itself, which `job`'s sizing step runs."""
     return reads((CEILING, f"{at(job, CEILING_STEP)} runs it"))
+
+
+# The forced-order steps run packages/envoy/scripts/forced-order.sh, whose go test builds each
+# package's TestForcedOrder tests under -tags odatrace and -race against a copy of nats-server
+# that the script hooks with internal/testnats/testdata/hooked/v<version>, and replaces through a
+# copy of the workspace file or of the module's go.mod: a replacement outside the repository, of a
+# third-party module, so the first-party closure is the plain one under those tags. The check reads the step's run: line,
+# not what the script runs, so each such gate declares the script and the hooks it applies, and
+# the go test on the script's line FORCED_ORDER_GO_TEST, pinned as a Run per step.
+FORCED_ORDER = f"{ENVOY}/scripts/forced-order.sh"
+FORCED_ORDER_HOOKS = f"{ENVOY}/internal/testnats/testdata/hooked/**"
+FORCED_ORDER_GO_TEST = ('"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" '
+                        "-run '^TestForcedOrder' \"$@\"")
+# The envoy steps: one on the nats-server the workspace links (no -server, so a go.mod that moves
+# to a version with no hooks fails the step), and one on 2.10.29.
+ENVOY_FORCED_ORDER_SERVERS = ("", "2.10.29")
+ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/"]
+DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
+DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
+# The script's own test, envoy-go-race's step before the two above: packages/envoy/scripts/
+# forced-order.test.sh runs forced-order.sh in five cases, and the one run that gets as far as a
+# go test is over its fixture package, hooktest/skiponly, on the linked version; the other four
+# are refused before anything is built.
+FORCED_ORDER_TEST = f"{ENVOY}/scripts/forced-order.test.sh"
+ENVOY_FORCED_ORDER_TEST_STEP = "Test forced-order.sh's refusals"
+ENVOY_FORCED_ORDER_TEST_PKGS = ["./internal/testnats/hooktest/skiponly/"]
+
+
+def envoy_forced_order_step(server):
+    """The envoy-go-race step that runs the forced-order tests on nats-server `server`, or, for "",
+    on the version the workspace links."""
+    return f"Forced-order tests on the hooked nats-server v{server}" if server else \
+        "Forced-order tests on the hooked nats-server the module links"
+
+
+def forced_order_run(job, step, workdir, pkgs):
+    """The go test forced-order.sh starts in `job`'s `step`, over `pkgs` of the module at `workdir`."""
+    return script_run(FORCED_ORDER, FORCED_ORDER_GO_TEST, f"run by {at(job, step)}", workdir, pkgs,
+                      tags="odatrace", race=True)
+
+
+def forced_order_reads(job, step):
+    """forced-order.sh itself and the hooks it applies, which `job`'s `step` reads."""
+    return reads((FORCED_ORDER, f"{at(job, step)} runs it"),
+                 (FORCED_ORDER_HOOKS, f"{FORCED_ORDER}, run by {at(job, step)}, patches nats-server with them"))
 
 
 def two_builds_go_step():
@@ -1672,25 +1721,42 @@ LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 
 # The packages envoy-go's step "Count the database broker suites' skips" runs with `go test -json`
 # through packages/envoy/scripts/database-skips.sh, its default table (DEFAULT_PACKAGES there):
-# the broker's tree, internal/cipher and every package under it, and its command, cmd/cipherd.
-# That step fails on a failed test as on a skipped one. The unit step leaves them out: it ran
-# each of them a second time in the same job, with the same database, about 645 s of package
-# time on a merge-group run of 2026-11-17 (job 133989142856), internal/cipher/helper alone 326 s;
-# cmd/cipherd took 580 s of the unit step on 2026-11-18 (job 135007706189). The script's own
-# DEFAULT_EXCEPT, a `grep -Ev` over that table's import paths, leaves out the race lane's packages
-# under the tree (DATABASE_SKIPS_PATTERN, today the auth service's natscallout), which open no
-# database and which the lane's race job runs: a run there too would be each one's second in the
-# same CI run. The pattern is built from ENVOY_RACE_LANE, as the unit step's is.
-# hold_database_skips_packages() below refuses a script whose table is not this list, or whose
-# DEFAULT_EXCEPT is not that pattern.
+# the broker's tree, internal/cipher and every package under it, its command, cmd/cipherd, and
+# DATABASE_SKIPS_PACKAGES, each the package alone: the writer hold's client, internal/holdrecord,
+# whose journal tests run on the broker's own routes over its Postgres. That step fails on a
+# failed test as on a skipped one. The unit step leaves them out: it ran each of them a second
+# time in the same job, with the same database, about 645 s of package time on a merge-group run
+# of 2026-11-17 (job 133989142856), internal/cipher/helper alone 326 s; cmd/cipherd took 580 s of
+# the unit step on 2026-11-18 (job 135007706189). The script's own DEFAULT_EXCEPT, a `grep -Ev`
+# over that table's import paths, leaves out DATABASE_SKIPS_RACE_ONLY: race lane packages under
+# the tree that open no database, which the lane's race job runs, where a run here too would be
+# each one's second in the same CI run and would count nothing. It names none today. The auth
+# service's natscallout is in the lane, and its hold rows open the broker's Postgres and skip
+# without it, so the count runs it too, its second run in CI, for the count of its skips.
+# DATABASE_SKIPS_PATTERN is built from the lane's declaration of those packages, as the unit
+# step's is. hold_database_skips_packages() below refuses a script whose table is not this list,
+# or whose DEFAULT_EXCEPT is not that pattern.
 DATABASE_SKIPS_TREE = "internal/cipher"
 DATABASE_SKIPS_COMMAND = "cmd/cipherd"
-DATABASE_SKIPS_PKGS = [f"./{DATABASE_SKIPS_TREE}/...", f"./{DATABASE_SKIPS_COMMAND}/"]
+DATABASE_SKIPS_PACKAGES = ["internal/holdrecord"]
+DATABASE_SKIPS_PKGS = ([f"./{DATABASE_SKIPS_TREE}/...", f"./{DATABASE_SKIPS_COMMAND}/"]
+                       + [f"./{p}/" for p in DATABASE_SKIPS_PACKAGES])
 DATABASE_SKIPS_STEP = "Count the database broker suites' skips"
 DATABASE_SKIPS_SCRIPT = "packages/envoy/scripts/database-skips.sh"
+DATABASE_SKIPS_RACE_ONLY: list = []
+_lane_under_tree = {p.name: p for job in ENVOY_RACE_LANE for p in job.packages
+                    if p.name == DATABASE_SKIPS_TREE or p.name.startswith(f"{DATABASE_SKIPS_TREE}/")}
+if any(name not in _lane_under_tree for name in DATABASE_SKIPS_RACE_ONLY):
+    raise ValueError(f"DATABASE_SKIPS_RACE_ONLY names {DATABASE_SKIPS_RACE_ONLY}, and only race lane packages under "
+                     f"{DATABASE_SKIPS_TREE} ({sorted(_lane_under_tree)}) can be left to the race job")
 DATABASE_SKIPS_PATTERN = "|".join(
-    f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages
-    if p.name == DATABASE_SKIPS_TREE or p.name.startswith(f"{DATABASE_SKIPS_TREE}/"))
+    f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for p in _lane_under_tree.values() if p.name in DATABASE_SKIPS_RACE_ONLY)
+# The packages the count runs, as its Run names them: the tree's packages DATABASE_SKIPS_PATTERN
+# keeps (packages_kept, which needs a pattern that takes some package out), the command and
+# DATABASE_SKIPS_PACKAGES.
+DATABASE_SKIPS_RUN_PKGS = ((packages_kept(ENVOY, DATABASE_SKIPS_PATTERN, DATABASE_SKIPS_TREE) if DATABASE_SKIPS_PATTERN
+                            else [f"./{DATABASE_SKIPS_TREE}/..."])
+                           + [f"./{DATABASE_SKIPS_COMMAND}/"] + [f"./{p}/" for p in DATABASE_SKIPS_PACKAGES])
 # The -timeout of envoy-go's unit step, which the count step passes the counter too: cmd/cipherd
 # ran under it in the unit step before it moved to the count, so its limit does not fall.
 UNIT_TEST_TIMEOUT = "20m"
@@ -1727,7 +1793,7 @@ DATABASE_SKIPS_RUN = (f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT} "
 # on these three packages, one at a time, each narrowed to its planted and expected tests.
 DATABASE_SKIPS_TEST_STEP = "Test the database skip counter"
 DATABASE_SKIPS_TEST = "packages/envoy/scripts/database-skips.test.sh"
-DATABASE_SKIPS_TEST_PKGS = ["./internal/cipher/api/", "./cmd/cipherd/", "./internal/dispatch/api/"]
+DATABASE_SKIPS_TEST_PKGS = ["./internal/cipher/api/", "./cmd/cipherd/", "./internal/holdrecord/", "./internal/dispatch/api/"]
 
 
 def hold_database_skips_packages():
@@ -1756,16 +1822,17 @@ hold_database_skips_packages()
 # run under the detector, internal/integration, which envoy-go's integration step runs, the text
 # checks, which the text-check job runs, the architecture-note and spec-file packages and
 # LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-checks runs, and the
-# broker's tree and command, which envoy-go's database-skips step runs. Its `grep -Ev` is
-# `/integration`, then the text checks, then those packages, each the package alone, then the
-# broker's tree and its command, then, in the lane's own order, each package in the form go
+# broker's tree, its command and DATABASE_SKIPS_PACKAGES, which envoy-go's database-skips step
+# runs. Its `grep -Ev` is `/integration`, then the text checks, then those packages, each the
+# package alone, then the broker's tree, its command and DATABASE_SKIPS_PACKAGES, each of those
+# the package alone, then, in the lane's own order, each package in the form go
 # list's import paths need - a tree matching the package and everything under it, any other the
 # package alone.
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
     + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES]
-    + [f"/{DATABASE_SKIPS_TREE}($|/)", f"/{DATABASE_SKIPS_COMMAND}$"]
+    + [f"/{DATABASE_SKIPS_TREE}($|/)", f"/{DATABASE_SKIPS_COMMAND}$"] + [f"/{p}$" for p in DATABASE_SKIPS_PACKAGES]
     + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
 
 # envoy-go-race-api's step runs its package through database-skips.sh, which counts the skips of
@@ -2557,6 +2624,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
+        (FORCED_ORDER, "check-ci-filters.test.sh reads its go flags, which must pass -tags odatrace, the one name "
+                       "beyond the toolchain's that go_build_tags.py leaves out of every vet"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh's fixture function)"),
@@ -2633,6 +2702,7 @@ GATES = [
     gate("daemon_go_tests", "daemon-go", runs=[
         script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
                    at("daemon-go", "Stage 1 live proof"), DAEMON, ["./cmd/legion"], mode="build"),
+        forced_order_run("daemon-go", DAEMON_FORCED_ORDER_STEP, DAEMON, DAEMON_FORCED_ORDER_PKGS),
     ], exact=[
         # check-ci-filters.sh reduces only a one-line go test, so the step's whole script is
         # pinned, as the envoy-go unit step's is - and it carries a -skip besides, which is no
@@ -2684,7 +2754,8 @@ GATES = [
         (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
-    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
+    ) + forced_order_reads("daemon-go", DAEMON_FORCED_ORDER_STEP)
+      + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
 
     # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the
     # daemon-go race step skips by name - the one that packs the two plugin releases and loads
@@ -3252,25 +3323,26 @@ GATES = [
             (ENVOY, DATABASE_SKIPS_TEST_PKGS,
              "packages/envoy/scripts/database-skips.test.sh's runs of the counter on each package", {}),
         ]),
-        # The broker's tree less the race lane's packages under it, and its command, which
-        # database-skips.sh runs with `go test -json` from packages/envoy (DATABASE_SKIPS_PKGS less
-        # DEFAULT_EXCEPT, which hold_database_skips_packages() holds to DATABASE_SKIPS_PATTERN); the
-        # unit step leaves the whole table out. The Run names the tree's packages that pattern
-        # keeps (packages_kept), as the unit step's does, so a lane package's files do not reach
-        # this step's reads. Its --skip takes the backend count's test of internal/cipher/api out,
-        # as the unit step's -skip takes that count's other tests out of it.
+        # The broker's tree less DATABASE_SKIPS_RACE_ONLY, its command and the writer hold's
+        # client, which database-skips.sh runs with `go test -json` from packages/envoy
+        # (DATABASE_SKIPS_PKGS less DEFAULT_EXCEPT, which hold_database_skips_packages() holds to
+        # DATABASE_SKIPS_PATTERN); the unit step leaves the whole table out. The Run names the
+        # tree's packages that pattern keeps (DATABASE_SKIPS_RUN_PKGS), as the unit step's does, so
+        # a package left to the race job does not bring its files to this step's reads. Its --skip
+        # takes the backend count's test of internal/cipher/api out, as the unit step's -skip takes
+        # that count's other tests out of it.
         pinned_step("envoy-go", DATABASE_SKIPS_STEP, ".", DATABASE_SKIPS_RUN, [
-            (ENVOY, packages_kept(ENVOY, DATABASE_SKIPS_PATTERN, DATABASE_SKIPS_TREE) + [f"./{DATABASE_SKIPS_COMMAND}/"],
+            (ENVOY, DATABASE_SKIPS_RUN_PKGS,
              f"packages/envoy/scripts/database-skips.sh's go test -json -timeout {UNIT_TEST_TIMEOUT} of the broker's "
-             "packages, less the race lane's, and its command", {}),
+             "packages, less DATABASE_SKIPS_RACE_ONLY, its command and the writer hold's client", {}),
         ]),
         # Only what the natslive tag adds, one package at a time: the rig's own matrix, the one
         # test of internal/bus that needs a real server image, and the auth service's check that
         # the deployed server lets an empty allow list through, which its guard refuses. The rest
-        # of internal/testnats runs in the unit step; the rest of internal/bus and
-        # internal/cipher/natscallout runs in envoy-go-race, since UNIT_TEST_PATTERN leaves the
-        # race lane's packages out of the unit step, and the envoy_go entry of TAG_RUNS, one entry
-        # per step, checks the testnats half alone.
+        # of internal/testnats runs in the unit step; the rest of internal/bus runs in
+        # envoy-go-race, and the rest of internal/cipher/natscallout there and in the database-skips
+        # step above, since UNIT_TEST_PATTERN leaves the race lane's packages out of the unit step,
+        # and the envoy_go entry of TAG_RUNS, one entry per step, checks the testnats half alone.
         pinned_step("envoy-go", NATS_MATRIX_STEP, ENVOY, NATS_MATRIX_SCRIPT, [
             (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
             (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
@@ -3481,8 +3553,17 @@ GATES = [
     # runs the package under .github/scripts/race_memory.py
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
-    gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
-         reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
+    gate("envoy_go_race", "envoy-go-race",
+         runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")]
+         + [forced_order_run("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP, ENVOY, ENVOY_FORCED_ORDER_TEST_PKGS)]
+         + [forced_order_run("envoy-go-race", envoy_forced_order_step(server), ENVOY, ENVOY_FORCED_ORDER_PKGS)
+            for server in ENVOY_FORCED_ORDER_SERVERS],
+         reads=ceiling_reads("envoy-go-race")
+         + reads((FORCED_ORDER_TEST, f"{at('envoy-go-race', ENVOY_FORCED_ORDER_TEST_STEP)} runs it"))
+         + forced_order_reads("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP)
+         + [read for server in ENVOY_FORCED_ORDER_SERVERS
+            for read in forced_order_reads("envoy-go-race", envoy_forced_order_step(server))]
+         + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
 
     gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-go-race-api")], exact=[
         pinned_step("envoy-go-race-api", RACE_API.step, ENVOY, RACE_API_SCRIPT, [
@@ -3686,6 +3767,8 @@ GATES = [
                    f"run by {at('envoy-e2e-local', 'Local end-to-end acceptance')}", ENVOY, ["./cmd/listener"], mode="build"),
         script_run(f"{ENVOY}/scripts/e2e-local.sh", 'go build -o "$nats_binary" ./internal/testnats/cmd/natsd',
                    f"run by {at('envoy-e2e-local', 'Local end-to-end acceptance')}", ENVOY, ["./internal/testnats/cmd/natsd"], mode="build"),
+        script_run(f"{ENVOY}/scripts/e2e-local.sh", 'go build -o "$fixturebuckets_binary" ./internal/testnats/cmd/fixturebuckets',
+                   f"run by {at('envoy-e2e-local', 'Local end-to-end acceptance')}", ENVOY, ["./internal/testnats/cmd/fixturebuckets"], mode="build"),
     ], reads=reads(
         (f"{ENVOY}/scripts/e2e-local.test.sh", at("envoy-e2e-local", "Refusal test for e2e-local.sh")),
         (f"{ENVOY}/scripts/e2e-local.sh", f"{at('envoy-e2e-local', 'Local end-to-end acceptance')}; e2e-local.test.sh:6,27"),
@@ -3701,7 +3784,7 @@ GATES = [
                    'const spawned = Bun.spawn(["go", "build", "-o", `${build.bin}${path.sep}`, ...build.packages], {',
                    f"buildGoBinaries, which both rigs of that directory call; this one's packages are the Envoy "
                    f"stack's, built for {at(STALL, STALL_CLIENT)}, {at(STALL, 'Stall test of pi-envoy')} and "
-                   f"{at(STALL, 'Stall test of claude-envoy')}", ENVOY, ["./internal/testnats/cmd/natsd", "./cmd/listener"], mode="build"),
+                   f"{at(STALL, 'Stall test of claude-envoy')}", ENVOY, ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/fixturebuckets", "./cmd/listener"], mode="build"),
         script_run("packages/envoy-client/test/dispatch-stack.ts",
                    'packages: ["./cmd/dispatch"],',
                    f"the packages that rig hands buildGoBinaries, run by "

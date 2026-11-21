@@ -397,6 +397,11 @@ func WithReplicas(n int) Option {
 	}
 }
 
+// Retention is the CI-state bucket's TTL, how long one commit's state is kept: the listener opens
+// the bucket with it, and the operator makes the bucket with it, beside the auth service
+// (internal/streamset) and as one of the buckets a listener copies (bus.CopiedBucketConfig).
+const Retention = bus.CIStateBucketMaxAge
+
 // WithTTL sets the per-key expiry so stale per-commit state auto-cleans.
 func WithTTL(d time.Duration) Option {
 	return func(o *openOpts) {
@@ -406,12 +411,13 @@ func WithTTL(d time.Duration) Option {
 	}
 }
 
-// Open connects (or creates) the CI-state KV bucket and starts the WatchAll
-// cache. Mirrors store.Open: the cache is populated asynchronously by watch()
-// so Open never blocks on per-key Gets. The store and its cache watcher log through logger.
-// ctx bounds the bucket's open (bus.EnsureKeyValue).
+// Open connects the CI-state KV bucket and starts the WatchAll cache. The bucket is one a
+// listener copies, which bus.EnsureKeyValue creates only through a test fixture's connection
+// (bus.CreateCopiedBucketsOn), and otherwise answers bus.ErrBucketMissing. Mirrors store.Open:
+// the cache is populated asynchronously by watch() so Open never blocks on per-key Gets. The store
+// and its cache watcher log through logger. ctx bounds the bucket's open (bus.EnsureKeyValue).
 func Open(ctx context.Context, nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error) {
-	o := openOpts{replicas: 1, ttl: 7 * 24 * time.Hour}
+	o := openOpts{replicas: 1, ttl: Retention}
 	for _, f := range opts {
 		f(&o)
 	}

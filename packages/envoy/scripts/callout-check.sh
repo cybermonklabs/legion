@@ -20,8 +20,8 @@
 #      the auth service's queue group, so no request waits on it. A session opened before the hub
 #      has read that connection's close can be routed to the dead replica and is refused at the
 #      hub's authorization timeout (measured), so the check opens the first session only once the
-#      hub lists one envoy-broker-callout connection fewer (both replicas carry that name), inside
-#      the first session's 2 s.
+#      hub lists one auth service connection fewer (each replica's is named `envoy-auth <build>
+#      hold-aware`), inside the first session's 2 s.
 #
 # Each probe is cmd/natsprobe, run with only the variables it needs: as a session, it trades the
 # pod's exchange token for a broker access token under the session the stack registered the pod
@@ -247,13 +247,13 @@ else
 fi
 
 # callout_connections prints how many connections the hub's connection list names as the auth
-# service's (natscallout's connectionName), or nothing when the list cannot be read inside 2 s.
-# nats-server marks a connection closed, and so routes nothing more to its subscriptions
-# (client.go, deliverMsg), before it takes the connection off that list (closeConnection,
-# removeClient).
+# service's (natscallout's connectionName, `envoy-auth <build> hold-aware`), or nothing when the
+# list cannot be read inside 2 s. nats-server marks a connection closed, and so routes nothing more
+# to its subscriptions (client.go, deliverMsg), before it takes the connection off that list
+# (closeConnection, removeClient).
 callout_connections() {
   curl -sf --max-time 2 "$DEV_STACK_NATS_MONITOR_URL/connz?limit=1024" 2>/dev/null |
-    jq -r '[.connections[]? | select(.name == "envoy-broker-callout")] | length' 2>/dev/null || true
+    jq -r '[.connections[]? | select((.name // "") | startswith("envoy-auth ") and endswith(" hold-aware"))] | length' 2>/dev/null || true
 }
 
 # 6. One of the two brokers killed, then three new sessions, each admitted within 2 s: the first
@@ -267,7 +267,7 @@ else
   if [ -z "$before" ]; then
     unknown "$killed_property: the hub's connection list ($DEV_STACK_NATS_MONITOR_URL/connz) could not be read before the kill"
   elif [ "$before" -lt 2 ]; then
-    unknown "$killed_property: the hub lists $before connection named envoy-broker-callout before the kill, not one for each of the two brokers"
+    unknown "$killed_property: the hub lists $before auth service connection before the kill, not one for each of the two brokers"
   else
     killed=$(date +%s%N)
     kill -KILL "$second_broker"
@@ -292,7 +292,7 @@ else
     if [ -z "$dropped" ] && [ -z "$listed" ]; then
       unknown "$killed_property: the hub's connection list ($DEV_STACK_NATS_MONITOR_URL/connz) could not be read after the kill"
     elif [ -z "$dropped" ]; then
-      fail "$killed_property: the hub still listed $listed connections named envoy-broker-callout ${waited} ms after the kill"
+      fail "$killed_property: the hub still listed $listed auth service connections ${waited} ms after the kill"
     else
       slowest=0
       outcome=pass

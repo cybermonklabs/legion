@@ -165,6 +165,11 @@ type Deps struct {
 	// never stops in the first place - ciphertest and the in-process rigs - for which the broker
 	// is never draining.
 	Draining func() bool
+	// NATSHold is the NATS writer hold's routes, /v1/nats-hold and the three under it, which
+	// the operator alone calls (NATSHold). Every Deps mounts them; the zero NATSHold refuses
+	// every caller 403 not_operator, as a broker whose BROKER_NATS_SERVICES lists no operator
+	// does.
+	NATSHold NATSHold
 	// EdgeListeners is each edge listener's entry of BROKER_NATS_SERVICES
 	// (config.NATSCallout.EdgeListeners): GET /v1/project-repositories answers the account an entry
 	// names, presenting its own identity token as a listed caller does, about the projects that
@@ -192,6 +197,9 @@ type server struct {
 	// route of the approval page share.
 	tokenLimiter   *ratelimit.Keyed
 	accountLimiter *ratelimit.Keyed
+	// holdFloors is this process's floor of each NATS writer hold record (recordFloors), kept
+	// for as long as the routes Register mounted serve.
+	holdFloors *recordFloors
 	// repositoryCalls counts each edge listener's calls of GET /v1/project-repositories still
 	// waiting on Dispatch, at most maxRepositoryCallsInFlight each.
 	repositoryCalls *callsInFlight
@@ -200,6 +208,9 @@ type server struct {
 func Register(mux *http.ServeMux, deps Deps) {
 	if deps.OAuth != nil && (deps.MachineLogin == nil || deps.DeviceLogin == nil || deps.TokenHooks.Before == nil || deps.TokenHooks.After == nil) {
 		panic("api: Deps.OAuth needs MachineLogin, DeviceLogin and both TokenHooks")
+	}
+	if deps.NATSHold.OperatorToken != nil && (deps.NATSHold.Pool == nil || deps.NATSHold.Schema == "") {
+		panic("api: Deps.NATSHold.OperatorToken needs the Pool and the Schema of the hold's tables")
 	}
 	limits := DefaultLauncherLimits
 	if deps.LauncherLimits != nil {
@@ -242,6 +253,7 @@ func Register(mux *http.ServeMux, deps Deps) {
 		rereadOverall:   rereadBucket,
 		tokenLimiter:    ratelimit.NewKeyed(token),
 		accountLimiter:  ratelimit.NewKeyed(account),
+		holdFloors:      newRecordFloors(),
 		repositoryCalls: newCallsInFlight(maxRepositoryCallsInFlight),
 	}
 	for _, route := range routes() {
@@ -294,8 +306,9 @@ const (
 // listed caller must then hold the power its row declares, a service's token must name an
 // account BROKER_SERVICE_LOGINS lists and BROKER_POD_OPERATORS does not map (serviceCaller), and
 // an edge listener's must name an account an edge-listener entry of BROKER_NATS_SERVICES names
-// (edgeListenerCaller). The approval page's routes spend that same bucket, for the same reason:
-// see the authSignIn case.
+// (edgeListenerCaller). The NATS writer hold's routes (operatorAuth) spend that bucket before the
+// operator's token is verified, for the same reason, and the approval page's routes spend it
+// too: see the authSignIn case.
 func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiRoute) (caller, bool) {
 	auth := route.Handler.auth
 	switch auth {
@@ -324,6 +337,11 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 			return caller{}, false
 		}
 		return s.serviceCaller(w, r)
+	case authOperator:
+		if s.refuseAccountAddress(w, r) {
+			return caller{}, false
+		}
+		return s.operatorCaller(w, r)
 	case authEdgeListener:
 		if s.refuseAccountAddress(w, r) {
 			return caller{}, false
@@ -392,11 +410,11 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 
 // answerCaller is the caller class and identity the answer's record names for a request
 // authenticate let through on route (answer.Recorder.NoteCaller): the launcher credential, the
-// enrollment, the listed account, the service and the account it presented, the edge listener's
-// account, or the signed-in person. A route that takes no credential is public, and a route of
-// the approval page reached with no live sign-in unauthenticated; a handler that authenticates
-// its own caller notes its class over this one (tokenLogin, and rereadSecret for a session's
-// proof).
+// enrollment, the listed account, the service and the account it presented, the writer hold's
+// operator, as the service operator@<its account>, the edge listener's account, or the signed-in
+// person. A route that takes no credential is public, and a route of the approval page reached
+// with no live sign-in unauthenticated; a handler that authenticates its own caller notes its
+// class over this one (tokenLogin, and rereadSecret for a session's proof).
 func (c caller) answerCaller(route routeHandler) (class, id string) {
 	switch route.auth {
 	case authLauncher:
@@ -407,6 +425,8 @@ func (c caller) answerCaller(route routeHandler) (class, id string) {
 		return answer.CallerAccount, c.account.Name
 	case authService:
 		return answer.CallerService, serviceIdentity(c.service)
+	case authOperator:
+		return answer.CallerService, "operator@" + c.operator
 	case authEdgeListener:
 		return answer.CallerEdgeListener, c.edge.Account
 	case authSignIn:

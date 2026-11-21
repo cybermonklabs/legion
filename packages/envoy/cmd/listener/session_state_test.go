@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
@@ -50,6 +51,7 @@ func stalledSessionsRig(t *testing.T) (*listenerDeps, *stateClock) {
 	if err != nil {
 		t.Fatalf("connect the bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {

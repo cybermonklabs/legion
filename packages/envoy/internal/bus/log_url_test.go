@@ -25,8 +25,8 @@ func TestNATSURLWithoutUserinfo(t *testing.T) {
 		{"nats://user:secret@host:4222/%zz", "host:4222/%zz"},
 		{"nats://user:secret@host:4222/a@b", "b"},
 	} {
-		if got := natsURLWithoutUserinfo(tc.raw); got != tc.want {
-			t.Errorf("natsURLWithoutUserinfo(%q) = %q, want %q", tc.raw, got, tc.want)
+		if got := NATSURLWithoutUserinfo(tc.raw); got != tc.want {
+			t.Errorf("NATSURLWithoutUserinfo(%q) = %q, want %q", tc.raw, got, tc.want)
 		}
 	}
 }

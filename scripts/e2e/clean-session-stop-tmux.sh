@@ -703,6 +703,8 @@ go -C "$root/packages/envoy" build -o "$work/bin/envoy-listener" ./cmd/listener 
   fail "./cmd/listener did not build"
 go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd ||
   fail "./internal/testnats/cmd/natsd did not build"
+go -C "$root/packages/envoy" build -o "$work/bin/fixturebuckets" ./internal/testnats/cmd/fixturebuckets ||
+  fail "./internal/testnats/cmd/fixturebuckets did not build"
 while IFS= read -r line; do note "$line"; done < <(
   bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/bin/legion" "$work/bin/envoy-listener"
 ) || fail "lib/built-from.sh could not say what the run built"
@@ -795,6 +797,9 @@ nats_port=$(report_port "$evidence/logs/natsd.log" 'Listening for client connect
   fail "natsd logged no client port; see $evidence/logs/natsd.log"
 nats_url=nats://127.0.0.1:$nats_port
 note "NATS on $nats_url, its JetStream store in $work/nats-store"
+# No listener creates a bucket it copies: the run provisions its own server with them
+# before the listener starts.
+provision_fixture_buckets "$work/bin/fixturebuckets" "$nats_url" "$evidence/logs/fixturebuckets.log"
 
 keep_port listener_keeper listener_port
 start_kept listener listener_keeper ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \

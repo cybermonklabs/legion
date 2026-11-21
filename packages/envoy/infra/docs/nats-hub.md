@@ -802,6 +802,64 @@ Three inputs work otherwise:
   Until the rename, `natsUrl` names the old, offline node, so the hub's clients reconnect only
   after it, to the new VM's empty stream.
 
+A hub that comes up on a new, empty data disk (a new `hostname` or `zone` above) holds no key-value
+bucket, and no listener creates one ([the module README](../README.md#envoy-infra-buckets)).
+Every listener that reaches it answers 503 to each write and names the missing buckets on
+`/healthz` until the operator creates them: a running one as 200 `degraded`, and one that starts
+meanwhile as 503 `waiting`, since its start serves no route, so its health check fails. The VM hub
+runs no writer hold, so the buckets are made with `envoy-infra buckets create --break-glass`, which
+creates only while the hub's connection list shows no client but its own. So:
+
+1. Before `pulumi up`, stop every listener and envoy-dispatch that reaches the hub.
+2. `pulumi up`. The new VM starts its own listener with the VM (`envoy-listener.service`), which
+   waits for its buckets; stop it on the VM: `sudo systemctl stop envoy-listener.service`.
+3. Run the create as the in-cluster `gke` listener's NATS user, its seed `envoy-nats-seed-gke` read
+   from Secret Manager for that run alone, through a pipe, and never written to disk, with
+   `--connz` the hub's monitoring URL (port 8222):
+
+   ```sh
+   NATS_NKEY_SEED_FILE=<(gcloud secrets versions access latest --secret=envoy-nats-seed-gke \
+       --project=<the deployment's project>) \
+     envoy-infra buckets create --break-glass --operator <you> --bucket envoy_interests \
+     --bucket envoy_roles --bucket envoy_sessions --bucket envoy_known_sessions \
+     --bucket envoy_ci_state --nats nats://<h>.<tailnetDnsName>:4222 --connz http://<h>:8222
+   ```
+
+   It refuses, naming each, while any other client is connected, so step 1's stop is what lets
+   it run.
+4. Start the hub's listener (`sudo systemctl start envoy-listener.service`), then every other.
+
+A first deployment of a hub is the same from step 2. A replacement that keeps the disk
+(`recreate-instances`, a new template) keeps every bucket, and needs none of this.
+
+### A lost bucket on the clustered hub, before the writer hold runs there
+
+On the clustered hub a lost bucket is made inside the writer hold (`envoy-infra buckets create`),
+once the auth service that refuses every client but the operator during a hold runs there. Until
+then, make it with `create --break-glass` once every writer of the buckets is scaled to zero, so
+`--connz` shows no client but the command's own:
+
+1. Note each Deployment's replica count, then scale them to 0 in this order: the in-cluster
+   listener (`kubectl -n envoy scale deployment/envoy-listener --replicas=0`, the deployment's
+   `envoy-cluster/listener.go`), the hub's session listener
+   (`kubectl -n envoy scale deployment/envoy-nats-listener --replicas=0`, `gcp:ClusteredNatsHub`'s
+   `<release>-listener`), Dispatch (`kubectl -n dispatch scale deployment/<hostname> --replicas=0`,
+   `gcp:Dispatch`'s app, container `envoy-dispatch`) and Dispatch's listener
+   (`kubectl -n dispatch scale deployment/<hostname>-listener --replicas=0`). Run no `pulumi up` of
+   either program until step 4: it would scale them back.
+2. Wait until no pod of any of them is left (`kubectl -n envoy get pods`, `kubectl -n dispatch get
+   pods`).
+3. Port-forward each hub server's client and monitoring ports
+   (`kubectl -n envoy port-forward pod/envoy-nats-<i> <port>:4222 <port>:8222`), and run the create
+   as the `gke` listener's NATS user, as above, with `--nats` one server's forwarded client port and
+   one `--connz` for every server's forwarded monitoring port.
+   The create names every other connection it sees, not only a writer's: the legion daemons'
+   (`legion-daemon`), the measure probe's (`envoy-measure`) and the auth service's, where they run.
+   Stop each one it names, and run it again.
+4. Scale them back to the counts noted in step 1, in the reverse order: Dispatch's listener,
+   Dispatch, the hub's session listener, the in-cluster listener, and start each other client you
+   stopped.
+
 ## What a first Google Cloud deployment proves
 
 The unit tests run the hub under Pulumi's mocks, check its cloud-config against the golden, and
@@ -990,6 +1048,15 @@ Tailscale Service `envoy-hub` or by setting `machineId`: the listener's user is 
 VM rendered, with `ListenerPermissions(envoy-hub)`, and its durable is the VM listener's
 `listener-envoy-hub`, so a durable restored with the streams is the one the new listener binds.
 The hub runs one listener, in a pod of its own, as that machine id.
+
+A move that restores the VM hub's streams into the clustered hub restores each key-value bucket
+from its snapshot, a bucket created again, so every writer of the buckets must have ended first: a
+write the old hub acknowledged after the snapshot is in no restored bucket (the module README's
+[`envoy-infra buckets`](../README.md#envoy-infra-buckets)). Back each bucket up on the old hub with
+`envoy-infra buckets backup --to <dir>` and restore it with `envoy-infra buckets restore --from
+<dir> --bucket <B>`, which runs inside the writer hold on the clustered hub, so no writer of either
+hub's clients can write it from the hold's start to its release. Never restore one with `nats stream
+restore`, which nothing holds.
 
 The rendered `auth.conf` is a key of the chart's ConfigMap `<n>-config`, beside `nats.conf`, which
 includes it; like the VM's metadata, the ConfigMap holds it in the clear, public keys only.
@@ -1253,13 +1320,35 @@ count by (stream_name) (
 ```
 
 A stream matches when a server holding a copy is down, when a copy is behind, or when the stream
-keeps fewer than three copies. With `natsReplicas: 3` every stream and bucket the listener creates
-keeps three; a stream another client creates with fewer always matches, so scope the query with a
+keeps fewer than three copies. With `natsReplicas: 3` the stream the listener creates keeps three,
+and so does every bucket `envoy-infra buckets` creates at `ENVOY_NATS_REPLICAS=3`; a stream
+another client creates with fewer always matches, so scope the query with a
 `stream_name` matcher, such as `{stream_name=~"ENVOY_NOTIFICATIONS|KV_.+"}` on both selectors,
 when the hub holds any. Each exporter scrapes its own server at its own moment, so under steady
 writes one copy can trail another by a few messages in a single scrape: give the alert a `for`
 duration longer than a few scrapes. A stream whose every server is down has no series at all,
 which the pod-down alert covers.
+
+A key-value bucket a listener copies that is missing has no series either, while the pods serve:
+no listener creates one, so every write that needs it answers 503 until
+the operator recreates it ([`envoy-infra buckets`](../README.md#envoy-infra-buckets), with
+`--break-glass` until the auth service's cutover, as [Updating a hub](#updating-a-hub) says).
+Alert on each bucket's absence, with a `for` of a few scrapes and the pod-down alert's silence
+while a pod is down:
+
+```promql
+absent(nats_stream_last_seq{stream_name="KV_envoy_interests"})
+  or absent(nats_stream_last_seq{stream_name="KV_envoy_roles"})
+  or absent(nats_stream_last_seq{stream_name="KV_envoy_sessions"})
+  or absent(nats_stream_last_seq{stream_name="KV_envoy_known_sessions"})
+  or absent(nats_stream_last_seq{stream_name="KV_envoy_ci_state"})
+```
+
+The listener says the same in its own log, the ERROR `listener KV bucket is missing` naming the
+bucket every 30 seconds until a read confirms it is back, and in its `envoy_kv_buckets_missing`
+gauge; the AWS listener's `bucket-missing` alarm pages on that line
+([the module README](../README.md#the-aws-components)). This module renders no alerting policy for
+Google Cloud: the deployment repository's companion change installs this query for its hubs.
 
 A pod that is down, a hub pod (`<n>-0` to `<n>-2`, container `nats`), a tailnet host
 (`<n>-tailnet-…`, container `tailscale`) or the session listener (`<n>-listener-…`, container

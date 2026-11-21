@@ -140,6 +140,13 @@ type ClusteredNatsHubArgs struct {
 	// least 1. Unset, the variable is unset. Set, it sizes maxFileStoreGb, diskSizeGb and
 	// natsMemory: their defaults and the least maxFileStoreGb and natsMemory may be (hubSizing).
 	StreamMaxBytes *int `pulumi:"streamMaxBytes,optional"`
+	// Whether the session listener runs beside the NATS auth service, which answers no client but
+	// the operator with a stream create or update: true renders ENVOY_STREAMS_OPERATOR_MADE=1 on it,
+	// so its start reads its streams and makes none, and the operator's `envoy-infra streams
+	// update` makes them. Refused without a session listener, which alone takes it. Unset or false,
+	// the variable is unset and the render is as before. The deployment's apply sets it together
+	// with the callout.
+	StreamsOperatorMade *bool `pulumi:"streamsOperatorMade,optional"`
 	// JetStream's max_file_store in whole GiB, below diskSizeGb. With streamMaxBytes, at least S,
 	// the stream at that limit, the KV buckets' 1 GiB and the Raft log's 10% of the limit, in GiB,
 	// and ⌈S⌉ by default; without it, ⌊0.9 × diskSizeGb⌋ (at least 1) by default.

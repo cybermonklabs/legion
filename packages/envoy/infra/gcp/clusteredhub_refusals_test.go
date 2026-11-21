@@ -188,6 +188,8 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 		{"tailnetAuthKey without tailnet", func(a *A) { a.Tailnet = nil }, "tailnetAuthKey", []string{"tailnetAuthKey is given without tailnet"}},
 		{"natsReplicas without a listener", func(a *A) { withoutTailnet(a).NatsReplicas = pulumi.IntRef(3) }, "natsReplicas",
 			[]string{"natsReplicas is given without a session listener (listener or tailnet.listener)"}},
+		{"streamsOperatorMade without a listener", func(a *A) { withoutTailnet(a).StreamsOperatorMade = pulumi.BoolRef(true) }, "streamsOperatorMade",
+			[]string{"streamsOperatorMade is given without a session listener (listener or tailnet.listener)"}},
 		{"a tailnet service name with an uppercase letter", func(a *A) { a.Tailnet.ServiceName = "Envoy-hub" }, "tailnet.serviceName",
 			[]string{`tailnet.serviceName "Envoy-hub"`}},
 		{"a tailnet DNS name outside ts.net", func(a *A) { a.Tailnet.TailnetDnsName = "example.com" }, "tailnet.tailnetDnsName",

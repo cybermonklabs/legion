@@ -100,7 +100,7 @@ func TestVersionStandsAlone(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Errorf("stdout %q, want none", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "envoy-infra: the command is seed or render, or --version alone\n") {
+	if !strings.Contains(stderr.String(), "envoy-infra: the command is seed, render, streams, buckets or hold, or --version alone\n") {
 		t.Errorf("stderr %q does not say what the command takes", stderr.String())
 	}
 	if strings.Contains(stderr.String(), canary) {
@@ -108,7 +108,8 @@ func TestVersionStandsAlone(t *testing.T) {
 	}
 }
 
-// TestHelpNamesVersion: the usage names --version beside the seed and render commands' own usage.
+// TestHelpNamesVersion: the usage names --version beside the seed, render, streams, buckets and
+// hold commands' own usage.
 func TestHelpNamesVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run(context.Background(), []string{"--help"}, &stdout, &stderr, noStore(t)); code != 0 {
@@ -118,6 +119,9 @@ func TestHelpNamesVersion(t *testing.T) {
 		"usage: envoy-infra --version\n",
 		"usage: envoy-infra seed {check|generate|verify}",
 		"usage: envoy-infra render {nats-start-script|webhook-listener-env|metric-filters}",
+		"envoy-infra streams check  --nats-url <urls>",
+		"usage: envoy-infra buckets create|recreate|restore [--hold ID] --reason R [options]",
+		"usage: envoy-infra hold status|prepare|set|abort|release|restore|prove|keygen",
 	} {
 		if !strings.Contains(stderr.String(), line) {
 			t.Errorf("the usage lacks %q: %q", line, stderr.String())

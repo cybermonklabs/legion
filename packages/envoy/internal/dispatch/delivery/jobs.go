@@ -70,7 +70,7 @@ type pendingRun struct {
 }
 
 const (
-	jobSubject       = "notifications.github.*.*.job.>"
+	jobSubject       = bus.DispatchJobFilter
 	jobQuiet         = 2 * time.Second
 	jobMaxWait       = 10 * time.Second
 	jobMaxAckPending = 64
@@ -128,22 +128,17 @@ func (j *JobIntake) Run(ctx context.Context) {
 	j.run(ctx, nil, func() bool { return true })
 }
 
-// jobConsumerConfig is the durable's policy: deliveryConsumerConfig's shape with this consumer's
-// name and filter, starting at new messages, since a job event older than the process says nothing
+// jobConsumerConfig is the durable's policy: its shape, bus.DispatchJobConsumer (this consumer's
+// name and filter, starting at new messages), and this intake's bounds, since a job event older than the process says nothing
 // the run's end event and the reconcile do not. A take-over recreates it at its ack floor
 // (takeOverConfig). Its FilterSubject, AckWait and MaxAckPending keep their values for the reason
 // deliveryConsumerConfig gives.
 func jobConsumerConfig() natsgo.ConsumerConfig {
-	return natsgo.ConsumerConfig{
-		Durable:        bus.DispatchJobDurable,
-		DeliverSubject: natsgo.NewInbox(),
-		FilterSubject:  jobSubject,
-		DeliverPolicy:  natsgo.DeliverNewPolicy,
-		AckPolicy:      natsgo.AckExplicitPolicy,
-		AckWait:        jobAckWait,
-		MaxAckPending:  jobMaxAckPending,
-		Metadata:       consumerGenerationMetadata(),
-	}
+	config := bus.DispatchJobConsumer()
+	config.AckWait = jobAckWait
+	config.MaxAckPending = jobMaxAckPending
+	config.Metadata = consumerGenerationMetadata()
+	return config
 }
 
 // deliver acks a job message on receipt, then hands its payload to receive. Acking first is safe:

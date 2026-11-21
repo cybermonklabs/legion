@@ -317,11 +317,12 @@
 #      makes beside a `!tag` file. The files are those on disk under the Runs' patterns, so a
 #      package whose every file a missing tag excludes is among them; go list says which each
 #      Run compiles, and of the rest, each whose constraint names a tag (no platform or
-#      architecture feature name, none the toolchain sets) is listed under every choice of its
-#      own tags, and one go list then compiles is the miss. The steps read their sets off the
-#      module with .github/scripts/go_build_tags.py at run time and ci_job_reads.py gives their
-#      Runs what it prints now, so this rule fails when that script stops printing a set a
-#      file needs,
+#      architecture feature name, none of go_build_tags.py's NOT_TAGS: those the toolchain sets,
+#      and odatrace, which only forced-order.sh's patched build sets) is listed under every
+#      choice of its own tags, and one go list then compiles is the miss. The steps read their
+#      sets off the module with .github/scripts/go_build_tags.py at run time and ci_job_reads.py
+#      gives their Runs what it prints now, so this rule fails when that script stops printing a
+#      set a file needs,
 #  21. a dorny/paths-filter step of any workflow of .github/workflows whose `filters` input is
 #      not exactly .github/ci-filters.yaml, naming the file, the job and the step. Every rule
 #      above reads that file, so a filter written into a workflow's own text instead is read by

@@ -1359,7 +1359,8 @@ chmod 0600 "$work"/*token "$work"/*-header "$work/postgres-password"
 # image (daemon_run_args); the devbox runs the same binary under aws-private-ip and for the run's own
 # `legion` calls.
 (cd "$root/packages/daemon" && CGO_ENABLED=0 go build -o "$work/legion" ./cmd/legion)
-(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/envoy-dispatch" ./cmd/dispatch)
+(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/envoy-dispatch" ./cmd/dispatch &&
+  CGO_ENABLED=0 go build -o "$work/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
 built=$(bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" "$work/envoy-listener" "$work/envoy-dispatch") ||
   fail "lib/built-from.sh could not say what the run built"
 while IFS= read -r line; do note "$line"; done <<<"$built"
@@ -1377,6 +1378,15 @@ docker exec "$pg_container" createdb -U legion legion
 . "$root/scripts/e2e/lib/nats-image.sh"
 docker run -d --name "$nats_container" -p "$bind_host:$port_nats:4222" "$nats_image" -js >/dev/null
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
+# No listener creates a bucket it copies, so the run provisions its own server with
+# them before the listener starts. fixturebuckets provisions only a loopback server, and bind_host is
+# the devbox's private address under aws-private-ip, so it runs in the NATS container's own network,
+# where the server is 127.0.0.1:4222, from the NATS container's own image ($nats_image, the pinned
+# hub image): fixturebuckets is built static for that, and the run pulls no other image.
+docker run --rm --network "container:$nats_container" \
+  --mount "type=bind,source=$work/fixturebuckets,target=/fixturebuckets,readonly" \
+  --entrypoint /fixturebuckets "$nats_image" -url nats://127.0.0.1:4222 >/dev/null ||
+  fail "fixturebuckets could not provision the run's NATS server with the buckets a listener copies"
 # The run's session database (lib/session-db.sh's session_db_start): every pod keeps its sessions in
 # it (session_store postgres, which the daemon requires, since an issue pod's disk dies with the
 # pod), the Claude Code implementer's transcript among them, so it binds bind_host on the run's port

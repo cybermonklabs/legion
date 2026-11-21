@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -49,6 +50,7 @@ func newFrozenWebhookBus(t *testing.T) *frozenWebhookBus {
 	if err != nil {
 		t.Fatalf("connect the listener's bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	return &frozenWebhookBus{server: server, client: client}
 }

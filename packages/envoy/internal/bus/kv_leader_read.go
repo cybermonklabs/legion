@@ -56,7 +56,7 @@ func (e leaderEntry) Operation() nats.KeyValueOp { return nats.KeyValuePut }
 // What that buys is the one hazard a direct get carries. Every bucket this package opens is
 // created AllowDirect, so nats.go answers each of its reads with a direct get, and nats-server
 // hands such a read to any copy of the stream that is 90% caught up rather than to the leader
-// (kv.go records the same hazard against the same bucket family, from
+// (kv_ensure.go:406-407 records the same hazard against the same bucket family, from
 // server/jetstream_cluster.go:2622-2641, v2.10.29). A copy that has not applied a Put made a
 // moment ago answers that the key is not there. A caller that only enriches what it holds can
 // read again; a caller that takes something away on the strength of a key being absent cannot,

@@ -1,0 +1,15 @@
+# The buckets image's build (buckets.Dockerfile) reads the two Go modules of packages/envoy - their
+# module files and every Go source but tests - and nothing else of the repository root it takes as
+# its context. This file replaces the root .dockerignore for that build, which leaves out
+# packages/envoy/infra and packages/envoy/deploy.
+*
+!packages/envoy/go.mod
+!packages/envoy/go.sum
+!packages/envoy/infra/go.mod
+!packages/envoy/infra/go.sum
+!packages/envoy/infra/go.work
+!packages/envoy/infra/go.work.sum
+!packages/envoy/**/*.go
+packages/envoy/**/*_test.go
+packages/envoy/**/testdata
+packages/envoy/**/node_modules

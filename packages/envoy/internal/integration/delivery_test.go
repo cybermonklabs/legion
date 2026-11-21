@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -41,11 +42,12 @@ func setupTestEnv(t *testing.T, options ...testEnvOption) *testEnv {
 	// Start real NATS with JetStream
 	uri := testnats.URL(t)
 
-	// Connect bus client
+	// Connect bus client, a fixture's (bustest.Fixture), so the registries create their buckets
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 
 	// Set up interest registry (NATS KV)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -49,6 +50,47 @@ func StartCluster(t testing.TB, n int) *Cluster {
 // a no_auth_user whose account has JetStream.
 func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	t.Helper()
+	cluster := startCluster(t, n, config, nil)
+	cluster.AwaitReady(t)
+	return cluster
+}
+
+// StartClusterRouteAuth is StartClusterConfig with route authorization: every member's cluster
+// block holds an authorization of user and password, and every member routes to the others with
+// them, so a route that presents no credential, or others, is refused (nats-server's
+// isRouterAuthorized) and never joins the cluster, as the clustered hub's render makes it. user and
+// password are letters and digits alone: each is written into the route URLs as it is.
+func StartClusterRouteAuth(t testing.TB, n int, user, password, config string) *Cluster {
+	t.Helper()
+	cluster := startCluster(t, n, config, newRouteAuth(t, user, password))
+	cluster.AwaitReady(t)
+	return cluster
+}
+
+// routeAuth is the credential every member's routes present and its cluster block requires.
+type routeAuth struct {
+	user, password string
+}
+
+// routeCredential is what a route credential may hold: letters and digits, which a route URL's
+// user information carries with no escape and the configuration reads as a string.
+var routeCredential = regexp.MustCompile(`^[A-Za-z0-9]+$`)
+
+// newRouteAuth is the routeAuth of user and password, failing t when either holds anything but
+// letters and digits.
+func newRouteAuth(t testing.TB, user, password string) *routeAuth {
+	t.Helper()
+	if !routeCredential.MatchString(user) || !routeCredential.MatchString(password) {
+		t.Fatalf("a route credential is letters and digits alone, not user %q, password %q", user, password)
+	}
+	return &routeAuth{user: user, password: password}
+}
+
+// startCluster starts the n members StartClusterConfig describes, each member's relay and client
+// port listening on a loopback address of its own (start), with route authorization when auth is
+// not nil, and returns without waiting for JetStream.
+func startCluster(t testing.TB, n int, config string, auth *routeAuth) *Cluster {
+	t.Helper()
 	if n < 2 {
 		t.Fatalf("a cluster needs at least 2 servers, not %d", n)
 	}
@@ -76,21 +118,27 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	}
 	cluster := &Cluster{Servers: make([]*Server, n), routes: relays}
 	for i := range n {
-		server := start(t, clusterConfig(i, routes, listeners[i].Addr().(*net.TCPAddr).IP.String())+config, []string{"-js"})
+		server := start(t, clusterConfig(i, routes, listeners[i].Addr().(*net.TCPAddr).IP.String(), auth)+config, []string{"-js"})
 		server.name = memberName(i)
 		members[i].Store(server)
 		cluster.Servers[i] = server
 	}
-	cluster.AwaitReady(t)
 	return cluster
 }
 
 // clusterConfig is the configuration of member i of a cluster whose route relays listen at routes.
 // The member's own route listener takes host, the address of its route relay (testport.LoopbackIP).
-func clusterConfig(i int, routes []string, host string) string {
+// With auth, the cluster block requires auth's credential of every route, and every route URL
+// presents it.
+func clusterConfig(i int, routes []string, host string, auth *routeAuth) string {
+	credential, authorization := "", ""
+	if auth != nil {
+		credential = auth.user + ":" + auth.password + "@"
+		authorization = fmt.Sprintf("  authorization {\n    user: %q\n    password: %q\n  }\n", auth.user, auth.password)
+	}
 	urls := make([]string, len(routes))
 	for j, route := range routes {
-		urls[j] = fmt.Sprintf("%q", "nats-route://"+route)
+		urls[j] = fmt.Sprintf("%q", "nats-route://"+credential+route)
 	}
 	return fmt.Sprintf(`server_name: %q
 jetstream {}
@@ -99,9 +147,9 @@ cluster {
   listen: %q
   advertise: %q
   no_advertise: true
-  routes: [ %s ]
+%s  routes: [ %s ]
 }
-`, memberName(i), net.JoinHostPort(host, "-1"), routes[i], strings.Join(urls, ", "))
+`, memberName(i), net.JoinHostPort(host, "-1"), routes[i], authorization, strings.Join(urls, ", "))
 }
 
 // memberName is member i's server_name.
@@ -157,13 +205,26 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 // another reason.
 func (c *Cluster) AwaitReady(t testing.TB) {
 	t.Helper()
-	// listening is when AwaitReady began listening for the members: its call, or its last restart.
+	c.awaitMeta(t)
+	for _, server := range c.Servers {
+		if server.running() {
+			Connect(t, server.URL()).Close()
+		}
+	}
+}
+
+// awaitMeta is AwaitReady's wait for the meta group alone, restarting a mute member as AwaitReady
+// says, without the account info request on each member, which a client with no credential
+// cannot send to a member with an auth callout (StartClusterWithCallout).
+func (c *Cluster) awaitMeta(t testing.TB) {
+	t.Helper()
+	// listening is when the wait began listening for the members: its call, or its last restart.
 	listening := time.Now()
 	restarts := 0
 	for {
 		err := c.metaReady()
 		if err == nil {
-			break
+			return
 		}
 		if restarts < muteRestarts {
 			if i := c.mute(time.Since(listening)); i >= 0 {
@@ -179,11 +240,6 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 			t.Fatalf("JetStream was not ready within %s (%d members restarted): %v", connectTimeout, restarts, err)
 		}
 		time.Sleep(retryInterval)
-	}
-	for _, server := range c.Servers {
-		if server.running() {
-			Connect(t, server.URL()).Close()
-		}
 	}
 }
 

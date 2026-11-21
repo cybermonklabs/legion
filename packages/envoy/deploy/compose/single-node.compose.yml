@@ -1,6 +1,7 @@
-# Envoy on one machine: a NATS server with JetStream of its own and the Envoy listener, both on
-# loopback. The Envoy page of the docs site ("Running Envoy on one machine", from
-# docs/site/src/content/docs/dispatch/envoy.md) covers what it serves and how to run it.
+# Envoy on one machine: a NATS server with JetStream of its own, the one-shot that makes the
+# key-value buckets the listener copies, and the Envoy listener, all on loopback. The Envoy page of
+# the docs site ("Running Envoy on one machine", from docs/site/src/content/docs/dispatch/envoy.md)
+# covers what it serves and how to run it.
 name: envoy-single-node
 
 services:
@@ -44,17 +45,70 @@ services:
       # hours of events, and the subscriptions and role claims of every session still running.
       - nats-data:/data
 
+  # The key-value buckets the listener keeps a copy of, made before it starts. No listener creates
+  # one, since a bucket deleted and created again under a running listener loses every write the
+  # deleted one acknowledged; a listener that finds one missing at its start waits, every route
+  # answering 503, until this command makes it (packages/envoy/infra/README.md, "envoy-infra
+  # buckets").
+  #
+  # The four buckets are the ones a listener that mounts no GitHub webhook route copies
+  # (listenerCopiedBuckets(false) in packages/envoy/cmd/listener/missing_buckets.go), and this
+  # listener mounts none.
+  #
+  # One machine has no auth service, broker or writer hold, so the command runs as
+  # `create --break-glass`, a client of the server like the listener, with no credential: it only
+  # creates, deletes nothing, and creates only while the server's connection list (--connz) holds
+  # no client but its own. The first `up` passes that check, since compose starts the listener only
+  # once this service has completed.
+  # Every later `up`, an upgrade (`up -d --wait`) while the listener still serves, finds every
+  # bucket there, changes nothing and exits 0. With one bucket missing and the listener running, it
+  # refuses, naming the listener's connection, and `up` fails; stop the listener
+  # (`docker compose -f single-node.compose.yml stop listener`) and run `up -d --wait` again, which
+  # makes the bucket and starts the listener.
+  #
+  # envoy-infra is not in the published envoy image, so this image is built from the checkout
+  # (buckets.Dockerfile), and pull_policy: build rebuilds it from the checkout on every `up`; the
+  # build's layers and Go caches make that quick once the first `up` has built it.
+  buckets:
+    build:
+      context: ../../../..
+      dockerfile: packages/envoy/deploy/compose/buckets.Dockerfile
+    pull_policy: build
+    network_mode: host
+    restart: "no"
+    depends_on:
+      nats:
+        condition: service_healthy
+    command:
+      - buckets
+      - create
+      - --break-glass
+      - --operator=single-node compose
+      - --nats=nats://127.0.0.1:${NATS_PORT:-4222}
+      - --connz=http://127.0.0.1:${NATS_MONITOR_PORT:-8222}
+      - --bucket=envoy_interests
+      - --bucket=envoy_roles
+      - --bucket=envoy_sessions
+      - --bucket=envoy_known_sessions
+
   listener:
     image: ghcr.io/cybermonklabs/legion/envoy:${ENVOY_IMAGE_TAG:?set ENVOY_IMAGE_TAG (see single-node.env.example)}
     network_mode: host
     depends_on:
       nats:
         condition: service_healthy
+      buckets:
+        condition: service_completed_successfully
     restart: unless-stopped
     # A SIGTERM runs the listener's ordered shutdown: up to 10 s for HTTP, up to 5 s to drain the
     # role lane, then up to 13 s to drain NATS, about 28 s in all. Docker's 10 s default would
     # SIGKILL it before the drain starts.
     stop_grace_period: 30s
+    # curl -f fails on any status from 400: while a start waits for a missing copied bucket,
+    # /healthz answers 503 "waiting", so the container reads unhealthy and `up -d --wait` fails
+    # rather than pass a listener that serves nothing. A running listener whose bucket goes missing
+    # answers 200 "degraded" with the bucket under "missing_buckets", and stays healthy, since it
+    # still serves every route that needs no missing bucket.
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:${ENVOY_LISTENER_PORT:-9020}/healthz"]
       interval: 10s

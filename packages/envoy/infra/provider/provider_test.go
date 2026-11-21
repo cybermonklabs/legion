@@ -166,7 +166,7 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	require.True(t, hub.IsComponent)
 	require.ElementsMatch(t, []string{
 		"kubeconfig", "namespace", "name", "serviceName", "natsImage", "reloaderImage", "exporterImage",
-		"natsReplicas", "streamMaxBytes", "maxFileStoreGb", "diskSizeGb", "storageClassName", "natsCpu", "natsMemory",
+		"natsReplicas", "streamMaxBytes", "streamsOperatorMade", "maxFileStoreGb", "diskSizeGb", "storageClassName", "natsCpu", "natsMemory",
 		"priorityClassName", "clientNamespaces", "monitorNamespaces", "metricsNamespaces", "users", "sessionUser",
 		"authCallout", "privateProjects", "listener", "tailnet", "tailnetAuthKey",
 	}, slices.Collect(maps.Keys(hub.InputProperties)))
@@ -179,6 +179,7 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	for _, input := range []string{"natsReplicas", "streamMaxBytes", "maxFileStoreGb", "diskSizeGb"} {
 		require.Equal(t, "integer", hub.InputProperties[input].Type, input)
 	}
+	require.Equal(t, "boolean", hub.InputProperties["streamsOperatorMade"].Type)
 	require.Equal(t, "#/types/envoy-infra:gcp:NatsUser", hub.InputProperties["users"].Items.Ref)
 	require.Equal(t, "#/types/envoy-infra:gcp:SessionUser", hub.InputProperties["sessionUser"].Ref)
 	require.Equal(t, "#/types/envoy-infra:nats:AuthCallout", hub.InputProperties["authCallout"].Ref)

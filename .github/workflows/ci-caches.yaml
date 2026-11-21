@@ -273,16 +273,17 @@ jobs:
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
-      # The two binaries envoy-e2e-local's scripts/e2e-local.sh and envoy-session-stall's
+      # The three binaries envoy-e2e-local's scripts/e2e-local.sh and envoy-session-stall's
       # test/envoy-stack.ts build, and whose packages listener-server-change compiles too: the
-      # listener and the in-process NATS server's natsd. An -o ending in a separator names a
-      # directory, as envoy-stack.ts's build does, so both main packages build in one command.
+      # listener, the in-process NATS server's natsd and fixturebuckets, which provisions that
+      # server with the buckets a listener copies. An -o ending in a separator names a directory,
+      # as envoy-stack.ts's build does, so the three main packages build in one command.
       # envoy-go-checks' darwin vet is left out: its darwin objects, about 1.6 GB of build cache on
       # a devbox, would ride in an entry every job that restores go-envoy downloads, and the step
       # builds them in under three minutes (run 43990864191).
-      - name: Build the listener and natsd of the envoy module
+      - name: Build the listener, natsd and fixturebuckets of the envoy module
         if: steps.go-envoy.outputs.cache-hit != 'true'
-        run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
+        run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd ./internal/testnats/cmd/fixturebuckets
         working-directory: packages/envoy
 
       - if: steps.go-envoy.outputs.cache-hit != 'true'

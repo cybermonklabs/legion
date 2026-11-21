@@ -67,6 +67,12 @@ type ListenerConfig struct {
 	AgentSecretsURL      string
 	AgentSecretsAudience string
 	PublicURL            string
+	// StreamsOperatorMade is bus.StreamsOperatorMadeEnvVar: true renders
+	// ENVOY_STREAMS_OPERATOR_MADE=1, for a listener beside the NATS auth service, which answers no
+	// client but the operator with a stream create or update, so the listener's start reads its
+	// streams and makes none (the operator's envoy-infra streams update makes them). False leaves
+	// the variable unset, and the listener makes and reconciles its streams as before.
+	StreamsOperatorMade bool
 }
 
 // TailnetHostName is the address a client reaches the listener of the tailnet machine hostname by,
@@ -311,7 +317,8 @@ func (c ListenerConfig) Check() error {
 // ENVOY_NATS_REPLICAS after all of Env's variables, the sender limit's included. The broker check
 // comes last, in brokerVars's order — ENVOY_AGENT_SECRETS_URL,
 // ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — and only on a config that sets it, so
-// a listener without one renders what it always rendered, byte for byte.
+// a listener without one renders what it always rendered, byte for byte; and after it
+// ENVOY_STREAMS_OPERATOR_MADE=1, only on a config that sets StreamsOperatorMade, for that reason too.
 func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	if err := c.Check(); err != nil {
 		return nil, err
@@ -373,6 +380,9 @@ func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 		if value != "" {
 			env = append(env, brokerVars[i].variable+"="+value)
 		}
+	}
+	if c.StreamsOperatorMade {
+		env = append(env, bus.StreamsOperatorMadeEnvVar+"=1")
 	}
 	return env, nil
 }

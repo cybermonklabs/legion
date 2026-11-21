@@ -6,11 +6,12 @@
 # but for the one container --project-access runs (below), no container runtime:
 # cmd/dev-oidc-issuer (the local stand-in for a cluster's ServiceAccount token issuer and for the
 # identity provider a person signs in at), cmd/cipherd on a fake secrets file,
-# internal/testnats/cmd/natsd (one throwaway NATS with JetStream), cmd/listener on that NATS, and
-# cmd/dispatch, the real Dispatch server, pointed at that broker and that listener. It is
-# dev-broker.sh's broker with the two things that script has no room for -- a real Dispatch and a
-# real Envoy listener -- so a session on it gets a broker access token, writes to Dispatch with it
-# and sends an Envoy message, all against the processes production runs.
+# internal/testnats/cmd/natsd (one throwaway NATS with JetStream, given the buckets a listener
+# copies by internal/testnats/cmd/fixturebuckets, since no listener creates one), cmd/listener on
+# that NATS, and cmd/dispatch, the real Dispatch server, pointed at that broker and that listener.
+# It is dev-broker.sh's broker with the two things that script has no room for -- a real Dispatch
+# and a real Envoy listener -- so a session on it gets a broker access token, writes to Dispatch
+# with it and sends an Envoy message, all against the processes production runs.
 #
 # It takes one input, the URL of a Postgres server it may create databases on: --database-url,
 # else LEGION_TEST_PG_DSN (a Legion pod has one), else DATABASE_URL. With none it refuses, naming
@@ -26,11 +27,11 @@
 # --binaries <dir> names a directory that already holds them, built elsewhere: a Legion pod sends
 # a Go build out to the builds farm rather than running it itself. Then it runs those in place of
 # its go build, and needs no go on PATH. It requires each of them in that directory, broker,
-# dev-oidc-issuer, dispatch, listener, agent-secrets, agent-secrets-helper, natsd and natsprobe,
-# and dev-airlock-stands as well under --project-access, each an executable file, and refuses
-# before it creates or starts anything -- no database, no port, no process -- when one is missing
-# or is not, naming each such file. It copies them into this run's own bin directory, where a
-# build would have put them, so everything after that step is the same either way.
+# dev-oidc-issuer, dispatch, listener, agent-secrets, agent-secrets-helper, natsd, natsprobe and
+# fixturebuckets, and dev-airlock-stands as well under --project-access, each an executable file,
+# and refuses before it creates or starts anything -- no database, no port, no process -- when one
+# is missing or is not, naming each such file. It copies them into this run's own bin directory,
+# where a build would have put them, so everything after that step is the same either way.
 #
 # With --project-access the broker asks this run's Dispatch whether a project is private and who
 # may see it, and the stack runs the airlock beside it: the broker's own proxy, and
@@ -179,7 +180,7 @@ drives them with. The Postgres URL is this one option, else LEGION_TEST_PG_DSN, 
 DATABASE_URL; this run creates and drops two databases of its own on that server.
 
 With --binaries, run the prebuilt broker, dev-oidc-issuer, dispatch, listener, agent-secrets,
-agent-secrets-helper, natsd and natsprobe in <dir> in place of building them, and
+agent-secrets-helper, natsd, natsprobe and fixturebuckets in <dir> in place of building them, and
 dev-airlock-stands too under --project-access; a directory short of any of them, or holding one
 that is not an executable file, is refused, naming each, before anything is created or started.
 
@@ -288,7 +289,8 @@ POSTGRES_QUERY="${BASH_REMATCH[3]:-}"
 # the airlock's stands. ---
 STACK_ENTRIES=(broker=./cmd/cipherd dev-oidc-issuer=./cmd/dev-oidc-issuer dispatch=./cmd/dispatch
   listener=./cmd/listener agent-secrets=./cmd/cipher agent-secrets-helper=./cmd/cipher-helper
-  natsd=./internal/testnats/cmd/natsd natsprobe=./cmd/natsprobe)
+  natsd=./internal/testnats/cmd/natsd natsprobe=./cmd/natsprobe
+  fixturebuckets=./internal/testnats/cmd/fixturebuckets)
 if [ "$PROJECT_ACCESS" = true ]; then
   STACK_ENTRIES+=(dev-airlock-stands=./cmd/dev-proxy-stands)
 fi
@@ -348,6 +350,7 @@ mkdir -p "$BIN_DIR" "$LOG_DIR" "$WORK_DIR/keys" "$WORK_DIR/dispatch-home"
 ISSUER_LOG="$LOG_DIR/dev-oidc-issuer.log"
 BROKER_LOG="$LOG_DIR/broker.log"
 NATS_LOG="$LOG_DIR/natsd.log"
+FIXTUREBUCKETS_LOG="$LOG_DIR/fixturebuckets.log"
 LISTENER_LOG="$LOG_DIR/listener.log"
 DISPATCH_LOG="$LOG_DIR/dispatch.log"
 KEEPER_LOG="$LOG_DIR/dispatch-port-keeper.log"
@@ -753,6 +756,12 @@ start_natsd -1 -1
 NATS_URL="nats://127.0.0.1:$NATS_PORT"
 echo "dev-stack: natsd $NATS_URL" >&2
 callout_after_natsd
+# No listener creates a bucket it copies: fixturebuckets gives this run's own natsd
+# those buckets before the listener starts on it.
+if ! env -i PATH="$PATH" "$BIN_DIR/fixturebuckets" -url "$NATS_URL" >"$FIXTUREBUCKETS_LOG" 2>&1; then
+  echo "dev-stack: fixturebuckets could not provision $NATS_URL; see $FIXTUREBUCKETS_LOG" >&2
+  exit 1
+fi
 
 # --- The broker, on a fake Secrets Manager holding one agent-tier secret its owner's sessions get
 # without asking, one human-tier secret its owner approves — both owned by the person the issuer

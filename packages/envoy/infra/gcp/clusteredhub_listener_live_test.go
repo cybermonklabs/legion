@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -112,8 +113,14 @@ func liveListenerEnv(t *testing.T, port int, natsURL string, allowUnauthenticate
 // process and the port it serves on. The listener binds ENVOY_LISTEN_HOST=0.0.0.0 as the pod does,
 // so it binds the port itself rather than inherit a cmdtest.HoldPort socket, which listens on
 // loopback alone.
+//
+// The server is provisioned first (bustest.ProvisionURL), as `envoy-infra buckets` does before a
+// hub's first listener starts: no listener creates a bucket it copies, and one started without them
+// waits at its start, so the listener runs with the pod's environment and nothing else. That acts
+// once per server, so a second listener's start leaves the first one's buckets as they are.
 func startLiveListener(t *testing.T, name, binary, natsURL string) (*cmdtest.Process, int) {
 	t.Helper()
+	bustest.ProvisionURL(t, natsURL, 1)
 	port := reservePorts(t, 1)[0]
 	cmd := exec.Command(binary)
 	cmd.Env = liveListenerEnv(t, port, natsURL, true)

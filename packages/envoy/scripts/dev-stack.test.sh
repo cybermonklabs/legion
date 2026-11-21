@@ -24,7 +24,8 @@
 # to make safe — and asserts that: (a) every process of a run is started and the port the banner
 # names for it is the one that process reported; (b) the Dispatch port keeper's held port is what
 # the broker's machine-login URL and Dispatch's own server URL name, which is why a keeper is
-# there at all, and the broker binds its metrics on a port the kernel picks; (c) "dev-stack:
+# there at all, and the broker binds its metrics on a port the kernel picks, and fixturebuckets
+# provisioned natsd's own server, by the port natsd reported; (c) "dev-stack:
 # ready." is printed exactly once, with the export block after it;
 # (d) the two instances mint different database names, different ports and different work
 # directories, and neither names the other's; (e) the one trap stops every process it started and
@@ -421,9 +422,13 @@ echo "fake natsd: pid=$$" >&2
 echo "fake natsd: args=$*" >&2
 # The ports it was given, bound as nats-server binds them: -1 is its own choice, which this stub's
 # PID stands for, and any other port is that port.
-client=$$ monitor=""
+client=$$ monitor="" callout=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -callout-keys)
+      callout="$2"
+      shift 2
+      ;;
     -p)
       [[ "$2" == -1 ]] || client="$2"
       shift 2
@@ -452,6 +457,8 @@ MOVES
 echo "[INF] Listening for client connections on 127.0.0.1:$client" >&2
 [[ -z "$monitor" ]] || echo "[INF] Starting http monitor on 127.0.0.1:$monitor" >&2
 echo "[INF] Server is ready" >&2
+# Behind the callout the real natsd then makes the declared streams as its own admin user.
+[[ -z "$callout" ]] || echo "natsd: made the declared streams as its admin user"
 NATSD
       ;;
     listener)
@@ -459,6 +466,7 @@ NATSD
 #!/usr/bin/env bash
 printf '{"level":"INFO","msg":"listener API auth: none","nats":"%s"}\n' "${NATS_URLS:-}" >&2
 echo "fake listener: machine=${ENVOY_MACHINE_ID:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
+echo "fake listener: operator-made=${ENVOY_STREAMS_OPERATOR_MADE:-}" >&2
 echo "fake listener: pid=$$ public=${ENVOY_PUBLIC_URL:-} listen-fd=${ENVOY_LISTEN_FD:-}" >&2
 # It serves the socket it was handed, whose port held-port.py put in ENVOY_PUBLIC_URL; its own PID
 # stands for a port only where it was handed none.
@@ -485,6 +493,7 @@ LISTENER
       cat >"$target" <<'DISPATCH'
 #!/usr/bin/env bash
 echo "fake dispatch: database=${DATABASE_URL:-} server-url=${DISPATCH_SERVER_URL:-} listen-fd=${DISPATCH_LISTEN_FD:-} envoy=${ENVOY_URL:-} broker=${DISPATCH_AGENT_SECRETS_URL:-} nats=${NATS_URLS:-} home=${HOME:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
+echo "fake dispatch: operator-made=${ENVOY_STREAMS_OPERATOR_MADE:-}" >&2
 echo "fake dispatch: oidc-issuer=${DISPATCH_OIDC_ISSUER:-} oidc-audience=${DISPATCH_OIDC_AUDIENCE:-} oidc-accounts=${DISPATCH_OIDC_ACCOUNTS:-} access-accounts=${DISPATCH_ACCESS_ACCOUNTS:-}" >&2
 port=$$
 DISPATCH
@@ -499,6 +508,17 @@ DISPATCH
 #!/usr/bin/env bash
 exit 0
 CLIENT
+      chmod +x "$target"
+      continue
+      ;;
+    # fixturebuckets runs once and exits: its stub says what it was given, into the log
+    # dev-stack.sh keeps of it.
+    fixturebuckets)
+      cat >"$target" <<'FIXTUREBUCKETS'
+#!/usr/bin/env bash
+echo "fake fixturebuckets: $*" >&2
+exit 0
+FIXTUREBUCKETS
       chmod +x "$target"
       continue
       ;;
@@ -724,6 +744,10 @@ assert_instance_ready() {
   # of two stacks on a machine could hold.
   grep -q 'metrics=127\.0\.0\.1:0$' "${work_dir}/logs/broker.log" ||
     fail "$label: the broker was not started with BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0"
+  # No listener creates a bucket it copies, so fixturebuckets provisioned the run's
+  # own natsd, by the port natsd reported, before the listener started.
+  grep -qxF "fake fixturebuckets: -url nats://127.0.0.1:${process_port[natsd]}" "${work_dir}/logs/fixturebuckets.log" ||
+    fail "$label: fixturebuckets did not provision natsd's own server: $(cat "${work_dir}/logs/fixturebuckets.log" 2>/dev/null)"
   # The listener serves on its keeper's socket: the port it reported is the one its keeper holds,
   # which held-port.py put in its ENVOY_PUBLIC_URL, so a restart (l) serves that same port.
   local listener_kept_port
@@ -927,6 +951,8 @@ grep -q 'fake broker: nats= seeds=,, nats-audience= services=$' "${work_dir1}/lo
 [[ ! -e "${work_dir1}/logs/broker-2.log" ]] || fail "instance 1, run without --callout, started a second broker"
 grep -q -- '-callout-keys' "${work_dir1}/logs/natsd.log" && fail "instance 1, run without --callout, ran natsd with -callout-keys"
 grep -q 'nats-token=$' "${work_dir1}/logs/listener.log" || fail "instance 1, run without --callout, gave its listener a NATS token"
+grep -qx 'fake listener: operator-made=' "${work_dir1}/logs/listener.log" || fail "instance 1, run without --callout, set its listener's ENVOY_STREAMS_OPERATOR_MADE"
+grep -qx 'fake dispatch: operator-made=' "${work_dir1}/logs/dispatch.log" || fail "instance 1, run without --callout, set Dispatch's ENVOY_STREAMS_OPERATOR_MADE"
 [[ -z "$(exported "$log1" DEV_STACK_CALLOUT)" ]] || fail "instance 1, run without --callout, exported DEV_STACK_CALLOUT"
 printf 'PASS: a run without --callout runs no auth service, no second broker and no NATS token\n'
 
@@ -1274,7 +1300,8 @@ prebuilt="${temporary_dir}/prebuilt"
 # not its binary's name is renamed after the fake build.
 prebuilt_entries=(broker=./cmd/cipherd dev-oidc-issuer=./cmd/dev-oidc-issuer dispatch=./cmd/dispatch
   listener=./cmd/listener agent-secrets=./cmd/cipher agent-secrets-helper=./cmd/cipher-helper
-  natsd=./internal/testnats/cmd/natsd natsprobe=./cmd/natsprobe)
+  natsd=./internal/testnats/cmd/natsd natsprobe=./cmd/natsprobe
+  fixturebuckets=./internal/testnats/cmd/fixturebuckets)
 prebuilt_packages=("${prebuilt_entries[@]#*=}")
 prebuilt_binaries=("${prebuilt_entries[@]%%=*}")
 env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \
@@ -1417,6 +1444,11 @@ grep -q "fake listener: machine=dev-stack-${run_suffix} nats-token=${work_dir}/l
   fail "the --callout run's listener was not started with its NATS token"
 grep -q "nats-token=${work_dir}/dispatch-nats-token$" "${work_dir}/logs/dispatch.log" ||
   fail "the --callout run's Dispatch was not started with its NATS token"
+# Neither makes a stream beside the auth service, and natsd made them before either started.
+grep -qx 'fake listener: operator-made=1' "${work_dir}/logs/listener.log" ||
+  fail "the --callout run's listener was not started with ENVOY_STREAMS_OPERATOR_MADE=1"
+grep -qx 'fake dispatch: operator-made=1' "${work_dir}/logs/dispatch.log" ||
+  fail "the --callout run's Dispatch was not started with ENVOY_STREAMS_OPERATOR_MADE=1"
 for pair in "DEV_STACK_CALLOUT=1" "NATS_AUTH=broker" "DEV_STACK_NATS_SERVICE_TOKEN_FILE=${work_dir}/listener-nats-token" \
   "DEV_STACK_EXCHANGE_SESSION=example-worker-session" \
   "DEV_STACK_BROKER_PIDS=\"${process_port[broker]} ${second_broker_port}\"" \

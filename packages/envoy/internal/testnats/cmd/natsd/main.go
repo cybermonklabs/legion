@@ -13,14 +13,24 @@
 // server's configuration (nats.conf); a later start on the same dir keeps them, so a restarted
 // server still answers to the brokers that read them.
 //
+// Behind the callout it also makes every protected stream of the declared set
+// (internal/streamset, EnsureStreams) once it accepts connections, as an admin user of its own
+// that only this process holds: the configuration names the admin's public key, made at each
+// start, and its seed never leaves this process's memory. The auth service answers no client but
+// the operator with a stream create or update (natsgrant.ForCallout), and the dev stack's listener
+// and Dispatch run beside it with ENVOY_STREAMS_OPERATOR_MADE=1 and only read their streams, so the
+// streams exist before any of them connects, as the operator's update makes them in a deployment.
+// The admin's connection closes once they are made.
+//
 // It is a test fixture, not a product. Nothing deployed runs it: it listens on loopback only, has
-// no users but the callout's, keeps its JetStream store wherever the caller says and never cleans
+// no users but the callout's and its own admin's, keeps its JetStream store wherever the caller says and never cleans
 // it up, and lives under internal/testnats so nothing outside this module can import it. The
 // server the tests run is the one testnats starts (nats.go); this is the same server for a shell
 // script's sake.
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -32,8 +42,10 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
+	"github.com/sjawhar/envoy/internal/streamset"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -63,8 +75,16 @@ func run(args []string) error {
 		// -v, -h or -help_tls: ConfigureOptions has printed what was asked for.
 		return nil
 	}
+	var admin nkeys.KeyPair
 	if *calloutDir != "" {
-		config, err := calloutConfig(*calloutDir)
+		if admin, err = nkeys.CreateUser(); err != nil {
+			return err
+		}
+		adminKey, err := admin.PublicKey()
+		if err != nil {
+			return err
+		}
+		config, err := calloutConfig(*calloutDir, adminKey)
 		if err != nil {
 			return err
 		}
@@ -86,6 +106,13 @@ func run(args []string) error {
 		srv.WaitForShutdown()
 		return fmt.Errorf("no connections accepted on %s:%d within %s; is the port taken?", opts.Host, opts.Port, readyTimeout)
 	}
+	if admin != nil {
+		if err := makeStreams(srv.ClientURL(), admin); err != nil {
+			srv.Shutdown()
+			srv.WaitForShutdown()
+			return err
+		}
+	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	<-signals
@@ -97,11 +124,43 @@ func run(args []string) error {
 // calloutSeeds are the files -callout-keys keeps the three keys in.
 var calloutSeeds = [3]string{"service.seed", "issuer.seed", "xkey.seed"}
 
+// adminUser is the admin user's grant behind the callout: the JetStream API, which making the
+// declared streams calls, and the reply inboxes its answers come to.
+func adminUser(nkey string) testnats.StaticUser {
+	return testnats.StaticUser{NKey: nkey, Publish: []string{"$JS.API.>"}, Subscribe: []string{"_INBOX.>"}}
+}
+
+// makeStreamsWait bounds making the declared streams.
+const makeStreamsWait = time.Minute
+
+// makeStreams makes every protected stream of the declared set on the server at url as admin, at
+// one copy with no byte limit and the session bucket's own age, the settings the dev stack's
+// programs run with, and closes its connection.
+func makeStreams(url string, admin nkeys.KeyPair) error {
+	adminKey, err := admin.PublicKey()
+	if err != nil {
+		return err
+	}
+	conn, err := nats.Connect(url, nats.Nkey(adminKey, admin.Sign), nats.Name("natsd-admin"))
+	if err != nil {
+		return fmt.Errorf("connect as the admin user: %w", err)
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), makeStreamsWait)
+	defer cancel()
+	if err := streamset.EnsureStreams(ctx, conn, streamset.Settings{}); err != nil {
+		return fmt.Errorf("make the declared streams as the admin user: %w", err)
+	}
+	fmt.Println("natsd: made the declared streams as its admin user")
+	return nil
+}
+
 // calloutConfig returns the path of the callout server's configuration in dir, written from the
-// keys dir holds: made and written there the first time, when dir holds none of the three seeds,
-// and read back on every start after, so the keys a broker read stay the server's. A dir holding
-// some of the seeds but not all is refused naming the first one missing.
-func calloutConfig(dir string) (string, error) {
+// keys dir holds and adminKey, the admin user's public key: the keys are made and written there
+// the first time, when dir holds none of the three seeds, and read back on every start after, so
+// the keys a broker read stay the server's. A dir holding some of the seeds but not all is refused
+// naming the first one missing.
+func calloutConfig(dir, adminKey string) (string, error) {
 	keys, err := readCalloutKeys(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		keys, err = writeCalloutKeys(dir)
@@ -110,7 +169,7 @@ func calloutConfig(dir string) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(dir, "nats.conf")
-	if err := os.WriteFile(path, []byte(testnats.CalloutConfig(keys)), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(testnats.CalloutConfig(keys, adminUser(adminKey))), 0o600); err != nil {
 		return "", fmt.Errorf("write the callout configuration: %w", err)
 	}
 	return path, nil

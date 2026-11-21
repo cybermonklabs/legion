@@ -241,6 +241,41 @@ func TestClusteredNatsHubTakesNatsReplicasBesideItsOwnListener(t *testing.T) {
 	require.Contains(t, s.Listener.Env, "ENVOY_NATS_REPLICAS=3")
 }
 
+// streamsOperatorMade is the session listener's too: true renders ENVOY_STREAMS_OPERATOR_MADE=1 last
+// in its environment, so its start beside the auth service reads its streams and makes none, and
+// false or unset renders nothing, the environment it always had, on the tailnet listener and on the
+// hub's own alike.
+func TestClusteredNatsHubRendersStreamsOperatorMadeOnItsListener(t *testing.T) {
+	const made = "ENVOY_STREAMS_OPERATOR_MADE=1"
+	for _, row := range []struct {
+		name string
+		args func() *gcp.ClusteredNatsHubArgs
+	}{
+		{"the tailnet listener", clusteredArgs},
+		{"the hub's own listener", func() *gcp.ClusteredNatsHubArgs {
+			args := clusteredArgs()
+			standaloneListener(args)
+			return args
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			unset, err := gcp.ResolveClusteredNatsHub(row.args())
+			require.NoError(t, err)
+			require.NotContains(t, unset.Listener.Env, made)
+			off := row.args()
+			off.StreamsOperatorMade = pulumi.BoolRef(false)
+			resolved, err := gcp.ResolveClusteredNatsHub(off)
+			require.NoError(t, err)
+			require.Equal(t, unset.Listener.Env, resolved.Listener.Env, "streamsOperatorMade false changed the listener's environment")
+			on := row.args()
+			on.StreamsOperatorMade = pulumi.BoolRef(true)
+			resolved, err = gcp.ResolveClusteredNatsHub(on)
+			require.NoError(t, err)
+			require.Equal(t, append(slices.Clone(unset.Listener.Env), made), resolved.Listener.Env)
+		})
+	}
+}
+
 // The hub's own listener reaches the plugin over the wire a consumer's SDK uses, as an object
 // input of its own beside no tailnet entry, and Construct decodes and renders it as the direct
 // path does: no tailnet object, the listener's token check, and no tailnet URL.

@@ -16,6 +16,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -23,13 +24,15 @@ import (
 )
 
 // setupNATS connects t to the package's shared NATS server, in the JetStream account testnats.URL
-// hands t, where no earlier test made a session bucket.
+// hands t, where no earlier test made a session bucket. Its connection is a fixture's
+// (bustest.Fixture), so a store opened through it creates the bucket it finds missing.
 func setupNATS(t *testing.T) *bus.Client {
 	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	return client
 }

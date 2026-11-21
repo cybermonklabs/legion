@@ -6,6 +6,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -17,13 +18,16 @@ import (
 // On a three-copy deployment (an in-process three-server cluster, replica count 3), each of the
 // five buckets a library opener creates is created at three copies by the opener its program
 // calls: interests and role claims (store.Open), sessions (session.OpenSessionRegistry), CI state
-// (cistore.Open) and webhook redelivery (redeliver.OpenState). The sixth bucket Envoy opens, the
+// (cistore.Open) and webhook redelivery (redeliver.OpenState). The first four are buckets a
+// listener copies (bus.CopiedBuckets), which an opener creates only on a fixture's connection
+// (bustest.Connect), as here, and never in a deployment, where `envoy-infra buckets` creates them;
+// the replica count the opener asks for is the one under test. The sixth bucket Envoy opens, the
 // listener's spent-proof bucket (bus.DPoPProofBucket), has its opener in cmd/listener and is
 // covered by that package's own tests.
 func TestEveryBucketIsCreatedAtThreeCopiesOnAThreeCopyDeployment(t *testing.T) {
 	const replicas = 3
 	cluster := testnats.StartCluster(t, 3)
-	conn := testnats.Connect(t, cluster.URL())
+	conn := bustest.Connect(t, cluster.URL())
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream(natsgo.MaxWait(10 * time.Second))
 	if err != nil {

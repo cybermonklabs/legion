@@ -204,6 +204,7 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"natsInCluster", func(a *gcp.DispatchArgs) { a.NatsInCluster = pulumi.BoolRef(true) }},
 		{"natsReplicas", func(a *gcp.DispatchArgs) { a.NatsReplicas = pulumi.IntRef(dispatchNatsReplicas) }},
 		{"streamMaxBytes", func(a *gcp.DispatchArgs) { a.StreamMaxBytes = pulumi.IntRef(dispatchStreamMaxBytes) }},
+		{"streamsOperatorMade", func(a *gcp.DispatchArgs) { a.StreamsOperatorMade = pulumi.BoolRef(true) }},
 		{"senderMessagesPerMinute", func(a *gcp.DispatchArgs) { a.SenderMessagesPerMinute = pulumi.IntRef(60) }},
 		{"senderMessageBurst", func(a *gcp.DispatchArgs) { a.SenderMessageBurst = pulumi.IntRef(10) }},
 		{"signingKeyGenerations", func(a *gcp.DispatchArgs) { a.SigningKeyGenerations = []int{0, 1} }},

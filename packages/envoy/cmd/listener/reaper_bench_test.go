@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -31,6 +32,7 @@ func benchmarkReap(b *testing.B, n int) {
 	if err != nil {
 		b.Fatalf("connect bus: %v", err)
 	}
+	bustest.Fixture(client.Conn)
 	b.Cleanup(client.Close)
 	quiet := slog.New(slog.DiscardHandler)
 	registry, err := store.Open(b.Context(), client.Conn, store.WithReplicas(1), store.WithLogger(quiet))

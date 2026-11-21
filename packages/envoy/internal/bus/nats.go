@@ -23,9 +23,9 @@ import (
 type ConnectOption interface{ apply(*connectOpts) }
 
 // DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection,
-// WithPromptReconnect and WithReconnectErrClock. Dial's name and environment are its parameters,
-// so WithName and WithEnvironment are not DialOptions, and neither are the options of a client's
-// JetStream (WithReplicas, WithPublishAcknowledgementClock).
+// WithPromptReconnect, WithInboxPrefix and WithReconnectErrClock. Dial's name and environment are
+// its parameters, so WithName and WithEnvironment are not DialOptions, and neither are the options
+// of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock).
 type DialOption func(*connectOpts)
 
 func (o DialOption) apply(opts *connectOpts) { o(opts) }
@@ -50,12 +50,13 @@ type connectOpts struct {
 	background                  bool
 	silentCutDetection          bool
 	promptReconnect             bool
+	inboxPrefix                 string
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
 // (connectWithContext): the NATS credential names (credential, nil for none), the pings of
-// WithSilentCutDetection and the redial waits of WithPromptReconnect, each when the client asked
-// for it.
+// WithSilentCutDetection, the redial waits of WithPromptReconnect and WithInboxPrefix's reply
+// inboxes, each when the client asked for it.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	settings := []nats.Option{credential}
 	if o.silentCutDetection {
@@ -63,6 +64,9 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	}
 	if o.promptReconnect {
 		settings = append(settings, promptRedial)
+	}
+	if o.inboxPrefix != "" {
+		settings = append(settings, nats.CustomInboxPrefix(o.inboxPrefix))
 	}
 	if len(settings) == 1 {
 		return credential
@@ -169,6 +173,16 @@ func WithEnvironment(lookup func(string) (string, bool)) ConnectOption {
 // takes its name as a parameter, and not this option.
 func WithName(name string) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.name = name })
+}
+
+// WithInboxPrefix has every connection of the client take its reply inboxes under prefix, in place
+// of nats.go's _INBOX: every request it sends, a JetStream API call included, asks for its answer on
+// prefix.<token>. A NATS user whose grant subscribes prefix.> alone can then run the client, where
+// one granted _INBOX.> would receive every other client's replies under _INBOX - a session's push
+// deliveries among them. `envoy-infra buckets` connects with _INBOX_envoy_buckets, and the NATS auth
+// service's own connection (Dial) with _INBOX_envoy_auth.
+func WithInboxPrefix(prefix string) DialOption {
+	return func(o *connectOpts) { o.inboxPrefix = prefix }
 }
 
 // WithConnectInBackground has the constructor (Connect, ConnectOwningStream, Dial) return without
@@ -387,6 +401,11 @@ type Client struct {
 	// streamConfig is the stream an owning client ensures on its first connect and on every
 	// connection event after it (ensureStreamOn); nil for a client that owns no stream.
 	streamConfig *nats.StreamConfig
+	// operatorMade is StreamsOperatorMadeEnvVar as the client's environment set it: the client's
+	// start, and every connection event after it, reads the stream and makes or changes nothing
+	// (readOperatorMadeStream), it runs no keeper, and EnsureKeyValue and SetKeyValueMaxAge on its
+	// connection make and change no bucket. Set once by the constructor, never written after.
+	operatorMade bool
 	// deployedSubjects holds the subjects the deployed stream carried when the client last read them
 	// (DeployedStreamCaptures); nil until the client has read them once.
 	deployedSubjects atomic.Pointer[[]string]
@@ -513,6 +532,11 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 	if err != nil {
 		return nil, err
 	}
+	raw, _ := opts.environment(StreamsOperatorMadeEnvVar)
+	operatorMade, err := ParseStreamsOperatorMade(raw)
+	if err != nil {
+		return nil, err
+	}
 	c := &Client{
 		urls:                        urls,
 		name:                        opts.name,
@@ -523,6 +547,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
 		stopCh:                      make(chan struct{}),
+		operatorMade:                operatorMade,
 	}
 	stream := opts.streamConfig()
 	if ownsStream {
@@ -651,9 +676,15 @@ const streamSubjectsRead = 10 * time.Second
 // and keeps the subjects it carries afterwards. defaultsAnUnsetCap is what the connected server
 // is, read from the version it answers (serverDefaultsAnUnsetCap): whether a deployed stream with
 // no consumer cap is one the server caps at a default of its own. ctx ends the ensure's waits on
-// the server, which the start's hang guard bounds too (ensureStreamWithConfig).
+// the server, which the start's hang guard bounds too (ensureStreamWithConfig). A client beside the
+// auth service (StreamsOperatorMadeEnvVar) only reads the stream the operator made
+// (readOperatorMadeStream).
 func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, defaultsAnUnsetCap bool, at streamEnsure) error {
-	subjects, err := ensureStreamWithConfig(ctx, js, c.streamConfig, defaultsAnUnsetCap, at)
+	ensure := ensureStreamWithConfig
+	if c.operatorMade {
+		ensure = readOperatorMadeStream
+	}
+	subjects, err := ensure(ctx, js, c.streamConfig, defaultsAnUnsetCap, at)
 	if err != nil {
 		return err
 	}
