@@ -937,6 +937,103 @@ test("the approval chip's keys press its own actions, and only while those take 
   }
 });
 
+/** Whether the header's key `id` applies now, as the key card reads it (`appKeymap.describe`). */
+function keyApplies(id: string): boolean | undefined {
+  return appKeymap.describe().find((key) => key.scope === "issue" && key.id === id)?.enabled;
+}
+
+// The pin stands in the actions group, which is drawn hidden while the menu is shut, and
+// `Shift+P` presses it there: the key reads the pin up to that group (`useHeaderKeys.ts`), so it
+// is offered and pins with the menu shut, and the menu stays shut.
+test("Shift+P is offered with the actions menu shut, and pins the issue", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const putIssueState = spyOn(api, "putIssueState").mockResolvedValue({
+    dismissed: [],
+    last_read_seq: 0,
+    pinned: true,
+    seq: 1,
+  });
+  const view = renderHeader();
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    const control = screen.getByRole("button", { name: CONTROL_LABELS.issue_actions });
+    expect(control).toHaveAttribute("aria-expanded", "false");
+    expect(keyApplies("pin"), "Shift+P is off while the actions menu is shut").toBe(true);
+    act(() => heading.focus());
+    await user.keyboard("{Shift>}P{/Shift}");
+    await waitFor(() =>
+      expect(putIssueState, "Shift+P with the actions menu shut sent no pin").toHaveBeenCalledWith(
+        "CORE-1",
+        { pinned: true },
+        keyedAttempt
+      )
+    );
+    expect(control, "Shift+P opened the actions menu").toHaveAttribute("aria-expanded", "false");
+  } finally {
+    view.unmount();
+    putIssueState.mockRestore();
+    restore();
+  }
+});
+
+// The pin is disabled while its write is out, and the menu it was pressed from is shut again by
+// then: read up to that shut group, a disabled pin still takes no press, so `Shift+P` is off. A
+// key press is not read here: a disabled button takes no click whatever the key rule says.
+test("Shift+P is off while the pin's write is out", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const saved = Promise.withResolvers<UserIssueState>();
+  const putIssueState = spyOn(api, "putIssueState").mockImplementation(() => saved.promise);
+  const view = renderHeader();
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    await openIssueActions();
+    const pin = screen.getByRole("button", { name: CONTROL_LABELS.pin_issue });
+    await user.click(pin);
+    await waitFor(() =>
+      expect(pin, "the pin is not disabled while its write is out").toBeDisabled()
+    );
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.issue_actions })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(keyApplies("pin"), "Shift+P is offered while the pin is disabled").toBe(false);
+  } finally {
+    saved.resolve({ dismissed: [], last_read_seq: 0, pinned: true, seq: 1 });
+    view.unmount();
+    putIssueState.mockRestore();
+    restore();
+  }
+});
+
+// The header's keys read the page's one rule (`usable-control.ts`), which refuses a control that
+// is busy, `aria-disabled`, as it refuses a disabled one: `s` is off while the status select is
+// `aria-disabled`, and focuses nothing.
+test("s is off while the status select is aria-disabled", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    const status = within(screen.getByTestId("issue-state-actions")).getByRole("combobox", {
+      name: "Status",
+    });
+    expect(keyApplies("status"), "s is off while the status select takes a press").toBe(true);
+    act(() => status.setAttribute("aria-disabled", "true"));
+    expect(keyApplies("status"), "s is offered while the status select is busy").toBe(false);
+    act(() => heading.focus());
+    await user.keyboard("s");
+    expect(status, "s focused a busy status select").not.toHaveFocus();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
 // The header's focus keeper gives a control of the Request changes dialog, lost as the dialog
 // shuts, to the document's chip (`chipOfLostAction`). The dialog gives the focus back to the
 // header's Request changes as it shuts; once the request is answered the header draws neither
