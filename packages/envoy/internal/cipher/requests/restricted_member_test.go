@@ -297,12 +297,19 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 // longer serves, which on its own is a pause and not an end (noLongerServed), still ends, and ends
 // as a restricted member's (errRestrictedMember). The control is the same grant shape under a full
 // member, which is refused for the name that is gone and left live.
+//
+// An approval of a request a restricted member's session left pending writes no grant whatever
+// its names either: when the policy no longer serves any of them, so that no name is left for the
+// policy to deny, the approval is still the policy's denial, restricted-member. The control is the
+// same approval of a full member's request for the same name, which is granted, as an approval of
+// a name the policy no longer serves is (its release is then refused for the name).
 func TestARestrictedMembersGrantEndsWhateverItsNames(t *testing.T) {
 	const outsider = "outsider@outside.example"
 	ctx := context.Background()
 	m, _, _, _ := newFixture(t)
 	gone := policytest.Secret("GONE_SECRET", policy.OwnerShared, policy.TierAgent, "gone-v1")
-	retag(t, m, gone, policytest.Secret("KEPT_SECRET", policy.OwnerShared, policy.TierAgent, "kept-v1"))
+	goneKey := policytest.Secret("GONE_KEY", policy.OwnerShared, policy.TierHuman, "gone-key-v1")
+	retag(t, m, gone, goneKey, policytest.Secret("KEPT_SECRET", policy.OwnerShared, policy.TierAgent, "kept-v1"))
 	twoNames := func(t *testing.T, person string) (string, string) {
 		t.Helper()
 		session, key := newEnrollment(t, m.Store, "session", person+"-box-"+t.Name(), new(person), nil)
@@ -314,9 +321,27 @@ func TestARestrictedMembersGrantEndsWhateverItsNames(t *testing.T) {
 	}
 	outsiderSession, outsiderGrant := twoNames(t, outsider)
 	fullSession, fullGrant := twoNames(t, fixtureOperator)
+	// Each person's session also leaves a request for GONE_KEY pending before the policy drops it.
+	pendingGoneKey := func(t *testing.T, person string) Request {
+		t.Helper()
+		session, key := newEnrollment(t, m.Store, "session", person+"-asks-"+t.Name(), new(person), nil)
+		req, err := m.Create(ctx, session, signRequest(t, m, key, "needs the key", "GONE_KEY"), "", nil)
+		if err != nil || req.State != "pending" || req.RecordID == nil {
+			t.Fatalf("Create(GONE_KEY) for %s = %+v, %v; want pending with a record", person, req, err)
+		}
+		return req
+	}
+	outsiderPending := pendingGoneKey(t, outsider)
+	fullPending := pendingGoneKey(t, fixtureOperator)
 	fixtureStore(m).Delete(gone.Name)
+	fixtureStore(m).Delete(goneKey.Name)
 	if err := m.Policy.Refresh(ctx); err != nil {
 		t.Fatalf("policy refresh: %v", err)
+	}
+	for _, name := range []string{"GONE_SECRET", "GONE_KEY"} {
+		if _, served := m.Policy.Get().Secrets[name]; served {
+			t.Fatalf("the policy still serves %s; the fixture is wrong", name)
+		}
 	}
 	dispatch := projectaccesstest.NewServer(t, nil, map[string]string{outsider: projectaccess.MemberRestricted, fixtureOperator: projectaccess.MemberFull})
 	m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
@@ -335,6 +360,22 @@ func TestARestrictedMembersGrantEndsWhateverItsNames(t *testing.T) {
 	var revoked bool
 	if err := m.Store.Pool.QueryRow(ctx, `select revoked_at is not null from grants where id=$1`, fullGrant).Scan(&revoked); err != nil || revoked {
 		t.Fatalf("%s's grant %s revoked = %t, %v; want it left live", fixtureOperator, fullGrant, revoked, err)
+	}
+
+	// The approval of the restricted member's request whose one name the policy no longer serves
+	// is the policy's denial, restricted-member, and writes no grant.
+	dec, err := m.ApplyDecision(ctx, *outsiderPending.RecordID, true, "bob@example.com")
+	if err != nil || dec.State != "denied" || dec.GrantID != "" || !strings.Contains(dec.Detail, "GONE_KEY: "+policy.ReasonRestrictedMember) {
+		t.Fatalf("ApplyDecision(approve %s's GONE_KEY, no longer served) = %+v, %v; want it denied naming %s and no grant", outsider, dec, err, policy.ReasonRestrictedMember)
+	}
+	var grants int
+	if err := m.Store.Pool.QueryRow(ctx, `select count(*) from grants where request_id=$1`, outsiderPending.ID).Scan(&grants); err != nil || grants != 0 {
+		t.Fatalf("%s's GONE_KEY request holds %d grants, %v; want none", outsider, grants, err)
+	}
+
+	// The control: the same approval of the full member's request is granted.
+	if dec, err := m.ApplyDecision(ctx, *fullPending.RecordID, true, "bob@example.com"); err != nil || dec.State != "granted" || dec.GrantID == "" {
+		t.Fatalf("ApplyDecision(approve %s's GONE_KEY, no longer served) = %+v, %v; want it granted", fixtureOperator, dec, err)
 	}
 }
 
