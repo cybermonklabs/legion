@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# The driver of the check c-outside-path-reach (dispatch://INFRA-3862): a person from outside runs
-# it on their own device, over the path we give them, to measure which of our listed addresses that
-# device reaches. What it measures is TCP connects from that device to the listed addresses and
-# ports, nothing more: it cannot see a service the origin itself forwards by path or by Host on its
-# own host and port, and it must run on the device itself, not in a VM, a container or a remote
-# shell, whose network is another one.
+# The driver of the check c-outside-path-reach: it measures which of our listed addresses a machine
+# reaches over the path we give a person from outside. What it measures is TCP connects from the
+# machine it runs on to the listed addresses and ports, nothing more: it cannot see a service the
+# origin itself forwards by path or by Host on its own host and port. So it runs where the path
+# starts. For a path that only that person's device has, such as a tunnel, that is the device
+# itself, not a VM, a container or a remote shell, whose network is another one; for a public path,
+# any host on the public internet will do, since a public load balancer answers every address alike.
 #
 # It is handed to that person as this one file with its target list, so it sources nothing and
 # needs only bash (3.2, as macOS ships it, or later), curl 7.40 or later and sleep, all three on a
@@ -52,8 +53,9 @@
 # later refuse a bound past 2147483 s where a long has 32 bits. They do not bound the probes, whose
 # 3 s to connect and 5 s in all the classifier's rules count on.
 #
-# It prints the origin, this device's name and the UTC time, a line for the origin's positive
-# control and one per target, then its verdict:
+# It prints the origin and the UTC time, never this device's host name (its output can be posted
+# where anyone reads it), then a line for the origin's positive control and one per target, then
+# its verdict:
 #   PASS     exit 0: Dispatch answered at the origin (/healthz 200, and /api/v1/projects with no
 #            credential 401 with Dispatch's own NO_IDENTITY refusal), the probe connected to the
 #            origin in every round, and every target was unreachable.
@@ -518,8 +520,9 @@ now=''
 if command -v date >/dev/null 2>&1; then
   now=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
 fi
+# No line names this device's host name: the output can be posted where anyone reads it, such as a
+# public CI log.
 printf 'outside-path-reach: origin %s\n' "$origin"
-printf 'outside-path-reach: device %s\n' "${HOSTNAME:-unknown}"
 printf 'outside-path-reach: time %s\n' "${now:-unknown (no date command answered)}"
 printf 'outside-path-reach: curl %s\n' "$version"
 printf 'outside-path-reach: targets %s (%s)\n' "$targets" "$count"

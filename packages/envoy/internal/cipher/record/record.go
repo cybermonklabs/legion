@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-jose/go-jose/v4"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/fold"
 )
@@ -568,43 +570,37 @@ func ParseBody(canonical string) (Body, error) {
 
 // ApproverLogin canonicalizes login and returns it when it may decide this record, a record of
 // kind whose verified request object names service (RequestObject.Service), and ErrNotApprover
-// otherwise (MayDecide). A record's approver is resolved when it is created — a secret's owner,
+// otherwise (MayDecide, with groups the members of a group approver). A record's approver is
+// resolved when it is created — a secret's owner, a group owner as group:<address>,
 // AnyoneApprover for a shared human-tier secret, a person's machine login's login_hint, or
 // AnyoneApprover for a service's login — and a service's login is decided by the service its
 // signed request names whatever approver its record stored, so this one comparison is every
 // decision's and every chain re-check's approver rule, and the login it returns is the one a
 // decision records.
-func (b Body) ApproverLogin(kind, service, login string) (string, error) {
+func (b Body) ApproverLogin(kind, service, login string, groups Groups) (string, error) {
 	login = CanonicalLogin(login)
-	if !MayDecide(kind, b.Approver, service, login) {
+	if !MayDecide(kind, b.Approver, service, login, groups) {
 		return "", ErrNotApprover
 	}
 	return login, nil
 }
 
 // MayDecide reports whether login may decide a record of kind whose approver is approver and whose
-// signed request names service: for a machine login that names a service, any login at all, since
-// its credential acts as that service and as no person; for an agent_secret record whose approver
-// is AnyoneApprover, any login; and otherwise the person the approver names. No login is
-// AnyoneApprover itself, and no empty login decides anything. A person's machine login's approver
-// is the person whose machine it becomes, so AnyoneApprover there admits no one, whatever binary
-// opened the record. Nor is a judge actor (JudgeLogin) ever a login that decides: the judge's own
-// approval is recorded under JudgeActor and never as a person, so an owner tag or a login_hint
-// spelled "judge:..." makes no record the judge's to approve as a person.
-func MayDecide(kind, approver, service, login string) bool {
-	login, approver = CanonicalLogin(login), CanonicalLogin(approver)
-	_, judge := JudgeLogin(login)
-	switch {
-	case login == "" || login == AnyoneApprover:
-		return false
-	case judge:
-		return false
-	case kind == KindLauncherCredential && service != "":
-		return true
-	case kind == KindAgentSecret && approver == AnyoneApprover:
-		return true
-	}
-	return login == approver
+// signed request names service (CheckDecider answers nil): for a machine login that names a
+// service, any login at all, since its credential acts as that service and as no person; for an
+// agent_secret record whose approver is AnyoneApprover, any login; for an agent_secret record whose
+// approver is a group (group:<address>, GroupOf), a login the group's one look (GroupStanding)
+// finds listed and fresh, and nobody when groups is nil or the group is stale; and otherwise the
+// person the approver names. No login is AnyoneApprover itself, no login spelled as a group is the
+// group, and no empty login decides anything. A person's machine login's approver is the person
+// whose machine it becomes, so AnyoneApprover there admits no one, whatever binary opened the
+// record, and a group there admits no one either. Nor is a judge actor (JudgeLogin) ever a login
+// that decides: the judge's own approval is recorded under JudgeActor and never as a person, so an
+// owner tag or a login_hint spelled "judge:..." makes no record the judge's to approve as a person.
+// No rule keeps a person from deciding their own request: a member of a group approver may approve
+// a request their own session made, as a sole owner may.
+func MayDecide(kind, approver, service, login string, groups Groups) bool {
+	return CheckDecider(kind, approver, service, login, groups) == nil
 }
 
 // ErrNotJudgeable is wrapped around every reason the model judge may not decide a record: the
@@ -697,6 +693,46 @@ var issueKeyPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-[0-9]+\b`)
 // reason the record signs, so the log line and the judge read one definition of an issue key.
 func IssueKeyInReason(reason string) string {
 	return issueKeyPattern.FindString(reason)
+}
+
+// IssueKeysInReason is every Dispatch issue key in a request's own signed reason, in the order the
+// reason names them, and nil when it names none. A reader deciding whose text the reason is reads
+// them all, not the first alone: the pattern also matches words that are no issue key, such as
+// "SHA-256", so a reason naming one before a project's issue would otherwise hide that project.
+func IssueKeysInReason(reason string) []string {
+	return issueKeyPattern.FindAllString(reason, -1)
+}
+
+// MaxReasonProjects is the most projects the issue keys of one new request's reason may name: as
+// many as one credential may name (oauthwire.MaxProjects). Each is one Dispatch read for every
+// reader that decides whose text the reason is (requests.Machine.HideUnseen), so the bound on the
+// reads is a bound on the reason.
+const MaxReasonProjects = oauthwire.MaxProjects
+
+// ReasonProjects is the distinct projects the issue keys of reason name (IssueKeysInReason, each
+// key's project the part before its hyphen), in the order the reason first names them. A word of
+// a key's form that is no project ("SHA-256") counts as one.
+func ReasonProjects(reason string) []string {
+	var projects []string
+	for _, key := range IssueKeysInReason(reason) {
+		project, _, _ := strings.Cut(key, "-")
+		if !slices.Contains(projects, project) {
+			projects = append(projects, project)
+		}
+	}
+	return projects
+}
+
+// CheckReasonProjects refuses, as ErrRequestInvalid, the reason of a request being created whose
+// issue keys name more than MaxReasonProjects projects (ReasonProjects). It is a rule for a new
+// request alone — requests.Machine.Create and the machine login's creation call it — and never
+// part of VerifyRequestObject, so a request stored before the rule keeps verifying wherever it is
+// read again.
+func CheckReasonProjects(reason string) error {
+	if n := len(ReasonProjects(reason)); n > MaxReasonProjects {
+		return fmt.Errorf("%w: the reason names issue keys of %d projects; a request may name at most %d", ErrRequestInvalid, n, MaxReasonProjects)
+	}
+	return nil
 }
 
 // askRefPattern is a reference to one ask of a Dispatch issue, in the one form Dispatch writes:

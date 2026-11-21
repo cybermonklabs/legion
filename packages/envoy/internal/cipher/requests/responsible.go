@@ -98,8 +98,9 @@ func (m *Machine) responsiblePerson(e enrollmentRow, req policy.Requester, assig
 // the enrollment, the error and whether the bound was reached, so a broker whose Dispatch token is
 // refused, or whose Dispatch is slow, is seen to list every Legion pod's request for everyone. An
 // issue nobody is assigned to logs nothing: that is an answer. No error here names a token: the
-// Dispatch read's errors name the status and the issue, and a token file's the file.
-func (m *Machine) claimAssignee(ctx context.Context, e enrollmentRow, set *policy.Set, names []string, reason string) string {
+// Dispatch read's errors name the status and the issue, and a token file's the file. facts are
+// what Create read of the names' projects, which the policy read needs for a tagged name.
+func (m *Machine) claimAssignee(ctx context.Context, e enrollmentRow, set *policy.Set, names []string, reason string, facts projectFacts) string {
 	if e.Kind != "pod" || m.Assignees == nil {
 		return ""
 	}
@@ -111,7 +112,7 @@ func (m *Machine) claimAssignee(ctx context.Context, e enrollmentRow, set *polic
 		slog.Warn(AssigneeUnreadMessage, "issue", key, "enrollment", e.ID, "error", err.Error(), "bound_reached", boundReached)
 		return ""
 	}
-	requester, err := m.requester(ctx, m.Store.Pool, e)
+	requester, err := m.requester(ctx, m.Store.Pool, e, facts)
 	if err != nil {
 		return unread(fmt.Errorf("read the pod's requester: %w", err), false)
 	}

@@ -41,8 +41,8 @@ const (
 	// ProjectsVar is the projects a session works on, project keys separated by white space,
 	// which a trade that acts as its person may ask the broker to name in its token
 	// (TradeProjects). The broker names only projects the person may see, and a restricted
-	// member's token must name at least one. The TypeScript sign-in client sends it; no Go trade
-	// of this release reads it yet.
+	// member's token must name at least one. The TypeScript sign-in client sends it, and so do
+	// natsprobe's trade and `agent-secrets register`, `enroll --helper` and `enroll --pod`.
 	ProjectsVar = "AGENT_SECRETS_PROJECTS"
 	// SignInIssuerVar is the OpenID provider a person signs in at, Google's unless a dev stack
 	// says otherwise.
@@ -88,21 +88,43 @@ func TradeSession(getenv func(string) string, own string) string {
 	return strings.TrimSpace(getenv(SessionVar))
 }
 
-// TradeProjects is the projects a trade acting as its person asks for: ProjectsVar, in the
-// grammar the broker reads (oauthwire.ParseProjects), sorted and each once; nil when it is blank.
-// A value that is no list is an error naming the variable and the rule, never a list quietly cut
-// short, and never the value: a value the variable cannot hold is where a credential pasted into
-// the wrong variable shows up, and ParseProjects quotes the key it refuses. It is the declaration
-// a Go trade naming its projects reads them through; no Go trade of this release calls it. The
-// TypeScript client reads the same variable the same way (packages/cipher-client/src/
-// environment.ts, tradeProjects).
+// TradeProjects is the projects a trade acting as its person asks for: ProjectsVar, read by
+// ParseProjectsSetting. It is the declaration a Go trade naming its projects reads them through:
+// `agent-secrets register` and `enroll` with no --projects, and natsprobe. The TypeScript client
+// reads the same variable the same way (packages/cipher-client/src/environment.ts,
+// tradeProjects).
 func TradeProjects(getenv func(string) string) ([]string, error) {
-	projects, err := oauthwire.ParseProjects(getenv(ProjectsVar))
+	return ParseProjectsSetting(ProjectsVar, getenv(ProjectsVar))
+}
+
+// ParseProjectsSetting is the projects raw names, in the grammar the broker reads
+// (oauthwire.ParseProjects), sorted and each once; nil when it is blank. setting is where raw came
+// from (ProjectsVar, or a flag such as --projects), which a refusal names (ProjectsRefusal).
+func ParseProjectsSetting(setting, raw string) ([]string, error) {
+	projects, err := oauthwire.ParseProjects(raw)
 	if err != nil {
-		return nil, fmt.Errorf("%s is not a list of project keys: at most %d keys, separated by white space, each named once and each %s",
-			ProjectsVar, oauthwire.MaxProjects, contracts.ProjectKeyRule)
+		return nil, ProjectsRefusal(setting, ProjectsSpaced)
 	}
 	return projects, nil
+}
+
+// ProjectsSpaced and ProjectsListed say how a projects setting holds its keys, which
+// ProjectsRefusal names: a variable or a flag separates them by white space
+// (ParseProjectsSetting), and a register's JSON list holds one key in each element, never split
+// (the helper's sessionProjects).
+const (
+	ProjectsSpaced = "separated by white space"
+	ProjectsListed = "one in each element of the list"
+)
+
+// ProjectsRefusal is the error for a projects setting that is no list: it names the setting, how
+// it holds its keys (held, ProjectsSpaced or ProjectsListed) and the rule, never the value, and is
+// never a list quietly cut short. A value the setting cannot hold is where a credential pasted into
+// the wrong place shows up, and oauthwire's own errors quote the key they refuse. The helper's
+// check of a register's projects says the same words, with its own way of holding them.
+func ProjectsRefusal(setting, held string) error {
+	return fmt.Errorf("%s is not a list of project keys: at most %d keys, %s, each named once and each %s",
+		setting, oauthwire.MaxProjects, held, contracts.ProjectKeyRule)
 }
 
 // MachineIdentity is the identity IdentityVar names, or nil when it names none, which is a

@@ -136,9 +136,10 @@ func (p githubPullRequest) mergeState() record.MergeState {
 //
 // The read is made of the repository GitHub serves the recorded one under (repositories.serving),
 // as every GitHub call the daemon makes for a recorded tree is: a record keeps the name it was
-// written under for its whole life, and after a transfer GitHub holds the repository under the
-// other name, on the other owner's installation. Read under the recorded name, this would mint on
-// the installation the repository has left and address a repository GitHub no longer answers for.
+// written under until this release's one-time rename pass writes a pair's `to` over it
+// (renamePass), and after a transfer GitHub holds the repository under the other name, on the
+// other owner's installation. Read under the recorded name, this would mint on the installation
+// the repository has left and address a repository GitHub no longer answers for.
 func (w *workflowRuntime) readPullRequest(ctx context.Context, pr record.PullRequest) (githubrest.Client, githubPullRequest, error) {
 	recorded, err := ghrepo.Parse("the pull request's repository", pr.Repo)
 	if err != nil {

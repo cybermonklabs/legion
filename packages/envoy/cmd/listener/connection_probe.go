@@ -43,8 +43,11 @@ const connectionProbeTimeout = 1 * time.Second
 // (bus.DeliverSubject), the subject both plugins subscribe before they register and on which the
 // session's owning listener relays its consumer's messages, and reports whether the session is
 // connected. The request is one core NATS request bounded by connectionProbeTimeout within ctx
-// (bus.Client.RequestCore), carrying bus.ConnectionProbeHeader and no body, on a reply inbox of
-// its own, so its answer never reaches the relay's reply handler.
+// (bus.Client.RequestCore), carrying bus.ConnectionProbeHeader and no body, on a reply subject of
+// its own that names the session (bus.SessionReplySubject under a new inbox), so its answer never
+// reaches the relay's reply handler, and the session may still answer it once natsgrant.Session
+// publishes bus.SessionReplies, its replies under its own id alone, in place of every _INBOX.
+// subject.
 //
 // Only NATS's no-responders status (nats.ErrNoResponders) is stopped: no subscription on this
 // server's cluster holds the subject, which is what a plugin whose connection closed leaves. A
@@ -58,7 +61,8 @@ const connectionProbeTimeout = 1 * time.Second
 func probeSessionConnection(ctx context.Context, client *bus.Client, sessionID string, logger *logging.Logger) bool {
 	probeCtx, cancel := context.WithTimeout(ctx, connectionProbeTimeout)
 	defer cancel()
-	_, err := client.RequestCore(probeCtx, bus.DeliverSubject(sessionID), nats.Header{bus.ConnectionProbeHeader: []string{"1"}})
+	reply := bus.SessionReplySubject(nats.NewInbox(), sessionID)
+	_, err := client.RequestCore(probeCtx, bus.DeliverSubject(sessionID), reply, nats.Header{bus.ConnectionProbeHeader: []string{"1"}})
 	switch {
 	case err == nil, errors.Is(err, context.DeadlineExceeded):
 		return true
