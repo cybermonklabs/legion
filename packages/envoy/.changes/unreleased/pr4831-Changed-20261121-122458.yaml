@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  Reading the GitHub issues a pull request's body cites now hands the host check of each issue
+  link only the 507 bytes before the link's path that the check reads, where it handed the whole
+  body. The issues credited are the same; a later change to that check can no longer make reading
+  a long body cost the square of its length.
+time: 2026-11-21T12:24:58Z
+custom:
+    Issue: pr4831
