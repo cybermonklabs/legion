@@ -186,6 +186,9 @@ type server struct {
 	// route of the approval page share.
 	tokenLimiter   *ratelimit.Keyed
 	accountLimiter *ratelimit.Keyed
+	// holdFloors is this process's floor of each NATS writer hold record (recordFloors), kept
+	// for as long as the routes Register mounted serve.
+	holdFloors *recordFloors
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -236,6 +239,7 @@ func Register(mux *http.ServeMux, deps Deps) {
 		rereadOverall:   rereadBucket,
 		tokenLimiter:    ratelimit.NewKeyed(token),
 		accountLimiter:  ratelimit.NewKeyed(account),
+		holdFloors:      newRecordFloors(),
 	}
 	for _, route := range routes() {
 		// A broker with no provider serves neither the OAuth routes nor the document that names

@@ -129,13 +129,40 @@ func TestAFieldHoldingALineBreakIsRefused(t *testing.T) {
 // another kind's.
 func TestEachKindOpensWithItsTag(t *testing.T) {
 	for want, lines := range map[string][]string{
-		"nats-hold-v1":        signedrecord.HoldRow(1, "released", "h", time.Unix(0, 0)),
-		"nats-hold-record-v1": signedrecord.Record("h", "done", "hold", 1, []byte(`{}`)),
-		"nats-cutover-v1":     signedrecord.Cutover("session", "done", "h", 1),
+		"nats-hold-v1":               signedrecord.HoldRow(1, "released", "h", time.Unix(0, 0)),
+		"nats-hold-record-v1":        signedrecord.Record("h", "done", "hold", 1, []byte(`{}`)),
+		"nats-hold-record-delete-v1": signedrecord.RecordDelete("h", "cohort", "cohort", 1),
+		"nats-cutover-v1":            signedrecord.Cutover("session", "done", "h", 1),
 	} {
 		if lines[0] != want {
 			t.Errorf("lines open with %q, want %q", lines[0], want)
 		}
+	}
+}
+
+// A record's delete is signed over the record's hold id, kind, key and the gen it deletes, under
+// its own tag: a delete signed over one gen does not verify over another, so an old signature
+// cannot delete a newer record, and a record write's signature does not verify as a delete.
+func TestARecordDeleteIsSignedOverTheGenItDeletes(t *testing.T) {
+	operator, operatorKey := newKey(t)
+	keys := []ed25519.PublicKey{operator}
+	sig := sign(t, operatorKey, signedrecord.RecordDelete("h", "cohort", "cohort", 2))
+	if err := signedrecord.Verify(keys, sig, signedrecord.RecordDelete("h", "cohort", "cohort", 2)); err != nil {
+		t.Fatalf("the delete's own lines: %v", err)
+	}
+	for name, lines := range map[string][]string{
+		"another gen":      signedrecord.RecordDelete("h", "cohort", "cohort", 3),
+		"another key":      signedrecord.RecordDelete("h", "cohort", "other", 2),
+		"another hold id":  signedrecord.RecordDelete("h2", "cohort", "cohort", 2),
+		"a record's write": signedrecord.Record("h", "cohort", "cohort", 2, []byte(`{}`)),
+	} {
+		if err := signedrecord.Verify(keys, sig, lines); !errors.Is(err, signedrecord.ErrBadSignature) {
+			t.Errorf("the delete's signature over %s answered %v, want ErrBadSignature", name, err)
+		}
+	}
+	write := sign(t, operatorKey, signedrecord.Record("h", "cohort", "cohort", 2, []byte(`{}`)))
+	if err := signedrecord.Verify(keys, write, signedrecord.RecordDelete("h", "cohort", "cohort", 2)); !errors.Is(err, signedrecord.ErrBadSignature) {
+		t.Errorf("a record write's signature verified as a delete: %v", err)
 	}
 }
 

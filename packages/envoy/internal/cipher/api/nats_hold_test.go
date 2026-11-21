@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,7 +60,8 @@ var holdServices = strings.Join([]string{
 
 // holdRig is the hold's routes on an httptest server over a migrated schema of the test's own:
 // the pool a test's admin reaches the tables through, the operator's signing key, and the issuer
-// that mints every entry's platform token.
+// that mints every entry's platform token. restart mounts the routes afresh on the same tables,
+// as a broker process that starts again does.
 type holdRig struct {
 	t      *testing.T
 	url    string
@@ -67,6 +69,8 @@ type holdRig struct {
 	key    ed25519.PrivateKey
 	issuer *oidctest.Issuer
 	signer *oidctest.Key
+	deps   api.Deps
+	mux    atomic.Pointer[http.ServeMux]
 }
 
 func newHoldRig(t *testing.T) *holdRig {
@@ -102,14 +106,24 @@ func newHoldRig(t *testing.T) *holdRig {
 			operator = entry
 		}
 	}
-	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{NATSHold: api.NATSHold{
+	rig := &holdRig{t: t, pool: pool, key: private, issuer: issuer, signer: signer, deps: api.Deps{NATSHold: api.NATSHold{
 		Pool: pool, Schema: parsed.Query().Get("search_path"), Keys: []ed25519.PublicKey{public},
 		OperatorToken: tokens.Verify, OperatorAccount: operator.Account, OperatorGoogle: operator.Google,
-	}})
-	server := httptest.NewServer(mux)
+	}}}
+	rig.restart()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { rig.mux.Load().ServeHTTP(w, req) }))
 	t.Cleanup(server.Close)
-	return &holdRig{t: t, url: server.URL, pool: pool, key: private, issuer: issuer, signer: signer}
+	rig.url = server.URL
+	return rig
+}
+
+// restart mounts the hold's routes afresh on the rig's tables, as a broker process that starts
+// again does: everything the routes kept in memory is gone, and every later request is served by
+// the new routes.
+func (r *holdRig) restart() {
+	mux := http.NewServeMux()
+	api.Register(mux, r.deps)
+	r.mux.Store(mux)
 }
 
 // token is account's platform token for the NATS audience, live for ten minutes, as `kubectl
@@ -220,6 +234,26 @@ func (r *holdRig) recordBody(holdID, kind, key string, expected uint64, value st
 		"hold_id": holdID, "kind": kind, "key": key, "value": json.RawMessage(value), "expected_gen": expected,
 		"sig": r.sign(signedrecord.Record(holdID, kind, key, expected+1, []byte(value))),
 	}
+}
+
+// deletePath is DELETE /v1/nats-hold/records' path deleting holdID's record of kind and key at
+// gen, with sig as its signature (none when sig is empty).
+func deletePath(holdID, kind, key string, gen uint64, sig string) string {
+	query := url.Values{"hold_id": {holdID}, "kind": {kind}, "key": {key}, "gen": {strconv.FormatUint(gen, 10)}}
+	if sig != "" {
+		query.Set("sig", sig)
+	}
+	return "/v1/nats-hold/records?" + query.Encode()
+}
+
+// deleteSig is the operator's signature of holdID's record of kind and key deleted at gen.
+func (r *holdRig) deleteSig(holdID, kind, key string, gen uint64) string {
+	return r.sign(signedrecord.RecordDelete(holdID, kind, key, gen))
+}
+
+// signedDelete is deletePath signed over gen.
+func (r *holdRig) signedDelete(holdID, kind, key string, gen uint64) string {
+	return deletePath(holdID, kind, key, gen, r.deleteSig(holdID, kind, key, gen))
 }
 
 // cutoverBody is PUT /v1/nats-hold/cutover's body, signed over holdGen.
@@ -409,14 +443,110 @@ func TestARecordMovesByItsGenAndTheAbortDeletesTheCohortAlone(t *testing.T) {
 	}
 	rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-a", "cohort", "cohort", 0, `{"threshold":3}`)).require(t, "the cohort's insert", http.StatusOK, "")
 
-	rig.do(http.MethodDelete, "/v1/nats-hold/records?hold_id=hold-other&kind=cohort", op, nil).
+	rig.do(http.MethodDelete, rig.signedDelete("hold-other", "cohort", "cohort", 1), op, nil).
 		require(t, "a cohort delete naming another hold id", http.StatusConflict, "hold_mismatch")
-	rig.do(http.MethodDelete, "/v1/nats-hold/records?hold_id=hold-a&kind=done", op, nil).
+	rig.do(http.MethodDelete, rig.signedDelete("hold-a", "done", "hold", 2), op, nil).
 		require(t, "a delete of the journal", http.StatusBadRequest, "bad_request")
-	rig.do(http.MethodDelete, "/v1/nats-hold/records?hold_id=hold-a&kind=cohort", op, nil).require(t, "the cohort's delete", http.StatusNoContent, "")
+	rig.do(http.MethodDelete, rig.signedDelete("hold-a", "cohort", "cohort", 1), op, nil).require(t, "the cohort's delete", http.StatusNoContent, "")
 	if cohorts, journals := rig.count(`select count(*) from nats_hold_records where kind = 'cohort'`),
 		rig.count(`select count(*) from nats_hold_records where kind = 'done'`); cohorts != 0 || journals != 1 {
 		t.Fatalf("after the cohort's delete %d cohort and %d journal records remain, want 0 and 1", cohorts, journals)
+	}
+}
+
+// The cohort's delete, hold abort's from prepare, is signed over the cohort's current gen and runs
+// only while the row is prepare with the delete's hold id. In held it is 409 hold_mismatch; with no
+// signature it is 400 bad_signature; signed over an older gen it is refused, 400 bad_signature when
+// it names the current gen and 409 gen_mismatch when it names the older one; each deletes nothing.
+// Signed over the current gen in prepare, it deletes the cohort. Fails if the route deletes on the
+// operator's token alone, or outside prepare.
+func TestTheCohortDeleteIsSignedAndRunsOnlyInPrepare(t *testing.T) {
+	cohorts := func(rig *holdRig) int {
+		return rig.count(`select count(*) from nats_hold_records where kind = 'cohort'`)
+	}
+	// prepared is a rig whose row is prepare under hold-d, with the cohort written twice: at gen 2.
+	prepared := func(t *testing.T) *holdRig {
+		rig := newHoldRig(t)
+		rig.bootstrap()
+		rig.move(1, "prepare", "hold-d")
+		op := rig.operator()
+		rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-d", "cohort", "cohort", 0, `{"threshold":3}`)).require(t, "the cohort's insert", http.StatusOK, "")
+		rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-d", "cohort", "cohort", 1, `{"threshold":4}`)).require(t, "the cohort's write", http.StatusOK, "")
+		return rig
+	}
+	t.Run("a signed delete in held is refused", func(t *testing.T) {
+		rig := prepared(t)
+		rig.move(2, "held", "hold-d")
+		answer := rig.do(http.MethodDelete, rig.signedDelete("hold-d", "cohort", "cohort", 2), rig.operator(), nil)
+		if answer.status != http.StatusConflict || answer.str("error") != "hold_mismatch" || cohorts(rig) != 1 {
+			t.Errorf("a signed delete in held answered %d %s and left %d cohorts, want 409 hold_mismatch and the cohort", answer.status, answer.body, cohorts(rig))
+		}
+	})
+	t.Run("an unsigned delete is refused", func(t *testing.T) {
+		rig := prepared(t)
+		answer := rig.do(http.MethodDelete, deletePath("hold-d", "cohort", "cohort", 2, ""), rig.operator(), nil)
+		if answer.status != http.StatusBadRequest || answer.str("error") != "bad_signature" || cohorts(rig) != 1 {
+			t.Errorf("an unsigned delete answered %d %s and left %d cohorts, want 400 bad_signature and the cohort", answer.status, answer.body, cohorts(rig))
+		}
+	})
+	t.Run("a delete signed over an older gen is refused", func(t *testing.T) {
+		rig := prepared(t)
+		op := rig.operator()
+		current := rig.do(http.MethodDelete, deletePath("hold-d", "cohort", "cohort", 2, rig.deleteSig("hold-d", "cohort", "cohort", 1)), op, nil)
+		older := rig.do(http.MethodDelete, rig.signedDelete("hold-d", "cohort", "cohort", 1), op, nil)
+		if current.status != http.StatusBadRequest || current.str("error") != "bad_signature" ||
+			older.status != http.StatusConflict || older.str("error") != "gen_mismatch" || cohorts(rig) != 1 {
+			t.Errorf("a delete of gen 2 signed over gen 1 answered %d %s, and one of gen 1 signed over it %d %s, leaving %d cohorts; want 400 bad_signature, 409 gen_mismatch and the cohort",
+				current.status, current.body, older.status, older.body, cohorts(rig))
+		}
+	})
+	t.Run("a delete signed over the current gen in prepare deletes the cohort", func(t *testing.T) {
+		rig := prepared(t)
+		rig.do(http.MethodDelete, rig.signedDelete("hold-d", "cohort", "cohort", 2), rig.operator(), nil).
+			require(t, "the signed delete in prepare", http.StatusNoContent, "")
+		if n := cohorts(rig); n != 0 {
+			t.Fatalf("after the signed delete in prepare %d cohorts remain", n)
+		}
+	})
+}
+
+// A broker process keeps, for each hold record, the highest gen it has written or served, and
+// answers a record below it as unknown, 409 below_floor, never the older record: a database writer
+// who puts an older signed journal back is refused, and a write naming the put-back gen is 409
+// gen_mismatch, since it would store a gen at or below the floor again. A broker that starts again
+// has no floor and serves the older record: the residual the hold's design states, asserted here
+// as such. Fails if the floor goes: the put-back journal is answered 200.
+func TestARecordBelowTheFloorReadsAsUnknown(t *testing.T) {
+	rig := newHoldRig(t)
+	op := rig.operator()
+	rig.bootstrap()
+	rig.move(1, "prepare", "hold-f")
+	rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-f", "done", "hold", 0, `{"ops":[]}`)).require(t, "the journal's insert", http.StatusOK, "")
+	rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-f", "done", "hold", 1, `{"ops":[1]}`)).require(t, "the journal's write at gen 2", http.StatusOK, "")
+	var older, olderSig string
+	if err := rig.pool.QueryRow(context.Background(), `select value::text, sig from nats_hold_records where hold_id = 'hold-f' and kind = 'done'`).Scan(&older, &olderSig); err != nil {
+		t.Fatal(err)
+	}
+	rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-f", "done", "hold", 2, `{"ops":[1,2]}`)).require(t, "the journal's write at gen 3", http.StatusOK, "")
+	if _, err := rig.pool.Exec(context.Background(), `update nats_hold_records set value = $1::jsonb, gen = 2, sig = $2 where hold_id = 'hold-f' and kind = 'done'`, older, olderSig); err != nil {
+		t.Fatal(err)
+	}
+	const journal = "/v1/nats-hold/records?hold_id=hold-f&kind=done"
+	read := rig.do(http.MethodGet, journal, op, nil)
+	write := rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-f", "done", "hold", 2, `{"ops":[1,9]}`))
+	if read.status != http.StatusConflict || read.str("error") != "below_floor" || write.status != http.StatusConflict || write.str("error") != "gen_mismatch" {
+		t.Fatalf("with the signed gen-2 journal put back after gen 3, GET answered %d %s and a write at gen 2 %d %s; want 409 below_floor and 409 gen_mismatch",
+			read.status, read.body, write.status, write.body)
+	}
+	if stored := rig.count(`select gen from nats_hold_records where hold_id = 'hold-f' and kind = 'done'`); stored != 2 {
+		t.Fatalf("the refused write moved the journal to gen %d", stored)
+	}
+	// The residual: a broker process that starts again has no floor, and serves the older journal.
+	rig.restart()
+	again := rig.do(http.MethodGet, journal, op, nil).require(t, "GET the put-back journal after a restart", http.StatusOK, "")
+	var records []map[string]json.RawMessage
+	if err := json.Unmarshal(again.fields["records"], &records); err != nil || len(records) != 1 || string(records[0]["gen"]) != "2" {
+		t.Fatalf("after a restart GET lists %s, want the put-back journal at gen 2 (the stated residual)", again.fields["records"])
 	}
 }
 
@@ -475,7 +605,7 @@ func TestOnlyTheOperatorWritesTheHold(t *testing.T) {
 			{http.MethodPost, "/v1/nats-hold/restore", rig.restoreBody(4, "released", "hold-o")},
 			{http.MethodPut, "/v1/nats-hold/records", rig.recordBody("hold-o", "cohort", "cohort", 1, `{"threshold":9}`)},
 			{http.MethodGet, "/v1/nats-hold/records?hold_id=hold-o&kind=cohort", nil},
-			{http.MethodDelete, "/v1/nats-hold/records?hold_id=hold-o&kind=cohort", nil},
+			{http.MethodDelete, rig.signedDelete("hold-o", "cohort", "cohort", 1), nil},
 			{http.MethodPut, "/v1/nats-hold/cutover", rig.cutoverBody("session", "rolled_back", "hold-o", 3)},
 			{http.MethodGet, "/v1/nats-hold/cutover", nil},
 		} {

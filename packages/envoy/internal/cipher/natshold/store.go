@@ -373,16 +373,25 @@ func (s Store) Records(ctx context.Context, holdID, kind string) ([]Record, erro
 	return out, err
 }
 
-// DeleteCohort deletes holdID's cohort record, for hold abort, which deletes it before it writes
-// released: only while the hold row's hold id is holdID (ErrHoldMismatch otherwise). It deletes
-// no record of another kind, so the journal outlives an abort.
-func (s Store) DeleteCohort(ctx context.Context, holdID string) error {
+// DeleteCohort deletes holdID's cohort record of key at gen, for hold abort from prepare, its one
+// caller, which deletes it before it writes released. It deletes only while the hold row is
+// prepare with holdID (ErrHoldMismatch otherwise), holding the row so no move commits between the
+// check and the delete, and only the record whose gen is gen (ErrGenMismatch otherwise), the gen
+// the route verified the operator's signature over, so an old signature cannot delete a newer
+// record. It deletes no record of another kind, so the journal outlives an abort.
+func (s Store) DeleteCohort(ctx context.Context, holdID, key string, gen uint64) error {
 	return s.in(ctx, pgx.ReadWrite, func(tx pgx.Tx) error {
-		if _, err := s.heldBy(ctx, tx, holdID, ""); err != nil {
+		current, err := s.heldBy(ctx, tx, holdID, string(natsgrant.OperatorPhasePrepare))
+		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `delete from `+s.table("nats_hold_records")+` where hold_id = $1 and kind = $2`, holdID, KindCohort); err != nil {
+		deleted, err := tx.Exec(ctx, `delete from `+s.table("nats_hold_records")+` where hold_id = $1 and kind = $2 and key = $3 and gen = $4`,
+			holdID, KindCohort, key, int64(gen))
+		if err != nil {
 			return fmt.Errorf("natshold: delete the cohort: %w", err)
+		}
+		if deleted.RowsAffected() == 0 {
+			return &Conflict{Err: ErrGenMismatch, Current: &current}
 		}
 		return nil
 	})

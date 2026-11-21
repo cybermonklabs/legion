@@ -42,9 +42,10 @@ var (
 
 // The tags each kind's lines open with.
 const (
-	holdRowTag = "nats-hold-v1"
-	recordTag  = "nats-hold-record-v1"
-	cutoverTag = "nats-cutover-v1"
+	holdRowTag      = "nats-hold-v1"
+	recordTag       = "nats-hold-record-v1"
+	recordDeleteTag = "nats-hold-record-delete-v1"
+	cutoverTag      = "nats-cutover-v1"
 )
 
 // HoldRow is the hold row's lines: its gen, phase, hold id and the time it was signed, which the
@@ -63,6 +64,13 @@ func Record(holdID, kind, key string, gen uint64, value []byte) []string {
 		digest = hex.EncodeToString(sum[:])
 	}
 	return []string{recordTag, holdID, kind, key, strconv.FormatUint(gen, 10), digest}
+}
+
+// RecordDelete is the lines of one hold record's delete: its hold id, kind, key and the gen the
+// delete removes, the record's current one. Signed over that gen, an old delete's signature cannot
+// delete the record once a newer write has moved it.
+func RecordDelete(holdID, kind, key string, gen uint64) []string {
+	return []string{recordDeleteTag, holdID, kind, key, strconv.FormatUint(gen, 10)}
 }
 
 // Cutover is one family's cutover row's lines: the family, its state, the hold id it was written

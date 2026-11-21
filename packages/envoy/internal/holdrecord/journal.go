@@ -108,10 +108,11 @@ const CommandProve = "hold prove"
 // once a command's latest entry is a `stop`, a command that stopped and has not run again since,
 // and refused ErrOutOfOrder ("no command has stopped") otherwise, so it is the way out of a failed
 // command, not a way to end a workflow that is going well. In `hub-restore` it keeps its own
-// rules: a `done` CommandProve entry excludes it. It moves the row to `released` before its
-// `done` entry, which completes the record; its `intent` carries each stop's record of what its
-// command left (Admit). It is refused after completion. From `prepare` it deletes the cohort
-// (DeleteCohort) and moves the row, and writes no entry.
+// rules: a `done` CommandProve entry excludes it, so a census that stops after a done prove is not
+// ended by abort, but by another prove and census, the restore's own way on. It moves the row to
+// `released` before its `done` entry, which completes the record; its `intent` carries each stop's
+// record of what its command left (Admit). It is refused after completion. From `prepare` it
+// deletes the cohort (DeleteCohort) and moves the row, and writes no entry.
 const CommandAbort = "hold abort"
 
 // LeftUnchanged is what a stop records (AppendStopLeft) when its command changed nothing outside
@@ -152,11 +153,13 @@ func Excludes(w Workflow, command string) []string { return current.Excludes(w, 
 // command is Repeatable once in each epoch.
 func Repeatable(w Workflow, command string) bool { return current.Repeatable(w, command) }
 
-// Stoppable reports whether the command writes a `stop` entry when its own check refuses. Each
-// Stoppable command is either needed again later, or leaves nothing that a later step must
-// finish, or, as the buckets commands that fail for good after their intent, records in its stop
-// what it left (AppendStopLeft), so the operator ends the hold with `hold abort`, or with `hold
-// release` when it left nothing changed. `hold release` is Stoppable in every workflow: its disk
+// Stoppable reports whether the command writes a `stop` entry when its own check refuses. Every
+// command of every workflow is Stoppable, since any command's own check can refuse after its intent
+// (a streams update that differs otherwise, a census that cannot read a stream, a restore whose
+// snapshot never arrives), and a command that could not stop would hold its intent pending for
+// good, which ErrBusy would let neither release nor abort end. A command's stop records what it
+// left (AppendStopLeft), and the operator ends the hold with `hold abort`, or with `hold release`
+// when every stop left nothing changed. `hold release` is Stoppable in every workflow too: its disk
 // check in `hub-restore` refuses before its PUT.
 func Stoppable(w Workflow, command string) bool { return current.Stoppable(w, command) }
 

@@ -12,14 +12,17 @@
 // entries in order, and its completion. A command's admission and its `intent` entry are one
 // compare-and-swap write (Admit), so of two processes racing for one admission one is admitted
 // and the other refused, and Decide refuses ErrBusy while another command's intent is pending, so
-// at most one command is past its intent at any time. A command whose own check refuses after its
-// intent writes a `stop` entry (AppendStop, AppendStopLeft), which ends the intent and records what
-// the command left; `hold release` follows only a complete record or one whose stops all left
-// nothing changed (LeftUnchanged), and `hold abort` is every workflow's way out once a command has
-// stopped and no intent is pending, so a command that can never succeed cannot hold the hold. The
+// at most one command is past its intent at any time. Every command is Stoppable: one whose own
+// check refuses after its intent writes a `stop` entry (AppendStop, AppendStopLeft), which ends the
+// intent and records what the command left. `hold release` follows only a complete record or one
+// whose stops all left nothing changed (LeftUnchanged), and `hold abort` is every workflow's way
+// out once a command has stopped and no intent is pending, so a command that can never succeed
+// cannot hold the hold. The one exception is hub-restore's own rule: after a done `hold prove`
+// abort is excluded, so a census that stops there is ended by another prove and census. The
 // workflow table and Decide are the ones model_test.go explores: every workflow from its true
 // start, with crashes between any two writes, two operator processes, restores landing outside the
-// hold, the row lost and restored, and a buckets command that fails for good after its intent.
+// hold, the row lost and restored, and any command of a workflow but hub-restore failing for good
+// after its intent.
 package holdrecord
 
 import (
@@ -87,7 +90,7 @@ type CutoverRow struct {
 }
 
 // RouteError is a route's 400, 403 or 409 answer, with its code: `bad_signature`,
-// `bad_transition`, `not_operator`, `gen_mismatch`, `hold_mismatch` or `row_exists`.
+// `bad_transition`, `not_operator`, `gen_mismatch`, `hold_mismatch`, `row_exists` or `below_floor`.
 type RouteError struct {
 	Status int
 	Code   string
@@ -211,13 +214,18 @@ func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.Ope
 	}
 }
 
-// Records reads and verifies the hold's records of one kind, through `/v1/nats-hold/records`.
+// Records reads and verifies the hold's records of one kind, through `/v1/nats-hold/records`. A
+// record the broker answers below its floor, an older signed record put back, is ErrUnknown.
 func (c *Client) Records(ctx context.Context, holdID, kind string) ([]Record, error) {
 	var answer struct {
 		Records []recordWire `json:"records"`
 	}
 	query := url.Values{"hold_id": {holdID}, "kind": {kind}}
 	if err := c.call(ctx, http.MethodGet, recordsPath, query, nil, &answer); err != nil {
+		var refusal *RouteError
+		if errors.As(err, &refusal) && refusal.Code == codeBelowFloor {
+			return nil, wrap(ErrUnknown, fmt.Sprintf("the broker answers hold %s's %s records below their floor: an older record put back", holdID, kind))
+		}
 		return nil, err
 	}
 	out := make([]Record, 0, len(answer.Records))
@@ -262,7 +270,27 @@ func (c *Client) PutRecord(ctx context.Context, holdID, kind, key string, expect
 
 // DeleteCohort deletes the cohort record, for `hold abort` from `prepare`.
 func (c *Client) DeleteCohort(ctx context.Context, holdID string) error {
-	return c.call(ctx, http.MethodDelete, recordsPath, url.Values{"hold_id": {holdID}, "kind": {"cohort"}}, nil, nil)
+	if len(c.cfg.SigningKey) == 0 {
+		return errNoSigningKey
+	}
+	// The route deletes a record only at the gen its delete is signed over, so each cohort record
+	// is read and verified first, and its delete signed over the gen read: a write between the two
+	// answers gen_mismatch, and the operator runs the abort again.
+	records, err := c.Records(ctx, holdID, cohortKind)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		sig, err := signedrecord.Sign(c.cfg.SigningKey, signedrecord.RecordDelete(holdID, cohortKind, record.Key, record.Gen))
+		if err != nil {
+			return fmt.Errorf("holdrecord: sign the delete of hold %s's cohort record %s: %w", holdID, record.Key, err)
+		}
+		query := url.Values{"hold_id": {holdID}, "kind": {cohortKind}, "key": {record.Key}, "gen": {strconv.FormatUint(record.Gen, 10)}, "sig": {sig}}
+		if err := c.call(ctx, http.MethodDelete, recordsPath, query, nil, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Cutovers reads and verifies every family's cutover row, through `/v1/nats-hold/cutover`.
@@ -387,11 +415,15 @@ func (c *Client) Admit(ctx context.Context, holdID string, req Request, inputs m
 // pass, by a PutRecord at the record's `gen`. It returns ErrNoIntent unless the command's latest
 // entry is its `intent`. When Final holds for the record's workflow and the command, the same
 // write sets `complete` to true, with `hold_gen` the row's current `gen`, so a final command's
-// `done` entry and the completion are one write. `hold release` prints `hold_gen` and does not
-// compare it with the row's `gen`.
+// `done` entry and the completion are one write. Every other command's `done` entry sets it to
+// false, but `hold release`'s, which keeps it, as its intent did: the hold ended as the record
+// stood. `hold release` prints `hold_gen` and does not compare it with the row's `gen`.
 func (c *Client) AppendDone(ctx context.Context, holdID, command string, outputs map[string]string) error {
 	return c.appendEntry(ctx, holdID, command, func(d *Done) error {
 		d.Ops = append(d.Ops, Operation{Command: command, State: stateDone, Outputs: outputs})
+		if command == CommandRelease {
+			return nil
+		}
 		d.Complete = false
 		if Final(d.Workflow, command) {
 			row, err := c.Row(ctx)
@@ -462,7 +494,9 @@ const (
 	cutoverPath      = "/v1/nats-hold/cutover"
 	journalKind      = "done"
 	journalKey       = "hold"
+	cohortKind       = "cohort"
 	codeGenMismatch  = "gen_mismatch"
+	codeBelowFloor   = "below_floor"
 	maxJournalWrites = 16
 	// maxAnswer bounds the answer body the client reads: the largest is a hold's records of one
 	// kind, a journal of some hundreds of entries.

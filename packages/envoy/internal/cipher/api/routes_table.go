@@ -582,14 +582,17 @@ func routes() []apiRoute {
 		// conversion's saved set, its journal or its selection-recovery inputs, signed over the
 		// gen it will store. expected_gen 0 inserts a record that is not there, and any other gen
 		// updates the record that holds it, one above; a record moved since is 409 gen_mismatch,
-		// and a hold id other than the row's 409 hold_mismatch.
+		// and so is a write storing a gen at or below the record's floor (recordFloors), and a hold
+		// id other than the row's 409 hold_mismatch.
 		{http.MethodPut, "/v1/nats-hold/records", operatorAuth((*server).putNATSHoldRecord)},
 		// List one hold's records of one kind (?hold_id= and ?kind=), each with its gen, when it
-		// was stored and its signature.
+		// was stored and its signature; a record below its floor is 409 below_floor.
 		{http.MethodGet, "/v1/nats-hold/records", operatorAuth((*server).readNATSHoldRecords)},
-		// Delete the cohort record of the hold the row names (?hold_id= and ?kind=cohort), for hold
-		// abort, which deletes it before it writes released; no other kind is deleted, so the
-		// journal outlives an abort.
+		// Delete the cohort record of the hold the row names (?hold_id=, ?kind=cohort, ?key=,
+		// ?gen=, ?sig=), for hold abort from prepare, which deletes it before it writes released:
+		// signed over the record's current gen (400 bad_signature otherwise), only while the row
+		// is prepare with that hold id (409 hold_mismatch otherwise), and only at that gen (409
+		// gen_mismatch otherwise). No other kind is deleted, so the journal outlives an abort.
 		{http.MethodDelete, "/v1/nats-hold/records", operatorAuth((*server).deleteNATSHoldCohort)},
 		// Write one family's cutover row, done by the hold's conversion or rolled_back by its
 		// rollback, with hold_gen the hold row's current gen, only while the row is held with the

@@ -45,7 +45,8 @@ type Broker struct {
 	SigningKey ed25519.PrivateKey
 	VerifyKey  ed25519.PublicKey
 
-	routes       http.Handler
+	deps         api.Deps
+	routes       atomic.Pointer[http.ServeMux]
 	hook         atomic.Pointer[func(http.ResponseWriter, *http.Request) bool]
 	recordWrites atomic.Int64
 }
@@ -71,8 +72,7 @@ func Start(t testing.TB) *Broker {
 	if err != nil {
 		t.Fatalf("holdrecordtest: generate the hold signing key: %v", err)
 	}
-	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{
+	b := &Broker{Pool: pool, SigningKey: key, VerifyKey: pub, deps: api.Deps{
 		AccountLimit: &ratelimit.Limit{Every: time.Microsecond, Burst: 1 << 20},
 		NATSHold: api.NATSHold{
 			Pool:            pool,
@@ -81,8 +81,8 @@ func Start(t testing.TB) *Broker {
 			OperatorToken:   verifyOperatorToken,
 			OperatorAccount: OperatorAccount,
 		},
-	})
-	b := &Broker{Pool: pool, SigningKey: key, VerifyKey: pub, routes: mux}
+	}}
+	b.Restart()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodPut && req.URL.Path == "/v1/nats-hold/records" {
 			b.recordWrites.Add(1)
@@ -90,11 +90,20 @@ func Start(t testing.TB) *Broker {
 		if hook := b.hook.Load(); hook != nil && (*hook)(w, req) {
 			return
 		}
-		mux.ServeHTTP(w, req)
+		b.routes.Load().ServeHTTP(w, req)
 	}))
 	t.Cleanup(srv.Close)
 	b.URL = srv.URL
 	return b
+}
+
+// Restart mounts the hold's routes afresh on the same tables, as a broker process that starts
+// again does: what the routes kept in memory, each record's floor among it, is gone, and every
+// later request is served by the new routes at the same URL.
+func (b *Broker) Restart() {
+	mux := http.NewServeMux()
+	api.Register(mux, b.deps)
+	b.routes.Store(mux)
 }
 
 // verifyOperatorToken is the routes' platform-token verifier: OperatorToken is the operator
@@ -141,7 +150,7 @@ func (b *Broker) Intercept(hook func(http.ResponseWriter, *http.Request) bool) {
 }
 
 // Routes are the hold's routes without the hook, for a hook that serves a request itself.
-func (b *Broker) Routes() http.Handler { return b.routes }
+func (b *Broker) Routes() http.Handler { return b.routes.Load() }
 
 // RecordWrites is how many PUTs of /v1/nats-hold/records b was sent, refused ones included.
 func (b *Broker) RecordWrites() int64 { return b.recordWrites.Load() }

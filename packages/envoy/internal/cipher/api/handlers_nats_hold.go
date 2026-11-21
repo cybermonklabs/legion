@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -120,7 +122,7 @@ func holdRowAnswer(row natshold.Row) holdRow {
 // operator's client read it, and what was refused, with the hold row it was refused against.
 type holdRefusal struct {
 	// The refusal's code: bad_request, too_large, bad_signature, bad_transition, not_operator,
-	// no_row, gen_mismatch, hold_mismatch or row_exists.
+	// no_row, gen_mismatch, hold_mismatch, row_exists or below_floor.
 	Error string `json:"error"`
 	// What was refused.
 	Message string `json:"message"`
@@ -366,6 +368,11 @@ func (s *server) putNATSHoldRecord(w http.ResponseWriter, r *http.Request, _ str
 		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the record at the gen it would store", nil)
 		return
 	}
+	floorKey := recordFloorKey{holdID: body.HoldID, kind: body.Kind, key: body.Key}
+	if floor, above := s.holdFloors.above(floorKey, gen); !above {
+		writeHoldRefusal(w, http.StatusConflict, "gen_mismatch", fmt.Sprintf("this broker has written or served the record at gen %d, so a write storing gen %d is a replay", floor, gen), nil)
+		return
+	}
 	stored, err := s.holdStore().PutRecord(r.Context(), natshold.Record{
 		HoldID: body.HoldID, Kind: body.Kind, Key: body.Key, Value: body.Value, Sig: body.Sig,
 	}, uint64(body.ExpectedGen))
@@ -385,6 +392,7 @@ func (s *server) putNATSHoldRecord(w http.ResponseWriter, r *http.Request, _ str
 		writeInternal(w, "write the hold record", err)
 		return
 	}
+	s.holdFloors.raise(floorKey, stored.Gen)
 	writeJSON(w, http.StatusOK, holdRecord{
 		HoldID: stored.HoldID, Kind: stored.Kind, Key: stored.Key, Value: stored.Value, Gen: int64(stored.Gen),
 		WrittenAt: stored.WrittenAt.UTC().Format(time.RFC3339Nano), Sig: stored.Sig,
@@ -411,17 +419,32 @@ type holdRecords struct {
 	Records []holdRecordEntry `json:"records"`
 }
 
-// readNATSHoldRecords lists one hold's records of one kind.
+// readNATSHoldRecords lists one hold's records of one kind, none below its floor (recordFloors):
+// a record below it is 409 below_floor, which the operator's client reads as unknown. A read that
+// meets the floor is made once more first, since a write that committed while it read moves the
+// floor past what it read; an older record put back meets it again.
 func (s *server) readNATSHoldRecords(w http.ResponseWriter, r *http.Request, _ string) {
 	holdID, kind := r.URL.Query().Get("hold_id"), r.URL.Query().Get("kind")
 	if holdID == "" || !natshold.RecordKind(kind) {
 		writeHoldRefusal(w, http.StatusBadRequest, "bad_request", "the query names hold_id and a kind: cohort, convert, done or selection", nil)
 		return
 	}
-	records, err := s.holdStore().Records(r.Context(), holdID, kind)
-	if err != nil {
-		writeUnavailable(w, "DATABASE_UNAVAILABLE", "read the hold records", err)
-		return
+	var records []natshold.Record
+	for attempt := 1; ; attempt++ {
+		var err error
+		records, err = s.holdStore().Records(r.Context(), holdID, kind)
+		if err != nil {
+			writeUnavailable(w, "DATABASE_UNAVAILABLE", "read the hold records", err)
+			return
+		}
+		below, floor, served := s.holdFloors.serve(holdID, kind, records)
+		if served {
+			break
+		}
+		if attempt == 2 {
+			writeHoldRefusal(w, http.StatusConflict, "below_floor", fmt.Sprintf("the %s record %s of hold %s is at gen %d, below gen %d, which this broker has written or served: an older record put back, which reads as unknown", kind, below.Key, holdID, below.Gen, floor), nil)
+			return
+		}
 	}
 	answer := holdRecords{Records: []holdRecordEntry{}}
 	for _, rec := range records {
@@ -432,14 +455,78 @@ func (s *server) readNATSHoldRecords(w http.ResponseWriter, r *http.Request, _ s
 	writeJSON(w, http.StatusOK, answer)
 }
 
-// deleteNATSHoldCohort deletes the hold row's hold's cohort, for hold abort.
+// recordFloors is a broker process's floor of each hold record: the highest gen of it the routes
+// have written, deleted or served. A database writer other than the operator cannot write a
+// record that verifies, but can put back an older one the operator signed, which does: the floor
+// answers it as unknown (GET's 409 below_floor) and refuses a write that would store a gen at or
+// below it again (409 gen_mismatch), so the operator's commands never act on a journal a command
+// has moved past.
+//
+// The floor lives as long as the process, as the auth service's floor of the hold row does
+// (natscallout's holdView): a broker that starts again, or a replica that has not yet written or
+// served a record, has no floor for it and serves an older signed record put back. That is the
+// residual the hold's design states for the row, here for the records too. Cutover rows carry no
+// gen of their own, so the routes keep no floor for them: an older signed cutover row put back
+// reads as genuine, before a restart and after it, the same residual. Safe for concurrent use.
+type recordFloors struct {
+	mu   sync.Mutex
+	gens map[recordFloorKey]uint64
+}
+
+// recordFloorKey names one hold record.
+type recordFloorKey struct{ holdID, kind, key string }
+
+func newRecordFloors() *recordFloors { return &recordFloors{gens: map[recordFloorKey]uint64{}} }
+
+// above answers the record's floor (0 for none), and whether gen, the gen a write would store, is
+// above it.
+func (f *recordFloors) above(k recordFloorKey, gen uint64) (uint64, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gens[k], gen > f.gens[k]
+}
+
+// raise moves the record's floor up to gen, a gen the routes stored or deleted.
+func (f *recordFloors) raise(k recordFloorKey, gen uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gens[k] = max(f.gens[k], gen)
+}
+
+// serve raises the floor of every record read to its gen and answers true, or, when one is below
+// its floor, answers that record and its floor and false, raising none.
+func (f *recordFloors) serve(holdID, kind string, records []natshold.Record) (natshold.Record, uint64, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, rec := range records {
+		if floor := f.gens[recordFloorKey{holdID, kind, rec.Key}]; rec.Gen < floor {
+			return rec, floor, false
+		}
+	}
+	for _, rec := range records {
+		f.gens[recordFloorKey{holdID, kind, rec.Key}] = rec.Gen
+	}
+	return natshold.Record{}, 0, true
+}
+
+// deleteNATSHoldCohort deletes the cohort record the query names (?hold_id=, ?kind=cohort, ?key=,
+// ?gen=, ?sig=), for hold abort from prepare, its one caller: once the operator's signature over
+// the record's delete at that gen verifies (signedrecord.RecordDelete), only while the row is
+// prepare with that hold id, and only the record at that gen, so neither the operator's token alone
+// nor an old signature deletes a record.
 func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ string) {
-	holdID, kind := r.URL.Query().Get("hold_id"), r.URL.Query().Get("kind")
-	if holdID == "" || kind != natshold.KindCohort {
-		writeHoldRefusal(w, http.StatusBadRequest, "bad_request", "the query names hold_id and kind=cohort, the one kind of record a delete takes", nil)
+	query := r.URL.Query()
+	holdID, kind, key := query.Get("hold_id"), query.Get("kind"), query.Get("key")
+	gen, err := strconv.ParseUint(query.Get("gen"), 10, 63)
+	if holdID == "" || kind != natshold.KindCohort || key == "" || err != nil || gen == 0 {
+		writeHoldRefusal(w, http.StatusBadRequest, "bad_request", "the query names hold_id, kind=cohort, the one kind of record a delete takes, its key, the gen it deletes (at least 1) and the sig over them", nil)
 		return
 	}
-	err := s.holdStore().DeleteCohort(r.Context(), holdID)
+	if err := signedrecord.Verify(s.deps.NATSHold.Keys, query.Get("sig"), signedrecord.RecordDelete(holdID, kind, key, gen)); err != nil {
+		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the record's delete at the gen it names", nil)
+		return
+	}
+	err = s.holdStore().DeleteCohort(r.Context(), holdID, key, gen)
 	var conflict *natshold.Conflict
 	switch {
 	case err == nil:
@@ -447,12 +534,17 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "delete the cohort", err)
 		return
 	case errors.Is(err, natshold.ErrHoldMismatch):
-		writeHoldRefusal(w, http.StatusConflict, "hold_mismatch", err.Error(), conflict)
+		writeHoldRefusal(w, http.StatusConflict, "hold_mismatch", err.Error()+": the cohort is deleted only while the row is prepare with its hold id", conflict)
+		return
+	case errors.Is(err, natshold.ErrGenMismatch):
+		writeHoldRefusal(w, http.StatusConflict, "gen_mismatch", err.Error(), conflict)
 		return
 	default:
 		writeInternal(w, "delete the cohort", err)
 		return
 	}
+	// The floor stays at the deleted gen, so a write putting an older signed cohort back is refused.
+	s.holdFloors.raise(recordFloorKey{holdID: holdID, kind: kind, key: key}, gen)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -4,9 +4,12 @@ body: |-
   entry of the new kind `operator` (`operator/-/*=<account>`, listed once, with no machine id and
   the whole grant), which connects as user `service` with its ServiceAccount token and the inbox
   prefix `_INBOX_envoy_operator`, and is placed in `$G` like every other client. Its grant follows
-  the NATS writer hold's phase (`natsgrant.Operator`): outside a hold, the stream infos, the copied
-  buckets' backups and the create of an absent `ENVOY_MEASURE`; while a hold is prepared, also the
-  consumer threshold raise; while a hold is set, the whole list the hold's commands need. Its user
+  the NATS writer hold's phase (`natsgrant.Operator`): outside a hold, reads alone (the stream and
+  consumer infos, and a stored-message walk of the session consumers' records, which
+  `kvrecords.Write` keeps as a records-only copy); while a hold is prepared, also the consumer
+  threshold raise; while a hold is set, the whole list the hold's commands need, the copied buckets'
+  snapshots and the create of `ENVOY_MEASURE` included, since a snapshot's delivery subject and a
+  stream's republish are the caller's choice. Its user
   expires at most ten minutes after the decision. A second new kind, `probe`
   (`probe/-/*=<account>`), is the hold's probe, granted publish and subscribe of
   `_ENVOY_HOLD_PROBE.none` alone. The hold's row, its records and each family's cutover row live in

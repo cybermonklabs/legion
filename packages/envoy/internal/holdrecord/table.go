@@ -30,16 +30,40 @@ type rules struct {
 	// entry is a stop and no intent is pending, so a command that fails for good after its intent
 	// cannot hold the hold.
 	WayOut bool
+	// EveryCommandStoppable: every command of every workflow is Stoppable, not the buckets
+	// commands alone, since any command's own check can refuse after its intent (a streams update
+	// that differs otherwise, a census that cannot read a stream), and a command that cannot stop
+	// holds its intent pending for good: ErrBusy then refuses release and abort alike.
+	EveryCommandStoppable bool
+	// EndIsFinal: a done hold release or hold abort ends the journal, and Decide refuses every
+	// command after it. Admit reads the row before the journal, so a process can read the row
+	// held and another end the hold before its journal read; this rule makes that process's
+	// decision a refusal, and the journal's compare-and-swap refuses a write decided before it.
+	EndIsFinal bool
+	// BackupCommand: `envoy-infra buckets backup`, a snapshot of each copied bucket, runs under a
+	// hold, as the first command of buckets-recreate and buckets-restore, Repeatable. The recreate,
+	// which deletes the bucket, requires its done entry, so a recreate always follows a backup of
+	// the bucket taken in its own hold; the restore does not, since a lost bucket cannot be backed
+	// up, and it restores from an archive an earlier hold took. Its stop records LeftUnchanged, but
+	// its done entry counts as a change under hold release's rule as every done entry does, so
+	// after a backup the way out of a recreate or restore that stops is hold abort.
+	BackupCommand bool
 }
 
 // currentRules are the hold's rules as its design stands: the frozen model's v62 (every fix, with
-// no account move) and WayOut, added since.
+// no account move) and the rules added since, WayOut, EveryCommandStoppable, EndIsFinal and
+// BackupCommand.
 var currentRules = rules{Name: "v63", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true,
 	AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true, AtomicAdmit: true, Serialize: true,
 	StopEntries: true, SetCommand: true, Step1Whole: true, ExpectedMap: true, ConvertStoppable: true,
-	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true, WayOut: true}
+	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true, WayOut: true, EveryCommandStoppable: true,
+	EndIsFinal: true, BackupCommand: true}
 
 var current = tableFor(currentRules)
+
+// commandBackup is `envoy-infra buckets backup` (BackupCommand). Its stop records LeftUnchanged:
+// it writes only the archive and its manifest, outside the hub.
+const commandBackup = "buckets backup"
 
 type entry struct {
 	name       string
@@ -49,6 +73,15 @@ type entry struct {
 	repeatable bool
 	stoppable  bool
 	epochal    bool
+	// skipsSet is a command that needs no `done` hold set entry: hold abort, which ends a hold
+	// whose hold set stopped as well as any other.
+	skipsSet bool
+	// needsStop is a command admitted only once some command's latest entry is a stop, or its own
+	// intent is pending, a rerun after a crash: hold abort outside hub-restore, the way out of a
+	// failed command and not a way to end a workflow that is going well. The rerun is admitted
+	// since the stop the crashed run followed may have been superseded since (the stopped command
+	// ran again and finished).
+	needsStop bool
 }
 
 // table is one rule set's workflow table and rules.
@@ -81,25 +114,37 @@ func tableFor(r rules) table {
 	hub = append(hub,
 		entry{name: "streams census", requires: []string{CommandProve}, final: true, epochal: r.ProveEpochs, repeatable: r.ProveEpochs,
 			stoppable: stop},
-		entry{name: CommandAbort, excludes: []string{CommandProve}, final: true, stoppable: stop})
+		entry{name: CommandAbort, excludes: []string{CommandProve}, final: true, stoppable: stop, skipsSet: true})
 	buckets := func(name string) []entry { return []entry{{name: name, final: true, stoppable: stop && r.WayOut}} }
+	recreate, restore := buckets("buckets recreate"), buckets("buckets restore")
+	if r.BackupCommand {
+		backup := entry{name: commandBackup, repeatable: true, stoppable: stop && r.WayOut}
+		recreate[0].requires = []string{commandBackup}
+		recreate = append([]entry{backup}, recreate...)
+		restore = append([]entry{backup}, restore...)
+	}
 	rows := map[Workflow][]entry{
 		WorkflowCutover:           cut,
 		WorkflowRollback:          rb,
 		WorkflowSelectionRecovery: sr,
 		WorkflowBucketsCreate:     buckets("buckets create"),
-		// LOCAL ROW (t-10, until #4679's push adds it): `buckets backup`, the held backup, first in
-		// the buckets-recreate and buckets-restore workflows, Repeatable and Stoppable.
-		WorkflowBucketsRecreate: append([]entry{{name: "buckets backup", repeatable: true, stoppable: stop && r.WayOut}}, buckets("buckets recreate")...),
-		WorkflowBucketsRestore:  append([]entry{{name: "buckets backup", repeatable: true, stoppable: stop && r.WayOut}}, buckets("buckets restore")...),
-		WorkflowStreamsUpdate:   {{name: "streams update", final: true}},
-		WorkflowStreamsCensus:   {{name: "streams census", final: true}},
-		WorkflowHubRestore:      hub,
+		WorkflowBucketsRecreate:   recreate,
+		WorkflowBucketsRestore:    restore,
+		WorkflowStreamsUpdate:     {{name: "streams update", final: true}},
+		WorkflowStreamsCensus:     {{name: "streams census", final: true}},
+		WorkflowHubRestore:        hub,
 	}
 	if r.WayOut { // hold abort, every workflow's way out; hub-restore names it already
 		for w := range rows {
 			if w != WorkflowHubRestore {
-				rows[w] = append(rows[w], entry{name: CommandAbort, final: true, stoppable: stop})
+				rows[w] = append(rows[w], entry{name: CommandAbort, final: true, stoppable: stop, skipsSet: true, needsStop: true})
+			}
+		}
+	}
+	if r.EveryCommandStoppable {
+		for _, entries := range rows {
+			for i := range entries {
+				entries[i].stoppable = stop
 			}
 		}
 	}
@@ -176,6 +221,13 @@ type modelRequest struct {
 // Decide is the table's Decide.
 func (t table) Decide(d Done, req modelRequest) error {
 	w, c := d.Workflow, req.Command
+	if t.Rules.EndIsFinal {
+		for _, end := range []string{CommandRelease, CommandAbort} {
+			if hasDone(d.Ops, end) {
+				return wrap(ErrAlreadyDone, "the hold has ended: "+end+" is done")
+			}
+		}
+	}
 	if t.Rules.Serialize {
 		for _, p := range pending(d) {
 			if p != c {
@@ -196,7 +248,7 @@ func (t table) Decide(d Done, req modelRequest) error {
 			}
 			return nil
 		}
-		if !(c == CommandAbort && (w == WorkflowHubRestore || t.Rules.WayOut)) && !hasDone(d.Ops, CommandSet) {
+		if e, ok := t.row(w, c); !(ok && e.skipsSet) && !hasDone(d.Ops, CommandSet) {
 			return wrap(ErrOutOfOrder, CommandSet)
 		}
 	}
@@ -212,10 +264,7 @@ func (t table) Decide(d Done, req modelRequest) error {
 			return wrap(ErrExcluded, x)
 		}
 	}
-	// Outside hub-restore abort is admitted once a command has stopped, and its own rerun after a
-	// crash left its intent pending is admitted too: that intent shows it was admitted, and the
-	// stop it followed may have been superseded since (the stopped command ran again and finished).
-	if c == CommandAbort && w != WorkflowHubRestore && t.Rules.WayOut && !anyStopped(d.Ops) && !slices.Contains(pending(d), c) {
+	if e.needsStop && !anyStopped(d.Ops) && !slices.Contains(pending(d), c) {
 		return wrap(ErrOutOfOrder, "no command has stopped")
 	}
 	for _, q := range e.requires {

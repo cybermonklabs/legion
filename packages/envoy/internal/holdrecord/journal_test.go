@@ -140,6 +140,24 @@ func run(t *testing.T, c *holdrecord.Client, holdID string, req holdrecord.Reque
 
 func cmd(command string) holdrecord.Request { return holdrecord.Request{Command: command} }
 
+// recreateStops runs a buckets-recreate hold's backup and then its recreate until its own check
+// refuses after its change, and writes the recreate's stop recording left.
+func recreateStops(t *testing.T, c *holdrecord.Client, holdID, left string) {
+	t.Helper()
+	ctx := context.Background()
+	run(t, c, holdID, cmd(commandBackup), nil, nil)
+	if _, err := c.Admit(ctx, holdID, cmd("buckets recreate"), nil); err != nil {
+		t.Fatalf("admit buckets recreate: %v", err)
+	}
+	if err := c.AppendStopLeft(ctx, holdID, "buckets recreate", "the create is refused", left); err != nil {
+		t.Fatalf("the recreate's stop: %v", err)
+	}
+}
+
+// commandBackup is `envoy-infra buckets backup`, a held command of the buckets-recreate and
+// buckets-restore workflows; the package names it by this text, and exports no constant for it.
+const commandBackup = "buckets backup"
+
 func journal(t *testing.T, c *holdrecord.Client, holdID string) (holdrecord.Done, uint64) {
 	t.Helper()
 	d, gen, err := c.Journal(context.Background(), holdID)
@@ -173,6 +191,29 @@ var twoDisks = map[string]string{"step1_disk_id.A": "1", "step1_disk_id.B": "2"}
 // answer is verified. Each row runs on a schema of its own.
 func TestTheHoldJournal(t *testing.T) {
 	ctx := context.Background()
+
+	t.Run("DeleteCohort deletes the cohort in prepare and is refused in held", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		current := row(t, c)
+		prepared, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhasePrepare, "h-cohort", "cohort")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.PutRecord(ctx, "h-cohort", "cohort", "cohort", 0, json.RawMessage(`{"threshold":3}`)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.MoveRow(ctx, prepared.Gen, natsgrant.OperatorPhaseHeld, "h-cohort", "cohort"); err != nil {
+			t.Fatal(err)
+		}
+		var refusal *holdrecord.RouteError
+		if err := c.DeleteCohort(ctx, "h-cohort"); !errors.As(err, &refusal) || refusal.Code != "hold_mismatch" {
+			t.Fatalf("DeleteCohort in held answered %v, want 409 hold_mismatch", err)
+		}
+		if records, err := c.Records(ctx, "h-cohort", "cohort"); err != nil || len(records) != 1 {
+			t.Fatalf("after the refused delete the cohort records are %+v, %v; want the one", records, err)
+		}
+	})
 
 	t.Run("the route methods round-trip and verify", func(t *testing.T) {
 		r := newRig(t)
@@ -835,19 +876,19 @@ func TestTheHoldJournal(t *testing.T) {
 		c := r.client(t)
 		for _, s := range []struct {
 			holdID, left string
-		}{{"h-changed", "changed: envoy_roles recreated empty"}, {"h-unrecorded", ""}} {
-			hold(t, c, s.holdID, holdrecord.WorkflowBucketsRecreate, nil)
-			if _, err := c.Admit(ctx, s.holdID, cmd("buckets recreate"), nil); err != nil {
+		}{{"h-changed", "changed: envoy_roles restored in part"}, {"h-unrecorded", ""}} {
+			hold(t, c, s.holdID, holdrecord.WorkflowBucketsRestore, nil)
+			if _, err := c.Admit(ctx, s.holdID, cmd("buckets restore"), nil); err != nil {
 				t.Fatal(err)
 			}
 			var stop error
 			if s.left != "" {
-				stop = c.AppendStopLeft(ctx, s.holdID, "buckets recreate", "the create is refused", s.left)
+				stop = c.AppendStopLeft(ctx, s.holdID, "buckets restore", "the snapshot's chunks never arrive", s.left)
 			} else {
-				stop = c.AppendStop(ctx, s.holdID, "buckets recreate", "the create is refused")
+				stop = c.AppendStop(ctx, s.holdID, "buckets restore", "the snapshot's chunks never arrive")
 			}
 			if stop != nil {
-				t.Fatalf("%s: the recreate's stop: %v", s.holdID, stop)
+				t.Fatalf("%s: the restore's stop: %v", s.holdID, stop)
 			}
 			_, err := c.Admit(ctx, s.holdID, cmd(holdrecord.CommandRelease), nil)
 			refused(t, s.holdID+": hold release after the stop", err, holdrecord.ErrOutOfOrder, "not complete")
@@ -862,6 +903,148 @@ func TestTheHoldJournal(t *testing.T) {
 			if err := c.AppendDone(ctx, s.holdID, holdrecord.CommandAbort, nil); err != nil {
 				t.Fatal(err)
 			}
+		}
+	})
+
+	// envoy-infra buckets backup takes a snapshot of each copied bucket, so it runs under a hold:
+	// the first command of buckets-recreate and buckets-restore, Repeatable, and Stoppable with a
+	// stop that left nothing changed, since it writes only the archive outside the hub. The
+	// recreate, which deletes the bucket, needs the backup's done entry; the restore does not, since
+	// a lost bucket cannot be backed up and restores from an archive an earlier hold took.
+	t.Run("buckets backup runs first in a buckets-recreate hold, again and again, and the recreate needs it", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-backup-recreate", holdrecord.WorkflowBucketsRecreate, nil)
+		run(t, c, "h-backup-recreate", cmd(commandBackup), nil, map[string]string{"archive": "gs://archive/a"})
+		run(t, c, "h-backup-recreate", cmd(commandBackup), nil, map[string]string{"archive": "gs://archive/b"})
+		if _, err := c.Admit(ctx, "h-backup-recreate", cmd(commandBackup), nil); err != nil {
+			t.Fatalf("a third backup: %v", err)
+		}
+		if err := c.AppendStopLeft(ctx, "h-backup-recreate", commandBackup, "a snapshot chunk timed out", holdrecord.LeftUnchanged); err != nil {
+			t.Fatalf("the backup's stop: %v", err)
+		}
+		run(t, c, "h-backup-recreate", cmd("buckets recreate"), nil, nil)
+		if d, _ := journal(t, c, "h-backup-recreate"); !d.Complete {
+			t.Fatal("the recreate after the backups did not complete the record")
+		}
+		release(t, c, "h-backup-recreate")
+		// A second hold: the recreate before any backup is refused, and a backup that stops having
+		// changed nothing leaves a hold that hold release ends.
+		hold(t, c, "h-recreate-first", holdrecord.WorkflowBucketsRecreate, nil)
+		_, err := c.Admit(ctx, "h-recreate-first", cmd("buckets recreate"), nil)
+		refused(t, "the recreate before any backup", err, holdrecord.ErrOutOfOrder, commandBackup)
+		if _, err := c.Admit(ctx, "h-recreate-first", cmd(commandBackup), nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendStopLeft(ctx, "h-recreate-first", commandBackup, "the bucket's stream cannot be read", holdrecord.LeftUnchanged); err != nil {
+			t.Fatal(err)
+		}
+		release(t, c, "h-recreate-first")
+	})
+
+	t.Run("buckets backup runs in a buckets-restore hold, again and again, and the restore runs with or without it", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-backup-restore", holdrecord.WorkflowBucketsRestore, nil)
+		run(t, c, "h-backup-restore", cmd(commandBackup), nil, nil)
+		run(t, c, "h-backup-restore", cmd(commandBackup), nil, nil)
+		if _, err := c.Admit(ctx, "h-backup-restore", cmd(commandBackup), nil); err != nil {
+			t.Fatalf("a third backup: %v", err)
+		}
+		if err := c.AppendStopLeft(ctx, "h-backup-restore", commandBackup, "a snapshot chunk timed out", holdrecord.LeftUnchanged); err != nil {
+			t.Fatalf("the backup's stop: %v", err)
+		}
+		run(t, c, "h-backup-restore", cmd("buckets restore"), nil, nil)
+		if d, _ := journal(t, c, "h-backup-restore"); !d.Complete {
+			t.Fatal("the restore after the backups did not complete the record")
+		}
+		release(t, c, "h-backup-restore")
+		hold(t, c, "h-restore-alone", holdrecord.WorkflowBucketsRestore, nil)
+		run(t, c, "h-restore-alone", cmd("buckets restore"), nil, nil)
+		release(t, c, "h-restore-alone")
+	})
+
+	// The broker's floor of each record: an older signed journal a database writer puts back reads
+	// as unknown, so Admit fails closed, and hold release is not admitted over a command that
+	// changed data. A broker that starts again has no floor: the stated residual.
+	t.Run("a replayed older journal is unknown, so hold release is refused after a command changed data", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-replay", holdrecord.WorkflowBucketsRecreate, nil)
+		var older, olderSig string
+		var olderGen int64
+		if err := r.Pool.QueryRow(ctx, `select value::text, gen, sig from nats_hold_records where hold_id = 'h-replay' and kind = 'done'`).Scan(&older, &olderGen, &olderSig); err != nil {
+			t.Fatal(err)
+		}
+		recreateStops(t, c, "h-replay", "envoy_sessions deleted")
+		_, err := c.Admit(ctx, "h-replay", cmd(holdrecord.CommandRelease), nil)
+		refused(t, "hold release after the recreate's stop", err, holdrecord.ErrOutOfOrder, "not complete")
+		// A database writer puts back the earlier signed journal: hold set's entries alone.
+		if _, err := r.Pool.Exec(ctx, `update nats_hold_records set value = $1::jsonb, gen = $2, sig = $3 where hold_id = 'h-replay' and kind = 'done'`, older, olderGen, olderSig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Admit(ctx, "h-replay", cmd(holdrecord.CommandRelease), nil); !errors.Is(err, holdrecord.ErrUnknown) {
+			t.Fatalf("hold release over the put-back gen-%d journal answered %v, want ErrUnknown", olderGen, err)
+		}
+		// The residual: a broker process that starts again has no floor, and admits the release.
+		r.Restart()
+		if _, err := c.Admit(ctx, "h-replay", cmd(holdrecord.CommandRelease), nil); err != nil {
+			t.Fatalf("after a restart hold release over the put-back journal answered %v; the stated residual is that it is admitted", err)
+		}
+	})
+
+	// Admit reads the row before the journal, so a process can read the row held, and another end
+	// the hold before it reads the journal: the journal's done release ends it, and Decide refuses
+	// the command, so no intent is written after the hold ended. Release's done keeps the record's
+	// completion.
+	t.Run("a command whose row read came before another process's release is refused", func(t *testing.T) {
+		r := newRig(t)
+		a, b := r.client(t), r.client(t)
+		hold(t, a, "h-ended", holdrecord.WorkflowSelectionRecovery, nil)
+		run(t, a, "h-ended", cmd("create-bucket --after-loss"), nil, nil)
+		journalRead := func(req *http.Request) bool {
+			return req.Method == http.MethodGet && req.URL.Path == "/v1/nats-hold/records" && req.URL.Query().Get("kind") == "done"
+		}
+		fired := r.once(journalRead, func(http.ResponseWriter, *http.Request) bool {
+			release(t, a, "h-ended") // between b's row read and its journal read
+			return false
+		})
+		_, err := b.Admit(ctx, "h-ended", cmd("replay"), nil)
+		if !fired.Load() {
+			t.Fatal("the release between the row read and the journal read did not run")
+		}
+		refused(t, "replay admitted after another process's release", err, holdrecord.ErrAlreadyDone, "the hold has ended")
+		d, _ := journal(t, a, "h-ended")
+		if e := last(t, d); e.Command != holdrecord.CommandRelease || e.State != "done" || !d.Complete {
+			t.Fatalf("after the release the journal ends %+v with complete %v, want release's done and the completion kept", e, d.Complete)
+		}
+	})
+
+	// Not only the buckets commands: every command whose own check can refuse after its intent
+	// stops, recording what it left, and hold abort then ends the hold.
+	t.Run("a streams update that fails for good stops, and hold abort ends the hold", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-update", holdrecord.WorkflowStreamsUpdate, nil)
+		if _, err := c.Admit(ctx, "h-update", cmd("streams update"), nil); err != nil {
+			t.Fatal(err)
+		}
+		const left = "changed: ENVOY_NOTIFICATIONS replicas 3, KV_envoy_roles not updated"
+		if err := c.AppendStopLeft(ctx, "h-update", "streams update", "KV_envoy_roles differs otherwise", left); err != nil {
+			t.Fatalf("the update's stop: %v", err)
+		}
+		if _, err := c.Admit(ctx, "h-update", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("hold abort after the update's stop: %v", err)
+		}
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, "h-update", "aborted"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendDone(ctx, "h-update", holdrecord.CommandAbort, nil); err != nil {
+			t.Fatal(err)
+		}
+		if d, _ := journal(t, c, "h-update"); !d.Complete {
+			t.Fatal("hold abort's done entry did not complete the record")
 		}
 	})
 
