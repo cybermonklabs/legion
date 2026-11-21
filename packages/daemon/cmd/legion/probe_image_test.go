@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
@@ -407,6 +408,62 @@ func TestProbeImageProbesAnOmpWhosePathHoldsAShellCharacter(t *testing.T) {
 			})
 		}
 	}
+
+	// The two other boundaries that run the OMP path: the image's TLS "omp" client, built as the
+	// probe builds it (tlsClientSpec.build, here among stand-ins for the other clients), and the
+	// role overlay read (--role-config-files, capabilities.CheckOverlays). Under a directory whose
+	// name holds a space, a quote and a '?', the omp answers the TLS client's `--eval` as a client
+	// refusing the compromised chains and reaching the control, marking that it ran, and hands
+	// every other call to the stand-in omp; the role's overlay sits in the same directory.
+	t.Run("the TLS omp client and the role overlays under x y'q?x", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "x y'q?x")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		omp, ran, overlay := filepath.Join(dir, "omp"), filepath.Join(dir, "tls-omp-ran"), filepath.Join(dir, "implementer.yml")
+		script := "#!/bin/sh\n" +
+			"if [ \"$1\" = --eval ]; then\n" +
+			"  : >" + shellprefix.Literal(ran) + "\n" +
+			"  [ \"$LEGION_TLS_URL\" != " + shellprefix.Literal(controlTLSSite.url) + " ] || exit 0\n" +
+			"  echo 'certificate verify failed' >&2\n  exit 1\nfi\n" +
+			"exec " + shellprefix.Literal(imageOmp(t)) + " \"$@\"\n"
+		if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(overlay, []byte("retry:\n  modelFallback: true\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		seen := filepath.Join(t.TempDir(), "seen")
+		t.Setenv("LEGION_TEST_SEEN", seen)
+		realOmpClient := func(invocation string, env []string, stateDir string) []tlsClient {
+			clients := passingImageTLSClients(invocation, env, stateDir)
+			for index, spec := range workerTLSClients {
+				if spec.name == "omp" {
+					clients[index] = spec.build(invocation, env, stateDir)
+				}
+			}
+			return clients
+		}
+
+		code, stdout, stderr := probeImageWith(realOmpClient, passingTLSPositiveControls,
+			inImage(t, thisBinarysContract, "/nonexistent/omp").flags("--omp", omp, "--pod-safety", "--role-config-files", "implementer="+overlay)...)
+
+		if code != 0 || !strings.Contains(stdout, "\nprobe-image: OK ("+omp+") ") {
+			t.Fatalf("probe-image with the omp at %s, its TLS client and its overlay = %d %q %q, want the OK line naming it", omp, code, stdout, stderr)
+		}
+		if _, err := os.Stat(ran); err != nil {
+			t.Errorf("the TLS omp client never ran the omp at %s: %v", omp, err)
+		}
+		raw, err := os.ReadFile(seen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// With no PI_CONFIG_FILES of the operator's, the role's whole list is its one file, so Oh My
+		// Pi reads it twice: alone, and as the whole list.
+		if got := len(regexp.MustCompile(`(?m)^`+regexp.QuoteMeta(overlay)+` written file$`).FindAllString(string(raw), -1)); got != 2 {
+			t.Errorf("Oh My Pi ran %d times on the implementer's overlay %s, want twice (alone and as the whole list): %q", got, overlay, raw)
+		}
+	})
 }
 
 // The image build's probe, which has none of the operator's model configuration, skips the agents'
