@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  An `envoy-dispatch` intake no longer lets a hand-back of a message reach the durable a standby recreated, in two cases that could have the standby's consumer deliver a message a second time. A subscription callback that was handing a message back as the intake's stop unsubscribed is now either counted before the stop decides to release its hold, which then waits for that hand-back, or it hands nothing back: once the stop has ended, no hand-back of that subscription begins. A hand-back still waiting for NATS when the intake's hold is lost, as when its renewals fail because the database is out of reach, no longer goes out when the link recovers: the intake severs its NATS connection before the hold lapses, resetting the socket so neither the waiting publish nor what the kernel had not sent reaches the server, and the bus client dials a new connection. The message stays with the durable, and the standby's take-over is handed it once.
+  An intake's stop under a deadline that has already passed now takes the messages waiting behind a running handler before it gives the handlers up, so such a message no longer starts its handler under the cancelled context, where the stop withheld its hand-back: the stop holds it and hands it back once its drain has answered.
+time: 2026-11-21T10:09:50Z
+custom:
+  Issue: envoy-hand-back-counted-before-release
