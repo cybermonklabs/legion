@@ -1,0 +1,111 @@
+{
+  "run_at": "1970-01-01T00:00:00Z",
+  "findings": [
+    {
+      "principal": "serviceAccount:ci-runner@example-project.iam.gserviceaccount.com",
+      "right": "container.serviceAccounts.createToken, container.clusters.impersonate, container.roles.escalate, container.roles.bind, container.clusterRoles.escalate, container.clusterRoles.bind, container.roleBindings.create, container.roleBindings.update, container.clusterRoleBindings.create, container.clusterRoleBindings.update, container.pods.exec, container.pods.attach, container.pods.portForward, container.pods.create, container.pods.update, container.deployments.create, container.deployments.update, container.replicaSets.create, container.replicaSets.update, container.statefulSets.create, container.statefulSets.update, container.daemonSets.create, container.daemonSets.update, container.jobs.create, container.jobs.update, container.cronJobs.create, container.cronJobs.update, container.secrets.get, container.secrets.list, container.namespaces.create, container.serviceAccounts.create on //cloudresourcemanager.googleapis.com/projects/example-project through roles/container.admin, granted at //cloudresourcemanager.googleapis.com/projects/example-project",
+      "role": "roles/container.admin",
+      "resource": "//cloudresourcemanager.googleapis.com/projects/example-project",
+      "permissions": [
+        "container.serviceAccounts.createToken",
+        "container.clusters.impersonate",
+        "container.roles.escalate",
+        "container.roles.bind",
+        "container.clusterRoles.escalate",
+        "container.clusterRoles.bind",
+        "container.roleBindings.create",
+        "container.roleBindings.update",
+        "container.clusterRoleBindings.create",
+        "container.clusterRoleBindings.update",
+        "container.pods.exec",
+        "container.pods.attach",
+        "container.pods.portForward",
+        "container.pods.create",
+        "container.pods.update",
+        "container.deployments.create",
+        "container.deployments.update",
+        "container.replicaSets.create",
+        "container.replicaSets.update",
+        "container.statefulSets.create",
+        "container.statefulSets.update",
+        "container.daemonSets.create",
+        "container.daemonSets.update",
+        "container.jobs.create",
+        "container.jobs.update",
+        "container.cronJobs.create",
+        "container.cronJobs.update",
+        "container.secrets.get",
+        "container.secrets.list",
+        "container.namespaces.create",
+        "container.serviceAccounts.create"
+      ],
+      "granted_at": "//cloudresourcemanager.googleapis.com/projects/example-project"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
+      "role": "create namespaces cluster-wide",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create namespaces cluster-wide"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create serviceaccounts in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods in envoy-operator, guarding envoy-operator/envoy-operator on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods in envoy-operator, guarding envoy-operator/envoy-operator",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods in envoy-operator, guarding envoy-operator/envoy-operator"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create serviceaccounts in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "create serviceaccounts in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create serviceaccounts in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
+      "right": "create pods in envoy-route, guarding envoy-route/envoy-route-password-reader on cluster example-grade/us-east1/grade-cluster",
+      "role": "create pods in envoy-route, guarding envoy-route/envoy-route-password-reader",
+      "resource": "cluster:example-grade/us-east1/grade-cluster",
+      "permissions": [
+        "create pods in envoy-route, guarding envoy-route/envoy-route-password-reader"
+      ],
+      "granted_at": "RBAC: allowed by a planted binding"
+    },
+    {
+      "principal": "serviceAccount:ci-runner@example-project.iam.gserviceaccount.com",
+      "right": "container.secrets.get on //cloudresourcemanager.googleapis.com/projects/example-project through roles/container.admin, granted at //cloudresourcemanager.googleapis.com/projects/example-project",
+      "role": "roles/container.admin",
+      "resource": "//cloudresourcemanager.googleapis.com/projects/example-project",
+      "permissions": [
+        "container.secrets.get"
+      ],
+      "granted_at": "//cloudresourcemanager.googleapis.com/projects/example-project"
+    }
+  ],
+  "unknown": [
+    {
+      "step": "admin tag of ENVOY_OPERATOR",
+      "reason": "agent-secrets secret show ENVOY_OPERATOR --json was refused: agent-secrets secret show: Secret Manager GetSecret answered PermissionDenied (missing permission: secretmanager.secrets.get; its message is not printed); looked in GCP Secret Manager project 123456789012"
+    }
+  ]
+}

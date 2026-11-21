@@ -12,9 +12,14 @@
 // entries in order, and its completion. A command's admission and its `intent` entry are one
 // compare-and-swap write (Admit), so of two processes racing for one admission one is admitted
 // and the other refused, and Decide refuses ErrBusy while another command's intent is pending, so
-// at most one command is past its intent at any time. The workflow table and Decide are the ones
-// model_test.go explores: every workflow from its true start, with crashes between any two writes,
-// two operator processes, restores landing outside the hold and the row lost and restored.
+// at most one command is past its intent at any time. A command whose own check refuses after its
+// intent writes a `stop` entry (AppendStop, AppendStopLeft), which ends the intent and records what
+// the command left; `hold release` follows only a complete record or one whose stops all left
+// nothing changed (LeftUnchanged), and `hold abort` is every workflow's way out once a command has
+// stopped and no intent is pending, so a command that can never succeed cannot hold the hold. The
+// workflow table and Decide are the ones model_test.go explores: every workflow from its true
+// start, with crashes between any two writes, two operator processes, restores landing outside the
+// hold, the row lost and restored, and a buckets command that fails for good after its intent.
 package holdrecord
 
 import (
@@ -27,6 +32,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -343,7 +349,9 @@ func (c *Client) Journal(ctx context.Context, holdID string) (Done, uint64, erro
 // `intent` entry, with inputs, by a PutRecord at the `gen` it read, so the decision and the write
 // are one compare-and-swap. A 409 `gen_mismatch` means another write came between, and Admit
 // reads and decides again. The entry sets `complete` to false, except `hold release`'s, which
-// keeps it. It returns the record's workflow.
+// keeps it. CommandAbort's entry also carries each stop entry's record of what its command left,
+// under `left.<the stop's index in the journal>` as `<command>: <left>`, so the operator ends the
+// hold knowing the state; those keys replace any of inputs'. It returns the record's workflow.
 func (c *Client) Admit(ctx context.Context, holdID string, req Request, inputs map[string]string) (Workflow, error) {
 	for attempt := 1; ; attempt++ {
 		row, err := c.Row(ctx)
@@ -360,6 +368,9 @@ func (c *Client) Admit(ctx context.Context, holdID string, req Request, inputs m
 		}
 		if err := Decide(d, req); err != nil {
 			return d.Workflow, fmt.Errorf("holdrecord: %s in %s: %w", req.Command, d.Workflow, err)
+		}
+		if req.Command == CommandAbort {
+			inputs = withStopRecords(inputs, d)
 		}
 		d.Ops = append(d.Ops, Operation{Command: req.Command, State: stateIntent, Inputs: inputs})
 		if req.Command != CommandRelease {
@@ -395,16 +406,51 @@ func (c *Client) AppendDone(ctx context.Context, holdID, command string, outputs
 
 // AppendStop writes the command's `stop` entry, with its reason, when Stoppable holds and the
 // command's own check refuses. It ends the command's pending `intent` with no `done`, so another
-// command can be admitted, and it keeps `complete` as it was, because a stop changes nothing
-// outside the journal. It returns ErrNoIntent unless the command's latest entry is its `intent`.
+// command can be admitted, and it keeps `complete` as it was. It records nothing of what the
+// command left, which counts as changed: AppendStopLeft records it. It returns ErrNoIntent unless
+// the command's latest entry is its `intent`.
 func (c *Client) AppendStop(ctx context.Context, holdID, command, reason string) error {
+	return c.appendStop(ctx, holdID, command, map[string]string{"reason": reason})
+}
+
+// AppendStopLeft is AppendStop that also records what the command left: LeftUnchanged when it
+// changed nothing outside the journal, or what it changed (a recreate that deleted the bucket
+// before it failed names the bucket). An empty left is refused.
+func (c *Client) AppendStopLeft(ctx context.Context, holdID, command, reason, left string) error {
+	if left == "" {
+		return fmt.Errorf("holdrecord: %s's stop names nothing it left: give LeftUnchanged or what it changed", command)
+	}
+	return c.appendStop(ctx, holdID, command, map[string]string{"reason": reason, stopLeftKey: left})
+}
+
+func (c *Client) appendStop(ctx context.Context, holdID, command string, outputs map[string]string) error {
 	return c.appendEntry(ctx, holdID, command, func(d *Done) error {
 		if !Stoppable(d.Workflow, command) {
 			return fmt.Errorf("holdrecord: %s is not Stoppable in %s, so its refusal writes no stop entry", command, d.Workflow)
 		}
-		d.Ops = append(d.Ops, Operation{Command: command, State: stateStop, Outputs: map[string]string{"reason": reason}})
+		d.Ops = append(d.Ops, Operation{Command: command, State: stateStop, Outputs: outputs})
 		return nil
 	})
+}
+
+// withStopRecords is inputs with each stop entry's record of what its command left, keyed by
+// the stop's index in the journal.
+func withStopRecords(inputs map[string]string, d Done) map[string]string {
+	out := make(map[string]string, len(inputs))
+	for k, v := range inputs {
+		out[k] = v
+	}
+	for i, o := range d.Ops {
+		if o.State != stateStop {
+			continue
+		}
+		left := o.Outputs[stopLeftKey]
+		if left == "" {
+			left = "nothing recorded, so counted as changed"
+		}
+		out["left."+strconv.Itoa(i)] = o.Command + ": " + left
+	}
+	return out
 }
 
 // The routes, the journal's record and how many times a journal write is tried against writes

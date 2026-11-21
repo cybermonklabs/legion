@@ -49,12 +49,13 @@
 #                     the principals being every ServiceAccount of the agent namespaces
 #                     (--agent-namespace) with the groups the API server gives it
 #                     (system:serviceaccounts, system:serviceaccounts:<namespace>,
-#                     system:authenticated), each group alone, and the Google service account each
-#                     is bound to (its iam.gke.io/gcp-service-account annotation) with
-#                     system:authenticated. A review without the groups would miss every grant made
-#                     to a group. Its witness is a review for the group the built-in cluster-admin
-#                     binding names, system:masters, which must be allowed: an API server whose
-#                     answers cannot say yes proves nothing by saying no.
+#                     system:authenticated), each group alone, the Google service account each is
+#                     bound to (its iam.gke.io/gcp-service-account annotation) with
+#                     system:authenticated, and the cluster's binding subjects (below). A review
+#                     without the groups would miss every grant made to a group. Its witness is a
+#                     review for the group the built-in cluster-admin binding names, system:masters,
+#                     which must be allowed: an API server whose answers cannot say yes proves
+#                     nothing by saying no.
 #   live: GKE IAM     GKE authorizes a Google identity's Kubernetes call through IAM beside RBAC, so
 #                     Policy Analyzer's holders of the container.* permission of each right, on the
 #                     project.
@@ -70,21 +71,33 @@
 #                     witness and the one non-person allowed.
 #   live: Workload    The Workload Identity member names the workload pool (<pool>.svc.id.goog,
 #     Identity        --pool-project, by default --project), the namespace and the ServiceAccount,
-#                     never the cluster, so every cluster that uses the pool can act as the
-#                     operator's Google service account. On every other cluster of the project, and
-#                     on every member cluster of the pool project's fleet, the namespace --namespace
-#                     must not exist, and no ServiceAccount outside that cluster's system namespaces
-#                     (kube-system, gke-*, gmp-*) may make a namespace or a ServiceAccount in it. A
-#                     project with the operator's cluster alone says so. The fleet's memberships are
-#                     read from the GKE Hub API (projects/<pool>/locations/-/memberships, every page)
-#                     with the running identity's access token, not through `gcloud container fleet
-#                     memberships list`, which drops the answer's `unreachable` locations: a listing
-#                     that could not reach a location reads complete there. A refused listing, and
-#                     one with an unreachable location, is UNKNOWN; a fleet the API answers with no
-#                     membership says so. A member that is a GKE cluster is read through `gcloud
-#                     container clusters get-credentials` in its own project, any other through
-#                     `gcloud container fleet memberships get-credentials` (the Connect gateway); the
-#                     operator's cluster, and a cluster the project step read, are not read twice.
+#                     never the cluster, so every cluster that uses the pool can act as the Google
+#                     service account a pair is bound to. The guarded pairs are the operator's
+#                     (--namespace/--service-account) and each --guarded <namespace>/<service
+#                     account>, such as a route password reader reached the same way. On every
+#                     cluster of the pool (the operator's, every other cluster of the project, and
+#                     every member cluster of the pool project's fleet) no principal the step
+#                     reviews may create a namespace cluster-wide, or a ServiceAccount or a pod in a
+#                     guarded pair's namespace; each finding's right names the pairs it guards. On
+#                     every cluster but the operator's, a guarded pair's namespace must not exist
+#                     either, and the principals are that cluster's ServiceAccounts outside its
+#                     system namespaces (kube-system, gke-*, gmp-*), with their groups, and its
+#                     binding subjects (below); on the operator's cluster they are the RBAC step's.
+#                     A project with the operator's cluster alone says so. The fleet's memberships
+#                     are read from the GKE Hub API (projects/<pool>/locations/-/memberships, every
+#                     page) with the running identity's access token, not through `gcloud container
+#                     fleet memberships list`, which drops the answer's `unreachable` locations: a
+#                     listing that could not reach a location reads complete there. A refused
+#                     listing, and one with an unreachable location, is UNKNOWN; a fleet the API
+#                     answers with no membership says so. A member that is a GKE cluster is read
+#                     through `gcloud container clusters get-credentials` in its own project, any
+#                     other through `gcloud container fleet memberships get-credentials` (the
+#                     Connect gateway); the operator's cluster, and a cluster the project step read,
+#                     are not read twice. GKE authorizes IAM beside RBAC, so for each GKE member in
+#                     a project other than --project, Policy Analyzer's holders of
+#                     container.namespaces.create, container.serviceAccounts.create and
+#                     container.pods.create on that project are judged as the GKE IAM step judges
+#                     its own (--project's are in that step).
 #   live: hold        Who can write the writer hold's tables beside the broker's routes, each holder a
 #     writers         finding: the holders of cloudsql.users.create or update on --sql-instance, of
 #                     get on the Secret --db-secret (a SubjectAccessReview for each agent principal,
@@ -95,6 +108,19 @@
 #                     show "admin": "true" and "tier": "human": the operator's credential is an
 #                     administrator's, released only when a person approves and never decided by a
 #                     model judge. No such secret is a finding too.
+#
+# Binding subjects. The Google identities a cluster's RBAC names are principals of that cluster
+# too: GKE authenticates a Google account as a User of its email, so `grade-ci@<p>.iam.
+# gserviceaccount.com` bound to cluster-admin on a member of the pool's fleet can make the
+# operator's namespace and ServiceAccount there. On the operator's cluster and on each other
+# cluster of the pool, every User subject of its ClusterRoleBindings and RoleBindings
+# (`kubectl get clusterrolebindings,rolebindings -A`) that is not a person is reviewed with
+# system:authenticated (system:anonymous with system:unauthenticated): a Google service account,
+# or any User the RBAC rule below does not allow, can be a finding. A person's email User subject
+# and every Group subject are never reviewed, so never a finding, as iam_verdict never makes a
+# `user:` member one and the accepted list names no person. A ServiceAccount subject is left out:
+# the cluster's own ServiceAccounts are reviewed with their groups already, and one named but not
+# made does not exist to act. A refused list of bindings is UNKNOWN, naming the permission.
 #
 # In every IAM step a `user:` member is a person and allowed; a group the analysis expands is judged
 # by its members, and one it does not expand is a finding; Google's own service agents
@@ -117,14 +143,34 @@
 # Exit 0: no finding and no UNKNOWN. Exit 1: at least one finding, each line naming the principal
 # and the right (UNKNOWN lines may stand beside them). Exit 2: no finding, and at least one UNKNOWN,
 # each naming its step and why, such as the permission the running identity lacks; also a usage
-# error. --report <file> writes {"run_at": "<RFC 3339>", "findings": [{"principal", "right"}],
-# "unknown": [{"step", "reason"}]} beside the text, run_at being when the run began.
+# error. --report <file> writes {"run_at": "<RFC 3339>", "findings": [{"principal", "right",
+# "role", "resource", "permissions", "granted_at"}], "unknown": [{"step", "reason"}]} beside the
+# text, run_at being when the run began. `right` is the sentence the text prints; the rest are its
+# parts, for a reader that matches a finding against an accepted entry by principal and role:
+#   role         the IAM role (roles/container.admin); for an RBAC finding the right's label
+#                (create serviceaccounts/token envoy-operator in envoy-operator); for the namespace
+#                and the secret's tags, what is wrong (namespace envoy-operator, admin, tier,
+#                secret);
+#   resource     what the right is on: the analysed resource's full name, `cluster:<name>` (the
+#                operator's cluster, `<project>/<location>/<name>` for another project's) or
+#                `membership:<pool>/<location>/<id>`, or `secret:<name>`;
+#   permissions  the IAM permissions the role grants among those asked; for an RBAC finding the
+#                right's label; empty for the namespace and the secret's tags;
+#   granted_at   the resource the IAM binding is made on; for an RBAC finding the API server's
+#                reason (`RBAC: allowed by ClusterRoleBinding "x" of ...`) or, from code, the
+#                binding; empty where there is none.
+#
+# The fixture testdata/operator-token-minters-report.json, beside this script, is this script's own
+# --report from a world of operator-token-minters.test.sh's, with run_at fixed: an IAM finding, RBAC
+# findings of a Google service account bound on a fleet member for two guarded pairs, and an
+# UNKNOWN. The writer hold's preflight, which reads --report, tests its reader against it, and the
+# test fails when the file differs from a fresh run (OPERATOR_MINTERS_WRITE_FIXTURE=1 rewrites it).
 #
 #   bash packages/envoy/infra/scripts/operator-token-minters.sh --project <id> --cluster <name> \
 #     --gsa <email> --agent-namespace <ns|glob>... --broker-account <email> \
 #     --broker-workload <ns>/<sa> --sql-instance <name> --db-secret <ns>/<name> \
 #     --broker-state gs://<bucket>[/<path>] --signing-secret <name> \
-#     --rbac-render <file>... --iam-preview <file>... [--report <file>]
+#     --rbac-render <file>... --iam-preview <file>... [--guarded <ns>/<sa>]... [--report <file>]
 #
 # The controls run against scratch targets: --namespace envoy-operator-control --gsa
 # envoy-operator-control@<project>.iam.gserviceaccount.com --secret ENVOY_OPERATOR_CONTROL.
@@ -142,6 +188,9 @@ usage: operator-token-minters.sh [flags]
                              share it (default --project)
   --namespace NS             the operator's namespace (default envoy-operator)
   --service-account NAME     the operator's Kubernetes ServiceAccount (default envoy-operator)
+  --guarded NS/NAME          one more namespace and ServiceAccount the pool's Workload Identity binds
+                             to a Google service account, guarded as the operator's pair is, which is
+                             always guarded; repeatable
   --gsa EMAIL                the Google service account the operator's ServiceAccount acts as
   --agent-namespace NS|GLOB  a namespace whose ServiceAccounts agents run as; repeatable
   --broker-account EMAIL     the secrets broker's Google service account, which mints the
@@ -168,7 +217,7 @@ usage_error() {
 
 PROJECT="" CLUSTER="" POOL_PROJECT="" NAMESPACE=envoy-operator KSA=envoy-operator GSA="" BROKER="" BROKER_WORKLOAD=""
 SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT=""
-AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=()
+AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=()
 while [ "$#" -gt 0 ]; do
   flag="$1"
   shift
@@ -179,7 +228,7 @@ while [ "$#" -gt 0 ]; do
   case "$flag" in
     --project | --cluster | --pool-project | --namespace | --service-account | --gsa | --agent-namespace | --broker-account | \
       --broker-workload | --sql-instance | --db-secret | --broker-state | --signing-secret | --secret | \
-      --rbac-render | --iam-preview | --analysis-scope | --credentials-arg | --report)
+      --rbac-render | --iam-preview | --analysis-scope | --credentials-arg | --report | --guarded)
       [ "$#" -gt 0 ] || usage_error "$flag needs a value"
       value="$1"
       shift
@@ -206,9 +255,17 @@ while [ "$#" -gt 0 ]; do
     --analysis-scope) ANALYSIS_SCOPE="$value" ;;
     --credentials-arg) CREDENTIALS_ARGS+=("$value") ;;
     --report) REPORT="$value" ;;
+    --guarded) GUARDED_FLAGS+=("$value") ;;
   esac
 done
 [ -n "$POOL_PROJECT" ] || POOL_PROJECT="$PROJECT"
+# The guarded pairs: the operator's first, then each --guarded, each once.
+GUARDED=("$NAMESPACE/$KSA")
+for pair in ${GUARDED_FLAGS[@]+"${GUARDED_FLAGS[@]}"}; do
+  [[ "$pair" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-.a-z0-9]*[a-z0-9])?$ ]] ||
+    usage_error "--guarded is <namespace>/<serviceaccount>, each a Kubernetes name, not $pair"
+  case " ${GUARDED[*]} " in *" $pair "*) ;; *) GUARDED+=("$pair") ;; esac
+done
 case "$DB_SECRET" in "" | */*) ;; *) usage_error "--db-secret is <namespace>/<name>, not $DB_SECRET" ;; esac
 case "$BROKER_WORKLOAD" in "" | */*) ;; *) usage_error "--broker-workload is <namespace>/<name>, not $BROKER_WORKLOAD" ;; esac
 case "$BROKER_STATE" in "" | gs://?*) ;; *) usage_error "--broker-state is gs://<bucket>[/<path>], not $BROKER_STATE" ;; esac
@@ -230,12 +287,17 @@ first_line() { sed -n '1{s/[[:cntrl:]]/ /g;p;}' "$1"; }
 # last_line: a command's refusal where it prints lines before it, as agent-secrets prints the
 # sign-in it uses before the failure.
 last_line() { tail -n 1 "$1" | sed 's/[[:cntrl:]]/ /g'; }
+# finding PRINCIPAL RIGHT ROLE RESOURCE PERMISSIONS GRANTED_AT: one finding, printed as PRINCIPAL and
+# RIGHT, the sentence; the report carries the four parts beside it (the header says each), with
+# PERMISSIONS separated by the unit separator ($US), never a comma: an RBAC label can hold one
+# ("create pods in ns, guarding ns/a, ns/b"). Two findings of one principal and one sentence are one.
 finding() {
   local principal="${1//[$'\t\r\n']/ }" right="${2//[$'\t\r\n']/ }" key
+  local role="${3//[$'\t\r\n']/ }" resource="${4//[$'\t\r\n']/ }" permissions="${5//[$'\t\r\n']/ }" granted="${6//[$'\t\r\n']/ }"
   key="F$principal"$'\t'"$right"
   [ -z "${RECORDED[$key]:-}" ] || return 0
   RECORDED[$key]=1
-  FINDINGS+=("$principal"$'\t'"$right")
+  FINDINGS+=("$principal"$'\t'"$right"$'\t'"$role"$'\t'"$resource"$'\t'"$permissions"$'\t'"$granted")
   echo "FINDING $principal: $right"
 }
 unknown() {
@@ -367,6 +429,21 @@ rights_json() {
              label: ("\(.verb) \(.resource)\(if .sub != "" then "/" + .sub else "" end)\(if .group != "" then "." + .group else "" end)"
                      + (if .name != "" then " " + .name else "" end) + (if .ns != "" then " in " + .ns else " cluster-wide" end))}]'
 }
+# GUARD_RIGHTS: the rights no principal the Workload Identity step reviews may hold on a cluster of
+# the pool, as rights_json writes rights: create namespaces cluster-wide, and for each guarded
+# pair's namespace, create serviceaccounts and create pods there. A pod in the namespace runs as
+# any ServiceAccount of it, and the ServiceAccount is the pair the pool binds, so either lets its
+# maker act as the pair's Google service account. Each label names the pairs the namespace holds.
+GUARD_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c '
+  [split("\n")[] | select(length > 0) | split("/") | {ns: .[0], sa: .[1]}] as $pairs
+  | [{verb: "create", group: "", resource: "namespaces", sub: "", ns: "", name: "", label: "create namespaces cluster-wide"}]
+    + [([$pairs[].ns] | unique)[] as $n
+       | ([$pairs[] | select(.ns == $n) | "\(.ns)/\(.sa)"] | join(", ")) as $guarding
+       | {verb: "create", group: "", resource: "serviceaccounts", sub: "", ns: $n, name: "", label: "create serviceaccounts in \($n), guarding \($guarding)"},
+         {verb: "create", group: "", resource: "pods", sub: "", ns: $n, name: "", label: "create pods in \($n), guarding \($guarding)"}]
+  | map(. + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))})')"
+GUARDED_TEXT="$(printf '%s, ' "${GUARDED[@]}")"
+GUARDED_TEXT="${GUARDED_TEXT%, }"
 
 # --- Principals. ---
 
@@ -531,6 +608,16 @@ held_text() {
   done
   printf '%s' "${out:-a permission of ${CHECK_PERMS[$1]// /, }}"
 }
+# held_list CHECK PERMISSIONS_CSV: the same, separated by $US, for the report: every permission the
+# check asks about where the answer names none of them.
+held_list() {
+  local permission out=""
+  for permission in ${CHECK_PERMS[$1]}; do
+    case ",$2," in *",$permission,"*) out="${out:+$out$US}$permission" ;; esac
+  done
+  [ -n "$out" ] || out="${CHECK_PERMS[$1]// /$US}"
+  printf '%s' "$out"
+}
 
 # --- Roles. ---
 
@@ -634,7 +721,7 @@ else
           grant)
             declared=$((declared + 1))
             k8s_subject "$kind" "$ns" "$name"
-            [ "$SUBJECT_OK" = true ] || finding "$SUBJECT" "$detail, declared by $id"
+            [ "$SUBJECT_OK" = true ] || finding "$SUBJECT" "$detail, declared by $id" "$detail" "cluster:$cluster_name" "$detail" "$id"
             ;;
           role)
             k8s_subject "$kind" "$ns" "$name"
@@ -767,7 +854,9 @@ else
           attached="$a:$b"
           [ "$a" != serviceaccount ] || attached="//iam.googleapis.com/projects/-/serviceAccounts/${b##*/}"
           iam_verdict "$check" "$e" "$d" "$attached" code
-          [ "$VERDICT" != finding ] || finding "$e" "$(held_text "$check" "$granted") on $(resource_of "$check") through $d, declared by $f$NOTE"
+          [ "$VERDICT" != finding ] ||
+            finding "$e" "$(held_text "$check" "$granted") on $(resource_of "$check") through $d, declared by $f$NOTE" \
+              "$d" "$(resource_of "$check")" "$(held_list "$check" "$granted")" "$attached"
         done
         ;;
     esac
@@ -874,7 +963,7 @@ review() {
          | ("\(.spec.user // "")|\((.spec.groups // []) | join(","))") as $who
          | [($names[$who] // ""), ($labels[$key] // ""),
             (if .status.allowed == true then "allowed" elif (.status.evaluationError // "") != "" then "error" else "refused" end),
-            (.status.evaluationError // "")]] as $rows
+            (.status.evaluationError // ""), (.status.reason // "")]] as $rows
       | ([$rows[] | select(.[0] != "" and .[1] != "")] | length) as $answered
       | (($principals | length) * ($rights | length)) as $asked
       | if $answered != $asked or ($rows | length) != $asked then ["short", $answered, $asked] | rec else $rows[] | rec end' \
@@ -899,18 +988,18 @@ principals_json() {
 # binding names, which every review must allow. An API server whose answers cannot say yes proves
 # nothing by saying no.
 WITNESS_RECORD=$'witness\x1f\x1fsystem:masters'
-# judge_reviews STEP SUFFIX: each review of $WORK/review.rec. The witness's must all be allowed;
-# every other allowed review is a finding, its right followed by SUFFIX. Returns 1 when the
-# witness was refused.
+# judge_reviews STEP SUFFIX RESOURCE: each review of $WORK/review.rec. The witness's must all be
+# allowed; every other allowed review is a finding on RESOURCE (the cluster), its right followed by
+# SUFFIX, granted where the API server's reason says. Returns 1 when the witness was refused.
 judge_reviews() {
-  local principal label verdict error witness_refused=false
-  while IFS="$US" read -r -u 4 principal label verdict error; do
+  local principal label verdict error reason witness_refused=false
+  while IFS="$US" read -r -u 4 principal label verdict error reason; do
     if [ "$principal" = witness ]; then
       [ "$verdict" = allowed ] || witness_refused=true
       continue
     fi
     case "$verdict" in
-      allowed) finding "$principal" "$label$2" ;;
+      allowed) finding "$principal" "$label$2" "$label" "$3" "$label" "$reason" ;;
       error) unknown "$1" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
     esac
   done 4<"$WORK/review.rec"
@@ -918,6 +1007,40 @@ judge_reviews() {
     unknown "$1" "the witness review, the cluster-admin binding's group system:masters, was not allowed, so a refusal from this API server proves nothing"
     return 1
   fi
+}
+# bound_subjects KUBECONFIG: the cluster's binding subjects (the header's "Binding subjects"), added
+# to $WORK/principals.rec: each User subject of its ClusterRoleBindings and RoleBindings that
+# k8s_subject does not allow and that the file does not hold already, with system:authenticated
+# (system:anonymous with system:unauthenticated). A person's User subject, every Group subject and
+# every ServiceAccount subject are left out. Sets BOUND to how many it added; returns 1 with
+# BOUND_ERROR when the API server refused the list or answered no JSON.
+bound_subjects() {
+  local kind name label
+  local -A held=()
+  BOUND=0 BOUND_ERROR=""
+  if ! kubectl --kubeconfig "$1" get clusterrolebindings,rolebindings --all-namespaces -o json >"$WORK/bindings.json" 2>"$WORK/bindings.err"; then
+    BOUND_ERROR="the API server refused the bindings' list (it needs list on clusterrolebindings and rolebindings, container.clusterRoleBindings.list and container.roleBindings.list on GKE): $(first_line "$WORK/bindings.err")"
+    return 1
+  fi
+  if ! jq -r "$JQ_REC"'[.items[]?.subjects[]? | select(.kind == "User") | [.kind, .name]] | unique[] | rec' \
+    "$WORK/bindings.json" >"$WORK/bindings.rec" 2>"$WORK/bindings.err"; then
+    BOUND_ERROR="the API server's list of bindings is not JSON: $(first_line "$WORK/bindings.err")"
+    return 1
+  fi
+  while IFS="$US" read -r label _; do held[$label]=1; done <"$WORK/principals.rec"
+  while IFS="$US" read -r -u 7 kind name; do
+    k8s_subject "$kind" "" "$name"
+    [ "$SUBJECT_OK" != true ] || continue
+    case "$SUBJECT" in system:serviceaccount:*) continue ;; esac
+    [ -z "${held[$SUBJECT]:-}" ] || continue
+    held[$SUBJECT]=1
+    if [ "$name" = system:anonymous ]; then
+      printf '%s\x1f%s\x1fsystem:unauthenticated\n' "$SUBJECT" "$name" >>"$WORK/principals.rec"
+    else
+      printf '%s\x1f%s\x1fsystem:authenticated\n' "$SUBJECT" "$name" >>"$WORK/principals.rec"
+    fi
+    BOUND=$((BOUND + 1))
+  done 7<"$WORK/bindings.rec"
 }
 
 # --- live: RBAC on the operator's cluster ---
@@ -933,7 +1056,9 @@ elif ! kubectl --kubeconfig "$KUBE" get serviceaccounts --all-namespaces -o json
   unknown "$step" "the API server refused the ServiceAccounts' list (it needs list on serviceaccounts, container.serviceAccounts.list on GKE): $(first_line "$WORK/serviceaccounts.err")"
 else
   mark
-  rights="$(rights_json db)"
+  # The operator's rights and the guarded pairs', each right once: where both list one, the
+  # operator's label stays.
+  rights="$(jq -c --argjson guard "$GUARD_RIGHTS" '. + $guard | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)' <<<"$(rights_json db)")"
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
     "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n' "$WITNESS_RECORD" >"$WORK/principals.rec"
@@ -950,18 +1075,19 @@ else
   if [ "$accounts" -eq 0 ]; then
     unknown "$step" "the cluster lists no ServiceAccount in the agent namespaces (${AGENT_NAMESPACES[*]}), so there is no principal to review"
   else
-    for bound in "${!seen_accounts[@]}"; do
+    while IFS= read -r bound; do
       printf 'serviceAccount:%s\x1f%s\x1fsystem:authenticated\n' "$bound" "$bound" >>"$WORK/principals.rec"
-    done
-    for group in "${!seen_groups[@]}"; do
+    done < <(printf '%s\n' ${seen_accounts[@]+"${!seen_accounts[@]}"} | sed '/^$/d' | sort)
+    while IFS= read -r group; do
       printf 'group:%s\x1f\x1f%s\n' "$group" "$group" >>"$WORK/principals.rec"
-    done
+    done < <(printf '%s\n' "${!seen_groups[@]}" | sort)
+    bound_subjects "$KUBE" || unknown "$step" "$BOUND_ERROR"
     if ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$rights"; then
       unknown "$step" "$REVIEW_ERROR"
-    elif judge_reviews "$step" ""; then
+    elif judge_reviews "$step" "" "cluster:$CLUSTER"; then
       RBAC_OK=true
       if unchanged; then
-        pass "$step" "$((accounts + ${#seen_accounts[@]} + ${#seen_groups[@]})) principals ($accounts ServiceAccounts of the agent namespaces, ${#seen_accounts[@]} Google service accounts, ${#seen_groups[@]} groups), $(jq length <<<"$rights") rights each: none allowed"
+        pass "$step" "$((accounts + ${#seen_accounts[@]} + ${#seen_groups[@]} + BOUND)) principals ($accounts ServiceAccounts of the agent namespaces, ${#seen_accounts[@]} Google service accounts, ${#seen_groups[@]} groups, $BOUND binding subjects), $(jq length <<<"$rights") rights each: none allowed"
       fi
     fi
   fi
@@ -969,35 +1095,44 @@ fi
 
 # --- The live IAM checks. ---
 
-# The analysis scope: --analysis-scope, else the project's top ancestor, so a grant made on its
-# folder or its organization is seen.
-SCOPE="$ANALYSIS_SCOPE" SCOPE_ERROR=""
-if [ -z "$SCOPE" ] && [ -n "$PROJECT" ]; then
-  if ! have gcloud; then
-    SCOPE_ERROR="gcloud is not on PATH"
-  elif ! gcloud projects get-ancestors "$PROJECT" --format=json --quiet >"$WORK/ancestors.json" 2>"$WORK/ancestors.err"; then
-    SCOPE_ERROR="gcloud projects get-ancestors $PROJECT was refused (it needs resourcemanager.projects.get), so the analysis scope is unknown: $(first_line "$WORK/ancestors.err")"
-  else
-    SCOPE="$(jq -r 'last | if .type == "organization" then "organizations/\(.id)" elif .type == "folder" then "folders/\(.id)" elif .type == "project" then "projects/\(.id)" else "" end' \
-      "$WORK/ancestors.json" 2>/dev/null || true)"
-    [ -n "$SCOPE" ] || SCOPE_ERROR="gcloud projects get-ancestors $PROJECT answered no ancestor"
+# scope_of PROJECT: the analysis scope for a resource of PROJECT, --analysis-scope, else the
+# project's top ancestor, so a grant made on its folder or its organization is seen. Sets
+# SCOPE_OF ("organizations/N", ...), SCOPE_OF_FLAG (the flag analyze passes) and SCOPE_OF_ERROR.
+scope_of() {
+  SCOPE_OF="$ANALYSIS_SCOPE" SCOPE_OF_ERROR=""
+  if [ -z "$SCOPE_OF" ] && [ -n "$1" ]; then
+    if ! have gcloud; then
+      SCOPE_OF_ERROR="gcloud is not on PATH"
+    elif ! gcloud projects get-ancestors "$1" --format=json --quiet >"$WORK/ancestors.json" 2>"$WORK/ancestors.err"; then
+      SCOPE_OF_ERROR="gcloud projects get-ancestors $1 was refused (it needs resourcemanager.projects.get), so the analysis scope is unknown: $(first_line "$WORK/ancestors.err")"
+    else
+      SCOPE_OF="$(jq -r 'last | if .type == "organization" then "organizations/\(.id)" elif .type == "folder" then "folders/\(.id)" elif .type == "project" then "projects/\(.id)" else "" end' \
+        "$WORK/ancestors.json" 2>/dev/null || true)"
+      [ -n "$SCOPE_OF" ] || SCOPE_OF_ERROR="gcloud projects get-ancestors $1 answered no ancestor"
+    fi
   fi
-fi
-case "$SCOPE" in
-  organizations/*) SCOPE_FLAG="--organization=${SCOPE#organizations/}" ;;
-  folders/*) SCOPE_FLAG="--folder=${SCOPE#folders/}" ;;
-  *) SCOPE_FLAG="--project=${SCOPE#projects/}" ;;
-esac
+  case "$SCOPE_OF" in
+    organizations/*) SCOPE_OF_FLAG="--organization=${SCOPE_OF#organizations/}" ;;
+    folders/*) SCOPE_OF_FLAG="--folder=${SCOPE_OF#folders/}" ;;
+    *) SCOPE_OF_FLAG="--project=${SCOPE_OF#projects/}" ;;
+  esac
+}
+scope_of "$PROJECT"
+SCOPE="$SCOPE_OF" SCOPE_FLAG="$SCOPE_OF_FLAG" SCOPE_ERROR="$SCOPE_OF_ERROR"
+# A check's own scope, for a resource outside --project: CHECK_SCOPE, CHECK_SCOPE_FLAG and
+# CHECK_SCOPE_ERROR, keyed by the check; a check with none uses the project's.
+declare -A CHECK_SCOPE=() CHECK_SCOPE_FLAG=() CHECK_SCOPE_ERROR=()
 
-# analyze RESOURCE PERMISSIONS_CSV: Policy Analyzer's holders of any of the permissions on the
-# resource, one line per binding and identity: identity, role, the resource the binding is made on,
-# the permissions it grants (comma-separated) and `expanded` for a group whose members the analysis
-# lists. Written as records to $WORK/analysis.rec; returns 1 with ANALYZE_ERROR.
+# analyze RESOURCE PERMISSIONS_CSV SCOPE_FLAG SCOPE: Policy Analyzer's holders of any of the
+# permissions on the resource, one line per binding and identity: identity, role, the resource the
+# binding is made on, the permissions it grants (comma-separated) and `expanded` for a group whose
+# members the analysis lists. Written as records to $WORK/analysis.rec; returns 1 with
+# ANALYZE_ERROR.
 analyze() {
   ANALYZE_ERROR=""
-  if ! gcloud asset analyze-iam-policy "$SCOPE_FLAG" --full-resource-name="$1" --permissions="$2" \
+  if ! gcloud asset analyze-iam-policy "$3" --full-resource-name="$1" --permissions="$2" \
     --expand-groups --output-group-edges --expand-roles --show-response --format=json --quiet >"$WORK/analysis.json" 2>"$WORK/analysis.err"; then
-    ANALYZE_ERROR="Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy on $SCOPE): $(first_line "$WORK/analysis.err")"
+    ANALYZE_ERROR="Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy on $4): $(first_line "$WORK/analysis.err")"
     return 1
   fi
   if ! jq -r "$JQ_REC"'if (.mainAnalysis | type) != "object" then ["error", "the answer holds no mainAnalysis"] | rec
@@ -1026,8 +1161,9 @@ live_iam() {
     unknown "$step" "${CHECK_MISSING[$check]}"
     return
   fi
-  if [ -n "$SCOPE_ERROR" ]; then
-    unknown "$step" "$SCOPE_ERROR"
+  local scope="${CHECK_SCOPE[$check]-$SCOPE}" scope_flag="${CHECK_SCOPE_FLAG[$check]-$SCOPE_FLAG}" scope_error="${CHECK_SCOPE_ERROR[$check]-$SCOPE_ERROR}"
+  if [ -n "$scope_error" ]; then
+    unknown "$step" "$scope_error"
     return
   fi
   if ! have gcloud; then
@@ -1038,7 +1174,7 @@ live_iam() {
     unknown "$step" "the project number, which the key's resource name holds, is unknown: $PROJECT_NUMBER_ERROR"
     return
   fi
-  if ! analyze "$resource" "${CHECK_PERMS[$check]// /,}"; then
+  if ! analyze "$resource" "${CHECK_PERMS[$check]// /,}" "$scope_flag" "$scope"; then
     unknown "$step" "$ANALYZE_ERROR"
     return
   fi
@@ -1058,7 +1194,9 @@ live_iam() {
   holders="$(cut -d"$US" -f2 "$WORK/analysis.rec" | sort -u | wc -l | tr -d ' ')"
   while IFS="$US" read -r -u 3 _ identity role attached perms how; do
     iam_verdict "$check" "$identity" "$role" "$attached" "$how"
-    [ "$VERDICT" != finding ] || finding "$identity" "$(held_text "$check" "$perms") on $resource through $role, granted at $attached$NOTE"
+    [ "$VERDICT" != finding ] ||
+      finding "$identity" "$(held_text "$check" "$perms") on $resource through $role, granted at $attached$NOTE" \
+        "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
   done 3<"$WORK/analysis.rec"
   if unchanged; then
     pass "$step" "$holders holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name${2:+; $2}"
@@ -1071,29 +1209,35 @@ live_iam gsa
 
 # --- live: Workload Identity: every other cluster that uses the pool ---
 
-# The two rights that make the operator's namespace and ServiceAccount, which no ServiceAccount
-# outside a cluster's system namespaces may hold on another cluster of the pool.
-OTHER_RIGHTS="$(jq -nc --arg ns "$NAMESPACE" '[
-    {verb: "create", group: "", resource: "namespaces", sub: "", ns: "", name: ""},
-    {verb: "create", group: "", resource: "serviceaccounts", sub: "", ns: $ns, name: ""}]
-  | map(. + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|")),
-             label: ("\(.verb) \(.resource)" + (if .ns != "" then " in " + .ns else " cluster-wide" end))})')"
 pool_name="the workload pool's project"
 [ -z "$POOL_PROJECT" ] || pool_name="project $POOL_PROJECT"
 
-# read_other_cluster STEP PRINCIPAL WHERE: on the cluster KUBE names, the namespace --namespace
-# must not exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount outside the
-# cluster's system namespaces may make a namespace or a ServiceAccount in it (each a finding, its
+# read_other_cluster STEP PRINCIPAL WHERE: on the cluster KUBE names, no guarded pair's namespace may
+# exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount outside the cluster's
+# system namespaces, and no binding subject, may hold a right of GUARD_RIGHTS (each a finding, its
 # right followed by WHERE). The reviews carry the witness. PASS when it recorded neither a finding
 # nor an UNKNOWN.
 read_other_cluster() {
-  local cstep="$1" principal="$2" where="$3" ns name accounts=0
+  local cstep="$1" principal="$2" where="$3" ns name pair acts accounts=0
+  local -A exists=()
   mark
-  if kubectl --kubeconfig "$KUBE" get namespace "$NAMESPACE" -o name >/dev/null 2>"$WORK/namespace.err"; then
-    finding "$principal" "namespace $NAMESPACE exists there, so its ServiceAccount $NAMESPACE/$KSA acts as $operator_account through the workload pool $POOL_PROJECT.svc.id.goog"
-  elif ! grep -q '(NotFound)' "$WORK/namespace.err"; then
-    unknown "$cstep" "the API server refused the read of namespace $NAMESPACE (it needs get on namespaces, container.namespaces.get on GKE): $(first_line "$WORK/namespace.err")"
-  fi
+  for pair in "${GUARDED[@]}"; do
+    ns="${pair%%/*}"
+    if [ -z "${exists[$ns]:-}" ]; then
+      exists[$ns]=no
+      if kubectl --kubeconfig "$KUBE" get namespace "$ns" -o name >/dev/null 2>"$WORK/namespace.err"; then
+        exists[$ns]=yes
+      elif ! grep -q '(NotFound)' "$WORK/namespace.err"; then
+        exists[$ns]=unknown
+        unknown "$cstep" "the API server refused the read of namespace $ns (it needs get on namespaces, container.namespaces.get on GKE): $(first_line "$WORK/namespace.err")"
+      fi
+    fi
+    [ "${exists[$ns]}" = yes ] || continue
+    acts="the Google service account the pool binds it to"
+    [ "$pair" != "$NAMESPACE/$KSA" ] || acts="$operator_account"
+    finding "$principal" "namespace $ns exists there, so its ServiceAccount $pair acts as $acts through the workload pool $POOL_PROJECT.svc.id.goog" \
+      "namespace $ns, guarding $pair" "$principal" "" ""
+  done
   if ! kubectl --kubeconfig "$KUBE" get serviceaccounts --all-namespaces -o json >"$WORK/serviceaccounts.json" 2>"$WORK/serviceaccounts.err"; then
     unknown "$cstep" "the API server refused the ServiceAccounts' list (it needs list on serviceaccounts, container.serviceAccounts.list on GKE): $(first_line "$WORK/serviceaccounts.err")"
     return
@@ -1106,12 +1250,13 @@ read_other_cluster() {
     printf 'system:serviceaccount:%s:%s\x1fsystem:serviceaccount:%s:%s\x1fsystem:serviceaccounts,system:serviceaccounts:%s,system:authenticated\n' \
       "$ns" "$name" "$ns" "$name" "$ns" >>"$WORK/principals.rec"
   done 3<"$WORK/serviceaccounts.rec"
-  if [ "$accounts" -eq 0 ]; then
-    unknown "$cstep" "the cluster lists no ServiceAccount outside its system namespaces, so there is no principal to review"
-  elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$OTHER_RIGHTS"; then
+  bound_subjects "$KUBE" || unknown "$cstep" "$BOUND_ERROR"
+  if [ "$((accounts + BOUND))" -eq 0 ]; then
+    unknown "$cstep" "the cluster lists no ServiceAccount outside its system namespaces and no binding subject to review, so there is no principal to review"
+  elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$GUARD_RIGHTS"; then
     unknown "$cstep" "$REVIEW_ERROR"
-  elif judge_reviews "$cstep" "$where" && unchanged; then
-    pass "$cstep" "no namespace $NAMESPACE, and none of its $accounts ServiceAccounts outside the system namespaces may make a namespace or a ServiceAccount in $NAMESPACE"
+  elif judge_reviews "$cstep" "$where" "$principal" && unchanged; then
+    pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces and $BOUND binding subjects may make a namespace, or a ServiceAccount or a pod in a guarded namespace"
   fi
 }
 
@@ -1209,6 +1354,9 @@ elif ! fleet_memberships; then
   unknown "$step" "$FLEET_ERROR"
 else
   fleet_f="${#FINDINGS[@]}" fleet_u="${#UNKNOWNS[@]}" members=0 own=0 above=0 here=0
+  # The projects of the GKE members read here other than --project, whose IAM the step after this
+  # one reads.
+  declare -A OTHER_PROJECTS=()
   while IFS="$US" read -r -u 6 what id location gke_project gke_location gke_cluster; do
     if [ "$what" = unreachable ]; then
       unknown "$step" "the listing could not reach the locations $id, so a membership registered there is not listed"
@@ -1226,6 +1374,7 @@ else
         continue
       fi
       here=$((here + 1))
+      [ "$gke_project" = "$PROJECT" ] || OTHER_PROJECTS[$gke_project]=1
       label="$gke_project/$gke_location/$gke_cluster"
       cstep="live: Workload Identity on fleet member $id (cluster $label)"
       if ! kube_for "$gke_cluster" "$gke_location" "$gke_project"; then
@@ -1253,6 +1402,21 @@ else
   fi
 fi
 
+# --- live: GKE IAM on the projects of the fleet's other GKE members. GKE authorizes IAM beside
+# RBAC, so a holder of container.namespaces.create, container.serviceAccounts.create or
+# container.pods.create there makes a guarded pair's namespace, ServiceAccount or pod on that member
+# as its RBAC would; IAM grants them in every namespace. --project's holders are the GKE IAM step's.
+# ---
+for other in $(printf '%s\n' ${OTHER_PROJECTS[@]+"${!OTHER_PROJECTS[@]}"} | sort); do
+  check="gke:$other"
+  CHECK_STEP[$check]="live: GKE IAM on project $other, of a fleet member"
+  CHECK_RESOURCE[$check]="//cloudresourcemanager.googleapis.com/projects/$other"
+  CHECK_PERMS[$check]="container.namespaces.create container.serviceAccounts.create container.pods.create"
+  scope_of "$other"
+  CHECK_SCOPE[$check]="$SCOPE_OF" CHECK_SCOPE_FLAG[$check]="$SCOPE_OF_FLAG" CHECK_SCOPE_ERROR[$check]="$SCOPE_OF_ERROR"
+  live_iam "$check"
+done
+
 # --- live: hold writers ---
 live_iam sql
 live_iam dbsecret "the agent principals' get on it is in the RBAC step"
@@ -1269,8 +1433,9 @@ elif agent-secrets secret show "$SECRET" --json >"$WORK/secret.json" 2>"$WORK/se
   else
     admin="$(jq -r '.admin // ""' "$WORK/secret.json")"
     tier="$(jq -r '.tier // ""' "$WORK/secret.json")"
-    [ "$admin" = true ] || finding "secret:$SECRET" "admin is \"$admin\", not \"true\": without the administrator tag a model judge may decide its release"
-    [ "$tier" = human ] || finding "secret:$SECRET" "tier is \"$tier\", not \"human\""
+    [ "$admin" = true ] || finding "secret:$SECRET" "admin is \"$admin\", not \"true\": without the administrator tag a model judge may decide its release" \
+      admin "secret:$SECRET" "" ""
+    [ "$tier" = human ] || finding "secret:$SECRET" "tier is \"$tier\", not \"human\"" tier "secret:$SECRET" "" ""
     if [ "$admin" = true ] && [ "$tier" = human ]; then
       pass "$step" "admin is \"true\" and tier is \"human\": each release waits on a person's approval"
     fi
@@ -1279,7 +1444,7 @@ elif agent-secrets secret show "$SECRET" --json >"$WORK/secret.json" 2>"$WORK/se
 # `rpc error: code = NotFound` (legion-envoy-v30.43.0, read on 2026-11-21), the store interceptor's
 # `GetSecret answered NotFound`, and AWS's ResourceNotFoundException from DescribeSecret.
 elif grep -Eq 'code = NotFound|GetSecret answered NotFound|DescribeSecret.*ResourceNotFoundException' "$WORK/secret.err"; then
-  finding "secret:$SECRET" "no such secret: the operator's credential must be stored at human tier with --admin true"
+  finding "secret:$SECRET" "no such secret: the operator's credential must be stored at human tier with --admin true" secret "secret:$SECRET" "" ""
 else
   unknown "$step" "agent-secrets secret show $SECRET --json was refused: $(last_line "$WORK/secret.err")"
 fi
@@ -1292,7 +1457,9 @@ if [ -n "$REPORT" ]; then
   printf '%s\n' ${UNKNOWNS[@]+"${UNKNOWNS[@]}"} >"$WORK/unknown"
   jq -n --arg run_at "$RUN_AT" --rawfile findings "$WORK/findings" --rawfile unknown "$WORK/unknown" '{
     run_at: $run_at,
-    findings: [$findings | split("\n")[] | select(length > 0) | split("\t") | {principal: .[0], right: .[1]}],
+    findings: [$findings | split("\n")[] | select(length > 0) | split("\t")
+      | {principal: .[0], right: .[1], role: .[2], resource: .[3],
+         permissions: ((.[4] // "") | split("\u001f") | map(select(length > 0))), granted_at: (.[5] // "")}],
     unknown: [$unknown | split("\n")[] | select(length > 0) | split("\t") | {step: .[0], reason: .[1]}]}' >"$WORK/report.json"
   cp "$WORK/report.json" "$REPORT"
 fi

@@ -15,7 +15,10 @@ package holdrecord
 // snapshot or another one, and in every workflow the row may be lost and restored `held` at a new
 // gen (a database admin deletes it, and the operator restores it). A prove names any non-empty set
 // of targets, its done entry records those alone, and the step-1 map is what hold set's reads gave
-// it.
+// it. For the rule added since the frozen bundle (WayOut), a buckets command may also fail for good
+// after its intent, before its change or after it, and every later run of it fails again; under
+// WayOut its stop records what it left, and hold abort, admitted in every workflow once no intent
+// is pending, ends the hold.
 //
 // It explores every reachable state breadth-first, for every workflow, with two operator
 // processes. An admission is what the code does: with AtomicAdmit, one compare-and-swap step that
@@ -36,8 +39,9 @@ package holdrecord
 //
 // The current rules must find no counterexample, and every earlier rule set and every rule set
 // with one fix removed must find a counterexample of each class it names, which the test asserts
-// by the class's name. The state and counterexample counts are those the frozen model gave, so a
-// port that changed what the model explores fails here too.
+// by the class's name. The frozen bundle's profiles do not model the failing buckets command, so
+// their state and counterexample counts are those the bundle gave, and a port that changed what the
+// model explores fails here too; the current rules and their control model it, with pinned counts.
 
 import (
 	"errors"
@@ -58,6 +62,10 @@ var (
 		AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true, PendingBlocksComplete: true}
 	v59 = rules{Name: "v59", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true, AfterCompleteStrict: true,
 		SelRecFinalRepeatable: true, RestoreKeyInTable: true, AtomicAdmit: true, Serialize: true, StopEntries: true}
+	// v62 is the frozen bundle's rule set: the current rules without WayOut, the one rule added
+	// since. Its profile and every profile with one of its fixes removed run the bundle's own
+	// scenarios, so they reproduce the bundle's counts.
+	v62 = func() rules { r := currentRules; r.Name, r.WayOut = "v62", false; return r }()
 )
 
 var oneHubProcess = map[string]bool{"v49": true, "v49+Step1Recorded": true, "v52": true, "v53": true, "v53-PendingBlocksComplete": true}
@@ -83,13 +91,16 @@ const (
 	classR28B        = "R28-B (a restore on a target the latest prove did not name, after completion: no prove is admitted)"
 	classR28C        = "R28-C (a row restored after completion: release's hold_gen check refuses for good)"
 	classR28H        = "R28-H (a disk judged against a target the step-1 map lacks)"
+	classWayOut      = "WAY-OUT (a buckets command that fails for good after its intent strands the hold: no command the table admits ends it)"
 )
 
 // modelProfile is a rule set and the classes its run must find: none for the current rules, and
-// each control's own.
+// each control's own. Fail models a buckets command that fails for good after its intent, which
+// the frozen bundle did not model, so only the profiles of the rule added since set it.
 type modelProfile struct {
 	rules
 	Want []string
+	Fail bool
 }
 
 func modelProfiles() []modelProfile {
@@ -98,13 +109,13 @@ func modelProfiles() []modelProfile {
 	v53p := v53
 	v53p.Name, v53p.PendingBlocksComplete = "v53-PendingBlocksComplete", false
 	out := []modelProfile{
-		{v49, []string{classAbortDone}},
-		{v49s, []string{classR27E}},
-		{v52, []string{classR27CNoProve}},
-		{v53, []string{classTwoWrites}},
-		{v53p, []string{classPending}},
-		{v59, []string{classR28ASet, classR28B}},
-		{currentRules, nil},
+		{v49, []string{classAbortDone}, false},
+		{v49s, []string{classR27E}, false},
+		{v52, []string{classR27CNoProve}, false},
+		{v53, []string{classTwoWrites}, false},
+		{v53p, []string{classPending}, false},
+		{v59, []string{classR28ASet, classR28B}, false},
+		{v62, nil, false},
 	}
 	type ab struct {
 		name string
@@ -128,12 +139,16 @@ func modelProfiles() []modelProfile {
 		{"PrepareMarksUnresolved", func(r *rules) { r.PrepareMarksUnresolved = false }, []string{classR28APrep}},
 		{"CompletionSurvivesRowRestore", func(r *rules) { r.CompletionSurvivesRowRestore = false }, []string{classR28C}},
 	} {
-		r := currentRules
-		r.Name = currentRules.Name + "-" + a.name
+		r := v62
+		r.Name = v62.Name + "-" + a.name
 		a.f(&r)
-		out = append(out, modelProfile{r, a.want})
+		out = append(out, modelProfile{r, a.want, false})
 	}
-	return out
+	// The current rules, with a buckets command that fails for good modeled, and their control:
+	// the same rules without WayOut, which strand the hold.
+	noWayOut := currentRules
+	noWayOut.Name, noWayOut.WayOut = currentRules.Name+"-WayOut", false
+	return append(out, modelProfile{currentRules, nil, true}, modelProfile{noWayOut, []string{classWayOut}, true})
 }
 
 // modelTable is what the model's transitions ask of a rule set's table. For the current rules it
@@ -187,9 +202,9 @@ type modelSlot struct {
 
 // modelState is one state of a workflow. The journal is kept as what the package's rules read:
 // which commands have a done entry (Ever), which have one after the latest done prove (Since), the
-// last done entry, the latest prove's disks, and which commands' latest entry is an intent.
-// toDone builds the record from it, so a Repeatable command can run without limit in a finite
-// space.
+// last done entry, the latest prove's disks, which commands' latest entry is an intent, and, under
+// WayOut, what the stops of commands other than hold set and hold release left (Left). toDone
+// builds the record from it, so a Repeatable command can run without limit in a finite space.
 type modelState struct {
 	Row        byte // 'P' prepare, 'H' held, 'R' released
 	Rec        bool // the done record exists
@@ -201,10 +216,13 @@ type modelState struct {
 	ProvenSet  int    // the targets the latest done prove names
 	Intent     string
 	Complete   bool
-	HoldGen    int  // the row's gen at completion
-	RowGen     int  // the row restores so far
-	Unresolved bool // rollback: a logical name with no start, which only restore --key resolves
-	NoStart    bool // cutover: a cohort member with no safe start, which only replay --key resolves
+	HoldGen    int    // the row's gen at completion
+	RowGen     int    // the row restores so far
+	Unresolved bool   // rollback: a logical name with no start, which only restore --key resolves
+	NoStart    bool   // cutover: a cohort member with no safe start, which only replay --key resolves
+	Doomed     bool   // a buckets command failed for good after its intent: every run of it fails
+	StopLatest string // under WayOut, the commands whose latest entry is a stop, which hold abort's admission reads
+	Left       byte   // under WayOut, the stops of other commands than hold set and release: 0 none, 'U' each left nothing changed, 'C' one changed or recorded nothing
 	Cur        [2]modelDisk
 	Step1      [2]modelDisk
 	Restores   int
@@ -291,7 +309,8 @@ func canon(s modelState) modelState {
 
 // modelScenario is one workflow as the operator drives it: the commands the operator sends in held,
 // its starting states, and its processes. hold set and hold abort from prepare are every
-// scenario's.
+// scenario's, and hold abort in held is every scenario's too, though only a table that names it
+// admits it. Fail models a buckets command that fails for good after its intent.
 type modelScenario struct {
 	Name  string
 	W     Workflow
@@ -299,6 +318,7 @@ type modelScenario struct {
 	Init  []modelState
 	Hub   bool
 	Slots int
+	Fail  bool
 }
 
 type modelOp struct {
@@ -338,7 +358,14 @@ func operatorCmd(c string) string {
 	return c
 }
 
-func scenarios(r rules) []modelScenario {
+// bucketsCommand reports whether c is one of the buckets commands, the commands Fail lets fail for
+// good after their intent: a restore whose snapshot can never be read, a recreate whose create is
+// refused after its delete.
+func bucketsCommand(c string) bool {
+	return c == "buckets create" || c == "buckets recreate" || c == "buckets restore"
+}
+
+func scenarios(r rules, fail bool) []modelScenario {
 	slots, hubSlots := 2, 2
 	if oneHubProcess[r.Name] {
 		hubSlots = 1
@@ -349,7 +376,7 @@ func scenarios(r rules) []modelScenario {
 		for _, c := range cs {
 			out = append(out, modelOp{cmd: c})
 		}
-		return append(out, modelOp{cmd: CommandRelease})
+		return append(out, modelOp{cmd: CommandAbort}, modelOp{cmd: CommandRelease})
 	}
 	out := []modelScenario{
 		{Name: "cutover", W: WorkflowCutover, Slots: slots, Init: []modelState{prep, {Row: 'P', NoStart: true}},
@@ -371,13 +398,29 @@ func scenarios(r rules) []modelScenario {
 		hub.Ops = append([]modelOp{{CommandProve, 0}}, hub.Ops...)
 	}
 	hub.Init = []modelState{{Row: 'P', Cur: [2]modelDisk{{ID: 1}, {ID: 2}}, NextID: 3}}
-	return append(out, hub)
+	out = append(out, hub)
+	for i := range out {
+		out[i].Fail = fail
+	}
+	return out
 }
 
 // toDone builds the done record that the state stands for, in an order whose readings by the
 // package are the state's.
 func toDone(sc modelScenario, s modelState) Done {
 	d := Done{Workflow: sc.W, Complete: s.Complete}
+	// Under WayOut, each command whose latest entry is a stop, after its done entries and before the
+	// intents. What hold release's rule reads of the stops of other commands than hold set and hold
+	// release is whether every one left nothing changed (Left), and every such stop carries that
+	// answer. StopLatest is set only under WayOut, so every other rule set's record is as before.
+	var stops []Operation
+	for _, c := range list(s.StopLatest) {
+		o := Operation{Command: c, State: stateStop}
+		if s.Left == 'U' {
+			o.Outputs = map[string]string{stopLeftKey: LeftUnchanged}
+		}
+		stops = append(stops, o)
+	}
 	done := func(c string, out map[string]string) {
 		d.Ops = append(d.Ops, Operation{Command: c, State: stateDone, Outputs: out})
 	}
@@ -404,6 +447,7 @@ func toDone(sc modelScenario, s modelState) Done {
 	if s.Last != "" && !(s.Proved && s.Last == CommandProve) {
 		done(s.Last, nil)
 	}
+	d.Ops = append(d.Ops, stops...)
 	for _, c := range list(s.Intent) {
 		d.Ops = append(d.Ops, Operation{Command: c, State: stateIntent})
 	}
@@ -644,6 +688,7 @@ func admit(r rules, sc modelScenario, s modelState, k int, o modelOp) modelEdge 
 
 func writeIntent(s modelState, c string) modelState {
 	s.Intent = addSet(s.Intent, c)
+	s.StopLatest = delSet(s.StopLatest, c)
 	if c != CommandRelease {
 		s.Complete = false
 	}
@@ -671,6 +716,7 @@ func finish(t modelTable, sc modelScenario, s modelState, k int) modelState {
 		s.Since = addSet(s.Since, c)
 	}
 	s.Intent = delSet(s.Intent, c)
+	s.StopLatest = delSet(s.StopLatest, c)
 	if t.final(sc.W, c) {
 		s.Complete, s.HoldGen = true, s.RowGen
 	}
@@ -679,13 +725,31 @@ func finish(t modelTable, sc modelScenario, s modelState, k int) modelState {
 
 // refuse ends a command whose own check refused: with a stop entry when the command is Stoppable,
 // which keeps complete, else with its intent left. rerun marks a refusal whose stated way out is the
-// command's own rerun, which ErrBusy admits.
+// command's own rerun, which ErrBusy admits. Its stop records nothing of what the command left,
+// which counts as changed (refuseLeft records it).
 func refuse(r rules, t modelTable, sc modelScenario, s modelState, k int, why string, rerun bool) modelEdge {
+	return refuseLeft(r, t, sc, s, k, why, rerun, 'C')
+}
+
+// refuseLeft is refuse whose stop records what the command left: 'U' nothing changed, 'C' a change.
+// Under WayOut a stop of a command other than hold set and hold release joins Left, which hold
+// release's rule reads; other rule sets never set it, so their states are as the bundle's.
+func refuseLeft(r rules, t modelTable, sc modelScenario, s modelState, k int, why string, rerun bool, left byte) modelEdge {
 	c := s.Slots[k].Cmd
 	ns := idle(s, k)
 	if t.stoppable(sc.W, c) && inSet(s.Intent, c) {
 		ns.Intent = delSet(ns.Intent, c)
-		return modelEdge{to: ns, label: c + ": " + why + ", stop entry", op: true}
+		if r.WayOut {
+			ns.StopLatest = addSet(ns.StopLatest, c)
+		}
+		label := c + ": " + why + ", stop entry"
+		if r.WayOut && c != cmdSet && c != CommandRelease {
+			if left == 'C' || ns.Left == 0 {
+				ns.Left = left
+			}
+			label += map[byte]string{'U': " left unchanged", 'C': " left changed"}[left]
+		}
+		return modelEdge{to: ns, label: label, op: true}
 	}
 	suffix := ""
 	switch {
@@ -862,8 +926,12 @@ func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []model
 		}
 		ns.Slots[k].Gen = s.RowGen
 		return []modelEdge{adv(ns, c+": disks checked")}
-	case !sc.Hub:
+	case !sc.Hub && c != CommandAbort:
+		doomable := sc.Fail && bucketsCommand(c)
 		if sl.Step == 1 {
+			if doomable && s.Doomed { // it fails for good: every run fails before any further change
+				return []modelEdge{refuseLeft(r, t, sc, s, k, "fails again, nothing more changed", false, 'U')}
+			}
 			switch {
 			case c == "restore --finish" && s.Unresolved:
 				return []modelEdge{refuse(r, t, sc, s, k, "stops, a name has no start", false)}
@@ -882,6 +950,11 @@ func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []model
 			if why, ok := transient[c]; ok {
 				out = append(out, refuse(r, t, sc, s, k, why, true))
 			}
+			if doomable {
+				ds := s
+				ds.Doomed = true
+				out = append(out, refuseLeft(r, t, sc, ds, k, "fails for good before any change", false, 'U'))
+			}
 			return out
 		}
 		if t.final(sc.W, c) && r.PendingBlocksComplete && otherPendingAdmitted(r, t, sc, s, c) {
@@ -891,7 +964,13 @@ func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []model
 		if t.final(sc.W, c) {
 			label += ", complete"
 		}
-		return []modelEdge{{to: finish(t, sc, ns, k), label: label, op: true}}
+		out := []modelEdge{{to: finish(t, sc, ns, k), label: label, op: true}}
+		if doomable { // it fails for good after its change: a recreate that deleted the bucket
+			ds := s
+			ds.Doomed = true
+			out = append(out, refuseLeft(r, t, sc, ds, k, "fails for good after its change", false, 'C'))
+		}
+		return out
 	case c == CommandProve:
 		if sl.Step == 1 { // restart and check
 			if lacks() {
@@ -944,6 +1023,9 @@ func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []model
 		}
 		switch sl.Step {
 		case 1:
+			if !sc.Hub { // outside hub-restore abort reads no disk: it ends the hold as the record stands
+				return []modelEdge{adv(ns, c+": nothing to check outside hub-restore")}
+			}
 			if lacks() {
 				return []modelEdge{refuse(r, t, sc, s, k, "UNKNOWN, a target the step-1 map lacks", false)}
 			}
@@ -1148,6 +1230,11 @@ func classifyR28(r rules, sc modelScenario, kind string, s modelState, trace []s
 }
 
 func classify(r rules, sc modelScenario, kind string, s modelState, trace []string) string {
+	// A buckets command failed for good after its intent, and no command the table admits ends the
+	// hold: the class WayOut fixes. Only the profiles that model the failure (Fail) reach it.
+	if kind == "liveness" && sc.Fail && s.Doomed {
+		return classWayOut
+	}
 	if c := classifyR28(r, sc, kind, s, trace); c != "" {
 		return c
 	}
@@ -1451,10 +1538,10 @@ type modelRun struct {
 	differ        []string
 }
 
-func runModel(r rules, bound int) modelRun {
+func runModel(r rules, bound int, fail bool) modelRun {
 	t := tableOf(r)
 	out := modelRun{byWorkflow: map[string]int{}, byClass: map[string]int{}, shortest: map[string]modelViolation{}}
-	for _, sc := range scenarios(r) {
+	for _, sc := range scenarios(r, fail) {
 		n, v, differ := explore(r, t, sc, bound)
 		out.states += n
 		out.total += len(v)
@@ -1515,26 +1602,43 @@ var frozenBound2 = map[string]modelCount{
 	"v62-CompletionSurvivesRowRestore": {31534, 1035, map[string]int{classR28C: 1035}},
 }
 
-// The current rules' runs as the frozen model counted them, by workflow (run-bound2.out and
-// run-bound3.out).
+// The frozen v62's runs, by workflow (run-bound2.out and run-bound3.out).
 var (
-	frozenCurrentBound2 = map[string]int{"cutover": 3622, "rollback": 1348, "selection-recovery": 1652, "buckets-create": 476,
+	frozenV62Bound2 = map[string]int{"cutover": 3622, "rollback": 1348, "selection-recovery": 1652, "buckets-create": 476,
 		"buckets-recreate": 476, "buckets-restore": 476, "streams-update": 476, "streams-census": 482, "hub-restore": 22940}
-	frozenCurrentBound3 = map[string]int{"cutover": 4908, "rollback": 1842, "selection-recovery": 2253, "buckets-create": 651,
+	frozenV62Bound3 = map[string]int{"cutover": 4908, "rollback": 1842, "selection-recovery": 2253, "buckets-create": 651,
 		"buckets-recreate": 651, "buckets-restore": 651, "streams-update": 651, "streams-census": 657, "hub-restore": 127548}
 )
 
-// The model of the hold's workflows, run on this package's journal and table, finds no
-// counterexample under the current rules, at two crashes and restores per run (31,948 states) and
-// at three (139,812), and at every state of hub-restore the package's Step1, Proven, Epoch,
-// Expected and Moved read the record as the model does. Every earlier rule set and every rule set
-// with one fix removed is a control: each must find a counterexample of each class it names,
-// asserted by the class's name, and every count must be the frozen model's, so a change to the
-// table or to Decide that the model would catch fails here, and so does a port that explores
-// otherwise.
+// pinnedBound2 is this model's run at bound 2 of the rule added since the bundle (WayOut), with a
+// buckets command that fails for good modeled: the current rules and their control. The control's
+// workflows but the three buckets ones are v62's, as the bundle counted them.
+var pinnedBound2 = map[string]modelCount{
+	"v63":        {144617, 0, nil},
+	"v63-WayOut": {32083, 135, map[string]int{classWayOut: 135}},
+}
+
+// The current rules' runs by workflow, pinned from this model at bounds 2 and 3.
+var (
+	pinnedCurrentBound2 = map[string]int{"cutover": 7828, "rollback": 2469, "selection-recovery": 1926, "buckets-create": 864,
+		"buckets-recreate": 864, "buckets-restore": 864, "streams-update": 609, "streams-census": 616, "hub-restore": 128577}
+	pinnedCurrentBound3 = map[string]int{"cutover": 10617, "rollback": 3381, "selection-recovery": 2632, "buckets-create": 1186,
+		"buckets-recreate": 1186, "buckets-restore": 1186, "streams-update": 837, "streams-census": 844, "hub-restore": 765341}
+	pinnedCurrentBound3Total = 787210
+)
+
+// The model of the hold's workflows, run on this package's journal and table. The frozen bundle's
+// profiles reproduce its counts: v62 finds no counterexample at two crashes and restores per run
+// (31,948 states) and at three (139,812), and every earlier rule set and every rule set with one of
+// v62's fixes removed is a control that finds a counterexample of each class it names, asserted by
+// the class's name, with the bundle's counts. The current rules add WayOut and are run with a
+// buckets command that fails for good after its intent: they find no counterexample, at bounds 2
+// and 3, with pinned state counts, and their control, the same rules without WayOut, finds the
+// stranded hold (classWayOut). At every hub-restore state of the current rules the package's Step1,
+// Proven, Epoch, Expected and Moved read the record as the model does.
 func TestTheHoldJournalModel(t *testing.T) {
-	if currentRules.Name != "v62" {
-		t.Fatalf("the current rules are %q, and the frozen counts below are v62's", currentRules.Name)
+	if currentRules.Name != "v63" || v62.WayOut {
+		t.Fatalf("the current rules are %q and v62's WayOut is %v; the counts below are v62's and v63's", currentRules.Name, v62.WayOut)
 	}
 	for _, w := range tableFor(currentRules).Workflows() {
 		for _, c := range append([]string{CommandSet, CommandRelease}, Commands(w)...) {
@@ -1549,13 +1653,17 @@ func TestTheHoldJournalModel(t *testing.T) {
 		p := p
 		t.Run(p.Name, func(t *testing.T) {
 			t.Parallel()
-			got := runModel(p.rules, 2)
+			got := runModel(p.rules, 2, p.Fail)
 			want, ok := frozenBound2[p.Name]
 			if !ok {
-				t.Fatalf("no frozen count for the rules %s", p.Name)
+				want, ok = pinnedBound2[p.Name]
+			}
+			if !ok {
+				t.Fatalf("no count for the rules %s: it ran %d states and %d counterexamples, by workflow %v, by class %v",
+					p.Name, got.states, got.total, got.byWorkflow, got.byClass)
 			}
 			if got.states != want.states || got.total != want.counterexamples {
-				t.Errorf("rules %s at bound 2: %d states and %d counterexamples, and the frozen model %d and %d",
+				t.Errorf("rules %s at bound 2: %d states and %d counterexamples, and the pinned count %d and %d",
 					p.Name, got.states, got.total, want.states, want.counterexamples)
 			}
 			for c, n := range got.byClass {
@@ -1567,15 +1675,22 @@ func TestTheHoldJournalModel(t *testing.T) {
 			for _, why := range got.differ {
 				t.Errorf("rules %s: the package's reading differs from the model's: %s", p.Name, why)
 			}
-			if p.rules == currentRules {
+			if len(p.Want) == 0 {
 				for c, v := range got.shortest {
-					t.Errorf("the current rules found %d counterexamples of %s, the shortest (%s, %s): %s",
-						got.byClass[c], c, v.Workflow, v.Kind, strings.Join(v.Trace, " -> "))
+					t.Errorf("rules %s found %d counterexamples of %s, the shortest (%s, %s): %s",
+						p.Name, got.byClass[c], c, v.Workflow, v.Kind, strings.Join(v.Trace, " -> "))
 				}
-				for w, n := range frozenCurrentBound2 {
+				byWorkflow := frozenV62Bound2
+				if p.rules == currentRules {
+					byWorkflow = pinnedCurrentBound2
+				}
+				for w, n := range byWorkflow {
 					if got.byWorkflow[w] != n {
-						t.Errorf("the current rules' %s at bound 2: %d states, and the frozen model %d", w, got.byWorkflow[w], n)
+						t.Errorf("rules %s's %s at bound 2: %d states, and the pinned count %d", p.Name, w, got.byWorkflow[w], n)
 					}
+				}
+				if len(byWorkflow) != len(got.byWorkflow) {
+					t.Errorf("rules %s ran the workflows %v, and the pinned counts name %v", p.Name, got.byWorkflow, byWorkflow)
 				}
 				return
 			}
@@ -1586,29 +1701,39 @@ func TestTheHoldJournalModel(t *testing.T) {
 					continue
 				}
 				if n != want.classes[c] {
-					t.Errorf("control %s found %d counterexamples of its class %s, and the frozen model %d", p.Name, n, c, want.classes[c])
+					t.Errorf("control %s found %d counterexamples of its class %s, and the pinned count %d", p.Name, n, c, want.classes[c])
 				}
-				t.Logf("control %s found %d counterexamples of its class %s", p.Name, n, c)
+				t.Logf("control %s found %d counterexamples of its class %s, the shortest (%s): %s", p.Name, n, c,
+					got.shortest[c].Workflow, strings.Join(got.shortest[c].Trace, " -> "))
 			}
 		})
 	}
-	t.Run("v62 at bound 3", func(t *testing.T) {
-		t.Parallel()
-		got := runModel(currentRules, 3)
-		if got.states != 139812 || got.total != 0 {
-			t.Errorf("the current rules at bound 3: %d states and %d counterexamples, and the frozen model 139812 and 0", got.states, got.total)
-		}
-		for w, n := range frozenCurrentBound3 {
-			if got.byWorkflow[w] != n {
-				t.Errorf("the current rules' %s at bound 3: %d states, and the frozen model %d", w, got.byWorkflow[w], n)
+	for _, b := range []struct {
+		r          rules
+		fail       bool
+		total      int
+		byWorkflow map[string]int
+	}{{v62, false, 139812, frozenV62Bound3}, {currentRules, true, pinnedCurrentBound3Total, pinnedCurrentBound3}} {
+		b := b
+		t.Run(b.r.Name+" at bound 3", func(t *testing.T) {
+			t.Parallel()
+			got := runModel(b.r, 3, b.fail)
+			if got.states != b.total || got.total != 0 {
+				t.Errorf("rules %s at bound 3: %d states and %d counterexamples, and the pinned count %d and 0 (by workflow %v)",
+					b.r.Name, got.states, got.total, b.total, got.byWorkflow)
 			}
-		}
-		for c, v := range got.shortest {
-			t.Errorf("the current rules at bound 3 found %d counterexamples of %s, the shortest (%s, %s): %s",
-				got.byClass[c], c, v.Workflow, v.Kind, strings.Join(v.Trace, " -> "))
-		}
-		for _, why := range got.differ {
-			t.Errorf("the package's reading differs from the model's at bound 3: %s", why)
-		}
-	})
+			for w, n := range b.byWorkflow {
+				if got.byWorkflow[w] != n {
+					t.Errorf("rules %s's %s at bound 3: %d states, and the pinned count %d", b.r.Name, w, got.byWorkflow[w], n)
+				}
+			}
+			for c, v := range got.shortest {
+				t.Errorf("rules %s at bound 3 found %d counterexamples of %s, the shortest (%s, %s): %s",
+					b.r.Name, got.byClass[c], c, v.Workflow, v.Kind, strings.Join(v.Trace, " -> "))
+			}
+			for _, why := range got.differ {
+				t.Errorf("the package's reading differs from the model's at bound 3: %s", why)
+			}
+		})
+	}
 }

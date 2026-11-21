@@ -244,6 +244,10 @@ func operatorReleased() []string {
 	for _, b := range copiedBuckets {
 		publish = append(publish, "$JS.API.STREAM.SNAPSHOT.KV_"+b, "$JS.SNAPSHOT.ACK.KV_"+b+".>")
 	}
+	// The selection bucket's backup, which consumer-names create-bucket --after-loss --backup
+	// restores inside a hold: a backup only reads, so it needs no hold.
+	publish = append(publish,
+		"$JS.API.STREAM.SNAPSHOT.KV_envoy_session_consumers", "$JS.SNAPSHOT.ACK.KV_envoy_session_consumers.>")
 	return append(publish,
 		"$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers",
 		"$JS.API.CONSUMER.NAMES.ENVOY_NOTIFICATIONS",
@@ -331,6 +335,9 @@ func TestOperatorIsExactly(t *testing.T) {
 		got := natsgrant.Operator(phase)
 		for _, entry := range got.Publish {
 			require.Contains(t, want, entry, "Operator(%s) publishes %q, which the plan's list does not hold", phase, entry)
+		}
+		for _, entry := range want {
+			require.Contains(t, got.Publish, entry, "Operator(%s) does not publish %q, which the plan's list holds", phase, entry)
 		}
 		require.Equal(t, natsgrant.Permissions{Publish: want, Subscribe: inbox}, got, "Operator(%s)", phase)
 	}

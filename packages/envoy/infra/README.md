@@ -4223,7 +4223,8 @@ operator connects with that inbox prefix:
 - `released`, no hold, and the grant whenever the auth service cannot read the row: `$JS.API.INFO`;
   the infos of `ENVOY_NOTIFICATIONS`, `KV_envoy_session_consumers` and each copied bucket
   (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`, `envoy_ci_state`);
-  each copied bucket's snapshot and the acknowledgements of its chunks, so a backup needs no hold;
+  the snapshot of each copied bucket and of `KV_envoy_session_consumers`, and the acknowledgements
+  of its chunks, so a backup needs no hold;
   the stored-message get of `KV_envoy_session_consumers` and the consumer names and infos of
   `ENVOY_NOTIFICATIONS`; and the create and info of `ENVOY_MEASURE`, its one mutation, of the one
   stream no client depends on;

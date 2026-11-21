@@ -1,5 +1,7 @@
 package holdrecord
 
+import "slices"
+
 // rules are the rule choices that changed between versions of the hold's design, so the model in
 // model_test.go runs the table of each version and of each rule set with one fix removed.
 // currentRules are the design's, and the package's functions use them.
@@ -22,14 +24,20 @@ type rules struct {
 	ConvertStoppable             bool // convert's stop for a name with no safe start ends its intent, so replay is admitted
 	PrepareMarksUnresolved       bool // restore --prepare marks a name with no start and goes on; restore --finish stops
 	CompletionSurvivesRowRestore bool // release does not compare hold_gen, so a row restored by RestoreRow can release
+	// WayOut: the buckets commands are Stoppable, a stop records what its command left, hold
+	// release follows a record whose other entries are stops that left nothing changed, and hold
+	// abort is every workflow's way out: outside hub-restore it is admitted once a command's latest
+	// entry is a stop and no intent is pending, so a command that fails for good after its intent
+	// cannot hold the hold.
+	WayOut bool
 }
 
-// currentRules are the hold's rules as its design stands (the model's v62): every fix, with no
-// account move.
-var currentRules = rules{Name: "v62", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true,
+// currentRules are the hold's rules as its design stands: the frozen model's v62 (every fix, with
+// no account move) and WayOut, added since.
+var currentRules = rules{Name: "v63", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true,
 	AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true, AtomicAdmit: true, Serialize: true,
 	StopEntries: true, SetCommand: true, Step1Whole: true, ExpectedMap: true, ConvertStoppable: true,
-	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true}
+	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true, WayOut: true}
 
 var current = tableFor(currentRules)
 
@@ -74,17 +82,26 @@ func tableFor(r rules) table {
 		entry{name: "streams census", requires: []string{CommandProve}, final: true, epochal: r.ProveEpochs, repeatable: r.ProveEpochs,
 			stoppable: stop},
 		entry{name: CommandAbort, excludes: []string{CommandProve}, final: true, stoppable: stop})
-	return table{Rules: r, rows: map[Workflow][]entry{
+	buckets := func(name string) []entry { return []entry{{name: name, final: true, stoppable: stop && r.WayOut}} }
+	rows := map[Workflow][]entry{
 		WorkflowCutover:           cut,
 		WorkflowRollback:          rb,
 		WorkflowSelectionRecovery: sr,
-		WorkflowBucketsCreate:     {{name: "buckets create", final: true}},
-		WorkflowBucketsRecreate:   {{name: "buckets recreate", final: true}},
-		WorkflowBucketsRestore:    {{name: "buckets restore", final: true}},
+		WorkflowBucketsCreate:     buckets("buckets create"),
+		WorkflowBucketsRecreate:   buckets("buckets recreate"),
+		WorkflowBucketsRestore:    buckets("buckets restore"),
 		WorkflowStreamsUpdate:     {{name: "streams update", final: true}},
 		WorkflowStreamsCensus:     {{name: "streams census", final: true}},
 		WorkflowHubRestore:        hub,
-	}}
+	}
+	if r.WayOut { // hold abort, every workflow's way out; hub-restore names it already
+		for w := range rows {
+			if w != WorkflowHubRestore {
+				rows[w] = append(rows[w], entry{name: CommandAbort, final: true, stoppable: stop})
+			}
+		}
+	}
+	return table{Rules: r, rows: rows}
 }
 
 func (t table) row(w Workflow, c string) (entry, bool) {
@@ -177,7 +194,7 @@ func (t table) Decide(d Done, req modelRequest) error {
 			}
 			return nil
 		}
-		if !(w == WorkflowHubRestore && c == CommandAbort) && !hasDone(d.Ops, CommandSet) {
+		if !(c == CommandAbort && (w == WorkflowHubRestore || t.Rules.WayOut)) && !hasDone(d.Ops, CommandSet) {
 			return wrap(ErrOutOfOrder, CommandSet)
 		}
 	}
@@ -192,6 +209,12 @@ func (t table) Decide(d Done, req modelRequest) error {
 		if hasDone(d.Ops, x) {
 			return wrap(ErrExcluded, x)
 		}
+	}
+	// Outside hub-restore abort is admitted once a command has stopped, and its own rerun after a
+	// crash left its intent pending is admitted too: that intent shows it was admitted, and the
+	// stop it followed may have been superseded since (the stopped command ran again and finished).
+	if c == CommandAbort && w != WorkflowHubRestore && t.Rules.WayOut && !anyStopped(d.Ops) && !slices.Contains(pending(d), c) {
+		return wrap(ErrOutOfOrder, "no command has stopped")
 	}
 	for _, q := range e.requires {
 		if e.epochal && q == CommandProve {
@@ -230,10 +253,22 @@ func (t table) Decide(d Done, req modelRequest) error {
 
 // unchanged reports whether the record shows nothing changed: no entry but hold release's own,
 // which a crashed release leaves, and, with SetCommand, hold set's, whose restart and barrier
-// change no stored data.
+// change no stored data. With WayOut a command's stop that recorded LeftUnchanged, and the intent
+// it ends, change nothing either; a stop that recorded anything else, or nothing, a done entry
+// and an intent no stop ends all count as changes.
 func (t table) unchanged(ops []Operation) bool {
+	latest := map[string]Operation{}
 	for _, o := range ops {
-		if o.Command != CommandRelease && !(t.Rules.SetCommand && o.Command == CommandSet) {
+		if o.Command == CommandRelease || (t.Rules.SetCommand && o.Command == CommandSet) {
+			continue
+		}
+		if !t.Rules.WayOut || o.State == stateDone || (o.State == stateStop && o.Outputs[stopLeftKey] != LeftUnchanged) {
+			return false
+		}
+		latest[o.Command] = o
+	}
+	for _, o := range latest {
+		if o.State != stateStop {
 			return false
 		}
 	}

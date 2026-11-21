@@ -515,8 +515,9 @@ func otherDeclaredStreams() []string {
 
 // operatorReleased is the operator's publish list outside a hold: JetStream's account info, the
 // read-only infos of the notification stream, the session consumers' records and each copied
-// bucket, the backup of each copied bucket (its snapshot request and the acknowledgements of its
-// chunks, nats-server jetstream_api.go's STREAM.SNAPSHOT and $JS.SNAPSHOT.ACK), consumer-names
+// bucket, the backup of each copied bucket and of the session consumers' records (its snapshot
+// request and the acknowledgements of its chunks, nats-server jetstream_api.go's STREAM.SNAPSHOT
+// and $JS.SNAPSHOT.ACK), consumer-names
 // status's reads (the records walked by sequence, the notification stream's consumer names and
 // infos), and the create and info of ENVOY_MEASURE. Its one mutation is that create of the one
 // unprotected stream: a backup only reads. Released's own grant adds ENVOY_MEASURE's update
@@ -533,6 +534,10 @@ func operatorReleased() []string {
 	for _, bucket := range copiedBuckets() {
 		publish = append(publish, jsAPI+"STREAM.SNAPSHOT."+kvStream+bucket, "$JS.SNAPSHOT.ACK."+kvStream+bucket+".>")
 	}
+	// The session consumers' records are backed up as the copied buckets are, for the restore
+	// consumer-names create-bucket --after-loss --backup makes inside a hold.
+	publish = append(publish,
+		jsAPI+"STREAM.SNAPSHOT."+kvStream+sessionConsumerRecordsBucket, "$JS.SNAPSHOT.ACK."+kvStream+sessionConsumerRecordsBucket+".>")
 	return append(publish,
 		jsAPI+"STREAM.MSG.GET."+kvStream+sessionConsumerRecordsBucket,
 		jsAPI+"CONSUMER.NAMES."+bus.Stream,
