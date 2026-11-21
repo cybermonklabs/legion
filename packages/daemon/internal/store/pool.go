@@ -318,7 +318,7 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 // (releaseMigrationConn). A transaction from BeginTx cannot serve it, because pgx returns that
 // transaction's connection to the pool as the transaction ends. acquire runs the guard first, as
 // every other way this pool hands out a connection does. Then it marks the caller as holding a
-// connection, as begin does. The caller runs release only once the connection is back in the pool
+// connection, as BeginTx does. The caller runs release only once the connection is back in the pool
 // or closed, so the guard sees the connection for as long as the caller holds it. release is never
 // nil: for a context the pool cannot see, it does nothing.
 func (p *Pool) acquire(ctx context.Context) (conn *pgxpool.Conn, release func(), err error) {
@@ -333,19 +333,15 @@ func (p *Pool) acquire(ctx context.Context) (conn *pgxpool.Conn, release func(),
 }
 
 // BeginTx opens a transaction with options and marks the caller as holding a connection. It is
-// what TransactWith opens every transaction of the daemon through.
+// what TransactWith opens every transaction of the daemon through, and the pool's one way to a
+// transaction, so the boundary guard counts its one begin on pgx's pool. The transaction it gives
+// is always the store's own (storeTx), so every statement of it passes the argument rule. It
+// carries the release of the caller's hold mark, which does nothing for a context the pool cannot
+// see, as acquire's does.
 func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	if err := p.guard(ctx); err != nil {
 		return nil, err
 	}
-	return p.begin(ctx, options)
-}
-
-// begin is BeginTx's body once its guard has passed. The transaction it gives is always the
-// store's own (storeTx), so every statement of it passes the argument rule. It carries the release
-// of the caller's hold mark, which does nothing for a context the pool cannot see, as acquire's
-// does.
-func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	tx, err := p.pool.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err

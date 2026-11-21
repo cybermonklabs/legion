@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
 	"os"
 	"os/exec"
@@ -30,15 +31,19 @@ const (
 	pgxPath    = "github.com/jackc/pgx/v5"
 )
 
-// transactionOpeners are the functions of pgx that open a transaction by hand (R1).
+// transactionOpeners are the functions of pgx that open a transaction by hand (R1), named through
+// the package or through a dot import.
 var transactionOpeners = []string{"BeginFunc", "BeginTxFunc"}
 
-// connectionTakers are the methods that open a transaction or take a connection (R2).
-var connectionTakers = []string{"Begin", "BeginTx", "Acquire", "AcquireFunc"}
+// connectionTakers are the methods that open a transaction or take a connection (R2), database/sql's
+// included.
+var connectionTakers = []string{"Begin", "BeginTx", "Acquire", "AcquireFunc", "Conn"}
 
-// statementRunners are the methods that run a statement (R3), a read included.
+// statementRunners are the methods that run a statement (R3), a read included, database/sql's
+// included.
 var statementRunners = []string{"Exec", "ExecParams", "ExecPrepared", "ExecBatch", "SendBatch", "CopyFrom", "CopyTo",
-	"Prepare", "Deallocate", "DeallocateAll", "Query", "QueryRow", "QueryFunc"}
+	"Prepare", "Deallocate", "DeallocateAll", "Query", "QueryRow", "QueryFunc",
+	"ExecContext", "QueryContext", "QueryRowContext", "PrepareContext"}
 
 // allowance is one function's calls the guard admits, by rule, with their exact count.
 type allowance struct {
@@ -53,7 +58,7 @@ var allowances = []allowance{
 	// The boundary's own begin.
 	{"internal/store", "TransactWith", "R2", 1},
 	// The guarded pool's BeginTx, which TransactWith opens through, forwarding to pgx's pool.
-	{"internal/store", "(*Pool).begin", "R2", 1},
+	{"internal/store", "(*Pool).BeginTx", "R2", 1},
 	// The connection a migration runs on and resets before it goes back.
 	{"internal/store", "(*Pool).acquire", "R2", 1},
 	// The guarded pool's forwarders of their caller's SQL to pgx's pool. No production code calls
@@ -166,17 +171,20 @@ func (g *boundaryGuard) run(overlay map[string][]byte) ([]string, error) {
 			for _, decl := range file.Decls {
 				function := declName(decl)
 				ast.Inspect(decl, func(node ast.Node) bool {
-					selector, ok := node.(*ast.SelectorExpr)
-					if !ok {
-						return true
+					var rule string
+					var at token.Pos
+					switch node := node.(type) {
+					case *ast.Ident:
+						rule, at = openerRule(pkg.TypesInfo, node), node.Pos()
+					case *ast.SelectorExpr:
+						rule, at = checkedRule(pkg.TypesInfo, node, tx), node.Pos()
 					}
-					rule := checkedRule(pkg.TypesInfo, selector, tx)
 					if rule == "" {
 						return true
 					}
 					key := allowanceKey{pkg: within, function: function, rule: rule}
 					calls[key] = append(calls[key], fmt.Sprintf("%s:%d %s in %s.%s", path,
-						pkg.Fset.Position(selector.Pos()).Line, rule, pkg.Name, function))
+						pkg.Fset.Position(at).Line, rule, pkg.Name, function))
 					return true
 				})
 			}
@@ -222,20 +230,26 @@ func pgxTx(loaded []*packages.Package) (*types.Interface, error) {
 	return nil, errors.New("no loaded package imports pgx, so the guard cannot tell a transaction from a pool")
 }
 
-// checkedRule is the rule a reference breaks, or "" for one the guard does not check: a pgx
-// function that opens a transaction by hand (R1), called or not, or a method of the checked
-// surface on a receiver whose static type does not implement pgx.Tx (R2, R3), called, taken as a
-// method value, or named in a method expression. A method of the surface is one of the names
-// above whose signature takes a context.Context first, whatever the caller passes there. A method
-// of an interface is checked as one of a pool, since the guard cannot see what the interface
-// holds.
+// openerRule is R1 for an identifier that names a pgx function that opens a transaction by hand,
+// called or not, whether the identifier is the selector of `pgx.BeginFunc` or stands alone under a
+// dot import of pgx, and "" for any other.
+func openerRule(info *types.Info, ident *ast.Ident) string {
+	function, ok := info.Uses[ident].(*types.Func)
+	if ok && function.Pkg() != nil && function.Pkg().Path() == pgxPath && slices.Contains(transactionOpeners, function.Name()) {
+		return "R1"
+	}
+	return ""
+}
+
+// checkedRule is the rule a selector breaks, or "" for one the guard does not check: a method of
+// the checked surface on a receiver whose static type does not implement pgx.Tx (R2, R3), called,
+// taken as a method value, or named in a method expression. A method of the surface is one of the
+// names above whose signature takes a context.Context first, whatever the caller passes there. A
+// method of an interface is checked as one of a pool, since the guard cannot see what the
+// interface holds.
 func checkedRule(info *types.Info, selector *ast.SelectorExpr, tx *types.Interface) string {
 	selection := info.Selections[selector]
 	if selection == nil {
-		function, ok := info.Uses[selector.Sel].(*types.Func)
-		if ok && function.Pkg() != nil && function.Pkg().Path() == pgxPath && slices.Contains(transactionOpeners, function.Name()) {
-			return "R1"
-		}
 		return ""
 	}
 	if selection.Kind() != types.MethodVal && selection.Kind() != types.MethodExpr {
@@ -263,7 +277,7 @@ func checkedRule(info *types.Info, selector *ast.SelectorExpr, tx *types.Interfa
 }
 
 // declName is a declaration's name as the guard reports it: a function's name, a method's
-// receiver and name ((*Pool).begin), or "init" for a declaration outside any function.
+// receiver and name ((*Pool).BeginTx), or "init" for a declaration outside any function.
 func declName(decl ast.Decl) string {
 	function, ok := decl.(*ast.FuncDecl)
 	if !ok {
@@ -311,6 +325,7 @@ const plantedTransaction = `package daemon
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -320,7 +335,7 @@ import (
 
 func plantedOwner(ctx context.Context, pool *store.Pool, raw *pgxpool.Pool, conn *pgx.Conn, tx pgx.Tx, q interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}) {
+}, db *sql.DB) {
 	_ = pgx.BeginFunc(ctx, raw, func(pgx.Tx) error { return nil })  // L1 reported: R1
 	_, _ = pool.BeginTx(ctx, pgx.TxOptions{})                       // L2 reported: R2
 	_, _ = raw.Acquire(ctx)                                         // L3 reported: R2
@@ -333,6 +348,8 @@ func plantedOwner(ctx context.Context, pool *store.Pool, raw *pgxpool.Pool, conn
 	_ = exec
 	_, _ = (*pgxpool.Pool).Exec(raw, ctx, "select 1")               // L11 reported: R3, a method expression
 	_, _ = raw.Exec(struct{ context.Context }{ctx}, "select 1")     // L12 reported: R3, a context of another type
+	_, _ = db.ExecContext(ctx, "update issues set title = 'x'")    // L13 reported: R3, database/sql
+	_, _ = db.Conn(ctx)                                            // L14 reported: R2, database/sql
 	_ = store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx, "select count(*) from issues").Scan(new(int)) // inside the boundary
 	})
@@ -345,40 +362,74 @@ func apply(ctx context.Context, raw *pgxpool.Pool) error { // a name the allowli
 }
 `
 
+// plantedDotTransaction is a second overlay file of package daemon, which imports pgx into its
+// own scope, so its opener is named with no selector.
+const plantedDotTransaction = `package daemon
+
+import (
+	"context"
+
+	. "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func plantedDotOwner(ctx context.Context, raw *pgxpool.Pool) error {
+	return BeginFunc(ctx, raw, func(Tx) error { return nil }) // L15 reported: R1, through a dot import
+}
+`
+
+// plantedFile is one overlay file the guard loads, and the function each of its marked lines is
+// in.
+type plantedFile struct {
+	name, source string
+	function     func(mark string) string
+}
+
+var plantedFiles = []plantedFile{
+	{"planted_transaction.go", plantedTransaction, func(mark string) string {
+		if mark == "L9" {
+			return "apply"
+		}
+		return "plantedOwner"
+	}},
+	{"planted_dot_transaction.go", plantedDotTransaction, func(string) string { return "plantedDotOwner" }},
+}
+
 // plantedMark is a planted line's mark: its name and the rule it must be reported under.
 var plantedMark = regexp.MustCompile(`// (L[0-9]+) reported: (R[0-9])`)
 
 // TestNoTransactionOrStatementBypassesTheBoundary runs the guard over the module with the planted
-// file added. The production code must add no line; the planted file must add exactly its twelve
-// marked lines. A real call outside the boundary fails by being listed, a guard blind to a
-// receiver kind, a method, a method value, a method expression, a context of another type or a
-// package fails by a missing marked line, and a guard that reaches into the boundary fails by
-// listing the TransactWith body, the savepoint or the statement in a transaction.
+// files added. The production code must add no line; the planted files must add exactly their
+// fifteen marked lines. A real call outside the boundary fails by being listed, a guard blind to a
+// receiver kind, a method, a method value, a method expression, a context of another type,
+// database/sql, a dot import or a package fails by a missing marked line, and a guard that
+// reaches into the boundary fails by listing the TransactWith body, the savepoint or the
+// statement in a transaction.
 func TestNoTransactionOrStatementBypassesTheBoundary(t *testing.T) {
 	dir := moduleDir(t)
-	planted := filepath.Join(dir, "internal", "daemon", "planted_transaction.go")
-	if _, err := os.Stat(planted); err == nil {
-		t.Fatalf("%s exists on disk; the planted file is an overlay only", planted)
-	}
+	overlay := map[string][]byte{}
 	var want []string
-	for number, line := range strings.Split(plantedTransaction, "\n") {
-		mark := plantedMark.FindStringSubmatch(line)
-		if mark == nil {
-			continue
+	for _, file := range plantedFiles {
+		planted := filepath.Join(dir, "internal", "daemon", file.name)
+		if _, err := os.Stat(planted); err == nil {
+			t.Fatalf("%s exists on disk; the planted file is an overlay only", planted)
 		}
-		function := "plantedOwner"
-		if mark[1] == "L9" {
-			function = "apply"
+		overlay[planted] = []byte(file.source)
+		for number, line := range strings.Split(file.source, "\n") {
+			mark := plantedMark.FindStringSubmatch(line)
+			if mark == nil {
+				continue
+			}
+			want = append(want, "internal/daemon/"+file.name+":"+strconv.Itoa(number+1)+" "+mark[2]+" in daemon."+file.function(mark[1]))
 		}
-		want = append(want, "internal/daemon/planted_transaction.go:"+strconv.Itoa(number+1)+" "+mark[2]+" in daemon."+function)
 	}
-	if len(want) != 12 {
-		t.Fatalf("the planted file marks %d lines, want 12", len(want))
+	if len(want) != 15 {
+		t.Fatalf("the planted files mark %d lines, want 15", len(want))
 	}
 	slices.Sort(want)
 
 	start := time.Now()
-	lines, err := newBoundaryGuard(dir).run(map[string][]byte{planted: []byte(plantedTransaction)})
+	lines, err := newBoundaryGuard(dir).run(overlay)
 	t.Logf("the guard ran in %s", time.Since(start).Round(time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
