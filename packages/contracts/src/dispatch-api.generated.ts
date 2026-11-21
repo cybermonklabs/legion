@@ -2037,7 +2037,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it. A restricted member lists at their browser alone, and is answered their own machine logins and no service's; through their personal token or a person-scope broker token they are 403 RESTRICTED_MEMBER, and through their agent's named token, which holds no scope, 403 OAUTH_SCOPE_REQUIRED. */
+    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it. A restricted member lists at their browser alone, and is answered their own machine logins and no service's; a list through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token and any broker token of theirs do, and 403 RESTRICTED_MEMBER otherwise, as their personal token is. */
     get: operations["getApiV1MachineLogins"];
     put?: never;
     post?: never;
@@ -2537,7 +2537,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), the owner's browser session also gets passkeys, [{email, enrolled_at, made_by, project?}] for each passkey of a person people names, sorted by email then enrolled_at: made_by is who made the link that enrolled it, and project that link's project, absent where the reader does not see it; and invitable, the emails of people the owner can make a link for now (on no domain of the company's Workspace, no full member's), sorted; each [] for none, and both absent from every other answer. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope. */
+    /** @description Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), the owner's browser session also gets passkeys, [{email, enrolled_at, made_by, project?}] for each passkey of a person people names, sorted by email then enrolled_at: made_by is who made the link that enrolled it, and project that link's project, absent where the reader does not see it; invitable, the emails of people the owner can make a link for now (on no domain of the company's Workspace, no full member's, and named by no project of another owner), sorted; and listed_by_another_owner, the emails of people a project of another owner names directly, for whom the owner makes no link until that project's owner takes them off its list, sorted; each [] for none, and all three absent from every other answer. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope. */
     get: operations["getApiV1ProjectsByKeyAccess"];
     put?: never;
     post?: never;
@@ -2577,7 +2577,7 @@ export interface paths {
     /** @description Name a person on a project's access list by email (stored trimmed, with A-Z lowered); a person it names already stays as they were. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a value that is no email, or that holds a capital letter beyond A-Z and so names nobody who could sign in, is 400 PROJECT_ACCESS_INPUT; a list of 500 people and groups is 409 ACCESS_LIST_FULL; where passkey sign-in is on, an address that holds a passkey a link of someone other than the project's owner enrolled is 409 PASSKEY_OF_ANOTHER_OWNER, since that passkey would read this project too, until that link's maker resets the person. Appends project.access_changed and answers the project's access. Needs the person scope. */
     put: operations["putApiV1ProjectsByKeyAccessPeopleByEmail"];
     post?: never;
-    /** @description Take a person off a project's access list; one it does not name leaves it as it was and owes nothing. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Taking a restricted member off it when no other project's list names them records that Dispatch owes the secrets broker the revocation of the member's machine logins, which Dispatch pays after the commit, again until the broker confirms; a removal that leaves them on another list owes nothing, and the removal never waits on the broker. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), it also ends the person's unused links of the project, and, once no project's owner is them and no list names them directly, ends a restricted member's sign-in and deletes their passkeys, in the same transaction. Appends project.access_changed and answers the project's access. Needs the person scope. */
+    /** @description Take a person off a project's access list; one it does not name leaves it as it was and owes nothing. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Taking a restricted member off it when no other project's list names them records that Dispatch owes the secrets broker the revocation of the member's machine logins, which Dispatch pays after the commit, again until the broker confirms; a removal that leaves them on another list owes nothing, and the removal never waits on the broker. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), it also ends the person's unused links of the project, and, once no project's owner is them and no list names them directly, ends a restricted member's account in the same transaction, as the owner's Reset does: a new passkey subject, which revokes their personal tokens and owes the broker the old account's revocation, then their sign-in ended and their passkeys deleted. Appends project.access_changed and answers the project's access. Needs the person scope. */
     delete: operations["deleteApiV1ProjectsByKeyAccessPeopleByEmail"];
     options?: never;
     head?: never;
@@ -3346,7 +3346,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The process's Prometheus metrics, for an open viewer; a restricted member or a credential that lists projects is 403 DEPLOYMENT_READ_REFUSED. */
+    /** @description The process's Prometheus metrics, for an open viewer; a restricted member's credential, or one acting for one, is 403 DEPLOYMENT_READ_REFUSED. */
     get: operations["getMetrics"];
     put?: never;
     post?: never;
@@ -6355,6 +6355,7 @@ export interface components {
     ProjectAccess: {
       groups: string[] | null;
       invitable?: string[];
+      listed_by_another_owner?: string[];
       not_signed_in: string[] | null;
       owner: string;
       passkeys?: components["schemas"]["EnrolledPasskey"][];

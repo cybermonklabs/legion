@@ -15,9 +15,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// runbookPath is Dispatch's runbook, whose recovery after a Dispatch database restored or made again
-// alone ("Signing people in") the tests here run block by block.
-const runbookPath = "../../../../../docs/site/src/content/docs/dispatch/running-dispatch.md"
+// runbookPaths are Dispatch's runbook: Running Dispatch, whose "Signing people in" makes the
+// broker's libpq URL the blocks name, and After a restore, whose recoveries after a Dispatch or a
+// broker database restored or made again alone the tests here run block by block. Each lead the
+// tests name starts one line of the two together.
+var runbookPaths = []string{
+	"../../../../../docs/site/src/content/docs/dispatch/running-dispatch.md",
+	"../../../../../docs/site/src/content/docs/dispatch/after-a-restore.md",
+}
 
 // The leads of the runbook's paragraphs whose first ```sh block the tests here run.
 const (
@@ -102,14 +107,18 @@ func runbookBlockAfter(t *testing.T, lead string) runbookBlock {
 	return block
 }
 
-// runbookLines is the runbook, line by line.
+// runbookLines is the runbook, line by line: each of runbookPaths in order, a blank line between.
 func runbookLines(t *testing.T) []string {
 	t.Helper()
-	text, err := os.ReadFile(runbookPath)
-	if err != nil {
-		t.Fatalf("read the runbook: %v", err)
+	var lines []string
+	for _, path := range runbookPaths {
+		text, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read the runbook: %v", err)
+		}
+		lines = append(append(lines, strings.Split(string(text), "\n")...), "")
 	}
-	return strings.Split(string(text), "\n")
+	return lines
 }
 
 // runbookParagraph is the paragraph of the runbook that starts with lead, as one line of text: the

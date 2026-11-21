@@ -1364,8 +1364,9 @@ restart_scenarios() {
   # Dispatch, so none can follow the stop. testing's status write is then durably pending rather than
   # silently lost, and the board (left at the human's needs_review) catches up once Dispatch returns.
   # The agent's check carries a timeout: Dispatch's port is kept (start_dispatch), so while it is down
-  # a request waits unanswered, and the timeout is what fails.
-  send_agent "$restart_issue" implementer "Stage 3 outbox proof: make the smallest one-file smoke change for this issue, commit it and open pull request legion/$restart_issue in $repo, and write the implementation handoff. Before you call the legion tool's handoff_complete, wait for the proof to stop the Dispatch server: run curl -fsS --max-time 5 \"\$DISPATCH_URL/api/v1\" every 5 seconds until it fails (for up to 15 minutes), and only once it has failed call the legion tool's handoff_complete. Do not post anything to Dispatch."
+  # a request waits unanswered, and the timeout is what fails. It reads /healthz, which answers with no
+  # credential: the route index answers an agent's curl 401, which would fail the check at once.
+  send_agent "$restart_issue" implementer "Stage 3 outbox proof: make the smallest one-file smoke change for this issue, commit it and open pull request legion/$restart_issue in $repo, and write the implementation handoff. Before you call the legion tool's handoff_complete, wait for the proof to stop the Dispatch server: run curl -fsS --max-time 5 \"\$DISPATCH_URL/healthz\" every 5 seconds until it fails (for up to 15 minutes), and only once it has failed call the legion tool's handoff_complete. Do not post anything to Dispatch."
   until_true 900 "restart-tree pull request to open" sh -c \
     "gh -R '$repo' pr list --head 'legion/$restart_issue' --state open --json number | jq -e 'length == 1' >/dev/null"
   stop_dispatch

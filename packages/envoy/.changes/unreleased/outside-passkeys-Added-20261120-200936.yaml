@@ -9,8 +9,10 @@ body: |-
   (`/auth/passkey/login/begin` and `/finish`): a discoverable credential, user verification
   required, no attestation, the relying party the outside origin's host, a signature counter that
   does not go up refused while either it or the stored one is not zero, each ceremony's answer
-  taken once, and each begin limited per client address and across addresses (429
-  `PASSKEY_RATE_LIMITED`); the ceremony rides in the `__Host-dispatch_passkey_ceremony` cookie. No
+  taken once (its finish records it used; a begin writes nothing), and each begin limited per
+  client address (429 `PASSKEY_RATE_LIMITED`; the address is the load balancer's client entry,
+  else the connection's own, and two `X-Forwarded-For` lines through the balancer are 400
+  `FORWARDED_FOR_INVALID`); the ceremony rides in the `__Host-dispatch_passkey_ceremony` cookie. No
   link is made, and no passkey enrolled, for an address on a domain the Workspace owns
   (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`) or for a full member's (409
   `FULL_MEMBER`, also for a link made before its person signed in as one). One owner binds a person
@@ -18,15 +20,17 @@ body: |-
   person another owner's project names (409 `LISTED_BY_ANOTHER_OWNER`, and 403 at the enrollment
   when such a project named them since), and a list naming, or a transfer of a project naming, a
   person whose passkey another owner's link enrolled is 409 `PASSKEY_OF_ANOTHER_OWNER`. The hourly
-  confirmation, the owner's removal of the person from the last list that names them and the
-  owner's Reset (`POST .../access/people/{email}/reset`) each end the sign-in and delete the
-  passkeys in one transaction. The Reset also ends the person's unused links of every project,
-  owes the secrets broker the revocation of the machine logins the person approved, and gives the
-  address a new passkey account, which revokes the person's personal tokens and owes the broker
-  the old account's revocation, so a machine login approved while the Reset ran is refused too.
-  The owner's access answer carries `passkeys`, each with `made_by` and its link's `project`, and
-  `invitable`. Dispatch relays a passkey member's approvals to the broker under the outside origin
-  as the approving account's issuer (`people.sub_issuer`, migration `20261120165538`). At the
+  end of a person no list names, the owner's removal of the person from the last list that names
+  them and the owner's Reset (`POST .../access/people/{email}/reset`) each end the person's account
+  in one transaction: a new passkey subject, which revokes their personal tokens and owes the
+  secrets broker the old account's revocation, then the sign-in ended and the passkeys deleted, so
+  a later owner who names the address names a new account. The Reset also ends the person's
+  unused links of every project and owes the broker the revocation of the machine logins the
+  person approved, so a machine login approved while the Reset ran is refused too. The owner's
+  access answer carries `passkeys`, each with `made_by` and its link's `project`, `invitable` and
+  `listed_by_another_owner`. Dispatch relays a passkey member's approvals to the broker under the
+  outside origin as the approving account's issuer (`people.sub_issuer`, migration
+  `20261120165538`). At the
   outside origin `/auth/start` and `/auth/callback` now answer 404 unless
   `DISPATCH_SIGNIN_OUTSIDE=1`, the outside origin is its host however a client writes the default
   port or trailing dots, and the passkey routes answer 404 at `DISPATCH_SERVER_URL`. While the

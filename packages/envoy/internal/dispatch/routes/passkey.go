@@ -314,6 +314,7 @@ var passkeyRefusals = []struct {
 	{store.ErrPasskeyAccountMoved, "PASSKEY_UNKNOWN", http.StatusUnauthorized},
 	{store.ErrPasskeySignCount, "PASSKEY_SIGN_COUNT", http.StatusUnauthorized},
 	{identity.ErrPasskeyCeremonyExpired, "CEREMONY_EXPIRED", http.StatusBadRequest},
+	{store.ErrPasskeyCeremonyUsed, "CEREMONY_EXPIRED", http.StatusBadRequest},
 	{identity.ErrPasskeyRefused, "PASSKEY_REFUSED", http.StatusBadRequest},
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/auth/forwardedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 )
@@ -105,35 +106,34 @@ func TestEveryRouteNeedsACredentialButTheNamedOnes(t *testing.T) {
 }
 
 // TestNoRouteGrantsAccessByNetworkAddress (c-no-route-trusts-the-network): every route the API
-// serves answers a caller with no credential alike whether it comes bare or from a loopback peer
-// carrying every network header set to an internal address, with X-Forwarded-Host naming the API's
-// own host, so a route that trusts what a proxy of ours says it forwarded is caught, and naming a
-// host it does not answer at, so a route that takes the origin a request came to from that header
+// serves answers a caller with no credential alike whether it comes bare or as from an address of
+// ours, in each of forwardedtest's shapes: X-Forwarded-For holding every internal address in every
+// position a rule might read (leftmost, rightmost, second-to-last, alone, either of two lines), on a
+// loopback peer and on a peer of Google's load balancer, with every other network header set to an
+// internal address. Each shape carries X-Forwarded-Host naming the API's own host, so a route that
+// trusts what a proxy of ours says it forwarded is caught; and the first carries it naming a host the
+// API does not answer at too, so a route that takes the origin a request came to from that header
 // rather than from Host is caught.
 func TestNoRouteGrantsAccessByNetworkAddress(t *testing.T) {
 	handler, routes := apiWalk(t)
+	variants := forwardedtest.Variants()
 	for _, forwardedHost := range []string{apiHost, foreignHost} {
-		for _, route := range routes {
-			bare, inside := httptest.NewRecorder(), httptest.NewRecorder()
-			handler.ServeHTTP(bare, walkRequest(t, route))
-			request := walkRequest(t, route)
-			request.RemoteAddr = "127.0.0.1:40000"
-			for name, value := range map[string]string{
-				"X-Forwarded-For":        "127.0.0.1, 10.0.0.1, 100.64.0.1, fd7a:115c:a1e0::1",
-				"X-Real-IP":              "100.64.0.1",
-				"Forwarded":              `for=127.0.0.1;proto=https, for="[fd7a:115c:a1e0::1]"`,
-				"X-Forwarded-Host":       forwardedHost,
-				"Via":                    "1.1 10.0.0.1",
-				"Tailscale-User-Login":   "alice@example.com",
-				"Tailscale-User-Name":    "alice@example.com",
-				"Tailscale-Headers-Info": "https://tailscale.com/s/serve-headers",
-			} {
-				request.Header.Set(name, value)
-			}
-			handler.ServeHTTP(inside, request)
-			if bare.Code != inside.Code || bare.Body.String() != inside.Body.String() {
-				t.Errorf("%s answers a caller with no credential %d %s, and the same caller from an address of ours, forwarded for %s, %d %s",
-					route, bare.Code, firstLine(bare.Body.String()), forwardedHost, inside.Code, firstLine(inside.Body.String()))
+		shapes := variants
+		if forwardedHost != apiHost {
+			shapes = variants[:1]
+		}
+		for _, shape := range shapes {
+			for _, route := range routes {
+				bare, inside := httptest.NewRecorder(), httptest.NewRecorder()
+				handler.ServeHTTP(bare, walkRequest(t, route))
+				request := walkRequest(t, route)
+				shape.Apply(request)
+				request.Header.Set("X-Forwarded-Host", forwardedHost)
+				handler.ServeHTTP(inside, request)
+				if bare.Code != inside.Code || bare.Body.String() != inside.Body.String() {
+					t.Errorf("%s answers a caller with no credential %d %s, and the same caller with %s, forwarded for %s, %d %s",
+						route, bare.Code, firstLine(bare.Body.String()), shape.Name, forwardedHost, inside.Code, firstLine(inside.Body.String()))
+				}
 			}
 		}
 	}

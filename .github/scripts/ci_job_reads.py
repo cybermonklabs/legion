@@ -873,6 +873,34 @@ RULES = {
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
         (f"{ENVOY}/**/*.md", "internal/dispatch/store/search_text_test.go:104-120 walks packages/envoy (infra included, "
                              "node_modules and out passed over) and :114 opens each .md file, and no other")),
+    # Dispatch's runbook is two pages: Running Dispatch, and After a restore, which holds the
+    # recoveries after a database restored or made again alone and the move between the Cognito
+    # pool and a domain. These tests run the pages' blocks, so an edit of either alone must start
+    # the jobs that run them.
+    f"{ENVOY}/internal/dispatch/store/mode_switch_test.go": reads(
+        ("docs/site/src/content/docs/dispatch/running-dispatch.md",
+         "internal/dispatch/store/mode_switch_test.go:28 (sqlBlockAfter) reads it, dispatchRunbook, for "
+         "the record-again blocks broker_revocation_recovery_test.go runs"),
+        ("docs/site/src/content/docs/dispatch/after-a-restore.md",
+         "internal/dispatch/store/mode_switch_test.go:28 (sqlBlockAfter) reads it, restoreRunbook, for "
+         "the mode switch's statements and the reset reset_test.go runs")),
+    f"{ENVOY}/internal/dispatch/api/broker_restore_test.go": reads(
+        ("docs/site/src/content/docs/dispatch/running-dispatch.md",
+         "internal/dispatch/api/broker_restore_test.go:115 (runbookLines) reads it, the first of "
+         "runbookPaths, for the broker's libpq URL step every block names"),
+        ("docs/site/src/content/docs/dispatch/after-a-restore.md",
+         "internal/dispatch/api/broker_restore_test.go:115 (runbookLines) reads it, the second of "
+         "runbookPaths, for the reset's, the restore's and the sweep's blocks the tests run")),
+    f"{ENVOY}/internal/broker/store/person_subject_test.go": reads(
+        ("docs/site/src/content/docs/dispatch/running-dispatch.md",
+         "internal/broker/store/person_subject_test.go:152 (operatorClearBlock) reads it, for the "
+         "operator's clear of one refusal"),
+        ("docs/site/src/content/docs/dispatch/after-a-restore.md",
+         "internal/broker/store/person_subject_test.go:152 (operatorClearBlock) and :212 (heredocAfter) "
+         "read it, for the reset's clear and its read of the broker's recorded generation"),
+        (f"{ENVOY}/internal/dispatch/store/README.md",
+         "internal/broker/store/person_subject_test.go:152 (operatorClearBlock) reads it under ../.., "
+         "for the clear the store README gives")),
     f"{ENVOY}/internal/dispatch/store/counts_in_documents_test.go": reads(
         ("docs/site/src/content/docs/dispatch/running-dispatch.md",
          "internal/dispatch/store/counts_in_documents_test.go reads it: the connection counts it "

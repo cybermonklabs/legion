@@ -3,6 +3,7 @@ package oauthstore_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -374,6 +375,45 @@ func TestADPoPProofIsUsedOnce(t *testing.T) {
 	}
 	if used, err := s.CheckAndSetDPoPProofUsed(ctx, "jti-1", "jkt", "", "POST", "https://broker.example/v1/oauth/token", exp); err != nil || used {
 		t.Fatalf("an expired record: (%v, %v), want (false, nil)", used, err)
+	}
+}
+
+// A DPoP proof the replay table cannot hold is ErrUnstorableText and records nothing: a jti holding
+// a control character (PostgreSQL stores no U+0000 in text), and a jti and htu longer together than
+// the store's bound of 2,048 bytes (the primary key's btree takes no tuple over 2,704). A key of
+// exactly 2,048 bytes is recorded. The htu is random text (rand.Text), which PostgreSQL cannot
+// compress inside the index row.
+//
+// Controls in store.go: each arm of the guard dropped (the NUL fails the insert with SQLSTATE
+// 22021, and the long key with SQLSTATE 54000, neither ErrUnstorableText).
+func TestADPoPProofTheTableCannotHoldIsRefusedBeforeTheWrite(t *testing.T) {
+	ctx := context.Background()
+	s, pool := newStore(t)
+	exp := time.Now().Add(time.Minute)
+	const jti = "a-jti-of-the-library's-length"
+	htu := func(total int) string {
+		path := "https://broker.example/v1/oauth/token/"
+		for len(jti)+len(path) < total {
+			path += rand.Text()
+		}
+		return path[:total-len(jti)]
+	}
+	if used, err := s.CheckAndSetDPoPProofUsed(ctx, jti, "jkt", "", "POST", htu(2048), exp); err != nil || used {
+		t.Fatalf("a proof of jti and htu 2,048 bytes together: (%v, %v), want (false, nil)", used, err)
+	}
+	for name, refused := range map[string][2]string{
+		"a jti holding U+0000":         {"a-jti-with-a-\x00-in-it", "https://broker.example/v1/oauth/token"},
+		"a jti holding U+001F":         {"a-jti-with-a-\x1f-in-it", "https://broker.example/v1/oauth/token"},
+		"a jti and htu of 2,049 bytes": {jti, htu(2049)},
+		"a jti and htu of 3,000 bytes": {jti, htu(3000)},
+	} {
+		if used, err := s.CheckAndSetDPoPProofUsed(ctx, refused[0], "jkt", "", "POST", refused[1], exp); !errors.Is(err, oauthstore.ErrUnstorableText) || used {
+			t.Errorf("%s: (%v, %v), want (false, ErrUnstorableText)", name, used, err)
+		}
+	}
+	var recorded int
+	if err := pool.QueryRow(ctx, `select count(*) from oauth_dpop_proofs`).Scan(&recorded); err != nil || recorded != 1 {
+		t.Fatalf("the table holds %d proofs, %v; want only the 2,048-byte one", recorded, err)
 	}
 }
 

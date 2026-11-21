@@ -9,10 +9,14 @@ import (
 	"testing"
 )
 
-// dispatchRunbook is the runbook that gives the statements an operator runs by hand: those a
-// deployment moving between the Cognito pool and a domain runs at the cutover, and the
-// recording-again of a broker revocation settled by itself.
+// dispatchRunbook is the runbook page that gives the recording-again of a broker revocation settled
+// by itself, which an operator runs by hand.
 const dispatchRunbook = "../../../../../docs/site/src/content/docs/dispatch/running-dispatch.md"
+
+// restoreRunbook is the runbook page that gives the statements a deployment moving between the
+// Cognito pool and a domain runs at the cutover, and the reset after a Dispatch database restored or
+// made again alone.
+const restoreRunbook = "../../../../../docs/site/src/content/docs/dispatch/after-a-restore.md"
 
 // sqlBlockAfter is the first SQL block the document at path gives after the line starting with
 // lead (its leading spaces aside, since a list item indents its lines): a ```sql fence, or a psql
@@ -59,7 +63,7 @@ func sqlBlockAfter(t *testing.T, path, lead string) []string {
 // modeSwitchStatements is the SQL block the runbook gives after the paragraph starting with lead.
 func modeSwitchStatements(t *testing.T, lead string) []string {
 	t.Helper()
-	return sqlBlockAfter(t, dispatchRunbook, lead)
+	return sqlBlockAfter(t, restoreRunbook, lead)
 }
 
 // mintToken stores a personal token of owner recording subject ("" for none), as the mint does

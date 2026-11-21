@@ -11,14 +11,25 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ErrUnstorableProof is a DPoP proof the replay store records nothing of, because its jti holds a
-// control character (unicode.IsControl, U+0000 among them). PostgreSQL writes U+0000 in no text, so
-// such an insert failed, and the library reported the failure as its server_error, which the
-// broker-token check answered as an unreachable broker (503 BROKER_UNAVAILABLE) for a request whose
-// only fault is the caller's own proof. The other control characters are refused with it, as the
-// secrets broker's own replay store refuses them (its oauthstore.ErrUnstorableText). The API
-// answers it 401 BROKER_TOKEN_PROOF_INVALID, the caller's refusal (api.brokerTokenActor).
-var ErrUnstorableProof = errors.New("store: the DPoP proof's jti holds a control character, which the replay store does not keep")
+// ErrUnstorableProof is a DPoP proof the replay store records nothing of, because the row it would
+// write cannot be stored: its jti holds a control character (unicode.IsControl, U+0000 among them),
+// or its jti and htu together are longer than maxStoredProofKey. PostgreSQL writes U+0000 in no
+// text, and refuses a key too long for the primary key's btree (SQLSTATE 54000); either way the
+// insert failed, and the library reported the failure as its server_error, which the broker-token
+// check answered as an unreachable broker (503 BROKER_UNAVAILABLE) for a request whose only fault
+// is the caller's own proof or the length of its own path. The secrets broker's own replay store
+// refuses the same proofs (internal/broker/oauthstore's ErrUnstorableText). The API answers it 401
+// BROKER_TOKEN_PROOF_INVALID, the caller's refusal (api.brokerTokenActor).
+var ErrUnstorableProof = errors.New("store: the DPoP proof's jti holds a control character, or its jti and target URI are too long to record")
+
+// maxStoredProofKey bounds the bytes of a recorded proof's jti and htu together. The primary key
+// (jti, htu) is a btree, whose version 4 takes an index tuple of at most 2,704 bytes on an 8 kB page
+// (the refusal names that limit), and the tuple adds to the two texts at most 26 bytes: its 8-byte
+// header, a 4-byte length header for each column, up to 3 bytes aligning the second column and up
+// to 7 rounding the tuple up to 8. 2,048 leaves that and more, and it is far above what a client's
+// request needs: the library caps jti at 255 characters, and htu is the request's own URL without
+// its query.
+const maxStoredProofKey = 2048
 
 // jtiRetentionMargin is how long past a DPoP proof's acceptance window its record is kept. The
 // window's end is dated on the clock of whoever checked the proof and compared with this
@@ -43,10 +54,11 @@ func NewDPoPProofs(pool *Pool) *DPoPProofs { return &DPoPProofs{pool: pool} }
 // proof at the same moment cannot both see it unused. jkt, nonce and htm are left out of the key:
 // widening it only ever admits presentations that are no replay, and this store serves one
 // resource server whose proofs all carry an 'ath' the library has already checked, so the narrow
-// key the interface requires is the key. Sweep deletes expired records. A jti holding a control
-// character is ErrUnstorableProof, and records nothing.
+// key the interface requires is the key. Sweep deletes expired records. A proof whose jti holds a
+// control character, or whose jti and htu are over maxStoredProofKey bytes together, is
+// ErrUnstorableProof, and records nothing.
 func (d *DPoPProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _, htu string, exp time.Time) (bool, error) {
-	if strings.IndexFunc(jti, unicode.IsControl) >= 0 {
+	if strings.IndexFunc(jti, unicode.IsControl) >= 0 || len(jti)+len(htu) > maxStoredProofKey {
 		return false, ErrUnstorableProof
 	}
 	var recorded bool

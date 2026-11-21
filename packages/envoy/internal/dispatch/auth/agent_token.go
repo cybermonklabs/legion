@@ -205,7 +205,9 @@ func clipCallerField(field string) string {
 var googleLoadBalancerRanges = []netip.Prefix{netip.MustParsePrefix("35.191.0.0/16"), netip.MustParsePrefix("130.211.0.0/22")}
 
 // ForwardedAddress is the caller's address as Dispatch keys it: the access log's address, the
-// previous-token log's, and the bucket the secrets broker's token check keys on.
+// previous-token log's, and the per-address rate-limit bucket the secrets broker's token check
+// keys on. Nothing admits a caller by it: no route grants access by a caller's network address
+// (routes' TestNoRouteGrantsAccessByNetworkAddress).
 //
 // A connection from Google's external load balancer (googleLoadBalancerRanges) is read by the rule
 // the broker's edge reads its callers by: the second-to-last entry of the one X-Forwarded-For line,
@@ -249,6 +251,12 @@ func peerAddress(r *http.Request) string {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+// ThroughGoogleLoadBalancer reports whether r's connection came from Google's external load
+// balancer (googleLoadBalancerRanges), whose X-Forwarded-For ForwardedAddress reads.
+func ThroughGoogleLoadBalancer(r *http.Request) bool {
+	return fromGoogleLoadBalancer(peerAddress(r))
 }
 
 // fromGoogleLoadBalancer reports whether peer, a connection's address without its port, is one of

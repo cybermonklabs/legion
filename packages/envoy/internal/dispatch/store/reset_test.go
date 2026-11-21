@@ -24,7 +24,7 @@ const resetLead = `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v broker_greatest=`
 func runReset(t *testing.T, database *Store, brokerGreatest int64) int64 {
 	t.Helper()
 	ctx := context.Background()
-	statements := sqlBlockAfter(t, dispatchRunbook, resetLead)
+	statements := sqlBlockAfter(t, restoreRunbook, resetLead)
 	if len(statements) < 3 || statements[0] != "begin" || statements[len(statements)-1] != "commit" {
 		t.Fatalf("the runbook's reset is %q; want one transaction", statements)
 	}

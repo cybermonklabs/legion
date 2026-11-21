@@ -680,8 +680,9 @@ so Dispatch leaves that revocation owed, logs it at ERROR and counts it
 `0040_person_subjects` says how such a revoke can arrive.
 
 Reset or restore the broker's database and Dispatch's together, never one alone, for the reason
-[the Dispatch runbook](/legion/dispatch/running-dispatch/#signing-people-in) gives, which also
-gives the recovery when one was: for Dispatch's database alone, a reset that ends every person's
+[the Dispatch runbook](/legion/dispatch/running-dispatch/#signing-people-in) gives, and its
+[After a restore](/legion/dispatch/after-a-restore/) gives the recovery when one was: for
+Dispatch's database alone, a reset that ends every person's
 browser sessions, personal tokens and credentials at the broker, at once and again an hour and ten
 minutes later, lifts a refusal at the broker only for the account the Workspace directory names as
 an address's holder, and records its own start and end in Dispatch's `deployment_resets`; for the
@@ -691,7 +692,7 @@ revocations it chose not to pay), which nothing else finds — the broker holds 
 accounts' credentials live again, and Dispatch, which settled each, owes nothing and raises no
 alarm. Then the Dispatch runbook's read of the last reset's end says whether the backup may
 predate it, by the same hour's margin; when it may, run [the Dispatch runbook's credentials and
-directory blocks](/legion/dispatch/running-dispatch/#signing-people-in) again after record-again
+directory blocks](/legion/dispatch/after-a-restore/#after-a-dispatch-database-restored-or-made-again-alone) again after record-again
 and before starting Dispatch, and when the deployment ever moved from the Cognito pool to a domain,
 that move's sweep of machine logins recording no approving account too. A refusal an operator
 lifted by hand comes back with the restore and nothing records it: that runbook's block finds each

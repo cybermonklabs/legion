@@ -23,8 +23,9 @@ import (
 // answers as an unreachable broker: 503 BROKER_UNAVAILABLE ("try again in a minute") and a WARN
 // line saying the secrets broker could not be reached, for a request whose only fault is the
 // caller's own proof. The proof is the caller's to fix, as every other bad proof is: 401
-// BROKER_TOKEN_PROOF_INVALID, which the broker answers in kind since #4612 (400 REQUEST_INVALID
-// from its own store's ErrUnstorableText).
+// BROKER_TOKEN_PROOF_INVALID (store.ErrUnstorableProof). The secrets broker's own replay store
+// refuses the same proof (internal/broker/oauthstore's ErrUnstorableText), which its token
+// endpoint answers 400 invalid_request REQUEST_INVALID.
 //
 // The proofs here are signed by hand rather than by the helper's DPoP transport, which mints its
 // own jti; the first row is the control that this signer's proofs are otherwise sound.

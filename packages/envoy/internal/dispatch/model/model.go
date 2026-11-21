@@ -433,8 +433,14 @@ type ProjectAccess struct {
 	Passkeys *[]EnrolledPasskey `json:"passkeys,omitempty"`
 	// Invitable is, in that same answer alone, the people of People the owner can make a link for
 	// now (POST /api/v1/projects/{key}/access/people/{email}/invitations): each on no domain of the
-	// company's Workspace and with no full member's sign-in, sorted, [] for none.
+	// company's Workspace, with no full member's sign-in, and named by no project of another owner,
+	// sorted, [] for none.
 	Invitable *[]string `json:"invitable,omitempty"`
+	// ListedByAnotherOwner is, in that same answer alone, the people of People a project of
+	// another owner names directly, sorted, [] for none: one owner binds a person from outside, so
+	// the owner makes no link for them (409 LISTED_BY_ANOTHER_OWNER) until that project's owner
+	// takes them off its list, or an operator does.
+	ListedByAnotherOwner *[]string `json:"listed_by_another_owner,omitempty"`
 }
 
 // EnrolledPasskey is one passkey of a person (ProjectAccess.Passkeys): when it was enrolled, who

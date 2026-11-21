@@ -150,8 +150,8 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 			// database recreated or restored without the broker's, or a generation written at the
 			// broker by hand - and the replaced account's broker credentials were not ended. So the
 			// revocation stays owed, where the owed gauges show it, the ERROR line names the
-			// address's generation now beside the two the broker compared, and the runbook
-			// ("Signing people in") gives the recovery. The client answers "superseded" only with
+			// address's generation now beside the two the broker compared, and the runbook's
+			// After a restore page gives the recovery. The client answers "superseded" only with
 			// superseded_by; the generation sent is boxed against a broker that supersedes a revoke
 			// that carried none.
 			var sent any
@@ -171,7 +171,7 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 				current = generation
 			}
 			s.deps.BrokerRevocationsSuperseded.Inc()
-			slog.Error("dispatch: the secrets broker answered a revocation superseded: Dispatch's session generation for the address is below the one the broker recorded, so the replaced account's broker credentials were not ended; the revocation stays owed until an operator settles it, and a lone Dispatch restore requires the runbook's reset before that (running-dispatch.md, \"Signing people in\")",
+			slog.Error("dispatch: the secrets broker answered a revocation superseded: Dispatch's session generation for the address is below the one the broker recorded, so the replaced account's broker credentials were not ended; the revocation stays owed until an operator settles it, and a lone Dispatch restore requires the runbook's reset before that (after-a-restore.md)",
 				"email", revocation.Email, "issuer", revocation.Issuer, "subject", revocation.Subject,
 				"session_generation", sent, "superseded_by", *revoked.SupersededBy, "address_session_generation", current,
 				"still_owed_unread", err != nil, "retry_in", brokerRevocationRetry)
@@ -280,9 +280,9 @@ func RegisterBrokerRevocationMetrics(registry *metrics.Registry, pool *store.Poo
 // superseded this process's loop heard, for a revocation it then leaves owed and logs at ERROR
 // (revokeOwedBrokerCredentials), once a claim, so a revocation left that way adds one each retry.
 // Any count above zero means Dispatch's session generation for an address is below the broker's,
-// and a replaced account's broker credentials were not ended; the runbook ("Signing people in")
+// and a replaced account's broker credentials were not ended; the runbook's After a restore page
 // gives the recovery, a reset of every person's sessions, tokens and broker credentials.
 func NewBrokerRevocationsSuperseded(registry *metrics.Registry) *metrics.Counter {
 	return registry.NewCounter("envoy_dispatch_broker_revocations_superseded_total",
-		"Revocation calls the secrets broker answered superseded, which Dispatch leaves owed: Dispatch's session generation for the address is below the broker's, and the replaced account's broker credentials stay live until the runbook's reset after a lone restore ends them (running-dispatch.md, Signing people in)")
+		"Revocation calls the secrets broker answered superseded, which Dispatch leaves owed: Dispatch's session generation for the address is below the broker's, and the replaced account's broker credentials stay live until the runbook's reset after a lone restore ends them (after-a-restore.md)")
 }

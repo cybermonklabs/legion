@@ -126,19 +126,26 @@ func TestATradeOfAReplacedAccountIsRefusedOnEveryBoxKey(t *testing.T) {
 	}
 }
 
-// operatorClearDocs are the two files that give the operator's clear of a broker refusal, each in
-// a psql heredoc: the runbook and Dispatch's store README.
+// operatorClearDocs are the files that give the operator's clear of a broker refusal, each in a
+// psql heredoc: Dispatch's runbook, whose Running Dispatch page gives the clear of one refusal and
+// whose After a restore page gives it inside the loop of the reset after a lone Dispatch restore,
+// and Dispatch's store README.
 var operatorClearDocs = []string{
 	"../../../../../docs/site/src/content/docs/dispatch/running-dispatch.md",
+	restoreRunbook,
 	"../../dispatch/store/README.md",
 }
 
-// operatorClearBlock is the one block of statements both operatorClearDocs give in every heredoc
-// that deletes from replaced_person_subjects, a statement a line, each line trimmed, since a list
-// item indents its code block. The runbook gives it twice: as the operator's clear of one refusal,
-// and inside the loop of its reset after a lone Dispatch restore, which clears the refusal of the
-// account the Workspace directory names; every such heredoc must be that same block, so a fix to
-// the clear reaches both.
+// restoreRunbook is the page of Dispatch's runbook that gives the reset after a lone Dispatch
+// restore.
+const restoreRunbook = "../../../../../docs/site/src/content/docs/dispatch/after-a-restore.md"
+
+// operatorClearBlock is the one block of statements every operatorClearDocs file gives in every
+// heredoc that deletes from replaced_person_subjects, a statement a line, each line trimmed, since
+// a list item indents its code block: the operator's clear of one refusal, and the reset's clear
+// of the refusal of the account the Workspace directory names, whose psql line goes on past its
+// <<'SQL' with what the loop does on a failure; every such heredoc must be that same block, so a
+// fix to the clear reaches both.
 func operatorClearBlock(t *testing.T) []string {
 	t.Helper()
 	var block []string
@@ -153,7 +160,7 @@ func operatorClearBlock(t *testing.T) []string {
 		for _, line := range strings.Split(string(text), "\n") {
 			line = strings.TrimSpace(line)
 			switch {
-			case !inside && strings.HasSuffix(line, "<<'SQL'"):
+			case !inside && strings.Contains(line, "<<'SQL'"):
 				inside, heredoc = true, nil
 			case inside && line == "SQL":
 				inside = false
@@ -234,7 +241,7 @@ func heredocAfter(t *testing.T, path, lead string) []string {
 func TestTheRunbookReadsTheBrokersRecordedGeneration(t *testing.T) {
 	st := storetest.Open(t)
 	ctx := context.Background()
-	block := heredocAfter(t, operatorClearDocs[0], brokerGenerationLead)
+	block := heredocAfter(t, restoreRunbook, brokerGenerationLead)
 	if len(block) != 1 || !strings.HasPrefix(block[0], "select coalesce(max(session_generation), 0) from person_replacement_generations") {
 		t.Fatalf("the runbook gives %q after %q, want the one read of person_replacement_generations", block, brokerGenerationLead)
 	}
