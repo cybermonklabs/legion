@@ -492,16 +492,25 @@ func expectsReplyAnswer(requested json.RawMessage) json.RawMessage {
 }
 
 // senderStamp is the sender a send or a publish carries: the session, the machine and directory it
-// runs in (its interest record), the roles whose claims name it (store.Registry.RolesHeldBy), and
-// its title (its session entry). It only enriches the envelope, so no read it makes may cost the
-// message. The interest record is read from the cache, and a miss - a sender that subscribed to
-// nothing, or any sender while the cache refills after a reconnect - is read through to the bucket
-// within senderStampReadTimeout of ctx, the route's own (store.Registry.Get bounds that read
-// alone). A read that does not answer leaves the stamp with what is already known, the session id
-// and the title the session cache holds, and leaves the rest of the budget to the publish that
+// runs in (its interest record, or its session entry where that record cannot be read), the roles
+// whose claims name it (store.Registry.RolesHeldBy), and its title (its session entry). It only
+// enriches the envelope, so no read it makes may cost the message. The interest record is read
+// from the cache, and a miss - a sender that subscribed to nothing, or any sender while the cache
+// refills after a reconnect - is read through to the bucket within senderStampReadTimeout of ctx,
+// the route's own (store.Registry.Get bounds that read alone). A read that does not answer leaves
+// the stamp with what is already known, the session id and the title, machine and directory of
+// the entry the session cache holds, and leaves the rest of the budget to the publish that
 // follows, which meets the same silent bus itself and is answered as the named 503. The roles come
 // from the registry's watched view of the claims, with no bucket call, and a view that is not
 // complete (store.ErrRoleViewNotReady) leaves them out rather than refusing the send.
+//
+// The machine and directory are the interest record's wherever its read answers it, and the
+// session entry's where that read finds no record, does not answer, or answers a record this build
+// cannot decode (store.ErrMalformedInterest). Each registration writes both, moving the record to
+// the listener and directory it came through (internal/store's mergeForUpsert) and building the
+// entry afresh (sessionEntryFromSubscribe), so either names the registration the session has now.
+// The record is read first and decides wherever it answers; the entry is the one the title is read
+// from, so the fallback adds no read and spends no more of the window.
 //
 // The title is read the same way and within that same one window, so the two read-throughs of one
 // stamp cannot cost the message more than the window the budget allots it (senderStampReadTimeout)
@@ -526,19 +535,22 @@ func senderStamp(ctx context.Context, registry *store.Registry, sessions *sessio
 	sender := &contracts.EnvelopeSender{SessionID: sourceSession}
 	readCtx, cancel := context.WithTimeout(ctx, senderStampReadTimeout)
 	defer cancel()
-	if interest, err := registry.Get(readCtx, sourceSession); err == nil {
-		sender.Machine = interest.MachineID
-		sender.Cwd = interest.Dir
-	}
+	interest, interestErr := registry.Get(readCtx, sourceSession)
 	if held, err := registry.RolesHeldBy(sourceSession); err == nil {
 		sender.Roles = held
 	}
-	if entry, err := sessions.Get(sourceSession); err == nil {
+	entry, entryErr := sessions.Get(sourceSession)
+	if errors.Is(entryErr, nats.ErrKeyNotFound) {
+		entry, entryErr = sessions.Refresh(readCtx, sourceSession)
+	}
+	if entryErr == nil {
 		sender.Title = entry.Title
-	} else if errors.Is(err, nats.ErrKeyNotFound) {
-		if refreshed, err := sessions.Refresh(readCtx, sourceSession); err == nil {
-			sender.Title = refreshed.Title
-		}
+	}
+	switch {
+	case interestErr == nil:
+		sender.Machine, sender.Cwd = interest.MachineID, interest.Dir
+	case entryErr == nil:
+		sender.Machine, sender.Cwd = entry.MachineID, entry.Dir
 	}
 	return sender
 }
@@ -638,12 +650,12 @@ func deliveryModeVerdictFor(sessionID, title string, capabilities []string, adve
 }
 
 // sendRequestBudget is the bus work a /v1 route does under the request's own context: the send
-// route's read of the target session, its read of the sender's interest record (senderStamp), its
-// connection probe of the target (connectionProbeTimeout) and its publish share it, and GET
-// /v1/roles/<role> resolves its holder within it too. The publish route spends it on the publish
-// of a topic the stream captures, and a role send's first resolution of the role's holder
-// (sendToRole, every attempt of that resolution) is answered within it too; a role send then runs
-// on within publishDeliveryWindow (confirmed.go). GET
+// route's read of the target session, its reads of the sender's interest record and session entry
+// (senderStamp), its connection probe of the target (connectionProbeTimeout) and its publish share
+// it, and GET /v1/roles/<role> resolves its holder within it too. The publish route spends it on
+// the publish of a topic the stream captures, and a role send's first resolution of the role's
+// holder (sendToRole, every attempt of that resolution) is answered within it too; a role send
+// then runs on within publishDeliveryWindow (confirmed.go). GET
 // /v1/sessions, GET /v1/registry/<session_id> and GET /v1/interests/<session_id> read within it as
 // well, and every route that writes does its store work within it: subscribe, unsubscribe, POST
 // /v1/roles/set, and DELETE of /v1/interests/<session_id> and /v1/sessions/<session_id>. The HTTP
@@ -659,7 +671,8 @@ const sendRequestBudget = 3500 * time.Millisecond
 // paths keep roleHolderReadTimeout as their per-read cap instead.
 const sendSessionReadTimeout = 1 * time.Second
 
-// senderStampReadTimeout bounds senderStamp's read of the sender's interest record from the bucket.
+// senderStampReadTimeout bounds senderStamp's reads of the sender's interest record and session
+// entry from their buckets, the two together.
 // nats.go's KV read takes no context and waits out the JetStream MaxWait (10 s), and the stamp is
 // only enrichment, so on a bus that does not answer it gets no more of sendRequestBudget than the
 // send route's own read of its target (sendSessionReadTimeout): a send whose two reads both go
@@ -1311,10 +1324,10 @@ func sessionInfoWith(entry session.ListEntry, held []string) listenerwire.Sessio
 // legacy id past envoy_interests' get bound that envoy_sessions still lists, or one outside
 // nats.go's key alphabet, which GET /v1/interests/<session_id> answers as the 413 or 400
 // writeBusUnavailable writes and the two session routes as a row whose topics are []). Any other
-// error is a read that did not answer, whatever it names. In nats.go v1.50.0 that includes ctx's
+// error is a read that did not answer, whatever it names. In nats.go v1.55.0 that includes ctx's
 // end (store.Registry.Get's bound, or the JetStream MaxWait context nats.go's direct get always
 // runs under, so it always takes requestWithContext), nats.ErrConnectionClosed,
-// nats.ErrNoResponders, and whatever nats.go's publish returns, the raw *net.OpError of a write
+// nats.ErrDisconnected, nats.ErrNoResponders, and whatever nats.go's publish returns, the raw *net.OpError of a write
 // buffer flushed onto a broken connection among them; the rule does not rest on that list being
 // complete.
 func interestReadAnswered(err error) bool {

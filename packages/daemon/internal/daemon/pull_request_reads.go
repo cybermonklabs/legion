@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // followHead is the per-issue read's check of pr's head against pull, GitHub's own read of it.
@@ -50,33 +51,38 @@ import (
 // head GitHub shows. On an error, or a record no longer open, it returns the record as it last
 // read it, and the reads after it judge the pull request at that head; the next read of the issue
 // follows it.
+//
+// GitHub's head is compared with the record's as the store would keep it (storetext.Text), since
+// the record holds what the store kept of the head the synchronize named: compared as GitHub sent
+// it, a head the store had to change would read as a move at every read.
 func (w *workflowRuntime) followHead(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest) (record.PullRequest, error) {
-	if pull.State != "open" || pull.Head.SHA == "" || pull.Head.SHA == pr.HeadSHA {
+	head := storetext.Text(pull.Head.SHA)
+	if pull.State != "open" || head == "" || head == pr.HeadSHA {
 		return pr, nil
 	}
 	current, err := w.openRecord(ctx, pr)
-	if err != nil || current.HeadSHA == pull.Head.SHA {
+	if err != nil || current.HeadSHA == head {
 		return current, err
 	}
 	if current.HeadSHA != pr.HeadSHA && !pull.UpdatedAt.After(current.HeadUpdatedAt) {
 		return current, nil
 	}
 	pr = current
-	pushes, err := w.headPushes(ctx, github, pr, pull.Head.SHA)
+	pushes, err := w.headPushes(ctx, github, pr, head)
 	if err != nil {
 		return pr, err
 	}
 	w.log.Warn("workflow: GitHub shows a pull request at a head the daemon has not recorded; applying the synchronize its webhook would",
-		"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "recorded", pr.HeadSHA, "head", pull.Head.SHA, "updated_at", pull.UpdatedAt, "pushes", len(pushes))
+		"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "recorded", pr.HeadSHA, "head", head, "updated_at", pull.UpdatedAt, "pushes", len(pushes))
 	for _, push := range pushes {
 		if _, err := intake.ApplyFact(ctx, w.pool, "github", push.eventID, push.fact, w.handlers...); err != nil {
 			return pr, fmt.Errorf("apply the push to %s: %w", push.fact.After, err)
 		}
 	}
 	eventID := fmt.Sprintf("head-read:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, pr.Repo, pr.Number, time.Now().UnixNano())
-	fact := intake.PullRequestSynchronized{Repo: pr.Repo, Number: pr.Number, Branch: pr.Branch, HeadSHA: pull.Head.SHA, Body: pull.Body, UpdatedAt: pull.UpdatedAt}
+	fact := intake.PullRequestSynchronized{Repo: pr.Repo, Number: pr.Number, Branch: pr.Branch, HeadSHA: head, Body: pull.Body, UpdatedAt: pull.UpdatedAt}
 	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
-		return pr, fmt.Errorf("apply the synchronize to %s: %w", pull.Head.SHA, err)
+		return pr, fmt.Errorf("apply the synchronize to %s: %w", head, err)
 	}
 	return w.openRecord(ctx, pr)
 }
@@ -219,6 +225,9 @@ func (w *workflowRuntime) headPushes(ctx context.Context, github githubrest.Clie
 // unfollowed says why the pushes cannot be rebuilt, and then there are none: the page does not
 // lead back from head to the recorded head, an entry on the way is no push, or GitHub answered the
 // read with an error. A rate-limit answer, or ctx ending, is an error: the read ends there.
+//
+// The activity's commits are compared with the record's as the store would keep them
+// (storetext.Strings), as followHead compares the head.
 func (w *workflowRuntime) lostPushes(ctx context.Context, github githubrest.Client, pr record.PullRequest, head string) ([]readPush, string, error) {
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	activity, err := github.BranchActivity(read, pr.Branch)
@@ -229,7 +238,7 @@ func (w *workflowRuntime) lostPushes(ctx context.Context, github githubrest.Clie
 		}
 		return nil, fmt.Sprintf("the read of the branch's activity failed: %v", err), nil
 	}
-	chain, unfollowed := followActivity(activity, pr.HeadSHA, head)
+	chain, unfollowed := followActivity(storetext.Strings(activity), pr.HeadSHA, head)
 	if unfollowed != "" {
 		return nil, unfollowed, nil
 	}
@@ -301,14 +310,15 @@ func (w *workflowRuntime) pushReadEventID(pr record.PullRequest, before, after s
 	return readEventID("push-read", w.dispatchProject, pr.Repo, pr.Number, before+"..."+after)
 }
 
-// heardSpelling is repo as GitHub intake hears it, the spelling a webhook's fact names it by and a
-// pull request is recorded and looked up under: a served repository as the mapping names it, and
-// any other as its record keeps GitHub's spelling (heardRepositories).
+// heardSpelling is repo, the GitHub spelling a record keeps (record.Issue.GitHubRepo), as GitHub
+// intake hears it, the spelling a webhook's fact names it by and a pull request is recorded and
+// looked up under: as the held heard set names it (heard, heardRepositories), and repo itself, the
+// record's own GitHub spelling, where the set does not name it yet.
 func (w *workflowRuntime) heardSpelling(repo string) string {
-	if w.repositories != nil {
-		for _, served := range w.repositories.Accepted() {
-			if strings.EqualFold(served.String(), repo) {
-				return served.String()
+	if held := w.heard.Load(); held != nil {
+		for _, heard := range *held {
+			if strings.EqualFold(heard.String(), repo) {
+				return heard.String()
 			}
 		}
 	}

@@ -16,10 +16,10 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
@@ -55,12 +55,13 @@ var workerImageTools = sandbox.Tools{
 
 // imageProbeRetry is how often the daemon tries its worker image again after an attempt that said
 // nothing definitive: the daemon's backoff, bounded like `legion probe-image`'s at six attempts.
-// Its transient outcomes (a pod that never finished, a kubelet failure) can repeat for a reason no
-// wait changes, such as a memory limit too small for Oh My Pi, so an unbounded retry would hold a
-// deterministic refusal as a boot that never ends. A probe pod the pool has no room for is no such
-// outcome: it is waited on at the policy's longest interval, outside the six (bootprobe.Run,
-// Outcome.Waiting), since a full pool is the pool's state and not the image's, and the daemon
-// exiting would not make room.
+// Its transient outcomes (a pod that never finished, a kubelet failure, a probe that exited
+// bootprobe.NoVerdictExit because a TLS run or a check had no verdict) can repeat for a reason no
+// wait changes, such as a memory limit too small for Oh My Pi or a client that never answers, so
+// an unbounded retry would hold a deterministic refusal as a boot that never ends. A probe pod
+// the pool has no room for is no such outcome: it is waited on at the policy's longest interval,
+// outside the six (bootprobe.Run, Outcome.Waiting), since a full pool is the pool's state and not
+// the image's, and the daemon exiting would not make room.
 var imageProbeRetry = bootprobe.Image
 
 // sandboxReads is what Agent Sandbox needs that readBoot reads: the cluster's client and the
@@ -198,7 +199,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	// (volumeTrimReports, daemon.Run). It hangs off the plan by pointer, so the plan's own copy
 	// carries the one holder the factory closed over, as plan.repositories does.
 	p.volumeReports = &volumeTrimReports{}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
 		p.memoryGuardKills, p.volumeReports)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
@@ -261,6 +262,10 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 // 250m (CPU time × 4, plus the wall time off CPU), the worst takes 184 s, 56 s inside the budget,
 // short of the 60 s; at 500m (CPU time × 2) it takes 112 s, 128 s inside. The runs are at 1 CPU
 // because the builds namespace refuses a Job under 1 CPU, so the 500m figures are predictions.
+// None of these runs met a cold image: a TLS run its own limit stops at a site an earlier run
+// reached runs once more at two times that limit (probeTLSClients), which adds up to two times
+// the limit for each such run to a probe on a node where the image is new, and a probe its
+// deadline cuts exits 75, which the daemon reads as a transient attempt.
 // Five fresh runs at 250m / 1Gi, before the probe held gcloud, bq, az, mise, wget, git, go,
 // kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe, and the reservation
 // still fits a pool that cannot place a controller or issue pod. It has a 5Gi bound on node disk
@@ -399,6 +404,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		Setup:                   k.Setup,
 		TestPostgres:            k.TestPostgres,
 		MemoryGuard:             memoryGuard,
+		LeakCheckSetting:        cfg.LeakCheck,
 		BootTimeout:             cfg.WorkerBootTimeout,
 		RegistrationIntervals:   cfg.WorkerBootRegistrationDeadlineIntervals,
 		BusyBackoff:             busyBackoffFirst,
@@ -459,14 +465,14 @@ func providersSecrets(cfg config.Config, lookup func(string) (string, bool)) []s
 // client from runtime.kubernetes.agent_secrets and starts it at boot on a background context, so
 // the daemon logs in with its own projected ServiceAccount token (token_file) and keeps logging in
 // before each credential expires; no person approves any of it, a restart included. Every login
-// logs its own outcome (agentsecrets.Client.Login); one that fails is retried by the client, and
+// logs its own outcome (cipher.Client.Login); one that fails is retried by the client, and
 // pod enrollment waits for it. With the block's exchange_audience set, the same client is the
 // machines' Registrar too (newRegistrar), which registers each role's session for its pod; unset,
 // the Registrar is nil and no registration is ever made. The client itself is returned too,
 // read-only, so the state route can show the login's current status (source.State,
-// agentsecrets.Client.LoginStatus). Never part of launchSecrets, so no pod is ever handed the
+// cipher.Client.LoginStatus). Never part of launchSecrets, so no pod is ever handed the
 // daemon's key, token or credential. Nil, nil, nil without the block.
-func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, supervise.Registrar, *agentsecrets.Client) {
+func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, supervise.Registrar, *cipher.Client) {
 	k := cfg.Runtime.Kubernetes
 	if k == nil || k.AgentSecrets == nil {
 		return nil, nil, nil
@@ -480,18 +486,18 @@ func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, s
 		Timeout:       30 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	client := &agentsecrets.Client{URL: k.AgentSecrets.URL, HTTP: broker, TokenFile: k.AgentSecrets.TokenFile, Log: log}
+	client := &cipher.Client{URL: k.AgentSecrets.URL, HTTP: broker, TokenFile: k.AgentSecrets.TokenFile, Log: log}
 	go func() { _ = client.Start(context.Background()) }()
 	return brokerEnroller{client: client}, newRegistrar(*k.AgentSecrets, client), client
 }
 
-// brokerEnroller is agentsecrets.Client as supervise.Enroller; an *agentsecrets.APIError is a
+// brokerEnroller is cipher.Client as supervise.Enroller; an *cipher.APIError is a
 // PermanentError when its status says so, which is how the machine tells a refusal from an outage,
 // and an ExpiredTokenError for POD_TOKEN_EXPIRED, a stale token under a key that stands.
-type brokerEnroller struct{ client *agentsecrets.Client }
+type brokerEnroller struct{ client *cipher.Client }
 
 func (b brokerEnroller) Enroll(ctx context.Context, e supervise.PodEnrollment) (string, error) {
-	enrolled, err := b.client.Enroll(ctx, agentsecrets.PodEnrollment{
+	enrolled, err := b.client.Enroll(ctx, cipher.PodEnrollment{
 		PodUID: e.PodUID, Slot: e.Slot, Thumbprint: e.Thumbprint, PodToken: e.PodToken, Session: e.Session, Claim: e.Claim,
 	})
 	if err != nil {
@@ -563,7 +569,7 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // token source (the implement App's, minted for the repository's owner) and every tree role's gh
 // bundle (gitHubCredential, a directory for each owner the role's App is installed on, read from
 // GitHub at every bundle, and one for each owner a configured rename moved a repository away
-// from while repos holds the name it moved to), with the
+// from while served answers the name it moved to is served), with the
 // controller's own bundle beside it
 // (appauth.ControllerCredential), which a controller's launch and its refresh both ask by owner,
 // and the directory set those directories are compared with (appauth.GitHubDirs), which the
@@ -578,13 +584,13 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // its pod's own, so the implement App's refusal of an owner costs the controller's pod, which
 // runs the review App alone, nothing — with
 // serving as the rule every provisioning token's repository is read through
-// (repositories.serving, the mapping's own, so a configured rename's mint follows the owner
-// whose installation holds the repository now), with the repositories the project works as the
-// ones its repository caches follow (mapped: the mapping's and those of its live issue records,
-// workflowRuntime.cacheRepositories), with the store's own workspace bundles as what a
-// replacement pod's launcher is sent and what its restore drops, and registers its launcher
-// acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
-// mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
+// (repositories.serving, the repository state's own, so a configured rename's mint follows the
+// owner whose installation holds the repository now), with the repositories the project works as
+// the ones its repository caches follow (cached: those of its live issue records and of the
+// launches since their last read, workflowRuntime.cacheRepositories), with the store's own
+// workspace bundles as what a replacement pod's launcher is sent and what its restore drops, and
+// registers its launcher acceptor on the stream listener. A daemon with no GitHub Apps hands it no
+// tokens, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
 // one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST
 // root ("" is https://api.github.com), which the shared public leak check is read under
@@ -596,12 +602,12 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // (volumeTrimReports): it is built with this factory, before the workflow opens, and filled once
 // it has (plan.volumeReports). One that is never filled refuses every report it is given with
 // errVolumeReportsUnbound, which the launcher session logs.
-func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
+func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills,
 	reports *volumeTrimReports) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
-		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
-		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
+		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
+		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
 		// The two halves of the release's saved work: an idle release puts the issue's unpushed
 		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
 		// replaces the released one before any role of that pod starts. The confirmation deletes
@@ -624,10 +630,11 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// reports and filled when it does (plan.volumeReports).
 		opts.VolumeReported = reports.report
 		// The shared public leak check each pod's launcher is pushed before any role of the pod
-		// starts, read with the implement App's read lease on the check's owner (leakCheckToken);
-		// a daemon with no Apps reads none, and the runtime refuses the start of a role whose
-		// launcher names a tag with the cause that says so.
-		opts.LeakCheck = leakCheckSource(apps, githubAPI)
+		// starts, read from the repository the deployment names (opts.LeakCheckSetting) with the
+		// implement App's read lease on its owner (leakCheckToken). A deployment that names none
+		// is pushed none; a daemon with no Apps reads none, and the runtime refuses the start of a
+		// role whose launcher names a tag under a named check with the cause that says so.
+		opts.LeakCheck = leakCheckSource(apps, githubAPI, opts.LeakCheckSetting)
 		// Each process an issue pod's memory guard ends reaches the daemon through the kill
 		// holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed
@@ -641,10 +648,10 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 			// every launch's addressing reads its role's App's owners out of beside the drift
 			// check.
 			opts.Tokens = newImplementTokens(apps, serving)
-			opts.GitHubCredential = appauth.GitHubCredential(apps, repos, renames, installed, left, opts.Log)
-			opts.ControllerCredential = appauth.ControllerCredential(apps, repos, renames, installed, left, opts.Log)
+			opts.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, opts.Log)
+			opts.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, opts.Log)
 			opts.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-				return appauth.GitHubDirs(repos, renames, installed, left, roles, repo)
+				return appauth.GitHubDirs(served, renames, installed, left, roles, repo)
 			}
 		}
 		rt, err := sandbox.New(ctx, rc, opts)
@@ -860,7 +867,7 @@ func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMiss
 //
 // It is the one token source the Sandbox runtime's three mint sites share (runtime/sandbox's
 // provision, its gh credential refresh and its repository cache Secret), so the repository a
-// configured rename moved to another owner is mapped here, once, to the name whose installation
+// configured rename moved to another owner is turned here, once, into the name whose installation
 // holds it now (serving): nothing under runtime/sandbox knows of a rename.
 //
 // Only the token follows the rename. Every address those three sites build — the pod's feed, its
@@ -892,27 +899,30 @@ func (t *implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (st
 	return lease.Token, nil
 }
 
-// leakCheckSource is the daemon's reader of the shared public leak check, minting through apps
-// (leakCheckToken) and reading under githubAPI, GitHub's REST root ("" is
-// https://api.github.com), which the Sandbox runtime pushes to each pod's launcher before any role
-// of the pod starts (sandbox.Options.LeakCheck). Where apps drops an owner's leases
-// (appauth.Forgetter), a read GitHub answers 401 drops the lease leakCheckToken mints, so the next
-// read mints a new one. A daemon with no GitHub Apps has no reader: the answer is then
-// the nil interface, never a nil *leakguard.Source inside one, so the runtime's comparison with
-// nil reads the daemon as holding no credential.
-func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckReader {
-	if apps == nil {
+// leakCheckSource is the daemon's reader of the shared public leak check the deployment names
+// (setting, config's leak_check), minting through apps (leakCheckToken) and reading the setting's
+// repository under githubAPI, GitHub's REST root ("" is https://api.github.com), which the Sandbox
+// runtime pushes to each pod's launcher before any role of the pod starts
+// (sandbox.Options.LeakCheck). Where apps drops an owner's leases (appauth.Forgetter), a read
+// GitHub answers 401 drops the lease leakCheckToken mints, so the next read mints a new one. A
+// deployment that names no check, and a daemon with no GitHub Apps, have no reader: the answer is
+// then the nil interface, never a nil *leakguard.Source inside one. The runtime reads the first as
+// a deployment that runs no check (sandbox.Options.LeakCheckSetting) and pushes nothing, and the
+// second, under a configured setting, as the daemon holding no credential to read it with.
+func leakCheckSource(apps appauth.Tokens, githubAPI string, setting leakguard.Setting) sandbox.LeakCheckReader {
+	if apps == nil || !setting.Configured() {
 		return nil
 	}
-	source := &leakguard.Source{Token: leakCheckToken(apps), API: githubAPI}
+	repository := setting.Repository
+	source := &leakguard.Source{Repository: repository, Token: leakCheckToken(apps, repository), API: githubAPI}
 	if forgetter, ok := apps.(appauth.Forgetter); ok {
-		source.Forget = func() { forgetter.Forget(appauth.Implement, leakguard.CheckRepository.Owner()) }
+		source.Forget = func() { forgetter.Forget(appauth.Implement, repository.Owner()) }
 	}
 	return source
 }
 
 // leakCheckToken mints the token the shared public leak check is read with: the implement App's
-// read lease on the check's owner (appauth.Tokens.ReadToken, whose read permissions hold all a
+// read lease on repository's owner (appauth.Tokens.ReadToken, whose read permissions hold all a
 // tarball read needs). No request names a repository any longer (INFRA-2543), so the lease reaches
 // every repository that owner's installation holds and the reading permissions are the whole of
 // what keeps it from writing. It mints nothing else: an installation the account has not granted
@@ -924,16 +934,16 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckRea
 // told from every other failed mint, since the two are fixed in different places — what the
 // account grants the App's installation, and the App's configuration or its installation on the
 // owner.
-func leakCheckToken(apps appauth.Tokens) func(context.Context) (string, error) {
+func leakCheckToken(apps appauth.Tokens, repository ghrepo.Repository) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		lease, err := apps.ReadToken(ctx, appauth.Implement, leakguard.CheckRepository.Owner())
+		lease, err := apps.ReadToken(ctx, appauth.Implement, repository.Owner())
 		switch {
 		case err == nil:
 			return lease.Token, nil
 		case appauth.NarrowingRefused(err):
-			return "", fmt.Errorf("GitHub refused the daemon's implement App the reading permissions on %s, and the daemon reads %s with no wider token: %w", leakguard.CheckRepository.Owner(), leakguard.CheckSlug, err)
+			return "", fmt.Errorf("GitHub refused the daemon's implement App the reading permissions on %s, and the daemon reads %s with no wider token: %w", repository.Owner(), repository, err)
 		default:
-			return "", fmt.Errorf("the daemon could not mint its read-only token for %s: %w", leakguard.CheckSlug, err)
+			return "", fmt.Errorf("the daemon could not mint its read-only token for %s: %w", repository, err)
 		}
 	}
 }

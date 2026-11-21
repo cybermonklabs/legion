@@ -204,7 +204,7 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 		"GITHUB_TOKEN", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_KEY_3", "GIT_CONFIG_KEY_4",
 		"GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2", "GIT_CONFIG_VALUE_3", "GIT_CONFIG_VALUE_4", "GIT_TERMINAL_PROMPT", "GOCACHE", "GOMODCACHE",
 		"LEGION_BOOT_TOKEN_FILE", "LEGION_CONTROLLER", "LEGION_DAEMON_URL",
-		"LEGION_GENERATION", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "LEGION_PROJECT", "LEGION_ROLE", "LEGION_SLACK_CHANNELS", "LEGION_STATE_DIR",
+		"LEGION_GENERATION", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "LEGION_LEAK_CHECKER_MANIFEST_SHA256", "LEGION_PROJECT", "LEGION_ROLE", "LEGION_SLACK_CHANNELS", "LEGION_STATE_DIR",
 		"OMP_SESSION_EXCLUSIVE", "OMP_SESSION_SQL_DSN_FILE", "OMP_SESSION_STORAGE", "PATH", "PI_SHELL_PREFIX", "POD_UID", "PUBLIC_LEAK_CHECK", "TMPDIR",
 		"XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
 	}; !slices.Equal(told, want) {
@@ -279,8 +279,8 @@ func TestAControllerLaunchFailsWhenItsCredentialMintRefuses(t *testing.T) {
 	}
 }
 
-// A project whose repositories have no GitHub owner to mint for (runtime.ErrNoGitHubOwner: every mapped
-// repository lacks an App) still runs its controller, with gh acting as nobody, as `legion
+// A project whose repositories have no GitHub owner to mint for (runtime.ErrNoGitHubOwner: its
+// App installed on no account) still runs its controller, with gh acting as nobody, as `legion
 // controller start` does there: the launch succeeds, its role Secret holds the launcher token and
 // an empty default owner and no gh files, its gh volume is an empty directory rather than a
 // projection of the Secret (a projection with no items would project every key, the launcher

@@ -307,7 +307,7 @@ func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 // else, and the strip between them takes `partPlace` away with the rest
 // (withoutWhyAndLineFields) — so a sentence naming it states the later boundary and no other.
 // Every sentence that states that boundary carries the marker, in this tree's prose as in
-// server.go's own comment on the constant, which writes "no `partPlace` and no other field of
+// shaping.go's own comment on the constant, which writes "no `partPlace` and no other field of
 // this contract" into the window for exactly this reason: a sentence that forgets the marker is
 // read as one about the waiting line's first contract and refused for saying the wrong number,
 // which is the refusal wanted. A second marker is not the answer when that happens; the
@@ -347,7 +347,7 @@ func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 		files: []string{
 			"packages/daemon/cmd/legion/main.go",
 			"packages/daemon/cmd/legion/main_test.go",
-			"packages/daemon/internal/api/server.go",
+			"packages/daemon/internal/api/shaping.go",
 			"packages/daemon/internal/api/state.go",
 			"packages/daemon/internal/projection/project.go",
 			"packages/daemon/internal/projection/project_test.go",

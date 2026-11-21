@@ -42,8 +42,11 @@ logger.registerLogSink((entry) => {
  */
 function quietConnection() {
   let closed = false;
+  // Settles at the close, as nats.js's `closed()` does.
+  const shut = Promise.withResolvers<void>();
   const waiting: (() => void)[] = [];
   const wake = () => {
+    if (closed) shut.resolve();
     for (const resolve of waiting.splice(0)) resolve();
   };
   const silentUntil = (done: () => boolean) => ({
@@ -60,6 +63,7 @@ function quietConnection() {
   });
   return {
     isClosed: () => closed,
+    closed: () => shut.promise,
     close: async () => {
       closed = true;
       wake();

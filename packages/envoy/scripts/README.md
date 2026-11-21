@@ -137,7 +137,7 @@ Brings up the whole local surface the airlock's checks run on, with no container
 runtime and no cluster, and prints the exports a check needs. It runs
 `dev-broker.sh` for Postgres, `dev-oidc-issuer`, the six built binaries and that
 script's own broker, and reads what it printed, rather than starting any of that a
-second time. On top it starts a `cmd/dev-airlock-stands` of its own (the stand-in
+second time. On top it starts a `cmd/dev-proxy-stands` of its own (the stand-in
 services S and T, the GitHub, Google and Microsoft endpoints and the AWS service,
 and the certificate authority they are signed by), which is a second such process:
 `dev-broker.sh` starts one too, for the GitHub its own `github-app` secrets mint
@@ -231,14 +231,41 @@ consumers (`scripts/az-broker`, `scripts/secret-run`, `shims/gh`,
 model with `lake`, prints its theorem statements and their axioms, runs the comparison
 fuzz test for ten minutes, and runs the six mutants through `airlock-mutants.sh`.
 
+Before starting `k7`, set these operator inputs. An absent or empty input is a usage
+error (exit 2), reported before setup starts, and so is a broker name that is not
+uppercase letters, digits and single underscores starting with a letter, the one form
+the broker reads:
+
+- `AIRLOCK_GCLOUD_SECRET`: the broker name of the operator's gcloud login, which the
+  consumer's `scripts/gcloud-broker` reads, for example `GCLOUD_OPERATOR`.
+- `AIRLOCK_GWS_READ_SECRET`: the broker name of the operator's Google Workspace
+  read login, for example `GWS_OPERATOR_READ_OAUTH`.
+- `AIRLOCK_GWS_ADMIN_SECRET`: the broker name of the operator's Google Workspace
+  administrator login, for example `GWS_OPERATOR_ADMIN_OAUTH`.
+- `AIRLOCK_GWS_TIER_KEY`: the account key in `gws/accounts.json` whose
+  `tiers.read.command` the check reads, for example `operator`.
+
+The check uses fake login values in its local store, each stored under the name the
+broker reads its input's name by (lower-cased, each underscore a hyphen). These inputs
+identify the consumer's existing broker names and account; they do not rename the
+operator's logins. `bash packages/envoy/scripts/airlock-check.test.sh` calls the k7
+fixture and Google consumer boundary directly under fakes. It checks required inputs,
+fake broker rules, store names and consumer results without starting a stack.
+
 The programs the checks drive are files, not text a run writes out. The three Go
-clients are subcommands of `cmd/dev-airlock-stands`, the binary `dev-broker.sh`
+clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`
 builds and `dev-airlock.sh` runs: `probe-private` is `k4`'s private-address probe,
 `probe-bound` is `k7`'s call to a bound host, and `load` is `k9`'s load driver and
 the plain tunnel its baseline goes through. CI compiles and vets all three with the
-rest of that command. The others are under `scripts/airlock/`: `memscan.py`, `k6`'s
-boto3 steps (`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git
-credential helper.
+rest of that command. The others are under `scripts/airlock/`: `k7-consumers.sh`
+(the fixture and Google consumer boundary), `memscan.py`, `k6`'s boto3 steps
+(`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git credential helper.
+
+The grant's proxy password and placeholder stay out of a command's arguments, which
+every process of the pod reads in `/proc/<pid>/cmdline`. `load` reads the proxy URL from
+`--proxy-file` and the bearer from `--header-file`, and refuses `--proxy` and `--header`;
+curl reads the proxy from a config (`-K`) and the header from standard input; and `k7`'s
+git step reads the proxy from `GIT_CONFIG_*`. Each file is a `<(printf …)` path.
 
 Where a check needs a secret the stack does not hold, the run extends the stack's own
 fake Secrets Manager and makes every broker reread it. A control that needs other
@@ -332,6 +359,83 @@ for the stack's start under a short one. The stack runs in a session of its own 
 is stopped as one process group, so a stop during the build — the script's exit, a
 wait that ran out, Ctrl-C — ends that build with the stack.
 
+## project-secrets-check.sh
+
+Shows on the local stack that a private Dispatch project's secret goes only to a
+credential that names the project (R11 of dispatch://INFRA-3862). It starts one
+`dev-stack.sh --project-access` run, makes `PRIV` private (owner carol, access list
+bob), writes `PRIV_KEY` (tagged `dispatch-project=PRIV`, shared, agent tier) and
+`PUB_KEY` (untagged), and drives six callers. For each it runs `agent-secrets request`
+of the two secrets and one trade (`packages/cipher-client/scripts/print-trade.ts`,
+which prints the token's `project_scope` and `projects` from the broker's
+introspection), and prints one `PASS` or `FAIL` line per answer, naming the caller and
+the secret. The last line is `project-secrets-check: <n> rows ran, <m> passed`; it
+exits 0 only when all 16 rows ran and passed.
+
+```bash
+cd packages/envoy && LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh
+```
+
+| Caller | What passes |
+| --- | --- |
+| PRIV's pod (`legion-priv-worker`, mapped to PRIV for carol by its exchange entry) | its trade is `named` with `["PRIV"]`; after `agent-secrets enroll --pod --service legion-priv`, `PRIV_KEY` and `PUB_KEY` are granted |
+| carol's session listing PRIV (`AGENT_SECRETS_PROJECTS=PRIV`) on the stack's machine, which no machine registration names | avenue F's refusal (`machine_not_registered` at the trade, `MACHINE_NOT_REGISTERED` at enrollment); before F's check exists, only a `person`-scope token with `["PRIV"]`, and both secrets granted. The line says which branch ran |
+| alice's session listing PRIV | her trade is refused (her person cannot see PRIV) and her enrollment is refused `PROJECT_NOT_VISIBLE` |
+| carol's session naming nothing | `PUB_KEY` granted, `PRIV_KEY` denied `project-not-named` |
+| the machine's own session | its trade names no project, `PUB_KEY` granted, `PRIV_KEY` denied `project-not-named` |
+| PRIV's pod behind the airlock | a request through the proxy that spends the `PRIV_KEY` placeholder is served by the bound host (the host's own answer is read); after carol is taken off PRIV and the broker's 30-second K3 cache has passed, the next request's `CONNECT` is refused 407 |
+
+carol and alice each sign in with `agent-secrets login` on a box of their own (a HOME,
+key directory, sign-in store and `agent-secrets-helper` each), at the stack's issuer.
+Their sessions read no sign-in, so `agent-secrets register --exec` sends them to the
+box's helper, which enrolls them under the person's sign-in with the projects the
+session listed.
+
+The negative control writes `PRIV_KEY` with no project tag. Every caller then gets it,
+and the run exits 1 with the line `control: the first caller that got PRIV_KEY although
+it should have been refused: <caller>` (on the right stack, carol's session naming
+nothing):
+
+```bash
+LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh --control untagged
+```
+
+Live mode runs the session half against a deployment and writes nothing:
+
+```bash
+bash scripts/project-secrets-check.sh --broker-url <broker> --secret <NAME>
+```
+
+Its environment names the pod's exchange token (`AGENT_SECRETS_MACHINE_TOKEN_FILE`),
+the pod's enrolled key directory (`AGENT_SECRETS_KEY_DIR`), the operator's helper with
+its machine login (`AGENT_SECRETS_HELPER_SOCK`), and an account token the broker lists
+in `BROKER_API_ACCOUNTS` (`AGENT_SECRETS_ACCOUNT_TOKEN_FILE`), the only caller the
+broker lets read a token's introspection. A missing one of the first three exits 2; a
+missing account token fails the trade line as `UNKNOWN`. It runs the pod's trade (which
+names the project), the pod's request for the secret, and the operator's session
+listing that project, which reads F's check as the stack's row does. It takes no
+Dispatch URL, since nothing of the session half reads one.
+
+Until avenue A's `DISPATCH_ACCESS_ACCOUNTS` boot setting (t-a-5) and its private-project
+switch (t-a-20) are on the branch under test, the run writes Dispatch's rows directly
+in place of three of A's routes, reads them back, and says so on its output. The writes
+are two functions, each named for the route it stands in for, so each body becomes that
+call once the route answers: `standin_patch_access_private` for `PATCH
+/api/v1/projects/PRIV/access {"visibility":"private"}` and `PUT
+/api/v1/projects/PRIV/access/people/bob@example.com`, and, in the airlock row,
+`standin_patch_access_owner` for `PATCH /api/v1/projects/PRIV/access
+{"owner":"bob@example.com"}`. The rows need A's schema (`projects.owner`,
+`projects.visibility`, `project_access`), so on a Dispatch without it the run stops
+before any row with the route the write stands in for.
+
+`scripts/project-secrets-check.test.sh` proves the driver's own decisions with fakes of
+`dev-stack.sh`, `agent-secrets`, its helper, `bun`, `psql`, `curl`, `python3` and
+`sleep`: each row passes on the right answer and fails naming its caller and secret on
+a wrong one, the control fails, a run whose rows matched nothing fails, and live mode
+refuses half its options. It needs bash and jq and takes a few seconds. The driver
+needs what `dev-stack.sh` needs (Docker included, for the airlock's stands), `bun` with
+this repository's packages installed, and a few minutes.
+
 ## callout-check.sh
 
 Proves, on the whole local stack behind the NATS auth service, what the hub lets a
@@ -373,7 +477,7 @@ a hub that never drops the killed broker's connection fails line 6.
 ## backend-count.sh
 
 Counts, for each test it names, the runs that passed on each store backend: the test's
-own `aws` and `gcp` subtests (`onEachStore`, `cmd/agent-secrets/secret_kind_test.go`),
+own `aws` and `gcp` subtests (`onEachStore`, `cmd/cipher/secret_kind_test.go`),
 so a store or use change cannot pass on one backend alone.
 
 ```bash
@@ -391,7 +495,7 @@ cannot stand in for a new test's.
 `GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
 `GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
 in its time budget; the job runs it as "Count the store-form rows on each backend", over
-`./cmd/agent-secrets/` and `./internal/broker/api/`, as those tests' one run: the job's unit
+`./cmd/cipher/` and `./internal/cipher/api/`, as those tests' one run: the job's unit
 step and its database-skips step skip them by name (`BACKEND_COUNT_TESTS` in
 `.github/scripts/ci_job_reads.py`).
 
@@ -411,7 +515,7 @@ packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
 A `PACKAGE` is a pattern under `packages/envoy`, `./dir/` or `./dir/...`. With none it runs
-its default table, `./internal/broker/...` and `./cmd/broker/`, less the packages its
+its default table, `./internal/cipher/...` and `./cmd/cipherd/`, less the packages its
 `DEFAULT_EXCEPT` takes out of them: the race lane's packages under the broker's tree, of which the
 auth service's `natscallout`, which opens no database, is the one today (`DATABASE_SKIPS_PATTERN`
 in `.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says
@@ -427,7 +531,7 @@ run nor counted as a skip. `--report` reads a `go test -json` report instead and
 and refuses the four options that shape a run.
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
-`./cmd/./broker/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
+`./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
 listed package, then `database_skips=N` and, for a run of its own, `go_test_exit=E`. The tests
 `EXPECTED_SKIPS` names in the script skip by their own design in every CI run, which sets the
 database variables and none of what those tests need (a corpus, a seeded database, a built
@@ -446,12 +550,12 @@ stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>
 
 `ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
 `--timeout 20m`, the unit step's own `-timeout`, `--skip` of the one test of
-`./internal/broker/api/` that the job's "Count the store-form rows on each backend" runs
+`./internal/cipher/api/` that the job's "Count the store-form rows on each backend" runs
 (`backend-count.sh`, above), and a step limit of its own
 (`timeout-minutes: 30`) that its time budget counts, and `envoy-go-race-api` runs the
 Dispatch API through it as the second line above.
 `database-skips.test.sh` holds it to five controls, which `envoy-go` runs as "Test the database
-skip counter": a skip planted through a Go overlay in `./internal/broker/api/`, `./cmd/broker/`
+skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
 and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
 that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
 a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
@@ -463,7 +567,7 @@ a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_D
 ## aws-moto-check.sh
 
 Runs the built `agent-secrets` against moto's AWS, with no AWS account:
-`cmd/agent-secrets/secret_moto_test.go`'s `TestTheBuiltCLIAgainstMoto` (build tag
+`cmd/cipher/secret_moto_test.go`'s `TestTheBuiltCLIAgainstMoto` (build tag
 `moto`), which creates IAM users `writer` and `nobody` in moto, writes them as profiles,
 turns moto's IAM checks on, and runs the secret forms under each source of the AWS SDK's
 own order: access keys in the environment, which outrank `AWS_PROFILE`; `AWS_PROFILE`;
@@ -493,7 +597,7 @@ How many theorems there are is written nowhere: this script and `k15` both count
 model to.
 
 ```bash
-packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/broker/airlock/lean
+packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/cipher/proxyrules/lean
 ```
 
 It runs `lake env lean Axioms.lean` in that directory and writes what that printed to
@@ -541,7 +645,7 @@ from that wheel's own requirements.
 ## airlock-mutants.sh
 
 Proves that the airlock's differential fuzz test and the Lean proofs catch a defect
-in the decision code. Each file of `internal/broker/airlock/testdata/mutants` is one
+in the decision code. Each file of `internal/cipher/proxyrules/testdata/mutants` is one
 defect as a unified diff; for each, the script copies `packages/envoy` to a fresh
 directory under `$TMPDIR`, applies that one patch there, and requires the copy to
 fail — a `go-*.patch` under the comparison fuzz test over the committed seed corpus,

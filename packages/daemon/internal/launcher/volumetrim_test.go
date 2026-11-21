@@ -649,18 +649,19 @@ func (f *trimFixture) start(tr *trimmer) (context.CancelFunc, <-chan struct{}) {
 }
 
 // tick delivers one interval tick on the clock the trimmer is waiting on and returns once that
-// interval has ended, which is how a case holds the loop to one interval at a time. ends is a
-// line the interval writes. It ends a reading's interval, which writes nothing after it, but not
-// a sweep's: after "the sweep ended" the interval writes the pause's line and then makes and sends
-// the report (trimmer.tick), so a case that read those as soon as the line was written raced the
-// trimmer's goroutine and lost on a loaded machine. So where the interval swept, tick also waits
-// for the clock it ticked to be stopped, which the loop does once the interval has returned, for
-// the new clock it makes after every sweep or on its way out where the sweep ended the loop
-// (intervals). An interval swept where the trimmer read its own clock after it took the tick: a
-// sweep reads it first (sweep), and nothing else in an interval reads it before a sweep has begun.
-// The reads are counted at the hand-over itself (handTick), so a read the interval before made
-// late, in a report's size walk a case did not wait for, is not taken for a sweep of this one. A
-// case that holds a sweep's interval open past its line on purpose takes tickUntil.
+// interval's own work is done, which is how a case holds the loop to one interval at a time. ends
+// is a line the interval writes. A reading writes and sends nothing after its line, so tick returns
+// there. A sweep goes on after "the sweep ended" with the pause's line and the report
+// (trimmer.tick), so where the interval swept, tick also waits for the loop to stop the clock it
+// ticked, which the loop does once the interval has returned (intervals). An interval swept where
+// the trimmer read its own clock after it took the tick: a sweep reads it first (sweep), nothing
+// else in an interval reads it before a sweep has begun, and the reads are counted at the
+// hand-over itself (handTick). What the loop does once the interval has returned is the case's to
+// wait for: the next clock, which the loop makes after it stops the old one, after a sweep or after
+// settings that change the period; the wait for settings the loop ends for; the switch-off at a
+// third fault in a row, whose last report run sends after tick returns; and the loop that
+// run starts again after a panic its interval did not contain. A case that holds a sweep's
+// interval open past its line on purpose takes tickUntil.
 func (f *trimFixture) tick(ends string) {
 	f.t.Helper()
 	at, reads := f.tickUntil(ends)
@@ -3586,23 +3587,22 @@ func TestNoSweepStartsWhileOneRunsAndTheNextReadingIsAnIntervalAfterItEnds(t *te
 		t.Error("the trimmer took a second tick while a sweep was running, want no sweep to overlap another")
 	}
 	close(release)
-	testwait.Eventually(t, "the sweep to end", func() bool { return f.logged("the sweep ended") == 1 })
+	// The interval goes on after "the sweep ended" with its report, and the loop stops the clock
+	// it swept on only once the interval has returned, so the case waits for that and not for the
+	// line. A loop that kept that clock never stops it, and fails here.
+	testwait.Eventually(t, "the sweep's interval to end: the loop stops the clock the sweep began on", func() bool {
+		return f.ticks.stoppedAt(0)
+	})
 
-	// The clock it waited on before the sweep is stopped, and the new one it made after the
-	// sweep is what the next reading comes on.
+	// The clock it waited on before the sweep is stopped, and the new one it makes after the
+	// sweep, once it has stopped that one, is what the next reading comes on.
 	if f.ticks.offer(t, 0, 300*time.Millisecond) {
 		t.Error("the trimmer is still waiting on the interval clock it had before the sweep, want the next reading one interval after the sweep ended")
 	}
-	if made := f.ticks.count(); made < 2 {
-		t.Fatalf("the trimmer made %d clocks, want a new interval clock after the sweep", made)
-	}
-	live, running := f.ticks.live(f.interval())
-	if !running {
-		t.Fatal("the trimmer is waiting on no clock at all after its sweep")
-	}
-	if period := f.ticks.periodOf(live); period != settingsInterval(*trimSettings()) {
-		t.Errorf("the clock the trimmer now waits on runs every %s, want the interval %s", period, settingsInterval(*trimSettings()))
-	}
+	testwait.Eventually(t, "the trimmer to wait on a new clock of the interval after its sweep", func() bool {
+		_, running := f.ticks.live(f.interval())
+		return running
+	})
 	f.tick("nothing to sweep")
 	if sweeps := f.logged("sweeping"); sweeps != 1 {
 		t.Errorf("the trimmer swept %d times, want the one sweep: the reading after it is below the high mark", sweeps)
@@ -6946,7 +6946,7 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 }
 
 // Every string a report carries is kept whole at its bound in runes and cut at one rune more, to
-// the bound with an ellipsis in place of its last rune (cutRunes, bound). The other cases cut
+// the bound with an ellipsis in place of its last rune (redact.Runes, bound). The other cases cut
 // strings at three times their bound or more and read only that the result is within it
 // (TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes,
 // TestDirectoriesReadInPartAreBoundedInTheReportAndTheLog), with which a cut at the bound itself

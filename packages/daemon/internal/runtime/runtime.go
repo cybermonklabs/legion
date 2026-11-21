@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -44,17 +45,21 @@ type Runtime interface {
 	// On an error the caller owns stopping any previous process of the claim, and Spawn has
 	// stopped any process it started itself.
 	Spawn(ctx context.Context, spec SpawnSpec) (Locator, error)
-	// Resume starts the same agent again from the session file the spec names, after waiting
-	// for the previous incarnation to be Gone. prev is the incarnation the caller recorded, nil
-	// when it recorded none, and a hint: a runtime that finds a claim's process by the claim's own
-	// place, as a sandbox finds a role's launcher in its issue's pod, waits out whatever runs
-	// there even when prev is nil. A claim resumes the agent it recorded or none: a fresh agent on
-	// a claim that had one is the failure the same-agent refusal exists to catch. A session the
+	// Resume starts the same agent again from the session the spec names, by its file
+	// (ResumeSessionFile) or, for a claim that records no file of it, by its id (ResumeSession),
+	// after waiting for the previous incarnation to be Gone. prev is the incarnation the caller
+	// recorded, nil when it recorded none, and a hint: a runtime that finds a claim's process by the
+	// claim's own place, as a sandbox finds a role's launcher in its issue's pod, waits out whatever
+	// runs there even when prev is nil. A claim resumes the agent it recorded or none: a fresh agent
+	// on a claim that had one is the failure the same-agent refusal exists to catch. A session the
 	// runtime looked for and did not find is ErrSessionFileMissing, and a session store that could
 	// not be asked at all is ErrSessionStore; every runtime answers both the same way, having
-	// started nothing, and the caller tells them apart by what it does next (supervise's start).
-	// On an error the caller owns stopping prev (Suspend), and Resume has stopped any process it
-	// started itself.
+	// started nothing, and the caller tells them apart by what it does next (supervise's start). A
+	// Resume by the id alone that the runtime could not send, because the pod's launcher has not
+	// said it can look a session up by its id, is ErrSessionLookupUnavailable, having started
+	// nothing; only the sandbox runtime answers it, and the caller's next Resume has the agent's own
+	// command resolve the id (ResumeByAgent). On an error the caller owns stopping prev (Suspend),
+	// and Resume has stopped any process it started itself.
 	Resume(ctx context.Context, prev *Locator, spec SpawnSpec) (Locator, error)
 	// Suspend stops the process gracefully, within the runtime's stop grace, and keeps everything
 	// a later Resume needs: the agent's session, and whatever the runtime holds for the claim. The
@@ -155,10 +160,11 @@ type Runtime interface {
 	CleanupTree(ctx context.Context, tree string) error
 }
 
-// ErrSessionFileMissing is a Resume whose spec.ResumeSessionFile is held by no store the runtime
-// can resume it from: no folder the tmux runtime searched holds that session, or the session table
-// the Kubernetes launcher reads has no row for it. The session is gone, not unreachable, so the
-// caller starts a fresh agent in its place, charged nothing and reported (supervise's start).
+// ErrSessionFileMissing is a Resume whose session, named by spec.ResumeSessionFile or by the id
+// spec.ResumeSession, is held by no store the runtime can resume it from: no folder the tmux
+// runtime searched holds that session, or the session table the Kubernetes launcher reads has no
+// row for it. The session is gone, not unreachable, so the caller starts a fresh agent in its
+// place, charged nothing and reported (supervise's start).
 // Nothing was started. Both runtimes answer this for that one fact, whatever else is configured —
 // the operator's takeover of another runtime's claims (`runtime.tmux.take_over`) changes which
 // sessions are found, never what a session found nowhere means.
@@ -170,6 +176,14 @@ var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 // again every minute until the store answers (supervise's startWaitsForStore). Nothing was
 // started.
 var ErrSessionStore = errors.New("the session store could not be asked")
+
+// ErrSessionLookupUnavailable is a Resume by id (spec.ResumeSession, without spec.ResumeByAgent)
+// that the runtime did not send, because the pod's launcher has not said that it can look a
+// session up by its id (shimwire.LauncherHello.ResumesBySession). Nothing was started, and the
+// caller may call Resume again with ResumeByAgent set, which has the agent's own command resolve
+// the id instead (supervise's start). The sandbox runtime wraps it in an error that names the
+// claim, the Sandbox and the pod uid.
+var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a session up by its id")
 
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
 // that is not its round's: the Sandbox the locator records is gone, no pod of it is running, the
@@ -250,8 +264,10 @@ type IssueReleaser interface {
 // which holds nothing of a pod before it. The next launch deletes a Sandbox that carries the reset
 // mark or that has another disk shape, with its volume. The daemon asks it when a pod goes before
 // its update round is over, with the time the round opened, to tell the issue whether the work its
-// roles did not push is still on the volume. A runtime whose pods keep no volume implements
-// nothing here, and the daemon then reads no kept volume.
+// roles did not push is still on the volume, and in the rename pass's live-pod rules, at each boot
+// and each pod end, with the present time, to keep the issue on the name its workspace on the
+// volume is under. Every runtime that runs a pod per issue implements it, since the daemon's test
+// of such a runtime (issuePods) needs it; one whose pods keep no volume answers false.
 type IssueVolumeReader interface {
 	IssueKeepsVolume(issue string, since time.Time) bool
 }
@@ -339,8 +355,9 @@ type HeldWorkspaceBundleDrop func(ctx context.Context, issue, podUID string, kep
 // launcher cannot name another role, issue or pod.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
-// of the daemon's own packages, so the import is acyclic, and a second copy of the report would
-// be one more shape to keep in step for no reader that needs it.
+// of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so the
+// import is acyclic, and a second copy of the report would be one more shape to keep in step for
+// no reader that needs it.
 //
 // An error, a store that did not answer among them, is returned to the session, which logs it
 // and drops the report: nothing acknowledges the frame, so the launcher does not send it again,
@@ -356,9 +373,10 @@ type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token
 // roles container a new counting line for the daemon's notice bounds, is inside the report.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
-// of the daemon's own packages, so this import is acyclic, and a third near-copy of the report —
-// the wire's, the runtime's and the record's — would be three shapes to keep in step where two
-// are already the price of a durable notice.
+// of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so
+// this import is acyclic, and a third near-copy of the report — the wire's, the runtime's and the
+// record's — would be three shapes to keep in step where two are already the price of a durable
+// notice.
 //
 // A store that does not answer is logged and the report is dropped there. The launcher cannot
 // hold it again once the daemon has read it, and it is not asked to: the trimmer sweeps on, and
@@ -418,7 +436,13 @@ func (k Known) Validate() error {
 // values — each is written to a 0600 file and reaches the process as a `<NAME>_FILE` pointer — and
 // carries only what is the claim's to carry: a credential every agent of the deployment shares,
 // like the Dispatch bearer, is a runtime option. ResumeSessionFile is set only by `Resume`, and it
-// names the transcript the same agent continues from.
+// names the transcript the same agent continues from. ResumeSession is the session id a `Resume`
+// continues when the claim records no file of it: it is set only by supervise's Machine.start, in
+// its branch that resumes a session by its id, and only when ResumeSessionFile is empty.
+// ResumeByAgent is read only with ResumeSession: the agent's own command resolves the id
+// (`--resume=<ResumeSession>`), and the runtime names no session and no file to the pod's
+// launcher. Machine.start sets it only on the second `Resume` of a try whose first `Resume`
+// answered ErrSessionLookupUnavailable.
 // Plugins, set only under Kubernetes (specs.SpawnSpec, LEGION-164), carries the plugin pair a
 // stale-plugin relaunch installs into the kept pod before Oh My Pi starts, in place of the
 // image's own copies; nil for every launch that installs nothing — every tmux launch, and every
@@ -450,6 +474,8 @@ type SpawnSpec struct {
 	Repository        ghrepo.Repository
 	DefaultBranch     string
 	ResumeSessionFile string
+	ResumeSession     string
+	ResumeByAgent     bool
 	Plugins           *PluginInstall
 	Variants          []Variant
 	IssueTrailer      string
@@ -681,7 +707,8 @@ type Observation struct {
 	//
 	// It is bounded at PodEndRunes, which is a kubelet message with room to spare: the eviction
 	// message above is 120 runes, and the longest the kubelet writes names each resource it
-	// reclaimed. A longer one is cut at that bound with an ellipsis.
+	// reclaimed. A longer one is cut at that bound with an ellipsis, once the URL rule has read it
+	// whole (PodEnd).
 	PodEnd string
 }
 
@@ -697,9 +724,13 @@ const PodEndRunes = 400
 
 // PodEnd is reason and message as Observation.PodEnd holds them, bounded at PodEndRunes: the
 // reason alone when there is no message, "" when there is no reason, and a value cut at the
-// bound with an ellipsis when the two together pass it. Both the runtime that observes a pod and
-// any test that asserts on the field build the value here, so one rule decides what a claim and
-// a notice carry.
+// bound with an ellipsis when the two together pass it. The joined text is cut by redact.Runes,
+// which gives it whole through the URL rule (redact.URLCredentials) before the cut, so a URL the
+// cut falls inside has lost its userinfo and its query already: a cut made first could end inside
+// a URL's userinfo, before its "@", and leave the start of a user name or a password where the
+// rule the claim keeps the value under (storetext.FarSideText) reads it as the URL's host. Both
+// the runtime that observes a pod and any test that asserts on the field build the value here, so
+// one rule decides what a claim and a notice carry.
 func PodEnd(reason, message string) string {
 	if reason == "" {
 		return ""
@@ -708,11 +739,7 @@ func PodEnd(reason, message string) string {
 	if message != "" {
 		end += ": " + message
 	}
-	runes := []rune(end)
-	if len(runes) <= PodEndRunes {
-		return end
-	}
-	return string(runes[:PodEndRunes-1]) + "…"
+	return redact.Runes(end, PodEndRunes)
 }
 
 // GitIdentity is the author a worker's commits carry.

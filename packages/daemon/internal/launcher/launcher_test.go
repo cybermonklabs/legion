@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -661,7 +662,7 @@ func newFleetDialed(t *testing.T, grace time.Duration, roles ...string) *fleet {
 // requireRoleNamespaces first.
 func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	t.Helper()
-	scratch := namespaceScratch(t)
+	scratch := namespaceScratch(t, "")
 	f := &fleet{
 		t: t, rolesDir: filepath.Join(scratch, "roles"), home: filepath.Join(scratch, "home"),
 		fixed: filepath.Join(scratch, "fixed"), result: make(chan error, 1), stderr: &lockedBuffer{},
@@ -805,6 +806,23 @@ func TestAMultiRoleLauncherConnectsOncePerRoleWithThatRolesToken(t *testing.T) {
 	f.conns["tester"] = again
 	// The reviewer's connection carried on through the tester's: it still answers.
 	f.role("reviewer").stop(1)
+}
+
+// Every hello a launcher of this release writes says it can look a session up by its id and
+// resume the file it finds (shimwire.LauncherHello.ResumesBySession): the daemon names a session
+// by its id alone only to a launcher that said so, and to any other starts Oh My Pi with the id
+// itself. The controller pod's single role says it, and so does each role of an issue pod's one
+// container, on its own connection.
+func TestTheLauncherHelloSaysItResumesBySession(t *testing.T) {
+	if hello := newRig(t).hello; !hello.ResumesBySession {
+		t.Errorf("the single role's hello = %#v, want it to say it resumes a session by its id", hello)
+	}
+	f := newFleet(t, 2*time.Second, "tester", "reviewer")
+	for _, role := range []string{"tester", "reviewer"} {
+		if hello := f.role(role).hello; !hello.ResumesBySession {
+			t.Errorf("role %s's hello = %#v, want it to say it resumes a session by its id", role, hello)
+		}
+	}
 }
 
 // A stop reaches the role it names and nothing else: the stopped role's processes end, and every
@@ -952,6 +970,60 @@ func TestTheContainersLogKeepsEveryLineWholeAcrossGenerations(t *testing.T) {
 	if got := out.String(); got != want {
 		t.Fatalf("the container's log is\n%q\nwant\n%q", got, want)
 	}
+}
+
+// A role's line longer than maxLogLine reaches the container's log in two lines behind the prefix,
+// cut just after its last byte before the mark that ends a URL for the URL rule, so the rule of the
+// log (redact.Writer, as newManagers wraps it) reads each URL whole: a URL whose user name the
+// 64 KiB mark falls inside, and which carries a planted query, reaches the log with neither, and
+// the line's text is all there otherwise. A cut at the mark itself wrote the start of the user
+// name in the first line, where the rule read it as the URL's host, and the rest of the URL in the
+// second, which held no "://" for the rule to find its query by. A run of maxLogLine bytes with no
+// such byte is cut at the mark still. The line arrives in writes of 4 KiB, as a pipe's reads give
+// it, and in writes of 7 bytes and of one, as a child that writes a byte at a time gives it: the
+// writer searches only the bytes each write adds for a newline, since what it holds from earlier
+// writes holds none, and every size of write gives the same log.
+func TestALongRoleLineIsCutWhereTheURLRuleReadsEachURLWhole(t *testing.T) {
+	filler := strings.Repeat("x", maxLogLine-len(" https://planted-user"))
+	for _, tc := range []struct {
+		name, line, want string
+	}{{
+		name: "a URL across the mark",
+		line: filler + " https://planted-user-1@example.com/path?token=planted-query-token-1 done\n",
+		want: "tester: " + filler + " \n" + "tester: https://example.com/path done\n",
+	}, {
+		name: "a run with no byte that ends a URL",
+		line: strings.Repeat("y", maxLogLine+5) + "\n",
+		want: "tester: " + strings.Repeat("y", maxLogLine) + "\n" + "tester: yyyyy\n",
+	}} {
+		for _, size := range []int{4 << 10, 7, 1} {
+			t.Run(fmt.Sprintf("%s, in writes of %d bytes", tc.name, size), func(t *testing.T) {
+				out := &lockedBuffer{}
+				log := &roleLog{stdout: redact.Writer(out), stderr: redact.Writer(out)}
+				stdout, _ := log.writers("tester")
+				for chunk := range slices.Chunk([]byte(tc.line), size) {
+					_, _ = stdout.Write(chunk)
+				}
+				got := out.String()
+				if at := strings.Index(got, "planted"); at >= 0 {
+					t.Fatalf("the container's log holds %q, part of the URL's user name or query", got[max(0, at-40):min(len(got), at+60)])
+				}
+				if got != tc.want {
+					t.Fatalf("the container's log is %v, want %v", logLines(got), logLines(tc.want))
+				}
+			})
+		}
+	}
+}
+
+// logLines describes each line of a container's log by its length and its end, for a failure
+// message of lines too long to print.
+func logLines(log string) []string {
+	var lines []string
+	for line := range strings.Lines(log) {
+		lines = append(lines, fmt.Sprintf("%d bytes ending %q", len(line), line[max(0, len(line)-60):]))
+	}
+	return lines
 }
 
 // An issue pod role's generation whose role-init exits RoleInitSetupFailedExit without reporting a
@@ -1267,12 +1339,12 @@ func (d *sessionDialer) stallAt(addr string) {
 func (d *sessionDialer) Close() error { return nil }
 
 // build is the Config.SessionDialer a test passes: every generation of its launcher dials through
-// this very fake, and each build records the account it was given. A pod's roles start their
+// this very fake, and each build records the account its signer names. A pod's roles start their
 // generations concurrently, so the record is held under mu.
-func (d *sessionDialer) build(_ context.Context, account string) (sessionproxy.Dialer, error) {
+func (d *sessionDialer) build(_ context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.accounts = append(d.accounts, account)
+	d.accounts = append(d.accounts, signer.Account)
 	return d, nil
 }
 
@@ -1384,6 +1456,53 @@ func TestAPartlyNamedSessionDatabaseIsRefusedBeforeTheLauncherStarts(t *testing.
 				t.Fatalf("Run = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A writer audience is refused before the launcher does anything at all, each time with its
+// reason: named without the service account, which the writer token signs in only by
+// impersonating; in a form that is no workload identity provider's full resource name; and in
+// the single-role form, whose agent runs in the container's own namespaces, where the token would
+// be in its view. Named whole in the roles-dir form, it is accepted.
+func TestAWriterAudienceIsRefusedWithoutItsAccountInAnotherFormOrInTheSingleRoleForm(t *testing.T) {
+	noAccount := writerDatabase
+	noAccount.ImpersonateServiceAccount = ""
+	otherForm := writerDatabase
+	otherForm.WriterAudience = "projects/123456789012/locations/global/workloadIdentityPools/example-pool/providers/example-provider"
+	singleRole := Config{
+		Connect: "tcp://127.0.0.1:1", Token: "launcher-token", Sandbox: "legion-legion-legion-208",
+		Role: "tester", PodUID: "pod-1", PrivateDir: t.TempDir(),
+	}
+	rolesDir := Config{
+		Connect: "tcp://127.0.0.1:1", Sandbox: "legion-legion-legion-208", PodUID: "pod-1", RolesDir: t.TempDir(), Roles: []string{"tester"},
+	}
+	with := func(cfg Config, database ompsessions.Database) Config {
+		cfg.SessionDatabase = database
+		return cfg
+	}
+	for name, tc := range map[string]struct {
+		cfg  Config
+		want string
+	}{
+		"the audience alone": {with(rolesDir, ompsessions.Database{WriterAudience: testWriterAudience}),
+			"launcher: the session database is named in part: no --session-instance, no --session-database, no --session-user"},
+		"no service account": {with(rolesDir, noAccount),
+			"launcher: --session-writer-audience needs --session-impersonate-service-account: the writer token signs in to Cloud SQL only by impersonating that service account"},
+		"another form": {with(rolesDir, otherForm),
+			`launcher: --session-writer-audience "` + otherForm.WriterAudience + `" is not a workload identity provider's full resource name, ` + ompsessions.WriterAudienceForm},
+		"the single-role form": {with(singleRole, writerDatabase),
+			"launcher: --session-writer-audience needs the roles-dir form (--roles-dir): the single-role form runs its agent in the container's own namespaces, where the writer token would be in the agent's view"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// The connect address is one nothing listens on: a refused configuration must answer
+			// before the launcher dials anything.
+			if err := Run(context.Background(), tc.cfg); err == nil || err.Error() != tc.want {
+				t.Fatalf("Run = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if err := with(rolesDir, writerDatabase).validate(); err != nil {
+		t.Fatalf("the roles-dir form with the whole writer audience is refused: %v", err)
 	}
 }
 

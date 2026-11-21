@@ -1,4 +1,4 @@
-import { isFinalRefusal } from "@legion/broker-client/token-errors"
+import { isFinalRefusal } from "@legion/cipher-client/token-errors"
 import { holdUrlUserinfo, scrub, scrubProcessStreams } from "@legion/contracts/held-secrets"
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text"
 import { messageFor } from "@legion/envoy-client/errors"

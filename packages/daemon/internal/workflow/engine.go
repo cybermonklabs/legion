@@ -95,15 +95,15 @@ type Config struct {
 	RepositoryRenames ghrepo.Renames
 	// NoteUnread is told, inside the fact's transaction, of each issue the workflow did not record
 	// because its repository resolved Unread (left out for now, GitHub not answering its
-	// installation read, or its default-branch read past GitHub's rate limit): the daemon takes it
-	// into that repository's recovery whatever it resolves
-	// to by then. It keeps no state of the issue's own. Nil notes none.
+	// installation read, or its read of the repository's name and default branch): the daemon
+	// takes it into that repository's recovery whatever it resolves to by then. It keeps no state
+	// of the issue's own. Nil notes none.
 	NoteUnread func(key, resolved string)
 	// HearRepository is told, inside the transaction that writes a new issue record, of the
 	// repository GitHub spells that record's: the daemon has GitHub intake hear it and the
 	// runtime keep a repository cache of it from that moment, on the transaction's commit, so
-	// work in a repository no project maps gets the same event and cache service as work in a
-	// mapped one (daemon's hearRecorded). It is told every recording, including one on a
+	// the first issue on a repository gets the same event and cache service as every later
+	// one (daemon's hearRecorded). It is told every recording, including one on a
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
 	// ReadMergeState is asked, on the commit of a fact that owes a read of GitHub's merge state
@@ -1541,31 +1541,53 @@ func missingList(list []record.VolumeMissing) string {
 	return strings.Join(quoted, ", ")
 }
 
-// sessionLost tells the issue, its architect and the controller that a worker's recorded session
-// is in no session store any more, so the agent working the issue now has read none of its own
-// earlier work: it runs from a fresh session, and only what it pushed and committed survives.
-// Nothing of the issue moves — the worker is running — and nothing is held: the report is the
-// whole point, since a worker that lost its memory is otherwise indistinguishable from one that
-// is merely slow. An issue the record does not hold tells nobody.
+// sessionLost tells the issue, its architect and the controller that a worker forgot its recorded
+// session, so the agent working the issue now has read none of its own earlier work: it runs from
+// a fresh session, and only what it pushed and committed survives. Nothing of the issue moves — the
+// worker is running — and nothing is held: the report is the whole point, since a worker that lost
+// its memory is otherwise indistinguishable from one that is merely slow. An issue the record does
+// not hold tells nobody.
 //
-// The detail is the runtime's own account of the failed resume, which carries a session file name
-// and a transport error from outside the daemon, and this sentence is read into an agent's
-// prompt, so it is quoted as a Go string (strconv.Quote): the quotes bound it, and a quote or a
-// newline inside it is escaped rather than closing the one around it. sessionStoreFault quotes
-// its own detail for the same reason.
+// The fact's cause chooses the words, the notice kind and the warning line. A session no store
+// holds (gone, and a fact with no cause) and a Claude Code claim's session with no transcript file
+// are told as lost, in a notice of the kind session-lost. A session that the pod's launcher, older
+// than this release, could not look up by its id, and that Oh My Pi did not resume by that id, is
+// told as forgotten, in a notice of the kind session-forgotten, and nothing says it was lost:
+// nothing of it was deleted, and a store may hold it still (dispatch://INFRA-4108 R3). The kind is
+// part of what the architect and the controller hear, since the outbox publishes each notice as
+// `<kind> on <issue>` (the daemon's noticeSummary), so that forget has a kind of its own.
+//
+// The detail of a lost session can be the runtime's own account of the failed resume, which
+// carries a session file name and a transport error from outside the daemon, and this sentence is
+// read into an agent's prompt, so it is quoted as a Go string (strconv.Quote): the quotes bound it,
+// and a quote or a newline inside it is escaped rather than closing the one around it.
+// sessionStoreFault quotes its own detail for the same reason. The words of a forgotten session
+// carry no detail; they name the session the claim forgot (intake.SessionLost.Session), which the
+// agent's registration chose, quoted the same way.
 func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.SessionLost) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
+	kind := record.NoticeKind("session-lost")
 	told := fmt.Sprintf("The %s of %s lost the session it recorded: %s. It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.",
 		fact.Role, issue.Key, strconv.Quote(fact.Detail))
+	line := "workflow: a worker's recorded session was in no session store"
+	fields := []any{"issue", issue.Key, "role", fact.Role, "detail", fact.Detail}
+	if fact.Cause == supervise.SessionLossNotResumedByID {
+		kind = "session-forgotten"
+		told = fmt.Sprintf("The %s of %s forgot the session it recorded, %s: its pod's launcher is older than this release and could not look the session up by its id, and Oh My Pi did not resume it by that id. "+
+			"The daemon deleted nothing of that session. The %s is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.",
+			fact.Role, issue.Key, strconv.Quote(fact.Session), fact.Role)
+		line = "workflow: a worker forgot its recorded session, which its pod's launcher could not look up and Oh My Pi did not resume by its id"
+		fields = []any{"issue", issue.Key, "role", fact.Role, "session", fact.Session, "cause", fact.Cause, "detail", fact.Detail}
+	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: told}); err != nil {
 		return intake.Result{}, err
 	}
-	e.warnOnCommit(ctx, "workflow: a worker's recorded session was in no session store", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
+	e.warnOnCommit(ctx, line, fields...)
 	return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{
-		Kind: "session-lost", Role: fact.Role, Phase: issue.Phase, Reason: told})
+		Kind: kind, Role: fact.Role, Phase: issue.Phase, Reason: told})
 }
 
 // sessionStoreFault tells the issue and the controller that no worker of the issue can start
@@ -2351,11 +2373,12 @@ func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch str
 // pullRequest is the recorded pull request number of repo, when its issue is recorded on repo.
 // The read is made under the name the fact carries and then, when it finds nothing, under the
 // other name of the pair that names it (ghrepo.Under): a record keeps the repository it was
-// written under for its whole life, so a pull request already open when its repository was
-// transferred is recorded under the name it moved from while every event after names the one it
-// moved to. A deployment that configures no rename makes exactly the one query it always made; a
-// configured one makes the second only when the first finds nothing, which is the common case —
-// an event of a pull request this daemon does not record at all.
+// written under until the daemon's one-time rename pass writes the pair's `to` over it, so a pull
+// request already open when its repository was transferred is recorded under the name it moved
+// from while every event after names the one it moved to. A deployment that configures no rename
+// makes exactly the one query it always made; a configured one makes the second only when the
+// first finds nothing, which is the common case — an event of a pull request this daemon does not
+// record at all.
 func (e *Engine) pullRequest(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.PullRequest, error) {
 	pr, err := ghrepo.Under(e.cfg.RepositoryRenames, repo, func(name string) (*record.PullRequest, error) {
 		return e.store.PullRequestByNumber(ctx, tx, name, number)

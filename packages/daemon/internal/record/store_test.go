@@ -112,10 +112,11 @@ func writtenAll(t *testing.T, got []Issue) []Issue {
 }
 
 // An issue's repository, its default branch and GitHub's spelling of the repository are taken when
-// the daemon first records the issue and never change after: the store refuses a record without
-// any of them, or whose GitHub spelling names another repository, and a write that would change
-// any of them on a recorded issue, so no path that forgot them or rebuilt the record from a later
-// observation writes over what was recorded.
+// the daemon first records the issue, and PutIssue never changes them after (only the one-time
+// rename pass, RenameIssueRepository, writes another repository name): the store refuses a record
+// without any of them, or whose GitHub spelling names another repository, and a write that would
+// change any of them on a recorded issue, so no path that forgot them or rebuilt the record from a
+// later observation writes over what was recorded.
 func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -155,7 +156,7 @@ func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
 			moved := recorded
 			tc.change(&moved)
 			err := st.Tx(ctx, func(tx pgx.Tx) error { return records.PutIssue(ctx, tx, moved) })
-			want := "record issue LEGION-302: it is recorded on acme/widgets@release/v7.1 (GitHub's Acme/Widgets), and an issue's repository and default branch never change"
+			want := "record issue LEGION-302: it is recorded on acme/widgets@release/v7.1 (GitHub's Acme/Widgets), and a record keeps its repository and default branch: only the one-time rename pass writes another repository name on it"
 			if err == nil || err.Error() != want {
 				t.Fatalf("PutIssue = %v, want %q", err, want)
 			}
@@ -2342,11 +2343,13 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
-		"dispatch_issues":   {"key", "project", "status", "blockers", "dispatch_seq", "parent"},
-		"dispatch_claims":   {"key", "claimed_by", "claim_seq"},
-		"slots":             {"issue", "index", "admitted_at"},
-		"processed_events":  {"source", "event_id", "processed_at"},
-		"outbox":            {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
+		"dispatch_issues": {"key", "project", "status", "blockers", "dispatch_seq", "parent", "labels", "rank",
+			"status_seq", "parent_seq", "blockers_seq", "labels_seq", "rank_seq"},
+		"dispatch_issue_refills": {"project", "marked_at", "refilled_at"},
+		"dispatch_claims":        {"key", "claimed_by", "claim_seq"},
+		"slots":                  {"issue", "index", "admitted_at"},
+		"processed_events":       {"source", "event_id", "processed_at"},
+		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		for table, expected := range want {

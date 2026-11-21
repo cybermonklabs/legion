@@ -7,6 +7,7 @@ import {
   type WriteBounds,
   type WriteMethod,
 } from "../../api/client";
+import type { ReadHold } from "../../api/query-client";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -49,6 +50,9 @@ function actionFailure(
 }
 
 interface CommentActionQueueOptions<TContext> {
+  /** The queries `onMutate`'s optimistic value stands in, whose reads wait until Dispatch has
+   *  taken the action (`KeyedWriteOptions.holds`). */
+  holds?(input: CommentActionInput): ReadHold;
   onError?(error: Error, input: CommentActionInput, context: TContext | undefined): void;
   onMutate?(input: CommentActionInput): TContext | Promise<TContext>;
   /** The server took `input`; the next queued action starts after this. */
@@ -76,6 +80,7 @@ function submitCommentAction({ id, kind }: CommentActionInput, bounds: WriteBoun
  * clears that pending work so the reader can correct or retry the failed action explicitly.
  */
 export function useCommentActionQueue<TContext = undefined>({
+  holds,
   onError,
   onMutate,
   onSuccess,
@@ -89,6 +94,7 @@ export function useCommentActionQueue<TContext = undefined>({
     // The card that offered the action shows its refusal (`CommentActionFailure`).
     inline: true,
     label: ({ kind }) => ACTION_LABELS[kind],
+    holds,
     // Every action is a `POST` of its own route (`submitCommentAction`).
     method: "POST",
     write: submitCommentAction,

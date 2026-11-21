@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -33,8 +34,9 @@ type Fact interface{ namedIssue() (string, bool) }
 
 // DispatchIssue records Dispatch's complete issue observation. Rank is Dispatch's fractional key,
 // compared as bytes — the order rank.Between generates. HandedOver is resolved once at decode
-// (decodeDispatchFact), from the event's own raw labels: every reader acts on this bool, never on
-// a label list of its own.
+// (decodeDispatchFact), from the event's own raw labels, and every decision acts on this bool;
+// the raw list rides on the fact as well (Labels), for the copy of Dispatch's issues, which is
+// its one reader (blockers.Mirror).
 type DispatchIssue struct {
 	Key    string
 	Seq    int64
@@ -45,6 +47,10 @@ type DispatchIssue struct {
 	Rank   string
 	// HandedOver is whether the event's own labels carried dispatch.LegionLabel.
 	HandedOver bool
+	// Labels is the issue's labels as the observation showed them, in Dispatch's order. The copy
+	// of Dispatch's issues writes them with the rest of the observation (blockers.Mirror), and
+	// nothing else reads them: a decision reads HandedOver.
+	Labels []string
 	// ActorSession is the id of a non-daemon session that wrote the event. DaemonActor tells its
 	// own status write from a user or an untyped actor: a pending hand-over fence is consumed only
 	// by its daemon-authored todo event.
@@ -64,13 +70,13 @@ type DispatchIssue struct {
 	// not yet recorded, and clears this; the workflow fills a recorded issue's from its record, and
 	// never records an issue from a fact still missing it.
 	ResolvedRepoMissing bool
-	// RepositoryRefusal is why the GitHub reads this event's preparation made for a repository no
-	// repository mapping names record the issue on no repository: the role App that is not
-	// installed on it, a repository GitHub does not have, or a name that is no <owner>/<name> at
-	// all. It is read where the fact is applied, in place of what the daemon holds in memory
-	// (workflow.Engine.ResolveIssueRepository), because nothing of such a refusal is kept: the
-	// next preparation of the issue reads GitHub again, so an operator who installs the App is
-	// taken at that preparation with no wait, no restart and no mapping change. Empty for every
+	// RepositoryRefusal is why the GitHub reads this event's preparation made for the repository
+	// the issue resolves to record the issue on no repository: the role App that is not installed
+	// on it, a repository GitHub does not have, or a name that is no <owner>/<name> at all. It is
+	// read where the fact is applied, in place of what the daemon holds in memory
+	// (workflow.Engine.ResolveIssueRepository), because no such refusal decides a later
+	// preparation: the next preparation of the issue reads GitHub again, so an operator who
+	// installs the App is taken at that preparation with no wait and no restart. Empty for every
 	// other fact, the decode's own among them: only a preparation sets it.
 	RepositoryRefusal string
 	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
@@ -143,16 +149,16 @@ func (i DispatchIssue) LabelSetByPerson() bool {
 }
 
 // ObservedIssue is issue as Dispatch's detail shows it now, as an Observed fact at the sequence
-// Dispatch has run to: its status, title, parent, rank, hand-over and repository, with no event's
-// type or actor, since no one event wrote that state. release_children's todo child and an
-// unrecorded issue's admission event are applied from it.
+// Dispatch has run to: its status, title, parent, rank, labels, hand-over, blockers and
+// repository, with no event's type or actor, since no one event wrote that state.
+// release_children's todo child and an unrecorded issue's admission event are applied from it.
 func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 	parent := ""
 	if issue.Parent != nil {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
+		Rank: issue.Rank, HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
 		ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
 }
 
@@ -205,12 +211,14 @@ type ChildAdoption struct {
 
 // AdoptedChild is one child a ChildAdoption moves into its tree, as the release's own Dispatch
 // read showed it: its Dispatch parent, the status and the keys it waits on, and the sequence
-// Dispatch had run to at that read. The daemon's mirror of those links can be older than the read
+// Dispatch had run to at that read. The daemon's copy of those links can be older than the read
 // — a person's re-parent and link are one edit of Dispatch, whose event the consumer may not have
 // delivered — and an adopted root is already recorded, so no observation of it applies to correct
-// the mirror (settleObserved). The read therefore travels with the fact: the mirror takes it
-// (blockers.Mirror), behind the sequence fence every mirror write has, before the adoption judges
-// the child, and the workflow holds the child on it as well as on the mirror's row (workflow's
+// the copy (settleObserved). The read therefore travels with the fact: the mirror takes it
+// (blockers.Mirror) before the adoption judges the child, as a reading of the parent, the status
+// and the blockers at Seq, each of which it changes only where the copy holds it from an older
+// reading or from none, leaving the labels and the rank, which the read does not carry, as the
+// copy holds them; and the workflow holds the child on it as well as on the copy's row (workflow's
 // enterChild).
 type AdoptedChild struct {
 	Issue     string
@@ -223,16 +231,6 @@ type AdoptedChild struct {
 func (ChildAdoption) namedIssue() (string, bool) { return "", false }
 
 func (f DispatchIssue) namedIssue() (string, bool) { return f.Key, true }
-
-// RepoMappingChanged is Dispatch's settings.repo_project.updated on the daemon's own project: a
-// repository was mapped to the project, unmapped, moved or made its default. It is no workflow
-// fact: the consumer has the daemon read the mapping again (ConsumerSpec.RepositoryMapping) and
-// applies nothing.
-type RepoMappingChanged struct {
-	Project string
-}
-
-func (RepoMappingChanged) namedIssue() (string, bool) { return "", false }
 
 // DispatchArtifactKind identifies the three Dispatch artifact observations that affect a gate.
 type DispatchArtifactKind string
@@ -451,14 +449,14 @@ func (p DispatchConsumerPosition) Reached(target int64) bool {
 }
 
 // IssueStatus is one issue as Dispatch shows it now: its key, the project that key names, its
-// status, the keys it says it is blocked by, its Dispatch parent, and the Dispatch sequence that
-// view stands at. The periodic turn's re-read carries them on its ControllerTick, and
-// blockers.Mirror writes each through the same sequence-fenced write an event's own row takes, so
-// a view older than an event already applied changes nothing — except the parent, which
-// record.PutDispatchIssue also writes for a view at the row's own sequence, the listing that is
-// the only thing to carry the parent of an issue the daemon has never recorded. ClaimedBy and
-// ClaimKnown are DispatchIssue's: the issue read behind this view shows the claim unless it names
-// no actor.
+// status, the keys it says it is blocked by, its Dispatch parent, its labels, its board rank and
+// the Dispatch sequence that view stands at. The periodic turn's re-read carries them on its
+// ControllerTick, as a listing does (blockers.Observed), and blockers.Mirror writes each as one
+// reading of all five values: each value keeps the sequence of the reading that wrote it, and a
+// reading changes it only at a higher sequence or where no reading wrote it
+// (record.PutDispatchIssue), so a view older than an event already applied changes nothing that
+// event wrote. ClaimedBy and ClaimKnown are DispatchIssue's: the issue read behind this view shows
+// the claim unless it names no actor.
 type IssueStatus struct {
 	Key string
 	// Project is the Dispatch project of Key, as the read that saw the issue reports it, since a
@@ -471,11 +469,15 @@ type IssueStatus struct {
 	ClaimedBy  string
 	ClaimKnown bool
 	// Parent is the key of the issue's Dispatch parent, empty for an issue Dispatch shows under
-	// none. The children-first rule reads the mirror's parent column to find what hangs under an
+	// none. The children-first rule reads the copy's parent column to find what hangs under an
 	// issue (record.ChildWaits), so every observation carries the parent it saw, and empty is
-	// the observation that the issue has no parent: it clears the one the mirror holds
-	// (record.PutDispatchIssue).
+	// the observation that the issue has no parent: it takes the child out from under the parent
+	// the copy holds wherever it is the newer reading of the parent (record.PutDispatchIssue).
 	Parent string
+	// Labels and Rank are the issue's labels, in Dispatch's order, and its board rank as the view
+	// showed them. The copy of Dispatch's issues is their one reader.
+	Labels []string
+	Rank   string
 }
 
 // ControllerTick is the daemon's periodic wake for the project's controller, applied as a
@@ -689,9 +691,11 @@ func (r PullRequestReview) lastLegionFooter() legionFooter {
 
 // LegionSession is the session named in the last Legion footer in the review's body
 // (lastLegionFooter). It is "" when the body carries no such footer, the last one's JSON cannot
-// be parsed, or its session is empty.
+// be parsed, or its session is empty. The footer is JSON, whose \u0000 escape decodes to a NUL
+// that the body as stored never shows, so the session is given as the store would keep it
+// (storetext.Text): the workflow compares it with the reviewer claim's stored session.
 func (r PullRequestReview) LegionSession() string {
-	return r.lastLegionFooter().Session
+	return storetext.Text(r.lastLegionFooter().Session)
 }
 
 // LegionHead is the head the review says it read: the head field of the last Legion footer in the
@@ -1162,14 +1166,20 @@ type ClaimFailed struct {
 
 func (f ClaimFailed) namedIssue() (string, bool) { return f.Issue, true }
 
-// SessionLost is a claim whose recorded session no session store holds any more: its worker now
-// runs a fresh agent that has read none of its own earlier work (supervise's startFresh). Detail
-// is why, as the runtime said it. It is told on the issue, to its architect and to the controller,
-// because a worker that silently lost its memory looks like one that is merely slow.
+// SessionLost is a claim that forgot its recorded session: its worker now runs a fresh agent that
+// has read none of its own earlier work (supervise's startFresh). Detail is why, as the supervisor
+// said it. It is told on the issue, to its architect and to the controller, because a worker that
+// silently lost its memory looks like one that is merely slow.
+//
+// Cause is why the claim forgot the session; empty reads as gone (supervise.SessionLossGone).
+// Session is the session the claim forgot (supervise.AbandonedSession.Session), which the
+// workflow names in the words of a cause whose message does not quote Detail.
 type SessionLost struct {
-	Issue  string
-	Role   claim.Role
-	Detail string
+	Issue   string
+	Role    claim.Role
+	Detail  string
+	Cause   supervise.SessionLoss
+	Session string
 }
 
 func (f SessionLost) namedIssue() (string, bool) { return f.Issue, true }
@@ -1604,7 +1614,19 @@ type Pool interface {
 // Making per-tree locking correct means promotion taking the candidate tree's lock as well, which
 // is cross-tree lock ordering, which is a deadlock a daemon supervising long-lived agents would
 // hold until a human noticed. Serial facts are a throughput cost; that is the trade being made.
+//
+// Before anything else, source, eventID and every string fact carries are given through the
+// store's own rule (storetext.Text, storetext.Strings), so MarkProcessed, settleObserved and every
+// handler see the fact as the store keeps it. A handler compares what the fact says with what the
+// store holds of it — a title, a check run's name, a head, a changes request's reason — and the
+// store keeps each text as the rule makes it: compared as it arrived, a fact holding a text the
+// rule changes would differ from its own stored copy every time it was delivered again, and be
+// written again, or become another step of a pull request's head run. Every fact of GitHub,
+// Dispatch, Envoy, the API and supervision passes here, so the rule is given to facts here once;
+// the boot's Dispatch listing, which admission applies outside ApplyFact, takes it in admission's
+// Reconcile.
 func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
+	source, eventID, fact = storetext.Text(source), storetext.Text(eventID), storetext.Strings(fact)
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return Result{}, err
@@ -1686,12 +1708,17 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 // replays many facts it has most likely applied before (the boot's terminal replay) applies only
 // the rest: the duplicates cost one read between them, not a transaction each queued on the lock
 // behind every live fact.
+//
+// ApplyFact records each id as the store keeps it (storetext.Text), so the ids are looked up as
+// the store keeps them, and each one found is answered under the id the caller gave: a caller that
+// looks up its own id finds it, whatever the rule made of it.
 func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (map[string]bool, error) {
 	applied := make(map[string]bool, len(eventIDs))
 	if len(eventIDs) == 0 {
 		return applied, nil
 	}
-	rows, err := pool.Query(ctx, `select event_id from processed_events where source = $1 and event_id = any($2::text[])`, source, eventIDs)
+	stored := storetext.Strings(eventIDs)
+	rows, err := pool.Query(ctx, `select event_id from processed_events where source = $1 and event_id = any($2::text[])`, storetext.Text(source), stored)
 	if err != nil {
 		return nil, fmt.Errorf("read which %s facts are applied: %w", source, err)
 	}
@@ -1699,8 +1726,14 @@ func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (
 	if err != nil {
 		return nil, fmt.Errorf("read which %s facts are applied: %w", source, err)
 	}
+	found := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		applied[id] = true
+		found[id] = true
+	}
+	for i, id := range eventIDs {
+		if found[stored[i]] {
+			applied[id] = true
+		}
 	}
 	return applied, nil
 }
@@ -1748,15 +1781,17 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 
 // SerializeFacts takes, for tx's life, the lock every fact applies under (ApplyFact): until tx
 // commits or rolls back, no fact resolves a repository and commits an issue recorded on it. The
-// boot's reconcile, which records issues in its own transaction, takes it, as does a refresh of
-// the repository mapping across its live-record snapshot and its publication, so a repository an
-// admission is recording an issue on is never unsubscribed under it. The subscription update
-// itself is outside this lock and outside any transaction of that pool: a stream call made under
-// either left every connection of the pool idle in a transaction waiting on JetStream
-// (cybermonklabs/legion#3786, dispatch://INFRA-3169), so the mapping's refresh publishes its
-// superset before it takes this lock and narrows after it has let it go, and a recording's own
-// update runs in the commit hook, after the transaction returned its connection and Postgres
-// released this lock (internal/daemon's hearRecorded).
+// boot's reconcile, which records issues in its own transaction, takes it, as do the daemon's
+// read of the live records for its repository caches, across that read and its publication, and
+// its backfill of a record's repository columns (internal/daemon's refreshLive and
+// backfillLater), so no read of the records is published over an issue an admission recorded
+// meanwhile. The subscription update itself is outside this lock and outside any transaction of
+// that pool: a stream call made under either left every connection of the pool idle in a
+// transaction waiting on JetStream (cybermonklabs/legion#3786, dispatch://INFRA-3169), so the
+// daemon's publication of the whole heard set reads the records in a transaction of its own and
+// calls JetStream after it, and a recording's own update runs in the commit hook, after the
+// transaction returned its connection and Postgres released this lock (internal/daemon's
+// hearRecorded).
 func SerializeFacts(ctx context.Context, tx pgx.Tx) error {
 	_, err := tx.Exec(ctx, "select pg_advisory_xact_lock(hashtext('legion.apply_fact'))")
 	return err

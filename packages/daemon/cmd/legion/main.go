@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -207,11 +208,14 @@ func pluginsLine(cfg config.Config) string {
 // boot makes, through the loader that runs neither GitHub App's private_key_command nor any
 // secretsd read, then every refusal boot makes from the configuration, the environment and the
 // files they name before it writes anything (daemon.CheckStart, the reads boot's own prepare
-// starts with, the daemon's own NATS nkey seed among them), and nothing else: no store, no team, no
+// starts with, the daemon's own NATS nkey seed among them, then the store's refusals of a
+// postgres_dsn, which daemon.CheckStart lists), and nothing else: no store connection, no team, no
 // file written, and no process but `mise where <tool>` when a tmux configuration's omp_invocation
-// names a mise tool. The OK line names the design-gate steps the file resolved to, in the order
-// it named them (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS
-// nkey seed's public key when there is one, never the seed.
+// names a mise tool. Each refusal is written to stderr through printRefusal, as `legion start`
+// writes its own, so a URL a refusal quotes loses its query and its userinfo in both commands.
+// The OK line names the design-gate steps the file resolved to, in the order it named them
+// (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS nkey seed's
+// public key when there is one, never the seed.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
 // top level — in the words boot logs it with: what the key would have been refused for, and what
@@ -240,8 +244,8 @@ func pluginsLine(cfg config.Config) string {
 // `resources:` line names those pods as Burstable (capabilities.Deployment.BurstableLine);
 // a file that sets no lower request prints none, its pods all Guaranteed. Then, when the image
 // probe's attempt budget is derived above slow_command_timeout_seconds (daemon.ProbeBudget), one
-// plain line names the derived bound and why; then one names the repository cache every mapped
-// repository gets, as the file settles it;
+// plain line names the derived bound and why; then one names the repository cache each repository
+// a live record names gets, as the file settles it;
 // then a last plain line names the plugin pair this daemon would install for a stale-plugin
 // relaunch — the file's or the binary's — or, with neither, the gap, and, when worker_backends
 // runs any role on Claude Code, one sentence more saying that such a role's plugin is the image's
@@ -258,7 +262,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		paneNatsUser, daemonNatsUser, err = daemon.CheckStart(cfg, os.LookupEnv)
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "legion config check: %v\n", err)
+		printRefusal(stderr, "legion config check", err)
 		return 1
 	}
 	ok := "Config OK: project=" + cfg.Project + " design-gate-steps=" + designGateSteps(cfg.Gates.Steps())
@@ -297,7 +301,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, line)
 		}
 		cache := cfg.Runtime.Kubernetes.RepositoryCache
-		fmt.Fprintf(stdout, "repository cache: a %s volume per mapped repository, fetched from GitHub every %d minutes, kept %d hours after its repository leaves the mapping; its container reserves cpu %s, memory %s, ephemeral storage %s under %s\n",
+		fmt.Fprintf(stdout, "repository cache: a %s volume for each repository a live record names, fetched from GitHub every %d minutes, kept %d hours after no live record names it; its container reserves cpu %s, memory %s, ephemeral storage %s under %s\n",
 			cache.Volume, cache.RefreshMinutes, cache.RetainHours, reservedUnder(cache.Resources.CPURequest, cache.Resources.CPU),
 			reservedUnder(cache.Resources.MemoryRequest, cache.Resources.Memory), cache.Resources.EphemeralStorageRequest, cache.Resources.EphemeralStorage)
 		fmt.Fprintln(stdout, pluginsLine(cfg))
@@ -342,15 +346,18 @@ func reservedUnder(request, limit string) string {
 // process's one claim on the team — there is no second record to disagree with it — so `legion
 // stop`, `legion status` and `legion legions` read one answer and not the daemon's own opinion
 // of itself.
+//
+// Every error start writes to stderr passes the URL rule the log's handler applies to every
+// record (printRefusal).
 func start(ctx context.Context, configPath string, stderr io.Writer) int {
-	log := slog.New(slog.NewJSONHandler(stderr, nil))
+	log := slog.New(slog.NewJSONHandler(stderr, redact.HandlerOptions(nil)))
 	slog.SetDefault(log)
 
 	// The inherited socket is adopted first, before the configuration's key commands run, so none
 	// of them inherits its descriptor: from here on only the close-on-exec copy serving it is open.
 	inherited, socket, err := adoptListenFD()
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %v\n", err)
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 	if inherited != nil {
@@ -360,7 +367,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	}
 	cfg, err := config.Load(configPath, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %v\n", err)
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 	// Each warning the loader has (config.Config.Warnings) is logged once, here and nowhere
@@ -380,26 +387,26 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		bind := listenfd.Setting{Name: "bind", Value: cfg.Bind, Set: true}
 		port := listenfd.Setting{Name: "port", Value: strconv.Itoa(cfg.Port), Set: true}
 		if err := socket.CheckAgainst(bind, port); err != nil {
-			fmt.Fprintf(stderr, "legion start: %s: %v\n", configPath, err)
+			printRefusal(stderr, "legion start: "+configPath, err)
 			return 1
 		}
 	}
 	applyLinkedPlugins(&cfg)
 	absoluteConfig, err := filepath.Abs(configPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: resolve %s: %v\n", configPath, err)
+		printRefusal(stderr, "legion start: resolve "+configPath, err)
 		return 1
 	}
 	// The state directory is where the worker stream socket, the panes' secret files, and their
 	// home live; the registry refuses a second live legion on it, which only holds if every
 	// start names it the same way.
 	if cfg.StateDir, err = filepath.Abs(cfg.StateDir); err != nil {
-		fmt.Fprintf(stderr, "legion start: resolve state_dir: %v\n", err)
+		printRefusal(stderr, "legion start: resolve state_dir", err)
 		return 1
 	}
 	legions, err := registryPath()
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %v\n", err)
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 
@@ -416,7 +423,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		StartedAt:  time.Now().UTC(),
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %v\n", err)
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 	if !claimed {
@@ -426,15 +433,27 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	// Only this process's own entry: a daemon that replaced it owns the team now.
 	defer func() {
 		if err := registry.RemoveIf(legions, cfg.Project, os.Getpid()); err != nil {
-			fmt.Fprintf(stderr, "legion start: %v\n", err)
+			printRefusal(stderr, "legion start", err)
 		}
 	}()
 
 	if err := daemon.Run(ctx, cfg, log, inherited); err != nil {
-		fmt.Fprintf(stderr, "legion start: %v\n", err)
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 	return 0
+}
+
+// printRefusal writes prefix, ": ", err's text through the URL rule (redact.URLCredentials) and a
+// newline to stderr. The daemon's own commands (start, probe-boot, config check) and the commands
+// podLogs names write their refusals through here or through the same rule, so each passes the
+// rule the daemon's log handler applies to every record: an error can wrap a *url.Error, which
+// keeps the URL's query and its user name (Go's client masks only a password), and pgx's
+// ParseConfigError of a postgres_dsn it cannot parse quotes the DSN with its user name and its
+// query (pgx masks only the password). The operator's own commands (state, stop, status) print
+// theirs on the operator's terminal without it.
+func printRefusal(stderr io.Writer, prefix string, err error) {
+	fmt.Fprintf(stderr, "%s: %s\n", prefix, redact.URLCredentials(err.Error()))
 }
 
 // listenFDVariable names the listening TCP socket `legion start` serves its API on in place of
@@ -528,7 +547,7 @@ func stopLegion(configPath string, stdout, stderr io.Writer) int {
 func newStateCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "state",
-		Short: "print the daemon's state: admission, the project's pause, issues, pending Dispatch status writes, claims nothing will wake, served repositories without Dispatch's webhook App, the durable consumers' lag (--json for all of it)",
+		Short: "print the daemon's state: admission, the project's pause, issues, pending Dispatch status writes, claims nothing will wake, the live records' repositories GitHub did not read or a GitHub App is missing from, the durable consumers' lag (--json for all of it)",
 		Args:  configOnly,
 	}
 	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names; with it the claims nothing will wake name who suspended each", stdout, stderr)
@@ -597,6 +616,9 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims, strandedSuspenders(ctx, op, state.StrandedClaims)))
 	if wakes := wakesWaitingSummary(state.WakesWaiting); wakes != "" {
 		fmt.Fprintln(stdout, wakes)
+	}
+	for _, line := range repositoryLines(state.Repositories.Live) {
+		fmt.Fprintln(stdout, line)
 	}
 	for _, line := range webhookAppLines(state.Repositories.WithoutWebhookApp) {
 		fmt.Fprintln(stdout, line)
@@ -782,10 +804,10 @@ const waitingLineNamedCap = 10
 // settings carries neither, so the list above declares the `memory` experiment alone and the
 // line is the one a `legion` without this change prints for the same body. A daemon of this
 // release serves the memory fields only where an issue's `memory` row records a draw, and serves
-// that row in `assignments` as well to every caller but a pod below contract 141 (api's stateFor),
+// that row in `assignments` as well to every caller but one below contract 141 (api's shapeIssue),
 // so in the body it serves `legion state` an issue with no `assignments` carries no `memoryGroup`
-// either and the fallback counts nothing; in the body it serves such a pod it counts the `memory`
-// draws.
+// either and the fallback counts nothing; in the body it serves a caller below 141 it counts the
+// `memory` draws.
 func experimentLines(settings api.Settings, project string, issues map[string]api.Issue) []string {
 	declared := settings.Projects[project].DeclaredExperiments(project)
 	counts := make(map[string]map[armDraw]int, len(declared))
@@ -1379,11 +1401,43 @@ func strandedSuspenders(ctx context.Context, op operator, stranded []api.Strande
 	return api.SuspendersOfOperatorClaims(list.Claims)
 }
 
-// webhookAppLines are the lines an operator reads for the served repositories Dispatch's GitHub App
-// is not known to be installed on (api.RepositoriesView.WithoutWebhookApp): GitHub sends Legion no
-// event of such a repository. One line per repository with why, in the state's order; with none
-// the one line says so.
+// repositoryLines are the lines an operator reads for the repositories the live records name
+// (api.RepositoriesView.Live) that GitHub's last read did not name or a role App is not installed
+// on: one line per such repository, in the state's order, with why — its readError, the Apps
+// GitHub answered are not installed on it (api.LiveRepositoryView.NotInstalled), or both — and
+// the name it is served under where that is the other name of its configured pair. A repository
+// with neither, one GitHub has not yet answered among them, has no line.
+func repositoryLines(live []api.LiveRepositoryView) []string {
+	var lines []string
+	for _, repo := range live {
+		var why []string
+		for _, reason := range []string{repo.ReadError, repo.NotInstalled()} {
+			if reason != "" {
+				why = append(why, reason)
+			}
+		}
+		if len(why) == 0 {
+			continue
+		}
+		name := repo.Repo
+		if repo.ServedAs != "" {
+			name += " (served as " + repo.ServedAs + ")"
+		}
+		lines = append(lines, "repository "+name+": "+strings.Join(why, "; "))
+	}
+	return lines
+}
+
+// webhookAppLines are the lines an operator reads for the repositories the live records name that
+// Dispatch's GitHub App is not known to be installed on (api.RepositoriesView.WithoutWebhookApp,
+// which a daemon of contract 152 writes too): GitHub sends Legion no event of such a repository.
+// One line per repository with why, in the state's order. Only a list that is present and empty
+// gives the one line that says none is missing; a daemon that wrote no list (gaps nil) says
+// nothing of the webhook App, so the CLI prints no line for it.
 func webhookAppLines(gaps []api.WebhookAppGapView) []string {
+	if gaps == nil {
+		return nil
+	}
 	if len(gaps) == 0 {
 		return []string{"webhook App missing: none"}
 	}

@@ -30,7 +30,9 @@ legion config check --config legion.yaml
 | `worker_stop_timeout_seconds must be at least 9 when runtime is kubernetes: …` | Raise it to 9 or more. A role's stop gives its agent 5 s to exit, drains its output for 1 s and waits at least 3 s for the CodeGraph warm-up to release its lease on the issue volume; a smaller grace would let the pod kill the shim with the lease held, and the role's relaunch would skip its own build for a minute. |
 | `projects must configure <PROJECT>, the daemon's own project` | `project` must also be a key of `projects`. |
 | `postgres_dsn is required (or set LEGION_POSTGRES_DSN)` | Give the daemon its database. |
-| `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": Dispatch holds the project's repository mapping …` is one: map the repositories in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
+| `<LEGION_LEAK_CHECK_REPOSITORY or leak_check.repository> is set and the manifest sha256 is not: …` or `<LEGION_LEAK_CHECK_MANIFEST_SHA256 or leak_check.manifest_sha256> is set and the repository is not: …` | The deployment's shared leak check is two values, set together or not at all: the repository it is published from and the check's manifest digest, one sha256 over every file it runs from ([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)). Set the half the message names, in the daemon's environment or in `legion.yaml`; or unset the half that is set, and the daemon runs no shared leak check. |
+| `connect to Postgres at …: default_query_exec_mode=<mode> is refused: the store's text rule needs the type of each parameter, which pgx learns from the server only in cache_statement, cache_describe and describe_exec` | `postgres_dsn` sets `default_query_exec_mode` to `exec` or `simple_protocol`, in which pgx sends each value with no parameter type, so the store cannot apply its text rule to what it writes. Remove `default_query_exec_mode` from the DSN, or set another mode: `cache_statement` (pgx's default), `cache_describe` or `describe_exec`. |
+| `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": the daemon takes each issue's repository from Dispatch …` is one: set the issue's repository, or the project's default repository, in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
 | `omp_invocation is not used when runtime is kubernetes: …` | Remove it: every pod runs the worker image's Oh My Pi. |
 | `worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger: …` | Claude Code runs the phase workers alone; leave the architect on `omp`. |
 | `worker_backends runs a role on claude, and boot is missing …` | Under tmux, give the daemon's environment what the message names: `LEGION_CLAUDE_PATH` and `LEGION_BUN_PATH` (or `claude` and `bun` on `PATH`), and `LEGION_CLAUDE_PLUGIN_DIR`, the absolute path of a built `packages/claude-envoy`. A Kubernetes daemon needs none of them: the worker image carries the plugin and Claude Code's pin, and each Claude role's pod installs the pinned Claude Code at launch, so `worker_backends` is accepted there with nothing else set. A launch whose install fails or does not verify fails, printing a `legion claude-code: …` line, so such a pod must reach the npm registry. |
@@ -65,41 +67,66 @@ legion config check --config legion.yaml
 | `<PROJECT> is already running (pid <n>)` (from `legion start` itself) | A daemon for this project is already registered on the machine: `legion status <PROJECT>`, `legion legions`. |
 | `capability <name> is open: <detail>; to record a decision, add to legion.yaml: capabilities.decided.<name>: "<reason>"` (after the `Config OK` line, exit 0) | A report, not a refusal: the deployment leaves a worker capability open. The check names the rows the file alone decides — `resource-limits` while a role lacks CPU and memory in both requests and limits, `secrets` while no broker is configured — and the daemon logs the same line at boot for every open row, `model-fallback` included when the probe read `retry.modelFallback` false under your overlay or could not read it at all (the probe's OK line marks that `model-fallback=unread`, the probe pod's log says why), and `pool-capacity` when the image probe pod was Unschedulable before it scheduled (the detail counts the attempts that waited and quotes the scheduler's reason). Close the gap, or add the `capabilities.decided.<name>: "<reason>"` line it prints to record your decision. `legion state --json` lists every row under `capabilities`, each deployment row carrying `source` (`configuration` or `boot`), and the controller's daily report names each open one. In the daemon's log alone (the check prints no such row), a line without the `; to record a decision` tail — `capability <name> is open: pod <sandbox>/<container> (<role>, <issue>): <fact>`, or `pane <window>:<pane>` under tmux — is a live row (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) that a running session's own check at its start failed: the daemon logs the fact alone, with the claim, role, issue and locator as the line's attributes, as the session reports ready, then this pod-naming form at boot and at the first controller tick after the set of open rows changed, and `legion state` shows the row `open` with that detail, naming each failing session. The fact is what the session measured inside its Oh My Pi (`web_search is not a registered tool`, `not connected: <server> (<error>)`, `agents the prompts dispatch that the task tool does not resolve: <names>`, `not discovered: <paths>`, `Envoy tools missing: <names>`, `dispatch read failed: <stderr>`, `gh viewer login failed: <stderr>`, or `did not finish within 8 s`). No `capabilities.decided` line applies: fix what the fact names in the session's environment, and the row heals when that process is relaunched with the gap closed or reports anew at its next boot — a session that booted during a Dispatch, GitHub or search-provider outage reads open until then. The session's own report is under `issues.<KEY>.architect.capabilities` or `issues.<KEY>.workers.<role>.claim.capabilities` in `legion state --json`. |
 
-**At boot, after the check passes**, the daemon reads the project's repositories and checks the
-cluster and the image:
+**At boot, after the check passes**, the daemon checks its GitHub Apps, the cluster and the image.
+The key proof under the App's JWT mints no token for an owner; every other step of the boot that
+reads GitHub or writes a cache's credential mints the token that step needs. One such step fills a
+record that lacks its repository columns, one read per such record bounded at 15 seconds, a read
+that fails leaving the record for the daemon to fill later. The one-time rename pass of
+`repository_renames` reads GitHub for a pair only while a stored row still names the pair's
+`from`: then it reads both role Apps' installations on each of the pair's names that the daemon
+holds no answer for (at boot, both) and, where the daemon holds no spelling of the `to`, GitHub's
+spelling of it, each read bounded at 15 seconds; once no row names a pair's `from`, the pass reads
+nothing of GitHub for that pair. A project with no
+repository, or with no default repository, boots all the same, and when no live record names a
+repository it logs one line at info, `workflow: no live record of the project names a repository,
+so the daemon serves no repository until an issue names one`, which is no fault. Once the API
+serves, the daemon prepares each repository its records name, beside the boot: it reads both role
+Apps' installations on it, its name and default branch, and Dispatch's webhook App on it.
 
-- **No repository mapped.** `project <PROJECT> has no repository mapped in Dispatch (Settings →
-  Repositories → Projects)`: map the project's repositories in Dispatch, one of them its default.
-- **A repository is left out.** A mapped repository missing either App does not stop the boot,
-  even when it is the project's only one: the log's `legion workflow boot stage` line with
-  `stage=repositories` lists it under `refused`, `legion state --json | jq .repositories.refused`
-  names it with the App it lacks, and its issues are not admitted, each saying so, until the App
-  is installed there and the issue moves to `todo` again.
-  A refusal that reads `the <role> App's installation on <owner>/<repo> could not be read: …;
-  Legion reads it again` is GitHub not answering, not a missing App: the daemon reads the mapping
-  again on its own, 30 s doubling to 10 min, and serves the repository once GitHub answers; an
-  issue handed to Legion on it, before the boot or after, has nothing said on it, and the daemon
-  recovers it from Dispatch's listing once GitHub answers, with nothing to move. A
-  `child-release-stalled` notice that names such a repository says which parent to release first:
-  the recovery records no child under a parent that is not `todo`.
-- **A stamped repository the mapping does not hold.** The boot says once, naming the repository
-  and the project, that `projects.<KEY>.commit_issue_trailer_repos` names a repository Dispatch
-  does not map to the project. A pane still stamps a commit for that repository when it works it,
-  so the line catches a typo and nothing else. It is a
-  warning, not a refusal — the boot's check reads no Dispatch, and a repository mapped the day
-  after the file is written is no fault of the file. Map the repository to the project in
-  Dispatch, or take the name out.
-- **Records with no repository.** `<n> issue records have no repository and Dispatch resolves none
-  for them (<KEY>, …): set the project's default repository in Dispatch …`: the first boot of this
-  release records each issue it already runs on the repository Dispatch resolves for it, and these
-  resolve to none. Set the project's default repository in Dispatch, or each issue's own, and start
-  the daemon again.
-- **A record whose work is elsewhere.** `fill the repository of <KEY>: Dispatch resolves it to
+- **A GitHub App's key is refused.** `prove the <role> App's key by reading its installations: …`:
+  GitHub refused the App-level read of that App's installations, so the App's key or its id is
+  wrong, or GitHub refuses the App. Correct the App's `app_id` or its key under `github_apps` in
+  `legion.yaml`, and start the daemon again. An App installed on no account is no refusal: the
+  daemon boots and logs it once.
+- **A repository a role App cannot work.** A repository that a record names, and that a role App
+  is not installed on or that GitHub does not have, never stops the daemon and changes no record.
+  `legion state` prints a `repository <owner>/<name>: <why>` line for it, `legion state --json |
+  jq .repositories.live` shows its `apps` and `readError`, and the log says it once (`GitHub's
+  answer for a repository leaves it unworkable for now`). The daemon reads the repository again on
+  its own, 30 s doubling to 10 min, and the line goes once GitHub answers that both Apps are
+  installed. An issue on such a repository that the daemon does not record yet is not admitted,
+  and the daemon says why on the issue: install the App, and move the issue to `todo` again.
+  A reason that reads `the <role> App's installation on <owner>/<repo> could not be read: …` is
+  GitHub not answering, not a missing App: the daemon reads it again on the same backoff. An issue
+  handed to Legion on such a repository has nothing said on it, and the daemon recovers it from
+  Dispatch's listing once GitHub answers, with nothing to move. A `child-release-stalled` notice
+  that names such a repository says which parent to release first: the recovery records no child
+  under a parent that is not `todo`.
+- **A launch on an issue that names no repository.** `<KEY> names no repository: set the
+  repository of <KEY>, or the default repository of project <PROJECT>, in Dispatch`. A claim an
+  operator starts on an issue the workflow does not record works the repository Dispatch resolves
+  for that issue (its own, else its nearest ancestor's, else the project's default), and this issue
+  resolves to none. Set the issue's repository, or the project's default repository, in Dispatch,
+  and start the claim again. The daemon refuses that launch alone and stays up. The same launch is
+  refused, naming the cause, when Dispatch does not answer, when a role App is not installed on the
+  repository, or when GitHub does not answer its read.
+- **A stamped repository.** The daemon compares `projects.<KEY>.commit_issue_trailer_repos` with
+  nothing at boot: the loader checks each name's shape and two names of one repository (the table
+  above), and a pane stamps a commit when the repository it works is on the list. A misspelled name
+  matches no repository, so no commit is stamped for it and no line says so: compare the list with
+  the repositories `legion state` lists.
+- **Records with no repository.** A log line `workflow backfill: a record is left as it is, without
+  its repository columns, and the backfill tries it again` with the cause `Dispatch resolves no
+  repository for it: set its repository in Dispatch`: a record written before the record carried
+  its repository resolves to none. The boot goes on, the daemon tries the record again, 30 s
+  doubling to 10 min and at each boot, and each launch of its issue is refused until it is filled.
+  Set the project's default repository in Dispatch, or the issue's own.
+- **A record whose work is elsewhere.** The same log line with the cause `Dispatch resolves it to
   <owner/name>, but its pull request #<n> is on <owner/name>` (or `its workspace <dir> is in
-  <owner/name>`) `: set the issue's repository in Dispatch to … and restart`: the issue worked in
-  that repository, but its own repository or an ancestor's, set in Dispatch since, resolves it
-  elsewhere. Set the issue's repository in Dispatch to the one the message names, with the command
-  it names, and start the daemon again.
+  <owner/name>`) `: set the issue's repository in Dispatch to …`: the issue worked in that
+  repository, but its own repository or an ancestor's, set in Dispatch since, resolves it
+  elsewhere. Set the issue's repository in Dispatch to the one the cause names, with the command it
+  names; the daemon fills the record at its next try.
 - **Agent Sandbox is missing.** The refusal names `the Sandbox CRD sandboxes.agents.x-k8s.io` or
   `the Agent Sandbox controller Deployment agent-sandbox-system/agent-sandbox-controller`, and
   whether the API answered 404 or 403. A 403 means the daemon's identity lacks the get the
@@ -185,12 +212,12 @@ that, so it stops well inside a pod's termination grace. It ends no agent: the n
 every pod or pane still running and relaunches each launch the stop cut short.
 
 A signal that comes before the boot is recorded ends the boot step under way only when that step
-is the plugin gate, which runs first, the GitHub App token mint, the image probe, or the NATS and
-Dispatch readiness checks; the daemon then stops without recording a boot. The cluster check,
-opening and migrating the store, building the runtime and recording the boot are not cut short:
-each runs to its end, with at most 30 seconds between one of the steps that end at the signal and
-the next, and the daemon stops at the next such step, or once its boot is recorded, which it then
-stamps.
+is the plugin gate, which runs first, the GitHub Apps' logins read and key proof, the image probe,
+or the NATS and Dispatch readiness checks; the daemon then stops without recording a boot. The
+cluster check, opening and migrating the store, building the runtime and recording the boot are
+not cut short: each runs to its end, with at most 30 seconds between one of the steps that end at
+the signal and the next, and the daemon stops at the next such step, or once its boot is
+recorded, which it then stamps.
 
 - **`legion daemon stopped draining the API`.** A request was still in flight after those 8
   seconds. The daemon cut it short, the caller got an error, and the next boot takes its claim up;
@@ -291,12 +318,13 @@ Check, in order:
    root the daemon recorded that a person moved back to `triage` is never queued again: it runs
    again only from `todo`. In `backlog` or `icebox` it does not run.
 3. **The project and its repository.** The issue's project must be the daemon's, under `projects`
-   in `legion.yaml`. The issue may name any `owner/name`, whether or not Dispatch maps it to the project. An issue
+   in `legion.yaml`. The issue may name any `owner/name`. An issue
    whose repository resolves to none, or to one a role App is not installed on, is not admitted: the
    daemon says why on the issue (`Legion did not admit this issue: …`), once until the cause
-   changes. Set the issue's repository (the issue header's Repository picker, or
-   `dispatch issue-update --repo owner/name`), or install the missing App, and move the issue to
-   `todo` again. A child of a tree is told the same way, and the architect that owns its parent
+   changes. For one that resolves to none, set the issue's repository (the issue header's
+   Repository picker, or `dispatch issue-update --repo owner/name`), or the project's default
+   repository, in Dispatch; for the other, install the missing App. Then move the issue to `todo`
+   again. A child of a tree is told the same way, and the architect that owns its parent
    (the tree's architect when its parent is not recorded in the tree) gets a `child-not-recorded`
    notice.
 4. **The slots.** When every slot is taken the issue waits its turn:
@@ -548,8 +576,14 @@ whole record.
 
 **A launch the shared public leak check refused** has a sentence of its own on the claim, as
 `leakCheckCause`. Under the Kubernetes runtime the daemon reads that check at the tag the worker
-image pins, and pushes it to the pod's launcher, which installs it before any role of the pod
-starts ([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)).
+image pins, from the repository the deployment names (`LEGION_LEAK_CHECK_REPOSITORY` and
+`LEGION_LEAK_CHECK_MANIFEST_SHA256` in the daemon's environment, or `leak_check.repository` and
+`leak_check.manifest_sha256` in `legion.yaml`), and pushes it to the pod's launcher, which installs
+it before any role of the pod starts
+([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)). A
+deployment that names no check runs none: the daemon logs `daemon: the deployment leak check is
+not configured` once at boot, and no launch is refused for the check and no claim carries this
+sentence.
 A start whose check could not be installed is not sent, and it is charged as a launch failure, so
 a claim that keeps meeting it fails with `launch failures ran out: <the refusal>` and the cause
 word `launch_refused`, or `died` where the refused launches were the relaunch of a process that
@@ -564,8 +598,9 @@ the try started or failed for another reason. It is not cleared while the claim 
 tries. It shows in `legion state --json`, `read_state` and `read_record` for a workflow role's
 claim, and in `legion claims list --json` and the last column of `legion claims list` for every
 claim. The project's controller is on no claim view of the state, so its sentence shows in the
-listing alone. What follows the colon says where to look. Each sentence names the repository
-the check is published from, written `<owner>/<repository>` below, and its owner, `<owner>`:
+listing alone. What follows the colon says where to look. Each sentence names the repository the
+deployment configured (`leak_check.repository`, or `LEGION_LEAK_CHECK_REPOSITORY` in the daemon's
+environment), written `<owner>/<repository>` below, and its owner, `<owner>`:
 
 - `the daemon runs with no GitHub App, so it cannot read <owner>/<repository>`, or `the daemon
   could not mint its read-only token for <owner>/<repository>: …`: the daemon's GitHub App
@@ -1871,14 +1906,15 @@ notice comes once per handoff commit, from whichever read finds it first.
   already applied, so that rate counts no redelivery of an event that carries no fact, and none of
   an event not yet applied. A recreated consumer's replay reads 1 and stands outside the rate,
   although JetStream did hand the fact over twice.
-- **`webhook App missing on <repo>: <reason>`** in `legion state` (`repositories.withoutWebhookApp`
-  in `--json`). Dispatch's GitHub App, the Envoy App whose webhook carries GitHub's events, is not
-  known to be installed on a repository the daemon serves. With `Dispatch's GitHub App is not
-  installed on <repo>: …`, GitHub sends Legion none of that repository's events and nothing
-  redelivers them: the repository is served, and nothing brings its pull requests' changes in, so
-  its issues stand still. An operator installs Dispatch's GitHub App on the repository
-  ([The GitHub Apps](/legion/legion/running-legion/#the-github-apps)); the line goes at the
-  daemon's next read of the mapping, at a restart or the next change of the mapping in Dispatch.
+- **`webhook App missing on <repo>: <reason>`** in `legion state` (its entry in
+  `repositories.withoutWebhookApp` in `--json`). Dispatch's GitHub App, the Envoy App whose
+  webhook carries GitHub's events, is not known to be installed on a repository a live record
+  names. With `Dispatch's GitHub App is not installed on <repo>: …`, GitHub sends Legion none of
+  that repository's events and nothing redelivers them: the repository is worked, and nothing
+  brings its pull requests' changes in, so its issues stand still. An operator installs Dispatch's
+  GitHub App on the repository ([The GitHub Apps](/legion/legion/running-legion/#the-github-apps));
+  the daemon asks Dispatch again on its own, 30 s doubling to 10 min, and the line goes at the
+  first answer that the App is installed.
   `the webhook App check failed: GITHUB_APP_UNCONFIGURED: …` is a Dispatch that holds no App key
   (`DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64`); `GITHUB_UNREADABLE` is Dispatch's read of
   GitHub failing; `this Dispatch does not answer the webhook App check` is a Dispatch older than
