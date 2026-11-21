@@ -41,6 +41,20 @@ func TestParseServicesRefusesProjectsForMeasure(t *testing.T) {
 	require.True(t, services[0].AllProjects)
 }
 
+// One measurement account per broker: the measurement job's grant subscribes its one fixed reply
+// prefix (natsgrant.Measure, _INBOX_envoy_measure.>), which the auth service answers as it is, so
+// a second measure entry would read the first's replies. A second entry is refused at the broker's
+// start, naming both. The control is one entry, which is read.
+func TestParseServicesRefusesASecondMeasureEntry(t *testing.T) {
+	first, second := "measure/-/*=google:"+measureAccount, "measure/-/*=google:other-measure@example-project.iam.gserviceaccount.com"
+	_, err := ParseServices(first + " " + second)
+	require.ErrorContains(t, err, `"`+first+`"`)
+	require.ErrorContains(t, err, `"`+second+`"`)
+	services, err := ParseServices(first + " daemon/-/*=" + daemonAccount)
+	require.NoError(t, err)
+	require.Len(t, services, 2)
+}
+
 // Every entry the broker could not serve is refused at start, naming the entry.
 func TestParseServicesRefusals(t *testing.T) {
 	for name, raw := range map[string]string{

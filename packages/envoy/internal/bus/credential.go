@@ -27,12 +27,15 @@ const (
 
 // credential is the NATS credential this process connects as, from its environment, as the option
 // every connection of a bus client applies; nil is no credential. A service token
-// (ServiceTokenFileEnvVar, ServiceGoogleAudienceEnvVar) is presented through natscred.Service, and
-// its keeper runs beside each connection (keepAlongside); a seed is presented as an nkey user
-// (nkeyCredential). A process connects as one identity, so a service variable set beside any
-// other credential variable is an error naming both, never a choice between them; the two seed
-// variables keep the rule they always had, the file winning. Neither set is no credential, as
-// every connection was before servers required one. No error carries a seed or a token.
+// (ServiceTokenFileEnvVar, ServiceGoogleAudienceEnvVar) is presented through natscred.Service, its
+// keeper runs beside each connection (keepAlongside), and the connection asks under the reply
+// prefix of the account the token names (keptService): the token is read once here, so a token
+// that cannot be read, or names no account (natscred.Identity), is an error naming the variable
+// before any dial. A seed is presented as an nkey user (nkeyCredential). A process connects as one
+// identity, so a service variable set beside any other credential variable is an error naming
+// both, never a choice between them; the two seed variables keep the rule they always had, the
+// file winning. Neither set is no credential, as every connection was before servers required
+// one. No error carries a seed or a token.
 func credential(lookup func(string) (string, bool)) (nats.Option, error) {
 	set := func(names ...string) []string {
 		var named []string
@@ -54,26 +57,32 @@ func credential(lookup func(string) (string, bool)) (nats.Option, error) {
 		if file == "" {
 			return nil, fmt.Errorf("%s is set but empty", ServiceTokenFileEnvVar)
 		}
-		reader := natscred.ServiceFile(file)
-		if _, err := reader.Read(); err != nil {
-			return nil, fmt.Errorf("%s names %s, which holds no token: %w", ServiceTokenFileEnvVar, file, err)
-		}
-		return keptService(reader), nil
+		return keptService(natscred.ServiceFile(file), fmt.Sprintf("%s names %s", ServiceTokenFileEnvVar, file))
 	}
 	if audience, ok := lookup(ServiceGoogleAudienceEnvVar); ok {
 		if strings.TrimSpace(audience) == "" {
 			return nil, fmt.Errorf("%s is set but empty", ServiceGoogleAudienceEnvVar)
 		}
-		return keptService(natscred.ServiceGoogle(strings.TrimSpace(audience))), nil
+		return keptService(natscred.ServiceGoogle(strings.TrimSpace(audience)), fmt.Sprintf("%s names the audience %s", ServiceGoogleAudienceEnvVar, strings.TrimSpace(audience)))
 	}
 	return nkeyCredential(lookup)
 }
 
 // keptService is a service's credential read through reader, with its keeper beside each
-// connection.
-func keptService(reader natscred.TokenReader) nats.Option {
+// connection, asking under the reply prefix of the account the token reader answers now names
+// (natscred.InboxPrefix), the one the auth service grants it in place of _INBOX.>. source says
+// where the token comes from, for an error.
+func keptService(reader natscred.TokenReader, source string) (nats.Option, error) {
+	token, err := reader.Read()
+	if err != nil {
+		return nil, fmt.Errorf("%s, which holds no token: %w", source, err)
+	}
+	identity, err := natscred.Identity(token)
+	if err != nil {
+		return nil, fmt.Errorf("%s, whose token names no account: %w", source, err)
+	}
 	option, keeper := natscred.Service(reader)
-	return allOf(option, keepAlongside(keeper))
+	return allOf(option, nats.CustomInboxPrefix(natscred.InboxPrefix(identity)), keepAlongside(keeper)), nil
 }
 
 // keepAlongside runs keeper beside the connection the options it applies to make, from that

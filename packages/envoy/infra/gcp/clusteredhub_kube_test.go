@@ -305,7 +305,7 @@ func TestClusteredNatsHubRollsThePodsOnlyForASessionUserOrStoreChange(t *testing
 
 	_, added := testnats.User(t)
 	args := clusteredArgs()
-	args.Users = append(args.Users, gcp.NATSUserArgs{Name: "example-host-b", NKey: added, MachineID: pulumi.StringRef("example-host-b")})
+	args.Users = append(args.Users, gcp.NATSUserArgs{Name: "example-host-b", NKey: added, ListenerMachineID: pulumi.StringRef("example-host-b")})
 	users := chartValues(t, runClusteredHub(t, args))
 	require.NotEqual(t, before["configMap"], users["configMap"], "the added user reaches auth.conf")
 	require.Contains(t, users["configMap"].(map[string]any)["merge"].(map[string]any)["data"].(map[string]any)["auth.conf"], added)

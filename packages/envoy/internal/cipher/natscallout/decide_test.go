@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -132,7 +133,8 @@ func TestASessionTokenGetsItsOwnChannel(t *testing.T) {
 }
 
 // A service's platform token, from an account the deployment lists, is answered with its kind's
-// grant from natsgrant, named <kind>/<machine id or account>, expiring with the token.
+// grant from natsgrant, reading only its own replies (TestNoCalloutGrantReadsAnotherInbox), named
+// <kind>/<machine id or account>, expiring with the token.
 func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	now := time.Now()
 	tokens := map[string]platformToken{
@@ -143,9 +145,9 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	}
 	deps := Deps{ServiceToken: serviceTokens(tokens)}
 	for raw, want := range map[string]Decision{
-		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)},
-		"listener-token": {Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)},
-		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: natsgrant.Daemon(), Expires: now.Add(30 * time.Minute)},
+		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: withOwnReplies(natsgrant.Dispatch("example-dispatch"), "system:serviceaccount:dispatch:dispatch", true), Expires: now.Add(time.Hour)},
+		"listener-token": {Name: "listener/example-hub", Grant: withOwnReplies(natsgrant.Listener("example-hub"), listenerAccount, true), Expires: now.Add(time.Hour)},
+		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: withOwnReplies(natsgrant.Daemon(), daemonAccount, false), Expires: now.Add(30 * time.Minute)},
 		"measure-token":  {Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)},
 	} {
 		t.Run(raw, func(t *testing.T) {
@@ -154,6 +156,18 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 			require.Equal(t, want, decision)
 		})
 	}
+}
+
+// withOwnReplies is grant as the auth service answers account with it: its _INBOX.> subscribe in
+// the same place written as the account's own reply prefix, and, when relay, the account's session
+// reply inbox subscribed last.
+func withOwnReplies(grant natsgrant.Permissions, account string, relay bool) natsgrant.Permissions {
+	index := slices.Index(grant.Subscribe, "_INBOX.>")
+	grant.Subscribe[index] = natscred.InboxPrefix(account) + ".>"
+	if relay {
+		grant.Subscribe = append(grant.Subscribe, "_INBOX."+natscred.InboxPrefix(account)+".>")
+	}
+	return grant
 }
 
 // Every refusal is one line naming why, carries nothing of the credential, and is counted under

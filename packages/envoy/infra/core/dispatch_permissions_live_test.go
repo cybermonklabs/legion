@@ -45,10 +45,9 @@ const (
 	// dispatchPerson is the person these proofs sign in as: the project they create names them
 	// as its default assignee, and the agent stream is watched as them.
 	dispatchPerson = "alice@example.com"
-	// testClientMachineID is the machine of the live test's own NATS user, which holds a host's
-	// grant for it (testClientPermissions): a machine of its own, so no durable or bucket that
-	// grant names is Dispatch's.
-	testClientMachineID = "example-test-client"
+	// testClientUser is the name of the live test's own NATS user, which holds a grant written
+	// out for its checks alone (testClientPermissions), so no check leans on Dispatch's grant.
+	testClientUser = "example-test-client"
 	// dispatchSessionUser is the NATS user of the session the agent stream checks play, holding
 	// SessionPermissions alone, as a deployment's sessions hold it.
 	dispatchSessionUser = "example-session"
@@ -88,7 +87,7 @@ func TestDispatchPermissionsOnRealServers(t *testing.T) {
 
 				// Dispatch's grant, built on the listener's, publishes every notification topic: a
 				// team topic it publishes over core NATS reaches a reader whose grant subscribes
-				// that family, the test client's host user, with no violation. No session is that
+				// that family, the test client's user, with no violation. No session is that
 				// reader: SessionPermissions subscribes a session's own relay subject alone, and
 				// the listener that relays its consumer is what carries it such a topic.
 				adhoc, err := live.conn.SubscribeSync("notifications.team.>")
@@ -151,8 +150,9 @@ type liveDispatch struct {
 	github  *dispatchGitHub
 	process *cmdtest.Process
 	port    int
-	// conn is the test client's connection: a host user, so no check leans on Dispatch's grant,
-	// and every notification topic the checks read is an entry that user holds itself.
+	// conn is the test client's connection: its own user (testClientPermissions), so no check
+	// leans on Dispatch's grant, and every notification topic the checks read is an entry that
+	// user holds itself.
 	conn *natsgo.Conn
 	errs <-chan error
 	js   natsgo.JetStreamContext
@@ -205,7 +205,7 @@ func startDispatchServer(t *testing.T, image string, grant core.Permissions) (di
 	client, session := testClientPermissions(), core.SessionPermissions()
 	config, err := core.Authorization{Users: []core.User{
 		{Name: dispatchMachineID, NKey: dispatchKey, Publish: &grant.Publish, Subscribe: &grant.Subscribe, HasSeed: true},
-		{Name: testClientMachineID, NKey: clientKey, Publish: &client.Publish, Subscribe: &client.Subscribe, HasSeed: true},
+		{Name: testClientUser, NKey: clientKey, Publish: &client.Publish, Subscribe: &client.Subscribe, HasSeed: true},
 		{Name: dispatchSessionUser, NKey: sessionKey, Publish: &session.Publish, Subscribe: &session.Subscribe, HasSeed: true},
 	}}.Render(nil)
 	require.NoError(t, err)
@@ -213,33 +213,34 @@ func startDispatchServer(t *testing.T, image string, grant core.Permissions) (di
 	return dispatchSeeds{dispatch: dispatchSeed, client: clientSeed, session: sessionSeed}, server, uri
 }
 
-// testClientPermissions is the grant of the live test's own NATS user: HostPermissions for a
-// machine of its own, the set of a host's one user, which holds every notification topic
-// (bus.NotificationTopicPrefix) and the reply inboxes its JetStream requests answer on. The
-// topics its checks read — an issue's events, an issue's comment.created, the team topic — are
-// that set's to subscribe and no session's: SessionPermissions subscribes a session's own relay
-// subject alone, and a session is carried such a topic by the listener that relays its consumer,
-// which is no part of what envoy-dispatch's grant must hold. A host user holds no
-// session-consumer call either, so the Dispatch durables' consumer info below is this reader's
-// own entry and it can create or delete none of the consumers it inspects. Added to the host's
-// set are the exact calls its checks make, so it leans on nothing of Dispatch's grant: each
-// Dispatch durable's consumer info and the redelivery bucket's reads, writes and watch — not the
-// bucket's create or the update that raises its copies, which are Dispatch's to make.
+// testClientPermissions is the grant of the live test's own NATS user, written out for the calls
+// its checks make and nothing else, so it leans on no set this file checks. Every notification
+// topic (bus.NotificationTopicPrefix), to publish the message the Dispatch durables acknowledge
+// and to subscribe the topics its checks read — an issue's events, an issue's comment.created,
+// the team topic — which are no session's to subscribe: SessionPermissions subscribes a session's
+// own relay subject alone, and a session is carried such a topic by the listener that relays its
+// consumer, which is no part of what envoy-dispatch's grant must hold. The reply inboxes its
+// JetStream requests answer on. Each Dispatch durable's consumer info and no other consumer call,
+// so it can create or delete none of the consumers it inspects. And the redelivery bucket's reads,
+// writes and watch — not the bucket's create or the update that raises its copies, which are
+// Dispatch's to make.
 func testClientPermissions() core.Permissions {
-	client := core.HostPermissions(testClientMachineID)
 	redelivery := "KV_" + bus.WebhookRedeliveryBucket
-	client.Publish.Allow = append(client.Publish.Allow,
-		"$JS.API.CONSUMER.INFO."+bus.Stream+"."+bus.DispatchDeliveryDurable,
-		"$JS.API.CONSUMER.INFO."+bus.Stream+"."+bus.DispatchJobDurable,
-		"$JS.API.STREAM.INFO."+redelivery,
-		"$JS.API.DIRECT.GET."+redelivery+".>",
-		"$JS.API.STREAM.MSG.GET."+redelivery,
-		"$KV."+bus.WebhookRedeliveryBucket+".>",
-		"$JS.API.CONSUMER.CREATE."+redelivery+".>",
-		"$JS.API.CONSUMER.DELETE."+redelivery+".>",
-		"$JS.FC."+redelivery+".>",
-	)
-	return client
+	return core.Permissions{
+		Publish: core.Rules{Allow: []string{
+			bus.NotificationTopicPrefix + ">",
+			"$JS.API.CONSUMER.INFO." + bus.Stream + "." + bus.DispatchDeliveryDurable,
+			"$JS.API.CONSUMER.INFO." + bus.Stream + "." + bus.DispatchJobDurable,
+			"$JS.API.STREAM.INFO." + redelivery,
+			"$JS.API.DIRECT.GET." + redelivery + ".>",
+			"$JS.API.STREAM.MSG.GET." + redelivery,
+			"$KV." + bus.WebhookRedeliveryBucket + ".>",
+			"$JS.API.CONSUMER.CREATE." + redelivery + ".>",
+			"$JS.API.CONSUMER.DELETE." + redelivery + ".>",
+			"$JS.FC." + redelivery + ".>",
+		}},
+		Subscribe: core.Rules{Allow: []string{natsgo.InboxPrefix + ">", bus.NotificationTopicPrefix + ">"}},
+	}
 }
 
 func seedDispatchDeliverySettings(t *testing.T, databaseURL string) {
@@ -373,7 +374,7 @@ func signInDispatchPerson(t *testing.T, port int) http.CookieJar {
 
 // requireCommentQuietPublished proves what a session subscribed to an issue is there for: a
 // comment an agent writes through Dispatch's HTTP API is published on that issue's own
-// comment.created subject, read here by the test client's host user, since a session subscribes
+// comment.created subject, read here by the test client's own user, since a session subscribes
 // to no notification topic and takes the frame from the listener that relays its consumer, and
 // the frame says in a field of its own, quiet, that it is not quiet. The actor is a session, not
 // a person, which is the case a reader judging the frame by notify drops: notify is false for

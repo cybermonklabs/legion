@@ -198,8 +198,9 @@ type heldDurable struct {
 	holder uuid.UUID
 	// throttle is this intake's own standby-log state (bindThrottle).
 	throttle *bindThrottle
-	// config is the durable's config in this build; each call draws a fresh deliver subject.
-	config func() natsgo.ConsumerConfig
+	// config is the durable's config in this build, delivering to the subject it is given: a
+	// take-over gives it a fresh inbox of the client's own connection (takeOver).
+	config func(deliverSubject string) natsgo.ConsumerConfig
 	// name is the durable's name: config's Durable, which every call returns alike.
 	name string
 	// key reads whether this intake wants a message at all and the key whose goroutine handles it
@@ -234,12 +235,12 @@ type heldDurable struct {
 
 // newHeldDurable builds the delivery from config's durable on natsClient, taking its hold and
 // consumer lease on leases, routing each message by key and handing it to handle.
-func newHeldDurable(natsClient *bus.Client, leases intakeLeases, config func() natsgo.ConsumerConfig,
+func newHeldDurable(natsClient *bus.Client, leases intakeLeases, config func(deliverSubject string) natsgo.ConsumerConfig,
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(*intakeDelivery, intakeMessage),
 ) heldDurable {
 	return heldDurable{
 		nats: natsClient, leases: leases, holder: uuid.New(), throttle: &bindThrottle{},
-		config: config, name: config().Durable, key: key, handle: handle,
+		config: config, name: config("").Durable, key: key, handle: handle,
 	}
 }
 
@@ -419,7 +420,11 @@ func (d *heldDurable) holds() bool {
 // absent leaves behind).
 func (d *heldDurable) takeOver(ctx context.Context) {
 	js := d.nats.JS()
-	wanted := d.config()
+	// The fresh deliver subject is an inbox of this client's own connection, under the reply
+	// prefix its credential names: the one inbox space the NATS auth service grants a service, so a
+	// durable a holder made on another prefix, or on nats.go's _INBOX. before it connected by its
+	// service token, moves into it at the take-over.
+	wanted := d.config(d.nats.Connection().NewInbox())
 	name := wanted.Durable
 	create := wanted
 	deleteFirst := false
@@ -452,9 +457,9 @@ func (d *heldDurable) takeOver(ctx context.Context) {
 
 // takeOverConfig is the config a take-over recreates the durable deployed describes with: the
 // deployed config when a newer build stamped it with a higher generation, this build's (wanted)
-// otherwise, on a fresh deliver subject, starting at the stream sequence after the durable's ack
-// floor. Starting there, the recreated durable redelivers at once every message the durable had
-// not acknowledged -- what a dead holder had been handed, what a stopped one handed back --
+// otherwise, on wanted's fresh deliver subject, starting at the stream sequence after the
+// durable's ack floor. Starting there, the recreated durable redelivers at once every message the
+// durable had not acknowledged -- what a dead holder had been handed, what a stopped one handed back --
 // replays nothing it had, and skips nothing (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse,
 // and TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt for a create retried).
 // The take-over records that start in its hold's token before it deletes the durable, and
@@ -465,7 +470,7 @@ func takeOverConfig(deployed *natsgo.ConsumerInfo, wanted natsgo.ConsumerConfig)
 	config := wanted
 	if bus.MetadataGeneration(deployed.Config.Metadata, consumerGenerationKey) > consumerConfigGeneration {
 		config = deployed.Config
-		config.DeliverSubject = natsgo.NewInbox()
+		config.DeliverSubject = wanted.DeliverSubject
 		config.OptStartTime = nil
 		config.Metadata = bus.OwnMetadata(deployed.Config.Metadata, 0)
 	}

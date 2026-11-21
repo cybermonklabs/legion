@@ -175,8 +175,8 @@ func TestClusteredNatsHubRendersTheVMHubsAuthorization(t *testing.T) {
 // The users that run Envoy programs on the clustered hub hold the update of each bucket's stream
 // their program opens (INFRA-546): a start whose ENVOY_NATS_REPLICAS is above a bucket's copies
 // raises it with that update, which the hub would refuse without the grant. The tailnet listener
-// and a host user open the listener's four buckets, and Dispatch's user also its redelivery
-// bucket; the explicit-permissions user and the session user hold only what they name.
+// and a listener's own user open the listener's four buckets, and Dispatch's user also its
+// redelivery bucket; the explicit-permissions user and the session user hold only what they name.
 func TestClusteredNatsHubUsersHoldTheBucketRaise(t *testing.T) {
 	s, err := gcp.ResolveClusteredNatsHub(clusteredArgs())
 	require.NoError(t, err)
@@ -192,7 +192,7 @@ func TestClusteredNatsHubUsersHoldTheBucketRaise(t *testing.T) {
 	raise := func(bucket string) string { return `"$JS.API.STREAM.UPDATE.KV_` + bucket + `"` }
 	listenerBuckets := []string{bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket, bus.CIStateBucket}
 	for _, user := range []struct{ name, nkey string }{
-		{"the tailnet listener", keyListener}, {"the host user", keyA}, {"Dispatch's user", keyC},
+		{"the tailnet listener", keyListener}, {"a listener's own user", keyA}, {"Dispatch's user", keyC},
 	} {
 		for _, bucket := range listenerBuckets {
 			require.Contains(t, userLine(user.nkey), raise(bucket), "%s raises %s", user.name, bucket)

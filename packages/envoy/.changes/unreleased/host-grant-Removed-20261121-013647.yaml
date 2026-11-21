@@ -1,0 +1,16 @@
+kind: Removed
+body: |-
+  The NATS grant a host's listener and every session on the host shared is gone: `natsgrant.Host`
+  and `core.HostPermissions` are removed, and with them the hub user kind that selected that grant,
+  a `gcp:NatsUser`'s `machineId` input (`NATSUserArgs.MachineID`). A hub renders no user with that
+  grant, and no other hub's rendered users change. The schema has no such input any more, so a
+  generated SDK has no such field; a hub given one anyway, as raw inputs can give it, refuses that
+  user as one naming no grant, `users[<i>]: name listenerMachineId, for a listener's own user,
+  dispatchMachineId, for Dispatch's, daemon, for the daemon's, or permissions`, before it
+  registers anything. A host's
+  listener takes a `listenerMachineId` user of its own (`ListenerHostPermissions`), whose seed no
+  session holds; a session connects as the hub's session user or through the auth service. The
+  listener's own `machineId` (`listener.machineId`, `tailnet.listener.machineId`) is unchanged.
+time: 2026-11-21T01:36:47Z
+custom:
+  Issue: host-grant

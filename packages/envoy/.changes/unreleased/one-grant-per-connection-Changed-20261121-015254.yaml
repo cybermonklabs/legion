@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  Every connection the NATS auth service admits by a service's platform token reads only its own
+  replies. The service answers a subscribe of `_INBOX.>` as the account's own reply prefix,
+  `natscred.InboxPrefix(<account>)` followed by `.>`, and grants a listener and Dispatch, beside it,
+  `natsgrant.SessionReplyInbox(<account>)` followed by `.>`, where the sessions they ask answer. A
+  bus client that connects with `NATS_SERVICE_TOKEN_FILE` or `NATS_SERVICE_GOOGLE_AUDIENCE` sets
+  that prefix (`nats.CustomInboxPrefix`) and says which account it connects as
+  (`Client.ServiceIdentity`), and so does `natsprobe` with a service flag. The client reads its
+  token once when it is built: a token it cannot read, a Google identity token the metadata server
+  does not mint, and a token that names no account are each an error naming the variable, before
+  any dial. A hub's static users keep `_INBOX.>`.
+time: 2026-11-21T01:52:54Z
+custom:
+    Issue: one-grant-per-connection

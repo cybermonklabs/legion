@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
@@ -26,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/natscred"
 )
 
 const daemonAccount = "system:serviceaccount:example-ns:example-daemon"
@@ -155,8 +157,10 @@ func TestNatsprobeSaysWhatTheHubAnswered(t *testing.T) {
 			[]string{"connected as session/ses_a", `refused: Permissions Violation for Subscription to "notifications.envoy.deliver.ses_b"`}},
 		{"no credential", []string{"--no-credential", "--subscribe", "notifications.envoy.deliver.ses_a"}, exitNotAdmitted,
 			[]string{"not admitted: Authorization Violation"}},
-		{"a service's grant", []string{"--service-token-file", serviceFile, "--subscribe", "_INBOX.probe"}, exitServed,
-			[]string{"connected as service " + daemonAccount, "served _INBOX.probe"}},
+		{"a service's own reply prefix", []string{"--service-token-file", serviceFile, "--subscribe", natscred.InboxPrefix(daemonAccount) + ".probe"}, exitServed,
+			[]string{"connected as service " + daemonAccount, "served " + natscred.InboxPrefix(daemonAccount) + ".probe"}},
+		{"every client's replies, which a service's grant no longer holds", []string{"--service-token-file", serviceFile, "--subscribe", "_INBOX.probe"}, exitRefused,
+			[]string{"connected as service " + daemonAccount, `refused: Permissions Violation for Subscription to "_INBOX.probe"`}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -168,6 +172,20 @@ func TestNatsprobeSaysWhatTheHubAnswered(t *testing.T) {
 			require.NotContains(t, stdout.String()+stderr.String(), "tok-")
 		})
 	}
+}
+
+// A probe connecting as a service asks under that service's own reply prefix
+// (natscred.InboxPrefix), as the service's own connection does, so a reply it is sent arrives in
+// the one inbox space the auth service grants that account.
+func TestAServiceProbeAsksUnderItsAccountsPrefix(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "service-token")
+	require.NoError(t, os.WriteFile(file, []byte(platformToken(daemonAccount, time.Hour)), 0o600))
+	option, name, err := credential(func(string) string { return "" }, file, "", false)
+	require.NoError(t, err)
+	require.Equal(t, "service "+daemonAccount, name)
+	options := nats.GetDefaultOptions()
+	require.NoError(t, option(&options))
+	require.Equal(t, natscred.InboxPrefix(daemonAccount), options.InboxPrefix)
 }
 
 // A hub that sends no nonce, as this plain one does, gives the probe nothing to sign a session's

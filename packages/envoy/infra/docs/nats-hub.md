@@ -65,11 +65,11 @@ The hub refuses these before it registers anything, with an error naming the inp
 - an nkey seed, found as `envoy-infra seed` finds one (`bus.HoldsSeed`: any type, either case,
   whole, inside a longer value, split by `.`, `-`, `_` or whitespace, or percent-encoded), in the
   hub's own name or an input it carries into the user data, a child or a refusal: `hostname`,
-  `tailnetDnsName`, a tag, `zone`, `machineType`, `diskType`, an image, a user's `machineId`,
+  `tailnetDnsName`, a tag, `zone`, `machineType`, `diskType`, an image, a user's
   `listenerMachineId` or `dispatchMachineId`, or the listener's `image`, `seedSecret`,
   `agentSecretsUrl`, `agentSecretsAudience`, `publicUrl` or one of its `allowedHosts`. The
   error names the input by its path and never its value, as
-  `users[0].machineId: an nkey user seed, which is never an input of the hub (not echoed)`, and a
+  `users[0].listenerMachineId: an nkey user seed, which is never an input of the hub (not echoed)`, and a
   seed in the hub's own name as `envoy-infra:gcp:NatsHub: the component's name holds an nkey seed
   (not echoed)`. `network`, `subnetwork` and `tailnetAuthKey` may come from another resource, so a
   seed in any of them fails the preview or update once it resolves, with the same error, before
@@ -133,16 +133,14 @@ The hub refuses these before it registers anything, with an error naming the inp
 `users` holds the NATS server's nkey users, and `listener` and `sessionUser` add one each. Each of
 `users` is `name`, `nkey` and exactly one of:
 
-- `machineId`: the user of one host, whose listener and sessions all connect as it, granted
-  `HostPermissions(machineId)` (see [Permission sets](../README.md#permission-sets)). Give it the
-  listener's own `machineId`: the set names that machine's durable consumer and queue group.
 - `listenerMachineId`: the user of one listener alone, which no session shares, granted
-  `ListenerHostPermissions(listenerMachineId)`: the listener's own set, the session consumers'
-  calls included, with a plain `notifications.>` subscribe nothing uses any more. Give it that
-  listener's `machineId`. Use it where the listener's process is the only one holding the seed,
-  so it keeps its sessions' consumers; a host whose sessions connect as the same user takes
-  `machineId` instead, since a session holding this set could create, pull and delete any
-  session's consumer.
+  `ListenerHostPermissions(listenerMachineId)` (see
+  [Permission sets](../README.md#permission-sets)): the listener's own set, the session
+  consumers' calls included, with a plain `notifications.>` subscribe nothing uses any more. Give
+  it that listener's `machineId`: the set names that machine's durable consumer and queue group.
+  Only the listener's process holds the seed, so it keeps its sessions' consumers; a session
+  holding this set could create, pull and delete any session's consumer, so no session connects
+  as this user. A session connects as the session user or through the auth service.
 - `dispatchMachineId`: the user shared by `envoy-dispatch` and the listener beside it, granted
   `DispatchPermissions(dispatchMachineId)`. Give it that listener's `machineId`, since the set
   names its durable consumer and queue group.
@@ -155,8 +153,8 @@ The hub refuses these before it registers anything, with an error naming the inp
 takes, whatever its cloud, and `nkey` is named as `aws:NatsService`'s users name it, so the two
 components spell a user's key and rules alike.
 
-`ListenerPermissions`, and through it `ListenerHostPermissions`, `HostPermissions` and
-`DispatchPermissions`, holds the notification stream's stored-message get,
+`ListenerPermissions`, and through it `ListenerHostPermissions` and `DispatchPermissions`, holds
+the notification stream's stored-message get,
 `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`: a read-only read of one stored message at a time.
 It can create, change or delete nothing. `SessionPermissions` does not hold it, so no session
 reads the stream's stored messages itself; each takes its own from the consumer its listener
@@ -170,14 +168,18 @@ hub's own listener sets none), and at 1 neither sends a raise.
 The buckets those sets grant are each one `bus.ListenerBuckets()` names, `envoy_interests`,
 `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`, `legion_agents`, `envoy_ci_state` and
 `envoy_dpop_proofs`, with `envoy_webhook_redelivery` for `DispatchPermissions` alone.
-Each is granted to every one of these users, and
-[Permission sets](../README.md#permission-sets) says what that lets a session on a host write.
+Each is granted to every one of these users, and no session connects as any of them
+([Permission sets](../README.md#permission-sets)).
 A listener whose user's grant does not yet carry `envoy_known_sessions` runs without that bucket
 until the grant reaches it ([Permission sets](../README.md#permission-sets)).
 
 The listener's send route asks whether a session's plugin still holds a NATS connection with one
 core request on the session's relay subject, `notifications.envoy.deliver.<session id>`, answered
-on the request's own reply inbox.
+on a reply subject that names the session, `<reply inbox>.<session id>.<random token>`
+(`bus.SessionReplySubject`: a new reply inbox of the listener's, the session's id, and 128 random
+bits). Each relay frame's reply subject has the same shape under the relay's one reply inbox. The
+probe waits only on the subject it made for that session, and the relay moves a frame only on a
+reply whose subject names the session the frame was sent to.
 It needs no rule of its own; [Permission sets](../README.md#permission-sets) names the entries
 that carry it.
 
@@ -188,13 +190,13 @@ hold the session consumers' calls on every consumer of the stream (`$JS.API.CONS
 `$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS`, which a listener that starts relaying every session
 at once reads instead of one info each), with which a listener keeps one pull consumer per
 session. A NATS wildcard is a whole token, so those entries reach every consumer of the stream,
-other listeners' and Dispatch's included, which is why a user any session shares holds none:
-`HostPermissions` and `DispatchPermissions` keep their per-durable scope. A listener connecting as
-a `machineId` or a `dispatchMachineId` user therefore keeps its own durable alone and refuses
-every registration that asks for consumer delivery `503 no_grant`, so a session registering
-through it is not registered at all and receives nothing until its listener's grant carries the
-session consumers. Every set above subscribes to the role lanes in the queue group every listener
-shares, `envoy-roles`, beside the machine's own, since each user runs a listener.
+other listeners' and Dispatch's included, which is why only a listener's own user holds them:
+`DispatchPermissions` keeps its per-durable scope. A listener connecting as a `dispatchMachineId`
+user therefore keeps its own durable alone and refuses every registration that asks for consumer
+delivery `503 no_grant`, so a session registering through it is not registered at all and
+receives nothing until its listener's grant carries the session consumers. Every set above
+subscribes to the role lanes in the queue group every listener shares, `envoy-roles`, beside the
+machine's own, since each user runs a listener.
 
 `nkey` is the public key `envoy-infra seed generate` prints, and the seed stays in the secret
 store it wrote (see [NATS seeds](../README.md#nats-seeds)): a host's listener reads it from there
@@ -221,10 +223,10 @@ is on the bus.
 A `listener` opens a second door, port 9020, with or without a session user, and it grants far
 more ([The hub's listener](#the-hubs-listener)).
 
-A user is refused when it names more than one of `machineId`, `listenerMachineId`,
-`dispatchMachineId`, `daemon: true` and `permissions`, or none, or when its `nkey` is empty, named
-by its index alone, as `users[1]: nkey is required`, since these come before the authorization has
-checked the names. A `machineId`, `listenerMachineId` or `dispatchMachineId` names the durable
+A user is refused when it names more than one of `listenerMachineId`, `dispatchMachineId`,
+`daemon: true` and `permissions`, or none, or when its `nkey` is empty, named by its index alone,
+as `users[1]: nkey is required`, since these come before the authorization has checked the
+names. A `listenerMachineId` or `dispatchMachineId` names the durable
 consumer `listener-<id>` and queue group `envoy-listener-<id>`. The shared machine-ID rule refuses
 an empty id; leading or trailing whitespace; `.`, `*`, `>`, `/` or `\`; a control character; and
 any whitespace other than an ordinary space; and any id over 246 bytes, so `listener-<id>` fits
@@ -232,7 +234,7 @@ NATS's 255-byte consumer-name limit. An ordinary space is accepted only inside t
 `users[1].dispatchMachineId contains '.', which the listener's NATS names or the hub's grant entries cannot carry`. Two ids that give one durable name, of any kind
 (`a b` and `a-b` collide), or one giving the hub's own listener's (the `hostname`'s), would put
 two listeners on one durable and queue group, so the later one is refused, as
-`users[2]: dispatchMachineId gives the same durable name as users[0].machineId` or
+`users[2]: dispatchMachineId gives the same durable name as users[0].listenerMachineId` or
 `… as the hub's own listener`. Every `dispatchMachineId` user also binds Dispatch's fixed durables
 `delivery-events` and `delivery-jobs`, so a second one is refused the same way, as
 `users[3]: dispatchMachineId gives the same durable name as users[2].dispatchMachineId`. So a
@@ -291,7 +293,7 @@ become it while a project is private`); beside any entry of `users` but the serv
 (`privateProjects: users[<i>] "<name>": a stored client seed while a project is private`); with an
 `authCallout.serviceUser` that names an entry of `users` other than a `permissions` entry
 (`privateProjects: authCallout.serviceUser "<name>" names users[<i>], a
-<machineId|listenerMachineId|dispatchMachineId|daemon> user, whose seed its client stores; the auth
+<listenerMachineId|dispatchMachineId|daemon> user, whose seed its client stores; the auth
 service connects as a permissions user of its own`); and with a service user granted more than
 the auth service's own grant, which subscribes `$SYS.REQ.USER.AUTH`, alone or with a queue group,
 and publishes only its replies, under `$SYS._INBOX.` (`privateProjects: callout.serviceUser
@@ -733,20 +735,26 @@ the listener's unit
 replaced, once and with that same outage, the VM of every hub that runs a listener, and no hub
 without one. This release adds `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`, the `envoy-roles`
 role-lane subscription and, for each key-value bucket the set opens,
-`$JS.API.STREAM.UPDATE.KV_<bucket>` to `ListenerPermissions`, and so to `HostPermissions` and
-`DispatchPermissions` (which also gains the update for the webhook redelivery bucket), and the
-session consumers' entries to `ListenerPermissions` alone, so a hub's own `listener` user gains
-them while its `machineId` and `dispatchMachineId` users keep their per-durable scope; that
-changes the rendered users of every hub with a `listener`, a `machineId` user or a
+`$JS.API.STREAM.UPDATE.KV_<bucket>` to `ListenerPermissions`, and so to the host set that release
+had and `DispatchPermissions` (which also gains the update for the webhook redelivery bucket), and
+the session consumers' entries to `ListenerPermissions` alone, so a hub's own `listener` user
+gains them while its host and `dispatchMachineId` users keep their per-durable scope; that
+changes the rendered users of every hub with a `listener`, a host user or a
 `dispatchMachineId` user: moving such a hub to it replaces its VM once, with the outage below, and
 a hub with none of them keeps its VM. It also adds the `listenerMachineId` kind, whose user holds
 those entries beside the plain `notifications.>` subscribe, for a listener whose user no session
 shares; a hub gains it only when its own users name it.
 The release that adds `envoy_known_sessions` to `bus.ListenerBuckets()` adds that bucket's calls to
-`ListenerPermissions`, and so to `ListenerHostPermissions`, `HostPermissions` and
-`DispatchPermissions`, which changes the rendered users of every hub with a `listener`, a
-`machineId`, a `listenerMachineId` or a `dispatchMachineId` user: upgrading such a hub to it
-replaces its VM once, with the outage below, and a hub with none of them keeps its VM.
+`ListenerPermissions`, and so to `ListenerHostPermissions`, the host set and
+`DispatchPermissions`, which changes the rendered users of every hub with a `listener`, a host user, a
+`listenerMachineId` or a `dispatchMachineId` user: upgrading such a hub to it replaces its VM once,
+with the outage below, and a hub with none of them keeps its VM.
+The release that retires the host set, the grant of a host's user that its listener and every
+session on the host shared, removes the user kind that selected it, a user's `machineId`, and
+changes no other hub's rendering. The schema has no such input any more, so a generated SDK has no
+such field, and a hub sent one anyway refuses that user as one naming no grant, as
+`users[0]: name listenerMachineId, …`, before it registers anything. A host's listener takes a
+`listenerMachineId` user of its own, whose seed no session holds.
 The release that adds `listener.senderMessagesPerMinute` and `listener.senderMessageBurst` renders
 neither variable for a hub that sets neither input, so such a hub keeps its VM. Setting, changing
 or removing either input changes the listener's `docker run` command in the cloud-config, so it
@@ -915,7 +923,7 @@ resources:
       users:
         - name: example-host-a
           nkey: UBERXOSHFHFLL7YEXXH7RYEJLK455TF4BOZLIHD5R6NF5FFISNHEXIZO
-          machineId: example-host-a
+          listenerMachineId: example-host-a
         - name: example-operator
           nkey: UCYF4CJJNU55NFRALQXGPOAZRM5R5JBXI6OAZB2BHWJ4QTTB5XHFENDG
           permissions:

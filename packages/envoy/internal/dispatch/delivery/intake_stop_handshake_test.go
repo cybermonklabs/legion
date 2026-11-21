@@ -59,13 +59,13 @@ func startStopRow(t *testing.T, key func(*natsgo.Msg) (string, *contracts.Envelo
 		}
 		return nil
 	})
-	wanted := deliveryConsumerConfig()
+	wanted := deliveryConsumerConfig(client.Connection().NewInbox())
 	if createDurable {
 		if _, err := client.JS().AddConsumer(bus.Stream, &wanted); err != nil {
 			t.Fatalf("create the delivery durable: %v", err)
 		}
 	}
-	durable := newHeldDurable(client, nil, func() natsgo.ConsumerConfig { return wanted }, key, handle)
+	durable := newHeldDurable(client, nil, func(string) natsgo.ConsumerConfig { return wanted }, key, handle)
 	sub, err := durable.subscribe(wanted.DeliverSubject)
 	if err != nil {
 		t.Fatalf("subscribe at %s: %v", wanted.DeliverSubject, err)

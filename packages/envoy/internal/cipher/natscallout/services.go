@@ -65,11 +65,14 @@ const (
 // entry with no machine id, and a daemon or measure entry with one; a machine id that is not one
 // subject token; a measure entry with -, since its grant holds a KV read no project scope can
 // hold and it reads no project's messages; an account config.ParseAccount refuses (a namespace's
-// default account, a Google default or service-agent account); and an account given twice, since
-// one account connects as one service.
+// default account, a Google default or service-agent account); an account given twice, since
+// one account connects as one service; and a second measure entry, naming both, since the
+// measurement job's grant subscribes one fixed reply prefix (natsgrant.Measure), which a second
+// account would share.
 func ParseServices(raw string) ([]ServiceEntry, error) {
 	var services []ServiceEntry
 	seen := map[string]string{}
+	measure := ""
 	for _, text := range strings.Fields(raw) {
 		entry, err := parseService(text)
 		if err != nil {
@@ -77,6 +80,12 @@ func ParseServices(raw string) ([]ServiceEntry, error) {
 		}
 		if other, twice := seen[entry.Account]; twice {
 			return nil, fmt.Errorf("%s names the account %s in both %q and %q; one account connects as one service, so name it once", ServicesVariable, entry.Account, other, text)
+		}
+		if entry.Kind == KindMeasure {
+			if measure != "" {
+				return nil, fmt.Errorf("%s names two measure entries, %q and %q; the measurement job's grant subscribes one fixed reply prefix, which a second account would share, so name one", ServicesVariable, measure, text)
+			}
+			measure = text
 		}
 		seen[entry.Account] = text
 		services = append(services, entry)

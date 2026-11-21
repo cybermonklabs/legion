@@ -93,7 +93,7 @@ func (d *heldDurable) subscribe(deliverSubject string) (*natsgo.Subscription, er
 		handling: handling, abandon: abandon,
 	}
 	delivery.keys = newKeyedRunner(func(message intakeMessage) { d.handle(delivery, message) })
-	wanted := d.config()
+	wanted := d.config(deliverSubject)
 	sub, err := subscribeDurable(d.nats, wanted, deliverSubject, delivery.receive)
 	if err != nil {
 		abandon()

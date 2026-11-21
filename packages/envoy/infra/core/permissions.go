@@ -29,7 +29,7 @@ func ListenerPermissions(machineID string) Permissions {
 
 // ListenerHostPermissions is the grant of a listener's own NATS user, one no session shares, as
 // machine machineID (natsgrant.ListenerHost): ListenerPermissions and a subscribe to every
-// notification topic. HostPermissions stays the set of a user a host's sessions share.
+// notification topic.
 func ListenerHostPermissions(machineID string) Permissions {
 	return rules(natsgrant.ListenerHost(machineID))
 }
@@ -58,10 +58,4 @@ func SessionPermissions() Permissions {
 // daemon's real-NATS proof also reads, so the proof and the hub's rendered user share it.
 func DaemonPermissions() Permissions {
 	return rules(natsgrant.Daemon())
-}
-
-// HostPermissions is the grant of a host's one NATS user, which its listener and every session on
-// the host share (natsgrant.Host).
-func HostPermissions(machineID string) Permissions {
-	return rules(natsgrant.Host(machineID))
 }

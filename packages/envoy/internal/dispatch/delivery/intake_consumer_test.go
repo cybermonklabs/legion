@@ -799,7 +799,7 @@ func TestTheConsumerConfigEqualsItsGenerationsPinnedRow(t *testing.T) {
 	if !ok {
 		t.Fatalf("generation %d has no pinned rows; add them with the configs it ships", consumerConfigGeneration)
 	}
-	for _, config := range []natsgo.ConsumerConfig{deliveryConsumerConfig(), jobConsumerConfig()} {
+	for _, config := range []natsgo.ConsumerConfig{deliveryConsumerConfig(natsgo.NewInbox()), jobConsumerConfig(natsgo.NewInbox())} {
 		row, ok := rows[config.Durable]
 		if !ok {
 			t.Errorf("generation %d has no pinned row for %s", consumerConfigGeneration, config.Durable)

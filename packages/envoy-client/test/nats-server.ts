@@ -1,6 +1,7 @@
 import { rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import sessionGrantFixture from "../../contracts/fixtures/session-grant.json";
 
 /**
  * The NATS server image the tests run; CI pulls it before the tests.
@@ -11,7 +12,66 @@ const NATS_IMAGE =
 
 export interface NatsServer {
   readonly url: string;
+  /** The server's own log so far (nats-server writes it to stderr), where it names every publish
+   *  it refused: `Publish Violation`, then the subject. */
+  log(): Promise<string>;
   stop(): void;
+}
+
+/**
+ * The authorization of a server whose one requester may do anything, as the listener and Dispatch
+ * may, and whose session user holds the grant the NATS auth service gives one session. That grant
+ * is `natsgrant.Session` itself: packages/envoy/natsgrant's TestTheSessionGrantFixtureIsNatsgrantSession
+ * writes it to packages/contracts/fixtures/session-grant.json for a placeholder id and fails when
+ * the two drift, and this reads the fixture with the placeholder swapped, token by token, for
+ * `sessionID`. Each user is the nkey whose public key is named. A row's requester asks the
+ * session on a reply subject {@link sessionReplySubject} makes, and the session answers on
+ * whatever reply subject it is handed.
+ */
+export function sessionGrantConfig(options: {
+  readonly sessionID: string;
+  readonly sessionKey: string;
+  readonly requesterKey: string;
+}): string {
+  const { sessionID, sessionKey, requesterKey } = options;
+  const placeholder = sessionGrantFixture.session_id;
+  const list = (subjects: readonly string[]) =>
+    subjects
+      .map((subject) =>
+        JSON.stringify(
+          subject
+            .split(".")
+            .map((token) => (token === placeholder ? sessionID : token))
+            .join(".")
+        )
+      )
+      .join(", ");
+  const publish = list(sessionGrantFixture.publish);
+  const subscribe = list(sessionGrantFixture.subscribe);
+  return `jetstream {}
+authorization {
+  users = [
+    { nkey: ${JSON.stringify(requesterKey)} }
+    { nkey: ${JSON.stringify(sessionKey)}, permissions: { publish: { allow: [${publish}] }, subscribe: { allow: [${subscribe}] } } }
+  ]
+}
+`;
+}
+
+/** The 32 letters and digits of Go's crypto/rand.Text, which the listener's and Dispatch's
+ *  reply tokens are written in. */
+const TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/**
+ * A reply subject a listener or Dispatch asks session `sessionID` on: `inbox`, then the session's
+ * id, then 26 random characters, as `bus.SessionReplySubject` makes it.
+ */
+export function sessionReplySubject(inbox: string, sessionID: string): string {
+  const token = Array.from(
+    crypto.getRandomValues(new Uint8Array(26)),
+    (byte) => TOKEN_ALPHABET[byte % TOKEN_ALPHABET.length]
+  ).join("");
+  return `${inbox}.${sessionID}.${token}`;
 }
 
 /** Runs `docker args…` and returns its stdout and stderr, trimmed, throwing on a non-zero exit. */
@@ -54,15 +114,25 @@ export function useNatsServerDirectory(): string {
  * configuration file is written there, and `stop` removes that file.
  */
 export async function startNatsServer(directory: string, nkeyUser?: string): Promise<NatsServer> {
-  const name = `legion-nats-test-${crypto.randomUUID()}`;
-  const config = path.join(directory, `${name}.conf`);
-  writeFileSync(
-    config,
+  return startNatsServerWithConfig(
+    directory,
     nkeyUser === undefined
       ? "jetstream {}\n"
-      : `jetstream {}\nauthorization {\n  users = [ { nkey: ${JSON.stringify(nkeyUser)} } ]\n}\n`,
-    { mode: 0o644 }
+      : `jetstream {}\nauthorization {\n  users = [ { nkey: ${JSON.stringify(nkeyUser)} } ]\n}\n`
   );
+}
+
+/**
+ * Runs a NATS server container as {@link startNatsServer} does, whose whole configuration is
+ * `config`: a row that needs users with grants of their own writes their `authorization` block.
+ */
+export async function startNatsServerWithConfig(
+  directory: string,
+  configuration: string
+): Promise<NatsServer> {
+  const name = `legion-nats-test-${crypto.randomUUID()}`;
+  const config = path.join(directory, `${name}.conf`);
+  writeFileSync(config, configuration, { mode: 0o644 });
   const stop = () => {
     // With -v, since the image declares a VOLUME a plain `docker rm -f` leaves on the host
     // (docs/testing.md).
@@ -99,7 +169,12 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
       await Bun.sleep(100);
     }
     const port = (await docker("port", name, "4222/tcp")).stdout.split("\n")[0];
-    return { url: `nats://${port}`, stop };
+    // `docker logs` splits the container's output into the two streams it was written to.
+    const log = async () => {
+      const { stdout, stderr } = await docker("logs", name);
+      return `${stdout}\n${stderr}`;
+    };
+    return { url: `nats://${port}`, log, stop };
   } catch (error) {
     stop();
     throw error;

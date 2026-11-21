@@ -281,6 +281,13 @@ func (s *SessionConsumers) SubscribeReplies(subject string, handler nats.MsgHand
 	return s.client.Connection().Flush()
 }
 
+// ReplyInbox is the reply inbox under which this connection asks a session for an answer
+// (SessionReplyInboxOf): the one a relay subscribes the wildcard of (SubscribeReplies) and puts
+// its frames' reply subjects under (SessionReplySubject).
+func (s *SessionConsumers) ReplyInbox() string {
+	return SessionReplyInboxOf(s.client.Connection())
+}
+
 // SessionConsumerStart is what Ensure or RestartAtFloor did to a session's consumer.
 type SessionConsumerStart struct {
 	// Created is set when the call created the consumer.

@@ -729,7 +729,7 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 	// The durable as a take-over leaves it, created here because Run is not what binds it. It
 	// starts at new messages (jobConsumerConfig), so a durable an earlier row left on the
 	// package's shared stream is recreated and handed this row's events alone.
-	wanted := jobConsumerConfig()
+	wanted := jobConsumerConfig(natsClient.Connection().NewInbox())
 	if err := natsClient.JS().DeleteConsumer(bus.Stream, wanted.Durable); err != nil && !errors.Is(err, natsgo.ErrConsumerNotFound) {
 		t.Fatalf("delete the job durable: %v", err)
 	}

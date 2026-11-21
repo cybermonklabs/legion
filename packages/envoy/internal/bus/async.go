@@ -440,7 +440,9 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	if err := w.pinToSend(); err != nil {
 		return nil, err
 	}
-	inbox := nats.NewInbox()
+	// The connection's own inbox, under the reply prefix its credential names (credential), the one
+	// inbox space the auth service grants a service.
+	inbox := w.conn.NewInbox()
 	replies := make(chan *nats.Msg, requestReplies)
 	inboxSub, err := w.conn.ChanSubscribe(inbox, replies)
 	if err != nil {

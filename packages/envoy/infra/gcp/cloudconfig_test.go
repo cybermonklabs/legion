@@ -134,22 +134,21 @@ func TestCloudConfigOpensTheHostFirewallToTheHealthChecksAndTheTailnet(t *testin
 }
 
 // The configuration file is core's rendering of the users: each is a keyed user with a seed. A
-// machine id gives the host's permission set, a listener machine id gives the listener-host set, a
-// Dispatch machine id gives its set, and explicit permissions are taken as they are. The
-// listener's user follows them, named after the hub, with the listener's set and a seed; then the
-// session user, with the session's set and no seed, which a client presenting no credential
-// becomes.
+// listener machine id gives the listener-host set, a Dispatch machine id gives its set, and
+// explicit permissions are taken as they are. The listener's user follows them, named after the
+// hub, with the listener's set and a seed; then the session user, with the session's set and no
+// seed, which a client presenting no credential becomes.
 func TestCloudConfigNatsConfigurationIsCoresRenderingOfTheUsers(t *testing.T) {
 	doc, _, err := gcp.CloudConfigOf(exampleArgs())
 	require.NoError(t, err)
 
-	host := core.HostPermissions("example-host-a")
+	hostListener := core.ListenerHostPermissions("example-host-a")
 	dispatch := core.DispatchPermissions("example-dispatch")
 	listenerHost := core.ListenerHostPermissions("example-listener-a")
 	listener := core.ListenerPermissions("example-hub")
 	session := core.SessionPermissions()
 	want, err := core.Authorization{Users: []core.User{
-		{Name: "example-host-a", NKey: keyA, Publish: &host.Publish, Subscribe: &host.Subscribe, HasSeed: true},
+		{Name: "example-host-a", NKey: keyA, Publish: &hostListener.Publish, Subscribe: &hostListener.Subscribe, HasSeed: true},
 		{
 			Name: "example-operator", NKey: keyB, HasSeed: true,
 			Publish:   &core.Rules{Allow: []string{">"}},

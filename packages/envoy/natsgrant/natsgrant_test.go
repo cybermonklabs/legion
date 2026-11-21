@@ -2,9 +2,15 @@ package natsgrant_test
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -23,15 +29,15 @@ type set struct {
 // mergeBase is testdata/merge-base-grants.json: every set infra/core returned at 545b2116, before
 // the sets moved here, for each machine id the fixture names. It was written once, by a throwaway
 // program in the infra module calling core.ListenerPermissions, core.ListenerHostPermissions,
-// core.DispatchPermissions, core.HostPermissions, core.SessionPermissions, core.DaemonPermissions
-// and core.DispatchDurables at that commit, and is never regenerated: it is the record of what the
-// hub rendered before this package existed.
+// core.DispatchPermissions, core.SessionPermissions, core.DaemonPermissions and
+// core.DispatchDurables at that commit, and is never regenerated: it is the record of what the hub
+// rendered before this package existed. It also held the host set, a host's listener and its
+// sessions shared, which left the fixture when that grant was retired.
 type mergeBase struct {
 	MachineIDs       []string       `json:"machine_ids"`
 	Listener         map[string]set `json:"listener"`
 	ListenerHost     map[string]set `json:"listener_host"`
 	Dispatch         map[string]set `json:"dispatch"`
-	Host             map[string]set `json:"host"`
 	SessionPattern   set            `json:"session_pattern"`
 	Daemon           set            `json:"daemon"`
 	DispatchDurables []string       `json:"dispatch_durables"`
@@ -67,7 +73,6 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 			"Listener":     {base.Listener[id], natsgrant.Listener(id)},
 			"ListenerHost": {base.ListenerHost[id], natsgrant.ListenerHost(id)},
 			"Dispatch":     {base.Dispatch[id], natsgrant.Dispatch(id)},
-			"Host":         {base.Host[id], natsgrant.Host(id)},
 		} {
 			requireSet(t, pair.want, pair.got, name+"("+strconv.Quote(id)+")")
 		}
@@ -87,15 +92,18 @@ func TestMeasureMatchesTheDeployedList(t *testing.T) {
 	requireSet(t, deployed, natsgrant.Measure(), "Measure()")
 }
 
-// A session's grant names its own subjects and no other session's, and an id that is not one
-// subject token is refused, because a dot, a wildcard or a space in it would widen the grant.
+// A session's grant names its own subjects and no other session's - its replies too, under
+// _INBOX.*.<id>.>, where the shared pattern publishes every _INBOX. subject - and an id that is not
+// one subject token is refused, because a dot, a wildcard or a space in it would widen the grant.
 func TestSessionGrantNamesOnlyItsOwnSession(t *testing.T) {
 	grant, err := natsgrant.Session("ses_a")
 	require.NoError(t, err)
 	require.Equal(t, natsgrant.Permissions{
-		Publish:   []string{"_INBOX.>", contracts.AgentStreamFramesSubject("ses_a")},
+		Publish:   []string{"_INBOX.*.ses_a.>", contracts.AgentStreamFramesSubject("ses_a")},
 		Subscribe: []string{bus.DeliverSubject("ses_a"), contracts.AgentStreamControlSubject("ses_a")},
 	}, grant)
+	require.Equal(t, bus.SessionReplies("ses_a"), grant.Publish[0])
+	require.Equal(t, "_INBOX.>", natsgrant.SessionPattern().Publish[0], "the shared pattern keeps every reply inbox")
 	for _, id := range []string{"a.b", "*", ">", "", "a b", "a\tb", "a\x00b"} {
 		_, err := natsgrant.Session(id)
 		require.ErrorContains(t, err, strconv.Quote(id), "Session(%q)", id)
@@ -165,11 +173,64 @@ func TestNamesSystemSubject(t *testing.T) {
 		grants["Listener("+id+")"] = natsgrant.Listener(id)
 		grants["ListenerHost("+id+")"] = natsgrant.ListenerHost(id)
 		grants["Dispatch("+id+")"] = natsgrant.Dispatch(id)
-		grants["Host("+id+")"] = natsgrant.Host(id)
 	}
 	for name, grant := range grants {
 		require.NotEmpty(t, slices.Concat(grant.Publish, grant.Subscribe), name)
 		entry, found := natsgrant.NamesSystemSubject(grant)
 		require.False(t, found, "%s names %q", name, entry)
 	}
+}
+
+// No grant is one a host's listener and its sessions share: the host grant, Host, is gone, and a
+// session connects either as the hub's session user (SessionPattern) or through the auth service
+// (Session). The package's source is read rather than its API called, since a call cannot name a
+// function that does not exist; the walk must find the grants that stay, ListenerHost among them,
+// or it read nothing and proves nothing.
+func TestNoGrantIsSharedByAHostsSessions(t *testing.T) {
+	declared := topLevelDeclarations(t, ".")
+	require.Subset(t, slices.Collect(maps.Keys(declared)), []string{"Listener", "ListenerHost", "Dispatch", "SessionPattern", "Session"},
+		"the walk of the package's source found none of the grants that stay")
+	if at, found := declared["Host"]; found {
+		t.Fatalf("natsgrant declares Host at %s: the grant a host's listener and its sessions share is retired", at)
+	}
+}
+
+// topLevelDeclarations parses each Go file in dir that is not a test and returns every name its
+// top level declares (functions without a receiver, types, variables and constants), each with
+// the file and line that declares it.
+func topLevelDeclarations(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	files := token.NewFileSet()
+	declared := map[string]string{}
+	add := func(name *ast.Ident) { declared[name.Name] = files.Position(name.Pos()).String() }
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(files, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		require.NoError(t, err)
+		for _, decl := range file.Decls {
+			switch decl := decl.(type) {
+			case *ast.FuncDecl:
+				if decl.Recv == nil {
+					add(decl.Name)
+				}
+			case *ast.GenDecl:
+				for _, spec := range decl.Specs {
+					switch spec := spec.(type) {
+					case *ast.TypeSpec:
+						add(spec.Name)
+					case *ast.ValueSpec:
+						for _, ident := range spec.Names {
+							add(ident)
+						}
+					}
+				}
+			}
+		}
+	}
+	return declared
 }

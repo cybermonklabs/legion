@@ -128,15 +128,15 @@ func (j *JobIntake) Run(ctx context.Context) {
 	j.run(ctx, nil, func() bool { return true })
 }
 
-// jobConsumerConfig is the durable's policy: deliveryConsumerConfig's shape with this consumer's
-// name and filter, starting at new messages, since a job event older than the process says nothing
-// the run's end event and the reconcile do not. A take-over recreates it at its ack floor
-// (takeOverConfig). Its FilterSubject, AckWait and MaxAckPending keep their values for the reason
-// deliveryConsumerConfig gives.
-func jobConsumerConfig() natsgo.ConsumerConfig {
+// jobConsumerConfig is the durable's policy, delivering to deliverSubject: deliveryConsumerConfig's
+// shape with this consumer's name and filter, starting at new messages, since a job event older
+// than the process says nothing the run's end event and the reconcile do not. A take-over
+// recreates it at its ack floor (takeOverConfig). Its FilterSubject, AckWait and MaxAckPending keep
+// their values for the reason deliveryConsumerConfig gives.
+func jobConsumerConfig(deliverSubject string) natsgo.ConsumerConfig {
 	return natsgo.ConsumerConfig{
 		Durable:        bus.DispatchJobDurable,
-		DeliverSubject: natsgo.NewInbox(),
+		DeliverSubject: deliverSubject,
 		FilterSubject:  jobSubject,
 		DeliverPolicy:  natsgo.DeliverNewPolicy,
 		AckPolicy:      natsgo.AckExplicitPolicy,

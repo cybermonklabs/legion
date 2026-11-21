@@ -40,9 +40,9 @@ func plainInputs() map[string]property.Value {
 	return map[string]property.Value{
 		"users": property.New(property.NewArray([]property.Value{
 			property.New(property.NewMap(map[string]property.Value{
-				"name":      property.New("example-host-a"),
-				"nkey":      property.New(keyA),
-				"machineId": property.New("example-host-a"),
+				"name":              property.New("example-host-a"),
+				"nkey":              property.New(keyA),
+				"listenerMachineId": property.New("example-host-a"),
 			})),
 			property.New(property.NewMap(map[string]property.Value{
 				"name": property.New("example-operator"),
@@ -170,5 +170,24 @@ func TestConstructRefusesAPlainFieldFromAnotherResource(t *testing.T) {
 	inputs["tailnetAuthKey"] = property.New(authKey).WithSecret(true)
 	m, _, err := construct(t, inputs, false)
 	require.ErrorContains(t, err, "hostname")
+	require.Empty(t, m.Types())
+}
+
+// A user's machineId, the kind that selected the grant a host's listener and its sessions shared,
+// is gone from gcp:NatsUser, so a generated SDK has no such field. A consumer that sends it anyway,
+// as raw inputs can, sends a key the plugin does not read: the user then names no grant, and the
+// hub refuses it before it registers anything.
+func TestConstructRefusesAUserNamingTheRetiredMachineID(t *testing.T) {
+	inputs := plainInputs()
+	inputs["users"] = property.New(property.NewArray([]property.Value{
+		property.New(property.NewMap(map[string]property.Value{
+			"name":      property.New("example-host-a"),
+			"nkey":      property.New(keyA),
+			"machineId": property.New("example-host-a"),
+		})),
+	}))
+	inputs["tailnetAuthKey"] = property.New(authKey).WithSecret(true)
+	m, _, err := construct(t, inputs, false)
+	require.ErrorContains(t, err, "users[0]: name listenerMachineId, for a listener's own user, dispatchMachineId, for Dispatch's, daemon, for the daemon's, or permissions")
 	require.Empty(t, m.Types())
 }

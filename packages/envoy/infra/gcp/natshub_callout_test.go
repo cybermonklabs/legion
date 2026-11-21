@@ -178,7 +178,7 @@ func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 
 	_, added := testnats.User(t)
 	args = calloutClusteredHub()
-	args.Users = append(args.Users, gcp.NATSUserArgs{Name: "example-host-b", NKey: added, MachineID: pulumi.StringRef("example-host-b")})
+	args.Users = append(args.Users, gcp.NATSUserArgs{Name: "example-host-b", NKey: added, ListenerMachineID: pulumi.StringRef("example-host-b")})
 	require.Equal(t, digest(calloutBlock(keyA, keyB, keyC, keyD, keyAuth, added, keySessions)+calloutPingLines), annotation(t, args),
 		"an added user's key in auth_users rolls the pods")
 
@@ -215,7 +215,7 @@ func TestClusteredNatsHubHashesTheRenderedCalloutBlock(t *testing.T) {
 	withXKey.AuthCallout.XKey = otherXKey(t)
 	_, added := testnats.User(t)
 	withUser := calloutClusteredHub()
-	withUser.Users = append(withUser.Users, gcp.NATSUserArgs{Name: "example-host-b", NKey: added, MachineID: pulumi.StringRef("example-host-b")})
+	withUser.Users = append(withUser.Users, gcp.NATSUserArgs{Name: "example-host-b", NKey: added, ListenerMachineID: pulumi.StringRef("example-host-b")})
 	for name, args := range map[string]*gcp.ClusteredNatsHubArgs{
 		"the callout's own": calloutClusteredHub(), "another xkey": withXKey, "an added user": withUser,
 	} {

@@ -27,10 +27,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// The live tests of the host grant: one nkey user holding HostPermissions, on the 2.10 image and on
-// the hub's, each run with the hub's own server arguments. This branch's listener connects as that
-// user with the environment host:Listener gives it, and a session connects as the same user, as
-// every session on a host does.
+// The live tests of the grants a hub renders, each on the 2.10 image and on the hub's, run with the
+// hub's own server arguments. This branch's listener connects with the environment host:Listener
+// gives it.
 
 const (
 	liveMachineID = "example-host-a"
@@ -53,14 +52,18 @@ type natsServer interface {
 	Logs(context.Context) (io.ReadCloser, error)
 }
 
-func TestHostPermissionsOnRealServers(t *testing.T) {
+// The listener beside envoy-dispatch connects as Dispatch's user, holding DispatchPermissions: the
+// listener's base entries, its own durable alone and no session consumer's call. Under that set
+// the listener reaches healthy and refuses every session registration by name, writing nothing;
+// without its durable's consumer create it never reaches healthy.
+func TestListenerUnderDispatchPermissionsOnRealServers(t *testing.T) {
 	listener := buildEnvoyCommand(t, "listener")
 	for _, image := range testnats.Images {
 		t.Run(image.Name, func(t *testing.T) {
 			t.Parallel()
 			t.Run("the listener reaches healthy and every session registration is refused by name", func(t *testing.T) {
 				t.Parallel()
-				seed, server, uri := startGrantServer(t, image.Ref, core.HostPermissions(liveMachineID))
+				seed, server, uri := startGrantServer(t, image.Ref, core.DispatchPermissions(liveMachineID))
 				held := cmdtest.HoldPort(t)
 				port := held.Port
 				process := startListenerConfig(t, listener, uri, seed, held, core.ListenerConfig{
@@ -68,15 +71,7 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 				})
 				t.Logf("healthy /healthz body: %s", requireHealthy(t, process, port, liveHealthWindow, listenerHealthy))
 
-				// A session on a host user shares that user, and the operations of its own hold:
-				// it reads its agent stream's control subject and writes that stream's frames.
-				conn, errs := connect(t, uri, seed)
-				_, err := conn.SubscribeSync(contracts.AgentStreamControlSubject(liveSession))
-				require.NoError(t, err)
-				require.NoError(t, conn.Publish(contracts.AgentStreamFramesSubject(liveSession), []byte(`[]`)))
-				require.NoError(t, conn.Flush())
-
-				// The host's set holds no session consumer's call, so this listener can give no
+				// Dispatch's set holds no session consumer's call, so this listener can give no
 				// session a consumer, and a session is reached through its own consumer and
 				// nothing else: the core receive path is gone with dispatch://INFRA-771 and the
 				// serving port with sjawhar/legion#2674. So every registration this listener
@@ -92,17 +87,8 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 				require.Equal(t, http.StatusNotFound, entryStatus,
 					"the refused registration left %s in the registry: %s", liveSession, entry)
 
-				// This is the one grant under which a session's user may subscribe to every
-				// notification topic, so what the listener publishes on the stream's subjects is
-				// read here over NATS: a team topic the stream stores reaches this subscription
-				// on the subject itself, whoever is registered.
-				adhoc, err := conn.SubscribeSync("notifications.team.>")
-				require.NoError(t, err)
-				require.NoError(t, conn.Flush())
-				postListener(t, process, port, "/v1/messages/publish", `{"topic":"notifications.team.deploy-squad","message":"example ad-hoc message"}`)
-				team, _ := nextEnvelope(t, process, adhoc)
-				require.Equal(t, "notifications.team.deploy-squad", team.Topic)
 				// Every allowed operation came first, so a violation for one would be the first error.
+				conn, errs := connect(t, uri, seed)
 				require.NoError(t, conn.Publish("outside.example", nil))
 				requireViolation(t, conn, errs, `Publish to "outside.example"`)
 				// The server refused nothing else either, the listener's own operations included,
@@ -117,10 +103,10 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 			})
 			t.Run("without its durable's consumer create the listener never reaches healthy", func(t *testing.T) {
 				t.Parallel()
-				// The host's set holds the durable's own create and no session consumer's
+				// Dispatch's set holds the listener durable's own create and no session consumer's
 				// wildcard, so removing that one entry leaves the durable uncreatable.
 				const removed = "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.listener-example-host-a"
-				grant := core.HostPermissions(liveMachineID)
+				grant := core.DispatchPermissions(liveMachineID)
 				held := len(grant.Publish.Allow)
 				grant.Publish.Allow = slices.DeleteFunc(grant.Publish.Allow, func(entry string) bool { return entry == removed })
 				require.Len(t, grant.Publish.Allow, held-1, "the grant does not hold %s", removed)
@@ -226,7 +212,7 @@ func TestListenerAndCredentialFreeSessionsOnRealServers(t *testing.T) {
 // gcp:NatsHub user with listenerMachineId): the set that keeps a listener's sessions' consumers
 // under a user no session holds. The listener reaches healthy, answers a registration consumer
 // rather than core, and relays a stored send to the session on its relay subject. The server
-// refused nothing but the publish provoked at the end: under this set, unlike the host's, no
+// refused nothing but the publish provoked at the end: under this set, unlike Dispatch's, no
 // session consumer's call is refused.
 func TestListenerHostPermissionsOnRealServers(t *testing.T) {
 	listener := buildEnvoyCommand(t, "listener")
@@ -616,7 +602,7 @@ func violationsOnceLogged(t *testing.T, server natsServer, subject string) [][]s
 }
 
 // sessionConsumerCall reports whether a refused subject is one of the session consumers' calls
-// (core.ListenerPermissions holds them; the host and Dispatch sets do not): a consumer API call on
+// (core.ListenerPermissions holds them; Dispatch's set does not): a consumer API call on
 // the stream naming a consumer other than this machine's durable, the stream's consumer list, or
 // an acknowledgement on such a consumer. A listener under a set without them probes once an
 // episode and refuses by name every registration it cannot give a consumer; a session served on a

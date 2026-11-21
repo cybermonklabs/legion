@@ -47,8 +47,8 @@ def main():
         descriptors.append(descriptor)
 
     with open(arguments.out, "w") as handle:
-        # Two spaces and a trailing newline: the repository's JSON formatter (`bunx biome check`)
-        # reads this file too.
+        # Two spaces and a trailing newline. biome.json's formatter excludes this file, as it does
+        # the other JSON a program writes, so it stays as this script writes it.
         json.dump(descriptors, handle, indent=2)
         handle.write("\n")
 

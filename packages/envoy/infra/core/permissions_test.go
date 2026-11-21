@@ -2,6 +2,12 @@ package core_test
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -15,9 +21,9 @@ import (
 // example-host-a, written out by hand from Envoy's names as they stand: every notification topic
 // (the stream's subjects, the role lanes, every exception lane and any ad-hoc topic), the stream
 // (its stored-message get, `bus.Client.NextStoredMessage`) and its own durable, then each bucket
-// in turn, then the interest bucket's purge. HostPermissions and DispatchPermissions are built on
-// it, so neither holds a session consumer's call. TestSessionPermissions's exact list holds none
-// of it: no session gets the stored-message read or a consumer.
+// in turn, then the interest bucket's purge. DispatchPermissions is built on it too, so it holds
+// no session consumer's call. TestSessionPermissions's exact list holds none of it: no session
+// gets the stored-message read or a consumer.
 var listenerBasePublish = []string{
 	"notifications.>",
 	"$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS",
@@ -133,18 +139,11 @@ func TestListenerHostPermissions(t *testing.T) {
 }
 
 // The one set a listener may hold with consumer delivery and the plain notifications.>
-// subscribe both, which no queue group narrows. The plain host set, which a host's sessions
-// share, carries that subscribe and no consumer call, so a listener connecting as it refuses
-// every registration that asks for consumer delivery by name and writes nothing.
+// subscribe both, which no queue group narrows.
 func TestListenerHostPermissionsHoldTheConsumerCallsAndEveryTopic(t *testing.T) {
 	grant := core.ListenerHostPermissions("example-host-a")
 	require.Subset(t, grant.Publish.Allow, sessionConsumerPublish)
 	require.Contains(t, grant.Subscribe.Allow, "notifications.>")
-	host := core.HostPermissions("example-host-a")
-	require.Contains(t, host.Subscribe.Allow, "notifications.>")
-	for _, entry := range sessionConsumerPublish {
-		require.NotContains(t, host.Publish.Allow, entry, "the host set publishes %q", entry)
-	}
 }
 
 // A space in the machine id is a hyphen in the durable and the queue, as the listener names them.
@@ -171,16 +170,16 @@ func TestSessionPermissions(t *testing.T) {
 // A user holding SessionPermissions alone publishes a reply and never subscribes to a reply inbox,
 // so it may answer a request but not make one: sessions that share one user holding the set would
 // otherwise each receive every other session's replies. The rules are read from the rendered block,
-// as the server reads them. A host's user subscribes to the inboxes for its listener, which the same
-// check finds.
+// as the server reads them. A listener's user subscribes to the inboxes, which the same check
+// finds.
 func TestSessionPermissionsRefuseASubscribeToReplyInboxes(t *testing.T) {
 	publish, subscribe := renderedRules(t, core.SessionPermissions())
 	require.Contains(t, publish, "_INBOX.>", "a session publishes the receipt of each relay frame")
 	for _, entry := range subscribe {
 		require.False(t, admitsInbox(entry), "the session's subscribe entry %q admits a reply inbox", entry)
 	}
-	_, host := renderedRules(t, core.HostPermissions("example-host-a"))
-	require.True(t, slices.ContainsFunc(host, admitsInbox), "the host's set subscribes to the inboxes, for its listener")
+	_, listener := renderedRules(t, core.ListenerPermissions("example-host-a"))
+	require.True(t, slices.ContainsFunc(listener, admitsInbox), "the listener's set subscribes to the inboxes")
 }
 
 // renderedRules renders one user holding p and returns the publish and subscribe allow lists its
@@ -214,26 +213,18 @@ func admitsInbox(entry string) bool {
 	return first == "_INBOX" || first == "*" || first == ">"
 }
 
-// The host's user runs a listener and holds every session's entries, and no session consumer's
-// call: a listener connecting as it keeps its own durable alone. Its notifications.> subscribe is
-// the set's own, and it admits the session's relay subject, which is why the union adds no entry
-// for it.
-func TestHostPermissionsAreTheListenersThenTheSessions(t *testing.T) {
-	require.Equal(t, core.Permissions{
-		Publish: core.Rules{Allow: append(append([]string{}, listenerBasePublish...), "_INBOX.>", "agentstream.*.frames")},
-		Subscribe: core.Rules{Allow: append(append([]string{}, listenerSubscribe...),
-			"notifications.>", "agentstream.*.control",
-		)},
-	}, core.HostPermissions("example-host-a"))
-}
-
-// Narrowing the session's set to its relay subject does not take notifications.> from the host's
-// or the listener-host's: both name it themselves. It is the reach the sessions sharing a host
-// user keep until dispatch://INFRA-840 gives each session a credential of its own, and the host
-// listener's own reach over the topics it serves.
-func TestHostPermissionsKeepTheSubscribeToEveryTopicTheSessionsLost(t *testing.T) {
-	require.NotContains(t, core.SessionPermissions().Subscribe.Allow, "notifications.>")
-	require.Contains(t, core.HostPermissions("example-host-a").Subscribe.Allow, "notifications.>")
+// Narrowing the session's set to its relay subject took notifications.> from every session. The
+// listener-host set alone names it, for the listener whose own user holds it, and no session
+// connects as that user.
+func TestOnlyTheListenerHostSetSubscribesToEveryTopic(t *testing.T) {
+	for name, p := range map[string]core.Permissions{
+		"listener": core.ListenerPermissions("example-host-a"),
+		"session":  core.SessionPermissions(),
+		"dispatch": core.DispatchPermissions("example-host-a"),
+		"daemon":   core.DaemonPermissions(),
+	} {
+		require.NotContains(t, p.Subscribe.Allow, "notifications.>", "the %s set subscribes to every topic", name)
+	}
 	require.Contains(t, core.ListenerHostPermissions("example-host-a").Subscribe.Allow, "notifications.>")
 }
 
@@ -271,14 +262,13 @@ func TestDispatchPermissions(t *testing.T) {
 }
 
 // The session consumers' calls belong to the sets of a user no session shares, the listener's and
-// the listener-host: a user built on the same base grant, Dispatch's or a host's, holds none of
-// them, nor does a session's, so a listener connecting as one of those users keeps its own durable
-// alone and serves its sessions over core NATS.
+// the listener-host: Dispatch's user, built on the same base grant, holds none of them, nor does a
+// session's, so a listener connecting as Dispatch's user keeps its own durable alone and refuses
+// every registration that asks for consumer delivery.
 func TestOnlyTheListenersOwnSetsHoldTheSessionConsumersCalls(t *testing.T) {
 	require.Subset(t, core.ListenerPermissions("example-host-a").Publish.Allow, sessionConsumerPublish)
 	require.Subset(t, core.ListenerHostPermissions("example-host-a").Publish.Allow, sessionConsumerPublish)
 	for name, p := range map[string]core.Permissions{
-		"host":     core.HostPermissions("example-host-a"),
 		"dispatch": core.DispatchPermissions("example-host-a"),
 		"session":  core.SessionPermissions(),
 	} {
@@ -289,13 +279,12 @@ func TestOnlyTheListenersOwnSetsHoldTheSessionConsumersCalls(t *testing.T) {
 }
 
 // nats-server takes a repeated entry, so a duplicate would be noise in every rendered block; none of
-// the sets holds one, the union included.
+// the sets holds one.
 func TestNoSetRepeatsAnEntry(t *testing.T) {
 	sets := map[string]core.Permissions{
 		"listener":      core.ListenerPermissions("example-host-a"),
 		"listener host": core.ListenerHostPermissions("example-host-a"),
 		"session":       core.SessionPermissions(),
-		"host":          core.HostPermissions("example-host-a"),
 		"daemon":        core.DaemonPermissions(),
 		"dispatch":      core.DispatchPermissions("example-host-a"),
 	}
@@ -313,10 +302,10 @@ func TestNoSetRepeatsAnEntry(t *testing.T) {
 // Each call returns lists of its own, so a caller that edits one, as a consumer narrowing a grant
 // does, changes no later call's.
 func TestASetIsTheCallersToChange(t *testing.T) {
-	first := core.HostPermissions("example-host-a")
+	first := core.ListenerPermissions("example-host-a")
 	first.Publish.Allow[0] = "edited"
 	first.Subscribe.Allow[0] = "edited"
-	second := core.HostPermissions("example-host-a")
+	second := core.ListenerPermissions("example-host-a")
 	require.Equal(t, "notifications.>", second.Publish.Allow[0])
 	require.Equal(t, "_INBOX.>", second.Subscribe.Allow[0])
 	session := core.SessionPermissions()
@@ -343,7 +332,7 @@ func TestASetIsTheCallersToChange(t *testing.T) {
 
 // A set drops into a User as its rules, and the authorization renders it.
 func TestASetIsAUsersRules(t *testing.T) {
-	p := core.HostPermissions("example-host-a")
+	p := core.ListenerHostPermissions("example-host-a")
 	a := core.Authorization{Users: []core.User{{
 		Name:      "example-host-a",
 		NKey:      "UBERXOSHFHFLL7YEXXH7RYEJLK455TF4BOZLIHD5R6NF5FFISNHEXIZO",
@@ -353,6 +342,37 @@ func TestASetIsAUsersRules(t *testing.T) {
 	}}}
 	_, err := a.Render(nil)
 	require.NoError(t, err)
+}
+
+// No set is one a host's listener and its sessions share: the host set, the rules of natsgrant's
+// host grant, is gone with that grant, and no hub renders such a user. The package's source is read
+// rather than its API called, since a call cannot name a function that does not exist; the walk
+// must find the sets that stay, ListenerHostPermissions among them, or it read nothing and proves
+// nothing.
+func TestNoGrantIsSharedByAHostsSessions(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+	files := token.NewFileSet()
+	declared := map[string]string{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(files, filepath.Join(".", name), nil, parser.SkipObjectResolution)
+		require.NoError(t, err)
+		for _, decl := range file.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil {
+				declared[fn.Name.Name] = files.Position(fn.Name.Pos()).String()
+			}
+		}
+	}
+	require.Subset(t, slices.Collect(maps.Keys(declared)),
+		[]string{"ListenerPermissions", "ListenerHostPermissions", "DispatchPermissions", "SessionPermissions", "DaemonPermissions"},
+		"the walk of the package's source found none of the sets that stay")
+	if at, found := declared["HostPermissions"]; found {
+		t.Fatalf("core declares HostPermissions at %s: the set a host's listener and its sessions share is retired", at)
+	}
 }
 
 // The expected daemon grant is written out literally rather than built from Envoy's subject names,

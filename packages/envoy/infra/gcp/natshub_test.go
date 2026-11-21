@@ -184,14 +184,14 @@ func runNamed(t *testing.T, name string, args *gcp.NatsHubArgs, check func(*gcp.
 	return m, err
 }
 
-// exampleArgs are a hub serving a host by its machine id, Dispatch by its listener's machine id, a
-// listener's own user by its listener machine id, and one user with explicit permissions, running
-// a listener of its own and admitting a client with no credential as the session user, on
+// exampleArgs are a hub serving two listeners' own users by their listener machine ids, a host's
+// and another, Dispatch by its listener's machine id, and one user with explicit permissions,
+// running a listener of its own and admitting a client with no credential as the session user, on
 // placeholders.
 func exampleArgs() *gcp.NatsHubArgs {
 	return &gcp.NatsHubArgs{
 		Users: []gcp.NATSUserArgs{
-			{Name: "example-host-a", NKey: keyA, MachineID: pulumi.StringRef("example-host-a")},
+			{Name: "example-host-a", NKey: keyA, ListenerMachineID: pulumi.StringRef("example-host-a")},
 			{Name: "example-operator", NKey: keyB, Permissions: &gcp.PermissionsArgs{
 				Publish:   nats.RulesArgs{Allow: []string{">"}},
 				Subscribe: nats.RulesArgs{Allow: []string{">"}, Deny: []string{"$SYS.>"}},

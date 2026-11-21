@@ -671,7 +671,7 @@ func TestAnIntakeSubscribesAtTheDeliverSubjectItIsGiven(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsClient := intakeTestClient(t)
-	wanted := deliveryConsumerConfig()
+	wanted := deliveryConsumerConfig(natsClient.Connection().NewInbox())
 	// Starting at new messages, so a durable recreated on the package's shared stream is handed
 	// only this test's.
 	wanted.DeliverPolicy = natsgo.DeliverNewPolicy
@@ -718,7 +718,7 @@ func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing
 	})
 	recreate := func() natsgo.ConsumerConfig {
 		t.Helper()
-		wanted := deliveryConsumerConfig()
+		wanted := deliveryConsumerConfig(natsClient.Connection().NewInbox())
 		// Starting at new messages, so a durable recreated on the package's shared stream is handed
 		// only this test's.
 		wanted.DeliverPolicy = natsgo.DeliverNewPolicy

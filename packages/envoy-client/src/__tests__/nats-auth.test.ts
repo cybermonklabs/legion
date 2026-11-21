@@ -3,10 +3,10 @@ import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { connect, nkeys } from "nats";
+import { type NatsServer, startNatsServer, useNatsServerDirectory } from "../../test/nats-server";
 import { natsSeedFromEnvironment } from "../envoy-settings";
 import { natsAuthOptions } from "../nats-auth";
 import type { BrokerNatsCredential, NatsCredential } from "../nats-credential";
-import { type NatsServer, startNatsServer, useNatsServerDirectory } from "./nats-server";
 
 interface TestKeyPair {
   getSeed(): Uint8Array;

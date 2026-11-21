@@ -247,20 +247,22 @@ func intakeAckWait() time.Duration {
 }
 
 // deliveryConsumerConfig is the policy a take-over creates the durable with
-// (bus.DispatchDeliveryDurable, one push consumer over githubIntakeSubject), unless the deployed
-// durable carries a higher generation (takeOverConfig). The server holds a backlog undelivered
-// until a subscriber attaches, so a restart with events waiting loses none of them and none of
-// them count against MaxAckPending in the meantime.
+// (bus.DispatchDeliveryDurable, one push consumer over githubIntakeSubject) delivering to
+// deliverSubject, unless the deployed durable carries a higher generation (takeOverConfig). The
+// server holds a backlog undelivered until a subscriber attaches, so a restart with events waiting
+// loses none of them and none of them count against MaxAckPending in the meantime. A take-over
+// passes a fresh inbox of its own connection, under the reply prefix its credential names: the one
+// inbox space the NATS auth service grants a service.
 //
 // FilterSubject, AckWait and MaxAckPending keep the values of the build before generations: that
 // build's processes, still running during a rolling release, update a durable whose three differ
 // from theirs in place on every settings poll, so a change to any of them waits until no such
 // process is left. A change to this config takes a new consumerConfigGeneration and a new row in
 // TestTheConsumerConfigEqualsItsGenerationsPinnedRow.
-func deliveryConsumerConfig() natsgo.ConsumerConfig {
+func deliveryConsumerConfig(deliverSubject string) natsgo.ConsumerConfig {
 	return natsgo.ConsumerConfig{
 		Durable:        bus.DispatchDeliveryDurable,
-		DeliverSubject: natsgo.NewInbox(),
+		DeliverSubject: deliverSubject,
 		FilterSubject:  githubIntakeSubject,
 		AckPolicy:      natsgo.AckExplicitPolicy,
 		AckWait:        intakeAckWait(),

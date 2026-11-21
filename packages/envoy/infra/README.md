@@ -228,11 +228,11 @@ input:
 
 - an nkey seed (`bus.HoldsSeed`) in the hub's own name, first, then in any plain string input:
   `namespace`, `name`, `serviceName`, the images, `storageClassName`, `natsCpu`, `natsMemory`,
-  `priorityClassName`, an entry of any of the three namespace lists, a user's `machineId`,
-  `listenerMachineId` or `dispatchMachineId`, and, of `tailnet`, `serviceName`, `tailnetDnsName`, `tailscaleImage`, a tag,
-  and, of `listener` or `tailnet.listener`, `image`, `seedSecretName`, `seedSecretKey`, `machineId`,
-  `cpu`, `memory`, `oidcIssuer`, `oidcAudience`, `clientNamespaces`, `allowedHosts` and
-  `oidcAccounts` entries. The refusal names the
+  `priorityClassName`, an entry of any of the three namespace lists, a user's `listenerMachineId`
+  or `dispatchMachineId`, and, of `tailnet`, `serviceName`, `tailnetDnsName`, `tailscaleImage`, a
+  tag, and, of `listener` or `tailnet.listener`, `image`, `seedSecretName`, `seedSecretKey`,
+  `machineId`, `cpu`, `memory`, `oidcIssuer`, `oidcAudience`, `clientNamespaces`, `allowedHosts`
+  and `oidcAccounts` entries. The refusal names the
   input by its path and never its value. A seed in
   a user's name, a rule entry or an `nkey` is refused by the authorization, as for `gcp:NatsHub`;
 - no `kubeconfig`;
@@ -655,7 +655,7 @@ resources:
       users:
         - name: example-host-a
           nkey: <public key>
-          machineId: example-host-a
+          listenerMachineId: example-host-a
       sessionUser:
         name: example-sessions
         nkey: <public key whose seed nobody keeps>
@@ -3572,7 +3572,7 @@ service identity, with which it would connect through the auth service, arrives 
 dispatch://INFRA-840 (t-e-13). With `privateProjects`, a hub also refuses an
 `authCallout.serviceUser` that names an entry of `users` other than a `permissions` entry
 (`privateProjects: authCallout.serviceUser "<name>" names users[<i>], a
-<machineId|listenerMachineId|dispatchMachineId|daemon> user, whose seed its client stores; the auth
+<listenerMachineId|dispatchMachineId|daemon> user, whose seed its client stores; the auth
 service connects as a permissions user of its own`). `host:Listener` runs no NATS server and takes
 none.
 
@@ -3799,7 +3799,7 @@ Envoy's subjects. Each is a `core.Permissions`, a publish and a subscribe `Rules
 as its `Publish` and `Subscribe`. Below, `<m>` is the machine id with each space as `-`.
 
 `ListenerPermissions(machineID)` is what `envoy-listener` needs as that machine. Every entry below
-but the session consumers' is the base `HostPermissions` and `DispatchPermissions` are built from.
+but the session consumers' is the base `DispatchPermissions` is built from too.
 It publishes to:
 
 - every notification topic, `notifications.>`: the subjects of the `ENVOY_NOTIFICATIONS` stream,
@@ -3810,9 +3810,9 @@ It publishes to:
   `$JS.API.CONSUMER.INFO` and `CREATE`, the durable's acknowledgements
   `$JS.ACK.ENVOY_NOTIFICATIONS.listener-<m>.>`, and `$JS.API.INFO`. The stored-message get reads
   one stored message at a time and can create, change or
-  delete nothing. `HostPermissions` and `DispatchPermissions` hold it through those same base
-  entries; `SessionPermissions` does not, so a session holding that set alone reads no stored
-  message itself and takes its own from the consumer its listener relays;
+  delete nothing. `DispatchPermissions` holds it through those same base entries;
+  `SessionPermissions` does not, so a session holding that set alone reads no stored message
+  itself and takes its own from the consumer its listener relays;
 - for each key-value bucket, `envoy_interests`, `envoy_roles`, `envoy_sessions`,
   `envoy_known_sessions`, `legion_agents` (the Legion agent registry), `envoy_ci_state` and
   `envoy_dpop_proofs`, the calls nats.go's key-value store makes: the info, create and update of
@@ -3840,13 +3840,10 @@ It publishes to:
 - `$JS.API.STREAM.PURGE.KV_envoy_interests`, which the interest bucket's delete-marker collection
   sends.
 
-Each bucket in that list is granted to every user built on this set: the listener's own, the host
-user a host's sessions share (`HostPermissions`) and Dispatch's.
-So every session on a host can write another session's record in any of those buckets, its
-session entry in `envoy_sessions` and its known-session record in `envoy_known_sessions` among
-them.
-dispatch://INFRA-840, which gives each session a NATS user of its own, is the place that narrows
-that reach; nothing here can, since one user serves every session on the host.
+Each bucket in that list is granted to every user built on this set, the listener's own and
+Dispatch's, and no session connects as either: `SessionPermissions`, and the grant the auth service
+answers a session's own connection with, name no bucket, so no session writes another session's
+record in any of them.
 
 It subscribes to `_INBOX.>`, and to the role lanes in the queue group every listener shares,
 `notifications.role.> envoy-roles`, so each role message is forwarded once whichever machine's
@@ -3864,12 +3861,12 @@ every session at once reads instead of one info per session (a grant without it 
 listener one info per session). A NATS wildcard is a whole token, so these entries reach every
 consumer of the stream, other listeners' durables and Dispatch's included, and let the listener
 create a push consumer that delivers the stream's messages to any subject. That reach is why only
-a user no session shares holds them: `HostPermissions` and `DispatchPermissions` keep the
-per-durable scope of the base entries above. A listener connecting as one of those users keeps its
-own durable alone; the server refuses its consumer calls, so it refuses every registration that
-asks for consumer delivery `503 no_grant` (one probe and one refusal per ten-minute
-episode), writing nothing, and a session registering through it is not registered at all and
-receives nothing until that user's grant carries the session consumers.
+a user no session shares holds them: `DispatchPermissions` keeps the per-durable scope of the base
+entries above. A listener connecting as Dispatch's user keeps its own durable alone; the server
+refuses its consumer calls, so it refuses every registration that asks for consumer delivery
+`503 no_grant` (one probe and one refusal per ten-minute episode), writing nothing, and a session
+registering through it is not registered at all and receives nothing until that user's grant
+carries the session consumers.
 
 `SessionPermissions()` is what any agent session needs, with `*` for the session id. It publishes
 to `_INBOX.>`, for the replies to a session consumer's
@@ -3878,35 +3875,30 @@ relay frames, and `agentstream.*.frames`, and subscribes to its own relay subjec
 and to nothing else — no other `notifications.` subject,
 so a session can read no topic the listener does not relay to it. While sessions share one user,
 each holds the same set, so the relay subject carries `*` and one session can read another's
-relay frames, until the per-session credentials
-of dispatch://INFRA-840.
+relay frames. A session the NATS auth service admits holds `natsgrant.Session` instead, which
+names its own id alone and publishes its replies under `_INBOX.*.<session id>.>` alone
+(`bus.SessionReplies`).
 It does not
 subscribe to `_INBOX.>`, so a client holding this set alone may answer a request but not make one:
 sessions that share one user holding it, as a `gcp:NatsHub`'s `sessionUser` does, would otherwise
 each receive every other session's replies, so request/reply from such a session is refused by
 design.
 The listener's connection probe of a session needs no rule of its own: it is a request on that
-same relay subject, which the session's relay subscription receives and answers on the probe's own
-reply inbox under this set's `_INBOX.>` publish, and the listener's `notifications.>` publish and
-`_INBOX.>` subscribe carry the listener's side.
-A host's user, holding `HostPermissions`, subscribes to `_INBOX.>` for its listener.
+same relay subject, which the session's relay subscription receives and answers under this set's
+`_INBOX.>` publish, and the listener's `notifications.>` publish and `_INBOX.>` subscribe carry the
+listener's side. Its reply subject names the session, `<reply inbox>.<session id>.<random token>`
+(`bus.SessionReplySubject`: a new reply inbox of the listener's, the session's id, and 128 random
+bits), as each relay frame's does under the relay's one reply inbox. The probe waits only on the
+subject it made for that session, and the relay moves a frame only on a reply whose subject names
+the session the frame was sent to: a reply naming another session changes nothing.
 
-`HostPermissions(machineID)` is the grant of a host's one NATS user, which its listener and every
-session on the host share: in each direction the listener's base entries, the session consumers'
-left out, then each of the session's the base lacks, and `notifications.>` itself, which keeps a
-shared host user's sessions at today's reach until dispatch://INFRA-840;
-a listener connecting as this user can give its sessions no consumer, so it refuses their
-registrations `no_grant`. A `gcp:NatsHub` user with `machineId` holds it, and a hub's own
-`listener` holds `ListenerPermissions` for the hub's hostname. Sharing one user makes the host one
-trust domain: any process that reaches the server as it, a listener's own process or any session on
-the host, holds the whole grant above, host sessions included, since sessions run as the Unix user
-that already reads the host's seed. This repository's listener and a session, connected as one
-user holding `HostPermissions`, and connected as a user holding `ListenerPermissions` beside a
-credential-free session user holding `SessionPermissions`, are checked against real nats-server
-2.10 and 2.15.1 servers, the session user's refusal of the stream's stored-message get included,
-as are a
-session consumer the listener's user creates, pulls, acks, restarts and deletes, both of its role
-lane queue groups, and the session user's refusal of a consumer create, in
+A hub's own `listener` holds `ListenerPermissions` for the hub's hostname. This repository's
+listener, connected as a user holding `ListenerPermissions` beside a credential-free session user
+holding `SessionPermissions`, and connected as Dispatch's user holding `DispatchPermissions`, under
+which it refuses every registration `no_grant`, is checked against real nats-server 2.10 and 2.15.1
+servers, the session user's refusal of the stream's stored-message get included, as are a session
+consumer the listener's user creates, pulls, acks, restarts and deletes, both of its role lane
+queue groups, and the session user's refusal of a consumer create, in
 `core/permissions_live_test.go` under the `natslive` tag; "Changing the module", below, gives the
 command that runs it.
 
@@ -3914,10 +3906,8 @@ command that runs it.
 shares: `ListenerPermissions(machineID)`, the session consumers' calls included, then a plain
 `notifications.>` subscribe that no Envoy program uses any more. A `gcp:NatsHub` user with
 `listenerMachineId` holds it, for a listener whose process is the only thing holding that seed: a
-session connecting as it could create, pull and delete any session's consumer. A host whose
-sessions share the listener's user takes `machineId` and `HostPermissions` instead, whose
-listener can give its sessions no consumer and so refuses their registrations `no_grant`. The two
-sets therefore allow the same calls a listener makes; the
+session connecting as it could create, pull and delete any session's consumer. It and
+`ListenerPermissions` therefore allow the same calls a listener makes; the
 subscribe stays rather than being dropped because a change to a set rewrites every hub's rendered
 authorization, which replaces a VM hub's instance and reaches a clustered hub only as a live
 reload. This repository's listener runs under this set against the real servers below: it answers

@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -148,6 +149,62 @@ const DeliverSubjectPrefix = NotificationTopicPrefix + "envoy.deliver."
 // consumers" under "Runtime shape").
 func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
+}
+
+// SessionReplySubject is the reply subject of one request made of session sessionID,
+// <inbox>.<session id>.<token>: inbox the requester's session reply inbox (SessionReplyInboxOf),
+// then the session's id, then a token of 128 random bits (crypto/rand.Text, 26 base32 characters).
+// Every request a session answers carries one - the relay's frames (cmd/listener's
+// sessionRelays), the listener's connection probe and Dispatch's agent stream replay
+// (internal/dispatch/agentstream). The id is there so that a grant can admit a session's own
+// replies alone (SessionReplies) and the relay can refuse a reply that names another session
+// than its frame's; the token is random so that no session can guess the subject of a request
+// made of another, since it is derived from nothing a session can see, and a session's grant
+// reads no other session's relay or control subject. A session's own grant, the one the NATS auth
+// service gives it (natsgrant.Session), publishes SessionReplies in place of every _INBOX.
+// subject, so a session on that grant can neither answer a request made of another session nor
+// guess the subject of one. The relay moves a frame only on a reply whose subject names the
+// session the frame was sent to (sessionRelays.onReply), and logs the first reply that names
+// another at WARN, then at most one a minute. A holder of the shared session user reads every
+// session's relay subject and may publish to every _INBOX. subject, so none of this holds against
+// it: the relay reads the session a reply subject names, not who published the reply. sessionID is
+// one subject token, as every session with a consumer's is (SessionConsumerName).
+func SessionReplySubject(inbox, sessionID string) string {
+	return inbox + "." + sessionID + "." + rand.Text()
+}
+
+// SessionReplyInboxOf is the reply inbox under which conn asks a session for an answer: _INBOX.
+// and one token, so that a session's grant, which admits replies under any one token after _INBOX.
+// and its own id (SessionReplies), lets the session answer. For a connection a service's platform
+// token made, which asks under its account's reply prefix (natscred.InboxPrefix, credential), it
+// is _INBOX. and that prefix, natsgrant.SessionReplyInbox of the account: the one session reply
+// inbox the NATS auth service grants it, distinct for each account, so no other client reads the
+// answers. For one on a seed or with no credential, whose grant subscribes _INBOX.>, it is a new
+// inbox of conn's. Every request of a session carries one (SessionReplySubject).
+func SessionReplyInboxOf(conn *nats.Conn) string {
+	// The prefix is set once, by the credential's option, before the connection is made; nats.go
+	// writes no other field of a running connection's options but its handlers (natscred's probe
+	// reads fields the same way).
+	if prefix := conn.Opts.InboxPrefix; prefix != "" {
+		return nats.InboxPrefix + prefix
+	}
+	return conn.NewInbox()
+}
+
+// SessionReplies is the one publish entry under _INBOX. a grant of session sessionID needs: it
+// admits every reply subject SessionReplySubject makes for that session, and none it makes for
+// another, nor a requester's plain inbox (_INBOX.<id> or nats.go's _INBOX.<id>.<token>).
+//
+// sessionID must be one subject token: no dot, no wildcard (* or >) and no whitespace, the rule
+// SessionConsumerName holds a session's id to. SessionReplies does not check it, so its caller
+// must: an id of * admits every session's replies, and since the entry ends in >, the entry of an
+// id also admits the replies of every id that extends it by a dot (a's entry admits a.b's, and
+// a.b's admits a.b.c's), so no session id may hold a dot. An id such as a* is one plain token and
+// admits nothing extra. The one builder of a session grant checks it first: natsgrant.Session
+// calls natsgrant.SessionToken before it calls SessionReplies, and the NATS auth service refuses
+// such an id as bad_session_id (natscallout's decideSession).
+func SessionReplies(sessionID string) string {
+	return nats.InboxPrefix + "*." + sessionID + ".>"
 }
 
 // ConnectionProbeHeader is the one header the listener's connection probe carries on a session's

@@ -17,9 +17,10 @@ import (
 )
 
 // Canonical policy for the listener's durable consumer. DeliverSubject is
-// deliberately not part of the policy: it is fixed at creation and preserved
-// for the consumer's lifetime (nats.Bind attaches to whatever subject the
-// server has persisted).
+// deliberately not part of the policy: it is chosen at creation, and a start
+// changes it only to move it into its own connection's inbox space
+// (ownDeliverSubject); nats.Bind attaches to whatever subject the server has
+// persisted.
 //
 // consumerInactiveThreshold lets the server delete a machine's durable
 // consumer once its listener has been gone this long. The notification
@@ -140,22 +141,30 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		// The deliver subject is a random inbox, not a derivable name: on a
 		// shared NATS account a predictable subject would let any client
 		// hold interest on it — shadow-reading deliveries and making the
-		// consumer look push-bound so the listener could never attach.
+		// consumer look push-bound so the listener could never attach. It is
+		// the connection's own inbox, under the reply prefix its credential
+		// names: the one inbox space the auth service grants a service.
 		config := nats.ConsumerConfig{
 			Durable:        consumer,
-			DeliverSubject: nats.NewInbox(),
+			DeliverSubject: client.Connection().NewInbox(),
 		}
 		applyListenerConsumerPolicy(&config, subjects)
 		if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {
 			return nil, err
 		}
 	default:
-		// Only a field the policy writes can differ: the copy shares every other one, the
-		// server-set metadata included, and listenerDurable has already refused any ack policy
-		// but explicit.
+		// Only a field the policy writes can differ, and the deliver subject when it lies outside
+		// this connection's inbox space: the copy shares every other one, the server-set metadata
+		// included, and listenerDurable has already refused any ack policy but explicit.
 		corrected := info.Config
 		applyListenerConsumerPolicy(&corrected, subjects)
+		corrected.DeliverSubject = ownDeliverSubject(client.Connection(), info.Config.DeliverSubject)
 		if !reflect.DeepEqual(corrected, info.Config) {
+			// nats-server refuses to change the deliver subject while the old one still has a
+			// subscriber, answering 10013 (consumer name already in use; v2.15.1 consumer.go,
+			// updateConfig): an old task of a rolling deploy still bound there. That error is no
+			// refusal (durableRefused), so bindListenerDurable tries again every
+			// durableBindInterval, and the move lands within one interval of that task's exit.
 			if _, err := client.JS().UpdateConsumer(bus.Stream, &corrected); err != nil {
 				return nil, err
 			}
@@ -167,6 +176,21 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		nats.Bind(bus.Stream, consumer),
 		nats.ManualAck(),
 	)
+}
+
+// ownDeliverSubject is the deliver subject a start gives the listener's durable, which delivers to
+// deployed now: deployed itself when it lies in conn's own inbox space, the prefix conn's NewInbox
+// takes (nats.go's _INBOX. for a seed or no credential, the account's own reply prefix,
+// natscred.InboxPrefix, for a service), and a new inbox of conn's otherwise. A durable a listener
+// made before it connected by its service token delivers on an _INBOX. subject, which the auth
+// service's grant of a service no longer admits; and one a service made, back on a seed after a
+// rollback, delivers on a prefix the seed's grant does not hold. Either moves at the start.
+func ownDeliverSubject(conn *nats.Conn, deployed string) string {
+	inbox := conn.NewInbox()
+	if strings.HasPrefix(deployed, inbox[:strings.LastIndex(inbox, ".")+1]) {
+		return deployed
+	}
+	return inbox
 }
 
 // errListenerDurableBindExhausted marks a bind still refused at its deadline: something other than

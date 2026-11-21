@@ -146,8 +146,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 }
 
 // credential is the option the probe connects with and the name it says it connects as: none for
-// none, a service's when a token file or a Google audience is named, and otherwise a session's,
-// traded from this machine's identity.
+// none, a service's when a token file or a Google audience is named, asking under the reply prefix
+// of the account its token names (natscred.InboxPrefix) as the service's own connection does, and
+// otherwise a session's, traded from this machine's identity.
 func credential(getenv func(string) string, tokenFile, googleAudience string, none bool) (nats.Option, string, error) {
 	if none {
 		return func(*nats.Options) error { return nil }, "no credential", nil
@@ -166,7 +167,13 @@ func credential(getenv func(string) string, tokenFile, googleAudience string, no
 			return nil, "", err
 		}
 		option, _ := natscred.Service(reader)
-		return option, "service " + account, nil
+		prefix := nats.CustomInboxPrefix(natscred.InboxPrefix(account))
+		return func(o *nats.Options) error {
+			if err := option(o); err != nil {
+				return err
+			}
+			return prefix(o)
+		}, "service " + account, nil
 	}
 	subject, err := cipherclient.MachineIdentity(getenv)
 	if err != nil {

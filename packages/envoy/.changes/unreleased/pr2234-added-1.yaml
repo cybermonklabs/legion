@@ -23,8 +23,8 @@ body: |-
   (from the session registry) and `replaced_by`/`replaced_at` (the next session of the role token by
   `started_at`), both derived at the read. Dispatch's listener client reads them with `Agent`,
   `RoleAgents` and `IssueAgents`. The listener's NATS grant (`ListenerPermissions`, and so
-  `HostPermissions` and `DispatchPermissions`) gains the bucket's key-value calls, so a hub's
-  rendered authorization changes, which replaces a GCP hub's VM on its next update. Deploy order:
+  `DispatchPermissions`) gains the bucket's key-value calls, so a hub's rendered authorization
+  changes, which replaces a GCP hub's VM on its next update. Deploy order:
   a listener that cannot open the bucket (a missing grant is the usual cause) serves everything
   else and answers 503 on the registry routes, logging one ERROR naming the `legion_agents` bucket,
   and retries the open in the background (1 s doubling to 1 min, and at once after each NATS

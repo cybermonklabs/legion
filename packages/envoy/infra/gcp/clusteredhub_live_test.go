@@ -97,19 +97,19 @@ func installTools(t *testing.T, dir string, tools ...liveTool) []string {
 	return paths
 }
 
-// liveHubKeys are the keys of the users the live hub serves: the operator's and the host's seeds,
-// which the test's clients connect with, and the session user's public key, whose seed nobody
-// keeps.
+// liveHubKeys are the keys of the users the live hub serves: the operator's and the host's
+// listener's seeds, which the test's clients connect with, and the session user's public key,
+// whose seed nobody keeps.
 type liveHubKeys struct {
 	operatorSeed, operatorKey string
 	hostSeed, hostKey         string
 	sessionKey                string
 }
 
-// liveHubArgs are clusteredArgs with keys' users: an operator with explicit permissions, a host
-// holding core.HostPermissions and the session user, a storage class, a priority class, sizes
-// other than the defaults, and a client Service named apart from the release, so each reaches the
-// rendering by its own value.
+// liveHubArgs are clusteredArgs with keys' users: an operator with explicit permissions, a host's
+// listener holding core.ListenerHostPermissions and the session user, a storage class, a priority
+// class, sizes other than the defaults, and a client Service named apart from the release, so
+// each reaches the rendering by its own value.
 func liveHubArgs(keys liveHubKeys) *gcp.ClusteredNatsHubArgs {
 	args := clusteredArgs()
 	args.ServiceName = "envoy-nats-client"
@@ -122,7 +122,7 @@ func liveHubArgs(keys liveHubKeys) *gcp.ClusteredNatsHubArgs {
 			Publish:   nats.RulesArgs{Allow: []string{">"}},
 			Subscribe: nats.RulesArgs{Allow: []string{">"}, Deny: []string{"$SYS.>"}},
 		}},
-		{Name: "live-host", NKey: keys.hostKey, MachineID: pulumi.StringRef("live-host")},
+		{Name: "live-host", NKey: keys.hostKey, ListenerMachineID: pulumi.StringRef("live-host")},
 	}
 	args.SessionUser = &gcp.SessionUserArgs{Name: "live-sessions", NKey: keys.sessionKey}
 	return args
@@ -1175,7 +1175,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, r.keys.hostKey, s.authorizedUser(t, conn))
 		conn.Close()
-		t.Logf("(a) the keyed user live-host (core.HostPermissions) connected to %s as %s", s.name, r.keys.hostKey)
+		t.Logf("(a) the keyed user live-host (core.ListenerHostPermissions) connected to %s as %s", s.name, r.keys.hostKey)
 	}
 	// A client another test left dialing 127.0.0.1, at a port the kernel has since given a server
 	// here, does not reach it: each listens at host alone. The control is the connect just above,
