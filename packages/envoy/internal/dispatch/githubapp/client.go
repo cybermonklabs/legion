@@ -122,6 +122,42 @@ func (err *ResponseTooLargeError) Error() string {
 	return fmt.Sprintf("GitHub response body exceeds the %d-byte limit", err.Limit)
 }
 
+// The stages of send a *SendError names.
+const (
+	// SendStageBuild is a request that could not be built: its method or its target is no
+	// request's.
+	SendStageBuild = "build"
+	// SendStageTransport is a request GitHub gave no answer to: the connection failed or the
+	// client's deadline ended it.
+	SendStageTransport = "transport"
+	// SendStageReadBody is an answer whose body could not be read.
+	SendStageReadBody = "read_body"
+	// SendStageTooLarge is an answer whose body ran past the caller's limit.
+	SendStageTooLarge = "too_large"
+)
+
+// SendError is a request send could not complete: its stage, the request, and the error that
+// stopped it. Its text names the method and the whole target, query included, as send's errors
+// always have, so a caller that logs a target a person wrote reads Stage and Err instead
+// (githubapi.ProxyREST). Unwrap is Err, so errors.As finds a *url.Error or a
+// *ResponseTooLargeError through it.
+type SendError struct {
+	Stage, Method, Target string
+	Err                   error
+}
+
+func (err *SendError) Error() string {
+	switch err.Stage {
+	case SendStageBuild:
+		return "build " + err.Method + " " + err.Target + ": " + err.Err.Error()
+	case SendStageReadBody:
+		return "read " + err.Method + " " + err.Target + " response: " + err.Err.Error()
+	}
+	return err.Method + " " + err.Target + ": " + err.Err.Error()
+}
+
+func (err *SendError) Unwrap() error { return err.Err }
+
 const defaultBase = "https://api.github.com"
 
 // tokenExpirySlack retires a cached installation token this long before
@@ -970,7 +1006,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	defer cancel()
 	request, err := http.NewRequestWithContext(bounded, method, target, body)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("build %s %s: %w", method, target, err)
+		return nil, 0, nil, &SendError{Stage: SendStageBuild, Method: method, Target: target, Err: err}
 	}
 	request.Header.Set("Authorization", authorization)
 	request.Header.Set("Accept", accept)
@@ -983,19 +1019,19 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	githubreads.NoteSent(ctx)
 	response, err := c.http.Do(request)
 	if err != nil {
-		err = fmt.Errorf("%s %s: %w", method, target, err)
+		err = &SendError{Stage: SendStageTransport, Method: method, Target: target, Err: err}
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		err = fmt.Errorf("read %s %s response: %w", method, target, err)
+		err = &SendError{Stage: SendStageReadBody, Method: method, Target: target, Err: err}
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
 	if int64(len(responseBody)) > limit {
-		err := fmt.Errorf("%s %s: %w", method, target, &ResponseTooLargeError{Limit: limit})
+		err := &SendError{Stage: SendStageTooLarge, Method: method, Target: target, Err: &ResponseTooLargeError{Limit: limit}}
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}

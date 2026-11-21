@@ -14,6 +14,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/heldpath"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -258,6 +259,43 @@ func TestThePreviousTokenLogIsBounded(t *testing.T) {
 	authenticate("one-past-the-bound", "/api/v1/whoami")
 	if remembered, lines := len(tokens.logged), len(logged())-before; remembered != previousTokenCallers || lines != 2 {
 		t.Errorf("past the bound: %d callers remembered and %d lines for two requests of one caller, want %d and 2", remembered, lines, previousTokenCallers)
+	}
+}
+
+// The previous-token warning writes its path as the request line does: while a project is
+// private, a private project's names as their placeholders, and while the private projects are
+// not known, every keyed path's; with none private and the set read, the path whole. The request
+// is served through a real mux, so it carries the pattern it was served under.
+func TestAPreviousTokensWarningHoldsItsPath(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		known  bool
+		keys   []string
+		target string
+		path   string
+	}{
+		{"PRIV private", true, []string{"PRIV"}, "/api/v1/projects/PRIV/artifacts/r14-plan", "/api/v1/projects/PRIV/artifacts/{slug}"},
+		{"the set not known", false, nil, "/api/v1/projects/PUB/artifacts/r14-plan", "/api/v1/projects/PUB/artifacts/{slug}"},
+		{"no project private", true, nil, "/api/v1/projects/PUB/artifacts/r14-plan", "/api/v1/projects/PUB/artifacts/r14-plan"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			set := heldpath.NewPrivateSet(test.keys...)
+			heldpath.Use(func() (heldpath.PrivateSet, bool) { return set, test.known })
+			t.Cleanup(func() { heldpath.Use(nil) })
+			logged := warnings(t)
+			tokens := sharedTokens(t, "new-token old-token")
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /api/v1/projects/{key}/artifacts/{slug}", func(_ http.ResponseWriter, r *http.Request) {
+				if !MatchesSharedAgentToken(r, "old-token", tokens) {
+					t.Errorf("old-token was refused")
+				}
+			})
+			mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, test.target, nil))
+			lines := logged()
+			if len(lines) != 1 || lines[0]["path"] != test.path {
+				t.Fatalf("the previous-token warnings are %v, want one with path %q", lines, test.path)
+			}
+		})
 	}
 }
 

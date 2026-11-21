@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/heldpath"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -200,4 +201,100 @@ func TestANamedSessionIsClipped(t *testing.T) {
 	if strings.Contains(got, strings.Repeat("s", fieldBytes+1)) {
 		t.Fatalf("access-log line keeps more than %d bytes of the named session", fieldBytes)
 	}
+}
+
+// private makes keys the private set until the test ends, known or not.
+func private(t *testing.T, known bool, keys ...string) {
+	t.Helper()
+	set := heldpath.NewPrivateSet(keys...)
+	heldpath.Use(func() (heldpath.PrivateSet, bool) { return set, known })
+	t.Cleanup(func() { heldpath.Use(nil) })
+}
+
+// served is the access-log line of method target, served under route through a real mux as
+// Dispatch mounts its routes, so the request carries its path values. A route that is no pattern
+// (heldpath.Unmatched) is mounted as the mux's catch-all, as the router's reserved roots are.
+func served(t *testing.T, route, method, target string) string {
+	t.Helper()
+	logged := capture(t)
+	mux := http.NewServeMux()
+	pattern := method + " " + route
+	if !strings.HasPrefix(route, "/") {
+		pattern = "/"
+	}
+	mux.HandleFunc(pattern, HandlerFunc(route, func(http.ResponseWriter, *http.Request) {}))
+	mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, target, nil))
+	return line(t, logged)
+}
+
+// lacks fails the test when got carries any of absent.
+func lacks(t *testing.T, got string, absent ...string) {
+	t.Helper()
+	for _, a := range absent {
+		if strings.Contains(got, a) {
+			t.Errorf("access-log line %q carries %q", got, a)
+		}
+	}
+}
+
+// A private project's line writes each name its path holds as the name's placeholder and keeps
+// each identifier, a repository's owner and name among them, and says the request was a private
+// project's; another project's line is today's.
+func TestAPrivateProjectsLineNamesNoName(t *testing.T) {
+	private(t, true, "PRIV")
+	for _, test := range []struct{ route, method, target, path string }{
+		{"/api/v1/projects/{key}/artifacts/{slug}", http.MethodGet, "/api/v1/projects/PRIV/artifacts/r14-plan", "/api/v1/projects/PRIV/artifacts/{slug}"},
+		{"/api/v1/issues/{key}/artifacts/{slug}", http.MethodGet, "/api/v1/issues/PRIV-7/artifacts/spec", "/api/v1/issues/PRIV-7/artifacts/{slug}"},
+		{"/api/v1/projects/{key}/architecture-sources/{owner}/{repo}", http.MethodPut, "/api/v1/projects/PRIV/architecture-sources/acme/r14-repo", "/api/v1/projects/PRIV/architecture-sources/acme/r14-repo"},
+	} {
+		got := served(t, test.route, test.method, test.target)
+		carries(t, got, " path="+test.path+" ", "private_project=true")
+		lacks(t, got, "r14-plan", "/spec ")
+	}
+	for _, test := range []struct{ route, method, target string }{
+		{"/api/v1/projects/{key}/artifacts/{slug}", http.MethodGet, "/api/v1/projects/PUB/artifacts/r14-plan"},
+		{"/api/v1/issues/{key}/artifacts/{slug}", http.MethodGet, "/api/v1/issues/PUB-7/artifacts/spec"},
+		{"/api/v1/projects/{key}/architecture-sources/{owner}/{repo}", http.MethodPut, "/api/v1/projects/PUB/architecture-sources/acme/r14-repo"},
+	} {
+		got := served(t, test.route, test.method, test.target)
+		carries(t, got, " path="+test.target+" ")
+		lacks(t, got, "private_project")
+	}
+}
+
+// While the private projects cannot be read, every request with a key counts as a private
+// project's, a public project's included.
+func TestAnUnknownPrivateSetHidesEveryKeyedName(t *testing.T) {
+	private(t, false)
+	got := served(t, "/api/v1/projects/{key}/artifacts/{slug}", http.MethodGet, "/api/v1/projects/PUB/artifacts/r14-plan")
+	carries(t, got, " path=/api/v1/projects/PUB/artifacts/{slug} ", "private_project=true")
+	lacks(t, got, "r14-plan")
+}
+
+// A route with a name and no key cannot say whose its name is, so while any project is private
+// it writes the name's placeholder for every project, and names no private project.
+func TestARouteWithNoKeyHidesItsNamesWhileAProjectIsPrivate(t *testing.T) {
+	const route, target = "/api/v1/agents/{session_id}/artifacts/{slug}", "/api/v1/agents/session-0123456789abcdef/artifacts/r14-plan"
+	private(t, true, "PRIV")
+	got := served(t, route, http.MethodGet, target)
+	carries(t, got, " path=/api/v1/agents/session-0123456789abcdef/artifacts/{slug} ")
+	lacks(t, got, "r14-plan", "private_project")
+
+	private(t, true)
+	got = served(t, route, http.MethodGet, target)
+	carries(t, got, " path="+target+" ")
+	lacks(t, got, "private_project")
+}
+
+// A path no route answers shows no project and can carry any name, so while any project is
+// private the unmatched line writes none of it.
+func TestTheUnmatchedLineHidesItsPath(t *testing.T) {
+	const target = "/api/v1/no-such-route/r14-plan"
+	private(t, true, "PRIV")
+	got := served(t, heldpath.Unmatched, http.MethodGet, target)
+	carries(t, got, " route=unmatched ", " path={unmatched} ")
+	lacks(t, got, "r14-plan", "private_project")
+
+	private(t, true)
+	carries(t, served(t, heldpath.Unmatched, http.MethodGet, target), " path="+target+" ")
 }

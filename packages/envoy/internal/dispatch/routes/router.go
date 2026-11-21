@@ -44,6 +44,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubpath"
+	"github.com/sjawhar/envoy/internal/dispatch/heldpath"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -340,7 +342,7 @@ func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 	mux.HandleFunc("GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
 	mux.HandleFunc("POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
 	mux.HandleFunc("GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
-	mux.HandleFunc(githubapi.Prefix, accesslog.HandlerFunc(githubapi.Prefix, r.apiGithubRest))
+	mux.HandleFunc(githubpath.Prefix, accesslog.HandlerFunc(githubpath.Prefix, r.apiGithubRest))
 	background := api.Register(mux, r.ctx.lifetime, r.ctx.apiDeps)
 	r.eventHead = ctx.eventHead
 	if r.eventHead == nil {
@@ -592,9 +594,6 @@ func signInUnconfigured(w http.ResponseWriter) {
 // that must be answered as one.
 var serverRoots = []string{"/api", "/v1", "/auth", "/ws", "/healthz"}
 
-// unmatchedRoute is the access-log route of a request under serverRoots that no route answers.
-const unmatchedRoute = "unmatched"
-
 // assetRoots hold Vite's content-hashed build output: a file there never changes under its name,
 // because a changed file is written under a new one.
 var assetRoots = []string{"/assets"}
@@ -615,7 +614,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 	if isReservedPath(normalized, serverRoots) {
 		// An unknown API path writes its access-log line too, so a client calling a route that
 		// does not exist is visible beside the callers of the routes that do.
-		accesslog.HandlerFunc(unmatchedRoute, func(w http.ResponseWriter, req *http.Request) {
+		accesslog.HandlerFunc(heldpath.Unmatched, func(w http.ResponseWriter, req *http.Request) {
 			api.WriteJSON(w, http.StatusNotFound, map[string]string{
 				"code":  "NOT_FOUND",
 				"error": "no route for " + req.Method + " " + req.URL.Path,

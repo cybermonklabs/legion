@@ -17,20 +17,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubpath"
+	"github.com/sjawhar/envoy/internal/dispatch/heldpath"
 )
 
-// Prefix is the route the web app reads GitHub under: /api/github/rest/<GitHub API path>.
-const Prefix = "/api/github/rest/"
-
-// readable are the GitHub API paths the web app reads, and the only ones the proxy forwards: a
-// pull request, an issue (which also answers for a pull request), the check runs of a commit, and
-// the workflow runs (`actions/runs`, group 3) whose query names one commit, held to
-// workflowRunsQuery. The App can read more of a repository than that, and none of the rest is
-// shown anywhere.
-var readable = regexp.MustCompile(`^repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(?:pulls/[0-9]+|issues/[0-9]+|commits/[0-9A-Fa-f]{7,64}/check-runs|(actions/runs))$`)
-
-// workflowRunsQuery is each parameter a workflow-runs read may carry, as sent: the commit's full
-// sha and the page. The read must name head_sha, and no parameter may repeat.
+// workflowRunsQuery is each parameter a workflow-runs read (githubpath.Read.WorkflowRuns) may
+// carry, as sent: the commit's full sha and the page. The read must name head_sha, and no
+// parameter may repeat.
 var workflowRunsQuery = regexp.MustCompile(`^(head_sha)=[0-9A-Fa-f]{40}$|^(per_page|page)=[0-9]+$`)
 
 // workflowRunsResponseLimit bounds GitHub's workflow-runs answer, which the proxy trims to three
@@ -70,7 +63,7 @@ func workflowRunsOfOneCommit(rawQuery string) bool {
 	return seen["head_sha"]
 }
 
-// ProxyREST answers GET Prefix<path> with GitHub's answer to GET /<path>, read with an
+// ProxyREST answers GET githubpath.Prefix<path> with GitHub's answer to GET /<path>, read with an
 // installation token of the App installation covering the path's repository. A workflow-runs read
 // GitHub answers 200 is trimmed to workflowRuns, and a body that does not decode as workflow runs
 // is 502 GITHUB_UPSTREAM; every other answer, and a workflow-runs answer of any other status,
@@ -87,14 +80,13 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client)
 		api.WriteJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "the GitHub proxy reads only: use GET", "code": "METHOD_NOT_ALLOWED"})
 		return
 	}
-	path := strings.TrimPrefix(r.URL.Path, Prefix)
-	match := readable.FindStringSubmatch(path)
-	if match == nil || match[1] == "." || match[1] == ".." || match[2] == "." || match[2] == ".." ||
-		(match[3] != "" && !workflowRunsOfOneCommit(r.URL.RawQuery)) {
+	path := strings.TrimPrefix(r.URL.Path, githubpath.Prefix)
+	match, reads := githubpath.Match(path)
+	if !reads || (match.WorkflowRuns && !workflowRunsOfOneCommit(r.URL.RawQuery)) {
 		api.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "the GitHub proxy reads a pull request, an issue, a commit's check runs or a commit's workflow runs only", "code": "GITHUB_PATH_REFUSED"})
 		return
 	}
-	owner, repo := match[1], match[2]
+	owner, repo := match.Owner, match.Repo
 	token, err := client.RepositoryToken(r.Context(), owner, repo)
 	if limited, ok := githubapp.AsRateLimit(err); ok {
 		rateLimited(w, limited)
@@ -113,11 +105,18 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client)
 		return
 	}
 	target := "/" + path
+	// held is the read as a warning writes it while heldpath holds names: the query a caller
+	// wrote, which reaches GitHub, is left out, and a workflow-runs read's is kept, since
+	// workflowRunsOfOneCommit holds it to a commit and its page.
+	held := target
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
+		if match.WorkflowRuns {
+			held = target
+		}
 	}
 	read := client.Read
-	if match[3] != "" {
+	if match.WorkflowRuns {
 		read = func(ctx context.Context, token, path string) ([]byte, int, http.Header, error) {
 			return client.ReadWithin(ctx, token, path, workflowRunsResponseLimit)
 		}
@@ -128,7 +127,7 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client)
 		return
 	}
 	if err != nil {
-		slog.Warn("dispatch: GitHub proxy read failed", "path", target, "error", err)
+		warnReadFailed(target, held, err)
 		var tooLarge *githubapp.ResponseTooLargeError
 		if errors.As(err, &tooLarge) {
 			api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": tooLarge.Error(), "code": "GITHUB_UPSTREAM"})
@@ -141,10 +140,10 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client)
 		rateLimited(w, limited)
 		return
 	}
-	if match[3] != "" && status == http.StatusOK {
+	if match.WorkflowRuns && status == http.StatusOK {
 		var runs workflowRuns
 		if err := json.Unmarshal(body, &runs); err != nil {
-			slog.Warn("dispatch: GitHub proxy could not decode the workflow runs", "path", target, "error", err)
+			warnUndecodable(target, held, err)
 			api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "GitHub answered the workflow runs with a body that does not decode", "code": "GITHUB_UPSTREAM"})
 			return
 		}
@@ -156,6 +155,53 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client)
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+// warnReadFailed logs a read of target that failed with err. While heldpath holds names (a
+// project is private, or the private projects are not known) it writes held, which carries no
+// query a caller wrote, and in place of err, whose text names the whole target
+// (githubapp.SendError), what kind of failure it was: the sender's stage, else other; whether
+// the client's deadline or the caller's cancel ended it; and, past a limit, the limit. A failed
+// read has no status, so it writes none.
+func warnReadFailed(target, held string, err error) {
+	const message = "dispatch: GitHub proxy read failed"
+	if !heldpath.Holding() {
+		slog.Warn(message, "path", target, "error", err)
+		return
+	}
+	kind := "other"
+	var sent *githubapp.SendError
+	if errors.As(err, &sent) {
+		kind = sent.Stage
+	}
+	attrs := []any{"path", held, "error_kind", kind,
+		"timeout", errors.Is(err, context.DeadlineExceeded), "canceled", errors.Is(err, context.Canceled)}
+	var tooLarge *githubapp.ResponseTooLargeError
+	if errors.As(err, &tooLarge) {
+		attrs = append(attrs, "limit", tooLarge.Limit)
+	}
+	slog.Warn(message, attrs...)
+}
+
+// warnUndecodable logs workflow runs GitHub answered 200 whose body did not decode. While
+// heldpath holds names it writes held and, in place of err, which can quote the body, the kind of
+// decode error: syntax, type, or other.
+func warnUndecodable(target, held string, err error) {
+	const message = "dispatch: GitHub proxy could not decode the workflow runs"
+	if !heldpath.Holding() {
+		slog.Warn(message, "path", target, "error", err)
+		return
+	}
+	decodeError := "other"
+	var syntax *json.SyntaxError
+	var typed *json.UnmarshalTypeError
+	switch {
+	case errors.As(err, &syntax):
+		decodeError = "syntax"
+	case errors.As(err, &typed):
+		decodeError = "type"
+	}
+	slog.Warn(message, "path", held, "status", http.StatusOK, "error_kind", "decode", "decode_error", decodeError)
 }
 
 func unavailable(w http.ResponseWriter, message string) {

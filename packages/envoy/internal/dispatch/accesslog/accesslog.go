@@ -8,7 +8,10 @@
 //
 // The line never carries a token, a cookie, a query string, a request body or a response body.
 // The text in it a caller wrote - the method, the path, the session id a bearer names, the
-// address a proxy forwarded and the user agent - is each clipped to fieldBytes.
+// address a proxy forwarded and the user agent - is each clipped to fieldBytes. While a project
+// is private, or while the private projects are not known, the path is written as heldpath.Of
+// writes it: a private project's names as their placeholders, and the line marked
+// private_project=true for a private project's request.
 package accesslog
 
 import (
@@ -23,6 +26,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/heldpath"
 )
 
 // The caller kinds the line names, one per way Dispatch authenticates a request.
@@ -140,9 +144,12 @@ func (rec *recorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
 
 // Handler serves one route and logs the request when it ends. route is the route's own pattern
 // (`/api/v1/issues/{key}`), mounted once, so the line groups a route's requests together whatever
-// ids their paths carry. A handler that panics (an artifact download whose store fails mid-stream
-// aborts with http.ErrAbortHandler) still writes its line, marked aborted=true, as the panic
-// passes on to net/http.
+// ids their paths carry; it is also the pattern heldpath.Of reads the path's names and identifiers
+// by, so it is the pattern the mux serves the request under, the GitHub proxy's prefix, or
+// heldpath.Unmatched, and names only parameters heldpath.Parameter classes
+// (TestEveryRouteAndPathIsHeld). A handler that panics (an artifact download whose store fails
+// mid-stream aborts with http.ErrAbortHandler) still writes its line, marked aborted=true, as the
+// panic passes on to net/http.
 func Handler(route string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -208,10 +215,11 @@ func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration,
 			status = http.StatusInternalServerError
 		}
 	}
+	path := heldpath.Of(route, r)
 	attrs := []any{
 		"method", clip(r.Method),
 		"route", route,
-		"path", clip(r.URL.EscapedPath()),
+		"path", clip(path.Text),
 		"caller_kind", kind,
 		"caller", clip(id),
 		"address", clip(auth.ForwardedAddress(r)),
@@ -226,6 +234,9 @@ func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration,
 	}
 	if aborted {
 		attrs = append(attrs, "aborted", true)
+	}
+	if path.PrivateProject {
+		attrs = append(attrs, "private_project", true)
 	}
 	slog.Info(Message, attrs...)
 }

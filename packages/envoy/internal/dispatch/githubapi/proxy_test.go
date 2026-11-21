@@ -3,6 +3,7 @@ package githubapi
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +14,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/dispatch/heldpath"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // fakeGitHub answers the App's installation lookup and token mint, and records every other read.
@@ -324,5 +327,120 @@ func TestProxyAnswersARateLimitWithRetryAfter(t *testing.T) {
 				t.Fatalf("Retry-After %q, want %q", got, tc.retryAfter)
 			}
 		})
+	}
+}
+
+// The proxy's two warnings write the GitHub path it read and nothing a caller wrote: while a
+// project is private, or the private projects are not known, a warning holds the path without the
+// caller's query (a workflow-runs read's held query aside) and, in place of the error, whose text
+// carries the whole target, the error's kind. With no private project and the set read, each
+// warning is today's. The caller is answered as today in every case. Each row's error is the one
+// the client's sender builds, from a real client against a stand-in GitHub that fails as the row
+// says.
+func TestTheProxysWarningsHoldTheCallersQuery(t *testing.T) {
+	const pulls = "/repos/acme/r14-repo/pulls/7"
+	runs := "/repos/acme/r14-repo/actions/runs?head_sha=" + headSHA
+	var undecodable any
+	decodeError := json.Unmarshal([]byte("not json"), &undecodable).Error()
+	rows := []struct {
+		name    string
+		failure githubapptest.Failure
+		// read is the GitHub path and query the caller asks the proxy for.
+		read    string
+		message string
+		// held is every attribute but msg and level the held warning carries, and today's error
+		// is today's error text, {target} standing for GitHub's URL of the read.
+		held       map[string]any
+		todayError string
+		// todayErrorIsPrefix says the rest of today's text is the transport's own words.
+		todayErrorIsPrefix bool
+		late               bool
+	}{{
+		name: "the connection closed before an answer", failure: githubapptest.CloseBeforeAnswer, read: pulls + "?x=r14-plan",
+		message:    "dispatch: GitHub proxy read failed",
+		held:       map[string]any{"path": pulls, "error_kind": "transport", "timeout": false, "canceled": false},
+		todayError: "GET {target}: ", todayErrorIsPrefix: true,
+	}, {
+		name: "an answer past the client's deadline", failure: githubapptest.AnswerLate, read: pulls + "?x=r14-plan", late: true,
+		message:    "dispatch: GitHub proxy read failed",
+		held:       map[string]any{"path": pulls, "error_kind": "transport", "timeout": true, "canceled": false},
+		todayError: "GET {target}: ", todayErrorIsPrefix: true,
+	}, {
+		name: "a body shorter than its length", failure: githubapptest.ShortBody, read: pulls + "?x=r14-plan",
+		message:    "dispatch: GitHub proxy read failed",
+		held:       map[string]any{"path": pulls, "error_kind": "read_body", "timeout": false, "canceled": false},
+		todayError: "read GET {target} response: unexpected EOF",
+	}, {
+		name: "an answer past the limit", failure: githubapptest.Oversized, read: pulls + "?x=r14-plan",
+		message:    "dispatch: GitHub proxy read failed",
+		held:       map[string]any{"path": pulls, "error_kind": "too_large", "timeout": false, "canceled": false, "limit": float64(1 << 20)},
+		todayError: "GET {target}: GitHub response body exceeds the 1048576-byte limit",
+	}, {
+		name: "workflow runs that do not decode", failure: githubapptest.Undecodable, read: runs,
+		message:    "dispatch: GitHub proxy could not decode the workflow runs",
+		held:       map[string]any{"path": runs, "status": float64(http.StatusOK), "error_kind": "decode", "decode_error": "syntax"},
+		todayError: decodeError,
+	}}
+	for _, state := range []struct {
+		name  string
+		known bool
+		keys  []string
+	}{
+		{name: "PRIV private", known: true, keys: []string{"PRIV"}},
+		{name: "the set not known", known: false},
+		{name: "no project private", known: true},
+	} {
+		for _, row := range rows {
+			t.Run(state.name+", "+row.name, func(t *testing.T) {
+				set := heldpath.NewPrivateSet(state.keys...)
+				heldpath.Use(func() (heldpath.PrivateSet, bool) { return set, state.known })
+				t.Cleanup(func() { heldpath.Use(nil) })
+				if row.late {
+					saved := githubapp.RequestTimeout
+					githubapp.RequestTimeout = 300 * time.Millisecond
+					t.Cleanup(func() { githubapp.RequestTimeout = saved })
+				}
+				logged := &logtest.Buffer{}
+				logtest.SetDefault(t, slog.NewJSONHandler(logged, nil))
+				base := githubapptest.FailingGitHub(t, row.failure)
+				_, pemText := githubapptest.Key(t)
+				client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.proxy", PEM: pemText}, base)
+				if err != nil {
+					t.Fatalf("githubapp.New: %v", err)
+				}
+
+				response := proxy(client, http.MethodGet, "/api/github/rest"+row.read)
+				if response.Code != http.StatusBadGateway || errorCode(t, response) != "GITHUB_UPSTREAM" {
+					t.Errorf("the caller is answered %d %s, want today's 502 GITHUB_UPSTREAM", response.Code, response.Body.String())
+				}
+				records := logtest.JSONLines(t, logged.String())
+				warning, found := logtest.LineWhere(records, func(record map[string]any) bool { return record["msg"] == row.message })
+				if !found {
+					t.Fatalf("no warning %q among\n%s", row.message, logged.String())
+				}
+				if state.known && len(state.keys) == 0 {
+					want := strings.ReplaceAll(row.todayError, "{target}", base+row.read)
+					got, _ := warning["error"].(string)
+					if warning["path"] != row.read || !(got == want || row.todayErrorIsPrefix && strings.HasPrefix(got, want)) {
+						t.Errorf("with no project private the warning is %v, want today's path %q and error %q", warning, row.read, want)
+					}
+					return
+				}
+				if strings.Contains(logged.String(), "r14-plan") {
+					t.Errorf("a record holds the caller's query:\n%s", logged.String())
+				}
+				if _, holds := warning["error"]; holds {
+					t.Errorf("the warning holds the error's text: %v", warning)
+				}
+				for key, want := range row.held {
+					if warning[key] != want {
+						t.Errorf("the warning's %s is %v, want %v (warning %v)", key, warning[key], want, warning)
+					}
+				}
+				if len(warning) != len(row.held)+3 {
+					t.Errorf("the warning %v holds attributes beyond time, level, msg and %v", warning, row.held)
+				}
+			})
+		}
 	}
 }

@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/dispatch/heldpath"
 )
 
 const (
@@ -128,7 +130,8 @@ func splitAtEachSpace(s string) []string {
 // X-Forwarded-For address (the hop the load balancer appended; the connection's own address when
 // there is none), its User-Agent and its path, once per address and User-Agent every
 // previousTokenLogWindow, so a rotation can see whether the value on its way out is still in use.
-// The line names the value's position and never a token.
+// The line names the value's position and never a token. Its path is held as the request line's
+// is (heldpath.Of) while a project is private or the private projects are not known.
 func MatchesSharedAgentToken(r *http.Request, token string, tokens *SharedAgentTokens) bool {
 	if tokens == nil {
 		return false
@@ -184,8 +187,14 @@ func (t *SharedAgentTokens) notePreviousToken(r *http.Request, entry int) {
 		}] = now
 	}
 	t.mu.Unlock()
+	// With nothing held the path is r.URL.Path, unescaped, as this line has always written it;
+	// heldpath.Of's whole path is the escaped one the request line writes.
+	path := r.URL.Path
+	if held := heldpath.Of(heldpath.RouteOf(r), r); held.Held {
+		path = held.Text
+	}
 	slog.Warn("dispatch: request authenticated with a previous shared agent token",
-		"entry", entry, "address", caller.address, "user_agent", caller.userAgent, "path", clipCallerField(r.URL.Path))
+		"entry", entry, "address", caller.address, "user_agent", caller.userAgent, "path", clipCallerField(path))
 }
 
 // clipCallerField cuts a caller-written field to previousTokenCallerBytes, dropping a rune the cut

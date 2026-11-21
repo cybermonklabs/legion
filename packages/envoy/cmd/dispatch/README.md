@@ -36,6 +36,7 @@ Each item below names a variable, then its purpose.
   Whitespace at either end is ignored; startup refuses an empty entry (two whitespace characters in a row, a CR LF among them) or a repeated one, naming its position, never its value.
   A request that authenticates with a value after the first logs one WARN line, `dispatch: request authenticated with a previous shared agent token`, with `entry` (the value's position), `address` (the rightmost `X-Forwarded-For` entry, which is the load balancer's view of the caller, or the connection's own address without one), `user_agent` and `path`, at most once per address and User-Agent every 10 minutes, and never a token.
   Each field keeps its first 256 bytes, and the server remembers up to 10,000 callers; one past that is logged on each request.
+  Its `path` is held as the access log's `path` is ("Access log"): while a project is private, or while the private projects are not known, a private project's names are written as their placeholders.
   Callers that share an address and User-Agent share a line, so the log says whether a value on its way out is still in use, not who uses it.
 
 - `DISPATCH_SIGNING_KEY`
@@ -3703,6 +3704,12 @@ Each item below names a field of the line, then what it holds.
 - `path`
 
   The request path as it was sent, still escaped (`a%2Fb` stays `a%2Fb`), without its query string.
+  While a project is private, or while the private projects are not known, it holds back the names a private project's path carries, its artifacts' slugs and the person and group of its access routes:
+  a private project's request (its `{key}` is the project's key or one of its issue keys, or any `{key}` while the private projects are not known) is written as its route with each identifier filled in, a project or issue key, an id, a number, a session id, a repository's owner and name, and each name left as its placeholder (`/api/v1/projects/PRIV/artifacts/{slug}`);
+  a route with a name and no `{key}`, such as an agent's artifact, writes its names as placeholders for every project;
+  an `unmatched` path is written `{unmatched}`;
+  and a GitHub proxy path none of the proxy's own paths matches is written `/api/github/rest/{path}`.
+  With no project private and the private projects known, it is the path whole.
 
 - `caller_kind`
 
@@ -3753,6 +3760,10 @@ Each item below names a field of the line, then what it holds.
   Only when the handler panicked (an artifact download whose store fails mid-stream aborts this way): `true`.
   The line is still written, and the panic still reaches the server.
 
+- `private_project`
+
+  Only on a private project's request, and on every request with a `{key}` while the private projects are not known: `true`.
+
 The line never carries a token, a cookie, a query string, a request body or a response body.
 The text in it a caller wrote, `method`, `path`, a session's `caller`, `address` and `user_agent`, is each cut to 256 bytes.
 
@@ -3766,6 +3777,12 @@ Three answers are given before any route runs and write none:
 the `403` a cookie request from another origin gets, the `421` a request for another host gets on a server with local sign-in, and the `307` redirect Go's router gives an unclean path (`/api/v1//issues`) or a prefix route called without its trailing slash (`/api/github/rest`).
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
 The line is one synchronous write to stderr per request, so a log pipe that blocks stalls requests.
+
+The GitHub proxy's two warnings, `dispatch: GitHub proxy read failed` and `dispatch: GitHub proxy could not decode the workflow runs`, are held the same way.
+While a project is private, or while the private projects are not known, each writes as `path` the GitHub path it read without the caller's query (a workflow-runs read keeps its commit and page, the only query the proxy lets it send), and in place of `error`, whose text names the whole URL:
+for a failed read, `error_kind` (`build`, `transport`, `read_body`, `too_large` or `other`), `timeout`, `canceled`, and `limit` for an answer past it;
+for workflow runs that do not decode, `status=200`, `error_kind=decode` and `decode_error` (`syntax`, `type` or `other`).
+With no project private and the private projects known, each writes the path with its query and the error, as before.
 
 ## Routes
 

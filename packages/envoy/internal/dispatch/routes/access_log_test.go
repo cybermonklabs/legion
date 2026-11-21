@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/heldpath"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -47,7 +48,7 @@ func TestAnUnknownAPIPathWritesOneAccessLogLine(t *testing.T) {
 			if response.Code != http.StatusNotFound {
 				t.Fatalf("%s %s = %d", request.method, request.path, response.Code)
 			}
-			lines := routeLines(logged, unmatchedRoute)
+			lines := routeLines(logged, heldpath.Unmatched)
 			if len(lines) != 1 {
 				t.Fatalf("an unknown API path wrote %d access-log lines", len(lines))
 			}
@@ -57,6 +58,21 @@ func TestAnUnknownAPIPathWritesOneAccessLogLine(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// While a project is private, the router's unmatched line writes no part of the path, which can
+// carry any name.
+func TestAnUnknownAPIPathsLineHoldsItsPathWhileAProjectIsPrivate(t *testing.T) {
+	set := heldpath.NewPrivateSet("PRIV")
+	heldpath.Use(func() (heldpath.PrivateSet, bool) { return set, true })
+	t.Cleanup(func() { heldpath.Use(nil) })
+	handler, _ := newTestRouter(t)
+	logged := captureAccessLog(t)
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/does-not-exist/r14-plan", nil))
+	lines := routeLines(logged, heldpath.Unmatched)
+	if len(lines) != 1 || !strings.Contains(lines[0], " path={unmatched} ") || strings.Contains(lines[0], "r14-plan") {
+		t.Fatalf("the unmatched lines are %q, want one with path={unmatched}", lines)
 	}
 }
 

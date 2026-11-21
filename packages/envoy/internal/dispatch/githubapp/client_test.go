@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"sort"
 	"strconv"
@@ -791,6 +792,64 @@ func hangingGitHub(t *testing.T, arrived chan<- struct{}) *Client {
 		t.Fatalf("new client: %v", err)
 	}
 	return client
+}
+
+// Each error send makes of a request it could not complete is a *SendError naming its stage,
+// whose text is the text send wrote before it had a type, byte for byte, and through which
+// errors.As still finds the error it wraps: the transport's *url.Error and a body's
+// *ResponseTooLargeError.
+func TestASendErrorKeepsItsText(t *testing.T) {
+	for _, row := range []struct {
+		stage   string
+		failure githubapptest.Failure
+		// path is the target's path under the stand-in.
+		path string
+		// text is today's format of the error, filled with the method, the target and Err.
+		text string
+		// wraps finds the error the row's SendError must wrap, nil for none.
+		wraps func(error) bool
+	}{{
+		stage: SendStageBuild, failure: githubapptest.CloseBeforeAnswer, path: "/repos/acme/r14-repo/pulls/7?x=r14\x7fplan",
+		text: "build %s %s: %w",
+	}, {
+		stage: SendStageTransport, failure: githubapptest.CloseBeforeAnswer, path: "/repos/acme/r14-repo/pulls/7?x=r14-plan",
+		text:  "%s %s: %w",
+		wraps: func(err error) bool { var transport *url.Error; return errors.As(err, &transport) },
+	}, {
+		stage: SendStageReadBody, failure: githubapptest.ShortBody, path: "/repos/acme/r14-repo/pulls/7?x=r14-plan",
+		text: "read %s %s response: %w",
+	}, {
+		stage: SendStageTooLarge, failure: githubapptest.Oversized, path: "/repos/acme/r14-repo/pulls/7?x=r14-plan",
+		text: "%s %s: %w",
+		wraps: func(err error) bool {
+			var tooLarge *ResponseTooLargeError
+			return errors.As(err, &tooLarge) && tooLarge.Limit == responseLimit
+		},
+	}} {
+		t.Run(row.stage, func(t *testing.T) {
+			_, pemText := testKeyPEM(t)
+			base := githubapptest.FailingGitHub(t, row.failure)
+			client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
+			if err != nil {
+				t.Fatalf("new client: %v", err)
+			}
+			target := base + row.path
+			_, _, _, err = client.send(context.Background(), "", http.MethodGet, target, "Bearer ghs_failing", mediaTypeJSON, "", nil, responseLimit)
+			var sent *SendError
+			if !errors.As(err, &sent) {
+				t.Fatalf("send answered %T %v, want a *SendError", err, err)
+			}
+			if sent.Stage != row.stage || sent.Method != http.MethodGet || sent.Target != target {
+				t.Errorf("the SendError is {Stage %q, Method %q, Target %q}, want {%q, GET, %q}", sent.Stage, sent.Method, sent.Target, row.stage, target)
+			}
+			if want := fmt.Errorf(row.text, http.MethodGet, target, sent.Err).Error(); err.Error() != want {
+				t.Errorf("the SendError reads\n%s\nwant today's\n%s", err.Error(), want)
+			}
+			if row.wraps != nil && !row.wraps(err) {
+				t.Errorf("errors.As does not find the %s error the SendError wraps: %v", row.stage, err)
+			}
+		})
+	}
 }
 
 func TestGraphQLPostsQueryAndVariablesWithAnInstallationToken(t *testing.T) {

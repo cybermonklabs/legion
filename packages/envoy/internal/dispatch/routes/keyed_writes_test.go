@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
+	"github.com/sjawhar/envoy/internal/dispatch/githubpath"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 )
 
@@ -18,7 +18,7 @@ import (
 // why it takes no Idempotency-Key: each is the browser's, and no agent client calls it.
 var browserWrites = map[string]string{
 	"POST /auth/logout": "the sign-out resolves its caller and refuses one it cannot, and a second run revokes nothing more",
-	githubapi.Prefix:    "the GitHub proxy answers every method but GET 405 and writes nothing",
+	githubpath.Prefix:   "the GitHub proxy answers every method but GET 405 and writes nothing",
 	"/":                 "the dashboard's files are read and never written",
 }
 
@@ -71,7 +71,7 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 		t.Fatalf("the server mounts these writes beside the API's table: %q, want exactly the browser's %q", outside, want)
 	}
 	response := httptest.NewRecorder()
-	post := httptest.NewRequest(http.MethodPost, "http://dispatch.test"+githubapi.Prefix+"repos/o/r", strings.NewReader("{}"))
+	post := httptest.NewRequest(http.MethodPost, "http://dispatch.test"+githubpath.Prefix+"repos/o/r", strings.NewReader("{}"))
 	post.Header.Set("X-Dispatch-User", "alice@d.example")
 	mux.ServeHTTP(response, post)
 	if response.Code != http.StatusMethodNotAllowed {
