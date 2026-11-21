@@ -37,6 +37,18 @@ export type EnvoyConfigEnvironment = {
 /** How long a `!` command may run before its field is an error. */
 const COMMAND_TIMEOUT_MS = 10_000;
 
+/** Tests only: the variable that sets that bound, in whole ms above 0, for a test that holds a
+ * command on its own gate while it waits on other processes, which a loaded host can stretch past
+ * 10 s (claude-envoy's answers-hook rows set it to their own timeout). Unset, or any other value,
+ * the bound is `COMMAND_TIMEOUT_MS`. */
+const COMMAND_TIMEOUT_VARIABLE = "ENVOY_COMMAND_TIMEOUT_MS";
+
+/** How long a `!` command run with `env` may run. */
+function commandTimeoutMs(env: EnvoyConfigEnvironment): number {
+  const ms = Number(env[COMMAND_TIMEOUT_VARIABLE] ?? "");
+  return Number.isSafeInteger(ms) && ms > 0 ? ms : COMMAND_TIMEOUT_MS;
+}
+
 /** A variable's value, with an empty one read as unset: the one meaning of `""` for every variable
  * Dispatch and Envoy read. */
 export function nonEmpty(value: string | undefined): string | undefined {
@@ -356,6 +368,7 @@ const commandOutcomes: Map<string, KeptOutcome> = processGlobal[COMMAND_OUTCOMES
 processGlobal[COMMAND_OUTCOMES] = commandOutcomes;
 
 function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): CommandOutcome {
+  const timeoutMs = commandTimeoutMs(env);
   const childEnv: Record<string, string> = {};
   for (const [name, variable] of Object.entries(env)) {
     if (variable !== undefined) childEnv[name] = variable;
@@ -376,7 +389,7 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
         stdin: "ignore",
         stdout: fd,
         stderr: "ignore",
-        timeout: COMMAND_TIMEOUT_MS,
+        timeout: timeoutMs,
         detached: true,
       });
     } catch (error) {
@@ -393,7 +406,7 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
     }
     if (result.exitedDueToTimeout) {
       return {
-        failure: `did not finish within ${COMMAND_TIMEOUT_MS / 1000} s, and does not run again in this process`,
+        failure: `did not finish within ${timeoutMs / 1000} s, and does not run again in this process`,
         timedOut: true,
       };
     }

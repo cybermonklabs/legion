@@ -1317,6 +1317,35 @@ describe("a ! command in envoy.json", () => {
     expect(left).toEqual([]);
   }, 20_000);
 
+  // A test that holds a command on its own gate while it waits on other processes sets the bound
+  // to its own timeout (claude-envoy's answers-hook rows); any other value keeps the 10 s.
+  test("runs for as long as ENVOY_COMMAND_TIMEOUT_MS says, a whole number of ms, when it is set", () => {
+    const home = tempDir();
+    const file = writeFile(path.join(home, "envoy.json"), {
+      dispatch: { ...dispatchOn, token: `!sleep 5 # ${home}` },
+    });
+    const read = (bound: string) => {
+      const env = { ...commandEnvironment(home), ENVOY_COMMAND_TIMEOUT_MS: bound };
+      return dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }));
+    };
+    expect(read("300")).toEqual({
+      enabled: false,
+      notice: null,
+      error: `${file}: dispatch.token's command did not finish within 0.3 s, and does not run again in this process`,
+    });
+    // A file of its own for each value, since a command's outcome is kept by command and file.
+    for (const bound of ["0", "-1", "1.5", "soon"]) {
+      const quick = writeFile(path.join(tempDir(), "envoy.json"), {
+        dispatch: { ...dispatchOn, token: `!sleep 0.5; printf ${USER_TOKEN}` },
+      });
+      const env = { ...commandEnvironment(home), ENVOY_COMMAND_TIMEOUT_MS: bound };
+      expect(dispatchSettings(env, readEnvoyConfig(quick, env, { cwd: tempDir() }))).toMatchObject({
+        enabled: true,
+        token: USER_TOKEN,
+      });
+    }
+  }, 20_000);
+
   test("whose field a variable overrides, or whose section is off, is not run", () => {
     const home = tempDir();
     const runs = path.join(home, "runs");

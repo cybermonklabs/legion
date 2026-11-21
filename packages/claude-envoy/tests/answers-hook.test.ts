@@ -499,6 +499,12 @@ interface HookRun {
 /** How many hooks the file started, which names each one's timing file. */
 let hookCount = 0
 
+/** How long envoy-config lets a token command run in the hooks and refreshers of this file
+ *  (`ENVOY_COMMAND_TIMEOUT_MS`, tests only): a row's own timeout, in place of the 10 s a user's
+ *  command gets. Rows hold a command on a gate while they wait on hooks and refreshers whose
+ *  start-ups a loaded host can stretch past 10 s, so the 10 s would decide them. */
+const COMMAND_BOUND_MS = 60_000
+
 function runHook(
   env: Record<string, string>,
   input: Record<string, unknown>,
@@ -515,6 +521,7 @@ function runHook(
       PATH: process.env["PATH"] ?? "",
       CLAUDE_PLUGIN_ROOT: packageRoot,
       ENVOY_ANSWERS_TIMING_FILE: timingFile,
+      ENVOY_COMMAND_TIMEOUT_MS: String(COMMAND_BOUND_MS),
       ...env,
     },
     stdin: new TextEncoder().encode(JSON.stringify(input)),
@@ -1092,12 +1099,19 @@ test("with a slow token command, a list read from another Dispatch than envoy.js
   const cache = JSON.parse(await readFile(join(state, "sessions", SESSION, "answers.json"), "utf8"))
   expect(cache.dispatch_url).toBe(before.base)
 
-  // The command sleeps past any deadline: the hook's is at most 800 ms after its process started
-  // or 150 ms after its code began, and the refresher starts after that code.
+  // The command waits until the case's cleanup opens the gate, so its refresher lands by no
+  // deadline however long the host leaves the hook unscheduled.
+  const gate = join(home, "gate")
   await writeFile(
     envoyJson,
-    JSON.stringify({ dispatch: { serverUrl: now.base, token: "!sleep 3; printf now-token" } }),
+    JSON.stringify({
+      dispatch: {
+        serverUrl: now.base,
+        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf now-token`,
+      },
+    }),
   )
+  cleanup.push(() => writeFile(gate, ""))
   const hanging = await runHook(env, sessionStart("resume", home))
   expect(contextOf(hanging, "SessionStart")).toBe(
     sessionAnswersFailureLine(notFinishedReason(hanging)),
