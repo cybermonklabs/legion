@@ -120,10 +120,17 @@ func newProcessWalk(t *testing.T) processWalk {
 		if response := at.send(t, "GET /api/v1", func(r *http.Request) { r.Header.Set("Authorization", "Bearer agent-token") }); response.Code != http.StatusOK {
 			t.Fatalf("GET /api/v1 with the shared agent token %s answered %d %s, want 200", at.name, response.Code, firstLine(response.Body.String()))
 		}
-		// The origin is answered as itself: a sign-in started at it comes back to its own
-		// callback, so the walk at the outside origin is not the canonical origin walked again.
+		// The origin is answered as itself, so the walk at the outside origin is not the canonical
+		// origin walked again: a sign-in started at a canonical origin comes back to its own
+		// callback, and the outside origin serves no Google sign-in, its start answering 404.
 		start := at.send(t, "GET /auth/start", nil)
 		location := start.Header().Get("Location")
+		if at.host == outsideHost {
+			if start.Code != http.StatusNotFound || location != "" {
+				t.Fatalf("GET /auth/start %s answered %d to %q, want the 404 of a path no route serves", at.name, start.Code, location)
+			}
+			continue
+		}
 		target, err := url.Parse(location)
 		if want := "https://" + at.host + "/auth/callback"; err != nil || target.Query().Get("redirect_uri") != want {
 			t.Fatalf("GET /auth/start %s answered %d to %q, want a sign-in that comes back to %s", at.name, start.Code, location, want)
