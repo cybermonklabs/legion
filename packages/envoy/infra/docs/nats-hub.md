@@ -1397,8 +1397,10 @@ secret, and pin its sync to a version number.
 Measured on two local servers: lowering `routes` to `env` logged 4 `Removed route` lines carrying
 the password. The forward step from `env` to `routes` logs one `Removed route` line for each route
 connection the server opened to a URL it replaces, the URL as `nats.conf` named it before, with no
-user and no password: the new URL differs only in its user and password, and a reload compares
-route URLs whole (`urlsAreEqual`, `reflect.DeepEqual`, `server/util.go:178-180`; `reload.go:530-543`).
+user and no password: the new URLs, `$NATS_ROUTE_URLS`, carry the user and the password and name
+each pod by its absolute name, where the chart's named it `<n>-<i>.<n>-headless:6222`, and a reload
+compares route URLs whole (`urlsAreEqual`, `reflect.DeepEqual`, `server/util.go:178-180`;
+`reload.go:530-543`), so it removes every old URL.
 Measured on three local servers: 8, 4 and 0 such lines. No forward stage logs the password.
 
 The password holds letters and digits only, a letter first, and at least 32 characters. It is
