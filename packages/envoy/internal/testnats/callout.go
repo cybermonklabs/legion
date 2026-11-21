@@ -82,6 +82,12 @@ type StaticUser struct {
 // no curve key, so the server sends its requests in the clear: the control a test of the sealing
 // starts.
 func CalloutConfig(keys CalloutKeys, static ...StaticUser) string {
+	return "jetstream {}\n" + calloutAuthorization(keys, static...)
+}
+
+// calloutAuthorization is CalloutConfig's authorization block alone, which a cluster member's
+// configuration takes after its own JetStream and cluster blocks (StartClusterWithCallout).
+func calloutAuthorization(keys CalloutKeys, static ...StaticUser) string {
 	users := []string{
 		userEntry(keys.ServicePublic, []string{"$SYS._INBOX.>"}, []string{"$SYS.REQ.USER.AUTH"}),
 	}
@@ -94,8 +100,7 @@ func CalloutConfig(keys CalloutKeys, static ...StaticUser) string {
 	if keys.XKeyPublic != "" {
 		xkey = fmt.Sprintf("\n    xkey: %q", keys.XKeyPublic)
 	}
-	return fmt.Sprintf(`jetstream {}
-authorization {
+	return fmt.Sprintf(`authorization {
   timeout: %d
   users = [
     %s
@@ -148,6 +153,29 @@ func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser
 	server := start(t, CalloutConfig(keys, static...), []string{"-js"})
 	awaitSeed(t, server.URL(), keys.ServiceSeed)
 	return server, server.URL()
+}
+
+// StartClusterWithCallout runs n members of a cluster (StartCluster), each configured as
+// StartWithCalloutServer configures its one server - the auth service's own user, each static user
+// with its grant, and the auth callout naming the issuer, $G and the curve key - and routed as
+// StartClusterConfig routes its members, with JetStream clustered across them, as the clustered hub
+// runs. Every member's relay and client port listen on a loopback address of their own, as every
+// server start makes. It returns once one member leads the JetStream meta group, which counts all
+// n, and every member admits the service's own user.
+//
+// No member admits a client with no credential, so the cluster is not awaited as StartCluster's
+// is (AwaitReady, whose last step connects with none and asks JetStream for the account's info): a
+// member holds such a client for its authorization timeout, waiting for a service that answers
+// nothing yet. A test reaches JetStream through a static user of its own, or through a client the
+// service it starts admits.
+func StartClusterWithCallout(t testing.TB, n int, keys CalloutKeys, static ...StaticUser) *Cluster {
+	t.Helper()
+	cluster := startCluster(t, n, calloutAuthorization(keys, static...))
+	cluster.awaitMeta(t)
+	for _, server := range cluster.Servers {
+		awaitSeed(t, server.URL(), keys.ServiceSeed)
+	}
+	return cluster
 }
 
 // awaitSeed waits, within connectTimeout, for the server at uri to admit the nkey user whose seed

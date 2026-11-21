@@ -153,9 +153,9 @@ except ex.Refused:
     print("refused")
 else:
     print(read.workdir, read.script)' "$@"; }
-check "envoy-go's count runs the broker's packages less the race lane's, and its command, less the backend count's test" \
+check "envoy-go's count runs the broker's packages, its command and the writer hold's client, less the backend count's test" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Count the database broker suites' skips" "")" \
-    "packages/envoy go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$' -timeout 20m")"
+    "packages/envoy go list ./internal/cipher/... ./cmd/cipherd/ ./internal/holdrecord/ | xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$' -timeout 20m")"
 check "envoy-go-race-api's race step runs the API package under -race through the counter" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" \
     "packages/envoy go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/")"

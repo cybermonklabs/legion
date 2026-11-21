@@ -262,6 +262,8 @@ on:
       - 'packages/envoy/internal/cipher/store/migrations/**'
       - 'packages/envoy/internal/cipher/wake/*'
       - 'packages/envoy/internal/cipher/natscallout/*'
+      - 'packages/envoy/internal/cipher/natshold/*'
+      - 'packages/envoy/internal/bus/signedrecord/*'
       - 'packages/envoy/natsgrant/*'
       - 'packages/envoy/natscred/*'
       - 'packages/envoy/internal/cipher/wire/*'
