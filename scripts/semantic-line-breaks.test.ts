@@ -33,11 +33,11 @@ function run(args: string[]) {
   };
 }
 
-/** `--write` on `text`; the file's content afterwards and the exit code. */
+/** `--write` on `text`; the file's content afterwards, the exit code and stderr, and the path. */
 async function written(text: string) {
   const path = await markdownFile(text);
-  const { exitCode } = run(["--write", path]);
-  return { exitCode, text: await readFile(path, "utf8") };
+  const { exitCode, stderr } = run(["--write", path]);
+  return { exitCode, stderr, path, text: await readFile(path, "utf8") };
 }
 
 test("R1 finds a second sentence that starts with a lowercase identifier", async () => {
@@ -75,18 +75,24 @@ test("the end of a list item closes a fence the item left open, so later text is
   expect(exitCode).toBe(1);
 });
 
-test("--write leaves a table written without leading pipes as it is", async () => {
+test("--write reads a table written without leading pipes as a table, which it does not re-lay out", async () => {
+  // A table row is not a paragraph, so the second sentence of its last cell stays where it is and
+  // the check's R1 refuses it; read as a paragraph, the rows would be joined and render otherwise.
   const text =
-    "Parts, in order:\n\nPart | Content\n--- | ---\n`Summary` | The change in the reader's terms\n`Problem` | What goes wrong, for whom\n";
+    "Parts, in order:\n\nPart | Content\n--- | ---\n`Summary` | The change in the reader's terms\n`Problem` | What goes wrong. For whom\n";
   const result = await written(text);
   expect(result.text).toBe(text);
-  expect(result.exitCode).toBe(0);
+  expect(result.stderr).toBe(
+    `${result.path}: refusing to write: line 6 would fail R1: \`Problem\` | What goes wrong. For whom\n`
+  );
+  expect(result.exitCode).toBe(2);
 });
 
 test("--write does not join a paragraph's last line into the header row of a table below it", async () => {
-  const text = "Intro text here.\nhead a | head b\n--- | ---\n1 | 2\n";
+  const text = "Intro one. Intro two.\nhead a | head b\n--- | ---\n1 | 2\n";
   const result = await written(text);
-  expect(result.text).toBe(text);
+  expect(result.text).toBe("Intro one.\nIntro two.\nhead a | head b\n--- | ---\n1 | 2\n");
+  expect(result.exitCode).toBe(0);
 });
 
 test("--write keeps a link reference definition's title on its own line", async () => {
@@ -185,14 +191,85 @@ test("R3 gives a nested item the same verdict whether a sibling follows it or no
   }
 });
 
+// Each file below passes the check, so --write leaves it as it is: a line break the writer put
+// after a clause stays, and a sentence over 160 characters is not cut after its colon. The shapes
+// are those of packages/envoy/cmd/dispatch/README.md, which --write once changed in 214 places.
+for (const [shape, text] of [
+  [
+    "a sentence over 160 characters with a colon in it",
+    "Each repository is read as a mapping's path is, lower-cased with one trailing `.git` trimmed, and held to the names GitHub allows as the settings route holds a mapping's path: an entry such as `acme/..=KEY` is refused, naming the entry, and the boot with it.\n",
+  ],
+  [
+    "a list item whose sentence breaks after a comma",
+    "- A pass reads every repository it covers (`cireconcile.covered`): each one `repo_projects` maps,\n  and each one an issue names as its own `repo`, which needs no mapping.\n",
+  ],
+  [
+    "a sentence that breaks after a clause, in a paragraph of two",
+    "The other mounts outside the table read no broker token,\nand they take no broker token at all.\nA read-only token names a service and no person too.\n",
+  ],
+]) {
+  test(`--write leaves a file the check accepts as it is: ${shape}`, async () => {
+    const path = await markdownFile(text);
+    const checked = run([path]);
+    expect(checked.stdout).toBe("");
+    expect(checked.exitCode).toBe(0);
+    const result = await written(text);
+    expect(result.text).toBe(text);
+    expect(result.exitCode).toBe(0);
+  });
+}
+
+test("--write refuses, naming the item, a re-layout that would take a list item past 50 screen rows", async () => {
+  // The item runs 50 screen rows, and its first line holds two sentences (R1). Cutting them apart
+  // makes 51, which R3 refuses, so --write writes nothing and names the item's line in the file:
+  // line 3, which the re-layout of the paragraph above would have moved to line 4.
+  const text = `Intro one. Intro two.\n\n- An attempt notes failures of two kinds. Both are listed here whole.\n${sentenceLines(49, "  ", "Line")}`;
+  const result = await written(text);
+  expect(result.stderr).toBe(
+    `${result.path}: refusing to write: line 3 would fail R3: 51 screen rows: - An attempt notes failures of two kinds.\n`
+  );
+  expect(result.exitCode).toBe(2);
+  expect(result.text).toBe(text);
+});
+
+test("--write refuses, naming the line, a finding it cannot fix: two sentences in a heading", async () => {
+  // The heading is line 3 of the file and would be line 4 of the re-layout.
+  const text = "One. Two.\n\n# Setup. Then run it\n";
+  const result = await written(text);
+  expect(result.stderr).toBe(
+    `${result.path}: refusing to write: line 3 would fail R1: # Setup. Then run it\n`
+  );
+  expect(result.exitCode).toBe(2);
+  expect(result.text).toBe(text);
+});
+
+test("the check accepts what --write writes, where it re-lays out a list item near 50 screen rows", async () => {
+  // The item runs 50 screen rows, and its first line holds two sentences (R1). Re-laid out, it
+  // still runs 50: one more line for the second sentence, one less where `here whole.` joins it.
+  const text = `- An attempt notes failures. Both are listed\n  here whole.\n${sentenceLines(48, "  ", "Line")}`;
+  const result = await written(text);
+  expect(result.text).toBe(
+    `- An attempt notes failures.\n  Both are listed here whole.\n${sentenceLines(48, "  ", "Line")}`
+  );
+  expect(result.exitCode).toBe(0);
+  const path = await markdownFile(result.text);
+  const checked = run([path]);
+  expect(checked.stdout).toBe("");
+  expect(checked.exitCode).toBe(0);
+});
+
+// --write re-lays out only a paragraph the check reports R1 in, so a test of a join guard gives
+// the paragraph two sentences on one line, as the two below do: the guards apply only there.
 test("--write does not join a 01. item into the paragraph above it: 01. starts at 1, so it interrupts", async () => {
-  const result = await written("A paragraph line\n01. An item.\n");
+  const result = await written("A paragraph line. More of it\n01. An item.\n");
   expect(result.text.split("\n")).toContain("01. An item.");
+  expect(result.text.split("\n")).toContain("More of it");
 });
 
 test("--write keeps a footnote definition that interrupts a paragraph on its own line", async () => {
-  const result = await written("Text[^n] here,\nmore text\n[^n]: The note.\n");
+  const result = await written("Text[^n] here. More,\nmore text\n[^n]: The note.\n");
   expect(result.text.split("\n")).toContain("[^n]: The note.");
+  expect(result.text.split("\n")).toContain("More, more text");
 });
 
 test("--write keeps the content of an empty list item's next line inside that item", async () => {
@@ -281,25 +358,26 @@ test("--write leaves YAML front matter as it is", async () => {
 });
 
 test("--write does not join a task marker with the text on the next line", async () => {
-  const result = await written("- [x]\n  done\n");
-  expect(result.text).not.toContain("[x] done");
+  const result = await written("- [x]\n  done. Next one\n");
+  expect(result.text).toBe("- [x]\n  done.\n  Next one\n");
 });
 
 test("--write keeps the spaces of a code span that a line break follows", async () => {
-  const text = "Run `foo   bar \nbaz` now.\n";
-  const result = await written(text);
-  expect(result.text).toBe(text);
+  const result = await written("Run `foo   bar \nbaz` now. Then stop.\n");
+  expect(result.text).toBe("Run `foo   bar \nbaz` now.\nThen stop.\n");
 });
 
+// Each paragraph below holds two sentences on one line, which --write would cut were the element
+// not verbatim.
 test("--write keeps the line break inside inline <pre> HTML", async () => {
-  const text = "Output follows <pre>line one\nline two</pre> in the doc.\n";
+  const text = "Output follows <pre>line one. Line two\nline three</pre> in the doc.\n";
   const result = await written(text);
   expect(result.text).toBe(text);
 });
 
 test("--write keeps the line break inside inline <code> HTML, which GitHub shows", async () => {
   // github-markdown-css sets `code { white-space: break-spaces }`, so the break is visible.
-  const text = "Type <code>a\nb</code> now.\n";
+  const text = "Type <code>a\nb</code> now. Then go.\n";
   const result = await written(text);
   expect(result.text).toBe(text);
 });
@@ -312,9 +390,8 @@ test("--write does not cut inside an inline HTML attribute value that holds a >"
 });
 
 test("--write does not join the lines of an inline HTML attribute value that holds a >", async () => {
-  const text = 'Hover <abbr title="x>y\nz">here</abbr> now.\n';
-  const result = await written(text);
-  expect(result.text).toBe(text);
+  const result = await written('Hover <abbr title="x>y\nz">here</abbr> now. Then go.\n');
+  expect(result.text).toBe('Hover <abbr title="x>y\nz">here</abbr> now.\nThen go.\n');
   expect(result.exitCode).toBe(0);
 });
 
@@ -364,7 +441,9 @@ test("front matter closed by ... is front matter to check and --write", async ()
 
 test("a second --write changes nothing when a paragraph holds a tag alone on its line", async () => {
   // packages/pi-envoy/extensions/askgate/askgate-request.md has this shape.
-  const once = await written("Intro line:\n<tag>\nvalue\n</tag>\nMore text here.\n");
+  const once = await written("Intro line. More:\n<tag>\nvalue\n</tag>\nMore text here.\n");
+  expect(once.text).toBe("Intro line.\nMore:\n<tag>\nvalue\n</tag>\nMore text here.\n");
+  expect(once.exitCode).toBe(0);
   const twice = await written(once.text);
   expect(twice.text).toBe(once.text);
 });
@@ -372,7 +451,7 @@ test("a second --write changes nothing when a paragraph holds a tag alone on its
 test("--write refuses a join inside a code span that it misreads as a link destination", async () => {
   // The script reads up to `d)` as the link's destination, so the line break looks like prose;
   // mdast reads the code span `c d) e \nf`, whose content the join would change.
-  const text = "See [a](b `c d) e \nf` g.\n";
+  const text = "See [a](b `c d) e \nf` g. Then more.\n";
   const path = await markdownFile(text);
   const result = Bun.spawnSync(["bun", SCRIPT, "--write", path], { cwd: REPO_ROOT });
   expect(result.stderr.toString()).toContain(`${path}: refusing to write: the block at line 1`);
@@ -381,21 +460,21 @@ test("--write refuses a join inside a code span that it misreads as a link desti
 });
 
 test("--write reads a < that opens no valid tag as text, so a code span after it stays masked", async () => {
-  const text = 'See <K, V="x > `code" > here \nand` then more.\n';
-  const result = await written(text);
-  expect(result.text).toBe(text);
+  const result = await written('See <K, V="x > `code" > here \nand` then more. Next one.\n');
+  expect(result.text).toBe('See <K, V="x > `code" > here \nand` then more.\nNext one.\n');
   expect(result.exitCode).toBe(0);
 });
 
 test("--write reads a < that opens no valid tag as text, so a <code> element after it stays masked", async () => {
-  const text = 'See <K, V="x > <code>a" > here \nand</code> then more.\n';
+  const text = 'See <K, V="x > <code>a" > here \nand</code> then more. Next one.\n';
   const result = await written(text);
   expect(result.text).toBe(text);
   expect(result.exitCode).toBe(0);
 });
 
 test("a second --write changes nothing when a paragraph holds a line of only :", async () => {
-  const once = await written("Intro text\n:\nmore text\n");
+  const once = await written("Intro one. Intro two\n:\nmore text\n");
+  expect(once.text).toBe("Intro one.\nIntro two\n:\nmore text\n");
   expect(once.exitCode).toBe(0);
   const twice = await written(once.text);
   expect(twice.exitCode).toBe(0);
@@ -403,35 +482,37 @@ test("a second --write changes nothing when a paragraph holds a line of only :",
 });
 
 test("a second --write changes nothing when a paragraph holds a line of only -=", async () => {
-  const once = await written("Intro text\n-=\nmore text\n");
+  const once = await written("Intro one. Intro two\n-=\nmore text\n");
+  expect(once.text).toBe("Intro one.\nIntro two\n-=\nmore text\n");
   expect(once.exitCode).toBe(0);
   const twice = await written(once.text);
   expect(twice.exitCode).toBe(0);
   expect(twice.text).toBe(once.text);
 });
 
-test("--write refuses, writing nothing, a re-layout that a second re-layout would change again", async () => {
-  // `[see. Next [a]:` could open a link reference definition, so the line stays apart; once the
-  // sentence break moves `[a]:` to the next line, a second run joins `[see.` onto `Intro text`.
-  const text = "Intro text\n[see. Next [a]: b\n";
-  const path = await markdownFile(text);
-  const result = Bun.spawnSync(["bun", SCRIPT, "--write", path], { cwd: REPO_ROOT });
-  expect(result.stderr.toString()).toBe(
-    `${path}: refusing to write: a second re-layout would change it again (first difference at line 1 of the re-laid-out text)\n`
-  );
-  expect(result.exitCode).toBe(2);
-  expect(await readFile(path, "utf8")).toBe(text);
+test("a second --write leaves a re-layout the check accepts, though re-laying out its paragraph again would join a line", async () => {
+  // `[see. Next [a]:` could open a link reference definition, so the line stays apart; the
+  // sentence break then moves `[a]:` to the next line. Re-laid out again, the paragraph would have
+  // `[see.` joined onto `Intro text`, but the check reports nothing in it, so --write leaves it.
+  const once = await written("Intro text\n[see. Next [a]: b\n");
+  expect(once.text).toBe("Intro text\n[see.\nNext [a]: b\n");
+  expect(once.exitCode).toBe(0);
+  const twice = await written(once.text);
+  expect(twice.text).toBe(once.text);
+  expect(twice.exitCode).toBe(0);
 });
 
+// Each paragraph below holds two sentences on one line, which --write would cut were the element
+// not verbatim.
 test("--write leaves a <pre> element on a blockquote's lazy line as it is", async () => {
-  const text = "> Quote <pre>\nline one\nline two</pre>\n";
+  const text = "> Quote <pre>\nline one. Line two\nline three</pre>\n";
   const result = await written(text);
   expect(result.text).toBe(text);
   expect(result.exitCode).toBe(0);
 });
 
 test("--write leaves a <pre> element in a footnote definition's text as it is", async () => {
-  const text = "[^1]: Run <pre>\nline one\nline two</pre>\n\nText[^1].\n";
+  const text = "[^1]: Run <pre>\nline one. Line two\nline three</pre>\n\nText[^1].\n";
   const result = await written(text);
   expect(result.text).toBe(text);
   expect(result.exitCode).toBe(0);
@@ -439,7 +520,7 @@ test("--write leaves a <pre> element in a footnote definition's text as it is", 
 
 test("--write leaves a <code> element that runs past an escaped close tag as it is", async () => {
   // `\</code>` is text, so the element runs to the second `</code>`, over the line break.
-  const text = "Use <code>a \\</code> b\nc</code> here.\n";
+  const text = "Use <code>a \\</code> b\nc</code> here. Then go.\n";
   const result = await written(text);
   expect(result.text).toBe(text);
   expect(result.exitCode).toBe(0);
@@ -453,14 +534,14 @@ test("--write leaves a paragraph byte for byte when a nested <pre> closes before
 });
 
 test("--write leaves a paragraph byte for byte when a nested <code> closes before the outer one", async () => {
-  const text = "Use <code>a <code>b</code> c\nd</code> here.\n";
+  const text = "Use <code>a <code>b</code> c\nd</code> here. Then go.\n";
   const result = await written(text);
   expect(result.text).toBe(text);
   expect(result.exitCode).toBe(0);
 });
 
 test("--write leaves the lines after a <pre> opened inside emphasis byte for byte", async () => {
-  const text = "> Quote *x <pre>y*\nline one\nline two</pre>\n";
+  const text = "> Quote *x <pre>y*\nline one. Line two\nline three</pre>\n";
   const result = await written(text);
   expect(result.text).toBe(text);
   expect(result.exitCode).toBe(0);
@@ -494,8 +575,7 @@ test("a <code> named inside a code span opens no element, so --write re-lays out
 });
 
 test("a </pre> inside an HTML comment closes no <pre>, so the next paragraph stays as it is", async () => {
-  const text =
-    "<pre>\n<!-- </pre> -->\n\nThis sentence starts on one line\nand ends on the next.\n";
+  const text = "<pre>\n<!-- </pre> -->\n\nThis one starts on one line. It ends\non the next.\n";
   const result = await written(text);
   expect(result.text).toBe(text);
   expect(result.exitCode).toBe(0);
@@ -503,7 +583,7 @@ test("a </pre> inside an HTML comment closes no <pre>, so the next paragraph sta
 
 test("a </pre> inside an attribute value closes no <pre>, so the next paragraph stays as it is", async () => {
   const text =
-    'Intro <pre> then <span title="</pre>">x</span>\n\nThis sentence starts on one line\nand ends on the next.\n';
+    'Intro <pre> then <span title="</pre>">x</span>\n\nThis one starts on one line. It ends\non the next.\n';
   const result = await written(text);
   expect(result.text).toBe(text);
   expect(result.exitCode).toBe(0);
@@ -556,14 +636,21 @@ test("the guard refuses a re-layout after a <pre> only micromark reads, in a blo
 });
 
 // GitHub's cmark-gfm still reads `source` as an HTML block tag (CommonMark 0.31 and micromark do
-// not), so a line that starts with `<source` interrupts the paragraph and stays as it is.
-for (const text of [
-  'Some words here\n<source "x"> *a* more words.\n',
-  'Intro words.\n<source "x"> <code "y">alpha\nbeta gamma</code> tail.\n',
+// not), so a line that starts with `<source` interrupts the paragraph and stays as it is. The
+// paragraph above it holds two sentences on one line, so --write re-lays it out.
+for (const [text, expected] of [
+  [
+    'Some words here. More words\n<source "x"> *a* more words.\n',
+    'Some words here.\nMore words\n<source "x"> *a* more words.\n',
+  ],
+  [
+    'Intro words. More words\n<source "x"> <code "y">alpha\nbeta gamma</code> tail.\n',
+    'Intro words.\nMore words\n<source "x"> <code "y">alpha\nbeta gamma</code> tail.\n',
+  ],
 ]) {
   test(`--write leaves a line that starts with <source as it is: ${JSON.stringify(text)}`, async () => {
     const result = await written(text);
-    expect(result.text).toBe(text);
+    expect(result.text).toBe(expected);
     expect(result.exitCode).toBe(0);
   });
 }
