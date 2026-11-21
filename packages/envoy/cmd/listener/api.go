@@ -1226,15 +1226,22 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// The lane names its role in either form while every reader takes both: its project
 			// and then the role, or the role alone. A claim is keyed by the bare role name
 			// whichever form claimed it (store.Registry.ClaimedRole), so the role this send
-			// resolves is the name CanonicalRole reads, never the lane's tokens as they stand.
-			_, role, _ := contracts.CanonicalRole(lane)
+			// resolves is the name CanonicalRole reads, never the lane's tokens as they stand. A
+			// lane naming a valid role in the old form is counted and named back in the answer's
+			// warnings with its new form (store.Registry.ReadRole): this publisher is one the old
+			// form's refusal would stop.
+			role, roleWarning := d.registry.ReadRole(lane, roles.Valid)
+			var warnings []string
+			if roleWarning != "" {
+				warnings = []string{roleWarning}
+			}
 			ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(publishDeliveryWindow))
 			defer cancel()
 			// The request's keep flag is read here and nowhere else: it belongs to this route's
 			// give-up (roleSend.noHolder) rather than to the envelope, which travels on to the
 			// holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived)
+			sendToRole(ctx, w, record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived, warnings)
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone
@@ -2289,8 +2296,10 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 		}
 		// The path names the role in either form, its project first or its name alone, and a
 		// claim is keyed by the bare name either way (store.Registry.ClaimedRole), so the holder
-		// is read under that name.
-		_, role, _ := contracts.CanonicalRole(name)
+		// is read under that name. A path naming a valid role in the old form is counted
+		// (store.Registry.ReadRole): a caller that looks a role up by its name alone is still on
+		// the old form, though this answer, a holder's record, carries no warning of it.
+		role, _ := d.registry.ReadRole(name, roles.Valid)
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		result, err := roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)

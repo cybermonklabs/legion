@@ -333,7 +333,9 @@ func (s *Service) openLiveWrite(ctx context.Context, ledger *Ledger, artifactID 
 			state.liveWriter = write
 			state.roomGeneration = s.nextRoomGeneration()
 			// A writer takes up a room a late departure's settlement loaded: the room stays once
-			// that settlement has ended (retireSettlementRoom).
+			// that settlement has ended (retireSettlementRoom). A load of that room that has not
+			// taken the record yet sets no mark while this write holds the slot (onLoadDocument),
+			// so the room is taken up whichever of the two comes first.
 			state.warmed = nil
 			// The take-over runs whatever the record already says, so it always stops an
 			// armed timer: `settleDeferred || takeOver…` would skip the call on a record

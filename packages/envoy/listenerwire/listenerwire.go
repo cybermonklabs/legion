@@ -236,6 +236,11 @@ type PublishResponse struct {
 	// naming its holder. An older client reads neither field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
+	// Warnings names a role send's role when its topic named it in the old form, the role alone,
+	// with its new form, project first ("<old> is the old form of <new>; name <new>",
+	// store.Registry.ReadRole), as the subscribe and claim routes name an old form; it is left out
+	// when the topic named the role in the new form, and from every answer that is no role send.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // SessionInfo is the joined view of a session's interest record (topics, dir, machine) and its

@@ -1126,8 +1126,9 @@ func sameLifetime(a, b *int) bool {
 
 // signedForAnotherBroker reports whether pending request p's record is signed for another broker
 // address: its request object does not verify for this broker, by the check PendingForApprover
-// lists a record by (requestedIdentifiers), because its aud is not Machine.Audience
-// (record.ErrAudienceMismatch). Such a request can be decided by no person and no judge here: no
+// lists a record by (requestedIdentifiers), because its aud names neither Machine.Audience's
+// origin nor, for a machine login, Machine.EdgeAudience's (record.VerifyStoredRequestObject,
+// record.ErrAudienceMismatch). Such a request can be decided by no person and no judge here: no
 // approver's list shows it and the judge was never handed it. A request with no record, a body
 // that does not parse and every other refusal (a signature, a time) answer false, so Create keeps
 // such a request and applies the one-pending-request rule to it: the broker's move is the one
@@ -1695,7 +1696,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 // clock from that moment, not a budget of their own: the reader's own rows, read on the list's
 // context before or between them, spend it too, so the fallback rows never take the list past
 // it, whatever the reader's own rows took. Dispatch's Inbox waits 5 seconds for the whole list
-// (agentsecrets.Client's defaultTimeout), and each read of Dispatch may take up to the
+// (cipher.Client's defaultTimeout), and each read of Dispatch may take up to the
 // project-access client's own 10, so without the clock a slow Dispatch and many other people's
 // rows could empty every Inbox. A row the clock cuts short is left off, as every such row was
 // before the fallback existed, and counted in the list's one line (logFallbackCut).
@@ -1731,15 +1732,16 @@ func (m *Machine) listedInStead(fallback context.Context, p PendingSummary, read
 
 // requestedIdentifiers is what the record whose canonical body is canonical asks for, and the
 // signed reason it asks with, read from the request object it embeds once that object verifies
-// for this broker: its audience, its signature and its time against when the record was written.
-// The reason is what the person rule reads of the row (maySeeRecord), so it comes only from an
-// object that verified.
+// for this broker: its audience, an address of this broker for its kind
+// (record.VerifyStoredRequestObject), its signature and its time against when the record was
+// written. The reason is what the person rule reads of the row (maySeeRecord), so it comes only
+// from an object that verified.
 func (m *Machine) requestedIdentifiers(canonical string, createdAt time.Time) (identifiers []string, reason string, _ error) {
 	body, err := record.ParseBody(canonical)
 	if err != nil {
 		return nil, "", err
 	}
-	obj, err := record.VerifyRequestObject(body.Request, m.Audience, m.Skew, createdAt)
+	obj, err := record.VerifyStoredRequestObject(body.Request, m.Audience, m.EdgeAudience, m.Skew, createdAt)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1882,7 +1884,7 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 	if err != nil {
 		return RecordDetail{}, err
 	}
-	obj, err := record.VerifyRequestObject(body.Request, m.Audience, m.Skew, createdAt)
+	obj, err := record.VerifyStoredRequestObject(body.Request, m.Audience, m.EdgeAudience, m.Skew, createdAt)
 	if err != nil {
 		return RecordDetail{}, err
 	}

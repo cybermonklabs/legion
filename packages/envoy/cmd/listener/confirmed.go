@@ -164,7 +164,10 @@ type roleSend struct {
 	// read live, so that is what it carries there; a 202 kept for a lapsed holder carries
 	// unresponsive or gone (kept).
 	holderState session.State
-	attempts    int
+	// warnings is what the route's answers name of the topic's old form (store.Registry.ReadRole):
+	// the 200 and the 202 carry it, as the subscribe and claim routes' answers carry theirs.
+	warnings []string
+	attempts int
 }
 
 // settle counts and logs the send's outcome, the one delivery line a send writes, once its answer
@@ -188,7 +191,7 @@ func (s *roleSend) settle(outcome sendOutcome) {
 // holder's record put it in, which GET /v1/roles/<role> names the same way.
 func (s *roleSend) delivered(outcome sendOutcome) {
 	s.record.holder = s.holder
-	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: s.holder, HolderState: s.holderState})
+	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: s.holder, HolderState: s.holderState, Warnings: s.warnings})
 	s.settle(outcome)
 }
 
@@ -273,6 +276,7 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 		Kept:         true,
 		KeptReason:   result.State,
 		KeptUntil:    kept.until,
+		Warnings:     s.warnings,
 	}
 	if result.LastSeen != 0 {
 		answer.LastSeen = &result.LastSeen
@@ -411,9 +415,9 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // an earlier forward under its Nats-Msg-Id was still in process, which is the 503 maybe_stored
 // (windowEnded). expectsReply is the expects_reply its answers write (expectsReplyAnswer, api.go),
 // the request's own dialect; the envelope this send forwards and keeps carries the envelope's own
-// value.
-func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
-	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
+// value. warnings is what its 200 and 202 name of the topic's old form.
+func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time, warnings []string) {
+	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived, warnings: warnings}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later

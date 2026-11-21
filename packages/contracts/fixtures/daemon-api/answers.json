@@ -98,7 +98,6 @@
       "POST /legion/v1/phase/retry",
       "POST /legion/v1/signoff",
       "POST /legion/v1/roots/close",
-      "POST /legion/v1/children/park",
       "POST /legion/v1/children/rerun"
     ],
     "since": 46,
