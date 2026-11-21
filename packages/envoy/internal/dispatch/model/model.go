@@ -1160,9 +1160,10 @@ type ArchitectureTreeComponent struct {
 }
 
 // ArchitectureTreeIssue is an issue counted for a component. Attached is how:
-// "direct" (its own row names the component), "inherited" (an ancestor's row
-// does), or "contained" (its effective set names a component this one
-// contains; Via is that component). When several apply the strongest wins.
+// "direct" (its own row names the component), "inherited" (the row of an
+// ancestor in its own project does), or "contained" (its effective set names
+// a component this one contains; Via is that component). When several apply
+// the strongest wins.
 type ArchitectureTreeIssue struct {
 	Key           string         `json:"key"`
 	Title         string         `json:"title"`
@@ -1183,7 +1184,7 @@ type ArchitectureTreeIssueRef struct {
 }
 
 // ArchitectureTreeNone is an issue declared not architectural, with the reason
-// and, when the declaration is an ancestor's, that ancestor.
+// and, when the declaration is an ancestor's in its own project, that ancestor.
 type ArchitectureTreeNone struct {
 	Key           string  `json:"key"`
 	Title         string  `json:"title"`

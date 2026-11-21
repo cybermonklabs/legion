@@ -8,4 +8,4 @@ body: |-
   assignee, and the create route's description in the OpenAPI document says the same.
 time: 2026-11-21T19:02:54Z
 custom:
-    Issue: parent-across-projects
+    Issue: pr4896

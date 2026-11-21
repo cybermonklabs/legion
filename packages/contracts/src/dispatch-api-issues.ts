@@ -23,11 +23,12 @@ export type IssuePriority = z.output<typeof IssuePrioritySchema>;
 export type IssueComponentsMode = (typeof ISSUE_COMPONENTS_MODES)[number];
 
 /**
- * An issue's effective component attachment, resolved on read: the nearest issue on its
- * parent chain (itself first) with its own attachment decides, and `inherited_from` names it
- * when that is an ancestor. Mode `inherit` with `inherited_from` null means no ancestor chose
- * (unassigned). `ids` is the effective set of live component ids; `unknown` the effective ids
- * a re-import has since retired; `reason` is set for mode `none`.
+ * An issue's effective component attachment, resolved on read: the nearest issue of its own
+ * project on its parent chain (itself first) with its own attachment decides, and
+ * `inherited_from` names it when that is an ancestor. Mode `inherit` with `inherited_from` null
+ * means no ancestor of its project chose (unassigned). `ids` is the effective set of live
+ * component ids; `unknown` the effective ids a re-import has since retired; `reason` is set for
+ * mode `none`.
  */
 export const IssueComponentsSchema = z
   .strictObject({

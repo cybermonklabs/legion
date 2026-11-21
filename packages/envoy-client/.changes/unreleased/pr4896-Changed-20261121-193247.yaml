@@ -5,4 +5,4 @@ body: |-
   project's default assignee, as Dispatch now decides.
 time: 2026-11-21T19:32:47Z
 custom:
-    Issue: parent-across-projects
+    Issue: pr4896
