@@ -9,7 +9,7 @@
 // packages/envoy's cmd/dispatch and runs it, as packages/dispatch/e2e/run-server.sh does, on a
 // database of its own on LEGION_TEST_PG_DSN's server, with NATS off and the agent token the daemon
 // and the CLI present; it stops it and starts it again on the same database and port for A10. The
-// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonWithin),
+// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonLogging),
 // booted with dispatch_url at that server, so every Dispatch read and write it makes - the
 // repository mapping, the issue list, its status writes and messages, and the read of the record a
 // completion names - goes to the real routes. The worker side is the real `dispatch` CLI
@@ -166,7 +166,7 @@ func (r *handoffRecordsLive) boot() {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
-	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), 2*time.Minute)
+	r.d = startDaemonLogging(r.t, r.cfg, o, r.log())
 	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s; daemon at dispatch_url %s",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.cfg.DispatchURL)
 }

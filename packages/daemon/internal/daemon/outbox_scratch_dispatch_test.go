@@ -8,14 +8,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -422,11 +420,14 @@ type scratchDispatch struct {
 	token    string
 	home     string
 	log      io.Writer
-	port     int
-	base     string
-	command  *exec.Cmd
-	exited   chan error
-	output   *syncBuffer
+	// socket is the port's one socket from the first start to the test's end (ownPort): it listens
+	// while a Dispatch serves on it, and stop takes it out of listening, the port kept.
+	socket  *os.File
+	port    int
+	base    string
+	command *exec.Cmd
+	exited  chan error
+	output  *syncBuffer
 }
 
 // startScratchDispatchOn gives the server a scratch database of its own on the test DSN's
@@ -456,8 +457,9 @@ func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scrat
 	return d
 }
 
-// start runs the server and returns once GET /api/v1 answers 200. The first start serves on a port
-// the kernel chooses; a restart serves on the same one again.
+// start runs the server and returns once it has logged that it serves on its port and GET /api/v1
+// there answers 200. The first start serves on a port the kernel chooses; a restart serves on the
+// same one again.
 func (d *scratchDispatch) start() {
 	t := d.t
 	t.Helper()
@@ -468,16 +470,23 @@ func (d *scratchDispatch) start() {
 	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-10*time.Second).Before(deadline) {
 		deadline = testDeadline.Add(-10 * time.Second)
 	}
-	// Dispatch serves on a socket held here (DISPATCH_LISTEN_FD), so no other process can take the
-	// port before Dispatch serves it: the first start on a port the kernel chose (heldSocket), a
-	// restart on the port it served before (holdPortAgain).
-	var held *os.File
-	if d.port == 0 {
-		held, d.port = heldSocket(t)
+	// Dispatch serves on the port's own socket (DISPATCH_LISTEN_FD), which the test owns from the
+	// first start to its end, so no other process can take the port before Dispatch serves it, nor
+	// between a stop and the next start.
+	if d.socket == nil {
+		d.socket, d.port = ownPort(t)
 		d.base = fmt.Sprintf("http://127.0.0.1:%d", d.port)
-	} else {
-		held = d.holdPortAgain(deadline)
 	}
+	// The socket listens with SO_REUSEADDR, so the connections a Dispatch served and closed, which
+	// wait out TIME_WAIT on the port, share it with the next listen; stop drops it again.
+	fd := int(d.socket.Fd())
+	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+		t.Fatalf("let scratch Dispatch's socket listen past its closed connections: %v", err)
+	}
+	if err := syscall.Listen(fd, syscall.SOMAXCONN); err != nil {
+		t.Fatalf("listen on scratch Dispatch's port %d: %v", d.port, err)
+	}
+	listening := fmt.Sprintf(`msg="dispatch: listening" addr=127.0.0.1:%d`, d.port)
 	command := exec.Command(d.binary)
 	command.Dir = d.dir
 	// Nothing of the caller's Dispatch, Envoy or NATS settings reaches the scratch server, as
@@ -507,17 +516,16 @@ func (d *scratchDispatch) start() {
 		"DISPATCH_WEB_DIST="+d.webDist,
 		"HOME="+d.home,
 	)
-	command.ExtraFiles = []*os.File{held}
+	command.ExtraFiles = []*os.File{d.socket}
 	output := &syncBuffer{}
 	command.Stdout = output
 	if d.log != nil {
 		command.Stdout = io.MultiWriter(output, d.log)
 	}
 	command.Stderr = command.Stdout
-	// From here Dispatch's is the only copy of the socket, so a Dispatch that exits releases the
-	// port and nothing of the test's answers on it.
+	// The test keeps its copy of the socket, so the port stays its own once Dispatch exits; stop
+	// takes it out of listening then, so a dial is refused while no Dispatch serves.
 	err := command.Start()
-	_ = held.Close()
 	if err != nil {
 		t.Fatalf("start scratch Dispatch: %v", err)
 	}
@@ -531,8 +539,13 @@ func (d *scratchDispatch) start() {
 			t.Fatalf("scratch Dispatch exited before it was ready (%v):\n%s", err, output.String())
 		default:
 		}
-		// Each poll is bounded (pollClient): until Dispatch serves, the held socket queues the
-		// connection unanswered.
+		// The wait names this start's process by its own output, a buffer each start makes anew:
+		// its line that it serves the port, then its 200. The port is the socket's alone (ownPort),
+		// the test never accepts on its copy, and stop waited the last Dispatch out, so this process
+		// is the only one that can answer there anyway; the line makes that explicit.
+		if !strings.Contains(output.String(), listening) {
+			return false
+		}
 		if response, err := pollClient.Get(d.base + "/api/v1"); err == nil {
 			response.Body.Close()
 			if response.StatusCode == http.StatusOK {
@@ -545,35 +558,76 @@ func (d *scratchDispatch) start() {
 	}
 }
 
-// holdPortAgain takes the socket of the port the server served on before its stop (takeSocket), as
-// heldSocket takes one of a port the kernel chooses. From the stop until here the port is any
-// process's, so a run that finds it still held by another process (EADDRINUSE) binds it again
-// until deadline. Every other failure of takeSocket, such as the descriptor the listener could not
-// give, is this run's own and fails the test at once: binding again would never clear it.
-func (d *scratchDispatch) holdPortAgain(deadline time.Time) *os.File {
-	d.t.Helper()
-	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(d.port))
-	var held *os.File
-	var last error
-	if !testwait.Holds(time.Until(deadline), 500*time.Millisecond, func() bool {
-		file, _, err := takeSocket(address)
-		switch {
-		case err == nil:
-			held = file
-			return true
-		case !errors.Is(err, syscall.EADDRINUSE):
-			d.t.Fatalf("hold scratch Dispatch's port %d again: %v", d.port, err)
-		}
-		last = err
-		d.t.Logf("scratch Dispatch's port %d is still taken (%v); binding it again", d.port, err)
-		return false
-	}) {
-		d.t.Fatalf("scratch Dispatch's port %d was still taken at the deadline: %v", d.port, last)
+// ownPort is a loopback port the kernel chooses, owned until t ends by a TCP socket bound to that
+// port by number and listening only while a Dispatch serves it. A socket bound by number keeps its
+// port when it stops listening (Linux's SOCK_BINDPORT_LOCK), where one bound to port 0 gives the
+// port back, so the port's number comes from a probe: the probe binds port 0 with SO_REUSEADDR, the
+// socket binds the probe's port beside it with SO_REUSEADDR, the probe closes, and the socket drops
+// SO_REUSEADDR before it first listens. From then on no other socket of any user binds the port,
+// whether it sets SO_REUSEADDR, SO_REUSEPORT or neither, and while the socket does not listen
+// every dial is refused. stop takes it out of listening with shutdown(SHUT_RD), SO_REUSEADDR
+// dropped first: a listening socket shares its port with no bind, and a socket that is neither
+// listening nor sets SO_REUSEADDR shares it with none either.
+func ownPort(t *testing.T) (*os.File, int) {
+	t.Helper()
+	probe := ownPortSocket(t, "the probe of scratch Dispatch's port")
+	if err := syscall.SetsockoptInt(int(probe.Fd()), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+		t.Fatalf("let the probe of scratch Dispatch's port share it: %v", err)
 	}
-	return held
+	if err := syscall.Bind(int(probe.Fd()), &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatalf("take a loopback port for scratch Dispatch: %v", err)
+	}
+	name, err := syscall.Getsockname(int(probe.Fd()))
+	if err != nil {
+		t.Fatalf("read scratch Dispatch's port: %v", err)
+	}
+	port := name.(*syscall.SockaddrInet4).Port
+	owner := ownPortSocket(t, "scratch Dispatch's port")
+	fd := int(owner.Fd())
+	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+		t.Fatalf("let scratch Dispatch's socket bind beside the probe: %v", err)
+	}
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatalf("bind scratch Dispatch's socket to port %d: %v", port, err)
+	}
+	if err := probe.Close(); err != nil {
+		t.Fatalf("close the probe of scratch Dispatch's port: %v", err)
+	}
+	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 0); err != nil {
+		t.Fatalf("keep scratch Dispatch's port from being shared: %v", err)
+	}
+	// A listen reads the socket's own SO_REUSEADDR again, which no other socket of the port now
+	// sets, so from it on the kernel shares the port with no other bind; the shutdown takes the
+	// socket out of listening until the first start.
+	if err := syscall.Listen(fd, syscall.SOMAXCONN); err != nil {
+		t.Fatalf("settle scratch Dispatch's port %d as its socket's alone: %v", port, err)
+	}
+	if err := syscall.Shutdown(fd, syscall.SHUT_RD); err != nil {
+		t.Fatalf("stop listening on scratch Dispatch's port %d: %v", port, err)
+	}
+	return owner, port
 }
 
-// stop interrupts the running server and waits for it to exit, killing it after ten seconds. A
+// ownPortSocket is a close-on-exec TCP socket, closed when t ends if it is still open.
+func ownPortSocket(t *testing.T, what string) *os.File {
+	t.Helper()
+	// Under ForkLock, so no child started between the two calls inherits the descriptor.
+	syscall.ForkLock.RLock()
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err == nil {
+		syscall.CloseOnExec(fd)
+	}
+	syscall.ForkLock.RUnlock()
+	if err != nil {
+		t.Fatalf("make %s: %v", what, err)
+	}
+	file := os.NewFile(uintptr(fd), what)
+	t.Cleanup(func() { _ = file.Close() })
+	return file
+}
+
+// stop interrupts the running server and waits for it to exit, killing it after ten seconds, then
+// takes the port's socket out of listening, so every dial is refused until the next start. A
 // server that is not running is left as it is.
 func (d *scratchDispatch) stop() {
 	if d.command == nil {
@@ -591,6 +645,17 @@ func (d *scratchDispatch) stop() {
 		_ = command.Process.Kill()
 		<-d.exited
 		d.t.Error("scratch Dispatch did not stop after SIGINT")
+	}
+	// The socket is closed already when the test's own cleanup ran before this one. SO_REUSEADDR
+	// goes before the socket stops listening, so the port is shareable only in the moment before a
+	// start's listen, and a socket bound beside it then can never listen there: the port's own
+	// socket either listens or does not set SO_REUSEADDR.
+	fd := int(d.socket.Fd())
+	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 0); err != nil && !errors.Is(err, syscall.EBADF) {
+		d.t.Errorf("keep scratch Dispatch's port %d from being shared: %v", d.port, err)
+	}
+	if err := syscall.Shutdown(fd, syscall.SHUT_RD); err != nil && !errors.Is(err, syscall.EBADF) {
+		d.t.Errorf("stop listening on scratch Dispatch's port %d: %v", d.port, err)
 	}
 }
 

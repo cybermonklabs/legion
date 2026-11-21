@@ -5,7 +5,7 @@
 // tree through the daemon's own intake and routes, and reads GET /legion/v1/state at each step.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration
 // load, the real store and its migrations, the real HTTP API, the real claim supervision, the real
 // openWorkflow, the real JetStream consumers and the real outbox lanes. Facts enter only by the
 // transports production has — the GitHub envelopes of the ENVOY_NOTIFICATIONS stream and the
@@ -127,7 +127,7 @@ func newAdmissionIssuesLive(t *testing.T) *admissionIssuesLive {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = admissionIssuesGitHub(t)
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, o, r.log())
 	r.architect = r.registerArchitect()
 	return r
 }

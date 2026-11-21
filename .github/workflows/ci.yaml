@@ -144,6 +144,7 @@ jobs:
       repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
       select_e2e_proofs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.select_e2e_proofs_test }}
       go_tagged_tests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_tagged_tests_test }}
+      testcontainers_links_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.testcontainers_links_test }}
       ci_ok_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_test }}
       ci_ok_report_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_report_test }}
       ci_ok_reconcile_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_reconcile_test }}
@@ -349,6 +350,7 @@ jobs:
       repo_paths_test: ${{ needs.changes.outputs.repo_paths_test }}
       select_e2e_proofs_test: ${{ needs.changes.outputs.select_e2e_proofs_test }}
       go_tagged_tests_test: ${{ needs.changes.outputs.go_tagged_tests_test }}
+      testcontainers_links_test: ${{ needs.changes.outputs.testcontainers_links_test }}
       ci_ok_test: ${{ needs.changes.outputs.ci_ok_test }}
       ci_ok_report_test: ${{ needs.changes.outputs.ci_ok_report_test }}
       ci_ok_reconcile_test: ${{ needs.changes.outputs.ci_ok_reconcile_test }}

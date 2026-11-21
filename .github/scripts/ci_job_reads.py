@@ -2241,6 +2241,7 @@ SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
 BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
+TC_LINKS_STEP = "Check no command or self-starting test binary links testcontainers-go"
 ACTIONLINT_STEP = "Check every workflow file with actionlint"
 GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"
@@ -2455,6 +2456,9 @@ SCRIPT_TEST_GATES = [
          "and holds its answer to `^(TestServerChange)$`, and the lister reads every *_test.go of the "
          "directory it is given (go-tagged-tests.sh:97), so a second serverchange test, a rename of that "
          "function or a compound //go:build line there changes what this step prints"),
+    ]),
+    harness("testcontainers_links_test", "Test the testcontainers link check", f"{SCRIPTS}/testcontainers_links.test.sh", [
+        (f"{SCRIPTS}/testcontainers_links.py", "the script under test"),
     ]),
     harness("ci_ok_test", "Test ci-ok's verdict", f"{SCRIPTS}/ci-ok.test.sh", [
         (f"{SCRIPTS}/ci-ok.sh", "the script under test"),
@@ -3721,6 +3725,9 @@ GATES = [
     ], reads=reads(
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay compiles it"),
         (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
+        # Its go list closures, every command's and every self-starting test binary's of the
+        # daemon and envoy modules, are inside the daemon and envoy runs above.
+        (".github/scripts/testcontainers_links.py", at("ci-filters", TC_LINKS_STEP)),
         (CI_FILTERS, f"{at('ci-filters', CHECK_STEP)} reads every filter from it, and writes rule 17's "
                      f"generated blocks into it in its write mode"),
         (".github/scripts/check-workflow-files.sh",

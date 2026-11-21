@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/logtest"
-	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // accountTokens is the broker's account token as Notify reads it: each read answers the next of

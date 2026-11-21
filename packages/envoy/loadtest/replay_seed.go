@@ -110,7 +110,7 @@ func runReplaySeed(args []string) error {
 	if err := checkStack(ctx, ep); err != nil {
 		return err
 	}
-	pool, err := pgxpool.New(ctx, pgURL)
+	pool, err := workerPool(ctx, pgURL, *workers)
 	if err != nil {
 		return err
 	}

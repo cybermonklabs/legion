@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/testpool"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -61,7 +62,7 @@ func storeBeforeTheReviewedHead(t *testing.T) (*store.Store, *pgxpool.Pool) {
 			t.Fatalf("apply %s: %v", migration.Name, err)
 		}
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := testpool.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open a pool on the database of the release before: %v", err)
 	}

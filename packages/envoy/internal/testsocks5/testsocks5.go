@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // Request is one CONNECT a Server received: its address type (0x01 an IPv4 address, 0x03 a domain

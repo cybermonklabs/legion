@@ -1196,17 +1196,24 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 	return startDaemonLogging(t, cfg, o, quietLogger())
 }
 
-// startDaemonLogging is startDaemon writing the daemon's log to log.
-func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
-	t.Helper()
-	return startDaemonWithin(t, cfg, o, log, 10*time.Second)
-}
+// startMargin is what a start the daemon never finishes leaves of the test binary's deadline: room
+// for the failure to be reported by name and for the cleanups, the daemon's own stop among them
+// (stopBudget), to run before `go test` panics at its -timeout.
+const startMargin = 30 * time.Second
 
-// startDaemonWithin is startDaemonLogging failing the test unless the daemon answers /healthz
-// within the given time. A test that points its workflow at no GitHub of its own gets
-// repositoriesGitHub, so every launch on a repository reads its default branch from a stand-in
-// rather than from github.com.
-func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.Logger, within time.Duration) *daemon {
+// startDaemonLogging is startDaemon writing the daemon's log to log. A test that points its
+// workflow at no GitHub of its own gets repositoriesGitHub, so every launch on a repository reads
+// its default branch from a stand-in rather than from github.com.
+//
+// It waits for the daemon's own signal that it serves HTTP, not for a poll of /healthz to pass
+// within a fixed time: the boot takes what the machine's load makes it take, and a bound of the
+// helper's own failed a test whose daemon was only slow. The signal is the
+// seam the boot runs once the goroutine that serves the API has begun (beforeServingLatched,
+// wrapped here around any hook the test set). The wait ends there, at the daemon's exit, which
+// fails the test naming the exit's error, or at the test binary's own deadline less startMargin,
+// which fails it naming the wait; with no deadline (-timeout 0) it has no end but those two. Once
+// the daemon serves, one GET /healthz confirms the route answers 200.
+func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
 	t.Helper()
 	if o.githubAPI == "" {
 		o.githubAPI = repositoriesGitHub(t)
@@ -1221,30 +1228,42 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 		client: &http.Client{Transport: transport, Timeout: 10 * time.Second},
 		base:   "http://127.0.0.1:" + strconv.Itoa(cfg.Port),
 	}
+	serving := make(chan struct{})
+	held := o.beforeServingLatched
+	o.beforeServingLatched = func(hold context.Context) {
+		close(serving)
+		if held != nil {
+			held(hold)
+		}
+	}
 	go func() { d.done <- run(ctx, cfg, log, o) }()
 	t.Cleanup(d.stop)
-	// Each poll is bounded by a second, so within bounds the wait whatever a poll meets: until the
-	// daemon serves, the held listener queues the connection unanswered.
-	poll := &http.Client{Transport: transport, Timeout: time.Second}
-	var err error
-	if !testwait.Holds(within, 20*time.Millisecond, func() bool {
-		var response *http.Response
-		response, err = poll.Get(d.base + "/healthz")
-		if err == nil {
-			response.Body.Close()
-			if response.StatusCode == http.StatusOK {
-				return true
-			}
-		}
-		select {
-		case exited := <-d.done:
-			d.stopped.Store(true)
-			t.Fatalf("the daemon exited before it answered /healthz: %v", exited)
-		default:
-		}
-		return false
-	}) {
-		t.Fatalf("the daemon did not answer /healthz on %s within %s: %v", d.base, within, err)
+	wait := context.Background()
+	if deadline, bounded := t.Deadline(); bounded {
+		var stop context.CancelFunc
+		wait, stop = context.WithDeadline(wait, deadline.Add(-startMargin))
+		defer stop()
+	}
+	started := time.Now()
+	select {
+	case <-serving:
+	case exited := <-d.done:
+		d.stopped.Store(true)
+		t.Fatalf("the daemon exited after %s, before it served HTTP: %v", time.Since(started).Round(time.Millisecond), exited)
+	case <-wait.Done():
+		t.Fatalf("the daemon did not serve HTTP on %s within %s, the test binary's deadline less %s", d.base, time.Since(started).Round(time.Millisecond), startMargin)
+	}
+	request, err := http.NewRequestWithContext(wait, http.MethodGet, d.base+"/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := (&http.Client{Transport: transport}).Do(request)
+	if err != nil {
+		t.Fatalf("the daemon serves HTTP on %s, and GET /healthz failed: %v", d.base, err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("the daemon serves HTTP on %s, and GET /healthz answered %s", d.base, response.Status)
 	}
 	return d
 }

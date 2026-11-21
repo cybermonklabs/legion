@@ -11,7 +11,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // Cluster is n nats-servers in this test process, routed to each other with JetStream clustered

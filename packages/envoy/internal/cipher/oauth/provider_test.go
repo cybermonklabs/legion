@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code"
@@ -67,7 +68,7 @@ func newFixtureWith(t *testing.T, adjust func(*oauth.Config)) *fixture {
 // test starts a second broker process beside a first.
 func newFixtureOn(t *testing.T, dsn string, adjust func(*oauth.Config)) *fixture {
 	t.Helper()
-	pool, err := pgxpool.New(context.Background(), dsn)
+	pool, err := testpool.NewPool(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}

@@ -3,11 +3,11 @@
 // connected to it is the test that fails, at its own cleanup (leakcheck.go). A test takes
 // its own client from Connect, which names it after the test and closes it when the test ends.
 //
-// One container per package, not per test: testcontainers keeps its Ryuk reaper only while a
-// container of the process is connected, and a reaper left idle past its timeout removes itself,
-// so a later test's start, finding it removing, fails ("unexpected container status removing"). A
-// per-test container left such a gap whenever the tests between two NATS tests outlasted the
-// timeout, as a loaded Docker host makes them.
+// One container per package, not per test. The shape was chosen for testcontainers-go's Ryuk
+// reaper: Ryuk stayed only while a container of the process was connected, and a reaper left idle
+// past its timeout removed itself, so a later test's start, finding it removing, failed
+// ("unexpected container status removing"). The package starts its containers through the docker
+// CLI now (container.go), and the reset below still serves the one shared server to each test.
 //
 // A host with no Docker, such as a Sandbox pod, runs a nats-server of its own with JetStream and
 // its monitoring endpoint, and names it in LEGION_TEST_NATS_URL (its client URL) and
@@ -29,19 +29,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/go-connections/nat"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/testcontainers/testcontainers-go"
-	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // Image is the NATS server image the daemon's NATS tests use: ghcr.io/cybermonklabs/legion/ci, the
@@ -76,7 +70,7 @@ var (
 
 	mainRuns   bool
 	startOnce  sync.Once
-	shared     *tcnats.NATSContainer
+	shared     *Container
 	serverURL  string
 	monitorURL string
 	startErr   error
@@ -93,18 +87,25 @@ func init() {
 	}
 }
 
-// Main runs the package's tests, then removes the NATS container if a test started one, and
-// returns the exit code; a run on an external server (external) started none and removes nothing.
-// A package whose tests use URL or JetStream calls it from TestMain: os.Exit(testnats.Main(m)).
+// Main runs the package's tests, then removes the NATS container if a test started one, ends the
+// reaper (container.go), and returns the exit code; a run on an external server (external) started
+// none and removes nothing. A package whose tests use URL or JetStream calls it from TestMain:
+// os.Exit(testnats.Main(m)).
 func Main(m *testing.M) int {
 	mainRuns = true
 	code := m.Run()
 	if shared != nil {
-		if err := testcontainers.TerminateContainer(shared); err != nil {
+		if err := shared.remove(); err != nil {
 			fmt.Fprintf(os.Stderr, "remove the package's NATS container: %v\n", err)
 			if code == 0 {
 				code = 1
 			}
+		}
+	}
+	if err := endReaper(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		if code == 0 {
+			code = 1
 		}
 	}
 	return code
@@ -133,16 +134,13 @@ func URL(t testing.TB) string {
 		if startErr != nil || serverURL != "" {
 			return
 		}
-		started, err := start(Image)
+		started, err := start(Image, startOptions{})
 		if err != nil {
 			startErr = err
 			return
 		}
 		shared = started
-		serverURL, startErr = clientURL(started)
-		if startErr == nil {
-			monitorURL, startErr = monitor(started)
-		}
+		serverURL, monitorURL = started.url, started.monitorURL
 	})
 	if startErr != nil {
 		t.Fatalf("start NATS JetStream: %v", startErr)
@@ -351,25 +349,6 @@ func clientConnections() ([]Connection, error) {
 	return connections, nil
 }
 
-// monitor returns the base URL of a container's NATS monitoring endpoint.
-func monitor(container *tcnats.NATSContainer) (string, error) {
-	address, err := endpoint(container, monitorPort)
-	if err != nil {
-		return "", err
-	}
-	return "http://" + address, nil
-}
-
-// clientURL returns a container's NATS client URL, at the loopback address start published its
-// client port on.
-func clientURL(container *tcnats.NATSContainer) (string, error) {
-	address, err := endpoint(container, clientPort)
-	if err != nil {
-		return "", err
-	}
-	return "nats://" + address, nil
-}
-
 // JetStream returns a JetStream client of the package's NATS server, as URL gives it to t.
 func JetStream(t testing.TB) jetstream.JetStream {
 	t.Helper()
@@ -507,63 +486,6 @@ func retryStreamStoreFailure(create func() error) error {
 	}
 }
 
-// hostConfig caps a NATS test container at one CPU and 512 MiB, as every container the
-// repository's tests and proofs start is capped on a shared host (a test server holds a few small
-// streams), and publishes its client and monitoring ports at host on the ports given. It is one
-// modifier because testcontainers keeps only the last a request is given.
-func hostConfig(host string, client, monitoring int) testcontainers.CustomizeRequestOption {
-	return testcontainers.WithHostConfigModifier(func(config *container.HostConfig) {
-		config.NanoCPUs = 1_000_000_000
-		config.Memory = 512 << 20
-		if config.PortBindings == nil {
-			config.PortBindings = nat.PortMap{}
-		}
-		config.PortBindings[clientPort] = []nat.PortBinding{{HostIP: host, HostPort: strconv.Itoa(client)}}
-		config.PortBindings[monitorPort] = []nat.PortBinding{{HostIP: host, HostPort: strconv.Itoa(monitoring)}}
-	})
-}
-
-// startTries bounds the starts start makes, each on a fresh address and ports, while Docker
-// refuses to publish a port because something took the probed one first (loopbackPorts).
-const startTries = 5
-
-// start runs a NATS container, with its monitoring endpoint on 8222. It publishes the client and
-// monitoring ports on a loopback address of its own and ports the kernel chose there
-// (loopbackPorts), so a client another test left dialing an earlier container's port cannot reach
-// this one, and tries again on a fresh address and ports, up to startTries starts, when Docker
-// refuses the publish because a probed port was taken in between; an error names every refusal
-// before it as well as its own failure. It waits for the line nats-server logs once its listeners
-// are up, in place of the NATS module's own wait, a dial of the client port at localhost, where
-// the port is not published; each caller's own connect (connect, ready, answering) is the proof a
-// client reaches the server. A container Docker created and never saw ready (a readiness wait that
-// timed out under load, or a refused publish) comes back beside the error, and is removed before
-// start returns: no test's end would remove a container the package shares.
-func start(image string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
-	var refused []error
-	var started *tcnats.NATSContainer
-	for range startTries {
-		host, ports, err := loopbackPorts(2)
-		if err != nil {
-			return started, errors.Join(append(refused, fmt.Errorf("choose loopback ports to publish NATS on: %w", err))...)
-		}
-		attempt := append([]testcontainers.ContainerCustomizer{
-			tcnats.WithArgument("http_port", monitorPort.Port()),
-			hostConfig(host, ports[0], ports[1]),
-			testcontainers.WithWaitStrategy(wait.ForLog("Server is ready")),
-		}, options...)
-		started, err = tcnats.Run(context.Background(), image, attempt...)
-		if err == nil {
-			return started, nil
-		}
-		err = fmt.Errorf("%s ports %d and %d: %w", host, ports[0], ports[1], errors.Join(err, testcontainers.TerminateContainer(started)))
-		if !addressInUse(err) {
-			return started, errors.Join(append(refused, err)...)
-		}
-		refused = append(refused, err)
-	}
-	return started, fmt.Errorf("every one of %d published addresses was refused as in use: %w", startTries, errors.Join(refused...))
-}
-
 // StartNkeyAuthorized runs a NATS container of its own, with JetStream, that accepts only clients
 // authenticating as the nkey user whose public key is user, removed when t ends, and returns its
 // client URL once the server answers there (answering).
@@ -582,7 +504,7 @@ type NkeyUser struct {
 
 // StartNkeyAuthorizedUsers is StartNkeyAuthorized for a server of image admitting users alone,
 // each with its permissions. It returns the container, for a test that reads the server's log.
-func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*tcnats.NATSContainer, string) {
+func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*Container, string) {
 	t.Helper()
 	entries := make([]string, 0, len(users))
 	for _, user := range users {
@@ -593,34 +515,35 @@ func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*t
 		entries = append(entries, entry+" }")
 	}
 	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ %s ]\n}\n", strings.Join(entries, ", "))
-	container, err := start(image, tcnats.WithConfigFile(strings.NewReader(config)))
+	container, err := start(image, startOptions{config: config})
 	if err != nil {
 		t.Fatalf("start nkey-authorized NATS: %v", err)
 	}
-	testcontainers.CleanupContainer(t, container)
-	url, err := clientURL(container)
-	if err != nil {
-		t.Fatalf("NATS connection string: %v", err)
-	}
-	answering(t, url)
-	return container, url
+	t.Cleanup(func() {
+		if err := container.remove(); err != nil {
+			t.Errorf("remove the nkey-authorized NATS container: %v", err)
+		}
+	})
+	answering(t, container.url)
+	return container, container.url
 }
 
-// StartImage runs a NATS container of image of its own, with JetStream and no users (the NATS
-// module's own -js), removed when t ends, and returns its client URL once its JetStream API
-// answers. It is for a test of the server itself, such as one the daemon refuses (SkippingImage);
-// every other test shares the package's server through URL.
+// StartImage runs a NATS container of image of its own, with JetStream and no users (start's
+// command), removed when t ends, and returns its client URL once its JetStream API answers. It is
+// for a test of the server itself, such as one the daemon refuses (SkippingImage); every other test
+// shares the package's server through URL.
 func StartImage(t testing.TB, image string) string {
 	t.Helper()
-	container, err := start(image)
+	container, err := start(image, startOptions{})
 	if err != nil {
 		t.Fatalf("start NATS of %s: %v", image, err)
 	}
-	testcontainers.CleanupContainer(t, container)
-	url, err := clientURL(container)
-	if err != nil {
-		t.Fatalf("NATS connection string: %v", err)
-	}
+	t.Cleanup(func() {
+		if err := container.remove(); err != nil {
+			t.Errorf("remove the NATS container of %s: %v", image, err)
+		}
+	})
+	url := container.url
 	ctx, cancel := context.WithTimeout(t.Context(), readinessTimeout)
 	defer cancel()
 	for {

@@ -19,11 +19,12 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 func newStore(t *testing.T) (*oauthstore.Store, *pgxpool.Pool) {
 	t.Helper()
-	pool, err := pgxpool.New(context.Background(), storetest.URL(t))
+	pool, err := testpool.NewPool(context.Background(), storetest.URL(t))
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}

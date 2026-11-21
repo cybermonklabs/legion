@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/testbinary"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
@@ -54,3 +55,8 @@ func TestMain(m *testing.M) {
 		})
 	}))
 }
+
+// This test binary links no module of testcontainers-go (testbinary.LinksNoTestcontainers). It
+// starts itself again for each role process of the idle rig (TestIdleRigRoleProcess above), and
+// each of those starts paid that library's package init.
+func TestThisTestBinaryLinksNoTestcontainers(t *testing.T) { testbinary.LinksNoTestcontainers(t) }

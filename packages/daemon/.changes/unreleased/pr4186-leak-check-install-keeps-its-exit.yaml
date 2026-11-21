@@ -1,0 +1,8 @@
+kind: Fixed
+custom:
+  Issue: pr4186
+body: |-
+  A pod's launcher, which is its container's PID 1, starts the leak check install's one run of the
+  served check through the guard its orphan reaper skips, as it already starts the put-back's git and
+  jj. Before, the reaper could take that run's exit before the install's own wait read it, and the
+  role's start was refused with `the served check could not be run: waitid: no child processes`.

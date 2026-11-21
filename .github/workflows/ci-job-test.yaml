@@ -180,6 +180,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.go_tagged_tests_test: go-tagged-tests.test.sh and what it tests."
         type: string
         required: true
+      testcontainers_links_test:
+        description: "ci.yaml's needs.changes.outputs.testcontainers_links_test: testcontainers_links.test.sh and what it tests."
+        type: string
+        required: true
       ci_ok_test:
         description: "ci.yaml's needs.changes.outputs.ci_ok_test: ci-ok.test.sh and what it tests."
         type: string
@@ -570,9 +574,10 @@ jobs:
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
       # that compiled it. What runs go here is the held-port build of the envoy listener below,
-      # the CI-filter check's go list over a scratch module and the build-tag lister, none of
-      # which that entry is filled for. The daemon's go.mod is still the one Go pin of this
-      # repository's three modules that a job without one of its own reads.
+      # the CI-filter check's go list over a scratch module, the testcontainers link check's go
+      # list over fixture modules and the build-tag lister, none of which that entry is filled
+      # for. The daemon's go.mod is still the one Go pin of this repository's three modules
+      # that a job without one of its own reads.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -602,6 +607,13 @@ jobs:
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
         run: .github/scripts/go-test-step-expansion.test.sh
+
+      # After setup-go: the ci-filters job's check that no command and no self-starting test
+      # binary links testcontainers-go, over fixture modules whose stand-in for it is a local
+      # replace, so it downloads nothing.
+      - name: Test the testcontainers link check
+        if: inputs.changes-result != 'success' || inputs.testcontainers_links_test == 'true'
+        run: .github/scripts/testcontainers_links.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

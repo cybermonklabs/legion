@@ -281,6 +281,30 @@ func TestTheGitWrapperPutsItsHooksPathAfterTheCallersGlobalOptions(t *testing.T)
 	}
 }
 
+// readingJJ is a stand-in for the real jj at path. The one command the jj wrapper starts itself,
+// its read of git.executable-path (the command whose last three words are `config get
+// git.executable-path`), goes to the real jj at jj, because that read is what the wrapper's check
+// is made of. Every other command it records in log, as logging does, and exits 0. That other
+// command is the push the wrapper hands on, and what jj then does with it is jj's and not the
+// wrapper's: in a repository with no remote, jj 0.45.1-sami prints "Nothing changed." and exits 0,
+// and jj 0.46.0-sami prints "No git remotes to push to" and exits 1, so a test that read the push's
+// own status passed or failed by the jj build it found on PATH.
+func readingJJ(t *testing.T, path, jj, log string) string {
+	t.Helper()
+	script := "#!/bin/sh\n" +
+		"a= b= c=\n" +
+		"for arg; do a=$b; b=$c; c=$arg; done\n" +
+		"if [ \"$a\" = config ] && [ \"$b\" = get ] && [ \"$c\" = git.executable-path ]; then\n" +
+		"  exec '" + jj + "' \"$@\"\n" +
+		"fi\n" +
+		"printf '%s\\0' \"$@\" >> '" + log + "'\n" +
+		"exit 0\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // The jj wrapper reads git.executable-path as the push would read it, the caller's own
 // configuration arguments included: a `jj git push --config git.executable-path=<another git>`
 // names a git on the command line, which outranks every configuration file, and a read without
@@ -301,8 +325,10 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 	gitWrapper := wrapperCopy(t, bin, "git", [2]string{
 		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), filepath.Join(dir, "argv")),
 	})
+	// The real jj reads the configuration; the push the wrapper hands on is recorded, not run.
+	jjLog := filepath.Join(dir, "jj-argv")
 	script := wrapperCopy(t, dir, "jj",
-		[2]string{"real=/usr/local/bin/jj", "real=" + jj},
+		[2]string{"real=/usr/local/bin/jj", "real=" + readingJJ(t, filepath.Join(dir, "stand-in-jj"), jj, jjLog)},
 		[2]string{"wrapper=/opt/legion/bin/git", "wrapper=" + gitWrapper},
 	)
 	// A configuration file naming another git, for the --config-file spelling.
@@ -313,14 +339,6 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 	repo := filepath.Join(dir, "repo")
 	run := fixturegit.Isolated(t, filepath.Join(dir, "home")).With("PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"))
 	run.Run(dir, fixturegit.JJInit(repo, false)...)
-	// The remote a real push has, which the pushes below must be able to resolve. jj 0.45 ended a
-	// `jj git push` with no remote at "Nothing changed." because its default revset named no
-	// bookmark; jj 0.46, whose git.push became a pattern over the remotes, resolves the remotes
-	// first and fails "No git remotes to push to", so without one the row's verdict was the host's
-	// jj version. With one, both versions stop at "Nothing changed." and run no git.
-	remote := filepath.Join(dir, "remote.git")
-	run.Run(dir, fixturegit.InitBare(remote, "")...)
-	run.Run(repo, "jj", "git", "remote", "add", "origin", remote)
 
 	for _, tc := range []struct {
 		name string
@@ -335,6 +353,10 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 		{name: "a --config naming the wrapper itself", args: []string{"git", "push", "--config", "git.executable-path=" + gitWrapper}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Each case reads only the push it handed jj itself.
+			if err := os.Remove(jjLog); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
 			out, err := run.Try(repo, append([]string{script}, tc.args...)...)
 			refused := strings.Contains(out, "LEAK CHECK SETUP ERROR")
 			if refused != tc.refused {
@@ -343,6 +365,9 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 			if !tc.refused {
 				if err != nil {
 					t.Fatalf("the wrapper did not run the push: %v\n%s", err, out)
+				}
+				if got := ranAs(t, jjLog); !slices.Equal(got, tc.args) {
+					t.Fatalf("the wrapper handed jj %q, want the caller's own arguments %q", got, tc.args)
 				}
 				return
 			}

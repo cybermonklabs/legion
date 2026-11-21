@@ -49,6 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // promptShutdown bounds a SIGTERM's whole ordered shutdown with a dashboard open. Closing the
@@ -1062,6 +1063,7 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 	if err != nil {
 		t.Fatalf("parse the relay's URL: %v", err)
 	}
+	config.MaxConns = testpool.PoolConns
 	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
 	opened, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {

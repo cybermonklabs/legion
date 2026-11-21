@@ -1,62 +1,134 @@
 package testnats
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/sjawhar/legion/daemon/internal/testbinary"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A start that fails after Docker created the container — here a readiness wait that can never
 // succeed, as a start timing out under load does — leaves no container behind once it returns: the
 // container is shared by the package, so no test's end would remove it. The container is asked for
-// by its label on the same Docker daemon testcontainers created it on. A run on an external server
-// starts no container, and is how a host with no Docker runs these tests, so it skips this one.
+// by a label of this row's own on the Docker daemon the docker CLI reaches. A run on an external
+// server starts no container, and is how a host with no Docker runs these tests, so it skips this
+// one.
 func TestAFailedStartLeavesNoContainer(t *testing.T) {
 	if server, _, err := external(); err == nil && server != "" {
 		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
 	}
 	label := "legion-testnats-" + rand.Text()
-	created, err := start(Image,
-		testcontainers.WithLabels(map[string]string{"legion.test": label}),
-		testcontainers.WithWaitStrategy(wait.ForLog("a line NATS never prints").WithStartupTimeout(3*time.Second)),
-	)
+	created, err := start(Image, startOptions{
+		labels: map[string]string{"legion.test": label},
+		ready:  "a line NATS never prints",
+		within: 3 * time.Second,
+	})
 	if err == nil {
 		t.Fatal("a start whose readiness wait cannot succeed returned no error")
 	}
 	if created == nil {
 		t.Fatalf("the failed start created no container (%v), so there was nothing to leak", err)
 	}
-	docker, err := testcontainers.NewDockerClientWithOpts(t.Context())
-	if err != nil {
-		t.Fatalf("the Docker client testcontainers uses: %v", err)
-	}
-	defer docker.Close()
-	left, err := docker.ContainerList(t.Context(), container.ListOptions{All: true, Filters: filters.NewArgs(filters.Arg("label", "legion.test="+label))})
+	left, err := docker(t.Context(), nil, "ps", "--all", "--quiet", "--filter", "label=legion.test="+label)
 	if err != nil {
 		t.Fatalf("list containers labelled %s: %v", label, err)
 	}
-	for _, c := range left {
-		t.Errorf("container %s of the failed start is still there (%s)", c.ID, c.State)
-		_ = docker.ContainerRemove(t.Context(), c.ID, container.RemoveOptions{Force: true})
+	for _, id := range strings.Fields(left) {
+		t.Errorf("container %s of the failed start is still there", id)
+		_, _ = docker(context.Background(), nil, "rm", "--force", "--volumes", id)
 	}
 }
+
+// reaperChildEnv makes this test binary, started again by TestAKilledTestBinaryLeavesNoContainer,
+// start a container, print its ID and wait to be killed.
+const reaperChildEnv = "LEGION_TESTNATS_REAPER_CHILD"
+
+// A test binary that is killed before it removes its container leaves none behind: the kernel
+// closes the reaper's pipe when the binary ends, and the reaper removes every container of the
+// binary's session (container.go). The row starts this test binary again as a child that starts a
+// container and then waits, kills the child with SIGKILL, which no cleanup of the child outlives,
+// and waits for the container to be gone. A run on an external server starts no container, so it
+// skips this row.
+func TestAKilledTestBinaryLeavesNoContainer(t *testing.T) {
+	if os.Getenv(reaperChildEnv) != "" {
+		started, err := start(Image, startOptions{})
+		if err != nil {
+			fmt.Printf("start: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("started %s\n", started.id)
+		// The parent holds this stdin open until it has killed this process.
+		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+		return
+	}
+	if server, _, err := external(); err == nil && server != "" {
+		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestAKilledTestBinaryLeavesNoContainer$", "-test.count=1")
+	child.Env = append(os.Environ(), reaperChildEnv+"=1")
+	stdin, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	stdout, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Start(); err != nil {
+		t.Fatalf("start this test binary again: %v", err)
+	}
+	killed := false
+	defer func() {
+		if !killed {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+		}
+	}()
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	id, ok := strings.CutPrefix(strings.TrimSpace(line), "started ")
+	if err != nil || !ok || id == "" {
+		t.Fatalf("the child started no container: %q, %v", line, err)
+	}
+	// A container this row could not see removed is removed here, by its ID, so a failing run
+	// leaves nothing behind either.
+	t.Cleanup(func() { _, _ = docker(context.Background(), nil, "rm", "--force", "--volumes", id) })
+	if _, err := docker(t.Context(), nil, "inspect", "--format", "{{.State.Running}}", id); err != nil {
+		t.Fatalf("the child's container %s is not there to be reaped: %v", id, err)
+	}
+	if err := child.Process.Kill(); err != nil {
+		t.Fatalf("kill the child: %v", err)
+	}
+	killed = true
+	var exit *exec.ExitError
+	if err := child.Wait(); !errors.As(err, &exit) || exit.ExitCode() != -1 {
+		t.Fatalf("the child ended with %v, want the SIGKILL this row sent", err)
+	}
+	testwait.Eventually(t, "the killed child's container "+id+" to be removed", func() bool {
+		_, err := docker(t.Context(), nil, "inspect", "--format", "{{.Id}}", id)
+		return err != nil && strings.Contains(strings.ToLower(err.Error()), "no such object")
+	})
+}
+
+// This test binary, which TestAKilledTestBinaryLeavesNoContainer starts again, links no module of
+// testcontainers-go (testbinary.LinksNoTestcontainers), so no start of it pays that library's
+// package init (container.go).
+func TestThisTestBinaryLinksNoTestcontainers(t *testing.T) { testbinary.LinksNoTestcontainers(t) }
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
 

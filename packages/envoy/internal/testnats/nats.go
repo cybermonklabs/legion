@@ -38,7 +38,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // Image is ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml), whose

@@ -7,7 +7,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // What a claim write refused by a database the daemon cannot reach really carries, measured
@@ -36,7 +37,7 @@ import (
 // is what meets the refusal — exactly as a daemon whose database went away meets it.
 func TestTheOwedWriteErrorsOfAnUnreachableDatabaseCarryNoSQLSTATE(t *testing.T) {
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, "postgres://legion:secret@127.0.0.1:1/legion")
+	pool, err := testpool.NewPool(ctx, "postgres://legion:secret@127.0.0.1:1/legion")
 	if err != nil {
 		t.Fatalf("build a pool at an address nothing listens on: %v", err)
 	}

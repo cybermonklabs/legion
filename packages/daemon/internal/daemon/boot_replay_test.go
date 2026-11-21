@@ -312,7 +312,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		var address string
 		for deadline := time.Now().Add(60 * time.Second); address == ""; time.Sleep(5 * time.Millisecond) {
 			if time.Now().After(deadline) {
-				// The daemon never built its runtime; startDaemonWithin fails the test.
+				// The daemon never built its runtime; startDaemonLogging fails the test.
 				return
 			}
 			record.mu.Lock()
@@ -327,7 +327,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		}
 	}()
 
-	startDaemonWithin(t, cfg, o, quietLogger(), 60*time.Second)
+	startDaemonLogging(t, cfg, o, quietLogger())
 
 	var conns []net.Conn
 	t.Cleanup(func() {

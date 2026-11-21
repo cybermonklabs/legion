@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/sjawhar/envoy/testport"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -1331,7 +1332,10 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 		t.Errorf("the Ready cache is %+v (health %+v), want its /healthz", widgets, widgets.Health)
 	}
 
+	// The cache's server stops, and the pod's address leads from here on to a port the test holds
+	// and nothing listens on: the closed server's port is any process's to take and answer on.
 	served.Close()
+	network.route("10.0.0.5:8418", testport.Refused(t))
 	g.r.readCacheHealth(g.ctx)
 	if widgets := g.r.RepositoryCaches()[1]; widgets.Health != nil || !strings.Contains(widgets.HealthError, "connection refused") {
 		t.Errorf("a cache whose /healthz cannot be read is %+v, want the read's failure and no health", widgets)
@@ -1350,6 +1354,7 @@ type podNetwork struct {
 func (n *podNetwork) dial(ctx context.Context, network, address string) (net.Conn, error) {
 	n.mu.Lock()
 	n.dialed = append(n.dialed, address)
+	to, routed := n.routes[address]
 	n.mu.Unlock()
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
@@ -1358,11 +1363,17 @@ func (n *podNetwork) dial(ctx context.Context, network, address string) (net.Con
 	if net.ParseIP(host) == nil {
 		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 	}
-	to, routed := n.routes[address]
 	if !routed {
 		return nil, fmt.Errorf("dial %s: no route to host", address)
 	}
 	return (&net.Dialer{}).DialContext(ctx, network, to)
+}
+
+// route has address lead to the listener at to from the next dial on.
+func (n *podNetwork) route(address, to string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.routes[address] = to
 }
 
 func (n *podNetwork) addresses() []string {

@@ -1021,7 +1021,12 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 		t.Fatalf("ack %d: %v", first.StreamSeq, err)
 	}
 	// One pull request asks for a whole batch, so the server delivered all three: the two this
-	// row never read sit unread in the pull's queue, and they are what the consumer awaits.
+	// row never read are what the consumer awaits, and Release returns them once the pull holds
+	// them. The row waits for the pull to hold both (waitForQueued), which is the state Release
+	// gives back from. The server's count of the two awaiting an ack is no wait for that: the
+	// server counts a message delivered before the message reaches the pull, and a Release run in
+	// between returned the one the pull held.
+	waitForQueued(t, pull, 2)
 	held := waitForAckPending(t, consumers, session, 2)
 	t.Logf("before Release the consumer has NumWaiting %d and NumAckPending %d", held.NumWaiting, held.NumAckPending)
 	if returned, err := pull.Release(); returned != 2 || err != nil {

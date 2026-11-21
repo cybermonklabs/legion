@@ -21,11 +21,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
-// realGHForCapture is the real gh a test that drives one runs: LEGION_GH_PATH when the test runs
-// in a Legion pane or pod, whose `gh` on PATH is the wrapper, else the gh on PATH; a machine with
-// neither skips, as the other gh-backed tests do. A gh on PATH that is a script skips too: it is
-// a wrapper of the machine's own (a gh shim that hands each call to the next gh on PATH, which is
-// the `legion gh` this test puts there), as boot refuses one for the real gh (daemon.RefuseScriptGH).
+// realGHForCapture is the real gh a test that drives one without a control of its own runs
+// (bothInstalledGh, which reads only gh's help): LEGION_GH_PATH when the test runs in a Legion
+// pane or pod, whose `gh` on PATH is the wrapper, else the first gh on PATH that is no script
+// (realGHCandidates) and answers as gh does with a home of its own (answersAsGH); a machine with
+// none skips, as the other gh-backed tests do. The first gh on PATH need not be that one: a
+// machine's own wrapper or a version manager's shim can head PATH with the real gh further down.
+// TestRealGhAndGitSendTheTargetOwnersToken has a control of its own, which tells a real gh from a
+// wrapper by the token it sends, so it tries the candidates itself.
 //
 // It also puts this test binary's own `legion gh` first on the test's PATH
 // (ghWrapperFirstOnPath), because a test that runs `gh` by name must reach the wrapper it is
@@ -33,22 +36,79 @@ import (
 // never against the one the test sets on the child's environment (os/exec LookPath, read when
 // exec.Command is built), so on a machine that has a `gh` of its own — a Legion pod's
 // /opt/legion/bin/gh, which runs the image's legion and not this build, among them — that gh
-// would answer the call and the test would measure it. Every caller runs `gh` that way.
+// would answer the call and the test would measure it. Every test that drives the real gh runs
+// `gh` that way.
 func realGHForCapture(t *testing.T) string {
 	t.Helper()
-	path := os.Getenv("LEGION_GH_PATH")
+	candidates, named := realGHCandidates()
+	path := ""
+	for _, candidate := range candidates {
+		if named || answersAsGH(t, candidate) {
+			path = candidate
+			break
+		}
+	}
 	if path == "" {
-		found, err := exec.LookPath("gh")
-		if err != nil {
-			t.Skip("no real gh on this machine: the capture test drives one")
-		}
-		if err := daemon.RefuseScriptGH(found); err != nil {
-			t.Skip(err)
-		}
-		path = found
+		t.Skipf("no gh on PATH but a script answers `gh --version` as gh does with a home of its own (%q were tried): the test drives the real gh; set LEGION_GH_PATH to it", candidates)
 	}
 	ghWrapperFirstOnPath(t)
 	return path
+}
+
+// answersAsGH is whether gh, run with a home of its own and a PATH of the system's directories
+// alone, prints gh's own version line. The real gh does; a version manager's shim, which picks a
+// version from the caller's own home, answers an error there instead.
+func answersAsGH(t *testing.T, gh string) bool {
+	t.Helper()
+	home := t.TempDir()
+	cmd := exec.Command(gh, "--version")
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + home, "GH_CONFIG_DIR=" + home, "GH_NO_UPDATE_NOTIFIER=1"}
+	out, err := cmd.Output()
+	return err == nil && strings.HasPrefix(string(out), "gh version ")
+}
+
+// realGHCandidates are the gh programs a test that drives the real gh may run, in the order it
+// tries them: LEGION_GH_PATH alone when it is set (named), as in a Legion pane or pod, whose `gh`
+// on PATH is the wrapper; otherwise every gh on PATH, first to last, but a script. A script is a
+// wrapper of the machine's own (a gh shim that hands each call to the next gh on PATH, which is
+// the `legion gh` a test puts there), as boot refuses one for the real gh (daemon.RefuseScriptGH).
+// The first gh on PATH need not be the real one: a machine's own gh wrapper can head PATH with the
+// real gh further down it, as on a devbox whose dotfiles shim comes first, then mise's shim, then
+// mise's install of gh.
+func realGHCandidates() (candidates []string, named bool) {
+	if path := os.Getenv("LEGION_GH_PATH"); path != "" {
+		return []string{path}, true
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		// A relative PATH entry is skipped, as exec.LookPath("gh") refuses one (exec.ErrDot).
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		path, err := exec.LookPath(filepath.Join(dir, "gh"))
+		if err != nil || slices.Contains(candidates, path) || daemon.RefuseScriptGH(path) != nil {
+			continue
+		}
+		candidates = append(candidates, path)
+	}
+	return candidates, false
+}
+
+// sentWithoutCredentials says what a control run sent by host and path, and of each credential
+// only whether there was one: a gh the control refuses is a machine's own wrapper, which may carry
+// a real credential, and a test log is no place for it.
+func sentWithoutCredentials(requests []capturedRequest) string {
+	if len(requests) == 0 {
+		return "nothing"
+	}
+	sent := make([]string, 0, len(requests))
+	for _, r := range requests {
+		credential := "no credential"
+		if r.auth != "" {
+			credential = "another credential"
+		}
+		sent = append(sent, r.host+r.path+" with "+credential)
+	}
+	return strings.Join(sent, ", ")
 }
 
 // ghWrapperFirstOnPath puts a `gh` that runs this test binary's `legion gh` first on the test's
@@ -91,7 +151,12 @@ func ghWrapperFirstOnPath(t *testing.T) {
 // (R4 of dispatch://INFRA-3399); no alias or extension runs, none is installed, and gh's own help
 // and version answer.
 func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
-	gh := realGHForCapture(t)
+	candidates, named := realGHCandidates()
+	if len(candidates) == 0 {
+		t.Skip("no gh on this machine that is not a script: the capture test drives the real one")
+	}
+	// After the candidates are listed, so the wrapper this puts first on PATH is none of them.
+	ghWrapperFirstOnPath(t)
 	git, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("no git on this machine")
@@ -124,7 +189,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		"GH_NO_UPDATE_NOTIFIER=1", "GH_PROMPT_DISABLED=1", "GH_SPINNER_DISABLED=1", "NO_COLOR=1",
 		"GH_TELEMETRY=false", "DO_NOT_TRACK=1",
 		"GH_TOKEN=", "GITHUB_TOKEN=", "GH_HOST=",
-		"GH_CONFIG_DIR=" + ghconfig.Dir(root, "acme"), "LEGION_GH_OWNERS_DIR=" + root, "LEGION_GH_PATH=" + gh,
+		"GH_CONFIG_DIR=" + ghconfig.Dir(root, "acme"), "LEGION_GH_OWNERS_DIR=" + root,
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
 		// `legion gh` passes every call through the leak guard, which refuses one it can run no
 		// shared check for; what this test reads is which token each call carries, so its check
@@ -186,13 +251,38 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		}
 	}
 
-	// The control: the gh under test, run directly with acme's directory, sends acme's token. A gh
-	// on PATH that does not — a wrapper of the machine's own that routes credentials elsewhere —
-	// is no real gh to prove the wrapper against, and LEGION_GH_PATH names the real one.
-	run(nil, gh, "api", "repos/acme/widgets")
-	if control := proxy.take(); len(control) == 0 || control[0].auth != "token "+tokens["acme"] {
-		t.Skipf("%s sent %+v for acme's directory: it does not read GH_CONFIG_DIR; set LEGION_GH_PATH to the real gh", gh, control)
+	// The control, which also chooses the gh under test: a real gh, run directly with acme's
+	// directory, sends acme's token. A gh that does not (a wrapper of the machine's own that routes
+	// credentials elsewhere, or finds no gh past itself on this test's PATH) is no real gh to prove
+	// the wrapper against, and the next candidate is tried. Its exit status says nothing, since the
+	// proxy answers no request with a success and a real gh exits non-zero too. The candidates run
+	// before base names one as LEGION_GH_PATH, so a wrapper that looks its gh up on PATH and finds
+	// this test's `legion gh` there is refused by it for that unset variable, rather than run again.
+	gh := ""
+	var refused []string
+	for _, candidate := range candidates {
+		cmd := exec.Command(candidate, "api", "repos/acme/widgets")
+		cmd.Env, cmd.Dir = base, home
+		err := cmd.Run()
+		control := proxy.take()
+		if len(control) > 0 && control[0].auth == "token "+tokens["acme"] {
+			gh = candidate
+			break
+		}
+		why := candidate + " sent " + sentWithoutCredentials(control)
+		if _, exited := err.(*exec.ExitError); err != nil && !exited {
+			why = candidate + " did not run: " + err.Error()
+		}
+		refused = append(refused, why)
 	}
+	switch {
+	case gh == "" && named:
+		t.Fatalf("LEGION_GH_PATH names no real gh: run with acme's directory, %s rather than acme's token, so it does not read GH_CONFIG_DIR as gh does", refused[0])
+	case gh == "":
+		t.Skipf("no gh on PATH reads GH_CONFIG_DIR as gh does, so there is no real gh to prove the wrapper against: run with acme's directory, %s; set LEGION_GH_PATH to the real gh", strings.Join(refused, "; "))
+	}
+	base = append(base, "LEGION_GH_PATH="+gh)
+	t.Logf("the real gh under test is %s", gh)
 
 	// acme's directory, the issue owner's, holds gh aliases of its own beside gh's default co
 	// (which an aliases key of the file's own replaces, so it is listed again): one naming

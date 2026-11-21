@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // TestANamedTradeMintsUncheckedOnlyForAnEmptyList: while Dispatch cannot be asked, an operator

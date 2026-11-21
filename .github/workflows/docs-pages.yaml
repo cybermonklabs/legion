@@ -143,6 +143,7 @@ on:
       - 'packages/envoy/listenerwire/*'
       - 'packages/envoy/listenfd/*'
       - 'packages/envoy/migrationid/*'
+      - 'packages/envoy/poolsetting/*'
       - 'packages/envoy/roleholder/*'
       - 'packages/envoy/sessiontiming/*'
       - 'packages/envoy/subjectforms/*'

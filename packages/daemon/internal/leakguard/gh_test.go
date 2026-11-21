@@ -80,7 +80,7 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 			t.Fatalf("the call answered %s after it began, inside the caller's %s: a bound shorter than the caller's stopped the check",
 				time.Since(started).Round(time.Millisecond), theBound)
 		}
-		stoppedByItsBound(t, setupFailure(t, err), theBound)
+		stoppedByItsBound(t, setupFailure(t, err), "the shared public leak check", theBound)
 		if len(asked) != 0 {
 			t.Fatalf("visibility asked of %q for a read whose check was stopped", asked)
 		}
@@ -106,34 +106,57 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 	}
 }
 
-// theStop is the sentence a setup failure says of a shared check its bound stopped
-// (stoppedError.said): the whole seconds the check ran, then the bound it was given.
-var theStop = regexp.MustCompile(`^the shared public leak check ran (\d+) s and was stopped by its bound of (\d+) s$`)
-
-// stoppedByItsBound fails t unless failed is the shared check stopped by its bound, said with the
-// seconds the guard counted: a bound no longer than ceiling, the caller's own, and a run no shorter
-// than that bound, since the check is stopped at its deadline and never before. The bound is what
-// was left of the caller's deadline when the check started (Guard.run), so on a loaded machine,
-// where the guard's own work before the check takes longer, it is less than the caller's whole
-// bound: it is read against the ceiling, as stopBound reads a child's, and never for its exact
-// seconds.
-func stoppedByItsBound(t *testing.T, failed *SetupFailure, ceiling time.Duration) {
+// stopSaid reads the sentence a setup failure ends with where the end of the caller's context
+// stopped a child (stoppedError.said) for name, the shared check or a read's program: the whole
+// seconds it ran, then the bound it was given or the cancel that stopped it. A test reads the
+// sentence for what stopped the child, its bound or a cancel, and never for its seconds: on a
+// loaded machine a child starts later and runs another whole number of seconds than the test's own
+// bound or cancel gave it, so the numbers are read only against each other (stoppedByItsBound).
+func stopSaid(t *testing.T, failed *SetupFailure, name string) (ran, bound int64, cancelled bool) {
 	t.Helper()
-	said := theStop.FindStringSubmatch(failed.Why)
+	sentence := regexp.MustCompile(`: ` + regexp.QuoteMeta(name) + ` ran (\d+) s and was stopped by (?:its bound of (\d+) s|(a cancel))$`)
+	said := sentence.FindStringSubmatch(failed.Error())
 	if said == nil {
-		t.Fatalf("the setup failure says %q, want the shared check stopped by its bound", failed.Error())
+		t.Fatalf("the setup failure says %q, want it to end saying %s was stopped by its bound or a cancel", failed.Error(), name)
 	}
 	ran, err := strconv.ParseInt(said[1], 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bound, err := strconv.ParseInt(said[2], 10, 64)
+	if said[3] != "" {
+		return ran, 0, true
+	}
+	bound, err = strconv.ParseInt(said[2], 10, 64)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return ran, bound, false
+}
+
+// stoppedByItsBound fails t unless failed says name was stopped by its bound, with the seconds the
+// guard counted: a bound no longer than ceiling, the caller's own, and a run no shorter than that
+// bound, since the child is stopped at its deadline and never before. The bound is what was left
+// of the caller's deadline when the child started (Guard.run), so on a loaded machine, where the
+// guard's own work before the child takes longer, it is less than the caller's whole bound: it is
+// read against the ceiling, as stopBound reads a child's, and never for its exact seconds.
+func stoppedByItsBound(t *testing.T, failed *SetupFailure, name string, ceiling time.Duration) {
+	t.Helper()
+	ran, bound, cancelled := stopSaid(t, failed, name)
+	if cancelled {
+		t.Fatalf("the setup failure says %q, want %s stopped by its bound, not a cancel", failed.Error(), name)
 	}
 	if bound > wholeSeconds(ceiling) || ran < bound {
 		t.Fatalf("the setup failure says %q: a bound of %d s and a run of %d s, want a bound no longer than the caller's %d s and a run no shorter than its bound",
 			failed.Error(), bound, ran, wholeSeconds(ceiling))
+	}
+}
+
+// stoppedByACancel fails t unless failed says name was stopped by a cancel, whatever whole seconds
+// it ran before the cancel reached it.
+func stoppedByACancel(t *testing.T, failed *SetupFailure, name string) {
+	t.Helper()
+	if _, _, cancelled := stopSaid(t, failed, name); !cancelled {
+		t.Fatalf("the setup failure says %q, want %s stopped by a cancel", failed.Error(), name)
 	}
 }
 

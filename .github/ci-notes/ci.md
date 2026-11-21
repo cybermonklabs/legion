@@ -197,6 +197,16 @@ holds the model, which airlock-lean alone reads, and testdata/ the fuzz seeds an
 the mutant patches, which the airlock package's own tests read - the daemon
 compiles that package without running them.
 
+## daemon_envoy_deps: The pool size every test of both modules builds at
+
+The pool size every test of both modules builds at, PoolConns, and NewPool, which opens a
+pool of that size. It is a public package of the envoy module, so the daemon's tests import it
+through the daemon's replace of packages/envoy rather than keep a copy of it: the daemon's
+internal/daemon, internal/intake, internal/record, internal/store and internal/supervise
+tests, and internal/testpg's ClonePool, which every clone of the daemon's test template goes
+through. A change to it changes the size of those pools, so it runs every job this anchor's
+filters gate, typecheck's vet and daemon-go's tests among them.
+
 ## daemon_envoy_deps: The daemon reads the Envoy session timings (heartbeat
 
 The daemon reads the Envoy session timings (heartbeat, live window, claim
@@ -278,6 +288,12 @@ tests were daemon-go's, bun.lock and skills/ were on that filter and a change to
 either ran the daemon's whole Go suite (dispatch://INFRA-1413).
 No Stage 1 script, no uv and no NATS images: those are daemon-go's steps, not this
 one's.
+
+## plugin_pack: internal/daemon's tests build their pools at Envoy's testpool size
+
+internal/daemon's tests build their pools at Envoy's testpool size, and internal/testpg's
+ClonePool, which those tests take, opens its pool with testpool.NewPool. The step compiles that
+package's tests to run its three by name, so a change to testpool changes what the step builds.
 
 ## claude_envoy_build: What packages/claude-envoy/scripts/build.ts and scripts/verify-build.sh
 
@@ -2007,10 +2023,13 @@ packages/envoy-client/**, so the suite brings no new path into this job's closur
 
 Holds every filter in `changes` to every file its job reads, recomputing each Go job's closure
 with go list (.github/scripts/check-ci-filters.sh). go list runs with GOPROXY=off over an empty
-module cache, so the job needs Go but downloads no module and restores no cache. It also holds
-every workflow file to 64,000 bytes and to what GitHub's own parser reads
-(.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml runs a
-second time, in a file small enough to start when this one is too large to.
+module cache, so that check needs Go but downloads no module. The job's next step,
+.github/scripts/testcontainers_links.py, lists the commands and self-starting test binaries of
+the daemon and envoy modules with their third-party packages, so it downloads the modules they
+need into the runner's empty cache: 236 modules, 368 MB of zips and 17 s on a devbox. The job
+restores no cache. It also holds every workflow file to 64,000 bytes and to what GitHub's own
+parser reads (.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml
+runs a second time, in a file small enough to start when this one is too large to.
 
 ## What the proof editor's offline proof shows
 

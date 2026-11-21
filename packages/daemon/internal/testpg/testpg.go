@@ -9,7 +9,9 @@
 // internal/testpg/testdb, which imports nothing of this module and so is open to every package,
 // internal/store among them: an empty database (testdb.Database), a file holding its DSN
 // (testdb.DSNFile), one database for a whole run (testdb.RunDatabaseMain, testdb.RunDatabaseFor),
-// and a database reached across a network's delay (testdb.Delayed), and the drop that waits out
-// an autovacuum worker and a backend that has not exited yet (testdb.Drop), which every clone of
-// this package's template and the template itself go through.
+// a database reached across a network's delay (testdb.Delayed), and the drop that waits out an
+// autovacuum worker and a backend that has not exited yet (testdb.Drop), which every clone of this
+// package's template and the template itself go through. The size of every pool a test builds is
+// Envoy's public testpool (testpool.PoolConns, testpool.NewPool), which ClonePool's pool takes and
+// both Go modules import.
 package testpg

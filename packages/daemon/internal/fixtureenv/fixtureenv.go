@@ -4,18 +4,26 @@
 // leads with Legion's own git and jj wrappers; a test that inherited them could read or push the
 // pod's own work, read and write the conversation of every agent of the deployment, or have its
 // own push refused by the pod's leak guard. Guard takes them out of a test process's own
-// environment, so every command it starts and everything it runs in-process inherits none;
-// Isolated hands one command none of the variables and a home of the test's.
+// environment, so every command it starts and everything it runs in-process inherits none, and
+// puts the git and jj a machine's own wrappers of them run first on the process's PATH, so a
+// command under a home of the test's meets no wrapper that needs another; Isolated hands one
+// command none of the variables and a home of the test's.
 package fixtureenv
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 )
 
@@ -100,14 +108,17 @@ var unguarded []string
 // (withoutImageWrappers), and sets GIT_ALLOW_PROTOCOL=file. The PATH is the process's own because
 // exec.Command and exec.LookPath look a bare name up on it, whatever PATH a command's Env holds:
 // a fixture's `git push` under Isolated, and a test's exec.LookPath("jj") for the real jj, find
-// the first git or jj of the process's PATH. A package whose tests run git or jj — as child
-// processes, with no Env of their own, or in-process through the code under test — calls it in
-// TestMain before m.Run, after the branch where the test binary runs as a helper child: that child
-// keeps the variables its test hands it. Code under test that names its own transport
-// (workspace's GIT_ALLOW_PROTOCOL=https) still does; a git that names none can reach no network
-// remote. Guard does the same in every build, the e2e one included, whose untagged tests are the
-// same fixtures; a live proof of that build, which reaches a real cluster and GitHub on purpose,
-// takes the process's own environment back for its own run with Live.
+// the first git or jj of the process's PATH. Guard then puts first on that PATH a directory of
+// links to the git and jj the PATH's own git and jj run (realTools), so neither a fixture under
+// Isolated nor the code under test, which looks each up by name, meets a machine's wrapper of
+// them. A package whose tests run git or jj — as child processes, with no Env of their own, or
+// in-process through the code under test — calls it in TestMain before m.Run, after the branch
+// where the test binary runs as a helper child: that child keeps the variables its test hands it.
+// Code under test that names its own transport (workspace's GIT_ALLOW_PROTOCOL=https) still does;
+// a git that names none can reach no network remote. Guard does the same in every build, the e2e
+// one included, whose untagged tests are the same fixtures; a live proof of that build, which
+// reaches a real cluster and GitHub on purpose, takes the process's own environment back for its
+// own run with Live.
 func Guard(keep ...string) error {
 	first := guardedKeep == nil
 	for _, entry := range os.Environ() {
@@ -125,12 +136,21 @@ func Guard(keep ...string) error {
 			return fmt.Errorf("fixtureenv: unset %s: %w", key, err)
 		}
 	}
-	path := os.Getenv("PATH")
-	if kept := withoutImageWrappers(path); kept != path {
+	own := os.Getenv("PATH")
+	path := withoutImageWrappers(own)
+	tools, err := realTools(path)
+	if err != nil {
+		return err
+	}
+	if tools != "" {
+		rest := slices.DeleteFunc(filepath.SplitList(path), func(entry string) bool { return entry == tools })
+		path = strings.Join(append([]string{tools}, rest...), string(filepath.ListSeparator))
+	}
+	if path != own {
 		if first {
-			unguarded = append(unguarded, "PATH="+path)
+			unguarded = append(unguarded, "PATH="+own)
 		}
-		if err := os.Setenv("PATH", kept); err != nil {
+		if err := os.Setenv("PATH", path); err != nil {
 			return fmt.Errorf("fixtureenv: set PATH: %w", err)
 		}
 	}
@@ -158,6 +178,143 @@ func MustGuard(keep ...string) {
 func guardFailed(err error) {
 	fmt.Fprintln(os.Stderr, "TestMain:", err)
 	os.Exit(1)
+}
+
+// parentExe is the shell command that prints the executable of the process it runs under, from
+// Linux's /proc: the parent of the shell that runs it is that process.
+const parentExe = `readlink "/proc/$PPID/exe"`
+
+// realTools is a directory holding git and jj: links to the programs path's own git and jj run,
+// for Guard to put first on the process's PATH. The first git or jj of a machine's PATH can be a
+// wrapper that finds its tool by, or changes what that tool does by, the home of whoever runs it: a
+// mise shim finds its version under the caller's HOME and none under a fixture's (`mise ERROR No
+// version is set for shim: jj`), and a person's own git or jj shim can check every commit against
+// a list it decrypts with that HOME's keys and refuse the commit where it cannot. A fixture runs
+// git and jj under a home of the test's (Isolated), and so does the code under test, so a test's
+// result depended on what the machine put first on PATH.
+//
+// Each program is read from itself while it runs: the executable /proc names for the parent of a
+// shell it starts (a git shell alias; `jj util exec`), started as path's first git or jj, in a
+// directory of its own, under the process's environment, where a wrapper finds its tool, and with
+// no configuration of the machine's (GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM and an empty
+// JJ_CONFIG). A tool path does not hold is left out, so a test that needs it skips or fails as it
+// did; one path holds that cannot be read that way, a wrapper that runs no tool, is an error
+// naming it. "" is a path with neither, and every system but Linux, which alone has that /proc.
+// The directory is the user's cache's, named for the programs it links (linkDir), so every test
+// binary that reads the same two programs shares it and none has one to remove.
+func realTools(path string) (string, error) {
+	if runtime.GOOS != "linux" {
+		return "", nil
+	}
+	work, err := os.MkdirTemp("", "fixtureenv-tools-")
+	if err != nil {
+		return "", fmt.Errorf("fixtureenv: make the directory the real git and jj are read in: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(work) }()
+	emptyConfig := filepath.Join(work, "jj-config.toml")
+	if err := os.WriteFile(emptyConfig, nil, 0o600); err != nil {
+		return "", fmt.Errorf("fixtureenv: write the empty jj configuration: %w", err)
+	}
+	targets := map[string]string{}
+	for _, tool := range []struct {
+		name string
+		args []string
+		env  []string
+	}{
+		{"git", []string{"-c", "alias.binary=!" + parentExe, "binary"}, []string{"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1"}},
+		{"jj", []string{"util", "exec", "--", "sh", "-c", parentExe}, []string{"JJ_CONFIG=" + emptyConfig}},
+	} {
+		onPath, found := lookpath.On(path, tool.name)
+		if !found {
+			continue
+		}
+		binary, err := runningBinary(work, path, onPath, tool.args, tool.env)
+		if err != nil {
+			return "", fmt.Errorf("fixtureenv: %w", err)
+		}
+		targets[tool.name] = binary
+	}
+	if len(targets) == 0 {
+		return "", nil
+	}
+	return linkDir(targets)
+}
+
+// runningBinary runs onPath with args, which make it run parentExe in a shell under itself, in dir,
+// under the process's environment with path as its PATH and env over it, and answers the absolute
+// path that prints: the program onPath ran. A run that prints no such path is an error naming the
+// command, its status, what it printed and its stderr.
+func runningBinary(dir, path, onPath string, args, env []string) (string, error) {
+	cmd := exec.Command(onPath, args...)
+	cmd.Dir = dir
+	cmd.Env = append(append(os.Environ(), "PATH="+path), env...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	binary := strings.TrimSpace(string(out))
+	if err == nil && filepath.IsAbs(binary) {
+		_, err = os.Stat(binary)
+		if err == nil {
+			return binary, nil
+		}
+	}
+	return "", fmt.Errorf("could not read the program %s runs: `%s %s` answered %q (%v), and reading it needs Linux's /proc; stderr: %s",
+		onPath, onPath, strings.Join(args, " "), binary, err, stderr.String())
+}
+
+// linkDir is the directory, in the user's cache, holding one link per name of targets to its
+// program, named for those links' targets: a second test binary that reads the same programs finds
+// it made, and two that make it at once each make a directory of their own and rename it into
+// place, the one that loses taking the winner's.
+func linkDir(targets map[string]string) (string, error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("fixtureenv: find the cache that holds the real git and jj: %w", err)
+	}
+	parent := filepath.Join(cache, "legion-fixtureenv")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", fmt.Errorf("fixtureenv: make %s: %w", parent, err)
+	}
+	hash := sha256.New()
+	for _, name := range slices.Sorted(maps.Keys(targets)) {
+		fmt.Fprintf(hash, "%s=%s\n", name, targets[name])
+	}
+	dir := filepath.Join(parent, hex.EncodeToString(hash.Sum(nil))[:16])
+	if holds(dir, targets) {
+		return dir, nil
+	}
+	made, err := os.MkdirTemp(parent, filepath.Base(dir)+".")
+	if err != nil {
+		return "", fmt.Errorf("fixtureenv: make the links to the real git and jj: %w", err)
+	}
+	for name, target := range targets {
+		if err := os.Symlink(target, filepath.Join(made, name)); err != nil {
+			_ = os.RemoveAll(made)
+			return "", fmt.Errorf("fixtureenv: link %s: %w", name, err)
+		}
+	}
+	if err := os.Rename(made, dir); err != nil {
+		_ = os.RemoveAll(made)
+		if holds(dir, targets) {
+			return dir, nil
+		}
+		return "", fmt.Errorf("fixtureenv: put the links to the real git and jj at %s: %w", dir, err)
+	}
+	return dir, nil
+}
+
+// holds is whether dir holds exactly one link per name of targets, each to its program.
+func holds(dir string, targets map[string]string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != len(targets) {
+		return false
+	}
+	for name, target := range targets {
+		if got, err := os.Readlink(filepath.Join(dir, name)); err != nil || got != target {
+			return false
+		}
+	}
+	return true
 }
 
 // Live gives the test the process's own values back of every variable Guard took out or set, its

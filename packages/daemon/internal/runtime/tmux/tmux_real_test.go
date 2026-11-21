@@ -147,13 +147,20 @@ type bootClaim struct {
 }
 
 // fakeDaemon serves POST /legion/v1/claims/register and /ready as the real routes will: the boot
-// token resolves to a claim or the registration is refused.
+// token resolves to a claim or the registration is refused, and each registration gets a secret
+// of its own, which its agent's ready carries back.
 type fakeDaemon struct {
 	server    *httptest.Server
 	mu        sync.Mutex
 	claims    map[string]bootClaim
-	registers []claim.RegisterRequest
+	registers []registered
 	readies   []claim.ReadyRequest
+}
+
+// registered is one registration and the secret minted for it.
+type registered struct {
+	claim.RegisterRequest
+	secret string
 }
 
 func newFakeDaemon() *fakeDaemon {
@@ -172,10 +179,11 @@ func newFakeDaemon() *fakeDaemon {
 			return
 		}
 		d.mu.Lock()
-		d.registers = append(d.registers, body)
+		secret := fmt.Sprintf("capability-%d", len(d.registers)+1)
+		d.registers = append(d.registers, registered{RegisterRequest: body, secret: secret})
 		d.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(claim.RegisterResponse{
-			ClaimToken: c.token, Tree: c.tree, Issue: c.issue, Role: c.role, Generation: c.generation, Secret: "capability",
+			ClaimToken: c.token, Tree: c.tree, Issue: c.issue, Role: c.role, Generation: c.generation, Secret: secret,
 		})
 	})
 	mux.HandleFunc("POST /legion/v1/claims/ready", func(w http.ResponseWriter, req *http.Request) {
@@ -201,7 +209,10 @@ func (d *fakeDaemon) resolve(bootToken string) (bootClaim, bool) {
 }
 
 // awaitReady waits for the agent holding bootToken to register and then declare itself ready,
-// returning its registration.
+// returning its registration. The ready is the one carrying that registration's secret: a resumed
+// agent registers as the session of the incarnation before it, and that incarnation's ready names
+// the same session, so a match on the session passed before the resumed agent had written its
+// report, let alone declared itself ready.
 func (d *fakeDaemon) awaitReady(t *testing.T, bootToken string) claim.RegisterRequest {
 	t.Helper()
 	var registration claim.RegisterRequest
@@ -210,9 +221,9 @@ func (d *fakeDaemon) awaitReady(t *testing.T, bootToken string) claim.RegisterRe
 		defer d.mu.Unlock()
 		for _, r := range d.registers {
 			if r.BootToken == bootToken {
-				registration = r
+				registration = r.RegisterRequest
 				for _, ready := range d.readies {
-					if ready.SessionID == r.SessionID {
+					if ready.Secret == r.secret && ready.SessionID == r.SessionID {
 						return true
 					}
 				}
@@ -718,10 +729,11 @@ func descendant(t *testing.T, root int, name string) int {
 	return found
 }
 
-// readReport is what the Oh My Pi stand-in recorded about its own launch. The stand-in writes it
-// as it starts, which is after the pane exists and after its agent registered, so the file is
-// waited for rather than read once: on a loaded machine the process is running before its first
-// write lands, and reading in that window is not a failed launch.
+// readReport is what the Oh My Pi stand-in recorded about its own launch. The stand-in renames the
+// report into place whole as it starts, which is after the pane exists and after its agent
+// registered, so the file is waited for rather than read once: on a loaded machine the process is
+// running before its report lands, and reading in that window is not a failed launch. Once the
+// file exists it is the whole report (omp-standin.go's writeWhole), so it is parsed once.
 func readReport(t *testing.T, workspace string, pid int) map[string]any {
 	t.Helper()
 	path := filepath.Join(workspace, fmt.Sprintf("standin-%d.json", pid))

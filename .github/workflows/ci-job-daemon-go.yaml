@@ -22,9 +22,8 @@ name: CI job daemon-go
 #   * the Postgres service and LEGION_TEST_PG_DSN, BROKER_TEST_DATABASE_URL and
 #     LEGION_E2E_PG_DSN — the daemon's unit tests' store, the broker rig its cipher
 #     contract tests drive, and Stage 1's;
-#   * TESTCONTAINERS_RYUK_DISABLED, LEGION_RUN_FUZZ_ITERS and LEGION_KEPT_PROPERTY_RUNS, read by
-#     the testcontainers-backed NATS tests, classify's fuzz tests and the daemon's
-#     keptPropertyEnv;
+#   * LEGION_RUN_FUZZ_ITERS and LEGION_KEPT_PROPERTY_RUNS, read by classify's fuzz tests and the
+#     daemon's keptPropertyEnv;
 #   * tmux, jj, Oh My Pi and uv, each refused-without by a test of this module (the comment on
 #     each step says which), and the NATS images those tests start;
 #   * the user-namespace sysctl internal/launcher's role-namespace tests need, which the race
@@ -97,10 +96,6 @@ jobs:
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       LEGION_E2E_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
-      # clean up, and its image (testcontainers/ryuk, on Docker Hub) would be one more registry
-      # pull a test could fail on.
-      TESTCONTAINERS_RYUK_DISABLED: "true"
       # The fuzz and property counts follow the lane. A pull-request run takes the reduced counts
       # below; every other lane — a merge group, a dispatched run — takes the empty string, which
       # every reader treats as unset (classify's run_fuzz_test.go and sender_fuzz_test.go, the

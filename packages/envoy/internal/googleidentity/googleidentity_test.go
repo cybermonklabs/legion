@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // stubMetadata stands up a metadata server at a host GCE_METADATA_HOST names, answering handler.

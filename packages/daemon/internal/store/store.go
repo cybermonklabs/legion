@@ -24,6 +24,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/poolsetting"
+
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
@@ -59,6 +61,17 @@ const (
 	idleBound      = 30 * time.Second
 )
 
+// PoolConns is the most connections the store's pool holds (MaxConns) when the DSN names no
+// pool_max_conns of its own. pgxpool's default is max(4, runtime.NumCPU()), and NumCPU in a
+// container is the host's CPU count, not the pod's CPU limit, so an unsized pool held as many
+// connections as the node had CPUs: a different number on every node, and 288 on a large dev
+// machine, past a Postgres of 100 connections. 32 is what every deployed daemon already runs with:
+// its deployment writes pool_max_conns=32 into each daemon's DSN, chosen after one deployed daemon
+// failed six boots in a row on 2026-10-26 with about 880 claims deciding at once, while its
+// instance served 41-48 connections. A DSN whose settings name pool_max_conns keeps
+// that number (poolsetting.Named).
+const PoolConns = 32
+
 // Store is the daemon's handle on its database. The pool is the guarded one (Pool): the pgx pool
 // it wraps is this package's alone, so no caller can ask for a connection past the refusal a
 // caller holding one gets (ErrNestedAcquire).
@@ -72,7 +85,8 @@ type Store struct {
 // Open connects to dsn and waits for the server to answer, so a daemon that
 // gets a Store has a database and one that does not is told where it failed.
 // Its pool is PoolConfig's, so every connection runs the store's text rule, and a dsn whose exec
-// mode the rule cannot run in is refused here, before any connection is opened.
+// mode the rule cannot run in is refused here, before any connection is opened. The pool holds at
+// most PoolConns connections, on every machine, unless dsn names a pool_max_conns of its own.
 // Every connection of the pool carries the idle bound (idleBound) unless dsn names a value of
 // its own, so a deployment can raise or lower it without a release.
 //
@@ -89,6 +103,9 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	config, err := PoolConfig(dsn)
 	if err != nil {
 		return nil, ConnectError(dsn, err)
+	}
+	if !poolsetting.Named(dsn) {
+		config.MaxConns = PoolConns
 	}
 	if _, named := config.ConnConfig.RuntimeParams[idleBoundParam]; !named {
 		// Milliseconds with no unit, which is the unit this setting counts in: the one spelling

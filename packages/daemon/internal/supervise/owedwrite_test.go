@@ -12,8 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
-	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/testpool"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -92,7 +92,7 @@ func newCountedHarness(t *testing.T) (*harness, *countingStore) {
 // Port 1 has no listener, so the dial is refused before any server reads anything.
 func dialFailure(t *testing.T) error {
 	t.Helper()
-	pool, err := pgxpool.New(context.Background(), "postgres://u:p@127.0.0.1:1/db")
+	pool, err := testpool.NewPool(context.Background(), "postgres://u:p@127.0.0.1:1/db")
 	if err != nil {
 		t.Fatalf("build a pool at an address nothing listens on: %v", err)
 	}
@@ -167,7 +167,7 @@ func refusingServer(t *testing.T, code, message string) string {
 // really builds rather than on whatever this helper happened to return.
 func refusedConnection(t *testing.T, code, message string) error {
 	t.Helper()
-	pool, err := pgxpool.New(context.Background(), "postgres://u:p@"+refusingServer(t, code, message)+"/db?sslmode=disable")
+	pool, err := testpool.NewPool(context.Background(), "postgres://u:p@"+refusingServer(t, code, message)+"/db?sslmode=disable")
 	if err != nil {
 		t.Fatalf("build a pool at a server that refuses every connection: %v", err)
 	}

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // relayProxy relays NATS connections to a server, so a test can act on the link between a client

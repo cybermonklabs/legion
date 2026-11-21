@@ -31,8 +31,9 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
 
-- A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
-  It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
+- A peer that is not there is `packages/envoy/testport`, one package for both modules: `packages/daemon` imports it through its `replace` of `packages/envoy`.
+  `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
+  It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP.
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
 
 - A listener a client dials — a test NATS server, a relay, proxy or fake in front of one — listens on `testport.ListenLoopback()` in `packages/envoy` and on `testnats.ListenLoopback()` in `packages/daemon`: a port the kernel chooses at a loopback address of its own, one of `127.0.0.0/8` chosen at random on Linux (`LoopbackIP`), and `127.0.0.1` elsewhere.
@@ -520,6 +521,36 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
 `packages/envoy/scripts/dev-postgres.sh`'s container.
 
+## A pool a Go test builds
+
+A Postgres pool a test builds has the same size on every machine. pgxpool's default,
+`max(4, runtime.NumCPU())`, is 4 on CI's 4-vCPU runners and 288 on a 288-CPU dev machine, so a test
+that runs work concurrently on an unsized pool opens as many connections as the machine has CPUs:
+on that machine `TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget` ran 100
+appliers on one `testpg.ClonePool`, passed the server's `max_connections` of 100 and failed with
+SQLSTATE 53300, while CI passed.
+
+Both modules name the size once: `testpool.PoolConns` in `packages/envoy/testpool`, 4, which is
+what every unsized pool already had on CI and pgx's own floor. It is a public package of the envoy
+module, which `packages/daemon` imports through its `replace` of `packages/envoy`; it imports
+nothing of either module, so every test package can take it, and it is a package of its own
+because envoy's `internal/testpg` imports testcontainers. A test writes `testpool.NewPool(ctx, dsn)`
+where it would write `pgxpool.New`, and sets `config.MaxConns` to the constant on a config from
+`pgxpool.ParseConfig`; a test that needs another size sets `MaxConns` itself. A pool copied from
+another pool's `Config()` keeps that pool's size, and `testpg.ClonePool` is sized at the
+constant. A store a product opens sizes its own pool on every machine, so a test that opens one,
+or a process it starts on a test's DSN, gets that store's size: the daemon's `store.Open` holds
+32 and the broker's 10 unless the DSN names `pool_max_conns`, and Dispatch's `store.Open` holds
+its `sharedPoolSize` and refuses a DSN that names one. All three read the DSN with
+`packages/envoy/poolsetting`, as pgxpool reads the settings: Dispatch through `Lookup`, which
+returns pgx's parse error, and the other two through `Named`.
+
+A store with such a default tests it through `packages/envoy/poolsetting/poolsettingtest`, which
+the daemon's store and the broker's both call: `SameOnEveryMachine` starts the test binary again on
+one CPU and on all of them and holds both pools to the default, and `OutranksTheDefault` opens the
+store on each form of a named size, a quoted decoy and a service file. Each store's own test opens
+its store and names its default.
+
 ## A Go test that opens a NATS client
 
 The daemon's NATS tests share one server per test binary, and `packages/daemon/internal/testnats`
@@ -690,6 +721,11 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
   Guard does the same under the `e2e` build tag, whose untagged tests are the same fixtures.
   A live proof of that build, which reaches a real cluster and GitHub on purpose, calls `fixtureenv.Live(t)` first in its entry point: that gives the test the process's own values back of everything Guard took out or set, until the test ends.
 
+- A machine's `PATH` can lead with wrappers of git or jj that are not Legion's: a mise shim, which finds its version under the caller's `HOME` and none under a test's, and a person's own shim, which checks every commit against a list it decrypts with that `HOME`'s keys.
+  A fixture runs git and jj under a home of the test's, and so does the code under test, which looks each up by name on the process's `PATH`, so on such a machine every bundle test of `packages/daemon/internal/launcher` failed at its setup.
+  So Guard also puts first on `PATH` a directory of links to the git and jj that the `PATH`'s own git and jj run, each read from the running program (`/proc/<pid>/exe` of the parent of a shell it starts) under the process's own `HOME`, so neither a fixture nor the code under test meets the wrapper.
+  The directory sits in the user's cache (`legion-fixtureenv/<hash of the two programs>`), shared by every test binary that reads the same two programs; a git or jj on `PATH` that cannot be read that way fails the `TestMain`, naming it, and off Linux, which alone has that `/proc`, Guard leaves `PATH`'s git and jj as they are.
+
 - A fixture command runs under `fixtureenv.Isolated(home)`: the same variables dropped, a home of the test's with its config and state homes (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`) under it, and an identity.
   The state home is the test's because the leak guard caches public visibility answers there, and a test on the runner's would read answers other tests cached.
   A package whose code under test reads the process's home sets `fixtureenv.Home` on the process and gives its fixtures that same home (`packages/daemon/internal/workspace`'s `setupEnvironment`).
@@ -709,6 +745,24 @@ that other work shares.
   `HostConfigModifier` for a `GenericContainer` (`packages/envoy/internal/testpg/testpg.go` is one).
   `WithHostConfigModifier` replaces any modifier an earlier option set, so a test that needs a host
   configuration of its own sets the limits in that same modifier.
+- A test binary that starts itself again as a helper process links no testcontainers-go. That
+  library's package init reads every process on the machine, which cost 7.6 to 11.5 s and 600 to
+  910 MB of allocation at each start of `internal/daemon`'s test binary on a box that ran 13,000 to
+  20,000 processes, and the binary pays it at each of its starts. Such a test drives its container
+  through the docker CLI, with `--cpus` and `--memory` on `docker create`, as
+  `packages/daemon/internal/testnats/container.go` does, whose reaper removes the containers of a
+  test binary that is killed before it removes them. It publishes and dials on the machine of the
+  daemon the docker CLI itself resolves (`docker context inspect`), so the order in which
+  `DOCKER_HOST`, `DOCKER_CONTEXT` and the current context win is the CLI's, not a copy of it.
+  `TestThisTestBinaryLinksNoTestcontainers` in the daemon's `cmd/legion`, `internal/daemon` and
+  `internal/testnats` calls `internal/testbinary`'s `LinksNoTestcontainers`, which fails when the
+  library is linked again; `.github/scripts/testcontainers_links.py` holds every command and every
+  self-starting test binary of both modules to the same rule in CI and names the import chain.
+  A developer container on the host's Docker socket reads that socket as its own machine, whose
+  127.0.0.1 is the container's: set `TESTCONTAINERS_HOST_OVERRIDE` to the host as the container
+  reaches it (the bridge gateway, `host.docker.internal`). The fixture dials its ports there and
+  publishes them on every interface of the host, as testcontainers-go does for the envoy module's
+  tests under the same variable.
 - In a script, `docker run` takes `--cpus` and `--memory` before the image. A Postgres whose data
   directory is a `tmpfs` mount counts that data against its memory limit. `scripts/e2e/README.md`
   lists each proof's containers and their limits.

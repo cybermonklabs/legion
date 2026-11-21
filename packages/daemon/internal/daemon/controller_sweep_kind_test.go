@@ -83,14 +83,19 @@ runtime:
 }
 
 // controllerSweepKindRuntime builds the Sandbox runtime from cfg as boot does: its cluster client
-// (kubeClient), sandboxOptions over the loaded configuration, then boot's own factory
-// (sandboxRuntime) on listener and st, which also registers the runtime's launcher acceptor. What
-// the proof stands in for: the agent is a sleep stub, the App tokens are placeholders
-// (outboxTokens), and no repository is mapped, so the controller's gh files name no owner.
-func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener *stream.Listener, st *store.Store, log *slog.Logger) (runtime.Runtime, error) {
+// (kubeClient), sandboxOptions over the loaded configuration under the proofs' leak check setting
+// (liveLeakCheckSetting), then boot's own factory (sandboxRuntime) on listener and st, which also
+// registers the runtime's launcher acceptor, and reads the shared public leak check with boot's own
+// reader under githubAPI, the stand-in GitHub serveLiveLeakCheck serves. What the proof stands in
+// for: the agent is a sleep stub, the App tokens are placeholders (outboxTokens), the leak check is
+// a stand-in, and no repository is mapped, so the controller's gh files name no owner.
+func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener *stream.Listener, st *store.Store, githubAPI string, log *slog.Logger) (runtime.Runtime, error) {
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
+		return nil, err
+	}
+	if cfg.LeakCheck, err = liveLeakCheckSetting(); err != nil {
 		return nil, err
 	}
 	rc, err := kubeClient(k)
@@ -109,7 +114,7 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 	// The proof applies no fact of a pod's volume and no memory guard kill, so the trimmer's
 	// reports and the guard's reach holders nothing filled, which drop them
 	// (volumeTrimReports.report, memoryGuardKills.killed).
-	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), "", &memoryGuardKills{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
+	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), githubAPI, &memoryGuardKills{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
 }
 
 // controllerSweepKindSpec is the project controller's launch as the proof makes it: the
@@ -125,8 +130,10 @@ func controllerSweepKindSpec(project, bootToken, prompt string) runtime.SpawnSpe
 
 // The live proof's legion.yaml passes the daemon's loader as a `controller: daemon` deployment, the
 // runtime it configures builds through boot's factory and sandbox.New, against an API server
-// standing in for the kind cluster, and its controller launch passes the spawn-spec checks. Every
-// step is the one the driver takes before it reaches the cluster.
+// standing in for the kind cluster, the providers Secret the driver creates holds the key the file
+// names, the check boot's reader serves from the stand-in GitHub is one a pod's launcher installs,
+// and its controller launch passes the spawn-spec checks. Every step is the one the driver takes
+// before it reaches the cluster.
 func TestTheControllerSweepKindProofBuildsItsRuntimeFromItsConfiguration(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	server := httptest.NewServer(newIssueSandboxAPI())
@@ -141,6 +148,7 @@ func TestTheControllerSweepKindProofBuildsItsRuntimeFromItsConfiguration(t *test
 	if cfg.ControllerLaunch != config.ControllerLaunchDaemon {
 		t.Fatalf("the proof's file launches the controller as %q, want %q", cfg.ControllerLaunch, config.ControllerLaunchDaemon)
 	}
+	requireLiveProvidersSecret(t, cfg)
 	st, err := store.Open(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatal(err)
@@ -151,9 +159,17 @@ func TestTheControllerSweepKindProofBuildsItsRuntimeFromItsConfiguration(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controllerSweepKindRuntime(ctx, cfg, listener, st, quietLogger()); err != nil {
+	github := serveLiveLeakCheck(t)
+	if _, err := controllerSweepKindRuntime(ctx, cfg, listener, st, github, quietLogger()); err != nil {
 		t.Fatalf("the proof's runtime: %v", err)
 	}
+	// The reader boot's factory builds over the stand-in App, that root and the proofs' setting
+	// (leakCheckSource).
+	setting, err := liveLeakCheckSetting()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireLiveLeakCheckInstalls(t, leakCheckSource(outboxTokens{}, github, setting))
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)

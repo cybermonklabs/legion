@@ -150,7 +150,7 @@ func TestABootAnswersHealthzBeforeItRelaunchesAnUnfinishedLaunchAndTheRelaunchRe
 	}
 	var record built
 
-	d := startDaemonWithin(t, cfg, fakeRuntime(rt, &record), quietLogger(), launcherWait)
+	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &record), quietLogger())
 
 	if failed := rt.timedOut.Load(); failed != 0 {
 		t.Fatalf("the daemon answered /healthz only after %d relaunch attempts timed out waiting for it", failed)
@@ -211,7 +211,7 @@ func TestABootWaitsForNoneOfItsUnfinishedLaunches(t *testing.T) {
 	t.Cleanup(letThrough)
 	var record built
 
-	d := startDaemonWithin(t, cfg, fakeRuntime(rt, &record), quietLogger(), 10*time.Second)
+	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &record), quietLogger())
 
 	waiting := map[claim.Token]runtime.SpawnSpec{}
 	deadline := time.After(10 * time.Second)

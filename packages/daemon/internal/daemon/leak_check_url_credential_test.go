@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testport"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
@@ -41,7 +42,9 @@ func TestALeakCheckRedirectTokenReachesNoClaimStoreStateOrLog(t *testing.T) {
 		answer: func(w http.ResponseWriter, permissions map[string]string) {
 			mintedToken(w, leakCheckLease, permissions)
 		}})
-	dead := fmt.Sprintf("127.0.0.1:%d", idleRigFreePort(t))
+	// A port the test holds bound and never listening (testport.Refused), so the redirect's dial is
+	// refused and no other program on the machine can take the port and answer it.
+	dead := testport.Refused(t)
 	download := "http://" + dead + "/" + leakCheckSetting.Repository.String() + "/legacy.tar.gz/refs/tags/" + leakCheckTag
 	repo := githubtest.Server(t, githubtest.Spec{Token: leakCheckLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != leakCheckTarballRoute+leakCheckTag {

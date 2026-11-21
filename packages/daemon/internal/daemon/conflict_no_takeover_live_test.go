@@ -19,7 +19,7 @@
 // and the PostgreSQL it runs against.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, booted as this package's
-// other whole-daemon proofs boot it (startDaemonWithin), so the proof exercises the real
+// other whole-daemon proofs boot it (startDaemonLogging), so the proof exercises the real
 // configuration, the real store and its migrations, the real HTTP API, the real claim supervision
 // and its worker stream, the real openWorkflow, the real JetStream consumers, the real merge-state
 // reads and the real outbox lanes — the lane that runs the second read (record.ConflictConfirm)
@@ -222,7 +222,7 @@ func (r *conflictNoTakeoverLive) bootLogged() {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
 	r.logged = newRecordingLog(r.log())
-	r.d = startDaemonWithin(r.t, r.cfg, o, slog.New(r.logged), 60*time.Second)
+	r.d = startDaemonLogging(r.t, r.cfg, o, slog.New(r.logged))
 }
 
 // silent holds that the daemon sends this role's connection nothing at all for within: the RPC

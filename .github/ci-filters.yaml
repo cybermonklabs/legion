@@ -90,9 +90,13 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/listenerwire/*'
-  - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/testport/*'
+  # why: .github/ci-notes/ci.md#daemon_envoy_deps-the-pool-size-every-test-of-both-modules-builds-at
+  - 'packages/envoy/testpool/*'
   - 'packages/envoy/listenfd/*'
   - 'packages/envoy/migrationid/*'
+  - 'packages/envoy/poolsetting/*'
+  - 'packages/envoy/poolsetting/poolsettingtest/*'
   - 'packages/envoy/roleholder/*'
   # why: .github/ci-notes/ci.md#daemon_envoy_deps-the-daemon-reads-the-envoy-session-timings-heartbeat
   - 'packages/envoy/sessiontiming/*'
@@ -184,6 +188,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/listenfd/*'
   - 'packages/envoy/migrationid/*'
+  - 'packages/envoy/poolsetting/*'
   - 'packages/envoy/roleholder/*'
   - 'packages/envoy/natsversion/*'
 legion_command: &legion_command
@@ -275,6 +280,7 @@ legion_command: &legion_command
   - 'packages/envoy/listenfd/*'
   # why: .github/ci-notes/ci.md#legion_command-packagesenvoymigrationid-is-the-identifier-rule-the-daemons-embedded
   - 'packages/envoy/migrationid/*'
+  - 'packages/envoy/poolsetting/*'
   - 'packages/envoy/roleholder/*'
   # why: .github/ci-notes/ci.md#legion_command-the-one-public-door-onto-the-generated-envoy-session
   - 'packages/envoy/sessiontiming/*'
@@ -419,7 +425,9 @@ plugin_pack:
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/dispatchbody/*'
   - 'packages/envoy/internal/testnats/*'
-  - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/testport/*'
+  # why: .github/ci-notes/ci.md#plugin_pack-internaldaemons-tests-build-their-pools-at-envoys-testpool-size
+  - 'packages/envoy/testpool/*'
   - 'packages/envoy/sessiontiming/*'
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
@@ -832,6 +840,13 @@ go_tagged_tests_test: &go_tagged_tests_test
   - '.github/scripts/go-tagged-tests.test.sh'
   - '.github/scripts/go-tagged-tests.sh'
   - 'packages/envoy/cmd/listener/*_test.go'
+testcontainers_links_test: &testcontainers_links_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/testcontainers_links.test.sh'
+  - '.github/scripts/testcontainers_links.py'
 ci_ok_test: &ci_ok_test
   - *ci_router
   - *ci_filters_data
@@ -1017,6 +1032,7 @@ test:
   - *repo_paths_test
   - *select_e2e_proofs_test
   - *go_tagged_tests_test
+  - *testcontainers_links_test
   - *ci_ok_test
   - *ci_ok_report_test
   - *ci_ok_reconcile_test
@@ -1362,6 +1378,7 @@ pi_legion:
   - 'packages/envoy/internal/fold/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/migrationid/*'
+  - 'packages/envoy/poolsetting/*'
   - 'packages/envoy/roleholder/*'
   - 'packages/envoy/sessiontiming/*'
   - 'packages/envoy/subjectforms/*'
@@ -1552,7 +1569,7 @@ dispatch_browser:
   - 'packages/envoy/internal/cipher/answer/*'
   - 'packages/envoy/internal/cipher/api/*'
   - 'packages/envoy/internal/cipher/approval/**'
-  - 'packages/envoy/internal/cipher/ciphertest/*'
+  - 'packages/envoy/internal/cipher/ciphertest/podclient/*'
   - 'packages/envoy/internal/cipher/ciphertest/requestseed/*'
   - 'packages/envoy/internal/cipher/config/*'
   - 'packages/envoy/internal/cipher/enroll/*'
@@ -1575,10 +1592,8 @@ dispatch_browser:
   - 'packages/envoy/internal/cipher/wake/*'
   - 'packages/envoy/internal/cipher/natscallout/*'
   - 'packages/envoy/natsgrant/*'
-  - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/oidc/oidctest/*'
   - 'packages/envoy/internal/ratelimit/*'
-  - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/internal/cipher/rulehost/*'
   - 'packages/envoy/internal/cipher/logmask/*'
   - 'packages/envoy/internal/weborigin/*'
@@ -1606,7 +1621,7 @@ envoy_infra_go:
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testpg/*'
   - 'packages/envoy/internal/testpg/testdb/*'
-  - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/internal/weborigin/*'
   - '.github/actions/pull-test-images/**'
@@ -1623,7 +1638,9 @@ envoy_infra_go:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/poolsetting/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testport/**/*_test.go'
   # END generated
 envoy_go:
   - *ci_router
@@ -1753,8 +1770,10 @@ dispatch_memory:
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
-  - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/testpool/*'
+  - 'packages/envoy/testport/*'
   - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/poolsetting/*'
   - '.github/scripts/go-tagged-tests.sh'
   - '.github/scripts/pg-connection-ceiling.sh'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
@@ -1780,7 +1799,9 @@ dispatch_memory:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/poolsetting/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testport/**/*_test.go'
   # END generated
 dispatch_multiprocess:
   - *ci_router
@@ -1790,8 +1811,10 @@ dispatch_multiprocess:
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
-  - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/testpool/*'
+  - 'packages/envoy/testport/*'
   - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/poolsetting/*'
   - '.github/scripts/go-tagged-tests.sh'
   - '.github/scripts/pg-connection-ceiling.sh'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
@@ -1818,7 +1841,9 @@ dispatch_multiprocess:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/poolsetting/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testport/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#dispatch_two_builds_go-the-two-build-jobs-go-step-alone-behind-a-gate-of
 dispatch_two_builds_go:
@@ -1829,8 +1854,10 @@ dispatch_two_builds_go:
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
-  - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/testpool/*'
+  - 'packages/envoy/testport/*'
   - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/poolsetting/*'
   - '.github/scripts/go-tagged-tests.sh'
   - 'packages/envoy/scripts/build-dispatch-build.sh'
   - '.github/scripts/pg-connection-ceiling.sh'
@@ -1910,7 +1937,9 @@ dispatch_two_builds_go:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/poolsetting/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testport/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#dispatch_two_builds-the-two-build-job-its-go-steps-reads-named-again
 dispatch_two_builds:
@@ -1921,8 +1950,10 @@ dispatch_two_builds:
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
-  - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/testpool/*'
+  - 'packages/envoy/testport/*'
   - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/poolsetting/*'
   - '.github/scripts/go-tagged-tests.sh'
   - 'packages/envoy/scripts/build-dispatch-build.sh'
   - 'packages/envoy-client/**'
@@ -2005,7 +2036,9 @@ dispatch_two_builds:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/poolsetting/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testport/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#listener_server_change-the-server-change-soak-listener-server-change-go
 listener_server_change:
@@ -2084,9 +2117,10 @@ listener_server_change:
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testpg/*'
   - 'packages/envoy/internal/testpg/testdb/*'
-  - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/migrationid/*'
+  - 'packages/envoy/poolsetting/*'
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envoy-session-no-interests.json'
   - '.github/scripts/go-tagged-tests.sh'
@@ -2100,7 +2134,9 @@ listener_server_change:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/poolsetting/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testport/**/*_test.go'
   # END generated
 broker_multiprocess:
   - *ci_router
@@ -2119,6 +2155,7 @@ broker_multiprocess:
   - 'packages/envoy/internal/cipher/api/*'
   - 'packages/envoy/internal/cipher/approval/**'
   - 'packages/envoy/internal/cipher/ciphertest/*'
+  - 'packages/envoy/internal/cipher/ciphertest/podclient/*'
   - 'packages/envoy/internal/cipher/config/*'
   - 'packages/envoy/internal/cipher/enroll/*'
   - 'packages/envoy/internal/cipher/exchange/*'
@@ -2169,13 +2206,14 @@ broker_multiprocess:
   - 'packages/envoy/internal/redirects/*'
   - 'packages/envoy/internal/serverwait/*'
   - 'packages/envoy/internal/testpg/testdb/*'
-  - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/internal/cipher/rulehost/*'
   - 'packages/envoy/internal/cipher/logmask/*'
   - 'packages/envoy/internal/weborigin/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/migrationid/*'
+  - 'packages/envoy/poolsetting/*'
   - '.github/scripts/go-tagged-tests.sh'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
@@ -2188,6 +2226,8 @@ broker_multiprocess:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/poolsetting/**/*_test.go'
+  - '!packages/envoy/testport/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#airlock_lean-the-lean-model-of-the-airlock-and-the-go-code-it-covers
 airlock_lean:
@@ -2300,7 +2340,6 @@ envoy_smoke:
   - '!packages/envoy/internal/stacktest/**/*_test.go'
   - '!packages/envoy/internal/store/**/*_test.go'
   - '!packages/envoy/internal/testnats/**/*_test.go'
-  - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
   - '!packages/envoy/internal/textcheck/**/*_test.go'
   - '!packages/envoy/internal/tlsalert/**/*_test.go'
@@ -2315,8 +2354,10 @@ envoy_smoke:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/poolsetting/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
+  - '!packages/envoy/testport/**/*_test.go'
   # END generated
 envoy_e2e_local:
   - *ci_router
@@ -2334,7 +2375,7 @@ envoy_e2e_local:
   - *listener_command
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testnats/cmd/natsd/*'
-  - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/testport/*'
   # why: .github/ci-notes/ci.md#envoy_e2e_local-the-job-reads-no-markdown-file-the-listener-the-renderer
   - '!**/*.md'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
@@ -2403,6 +2444,7 @@ worker_image:
   - 'packages/envoy/migrationid/**'
   - 'packages/envoy/natscred/**'
   - 'packages/envoy/natsgrant/**'
+  - 'packages/envoy/poolsetting/**'
   - 'packages/envoy/roleholder/**'
   - 'packages/envoy/scripts/**'
   - 'packages/envoy/sessiontiming/**'
@@ -2410,6 +2452,8 @@ worker_image:
   - 'packages/envoy/natsversion/**'
   - 'packages/envoy/steprecord/**'
   - 'packages/envoy/testnatsimages/**'
+  - 'packages/envoy/testpool/**'
+  - 'packages/envoy/testport/**'
   - '.omp-pin'
   - '.bun-version'
   - '.dockerignore'
@@ -2449,6 +2493,7 @@ ci_filters:
   - '.github/scripts/ci_job_reads.py'
   - '.github/scripts/ci_workflow_rules.py'
   - '.github/scripts/workflow_paths.py'
+  - '.github/scripts/testcontainers_links.py'
   - '.github/scripts/go_build_tags.py'
   - '.github/go-release-targets.json'
   - '.github/agent-secrets-client-targets.json'
@@ -2687,7 +2732,6 @@ envoy_go_race:
   - '!packages/envoy/internal/smoke/**/*_test.go'
   - '!packages/envoy/internal/stacktest/**/*_test.go'
   - '!packages/envoy/internal/testnats/**/*_test.go'
-  - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
   - '!packages/envoy/internal/textcheck/**/*_test.go'
   - '!packages/envoy/internal/tlsalert/**/*_test.go'
@@ -2701,8 +2745,10 @@ envoy_go_race:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/poolsetting/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
+  - '!packages/envoy/testport/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#envoy_go_race_api-the-api-race-job-not-packagesenvoy-as-envoy_go_race-has-that
 envoy_go_race_api:
@@ -2830,10 +2876,11 @@ envoy_go_race_api:
   - 'packages/envoy/internal/session/*'
   - 'packages/envoy/internal/store/*'
   - 'packages/envoy/internal/testpg/testdb/*'
-  - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/migrationid/*'
+  - 'packages/envoy/poolsetting/*'
   - 'packages/envoy/roleholder/*'
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/internal/cipher/wire/*'
@@ -2922,13 +2969,14 @@ envoy_go_race_api:
   - '!packages/envoy/internal/serverwait/**/*_test.go'
   - '!packages/envoy/internal/session/**/*_test.go'
   - '!packages/envoy/internal/store/**/*_test.go'
-  - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/tlsalert/**/*_test.go'
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/poolsetting/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testport/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#envoy_go_claim_model-the-mention-senders-claim-models-own-job
 envoy_go_claim_model:
@@ -3029,7 +3077,6 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/stacktest/**/*_test.go'
   - '!packages/envoy/internal/store/**/*_test.go'
   - '!packages/envoy/internal/testnats/**/*_test.go'
-  - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
   - '!packages/envoy/internal/textcheck/**/*_test.go'
   - '!packages/envoy/internal/tlsalert/**/*_test.go'
@@ -3044,8 +3091,10 @@ envoy_go_claim_model:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/poolsetting/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
+  - '!packages/envoy/testport/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#envoy_go_race_docs-the-document-services-own-race-job-not-packagesenvoy-as-envoy_go_race
 envoy_go_race_docs:
@@ -3099,6 +3148,7 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/migrationid/*'
+  - 'packages/envoy/poolsetting/*'
   - 'packages/contracts/fixtures/decision-blocks/**'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
@@ -3128,6 +3178,7 @@ envoy_go_race_docs:
   - '!packages/envoy/internal/stacktest/**/*_test.go'
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/poolsetting/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#private_names_port-the-private-name-port-harness-in-a-job-of-its-own-it
 private_names_port:
