@@ -140,7 +140,7 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 	// BROKER_POD_OPERATORS no longer maps acts for no person, so its former person is not its
 	// operator here either, and ends its grant only as its approver or as anyone may, withholding
 	// nothing from the pod.
-	allowed, asOperator := mayRevoke(login, approver, m.operatorOf(holder))
+	allowed, asOperator := mayRevoke(login, approver, m.operatorOf(holder), m.Groups)
 	if !allowed {
 		return ErrNotApprover
 	}
@@ -347,15 +347,32 @@ func withhold(ctx context.Context, tx pgx.Tx, enrollmentID, requestID, actor str
 // end: the model judge approved it in anyone's stead, so it names no person who could end it,
 // and GrantsForApprover lists it to everyone the person rule shows it to for that same reason.
 // The revoke is the approver's and not the operator's, since whoever ends it stands in for the
-// record's approver and withholds nothing from a session that is not theirs. The sentinel is no
-// signed-in person itself, and neither is an empty login: neither revokes anything.
-func mayRevoke(login string, approver, operator *string) (allowed, asOperator bool) {
+// record's approver and withholds nothing from a session that is not theirs. A grant whose
+// approver is a group (grantApprover) is each member's to end, as the one owner ends their own,
+// by the members the group's last good read listed however old that read is
+// (record.GroupStanding's listed, read without its freshness): a revoke only takes power away, so
+// a member keeps the power to end the group's grant while the group is stale. A login outside the
+// group ends nothing. The sentinel is no signed-in person itself, and neither is an empty login or
+// one spelled as a group: none of them revokes anything.
+func mayRevoke(login string, approver, operator *string, groups record.Groups) (allowed, asOperator bool) {
+	if _, loginIsGroup := record.GroupOf(record.CanonicalLogin(login)); loginIsGroup {
+		return false, false
+	}
 	if named, asOperator := namedOnGrant(login, approver, operator); named {
 		return true, asOperator
 	}
 	login = record.CanonicalLogin(login)
-	anyone := approver != nil && record.CanonicalLogin(*approver) == record.AnyoneApprover
-	return anyone && login != "" && login != record.AnyoneApprover, false
+	if login == "" || login == record.AnyoneApprover {
+		return false, false
+	}
+	if approver == nil {
+		return false, false
+	}
+	if record.CanonicalLogin(*approver) == record.AnyoneApprover {
+		return true, false
+	}
+	_, listed, _, group := record.GroupStanding(groups, *approver, login)
+	return group && listed, false
 }
 
 // namedOnGrant answers whether login is a person a grant names, and whether as the operator of

@@ -3,6 +3,7 @@
 package testnats
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -28,8 +29,8 @@ func TestStartImageConfigServesTheConfigWithTheArguments(t *testing.T) {
 			if err != nil {
 				t.Fatalf("JetStream context: %v", err)
 			}
-			waitForJetStream(t, func() error {
-				_, err := js.AccountInfo()
+			waitForJetStream(t, func(ctx context.Context) error {
+				_, err := js.AccountInfo(natsgo.Context(ctx))
 				return err
 			})
 		})

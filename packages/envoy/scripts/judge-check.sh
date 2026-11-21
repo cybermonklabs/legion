@@ -1558,15 +1558,15 @@ k10g_control_tree() { # <directory>
 		s/\n\t\tif admin && adminOK \{\n\t\t\tadminOK, adminDetail = false, decidedByAPerson\(name\)\n\t\t\}\n/\n/' \
 		"$dir/internal/cipher/judge/judge.go"
 	# The transaction's guard, beside the withheld one at the head of currentPolicyAdmits.
-	perl -0777 -pi -e 's/\n\t\t\tif set\.Secrets\[g\.name\]\.Admin \{\n\t\t\t\treturn fmt\.Errorf\("%w: %s is an administrator.s secret, and a person approves every release of one", record\.ErrNotApprover, g\.name\)\n\t\t\t\}\n/\n/' \
+	perl -0777 -pi -e 's/\n\t\t\tif set\.Secrets\[g\.name\]\.PersonApprovesEveryRelease\(\) \{\n\t\t\t\treturn fmt\.Errorf\("%w: a person approves every release of %s, an administrator.s or an Anthropic federation secret", record\.ErrNotApprover, g\.name\)\n\t\t\t\}\n/\n/' \
 		"$dir/internal/cipher/requests/machine_state.go"
 	# Create's choice of who decides (Machine.judgeKey): without the tag's test an
 	# administrator's key with a judge entry is a judge key, written pending for the judge.
-	perl -0777 -pi -e 's/ \|\| set\.Secrets\[name\]\.Admin \{/ {/' "$dir/internal/cipher/requests/machine_state.go"
+	perl -0777 -pi -e 's/ \|\| set\.Secrets\[name\]\.PersonApprovesEveryRelease\(\) \{/ {/' "$dir/internal/cipher/requests/machine_state.go"
 	local in_judge in_transaction in_create
 	in_judge="$(grep -c 'if admin && adminOK' "$dir/internal/cipher/judge/judge.go")"
-	in_transaction="$(grep -c 'set.Secrets\[g.name\].Admin' "$dir/internal/cipher/requests/machine_state.go")"
-	in_create="$(grep -c 'set.Secrets\[name\].Admin' "$dir/internal/cipher/requests/machine_state.go")"
+	in_transaction="$(grep -c 'set.Secrets\[g.name\].PersonApprovesEveryRelease' "$dir/internal/cipher/requests/machine_state.go")"
+	in_create="$(grep -c 'set.Secrets\[name\].PersonApprovesEveryRelease' "$dir/internal/cipher/requests/machine_state.go")"
 	if [ "$in_judge" != 0 ] || [ "$in_transaction" != 0 ] || [ "$in_create" != 0 ]; then
 		echo "judge-check: the control patch left the admin refusal in the tree ($in_judge in the judge's checks, $in_transaction in the decision transaction, $in_create in Create); a control built from it would prove nothing" >&2
 		exit 1

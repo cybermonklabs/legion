@@ -234,8 +234,9 @@ func (s *server) decideMachineLogin(w http.ResponseWriter, r *http.Request, reco
 // dismissBody is dismiss's request body, {"approver"}: the dismissing person's login, which
 // Dispatch's server sets from its own session.
 type dismissBody struct {
-	// The login of the person dismissing the record: its approver, or anyone signed in for a
-	// record whose approver is anyone, which is whose list holds it.
+	// The login of the person dismissing the record: its approver, a member of the group that is
+	// its approver, or anyone signed in for a record whose approver is anyone, which is whose list
+	// holds it.
 	Approver string `json:"approver"`
 }
 
@@ -250,10 +251,11 @@ type dismissResponse = wire.DismissResponse
 // bucket and checked the caller's token and its power before it runs; unlike the decide routes
 // it does not refuse a secret request: a dismissal decides nothing and releases nothing, so a
 // secret request's is relayed from Dispatch as a revoke is, with the person taken on the caller's
-// word. That person must be one whose list holds the record, its approver or, for a record whose
-// approver is anyone, anybody signed in. A second dismissal answers the first one's values and
-// writes nothing, so a person who clicks twice, or two people who dismiss one shared request,
-// read one answer. It is logged with the caller that relayed it and the approver it named, as a
+// word. That person must be one whose list holds the record: its approver, a member the group
+// reader admits to the group that is its approver, or, for a record whose approver is anyone,
+// anybody signed in. A second dismissal answers the first one's values and writes nothing, so a
+// person who clicks twice, or two people who dismiss one shared request, read one answer. It is
+// logged with the caller that relayed it and the approver it named, as a
 // machine login's decision is.
 func (s *server) dismissRecord(w http.ResponseWriter, r *http.Request, callerName string) {
 	recordID, ok := pathRecordID(w, r, "record", "RECORD_ID_INPUT")
@@ -283,7 +285,7 @@ func (s *server) dismissRecord(w http.ResponseWriter, r *http.Request, callerNam
 		writeProjectAccessUnavailable(w, "dismiss credential request", err)
 		return
 	case errors.Is(err, record.ErrNotApprover):
-		writeError(w, http.StatusForbidden, "NOT_APPROVER", "only the record's approver, or anyone signed in for a request whose approver is anyone, may dismiss it")
+		writeError(w, http.StatusForbidden, "NOT_APPROVER", "only the record's approver, a member of the group that is its approver, or anyone signed in for a request whose approver is anyone, may dismiss it")
 		return
 	case errors.Is(err, requests.ErrNotExpired):
 		writeError(w, http.StatusConflict, "RECORD_PENDING", err.Error())

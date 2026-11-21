@@ -1,0 +1,91 @@
+{
+  "id": 548,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 9,
+  "type": "ask.edited",
+  "actor": {
+    "kind": "session",
+    "id": "01a14267-5d59-705f-8db3-f0a6173a1951",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit ",
+      "tmux": "lorem ip",
+      "pane": "lor",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor s"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-16T18:14:03.210268Z",
+  "payload": {
+    "anchor": null,
+    "answer": null,
+    "artifact_id": null,
+    "author": {
+      "id": "01a14267-5d59-705f-8db3-f0a6173a1951",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit ",
+        "host": "lor",
+        "machine": "lorem ipsum d",
+        "pane": "lor",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor s",
+        "tmux": "lorem ip"
+      }
+    },
+    "block_id": null,
+    "created_at": "2026-10-16T18:10:37.955451Z",
+    "edited_at": "2026-10-16T18:14:03.210268Z",
+    "edited_by": {
+      "id": "01a14267-5d59-705f-8db3-f0a6173a1951",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit ",
+        "host": "lor",
+        "machine": "lorem ipsum d",
+        "pane": "lor",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor s",
+        "tmux": "lorem ip"
+      }
+    },
+    "id": "241f7a1e-db78-4ec1-8c35-1e6cfc6fab01",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 493,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum ",
+        "id": "b2",
+        "label": "lorem "
+      },
+      {
+        "description": "lorem ips",
+        "id": "b3",
+        "label": "lorem"
+      }
+    ],
+    "previous": {
+      "multiple": false,
+      "options": [
+        {
+          "description": "lorem ipsum dolor sit amet lorem i",
+          "label": "lorem "
+        },
+        {
+          "description": "lorem ips",
+          "label": "lorem"
+        }
+      ],
+      "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ",
+      "urgency": "high"
+    },
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+    "referenced_by_count": 0,
+    "revision": 1,
+    "state": "open",
+    "urgency": "high"
+  }
+}

@@ -83,8 +83,8 @@ func (d *discovery) keysFor(_ context.Context, issuer string) (*oidc.Keys, error
 	return d.keys[issuer], nil
 }
 
-// issuedBy is an unsigned token naming issuer, enough for oidc.Verifier.Issues, which reads the
-// claim without verifying anything.
+// issuedBy is an unsigned token naming issuer, enough for oidc.LazyVerifier.Issues, which reads
+// the claim without verifying anything.
 func issuedBy(issuer string) string {
 	payload, _ := json.Marshal(map[string]string{"iss": issuer})
 	return "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".c2ln"
@@ -112,7 +112,7 @@ func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 		t.Fatalf("read the key sets of %v, want the cluster's issuer alone, %v", d.asked, want)
 	}
 	cluster, ok := found.Pod.(enroll.K8sPodVerifier)
-	if !ok || !cluster.Verifier.Issues(issuedBy("https://cluster.example")) {
+	if !ok || !oidc.DiscoveredVerifier(cluster.Verifier).Issues(issuedBy("https://cluster.example")) {
 		t.Fatalf("verifiers = pod %#v; want a pod verifier for the cluster's issuer", found.Pod)
 	}
 	if found.K8sKeys == nil || found.K8sKeys != d.keys["https://cluster.example"] {
@@ -184,7 +184,7 @@ func TestTheEnrollmentServiceCarriesTheMachineServices(t *testing.T) {
 	if want := map[string]string{exampleVMAccount: "example-fleet"}; !maps.Equal(enr.VMServicesByAccount, want) {
 		t.Fatalf("the enrollment service's VMServicesByAccount = %v, want %v", enr.VMServicesByAccount, want)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, nil, nil)
 	if want := map[string]string{"system:serviceaccount:example:example-sa": "example-service"}; !maps.Equal(m.ServicesByAccount, want) {
 		t.Fatalf("request Machine's ServicesByAccount = %v, want %v", m.ServicesByAccount, want)
 	}
@@ -208,7 +208,7 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 	if dispatch := judgeDispatch(cfg); dispatch != nil {
 		t.Fatalf("judgeDispatch = %#v with no BROKER_JUDGE_DISPATCH_URL; want none", dispatch)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, judgeDispatch(cfg))
+	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, judgeDispatch(cfg), nil)
 	if want := map[string]string{exampleVMAccount: "ada@example.com"}; !maps.Equal(m.VMPersonsByAccount, want) {
 		t.Fatalf("request Machine's VMPersonsByAccount = %v, want %v", m.VMPersonsByAccount, want)
 	}
@@ -222,7 +222,7 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 	if dispatch == nil || dispatch.BaseURL != cfg.JudgeDispatchURL || dispatch.Account == nil {
 		t.Fatalf("judgeDispatch = %#v; want a read of Dispatch at %s", dispatch, cfg.JudgeDispatchURL)
 	}
-	m = newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, dispatch)
+	m = newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, dispatch, nil)
 	if got, ok := m.Assignees.(*judge.Dispatch); !ok || got != dispatch {
 		t.Fatalf("request Machine's Assignees = %#v; want the one read of Dispatch judgeDispatch built, %p", m.Assignees, dispatch)
 	}

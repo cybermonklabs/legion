@@ -172,11 +172,11 @@ func TestAConsumerCreateAndDeleteTheGrantRefusesEndAtOnceNamingTheRefusal(t *tes
 	}
 }
 
-// A watch of the bucket that the grant refuses ends at once with the server's refusal (refusedOn).
-// A read and a write of a key the grant refuses name the refusal too, after their own wait: they
-// are the calls the bus makes on every request it serves, so they read the record only when the
-// server left them unanswered (refusedAfterOn), and a call the server answers costs what it cost
-// before. At main each of them reported a bare timeout.
+// A watch of the bucket that the grant refuses ends at once with the server's refusal
+// (watchRefused). A read and a write of a key the grant refuses name the refusal too, after their
+// own wait: they are the calls the bus makes on every request it serves, so they read the record
+// only when the server left them unanswered (refusedAfterOn), and a call the server answers costs
+// what it cost before. At main each of them reported a bare timeout.
 func TestAKeyReadWriteAndWatchTheGrantRefusesNameTheRefusal(t *testing.T) {
 	const bucket = "envoy_denied_write"
 	stream := "KV_" + bucket

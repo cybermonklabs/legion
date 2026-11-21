@@ -1,0 +1,114 @@
+{
+  "id": 566658,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 1,
+  "type": "issue.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a1d439-1610-71a8-94b2-ed4e2676d22d",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor s",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit a",
+      "session_title": "lorem ipsum dolor sit amet lo"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-11-15T08:37:11.280952Z",
+  "payload": {
+    "key": "ACME-1",
+    "rank": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+    "repo": "lorem ipsum dolor si",
+    "claim": null,
+    "route": null,
+    "title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolo",
+    "labels": [
+      "lorem "
+    ],
+    "number": 3753,
+    "parent": "ACME-2",
+    "status": "triage",
+    "changed": [
+      "title",
+      "status",
+      "rank",
+      "priority",
+      "assignee",
+      "parent",
+      "labels",
+      "repo",
+      "components"
+    ],
+    "project": "ACME",
+    "advances": [],
+    "assignee": "alice@example.com",
+    "last_seq": 1,
+    "priority": 1,
+    "ancestors": [
+      "ACME-2"
+    ],
+    "closed_at": null,
+    "blocked_by": [],
+    "components": {
+      "ids": [
+        "lorem "
+      ],
+      "mode": "explicit",
+      "reason": null,
+      "unknown": [],
+      "inherited_from": "ACME-2"
+    },
+    "created_at": "2026-11-15T08:37:11.280952Z",
+    "created_by": {
+      "id": "01a1d439-1610-71a8-94b2-ed4e2676d22d",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit a",
+        "host": "lor",
+        "machine": "lorem ipsum dolor s",
+        "session_title": "lorem ipsum dolor sit amet lo"
+      }
+    },
+    "updated_at": "2026-11-15T08:37:11.280952Z",
+    "resolved_repo": "lorem ipsum dolor si",
+    "external_links": [],
+    "plan_artifact_id": "",
+    "advances_revision": 0,
+    "references_changed": [
+      {
+        "id": "ff31d89f-33c1-44de-9458-4e6d227b02fb",
+        "kind": "ask",
+        "issue_key": "ACME-3"
+      },
+      {
+        "id": "ACME-4",
+        "kind": "issue"
+      },
+      {
+        "id": "lorem ipsum dolor ",
+        "ref": "dispatch://ACME-4",
+        "kind": "block",
+        "artifact_id": "3d323464-646c-4b34-bc59-c0d5bc83dd2a"
+      },
+      {
+        "id": "ACME-5",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      },
+      {
+        "id": "lorem ipsum dolor ",
+        "ref": "dispatch://ACME-2",
+        "kind": "block",
+        "artifact_id": "69ef096e-3749-47ea-a5b2-24267ad33f72"
+      }
+    ],
+    "primary_artifact_id": "90414a06-0ff0-4799-8e50-7fcede20ccef",
+    "decisions_artifact_id": "",
+    "verification_artifact_id": ""
+  }
+}

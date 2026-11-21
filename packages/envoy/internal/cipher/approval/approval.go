@@ -98,7 +98,9 @@ type Config struct {
 	MachineLoginURL string
 	// Store holds the sessions.
 	Store *store.Store
-	// Machine reads the records and decides them (ReadRecord, PendingForApprover, ApplyDecision).
+	// Machine reads the records and decides them (ReadRecord, PendingForApprover, ApplyDecision),
+	// and its group reader (requests.Machine.Groups) says whether the signed-in person is a member
+	// of a group approver and so sees the buttons (record.MayDecide).
 	Machine *requests.Machine
 }
 

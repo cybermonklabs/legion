@@ -41,11 +41,11 @@ var ErrRequestInvalid = errors.New("request object invalid")
 
 // ErrAudienceMismatch is the one reason of ErrRequestInvalid a caller tells from the others: the
 // object's aud is not the audience it is verified for, which is a request signed for another
-// broker address (another BROKER_PUBLIC_URL). VerifyRequestObject wraps both, so its text stays
-// "request object invalid: aud does not match". requests.Machine.Create reads it to end a
-// pending request its session made on another broker that shares this database, which no person
-// and no judge on this broker can decide; a bad signature or a time outside the skew is no such
-// request, and is never this error.
+// broker address (another BROKER_PUBLIC_URL). VerifyRequestObject and VerifyStoredRequestObject
+// wrap both, so its text stays "request object invalid: aud does not match".
+// requests.Machine.Create reads it to end a pending request its session made on another broker
+// that shares this database, which no person and no judge on this broker can decide; a bad
+// signature or a time outside the skew is no such request, and is never this error.
 var ErrAudienceMismatch = errors.New("aud does not match")
 
 var (
@@ -187,14 +187,51 @@ func ValidLifetime(seconds int) bool {
 
 // VerifyRequestObject enforces the contract: single ES256 JWS, typ RequestTyp, embedded P-256 JWK,
 // iss == thumbprint(jwk), aud == audience, iat within skew, exp in (now, iat+10m], reason ≤400 runes
-// with categories Cc/Cf/Cs/Co/Zl/Zp refused, details non-empty and single-typed, launcher identifiers
-// matching the contract hostname pattern, service matching [a-z0-9-]{1,64}, and a lifetime, when
-// named, on a request for agent secrets alone and ValidLifetime. Replay (jti) is the caller's (it
-// needs the store). Every failure wraps ErrRequestInvalid with a reason that never quotes the JWS;
-// an aud that is not audience wraps ErrAudienceMismatch as well. The aud is checked after the
-// signature and before the times, so an object that is ErrAudienceMismatch was really signed by
-// its embedded key.
+// with categories Cc/Cf/Cs/Co/Zl/Zp refused, details non-empty and single-typed, launcher
+// identifiers matching the contract hostname pattern, service matching [a-z0-9-]{1,64}, and a
+// lifetime, when named, on a request for agent secrets alone and ValidLifetime. A new request is
+// also held to what the store can keep: those rune categories are refused in its login_hint, jti
+// and every string of its details (validateStoredText), before anything is written. A record
+// already stored is not (VerifyStoredRequestObject): it was written, and reading it back writes
+// nothing. Replay (jti) is the caller's (it needs the store). Every failure wraps ErrRequestInvalid
+// with a reason that never quotes the JWS; an aud that is not audience wraps ErrAudienceMismatch as
+// well. The aud is checked after the signature and before the times, so an object that is
+// ErrAudienceMismatch was really signed by its embedded key.
 func VerifyRequestObject(compact, audience string, skew time.Duration, now time.Time) (RequestObject, error) {
+	obj, err := verifyRequestObject(compact, func(aud string, _ []AuthorizationDetail) bool { return aud == audience }, skew, now)
+	if err != nil {
+		return RequestObject{}, err
+	}
+	if err := validateStoredText(obj.LoginHint, obj.JTI, obj.Details); err != nil {
+		return RequestObject{}, fmt.Errorf("%w: %s", ErrRequestInvalid, err)
+	}
+	return obj, nil
+}
+
+// ClaimedLoginHint is the login_hint the request object compact claims, read with no check of its
+// signature, and "" for an object that is no ES256 JWS or whose claims do not decode. It decodes
+// the payload into the claims verifyRequestObject decodes once the signature verifies
+// (requestClaims), with the same decoder, so a gate that reads the hint before the verifier runs
+// reads the one the verifier then reads: a key in any case, and the last of two keys that name
+// the field, are read alike by both.
+func ClaimedLoginHint(compact string) string {
+	sig, err := jose.ParseSigned(compact, []jose.SignatureAlgorithm{jose.ES256})
+	if err != nil {
+		return ""
+	}
+	var c requestClaims
+	if json.Unmarshal(sig.UnsafePayloadWithoutVerification(), &c) != nil {
+		return ""
+	}
+	return c.LoginHint
+}
+
+// verifyRequestObject is VerifyRequestObject with its aud check the caller's: ours reports
+// whether aud, the object's own and never empty, names this broker for an object claiming
+// details, its authorization details as the payload holds them, before they are validated.
+// VerifyRequestObject holds aud to one address exactly; VerifyStoredRequestObject to the origin
+// of one of the broker's two, the edge's for a machine login alone.
+func verifyRequestObject(compact string, ours func(aud string, details []AuthorizationDetail) bool, skew time.Duration, now time.Time) (RequestObject, error) {
 	sig, err := jose.ParseSigned(compact, []jose.SignatureAlgorithm{jose.ES256})
 	if err != nil || len(sig.Signatures) != 1 {
 		return RequestObject{}, fmt.Errorf("%w: not a single ES256 JWS", ErrRequestInvalid)
@@ -222,7 +259,7 @@ func VerifyRequestObject(compact, audience string, skew time.Duration, now time.
 	if err != nil || c.Issuer == "" || c.Issuer != thumbprint {
 		return RequestObject{}, fmt.Errorf("%w: iss is not the embedded key's thumbprint", ErrRequestInvalid)
 	}
-	if c.Audience == "" || c.Audience != audience {
+	if c.Audience == "" || !ours(c.Audience, c.AuthorizationDetails) {
 		return RequestObject{}, fmt.Errorf("%w: %w", ErrRequestInvalid, ErrAudienceMismatch)
 	}
 	issued := time.Unix(c.IssuedAt, 0)
@@ -402,6 +439,30 @@ func validateReason(reason string) error {
 	return nil
 }
 
+// validateStoredText refuses a new request object whose loginHint, jti, or any authorization
+// detail's type, identifier, service or action carries a rune ReasonRefuses, as validateReason
+// refuses one in the reason. The store keeps each of them as it was signed, and Postgres cannot
+// write U+0000 in text at all, so a NUL there would fail the write and answer 500, where any other
+// control or format rune would be stored as a person or a name nobody can match or read. The
+// request is refused before anything is written, naming the field and never quoting it.
+func validateStoredText(loginHint, jti string, details []AuthorizationDetail) error {
+	type field struct{ name, value string }
+	fields := []field{{"login_hint", loginHint}, {"jti", jti}}
+	for _, d := range details {
+		fields = append(fields, field{"an authorization detail's type", d.Type}, field{"an authorization detail's identifier", d.Identifier},
+			field{"an authorization detail's service", d.Service})
+		for _, action := range d.Actions {
+			fields = append(fields, field{"an authorization detail's action", action})
+		}
+	}
+	for _, f := range fields {
+		if strings.IndexFunc(f.value, ReasonRefuses) >= 0 {
+			return fmt.Errorf("%s contains a refused rune category", f.name)
+		}
+	}
+	return nil
+}
+
 // Enrollment identifies the enrollment a credential request came from. A machine login (no
 // enrollment) carries "-", "-", "-". Slot is a pod enrollment's slot, "" for every enrollment
 // without one.
@@ -570,43 +631,37 @@ func ParseBody(canonical string) (Body, error) {
 
 // ApproverLogin canonicalizes login and returns it when it may decide this record, a record of
 // kind whose verified request object names service (RequestObject.Service), and ErrNotApprover
-// otherwise (MayDecide). A record's approver is resolved when it is created — a secret's owner,
+// otherwise (MayDecide, with groups the members of a group approver). A record's approver is
+// resolved when it is created — a secret's owner, a group owner as group:<address>,
 // AnyoneApprover for a shared human-tier secret, a person's machine login's login_hint, or
 // AnyoneApprover for a service's login — and a service's login is decided by the service its
 // signed request names whatever approver its record stored, so this one comparison is every
 // decision's and every chain re-check's approver rule, and the login it returns is the one a
 // decision records.
-func (b Body) ApproverLogin(kind, service, login string) (string, error) {
+func (b Body) ApproverLogin(kind, service, login string, groups Groups) (string, error) {
 	login = CanonicalLogin(login)
-	if !MayDecide(kind, b.Approver, service, login) {
+	if !MayDecide(kind, b.Approver, service, login, groups) {
 		return "", ErrNotApprover
 	}
 	return login, nil
 }
 
 // MayDecide reports whether login may decide a record of kind whose approver is approver and whose
-// signed request names service: for a machine login that names a service, any login at all, since
-// its credential acts as that service and as no person; for an agent_secret record whose approver
-// is AnyoneApprover, any login; and otherwise the person the approver names. No login is
-// AnyoneApprover itself, and no empty login decides anything. A person's machine login's approver
-// is the person whose machine it becomes, so AnyoneApprover there admits no one, whatever binary
-// opened the record. Nor is a judge actor (JudgeLogin) ever a login that decides: the judge's own
-// approval is recorded under JudgeActor and never as a person, so an owner tag or a login_hint
-// spelled "judge:..." makes no record the judge's to approve as a person.
-func MayDecide(kind, approver, service, login string) bool {
-	login, approver = CanonicalLogin(login), CanonicalLogin(approver)
-	_, judge := JudgeLogin(login)
-	switch {
-	case login == "" || login == AnyoneApprover:
-		return false
-	case judge:
-		return false
-	case kind == KindLauncherCredential && service != "":
-		return true
-	case kind == KindAgentSecret && approver == AnyoneApprover:
-		return true
-	}
-	return login == approver
+// signed request names service (CheckDecider answers nil): for a machine login that names a
+// service, any login at all, since its credential acts as that service and as no person; for an
+// agent_secret record whose approver is AnyoneApprover, any login; for an agent_secret record whose
+// approver is a group (group:<address>, GroupOf), a login the group's one look (GroupStanding)
+// finds listed and fresh, and nobody when groups is nil or the group is stale; and otherwise the
+// person the approver names. No login is AnyoneApprover itself, no login spelled as a group is the
+// group, and no empty login decides anything. A person's machine login's approver is the person
+// whose machine it becomes, so AnyoneApprover there admits no one, whatever binary opened the
+// record, and a group there admits no one either. Nor is a judge actor (JudgeLogin) ever a login
+// that decides: the judge's own approval is recorded under JudgeActor and never as a person, so an
+// owner tag or a login_hint spelled "judge:..." makes no record the judge's to approve as a person.
+// No rule keeps a person from deciding their own request: a member of a group approver may approve
+// a request their own session made, as a sole owner may.
+func MayDecide(kind, approver, service, login string, groups Groups) bool {
+	return CheckDecider(kind, approver, service, login, groups) == nil
 }
 
 // ErrNotJudgeable is wrapped around every reason the model judge may not decide a record: the
@@ -625,8 +680,8 @@ var ErrNotJudgeable = errors.New("not a request the model judge may decide")
 // that then refuses cannot drift apart. Each caller keeps its own refusal wording, which is
 // what a person reads; only the comparison is shared.
 //
-// It lives in this package rather than beside JudgeSeconds in airlock because MayJudge must
-// reach it and this package must not import airlock; the other two callers already import
+// It lives in this package rather than beside JudgeSeconds in proxyrules because MayJudge must
+// reach it and this package must not import proxyrules; the other two callers already import
 // this one. Both sides are widened to int64, the bound being a uint32 and the lifetime an int,
 // so neither is ever cut to the other's range.
 func JudgeAllowsLifetime(bound uint32, lifetimeSeconds int) bool {
@@ -647,7 +702,7 @@ func JudgeAllowsLifetime(bound uint32, lifetimeSeconds int) bool {
 // nil decided is every key decided.
 //
 // judgeSeconds is the rules file's answer for one secret (proxyrules.Rules.JudgeSeconds); both
-// funcs are injected because this package must not import airlock or read the request rows. A
+// funcs are injected because this package must not import proxyrules or read the request rows. A
 // nil judgeSeconds is no bound at all and refuses, as a record with no lifetime does: an
 // unbounded grant is exactly what the judge's seconds are there to bound, so nothing the rules
 // say can admit it.

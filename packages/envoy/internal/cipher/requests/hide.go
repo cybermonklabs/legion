@@ -192,9 +192,11 @@ type grantJudged struct {
 	holder, approver string
 }
 
-// operatorOf is the person the enrollment that holds a grant acts for, as the person rule's
-// exemption reads it (namedOnGrant): enr's operator, and nil for a person's pod that
-// BROKER_POD_OPERATORS no longer maps (unmappedPersonPod), which acts for no person.
+// operatorOf is the person enrollment enr acts for now: enr's operator, and nil for a person's
+// pod that BROKER_POD_OPERATORS no longer maps (unmappedPersonPod), which acts for no person, as
+// for a service's pod and a machine's own session, which carry none. requester, the person
+// rule's exemption (namedOnGrant), mayRevoke and the grant list read it. The member-kind read
+// does not: restrictedOperator asks about the person enr was made for.
 func (m *Machine) operatorOf(enr enrollmentRow) *string {
 	if m.unmappedPersonPod(enr) {
 		return nil

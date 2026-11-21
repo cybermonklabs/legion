@@ -255,7 +255,7 @@ func (m *Machine) checkNarrowingMint(ctx context.Context, mint Minter, name stri
 	if err != nil && bounded.Err() != nil {
 		// The bound, or the budget it was derived from, ended the call while it was in flight.
 		// The minter names such a call by its class and writes the context's own words into its
-		// text without wrapping the context error (secrets' mintCall and transportFailure), so
+		// text without wrapping the context error (secrets' mintCall and TransportFailure), so
 		// the context error is wrapped here instead: the caller then reads this as its time
 		// running out rather than as an answer of GitHub's that decided nothing.
 		return fmt.Errorf("%w: %w", bounded.Err(), err)

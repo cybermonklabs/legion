@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
@@ -90,8 +91,8 @@ const (
 	ReasonNameMalformed = "name-malformed"
 	// ReasonOwnerTagMissing: the secret has no owner tag.
 	ReasonOwnerTagMissing = "owner-tag-missing"
-	// ReasonOwnerTagMalformed: the owner tag is not shared, a lowercase email, or a registered
-	// service.
+	// ReasonOwnerTagMalformed: the owner tag is not shared, a lowercase email, a group as
+	// group:<lowercase email>, or a registered service.
 	ReasonOwnerTagMalformed = "owner-tag-malformed"
 	// ReasonTierTagMissing: the secret has no tier tag.
 	ReasonTierTagMissing = "tier-tag-missing"
@@ -133,15 +134,17 @@ const (
 	// by anything but their lowercase sign-in email, or names a service the deployment does not
 	// register (ParseRequesters).
 	ReasonRequestersMalformed = "requesters-malformed"
-	// ReasonMaxGrantRequired: an admin secret, or a google-service-account one, sets no max-grant,
-	// or one longer than an hour (TagRules). Both release a credential whose grant is reviewed
-	// while it is live, so it lasts an hour at most.
+	// ReasonMaxGrantRequired: an admin secret, a google-service-account one or an
+	// anthropic-federation one sets no max-grant, or one longer than an hour (TagRules). Each
+	// releases a credential whose grant is reviewed while it is live, so it lasts an hour at most.
 	ReasonMaxGrantRequired = "max-grant-required"
-	// ReasonRequestersNotOwner: a google-service-account secret whose requesters are not its one
-	// person owner, once — no list, no entry naming the owner, more than one person, or a person
-	// who is not the owner — or which lists a service at agent tier, where no person approves the
-	// pod that asks (TagRules). A human-tier secret may list registered services beside its owner,
-	// unless the deployment binds it to a dev-<name> account, whose token is that one person's.
+	// ReasonRequestersNotOwner: a google-service-account or anthropic-federation secret whose
+	// requesters are not its owner, once — for a person owner, no list, no entry naming the owner,
+	// more than one person, a person who is not the owner, or a group; for a group owner, no list,
+	// another group, more than one group, or a person — or which lists a service at agent tier,
+	// where no person approves the pod that asks (TagRules). A human-tier secret may list
+	// registered services beside its owner, unless the deployment binds it to a dev-<name>
+	// account, whose token is that one person's.
 	ReasonRequestersNotOwner = "requesters-not-owner"
 	// ReasonAdminMalformed: the admin tag is set to anything but "true" (TagAdmin), the empty
 	// string included. A tag whose value says nothing is a mistake, not a secret that is no
@@ -153,6 +156,10 @@ const (
 	// ReasonAdminRequesters: an admin secret carries no requesters tag (TagRules). Who may ask for
 	// an administrator's credential is named, never left to owner and tier alone.
 	ReasonAdminRequesters = "admin-requesters"
+	// ReasonTypeHumanTier: a secret of a type the broker serves at human tier alone,
+	// anthropic-federation, is agent tier (TagRules). Its token can be an organization
+	// administrator's, which a person approves each release of.
+	ReasonTypeHumanTier = "type-human-tier"
 	// ReasonScopesMalformed: the scopes tag holds a comma, names no scope, names one twice, or
 	// holds an entry that is no scope name — a whole https://www.googleapis.com/auth/… URL
 	// included (ParseScopes).
@@ -203,6 +210,13 @@ func ValidPersonOwner(owner string) bool {
 	return emailPattern.MatchString(owner)
 }
 
+// ValidGroupOwner reports whether an owner tag, or a requesters entry, names a Google group:
+// record.GroupPrefix and the group's lowercase email, group:<address>.
+func ValidGroupOwner(owner string) bool {
+	address, ok := strings.CutPrefix(owner, record.GroupPrefix)
+	return ok && emailPattern.MatchString(address)
+}
+
 // Loader reads the policy from the secret store: every secret whose name starts with Prefix, with
 // its owner and tier tags, whether it is on the agent-secrets key, and whether it has a current
 // value.
@@ -221,12 +235,12 @@ type Loader struct {
 	// BROKER_SERVICES. An owner tag naming any other service is refused as malformed.
 	Services []string
 	// ServiceAccounts is the deployment's BROKER_SERVICE_ACCOUNT_SECRETS: each google-service-account
-	// secret's Name to the one account email the deployment binds to it. The loader reads it for
-	// one rule alone — a secret bound to a dev-<name> account, which is one person's own, may list
-	// no service among its requesters (TagRules) — and the minter is what refuses a mint for any
-	// account but the bound one, so a stored value rewritten to name another account releases no
-	// token. An empty or nil map binds nothing, and every such secret then stands on its tags
-	// alone.
+	// and anthropic-federation secret's Name to the one account email the deployment binds to it.
+	// The loader reads it for one rule alone — a secret bound to a dev-<name> account, which is
+	// one person's own, may list no service among its requesters (TagRules) — and the minter is
+	// what refuses a mint for any account but the bound one, so a stored value rewritten to name
+	// another account releases no token. An empty or nil map binds nothing, and every such secret
+	// then stands on its tags alone.
 	ServiceAccounts map[string]string
 	// AirlockDigest is the fingerprint of the secret's airlock entry, "" for a secret the rules
 	// do not name. In production: the loaded rules' Rules.Digest. A nil field is "" for every
@@ -240,6 +254,10 @@ type Loader struct {
 	// all the same. In production: NewStoreReads on the registry the metrics port serves. A nil
 	// counter counts nothing, which is every Loader a test builds that is not about the count.
 	StoreReads *metrics.Counter
+	// Groups is the broker's group reader (groups.Reader): Current stamps it on every set it
+	// makes live (Set.Groups), so each decision asks it who is a member of a group. A nil
+	// directory admits nobody to any group.
+	Groups record.Directory
 	// ProjectChecks is true when the broker holds a client of Dispatch's project access
 	// (BROKER_PROJECT_ACCESS_URL), which resolves whether a tagged secret's project is private
 	// before Evaluate reads it. A loader without one refuses every secret carrying a
@@ -415,6 +433,8 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 	switch {
 	case s.Owner == OwnerShared:
 		s.ownership = ownerShared
+	case ValidGroupOwner(s.Owner):
+		s.ownership = ownerGroup
 	case ValidPersonOwner(s.Owner):
 		s.ownership = ownerPerson
 	case slices.Contains(l.Services, s.Owner):

@@ -213,7 +213,8 @@ const ENVOY_READY: ReadyBudget = { timeoutMs: READY_TIMEOUT_MS, tailLines: TAIL_
  * bounds each check too: `ready` is handed a signal that aborts when the budget passes, for a
  * check that waits on a server's answer, and a check still pending then counts as not ready, so a
  * server that takes a check and never answers it fails the wait by name rather than holding it.
- * A budget of 0 or less, a caller's deadline spent before the wait began, gets one check.
+ * A budget of 0 or less, a caller's deadline spent before the wait began, ends the wait at once:
+ * one check, or two about 100 ms apart when the first answers false before the spent signal fires.
  */
 export async function awaitReady(
   what: string,

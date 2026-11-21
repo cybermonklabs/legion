@@ -428,10 +428,21 @@ missing file contributes nothing, so each section is then on only when its varia
 `token` or `natsSeed` starting with `!` is a command whose trimmed output is the value (10 s, its
 exit status deciding; never run from a checkout's file). `DISPATCH_URL`, `DISPATCH_TOKEN_FILE`,
 `DISPATCH_TOKEN`, `ENVOY_URL`, `ENVOY_NATS_URL`, `ENVOY_TOKEN_FILE`, `ENVOY_TOKEN`,
-`NATS_NKEY_SEED_FILE` and `NATS_NKEY_SEED` each override their own field; a file's token goes with
+`NATS_NKEY_SEED_FILE`, `NATS_NKEY_SEED`, `NATS_AUTH` and `ENVOY_INBOUND` each override their own
+field; a file's token goes with
 `DISPATCH_URL` or `ENVOY_URL` only when it names the file's own server, and a file's seed with
 `ENVOY_NATS_URL` only when it names the file's NATS servers, so another server needs its own token
-or seed variable. `DISPATCH_TOKEN_FILE` (a path whose trimmed contents are the token — how the
+or seed variable. `ENVOY_INBOUND=listener` (or `"inbound": "listener"` in the `envoy` section)
+takes inbound messages through the listener's relay socket, `<ENVOY_URL>/v1/sessions/<id>/relay`,
+over HTTPS alone, with the session's own broker token, rather than over NATS: for an agent on a
+machine with no NATS connection to the deployment. It is refused beside `ENVOY_NATS_URL` or
+`envoy.natsUrls`, naming both, with a bearer for the listener, with no broker route, and for a
+process that names no session. With the setting, a listener at a plain http address of another
+machine turns Envoy off as a whole, its tools included, a NATS server named or not (the token
+would cross the network unencrypted; a conflict with a NATS server is named first; this machine's
+own listener may be plain http, and a session not set to `listener` keeps plain http); the
+socket carries no live view, so the session opens none and the start notice says so (the
+`@legion/envoy-client` README, "The listener's relay socket"). `DISPATCH_TOKEN_FILE` (a path whose trimmed contents are the token — how the
 Legion daemon delivers it to a pane) never falls back when unreadable. Omitting
 `dispatch.serverUrl` while `dispatch.enabled` is true targets `http://localhost:8766`, the Go
 server's listen address. With Envoy off the session has no Envoy tools and takes no inbound
@@ -502,7 +513,7 @@ takes `--content` once it ends in `.md`.
 An upload over a document the owner already holds under that name replaces every word of it, so it names the token of the version it replaces.
 That token is the one `dispatch doc-read` prints as `Document token: sha256:…`, and it travels in `--precondition-json '{"document":"sha256:…"}'`, beside the `--force` that asks the command for the document's next version.
 A token behind the live document is refused `409 PRECONDITION_FAILED` and nothing is written: the refusal tells you to read the document again with `dispatch doc-read`, which prints the token the document carries now, and to upload again naming that token.
-An upload that names no token at all is refused `400 PRECONDITION_REQUIRED`, by every server and under no setting.
+An upload that names no token is taken for now, unchecked, since older `dispatch` commands cannot name one; Dispatch will refuse it `400 PRECONDITION_REQUIRED` again once every deployed command sends one, so name the token.
 A first upload of a name replaces no version, so it names no token.
 
 `dispatch handoff-write --issue <KEY> --phase <phase> --body-file <path>` records a Legion phase

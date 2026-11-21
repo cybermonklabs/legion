@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -98,6 +99,32 @@ const RequestEndedBrokerMovedMessage = "broker: a pending request's record is si
 // broken is a decision and no release, and writes none either.
 const GrantChainInvalidMessage = "broker: a grant's approval chain does not verify; it releases nothing"
 
+// GrantApproverLapsedMessage is logged, at WARN, each time a release or a reuse refuses a grant a
+// member of a group approver decided because the record's group does not admit that decider now
+// (record.ApproverNotAdmittedError, which ChainVerifier.Verify alone answers; noteLapsedApprover):
+// the group is stale or was never read, a lapsed grant, which writes no GrantChainInvalidMessage
+// beside it; or the group is fresh and does not list the decider, which is a broken chain too and
+// writes that line beside this one. It carries grant=, record_id=, secret=<the grant's names,
+// comma-joined>, decider=<the login that decided>, group=<the group's address>, reason=decider is
+// not a member now and at= (values, airlock or reuse), and nothing else: no value and no token.
+const GrantApproverLapsedMessage = "group approval lapsed"
+
+// noteLapsedApprover writes GrantApproverLapsedMessage for grant grantID, whose chain rests on
+// recordID and which holds granted, refused at at, when err holds a
+// record.ApproverNotAdmittedError, fresh or not, and writes nothing for any other error.
+func noteLapsedApprover(grantID, recordID, at string, granted []requestedSecret, err error) {
+	var lapsed record.ApproverNotAdmittedError
+	if !errors.As(err, &lapsed) {
+		return
+	}
+	names := make([]string, len(granted))
+	for i, g := range granted {
+		names[i] = g.name
+	}
+	slog.Warn(GrantApproverLapsedMessage, "grant", grantID, "record_id", recordID, "secret", strings.Join(names, ","),
+		"decider", lapsed.Login, "group", lapsed.Group, "reason", "decider is not a member now", "at", at)
+}
+
 // Release is one release of a grant: the values the session may hold, when the grant expires,
 // and, when the grant holds a name behind the airlock, how to reach the proxy that holds the
 // rest.
@@ -126,24 +153,35 @@ type grantRelease struct {
 // checkRelease is every check a release of a grant makes before it reads a value, shared by
 // Values and AirlockValues so that what the broker proxies and what it hands over are held to
 // one rule. It re-checks the enrollment and the grant, re-verifies the grant's whole approval
-// chain (verifyChainForRelease, which logs a chain that fails), and — when the policy has
+// chain (verifyChainForRelease, which logs a chain that fails, and noteLapsedApprover, which logs
+// a group approval whose decider the group does not admit now), and — when the policy has
 // changed since the grant's request was decided, any granted name is a service's
 // (anyServiceOwned: the policy's version does not cover which service BROKER_SERVICES' accounts
 // prove), any granted name carries a requesters tag (anyListed: an entry naming a service
-// matches by those same accounts), or the grant is a person's pod's (personPodGrant: the
-// policy's version does not cover which person BROKER_POD_OPERATORS maps the pod's account to)
-// — that the current policy still allows the session, with the names its operator withheld from
-// it, every granted name under the login that decided it, or, for a grant the model judge
-// decided, under the judge the rules still give that name (stillAllowed), that no granted name's
-// max-grant is now shorter than the lifetime the grant's request signed (overMaxGrant), and that
-// no granted name's airlock entry has changed since the request recorded its fingerprint, which
-// ends the grant for good.
+// matches by those same accounts, and one naming a group by the group's members), any granted
+// name is a group's (anyGroupOwned: the version does not cover the group's members), or the
+// grant is a person's pod's (personPodGrant: the policy's version does not cover which person
+// BROKER_POD_OPERATORS maps the pod's account to) — that the current policy still allows the
+// session, with the names its operator withheld from it, every granted name under the login that
+// decided it, or, for a grant the model judge decided, under the judge the rules still give that
+// name (stillAllowed), that no granted name's max-grant is now shorter than the lifetime the
+// grant's request signed (overMaxGrant), and that no granted name's airlock entry has changed
+// since the request recorded its fingerprint, which ends the grant for good.
 //
 // For a person's pod, the session is the pod as requester reads it now. When the setting no
 // longer maps the pod's account to its person, an automatic grant the pod got as that person is
 // refused (ErrGrantNotLive) but not ended, so it releases again when the entry comes back. A
-// grant a person approved still releases. A grant whose requesters tag names the person ends for
-// good (errRequesterNotListed).
+// grant a person approved still releases. A grant whose requesters tag no longer names the person
+// ends for good (errRequesterNotListed); one whose requesters tag names a group the broker has not
+// read in the last two hours is refused and not ended (policy.ReasonRequesterGroupUnread), and
+// releases again once a read lists the person.
+//
+// A session whose person Dispatch calls a restricted member (restrictedOperator, asked here
+// before anything is re-checked) has its grant ended for good there and then, before any name is
+// re-checked (restrictedMember, errRestrictedMember): such a person's agents are released no
+// secret, whoever approved the grant and whenever it was made, whatever its names now are. While
+// that cannot be asked of Dispatch, the release is refused (*projectaccess.MemberKindUncheckable)
+// and the grant left as it is, for the next release to try.
 //
 // owner, when it is not empty, is the enrollment the caller proved, which must be the grant's own
 // (ErrNotYours). AirlockValues passes none: a proxy connection proves its grant by holding one of
@@ -177,11 +215,12 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	if !live {
 		return grantRelease{}, ErrGrantNotLive
 	}
-	if err := m.verifyChainForRelease(ctx, grantID, enrollmentID, at); err != nil {
-		return grantRelease{}, err
-	}
 	granted, err := requestedSecrets(ctx, m.Store.Pool, requestID)
 	if err != nil {
+		return grantRelease{}, err
+	}
+	if recordID, err := m.verifyChainForRelease(ctx, grantID, enrollmentID, at); err != nil {
+		noteLapsedApprover(grantID, recordID, at, granted, err)
 		return grantRelease{}, err
 	}
 	// The grant's names, once the grant is the caller's and its chain verifies, so a refusal of
@@ -198,12 +237,19 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	// a project-channels name is read every time too (anyChannelLimited): which channels its
 	// credential may post to is Dispatch's as well, and the airlock hands the pod that list.
 	set := m.Policy.Get()
+	restricted, err := m.restrictedOperator(ctx, enr)
+	if err != nil {
+		return grantRelease{}, err
+	}
+	if restricted {
+		return grantRelease{}, m.endGrant(ctx, grantID, restrictedMember())
+	}
 	names := make([]string, len(granted))
 	for i, g := range granted {
 		names[i] = g.name
 	}
 	var facts projectFacts
-	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyProjectTagged(set, granted) || anyChannelLimited(set, names) || personPodGrant(enr) {
+	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyGroupOwned(set, granted) || anyProjectTagged(set, granted) || anyChannelLimited(set, names) || personPodGrant(enr) {
 		// The session's own rows are read before Dispatch is asked, so that nothing stands between
 		// Dispatch's answers and the rule that decides on them: projectFacts answers facts younger
 		// than projectaccess.CacheTTL as it returns (atDecision), and they are decided on then.
@@ -257,15 +303,16 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 // Create's reuse of a live grant (reuseLiveGrant). A chain that fails, ErrGrantChainInvalid and
 // only that, writes GrantChainInvalidMessage naming at, the release, with the error's text as its
 // reason; any other error, a database failure inside the check among them, writes nothing, since
-// it is no failed chain. The error is returned as verifyChain answered it, so each caller refuses
-// or passes over exactly as before the line. ApplyDecision, which also answers
-// ErrGrantChainInvalid, is a decision and no release, and does not come through here.
-func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollmentID, at string) error {
+// it is no failed chain. The error is returned as verifyChain answered it, beside the id of the
+// record the chain rests on, so each caller refuses or passes over exactly as before the line.
+// ApplyDecision, which also answers ErrGrantChainInvalid, is a decision and no release, and does
+// not come through here.
+func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollmentID, at string) (string, error) {
 	recordID, err := m.verifyChain(ctx, grantID)
 	if errors.Is(err, ErrGrantChainInvalid) {
 		slog.Warn(GrantChainInvalidMessage, "grant", grantID, "record_id", recordID, "enrollment", enrollmentID, "at", at, "reason", err.Error())
 	}
-	return err
+	return recordID, err
 }
 
 // Values releases the values of a live grant to its own enrollment, and when the grant expires:
@@ -462,11 +509,19 @@ func requesterNotListed(name string) error {
 	return fmt.Errorf("%w: %w: %s no longer lists this requester", ErrGrantNotLive, errRequesterNotListed, name)
 }
 
+// restrictedMember is the refusal of a whole grant to a session whose person Dispatch calls a
+// restricted member, which ends the grant for good (errRestrictedMember) before any of its names
+// is re-checked: a release (checkRelease), a reuse (reuseLiveGrant) and an airlock connection
+// (AirlockConnection) alike.
+func restrictedMember() error {
+	return fmt.Errorf("%w: %w: this grant is released to no restricted member's session", ErrGrantNotLive, errRestrictedMember)
+}
+
 // judgedAdminSecret is the refusal of a granted name the live policy tags as an administrator's
 // (policy.TagAdmin) on a grant the model judge decided, which ends the grant for good
 // (errJudgedAdminSecret).
 func judgedAdminSecret(name string) error {
-	return fmt.Errorf("%w: %w: %s is an administrator's secret, and a person approves every release of one", ErrGrantNotLive, errJudgedAdminSecret, name)
+	return fmt.Errorf("%w: %w: %s is an administrator's secret or an Anthropic federation secret, and a person approves every release of one", ErrGrantNotLive, errJudgedAdminSecret, name)
 }
 
 // GrantEndedActor is what a grant the broker itself ended at release records as having ended it,
@@ -641,11 +696,14 @@ func neededADecision(requested []requestedSecret) func(string) bool {
 }
 
 // stillAllowed re-checks one granted name against a policy newer than the one its request was
-// decided under. The policy must still serve the name and still let this requester have it: a
-// deny refuses; so does a name granted automatically that the current policy wants approved,
-// since no human ever approved it; and so does a name the current policy wants approved by
-// someone decidedBy, the login that decided the request, is not (record.MayDecide). So an
-// approval keeps its grant while the secret stays the approver's, or becomes shared, whose
+// decided under, or against the group reader's members now for a group's name. The policy must
+// still serve the name and still let this requester have it: a deny refuses; so does a name
+// granted automatically that the current policy wants approved, since no human ever approved it;
+// and so does a name the current policy wants approved by someone decidedBy, the login that
+// decided the request, is not (record.MayDecide, with the set's group reader). A group-approved
+// record whose group does not admit its decider now is the chain check's to refuse before this
+// runs (record.ChainVerifier.Verify, noteLapsedApprover), so the refusal here is the plain one. So
+// an approval keeps its grant while the secret stays the approver's, or becomes shared, whose
 // approver is anyone, or once the policy gives this requester the secret without asking; and a
 // secret handed to a person stops every grant of it that person must approve and did not. A name
 // withheld from the session that its request got automatically is judged as an approval by
@@ -658,7 +716,10 @@ func neededADecision(requested []requestedSecret) func(string) bool {
 // either: the frozen source no longer names the secret the policy decides about, so the session
 // asks again. A name whose requesters tag no longer lists this requester is not live either, and
 // ends the grant for good (errRequesterNotListed): that list is who may ask for the secret at
-// all, so a grant made before it dropped them must not go on releasing while they are off it.
+// all, so a grant made before it dropped them must not go on releasing while they are off it. A
+// name whose requesters tag names a group not read in the last two hours is not live while it is
+// so, and the grant is not ended (policy.ReasonRequesterGroupUnread): the list may still name the
+// person, and a fresh read says so.
 // A grant the model judge decided — record.JudgeLogin reads a judge actor off its decidedBy — is
 // held to the rules instead of to that login, and to the admin tag over both: the secret must not
 // be an administrator's now, and the rules in force must still give the name a judge of at least
@@ -679,6 +740,9 @@ func stillAllowed(set *policy.Set, rules proxyrules.Rules, name, frozenSource, f
 	switch {
 	case d.Outcome == policy.Deny && d.Reason == policy.ReasonRequesterNotListed:
 		return requesterNotListed(name)
+	case d.Outcome == policy.Deny && d.Reason == policy.ReasonRequesterGroupUnread:
+		// Paused, not ended: the list may still name this person, which a fresh read will say.
+		return fmt.Errorf("%w: %s's requesters name a group whose members were not read in the last two hours", ErrGrantNotLive, name)
 	case projectDeny(d):
 		return projectNotNamed(name)
 	case d.Outcome == policy.Deny:
@@ -689,14 +753,19 @@ func stillAllowed(set *policy.Set, rules proxyrules.Rules, name, frozenSource, f
 		return fmt.Errorf("%w: the current policy requires approval for %s", ErrGrantNotLive, name)
 	case judged:
 		return judgeStillDecides(set, rules, name, lifetime)
-	case !record.MayDecide(record.KindAgentSecret, d.Approver, "", decidedBy):
+	case !record.MayDecide(record.KindAgentSecret, d.Approver, "", decidedBy, set.Groups()):
+		// A group-approved record whose group does not admit its decider now is the chain
+		// check's to refuse and log (record.ChainVerifier.Verify, noteLapsedApprover), which runs
+		// before this; here the policy's approver is not the one the grant was decided by.
 		return fmt.Errorf("%w: %s now needs its owner's approval, which this grant does not have", ErrGrantNotLive, name)
 	}
 	return nil
 }
 
 // judgeStillDecides is stillAllowed's arm for a grant the model judge decided: the secret must
-// not be an administrator's under the live policy, and the rules in force must still give name a
+// not be one a person approves every release of under the live policy (an administrator's, or an
+// Anthropic federation secret: policy.Secret.PersonApprovesEveryRelease), and the rules in force
+// must still give name a
 // judge of at least lifetime, the seconds the grant was given. The judge's authority is that
 // entry and not a person's, so this arm reads the entry where the person's arm reads a login: a
 // secret handed to another person ends a grant that person must approve and did not, and leaves
@@ -721,7 +790,7 @@ func stillAllowed(set *policy.Set, rules proxyrules.Rules, name, frozenSource, f
 // exactly what the judge's seconds are there to bound, so the judge made no such grant and no
 // such grant is its.
 func judgeStillDecides(set *policy.Set, rules proxyrules.Rules, name string, lifetime *int) error {
-	if set.Secrets[name].Admin {
+	if set.Secrets[name].PersonApprovesEveryRelease() {
 		return judgedAdminSecret(name)
 	}
 	bound, ok := rules.JudgeSeconds(name)
@@ -747,16 +816,25 @@ var errSourceMoved = errors.New("source moved")
 // never brings back a grant they held while they were off it; they ask again instead.
 var errRequesterNotListed = errors.New("requester not listed")
 
-// errJudgedAdminSecret is judgeStillDecides's refusal of a judged grant of a secret the live
-// policy tags as an administrator's (policy.TagAdmin): the tag was added after the model judge
-// decided the request, and a person approves every release of such a secret. Values and
-// reuseLiveGrant end such a grant for good (endGrant), so taking the tag off again never brings
-// back a grant no person approved; the session asks again, as a new request, which the judge
-// refuses while the tag stands.
+// errRestrictedMember is the refusal of a grant to a session whose person Dispatch calls a
+// restricted member (restrictedMember): a grant such a session got before the broker asked, from
+// a broker that did not ask or while Dispatch called the person something else. A release, a
+// reuse and an airlock connection end it for good (endGrant), so nothing that person's agents
+// hold is released again.
+var errRestrictedMember = errors.New("restricted member")
+
+// errJudgedAdminSecret is judgeStillDecides's refusal of a judged grant of a secret a person now
+// approves every release of under the live policy (policy.Secret.PersonApprovesEveryRelease): one
+// tagged as an administrator's (policy.TagAdmin) after the model judge decided the request, or one
+// retagged to the anthropic-federation type. Values and reuseLiveGrant end such a grant for good
+// (endGrant), so taking the tag off again never brings back a grant no person approved; the
+// session asks again, as a new request, which the judge refuses while the tag stands.
 var errJudgedAdminSecret = errors.New("judged administrator's secret")
 
 // JudgePolicy answers what the live policy says about name for the enrollment that asked,
-// whether that name is withheld from its session, and whether the secret is an administrator's:
+// whether that name is withheld from its session, and whether a person approves every release of
+// the secret (policy.Secret.PersonApprovesEveryRelease: an administrator's, or an Anthropic
+// federation secret):
 // the one question the broker's model judge asks the machine before it decides a pending request
 // (judge.Requests, whose other two methods are the writes a verdict makes — ApplyJudgeDecision
 // and LogJudged, in machine_state.go).
@@ -773,17 +851,19 @@ var errJudgedAdminSecret = errors.New("judged administrator's secret")
 // so the two are not one answer: the judge decides no name its session's operator withheld,
 // whatever the policy would otherwise give it.
 //
-// The admin flag is answered beside it for the same sort of reason and off the same snapshot
-// (policy.Secret.Admin, the admin: "true" tag): Evaluate folds the tag into nothing at all — an
-// admin secret is human tier and comes back as the ordinary approval its owner makes — so the
-// outcome alone cannot tell an administrator's credential from any other the owner approves.
-// The judge decides none of them, whatever seconds a rules file gives it for the name, and the
-// one snapshot both answers come off is what keeps the tag and the outcome from being read a
-// policy apart.
+// The third flag is answered beside it for the same sort of reason and off the same snapshot:
+// Evaluate folds an admin tag, and a federation type, into nothing at all — such a secret is human
+// tier and comes back as the ordinary approval its owner makes — so the outcome alone cannot tell
+// a credential a person approves every release of from any other the owner approves. The judge
+// decides none of them, whatever seconds a rules file gives it for the name, and the one snapshot
+// both answers come off is what keeps the tag and the outcome from being read a policy apart.
 //
 // An enrollment that is no longer live (revoked, or its lease lapsed) is an error carrying
 // pgx.ErrNoRows, never a decision: the judge's check fails and the request waits for its person,
-// where a silent approval would grant a credential to a box that has gone.
+// where a silent approval would grant a credential to a box that has gone. The session's person is
+// asked of Dispatch first (restrictedOperator), so a restricted member's request is answered
+// deny, restricted-member, before the judge spends a model call on it, and one Dispatch cannot
+// be asked about is the *projectaccess.MemberKindUncheckable it returns, which decides nothing.
 func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (policy.Decision, bool, bool, error) {
 	enr, err := m.enrollment(ctx, enrollmentID)
 	if err != nil {
@@ -799,21 +879,27 @@ func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (p
 	if err != nil {
 		return policy.Decision{}, false, false, err
 	}
-	// What Dispatch holds of a tagged name is read under the judge's bound on Dispatch, whatever
-	// ctx the caller passed (JudgeDispatch): this is the judge's first read of Dispatch, and it
-	// shares the judge's Dispatch phase when the judge asks.
+	// What Dispatch holds of the session's person and of a tagged name is read under the judge's
+	// bound on Dispatch, whatever ctx the caller passed (JudgeDispatch): these are the judge's first
+	// reads of Dispatch, and they share the judge's Dispatch phase when the judge asks.
 	reads, cancel := JudgeDispatch(ctx)
+	restricted, err := m.restrictedOperator(reads, enr)
+	if err != nil {
+		cancel()
+		return policy.Decision{}, false, false, err
+	}
 	facts, err := m.projectFacts(reads, enr, []string{name}, set)
 	cancel()
 	if err != nil {
 		return policy.Decision{}, false, false, err
 	}
+	own.Restricted = restricted
 	requester := facts.requester(own)
 	decision, err := set.Evaluate(name, requester)
 	if err != nil {
 		return policy.Decision{}, false, false, err
 	}
-	return decision, slices.Contains(requester.Withheld, name), set.Secrets[name].Admin, nil
+	return decision, slices.Contains(requester.Withheld, name), set.Secrets[name].PersonApprovesEveryRelease(), nil
 }
 
 // JudgeRequestState answers the state a decision on recordID would meet now: the second
@@ -1078,8 +1164,9 @@ func sameLifetime(a, b *int) bool {
 
 // signedForAnotherBroker reports whether pending request p's record is signed for another broker
 // address: its request object does not verify for this broker, by the check PendingForApprover
-// lists a record by (requestedIdentifiers), because its aud is not Machine.Audience
-// (record.ErrAudienceMismatch). Such a request can be decided by no person and no judge here: no
+// lists a record by (requestedIdentifiers), because its aud names neither Machine.Audience's
+// origin nor, for a machine login, Machine.EdgeAudience's (record.VerifyStoredRequestObject,
+// record.ErrAudienceMismatch). Such a request can be decided by no person and no judge here: no
 // approver's list shows it and the judge was never handed it. A request with no record, a body
 // that does not parse and every other refusal (a signature, a time) answer false, so Create keeps
 // such a request and applies the one-pending-request rule to it: the broker's move is the one
@@ -1157,20 +1244,24 @@ func writtenBeforeMigration13(alias string) string {
 // the policy it was decided under is still current, no granted name is a service's
 // (anyServiceOwned: the policy's version does not cover which service BROKER_SERVICES' accounts
 // prove), no granted name carries a requesters tag (anyListed: an entry naming a service
-// matches by those same accounts) and the grant is no person's pod's (personPodGrant: the
-// policy's version does not cover which person BROKER_POD_OPERATORS maps the pod's account to),
-// or the current policy still allows it to the session
-// (stillAllowed, the check Values makes, which holds a judged grant to the judge the rules still
-// give its name, over the lifetime this reuse matched it on, the grant's own, and refuses one
-// whose secret the policy now tags as an administrator's), and its whole approval chain still
-// verifies (verifyChainForRelease, the same check Values makes). A caller that already holds a
-// live grant for these exact names never re-asks a human who already approved it, a policy
-// tightened since then is never bypassed by reuse, and neither is a chain that no longer
-// verifies.
+// matches by those same accounts, and one naming a group by the group's members), no granted name
+// is a group's (anyGroupOwned: the version does not cover the group's members), no granted name
+// is tagged with a project (anyProjectTagged: whether it is private is Dispatch's) and the grant
+// is no person's pod's (personPodGrant: the policy's version does not cover which person
+// BROKER_POD_OPERATORS maps the pod's account to), or the current policy still allows it to the
+// session (stillAllowed, the check Values makes, which holds a judged grant to the judge the rules
+// still give its name, over the lifetime this reuse matched it on, the grant's own, and refuses
+// one whose secret the policy now tags as an administrator's), and its whole approval chain still
+// verifies (verifyChainForRelease, the same check Values makes, read first). A caller that already
+// holds a live grant for these exact names never re-asks a human who already approved it, a policy
+// tightened since then is never bypassed by reuse, and neither is a chain that no longer verifies.
 // Every exact match is a candidate, newest grant first, and each gets those checks in turn. A
-// candidate whose chain fails is passed over for the next, and logged (GrantChainInvalidMessage,
-// at=reuse). A session's next enrollment adopts its earlier enrollment's live grants (enroll.go,
-// adopt), so a session that moved here from a broker of another BROKER_PUBLIC_URL sharing this
+// candidate whose chain fails, or whose group approval has lapsed, is passed over for the next,
+// and logged (GrantChainInvalidMessage, GrantApproverLapsedMessage, at=reuse). A grant a
+// requesters group not read in the last two hours pauses (policy.ReasonRequesterGroupUnread)
+// answers no reusable grant and is not ended, as Values leaves it. A session's next enrollment
+// adopts its earlier enrollment's live grants (enroll.go, adopt), so a session that moved here
+// from a broker of another BROKER_PUBLIC_URL sharing this
 // database can hold that broker's grant, whose chain fails here ("aud does not match"), and,
 // after its first grant here, a newer one of this broker for the same names. Without the order,
 // Postgres may answer the old grant first on any call, which would ask a person or the judge
@@ -1180,11 +1271,15 @@ func writtenBeforeMigration13(alias string) string {
 // at that candidate, as with one: a policy end (below) answers no reusable grant, a grant no
 // longer live answers none, and any other error is returned. With no candidate left there is
 // none, and Create asks afresh.
-// A grant whose secret no longer lists this requester, and a judged grant of a secret the policy
-// now tags as an administrator's, are not merely passed over: each is ended for good here, as
+// A grant whose secret no longer lists this requester, and a judged grant of a secret a person now
+// approves every release of (an administrator's, or an Anthropic federation secret), are not
+// merely passed over: each is ended for good here, as
 // Values ends it (errRequesterNotListed, errJudgedAdminSecret), and Create goes on to ask for
 // the names afresh — the denied request that tells the session why, where the list dropped it,
-// and the card the tag's own person answers, where the tag ended it.
+// and the card the tag's own person answers, where the tag ended it. A session whose person
+// Dispatch calls a restricted member (enrollmentRow.Restricted, which Create asked before this)
+// has the grant ended before any name is re-checked (restrictedMember), and Create goes on to the
+// denied request that names restricted-member.
 // An automatic grant a person's pod got as that person is not ended once BROKER_POD_OPERATORS no
 // longer maps the pod's account to that person, but its re-check refuses it (ErrGrantNotLive),
 // which answers no reusable grant, so Create asks for the names afresh. The grant is reusable
@@ -1207,7 +1302,14 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 	if err != nil {
 		return Request{}, false, err
 	}
+candidates:
 	for _, match := range matches {
+		if enr.Restricted {
+			if ended := m.endGrant(ctx, match.grantID, restrictedMember()); !errors.Is(ended, ErrGrantNotLive) {
+				return Request{}, false, ended
+			}
+			return Request{}, false, nil
+		}
 		var rulesVersion, decidedBy string
 		if err := m.Store.Pool.QueryRow(ctx, `select rules_version, coalesce(decided_by, '') from requests where id=$1`, match.requestID).Scan(&rulesVersion, &decidedBy); err != nil {
 			return Request{}, false, err
@@ -1216,7 +1318,17 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 		if err != nil {
 			return Request{}, false, err
 		}
-		if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyProjectTagged(set, granted) || personPodGrant(enr) {
+		// The chain first, as a release checks it: one that fails, or a group approval that has
+		// lapsed, is passed over for the next candidate, its lines written as a release writes
+		// them.
+		if recordID, err := m.verifyChainForRelease(ctx, match.grantID, enr.ID, "reuse"); err != nil {
+			noteLapsedApprover(match.grantID, recordID, "reuse", granted, err)
+			if errors.Is(err, ErrGrantChainInvalid) || errors.Is(err, ErrGrantNotLive) {
+				continue candidates
+			}
+			return Request{}, false, err
+		}
+		if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyGroupOwned(set, granted) || anyProjectTagged(set, granted) || personPodGrant(enr) {
 			requester, err := m.requester(ctx, m.Store.Pool, enr, facts)
 			if err != nil {
 				return Request{}, false, err
@@ -1245,13 +1357,6 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 		r, err := m.Get(ctx, match.requestID)
 		if err != nil {
 			return Request{}, false, err
-		}
-		if r.GrantID != nil {
-			if err := m.verifyChainForRelease(ctx, *r.GrantID, enr.ID, "reuse"); errors.Is(err, ErrGrantChainInvalid) {
-				continue
-			} else if err != nil {
-				return Request{}, false, err
-			}
 		}
 		return r, true, nil
 	}
@@ -1411,7 +1516,9 @@ const recordDeadlineSQL = `coalesce(req.pending_expires_at, cr.expires_at)`
 // An agent_secret record waiting on $2, record.AnyoneApprover, is read with the person its notify
 // column names (responsiblePerson), and PendingForApprover chooses whose list holds it
 // (listedInStead for a row whose responsible person is another). A launcher_credential record
-// carries no notify, so it is listed for everyone.
+// carries no notify, so it is listed for everyone. A record waiting on a group, group:<address>,
+// is listed for each of the groups $3 names, the fresh groups the group reader lists the person in
+// (Machine.Groups' GroupsOf), in the group form.
 const pendingListFrom = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
 		s.state, ` + recordDeadlineSQL + `, coalesce(cr.notify, ''), ` + credentialColumns + `, ` + currentCredentialColumns + `
 	from credential_requests cr
@@ -1419,7 +1526,7 @@ const pendingListFrom = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce
 	left join enrollments enr on enr.id = cr.enrollment_id
 	left join enrollments cur on cur.id = req.enrollment_id
 	cross join lateral (select ` + recordStateSQL + ` as state offset 0) s
-	where (cr.approver = $1 or cr.approver = $2) and `
+	where (cr.approver = $1 or cr.approver = $2 or cr.approver = any($3::text[])) and `
 
 // credentialColumns are the enrollment's columns namedProjects reads, over a left join aliased
 // enr, in the order a scan into enrollmentRow's Kind, Operator, Subject and Projects takes them. A
@@ -1468,17 +1575,17 @@ const pendingForApproverQuery = pendingListFrom + `(
 	) order by cr.created_at desc`
 
 // pendingOrExpiredForApproverQuery is PendingForApprover's statement for a caller that asks for
-// states, $3 for the pending records and $4 for the expired ones: the records of the approver
-// recordStateSQL reads 'pending' while $3 holds, and those it reads 'expired' that have no row in
-// credential_request_dismissals (migration 0033) while $4 holds. The pending rows come first and
+// states, $4 for the pending records and $5 for the expired ones: the records of the approver
+// recordStateSQL reads 'pending' while $4 holds, and those it reads 'expired' that have no row in
+// credential_request_dismissals (migration 0033) while $5 holds. The pending rows come first and
 // the expired ones after them, each newest first, so a caller that cuts the list into pages from
 // the front never pushes a record a person can still decide off its first page to show records
 // nobody can.
 // TestPendingForApproverAvoidsSequentialScans holds the dismissal's NOT EXISTS to the table's
 // primary key, as it holds the rest of this statement to pendingForApproverQuery's indexes.
 const pendingOrExpiredForApproverQuery = pendingListFrom + `(
-		s.state = 'pending' and $3::boolean
-		or s.state = 'expired' and $4::boolean and not exists (
+		s.state = 'pending' and $4::boolean
+		or s.state = 'expired' and $5::boolean and not exists (
 			select 1 from credential_request_dismissals d where d.record_id = cr.id)
 	) order by s.state = 'expired', cr.created_at desc`
 
@@ -1491,15 +1598,17 @@ const pendingOrExpiredForApproverQuery = pendingListFrom + `(
 // says whether it is pending or expired, and when its deadline is, by the one rule a decision
 // refuses an expired record by (recordStateSQL), which ReadRecord and Dismiss read as well.
 //
-// An approver's records are every record naming approver; every request for a shared human-tier
-// secret, whose approver is record.AnyoneApprover, that names approver as the person responsible
-// for the agent that made it, or names no such person (credential_requests.notify, Create's
-// responsiblePerson), so it waits where everyone sees it, or names a person who may not see it
-// (listedInStead); and every service's machine login, whose approver is record.AnyoneApprover too. A
-// private project's request is on no list of a person outside the project (maySeeRecord). Who may
-// decide is not this list's to say: anyone signed in decides a shared secret's request from its
-// page whether or not it is listed for them (record.MayDecide), within the person rule. A
-// service's login a broker from before that rule opened names a person
+// An approver's records are every record naming approver; every record naming a group the group
+// reader lists approver in now (Machine.Groups), so each member of a group owner is asked; every
+// request for a shared human-tier secret, whose approver is record.AnyoneApprover, that names
+// approver as the person responsible for the agent that made it, or names no such person
+// (credential_requests.notify, Create's responsiblePerson), so it waits where everyone sees it, or
+// names a person who may not see it (listedInStead); and every service's machine login, whose
+// approver is record.AnyoneApprover too. A private project's request is on no list of a person
+// outside the project (maySeeRecord). Who may decide is not this list's to say: anyone signed in
+// decides a shared secret's request from its page whether or not it is listed for them
+// (record.MayDecide), within the person rule. A service's login a broker from before that rule
+// opened names a person
 // instead and is listed for that person alone, though anyone who types its code may decide it
 // (record.MayDecide). Whether an agent_secret record is still pending is read from its request
 // row: every writer moves the request out of 'pending' together with the record's terminal event
@@ -1525,7 +1634,8 @@ const pendingOrExpiredForApproverQuery = pendingListFrom + `(
 // can act on. A list with no state reads an expired record only until the sweep ends it, and its
 // one line is the one it always wrote.
 func (m *Machine) PendingForApprover(ctx context.Context, approver string, states PendingStates) ([]PendingSummary, error) {
-	query, args := pendingForApproverQuery, []any{record.CanonicalLogin(approver), record.AnyoneApprover}
+	login := record.CanonicalLogin(approver)
+	query, args := pendingForApproverQuery, []any{login, record.AnyoneApprover, m.groupApprovers(login, true)}
 	byState := states != (PendingStates{})
 	if byState {
 		query, args = pendingOrExpiredForApproverQuery, append(args, states.Pending, states.Expired)
@@ -1633,7 +1743,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 // clock from that moment, not a budget of their own: the reader's own rows, read on the list's
 // context before or between them, spend it too, so the fallback rows never take the list past
 // it, whatever the reader's own rows took. Dispatch's Inbox waits 5 seconds for the whole list
-// (agentsecrets.Client's defaultTimeout), and each read of Dispatch may take up to the
+// (cipher.Client's defaultTimeout), and each read of Dispatch may take up to the
 // project-access client's own 10, so without the clock a slow Dispatch and many other people's
 // rows could empty every Inbox. A row the clock cuts short is left off, as every such row was
 // before the fallback existed, and counted in the list's one line (logFallbackCut).
@@ -1669,15 +1779,16 @@ func (m *Machine) listedInStead(fallback context.Context, p PendingSummary, read
 
 // requestedIdentifiers is what the record whose canonical body is canonical asks for, and the
 // signed reason it asks with, read from the request object it embeds once that object verifies
-// for this broker: its audience, its signature and its time against when the record was written.
-// The reason is what the person rule reads of the row (maySeeRecord), so it comes only from an
-// object that verified.
+// for this broker: its audience, an address of this broker for its kind
+// (record.VerifyStoredRequestObject), its signature and its time against when the record was
+// written. The reason is what the person rule reads of the row (maySeeRecord), so it comes only
+// from an object that verified.
 func (m *Machine) requestedIdentifiers(canonical string, createdAt time.Time) (identifiers []string, reason string, _ error) {
 	body, err := record.ParseBody(canonical)
 	if err != nil {
 		return nil, "", err
 	}
-	obj, err := record.VerifyRequestObject(body.Request, m.Audience, m.Skew, createdAt)
+	obj, err := record.VerifyStoredRequestObject(body.Request, m.Audience, m.EdgeAudience, m.Skew, createdAt)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1820,7 +1931,7 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 	if err != nil {
 		return RecordDetail{}, err
 	}
-	obj, err := record.VerifyRequestObject(body.Request, m.Audience, m.Skew, createdAt)
+	obj, err := record.VerifyStoredRequestObject(body.Request, m.Audience, m.EdgeAudience, m.Skew, createdAt)
 	if err != nil {
 		return RecordDetail{}, err
 	}
@@ -1917,8 +2028,10 @@ type ApproverGrant struct {
 }
 
 // GrantsForApprover lists every live grant approver may revoke, newest first: each grant of a
-// session approver operates, approved or automatic, and each grant approver approved on anyone's
-// session.
+// session approver operates, approved or automatic, each grant approver approved on anyone's
+// session, and each grant a group approver approved whose group's last good read lists approver,
+// however old that read is (grantApprover records the group, and mayRevoke admits the same
+// members, so a member sees every grant they may end, a judged one of a stale group included).
 //
 // It also lists every live grant that is on no other person's page at all: one a service's machine
 // login holds, with no approver because the policy gave it without asking and no operator because
@@ -1991,12 +2104,12 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		left join credential_requests cr on cr.id=r.record_id
 		left join enrollments enr on enr.id=cr.enrollment_id
 		where g.revoked_at is null and `+grantUnexpired("g")+`
-		and (g.approver=$1 or e.operator=$1 or g.approver=$2
+		and (g.approver=$1 or e.operator=$1 or g.approver=$2 or g.approver = any($5::text[])
 			or (g.approver is null and c.service is not null and (e.operator is null
 				or (e.kind='pod' and not exists (select 1 from unnest($3::text[], $4::text[]) as mapped(account, person)
 					where mapped.account=e.subject
 					and mapped.person=translate(e.operator, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'))))))
-		order by g.created_at desc`, login, record.AnyoneApprover, mappedAccounts, mappedPersons)
+		order by g.created_at desc`, login, record.AnyoneApprover, mappedAccounts, mappedPersons, m.groupApprovers(login, false))
 	if err != nil {
 		return nil, err
 	}
@@ -2068,4 +2181,28 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		}
 	}
 	return visible, nil
+}
+
+// groupApprovers is the groups the group reader lists login in, each in the group form a record's
+// and a grant's approver holds it in (record.GroupPrefix), and an empty list with no reader: with
+// freshOnly, for PendingForApprover, the groups that admit login now (GroupsOf), since a member
+// decides only while the group reads fresh; without it, for GrantsForApprover, every group whose
+// last good read lists login however old (GroupsListing), since such a member may revoke the
+// group's grant (mayRevoke), and a grant the model judge approved for a stale group's secret still
+// releases.
+func (m *Machine) groupApprovers(login string, freshOnly bool) []string {
+	if m.Groups == nil {
+		return []string{}
+	}
+	var groups []string
+	if freshOnly {
+		groups = m.Groups.GroupsOf(login)
+	} else {
+		groups = m.Groups.GroupsListing(login)
+	}
+	approvers := make([]string, 0, len(groups))
+	for _, group := range groups {
+		approvers = append(approvers, record.GroupPrefix+group)
+	}
+	return approvers
 }

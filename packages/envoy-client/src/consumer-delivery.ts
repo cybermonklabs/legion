@@ -8,7 +8,7 @@ import {
 } from "./delivery";
 import { type DeliveryLedger, envoyNoticeText } from "./delivery-ledger";
 import { messageFor } from "./errors";
-import { registrationTopics, subjectsOverlap } from "./stream-topics";
+import { subjectsOverlap } from "./stream-topics";
 import {
   type DeliveryAnswer,
   type DeliveryRequest,
@@ -309,6 +309,13 @@ export interface ConsumerDelivery {
    * it changed.
    */
   setFollowed(topics: Iterable<string>): void;
+  /**
+   * Forgets only `topics`, keeping every other follow and its stamp: what a registration the
+   * listener refused for some topics does, since another registration may have added a topic
+   * since this one took the follows (`setFollowed`), and that one's frames must still be handed
+   * over. Persists the snapshot when it changed.
+   */
+  unfollow(topics: Iterable<string>): void;
   /** Offers the snapshot to the host's `persist`, when it changed: call it after a frame is
    *  written. */
   persist(): void;
@@ -788,6 +795,10 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       follows = next;
       persist();
     },
+    unfollow(topics) {
+      for (const topic of topics) follows.delete(topic);
+      persist();
+    },
     persist,
     resumePoint,
     snapshot,
@@ -898,86 +909,4 @@ export function inboundUnavailable(
       restored();
     },
   };
-}
-
-/** What a registration needs of a session's relay; `ConsumerDelivery` is one. */
-export type RegisteringRelay = Pick<ConsumerDelivery, "setFollowed" | "registration">;
-
-/** What `registerWithRelay` is handed; `Result` is the host client's registration answer. */
-export interface RelayRegistration<Result> {
-  /**
-   * The relay this registration asks the listener for a consumer on, or `undefined` when the
-   * session holds no relay subject (no NATS connection yet, or inbound off for this session).
-   */
-  readonly relay: RegisteringRelay | undefined;
-  /**
-   * Why the session holds no relay subject when `relay` is undefined, in words a notice may hold
-   * (`natsFailureReason` of the failure of the NATS call that would have opened it); the refusal and
-   * the outage notice name it. Undefined when the host has no failure to name.
-   */
-  readonly relayMissing?: string;
-  /** This session's own agent subject, which every registration carries. */
-  readonly ownAgentSubject: string;
-  /** Every topic the session follows now, filtered by `registrationTopics`. */
-  readonly followed: Iterable<string>;
-  /** The Legion roles this session holds, which decide the controller notice lane it may follow. */
-  readonly roles?: readonly string[];
-  /** This session's outage report, told once per outage. */
-  readonly outage: InboundUnavailable;
-  /** Sends the registration carrying these topics and this delivery request. */
-  readonly send: (topics: readonly string[], delivery: DeliveryRequest) => Promise<Result>;
-  /**
-   * Takes the answer's consumer, once the registration was accepted: the host drops it when it
-   * has since left the session or closed the relay this asked for.
-   */
-  readonly answered: (result: Result) => void;
-}
-
-/**
- * `registerWithRelay`'s refusal of a session that holds no relay subject, so a host can tell it
- * from a refusal the listener sent. Its message names why the relay is missing when the host said
- * (`relayMissing`).
- */
-export class NoRelaySubjectError extends Error {}
-
-/**
- * One registration, as every host that holds a relay makes it: the topics the listener will
- * store (`registrationTopics`), stamped on the relay before the registration carries them, then
- * sent, with the outage told once whichever way it ends.
- *
- * A session with no relay subject open is refused here rather than registered: every
- * registration asks for consumer delivery, a session receives only what its own consumer holds,
- * and one carrying no relay would be refused `409 not_requested` and leave nothing registered.
- * The host's next heartbeat tries again.
- */
-export function registerWithRelay<Result>({
-  relay,
-  relayMissing,
-  ownAgentSubject,
-  followed,
-  roles,
-  outage,
-  send,
-  answered,
-}: RelayRegistration<Result>): Promise<Result> {
-  if (relay === undefined) {
-    const refused = new NoRelaySubjectError(
-      `this session holds no relay subject, so the listener can give it no consumer and it can receive nothing${relayMissing === undefined ? "" : `, because its relay subject could not be opened: ${relayMissing}`}`
-    );
-    outage.refused(refused);
-    return Promise.reject(refused);
-  }
-  const topics = registrationTopics(ownAgentSubject, followed, roles);
-  relay.setFollowed(topics);
-  return send(topics, relay.registration()).then(
-    (result) => {
-      outage.accepted();
-      answered(result);
-      return result;
-    },
-    (error: unknown) => {
-      outage.refused(error);
-      throw error;
-    }
-  );
 }
