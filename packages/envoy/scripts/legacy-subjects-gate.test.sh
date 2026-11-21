@@ -368,6 +368,15 @@ false	notifications.dispatch.issue.*.*.*.*
 false	notifications.dispatch.issue.ACME.*.comment.created
 false	notifications.dispatch.issue.*
 false	notifications.dispatch.issue.*.ACME-12.>
+true	notifications.dispatch.*.*.comment.created
+true	notifications.dispatch.*.ACME-12.>
+true	notifications.*.*.*.comment.created
+true	*.*.issue.*.comment.created
+true	notifications.envoy.exceptions.notifications.dispatch.*.*.comment.created
+false	notifications.dispatch.*.*.*.comment.created
+false	notifications.dispatch.*.>
+false	notifications.dispatch.>
+false	notifications.dispatch.document.*.spec.>
 true	notifications.agent.ses_a
 true	notifications.agent.*
 false	notifications.agent.PRIV.ses_a
@@ -402,6 +411,15 @@ true	notifications.dispatch.issue.*.comment.created	["notifications.dispatch.iss
 false	notifications.agent.ses_a	["notifications.agent.ses_a"]
 false	notifications.agent.ses_a	["notifications.agent.ses_a","notifications.agent.*.ses_b"]
 false	notifications.agent.ses_a	["notifications.agent.ses_a","notifications.agent.lower.ses_a"]
+false	notifications.agent.ses_a	["notifications.agent.ses_a","notifications.agent.ACME.ses_a"]
+false	notifications.dispatch.issue.*.comment.created	["notifications.dispatch.issue.*.comment.created","notifications.dispatch.issue.ACME.*.comment.created"]
+true	notifications.dispatch.issue.ACME-12.>	["notifications.dispatch.issue.ACME-12.>","notifications.dispatch.issue.*.ACME-12.>"]
+false	notifications.dispatch.issue.ACME-12.>	["notifications.dispatch.issue.ACME-12.>","notifications.dispatch.issue.ZED.ACME-12.>"]
+true	notifications.dispatch.*.*.comment.created	["notifications.dispatch.*.*.comment.created","notifications.dispatch.*.*.*.comment.created"]
+true	notifications.role.legion-priv-priv-1-architect	["notifications.role.legion-priv-priv-1-architect","notifications.role.PRIV.legion-priv-priv-1-architect"]
+false	notifications.role.legion-priv-priv-1-architect	["notifications.role.legion-priv-priv-1-architect","notifications.role.ACME.legion-priv-priv-1-architect"]
+true	notifications.envoy.kept.role.lead-reviewer	["notifications.envoy.kept.role.lead-reviewer","notifications.envoy.kept.role._.lead-reviewer"]
+true	notifications.envoy.exceptions.notifications.agent.ses_a	["notifications.envoy.exceptions.notifications.agent.ses_a","notifications.envoy.exceptions.notifications.agent.*.ses_a"]
 ROWS
 [ "$(jq -n -L "$here/lib" 'include "legacy-subjects-gate-forms"; "a\u0007b\nc" | printable')" = '"a\\x07b\\x0ac"' ] ||
   fail "printable does not write control characters as \\x<hh>"
@@ -844,6 +862,41 @@ replace_row interest ses_a "$(line interest ses_a 0 "$(interest ses_a notificati
 reading --since "$FAKE/earlier.json"
 expect_status 1
 expect_line "GATE SHUT: the interest record of session ses_a holds notifications.dispatch.issue.*.comment.created, in an old form"
+expect_last "GATE SHUT"
+done_case
+
+# A filter reaching the issue family through a wildcard in the family's own tokens
+# (notifications.dispatch.*.*.comment.created) is an issue filter all the same, and old-only for the
+# same reason, so it shuts the second reading as a stored interest and as a consumer's filter.
+new_case "an interest record holding an old-only filter that reaches the issue family through a wildcard shuts the second reading"
+first_reading_of 73
+replace_row interest ses_a "$(line interest ses_a 0 "$(interest ses_a notifications.agent.ses_a 'notifications.dispatch.*.*.comment.created')" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "GATE SHUT: the interest record of session ses_a holds notifications.dispatch.*.*.comment.created, in an old form"
+expect_last "GATE SHUT"
+done_case
+
+new_case "a consumer on an old-only filter that reaches the issue family through a wildcard shuts the second reading"
+first_reading_of 73
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers)" "$(consumer ses_fam '["notifications.dispatch.*.*.comment.created"]')")" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "GATE SHUT: consumer ses_fam filters notifications.dispatch.*.*.comment.created, which only an old-form name matches"
+expect_last "GATE SHUT"
+done_case
+
+# A twin covers the old filter only when it covers every project the old filter's names carry:
+# beside notifications.dispatch.issue.*.comment.created, whose names carry any project,
+# notifications.dispatch.issue.ACME.*.comment.created hears ACME's alone, so the consumer still
+# goes deaf to every other project's events when Dispatch publishes the new form.
+new_case "a consumer whose new-form filter covers one project of an old-only filter's names shuts the second reading"
+first_reading_of 73
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers)" \
+  "$(consumer ses_one '["notifications.dispatch.issue.*.comment.created","notifications.dispatch.issue.ACME.*.comment.created"]')")" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "GATE SHUT: consumer ses_one filters notifications.dispatch.issue.*.comment.created, which only an old-form name matches"
 expect_last "GATE SHUT"
 done_case
 

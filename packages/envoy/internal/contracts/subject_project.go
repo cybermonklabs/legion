@@ -248,19 +248,21 @@ func CanonicalTopic(topic string) (canonical string, legacy bool) {
 	return topic, false
 }
 
-// LegacyIssueFilter reads an issue-event filter with a wildcard where the old form names the key,
-// which CanonicalTopic reads as its own new form, and reports it old when it matches some old-form
-// issue event's name (the key, then the event's type) and no new-form one (the key's project, the
-// key, then the type), with its new form, any project first. So
+// LegacyIssueFilter reads a filter that reaches the issue family, which CanonicalTopic reads as its
+// own new form, and reports it old when its first token after the family's names an issue key, or
+// when it matches some old-form issue event's name (the key, then the event's type) and no new-form
+// one (the key's project, the key, then the type), with its new form, any project first. So
 // notifications.dispatch.issue.*.comment.created hears old-form names alone, since the new form of
 // an event has one token more, and its new form is notifications.dispatch.issue.*.*.comment.created.
-// A failed-delivery report of one follows the filter it carries. A filter that hears both forms
-// (notifications.dispatch.issue.*.*.>, notifications.dispatch.issue.>) is not old, nor is one that
-// hears the new form alone (notifications.dispatch.issue.*.INFRA-12.>). An event's type is read as
-// two tokens or more: every Dispatch event type is a noun and a verb or longer (comment.created,
-// settings.repo_project.updated). The listener's count of old-form names reads it beside
-// CanonicalTopic (store.LegacyTopicWarnings, store.CountStoredLegacyTopics), and it is the rule
-// packages/envoy/scripts/legacy-subjects-gate.sh holds a filter to (old_form in
+// A filter reaches the family when each of its first three tokens is the family's (notifications,
+// dispatch, issue) or a wildcard, none of them `>`: notifications.dispatch.*.*.comment.created is
+// such a filter, and old as surely. A failed-delivery report of one follows the filter it carries.
+// A filter that hears both forms (notifications.dispatch.issue.*.*.>, notifications.dispatch.*.>)
+// is not old, nor is one that hears the new form alone (notifications.dispatch.issue.*.INFRA-12.>).
+// An event's type is read as two tokens or more: every Dispatch event type is a noun and a verb
+// or longer (comment.created, settings.repo_project.updated). The listener's count of old-form
+// names reads it beside CanonicalTopic (store.LegacyTopicWarnings, store.CountStoredLegacyTopics),
+// and it is the rule packages/envoy/scripts/legacy-subjects-gate.sh holds a filter to (old_form in
 // lib/legacy-subjects-gate-forms.jq), so the gate and the count see the same filters. It is not one
 // of TopicForms' forms: what a session's consumer filters is unchanged. Until the old form is
 // refused only.
@@ -271,16 +273,20 @@ func LegacyIssueFilter(topic string) (canonical string, legacy bool) {
 		}
 		return "", false
 	}
-	rest, found := strings.CutPrefix(topic, DispatchIssueTopicPrefix)
-	if !found || !strings.HasPrefix(rest, "*.") {
+	tokens := strings.Split(topic, ".")
+	if len(tokens) < 4 || !familyToken(tokens[0], "notifications") || !familyToken(tokens[1], "dispatch") || !familyToken(tokens[2], "issue") {
 		return "", false
 	}
-	tokens := strings.Split(rest, ".")
-	if issueFilterMatches(tokens, issueKeyToken) && !issueFilterMatches(tokens, projectKey.MatchString, issueKeyToken) {
-		return DispatchIssueTopicPrefix + "*." + rest, true
+	rest := tokens[3:]
+	if issueKeyToken(rest[0]) || (issueFilterMatches(rest, issueKeyToken) && !issueFilterMatches(rest, projectKey.MatchString, issueKeyToken)) {
+		return strings.Join(tokens[:3], ".") + ".*." + strings.Join(rest, "."), true
 	}
 	return "", false
 }
+
+// familyToken reports whether a filter's token reaches a family's token name: it is that name, or
+// a wildcard over one token.
+func familyToken(token, name string) bool { return token == name || token == "*" }
 
 // issueFilterMatches reports whether an issue filter's tokens after the family's prefix match some
 // name of lead's classes followed by an event type of two tokens or more: a wildcard matches any

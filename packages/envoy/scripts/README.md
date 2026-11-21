@@ -929,10 +929,12 @@ stream's last sequence, the newest old-form message and every old-form counter. 
 at least the retention later, shuts on any old-form message the stream still holds (one published
 after the first reading's last stream sequence named apart); a listener whose count rose
 under any kind; a consumer one of whose filters only an old-form name matches and whose new form
-the same consumer does not also filter (a Legion daemon's `legion-go-<project>-<kind>` or any
-other; a session consumer filters both forms of its topics until the old form is refused, so its
-old filter loses nothing); an interest record holding an old-form topic other than its session's
-own agent subject, which the listener writes into every record itself until the old form is
+the same consumer does not also filter under every project its names carry (a Legion daemon's
+`legion-go-<project>-<kind>` or any other; a session consumer filters both forms of its topics
+until the old form is refused, so its old filter loses nothing; a new form under one project,
+beside an old filter whose names carry any, covers that project alone); an interest record holding
+an old-form topic other than its session's own agent subject, which the listener writes into every
+record itself until the old form is
 refused; a reading named with `--since` that shut the gate; and less than the retention between the
 two, the readings' and each listener's own two reads of its counter. The old form is the gate's own
 rule (`lib/legacy-subjects-gate-forms.jq`, `old_form`, which the gate also hands the Job to choose
@@ -940,7 +942,9 @@ the subjects whose last message it reads), so the gate stays right once the code
 forms is deleted. It takes as old a filter that matches old-form names alone even where it names
 no key: `notifications.dispatch.issue.*.comment.created` has the old form's length, one token
 short of every new-form issue event's name, so it hears the old form alone; the listener's counter
-takes it as old too (`contracts.LegacyIssueFilter`).
+takes it as old too (`contracts.LegacyIssueFilter`). A filter that reaches the issue family through
+a wildcard in the family's own tokens (`notifications.dispatch.*.*.comment.created`) is held to the
+same rule, by the gate and by the counter.
 
 What it cannot see prints `UNKNOWN`, never `GATE OPEN`: a surface it could not read or that
 answered nothing (no listener, no Legion daemon consumer, no issue or agent subject on the stream,

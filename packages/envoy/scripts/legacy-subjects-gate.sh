@@ -50,9 +50,12 @@
 #     sequence (its subject's last message, read by last_by_subj, is later) is named apart;
 #   - a listener whose count rose since the first reading, under any kind;
 #   - a consumer one of whose filters only an old-form name matches, and whose new form the same
-#     consumer does not also filter (a session consumer filters both forms of each topic until the
-#     old form is refused, so its old filter loses nothing; a filter that is the old form alone,
-#     a Legion daemon's legion-go-<project>-<kind> or any other, would go deaf once publishers stop);
+#     consumer does not also filter under every project its names carry (a session consumer filters
+#     both forms of each topic until the old form is refused, so its old filter loses nothing; a
+#     filter that is the old form alone, a Legion daemon's legion-go-<project>-<kind> or any other,
+#     would go deaf once publishers stop, and so would one beside a new form under one project of
+#     names that carry any); an issue filter is one that reaches the issue family, through a
+#     wildcard in the family's own tokens too (notifications.dispatch.*.*.comment.created);
 #   - an interest record holding an old-form topic other than its session's own agent subject,
 #     which the listener writes into every record itself until the old form is refused;
 #   - a reading named with --since that shut the gate, or less than the retention between the two
