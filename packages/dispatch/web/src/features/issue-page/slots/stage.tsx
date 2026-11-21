@@ -89,7 +89,7 @@ export type SlotsFilled = Readonly<Record<Preset, boolean>>;
 export const SLOT_FILLED: SlotsFilled = {
   conversation: true,
   decisions: false,
-  plan: false,
+  plan: true,
   spec: false,
   verification: false,
 };

@@ -20,7 +20,6 @@ import {
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // `dispatch plans --project <KEY>`: each finished issue of a project, as Dispatch's
 // `GET /api/v1/projects/{key}/plans` answers them, one header line and one line per issue: its
@@ -487,7 +486,6 @@ describe("dispatch plans on the command line", () => {
   let stateDir = "";
   beforeEach(() => {
     stateDir = makeDirectory();
-    forgetKeyedLayerMemory();
   });
 
   /** A fake Dispatch on a loopback port of its own whose plans reads of INFRA and of ACME each

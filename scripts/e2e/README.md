@@ -197,7 +197,7 @@ Each item below names a script, then what it proves.
 - `verifiers-staging-token.sh`
 
   `dispatch` and the Envoy listener authenticate a projected service-account token the staging EKS cluster actually minted
-  — the right audience is accepted, the other binary's audience and a missing bearer are refused, each shared token still works, half an OIDC pair refuses either boot, an issuer that does not answer refuses the listener's boot, Dispatch starts and serves against such an issuer (`/healthz` `service_tokens` false, a JWT-shaped bearer `503 OIDC_ISSUER_UNAVAILABLE` until it discovers it in the background), and a refused token leaves its failure class in the log and nowhere else
+  — the right audience is accepted, the other binary's audience and a missing bearer are refused, each shared token still works, half an OIDC pair refuses either boot, Dispatch starts and serves against an issuer that does not answer (`/healthz` `service_tokens` false, a JWT-shaped bearer `503 OIDC_ISSUER_UNAVAILABLE` until it discovers it in the background), the listener does the same (`/healthz` `oidc` false, `envoy_listener_oidc_issuer_discovered{issuer="cluster"} 0`, a JWT-shaped bearer 503 with `Retry-After: 1`, the shared token served), and a refused token leaves its failure class in the log and nowhere else
 
 - `burstable-kind.sh`
 
@@ -3299,7 +3299,7 @@ jq -r '.[].jsonPayload | tojson' <log export>.json | jq -R -s -f scripts/e2e/lib
 ## dispatch-user-turns.sh
 
 LEGION-394's acceptance: a person's direct Send or Aside from Dispatch's conversation page is the session's own user turn, and everything else keeps its Envoy card.
-One real session — the pinned Oh My Pi (`.omp-pin`, run as a mise tool spec) with this checkout's Envoy plugin in an isolated profile, launched with `controller-start-tmux.sh`'s `operator_env` line, its cwd under `/tmp` — registers with a real Envoy listener and NATS.
+One real session — the pinned Oh My Pi (`.omp-pin`, run as a mise tool spec) with this checkout's Envoy plugin in an isolated profile, launched under `env` with [`omp_session_unsets`](#libomp-homesh), the run's own `HOME` and `OMP_PROFILE`, and the run's Envoy, NATS and Dispatch addresses and token files, its cwd under `/tmp` — registers with a real Envoy listener and NATS.
 The profile's model route shuts Oh My Pi's first-run setup wizard ([`omp_setup_wizard_off`](#libomp-homesh)), which a fresh profile's first launch otherwise sits in.
 Dispatch, built from the checkout with NATS on and its trusted identity header, serves the SPA this checkout builds, and Playwright drives the conversation page as the person the header names.
 The session's model turns go through the route `LEGION_E2E_MODEL_ROUTE` names:
@@ -3654,8 +3654,8 @@ What the run touches, and nothing else:
 
 - the containers `verifiers-e2e-pg` (pgvector on PostgreSQL 18, the image CI's Dispatch service runs, pinned by digest) and `verifiers-e2e-nats` (the hub's nats-server with `-js`, [`lib/nats-image.sh`](#libnats-imagesh)), both on ephemeral loopback ports.
 
-- two ports the kernel chose, one for `dispatch` and one for the listener, each held by [`lib/held-port.py`](#libheld-portpy) from that choice until its binary serves on it (`DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`).
-  The boot refusals exit before any bind and get none.
+- two ports the kernel chose at a time, one for `dispatch` and one for the listener, each held by [`lib/held-port.py`](#libheld-portpy) from that choice until its binary serves on it (`DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`): first for the boots against an issuer that does not answer, which are stopped, then for the boots against the staging issuer.
+  The half-pair boot refusals exit before any bind and get none.
 
 After any exit — pass, failure, or an interrupt
 — the `EXIT` trap signals both binaries and removes both containers; `docker ps -a --filter name=verifiers-e2e` comes back empty.
@@ -3671,7 +3671,7 @@ The last step asserts that neither binary's log contains `eyJ`.
 ### How it fails
 
 Every step is fatal and names its reason:
-a cluster that will not mint, a discovery document with no `https` issuer, a token whose `iss`, `aud` or `sub` is not the one asked for, a container that never becomes ready, a binary that exits during boot (reported at once from its dead pid, with its log, rather than after the whole wait), a Dispatch booted against an issuer that does not answer that exits, never answers `/healthz`, reports `service_tokens` as anything but `false`, or does not stop with status 0 within 30 s of its SIGTERM, a boot log that does not name the issuer, any of the nine calls answering the wrong status, a body that is not the actor the verifier should have produced (or, for the bearer sent before the issuer is discovered, not `OIDC_ISSUER_UNAVAILABLE`), a refusal whose class is missing from the log
+a cluster that will not mint, a discovery document with no `https` issuer, a token whose `iss`, `aud` or `sub` is not the one asked for, a container that never becomes ready, a binary that exits during boot (reported at once from its dead pid, with its log, rather than after the whole wait), a Dispatch booted against an issuer that does not answer that exits, never answers `/healthz`, reports `service_tokens` as anything but `false`, or does not stop with status 0 within 30 s of its SIGTERM, a listener booted against such an issuer that exits, never reports healthy, reports `oidc` as anything but `false` or `google` as anything but `null`, reads anything but `0` on `envoy_listener_oidc_issuer_discovered{issuer="cluster"}`, answers a JWT-shaped bearer anything but `503` with `Retry-After: 1` or the shared token anything but `200`, logs no line naming the issuer, or does not stop with status 1, its ordered shutdown's, within 30 s of its SIGTERM, a boot log that does not name the issuer, any of the nine calls answering the wrong status, a body that is not the actor the verifier should have produced (or, for the bearer sent before the issuer is discovered, not `OIDC_ISSUER_UNAVAILABLE`), a refusal whose class is missing from the log
 — or present in the 401 body, which would tell an unauthenticated caller which credential the listener is configured for.
 
 Two notes on what the script had to learn about its own surface:
@@ -3679,7 +3679,7 @@ Two notes on what the script had to learn about its own surface:
 - Postgres readiness is probed **over TCP** (`pg_isready -h 127.0.0.1`).
   The container entrypoint's bootstrap phase answers on the unix socket while nothing listens on 5432 yet, and a client that connects in that window is reset by the peer.
 
-- The listener answers `/healthz` 200 with `{"status":"starting"}` before NATS is up, and every `/v1` route is 503 until then, so the wait is for the healthy status and not for the port.
+- The listener answers `/healthz` 200 with status `starting` before NATS is up, and every `/v1` route is 503 until then, so the wait is for the healthy status and not for the port.
 
 - The "never prints a token" assertions are written `grep -q … && fail`, not `! grep -q …`:
   `set -e` ignores a negated pipeline (shellcheck SC2251), so the negated form could never fail the run.
@@ -6642,9 +6642,9 @@ It does not see a `docker run` continued over lines, `podman` or a launcher that
 ## lib/omp-home.sh
 
 The run's own `HOME` for Oh My Pi, so a stage proof's isolated profile lives in its work directory and the operator's `~/.omp/profiles` is never written or deleted.
-Stage 2, Stage 3, the 4b.13b acceptance, Stage 4b's controller and the controller proof source it, and so do the three model-route libraries ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh), [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) and [`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)) for `omp_setup_wizard_off`.
+Stage 2, Stage 3, the 4b.13b acceptance, Stage 4b's controller, the controller proof, `dispatch-user-turns.sh`, `parked-decision-devbox.sh`, `claude-backend-tmux.sh`, the operator walkthrough's `record-casts.sh` and pi-legion's skill-scenario rig source it, and so do the three model-route libraries ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh), [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) and [`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)) for `omp_setup_wizard_off`.
 
-```sh
+```bash
 . "$root/scripts/e2e/lib/omp-home.sh"     # sourced, never run
 make_omp_home "$work/omp-home"
 omp_setup_wizard_off "$work/omp-home/.omp/profiles/$profile/agent/config.yml"
@@ -6681,6 +6681,7 @@ An interactive Oh My Pi in a terminal, such as the one `legion controller start`
 `startup.setupWizard: false` shuts the wizard whatever setup version the build counts to; an Oh My Pi in `--mode rpc`, as every daemon pane runs, never opens it.
 A named profile's own settings file is its `agent/config.yml`, and it inherits no other `config.yml` of the home (`getProfileConfigRoot`, `@oh-my-pi/pi-utils` `dirs.ts`).
 Only the working directory's project settings and `PI_CONFIG_FILES` overlays merge over it, so each profile the run writes carries the line itself.
+`lib/omp-home.test.ts` reads back, as one YAML document, what `omp_setup_wizard_off` and the controller proof's profile writer (`write_controller_profile`) write, and each model-route library's own test reads `startup.setupWizard` from the `config.yml` it writes.
 
 `omp_session_unsets` is the one list of the operator's own Oh My Pi session variables that no Oh My Pi a rig starts from that session may inherit, as `env` options:
 `-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH -u OMP_SESSION_EXCLUSIVE`.

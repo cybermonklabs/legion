@@ -1,6 +1,7 @@
 package testnats
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -31,7 +32,7 @@ func TestMain(m *testing.M) { os.Exit(Main(m)) }
 // races CreateKeyValue. The helper must retry the JetStream operation itself.
 func TestWaitForJetStreamRetriesTheOperationUntilItIsReady(t *testing.T) {
 	attempts := 0
-	waitForJetStream(t, func() error {
+	waitForJetStream(t, func(context.Context) error {
 		attempts++
 		if attempts < 3 {
 			return errors.New("JetStream is starting")

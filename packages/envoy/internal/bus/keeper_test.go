@@ -640,6 +640,13 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 				<-closed
 			}}
 			client.mu.Unlock()
+			// A pass takes the client's JetStream context once, as it starts (keepPass), so a pass
+			// in flight at the swap still holds the context with no gate: had it read the stream
+			// after the lowering below, it would raise the stream again unheld, every later pass
+			// would find nothing to restore, and the row would wait for an update that never comes.
+			// This wait sees that pass end, and a whole pass after it, so every pass that reads
+			// the lowered stream took the gated context.
+			keeperPasses(t, []*Client{client}, 1)
 			lowered := info.Config
 			lowered.Replicas = 1
 			if _, err := js.UpdateStream(&lowered); err != nil {

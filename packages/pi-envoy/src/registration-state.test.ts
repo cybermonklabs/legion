@@ -13,7 +13,6 @@ import {
   type SubscribeResult,
   type UnsubscribeInput,
 } from "@legion/envoy-client/transport";
-import type { NatsConnection } from "nats";
 import {
   createRegistrationState,
   type DialLimit,
@@ -21,6 +20,7 @@ import {
   type RegistrationState,
   taskWasAbandoned,
 } from "./registration-state";
+import type { SessionInbound } from "./session-inbound";
 
 /** The deadline rejection the queue answers with, which the module names through its predicate:
  *  the error class itself is private to it. */
@@ -94,11 +94,11 @@ interface HarnessControl {
   getRole: (role: string) => Promise<RoleInfo>;
   getInterest: (sessionID: string) => Promise<Interest>;
   unsubscribe: (input: UnsubscribeInput) => Promise<void>;
-  dial: (limit?: DialLimit) => Promise<NatsConnection>;
+  dial: (limit?: DialLimit) => Promise<SessionInbound>;
   /** The session's connection, as the extension's `ensureConnection` answers it: it dials when
    *  the session has none, and can wait again after the dial. */
-  connect: (dial: () => Promise<NatsConnection>) => Promise<NatsConnection>;
-  subscribeTopic: (topic: string, connect: () => Promise<NatsConnection>) => Promise<boolean>;
+  connect: (dial: () => Promise<SessionInbound>) => Promise<SessionInbound>;
+  subscribeTopic: (topic: string, connect: () => Promise<SessionInbound>) => Promise<boolean>;
 }
 
 interface Harness {
@@ -122,7 +122,7 @@ interface Harness {
     readonly timeoutMs?: number;
   }[];
   readonly claims: SetRoleInput[];
-  readonly fakeConnection: (name: string) => NatsConnection;
+  readonly fakeConnection: (name: string) => SessionInbound;
   /** Claims `role` for `id` through a settled role move, as a healthy pass does. */
   readonly hold: (role: string, id: string) => Promise<boolean | undefined>;
 }
@@ -144,12 +144,12 @@ function createHarness(): Harness {
   }[] = [];
   const claims: SetRoleInput[] = [];
 
-  const fakeConnection = (name: string): NatsConnection =>
+  const fakeConnection = (name: string): SessionInbound =>
     ({
       close: async (): Promise<void> => {
         closedConnections.push(name);
       },
-    }) as unknown as NatsConnection;
+    }) as unknown as SessionInbound;
 
   const control: HarnessControl = {
     open: "",

@@ -478,29 +478,39 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a refusal of the fallback model after the host's own walk steps down again and comes back to the model the session started on",
   async () => {
-    /** When the turn that pings the gateway every second must stop and let the run settle: past
-     * the doubled wait the second refusal bought. */
-    let until = 0;
     const pane = await fallbackPane({
       chains: TWO_STEPS,
-      prompt: ["Start FALL-1.", "Keep working."],
-      answer: (_model, nth) => {
+      // One assignment. Its first turn starts a background job, so the turn the second refusal
+      // ends waits on the job's result. The case reads the walks and the return from the
+      // transcript, on omp's own clock, so neither the job's length nor a step of the case decides
+      // it: the job's result starts a run whenever it comes, before the return or after it.
+      prompt: ["Start FALL-1."],
+      answer: (model, nth) => {
+        if (nth === 1) {
+          return replies(
+            [call("bash", { command: "sleep 3; echo finished", async: true })],
+            `msg_${nth}`
+          );
+        }
         // Refused before any output: the host walks its own chain to the middle model and
         // replays the turn there.
-        if (nth === 1) return refuses("refusal_1");
-        // The replay is refused after text, which the host leaves where it is: the plugin's own
-        // walk takes it from the middle model to the weaker one.
-        if (nth === 2) {
-          until = Date.now() + 4 * COOLDOWN_MS;
-          return refuses("refusal_2", { text: "Looking at it." });
-        }
-        return Date.now() < until
+        if (nth === 2) return refuses("refusal_1");
+        // The replay is refused after text, which the host leaves where it is, and the turn ends
+        // waiting on the job's result: the plugin's own walk takes it from the middle model to
+        // the weaker one.
+        if (nth === 3) return refuses("refusal_2", { text: "Looking at it." });
+        // The job's result starts a run that asks the gateway every second while the session is
+        // on the weaker model, and ends at its first request to any other: on the return, or at
+        // once when the result comes after it. A session that never comes back is left to the
+        // test runner's timeout.
+        return model === "weak-model"
           ? replies([sleeps(1)], `ping_${nth}`)
           : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
       },
     });
 
-    expect(pane.models().slice(0, 3)).toEqual(["strong-model", "middle-model", "weak-model"]);
+    // The job's start, the refused turn, and the host's replay of it on the middle model.
+    expect(pane.models().slice(0, 3)).toEqual(["strong-model", "strong-model", "middle-model"]);
     const states = await pane.cooldowns();
     const armed = states.findLast((state) => state.arming !== undefined)?.arming;
     // The defect this case is the proof of: the plugin's own walk armed the return on the model
@@ -511,16 +521,22 @@ test.skipIf(skip)(
     expect(states.findLast((state) => state.arming !== undefined)?.levels).toEqual({
       [STRONG]: 3,
     });
-    const refusedAt = pane.served[1]?.at ?? 0;
+    const refusedAt = pane.served[2]?.at ?? 0;
     const dueAt = armed?.dueAt ?? 0;
     expect(dueAt - refusedAt).toBeGreaterThanOrEqual(2 * COOLDOWN_MS);
     // Nothing went back before that wait, and what the session went back to is the stronger
-    // model: no request of this pane ever went to the middle model again.
-    const waiting = pane.served.slice(2).filter((turn) => turn.at < dueAt);
-    expect(waiting.length).toBeGreaterThan(1);
+    // model: the session's model changes, which omp records on the clock the due time is on, are
+    // its start on the stronger model, the host's walk to the middle one, the plugin's walk to the
+    // weaker one, and the return to the stronger one, no earlier than the due time. No request
+    // served in the wait went to the stronger model, and none of this pane went to the middle
+    // model again.
+    const timeline = await pane.modelTimeline();
+    expect(timeline.map((change) => change.value)).toEqual([STRONG, MIDDLE, WEAK, STRONG]);
+    expect(timeline[3]?.at).toBeGreaterThanOrEqual(dueAt);
+    const waiting = pane.served.slice(3).filter((turn) => turn.at < dueAt);
     expect(waiting.map((turn) => turn.model)).not.toContain("strong-model");
     expect(pane.returnedAt(dueAt)).toBeDefined();
-    expect(pane.models().slice(2)).not.toContain("middle-model");
+    expect(pane.models().slice(3)).not.toContain("middle-model");
   },
   240_000
 );
@@ -933,6 +949,69 @@ test.skipIf(skip)(
     expect(timeline[2]?.at).toBeGreaterThanOrEqual(armed?.arming?.dueAt ?? Infinity);
     // The run is the job's: its first request carries the job's output.
     expect(pane.served[first]?.messages).toContain("released");
+  },
+  180_000
+);
+
+test.skipIf(skip)(
+  "a refusal after streamed text that ends a turn waiting on a background job moves the session down before the job's result starts its run",
+  async () => {
+    /** The file whose existence ends the background job, which the case makes once the walk has
+     * set the model, so the job's result cannot start its run before that. */
+    const release = ".release-job";
+    let first = 0;
+    const pane = await fallbackPane({
+      // The case reads where the job's result starts its run, never the return: a wait no case
+      // reaches, so no step of the case can let the return come first.
+      cooldownMs: UNREACHED_COOLDOWN_MS,
+      prompt: ["Start FALL-1."],
+      answer: (_model, nth) => {
+        // The first assignment's one turn, which only brings the pane up.
+        if (nth === 1) return replies([{ type: "text", text: "Ready." }], `msg_${nth}`);
+        // The second assignment starts a background job, which the host runs on after the run
+        // has ended, and wakes the session with its result.
+        if (nth === 2) {
+          return replies(
+            [
+              call("bash", {
+                command: `until [ -e ${release} ]; do sleep 0.2; done; echo released`,
+                async: true,
+              }),
+            ],
+            `msg_${nth}`
+          );
+        }
+        // The turn after the job has started is refused after text, which the host leaves where
+        // it is: the turn ends waiting on the job's result, with `willContinue` and
+        // `awaitingAsyncWork` both set.
+        if (nth === 3) return refuses("refusal_1", { text: "Looking at it." });
+        return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+      },
+      whileUp: async (life) => {
+        // As in the case above: the job's run ends with an `agent_end` the host marks as not
+        // terminal, so this prompt is sent here.
+        await life.prompt("Start the job.");
+        const refusedAt = life.served[2]?.at ?? 0;
+        // The walk is the one model change the host reports after the refusal; a plugin that
+        // reads that end as a retry makes none, and the test runner's timeout then ends the case.
+        await life.modelChanges(refusedAt, 1);
+        first = life.served.length;
+        const runs = life.runs();
+        await writeFile(path.join(life.workspace, release), "");
+        await life.runAfter(runs);
+      },
+    });
+
+    // The job's result starts its run on the model the plugin's own walk moved the session to:
+    // the refused turn settled when it ended waiting on the job, since the host retries nothing
+    // then.
+    expect(pane.models()).toEqual(["strong-model", "strong-model", "strong-model", "weak-model"]);
+    expect(pane.served[first]?.messages).toContain("released");
+    // And the walk wrote the arming a refusal at a terminal end writes.
+    expect((await pane.cooldowns()).at(-1)).toMatchObject({
+      arming: { restoreTo: STRONG, cause: "refusal" },
+      levels: { [STRONG]: 2 },
+    });
   },
   180_000
 );
