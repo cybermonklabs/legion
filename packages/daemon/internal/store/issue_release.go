@@ -224,7 +224,9 @@ func releaseOvertaken(ctx context.Context, tx pgx.Tx, project, issue string, mar
 //     queue itself. One below the release's own rows was queued by a transaction already in
 //     flight when the mark was written; one above them was queued once the mark stood, while
 //     every role still ran. Either way the pod is the one that must answer it, so the release
-//     goes rather than the pod.
+//     goes rather than the pod. A start queued for news alone is not such a row (idleWaitingRow),
+//     as it holds no pod: it wakes the claim the release suspends, and the role comes back with
+//     its news.
 //
 // The mark stands through a cancel decided here: the caller carries the cancel out whole
 // (CancelIssueRelease), and a cancel that did not finish — a resume refused, the daemon stopped
@@ -252,7 +254,7 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 		}
 		if !overtaken && row == mark.boundary {
 			if err := tx.QueryRow(ctx, `select exists (
-				select 1 from outbox where issue = $1 and kind = any($2) and (id < $3 or id > $4))`,
+				select 1 from outbox where issue = $1 and `+idleWaitingRow+` and (id < $3 or id > $4))`,
 				issue, idleWaitingKinds, mark.first, mark.last).Scan(&overtaken); err != nil {
 				return err
 			}
@@ -408,11 +410,15 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		}
 		// A role started or resumed since the mark, or a start queued above the release's own
 		// rows, is the pod being used again: the teardown would take a pod with a live role in
-		// it, and the stop that would have caught it has already run. The release reads every
-		// queued start row where IssueSuspension reads only a production check's look, and
-		// needs no narrowing of its own: the read above has already returned a cancel for an
-		// issue that is not pods.InWorkflowNotLingering, so this predicate runs only for an issue
-		// still in the workflow under a live tree, where the outbox's start fence declines
+		// it, and the stop that would have caught it has already run. The start rows read here
+		// are those that wait for a role of the pod, the one rule the idle hold and the boundary
+		// read too (idleWaitingRow), so a start queued for news alone does not cancel the
+		// teardown: it wakes the claim this release suspended, as any start wakes one, and the
+		// role comes back with its news in the pod that replaces this one. The release reads
+		// every other queued start row where IssueSuspension reads only a production check's
+		// look, and needs no other narrowing: the read above has already returned a cancel for
+		// an issue that is not pods.InWorkflowNotLingering, so this predicate runs only for an
+		// issue still in the workflow under a live tree, where the outbox's start fence declines
 		// nothing and a queued start row really is a start. The cause is the one a role stop
 		// reads for it.
 		overtaken, err := releaseOvertaken(ctx, tx, project, release.Issue, mark)
@@ -421,8 +427,9 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		}
 		if !overtaken {
 			if err := tx.QueryRow(ctx, `select exists (
-				select 1 from outbox where issue = $1 and id > $2 and kind = 'supervise' and payload->>'op' = 'start')`,
-				release.Issue, mark.last).Scan(&overtaken); err != nil {
+				select 1 from outbox where issue = $1 and `+idleWaitingRow+` and id > $3
+					and kind = 'supervise' and payload->>'op' = 'start')`,
+				release.Issue, idleWaitingKinds, mark.last).Scan(&overtaken); err != nil {
 				return err
 			}
 		}

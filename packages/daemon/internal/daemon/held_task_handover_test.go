@@ -192,7 +192,7 @@ func TestTheHeldTaskOfARootAHandOverCarriedInKeepsItsPhaseWhenADecisionLeaves(t 
 	w := &workflowRuntime{pool: pool, records: records, gatedSteps: steps}
 	narrow := func(entry int64) string {
 		t.Helper()
-		task, _, err := w.rootTask(ctx, supervise.Claim{Token: token, Project: "legion", Tree: key, Issue: key, Role: claim.RoleArchitect},
+		task, _, _, err := w.rootTask(ctx, supervise.Claim{Token: token, Project: "legion", Tree: key, Issue: key, Role: claim.RoleArchitect},
 			supervise.Delivery{ID: "outbox:7", Task: held, Kept: encoded, Entry: entry})
 		if err != nil {
 			t.Fatalf("narrow the held task of %s at entry %d: %v", key, entry, err)

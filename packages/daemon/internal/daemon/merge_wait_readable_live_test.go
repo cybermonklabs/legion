@@ -77,7 +77,7 @@ const mergeWaitBase = "main"
 // The two heads the proof drives: the head the round is approved at, and the head a push moves it
 // to. They are full commit SHAs because a review the review App submits decides a round only when
 // the head its Legion footer names is the pull request's current head, and the daemon reads no
-// shorter spelling there (intake.PullRequestReview.LegionHead, over fullCommitSHA).
+// shorter spelling there (intake.PullRequestReview.LegionHead, over reviewround.IsHead).
 const (
 	mergeWaitFirstHead  = "4c1d0b9a7e52f38610d4c2b7a9e5f0318d6b2c47"
 	mergeWaitSecondHead = "8b3e5f1c9d04a7268f1b3c5d7e9a0b2c4d6e8f13"

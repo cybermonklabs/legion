@@ -233,10 +233,11 @@ type issueResolveQuery struct {
 // eventListQuery is the query GET /api/v1/issues/{key}/events and GET /api/v1/artifacts/{id}/events
 // share: one page of an event log.
 type eventListQuery struct {
-	// After reads the events above this event id, oldest first; it combines with neither
-	// Before nor order=desc.
+	// After reads the events above this position in the owner's event sequence (an event's seq),
+	// oldest first, 0 to 2147483647; it combines with neither Before nor order=desc.
 	After int `query:"after"`
-	// Before reads the events below this event id.
+	// Before reads the events below this position in the owner's event sequence, 0 to
+	// 2147483647.
 	Before int `query:"before"`
 	// IDs reads exactly these event ids, comma-separated.
 	IDs string `query:"ids"`
@@ -461,6 +462,15 @@ type artifactTextQuery struct {
 	// version, every one of them rendered from the one tree, so no write by another session
 	// splits a listing. Any other value carries no blocks.
 	Blocks bool `query:"blocks"`
+}
+
+// artifactChangesQuery is GET /api/v1/artifacts/{id}/changes's query: the two versions of the
+// document compared. Both are required.
+type artifactChangesQuery struct {
+	// From is the earlier version, a positive number below To.
+	From int `query:"from"`
+	// To is the later version.
+	To int `query:"to"`
 }
 
 // artifactVersionQuery is the query the four version reads share: GET
@@ -935,6 +945,9 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: artifactVersionText{}, Params: artifactVersionQuery{},
 		Opaque:             "a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above",
 		OpaqueContentTypes: []string{"application/octet-stream", "text/markdown"},
+	},
+	"GET /api/v1/artifacts/{id}/changes": {
+		Status: http.StatusOK, Response: artifactChanges{}, Params: artifactChangesQuery{},
 	},
 	"POST /api/v1/artifacts/{id}/versions": {
 		Status: http.StatusCreated, Response: model.Version{}, Request: createVersionInput{},

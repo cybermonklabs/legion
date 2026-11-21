@@ -190,12 +190,13 @@ func TestARefusedPromptLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 }
 
 // The abandoned session's sentence is told at the confirmation of the prompt that carried it, by
-// the rule the record of a let-go follows (confirm). The pinned Oh My Pi acknowledges a prompt at
-// its admission and can then answer it busy (lateRefused): the fresh agent is in a turn of its own
-// and never read that prompt, so the abandonment is still untold and the task the turn's end sends
-// names the session again. The turn that takes that prompt tells it, by that delivery. A late busy
-// answer to the same prompt then says that turn was another's: the confirmation goes back, and the
-// telling with it, so the next prompt names the session again, and the turn that takes it tells it.
+// the rule the record of a let-go follows (confirmCarrying). The pinned Oh My Pi acknowledges a
+// prompt at its admission and can then answer it busy (lateRefused): the fresh agent is in a turn
+// of its own and never read that prompt, so the abandonment is still untold and the task the
+// turn's end sends names the session again. The turn that takes that prompt tells it, by that
+// delivery. A late busy answer to the same prompt then says that turn was another's: the
+// confirmation goes back, and the telling with it, so the next prompt names the session again,
+// and the turn that takes it tells it.
 func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
 	h := newHarness(t)
 	refusal := "the provider ended the turn with an error at 226k tokens of context"

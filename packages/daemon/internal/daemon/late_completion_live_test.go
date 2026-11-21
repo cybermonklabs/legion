@@ -215,10 +215,6 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 	// daemon's project is its Dispatch project, so the run's project is a short one of its own.
 	proof.cfg.Project = "LC" + randomSuffix(t)[:6]
 	proof.cfg.Projects = map[string]config.Project{proof.cfg.Project: {}}
-	// The loader's own default (config's resolve), which workflowConfig leaves at zero: a pane's
-	// tool reads GET /legion/v1/state through the daemon API contract, which takes a positive cap
-	// alone and refuses the whole state otherwise.
-	proof.cfg.ReviewRoundCap = 3
 	var err error
 	if proof.project, err = claim.ProjectToken(proof.cfg.Project); err != nil {
 		t.Fatal(err)

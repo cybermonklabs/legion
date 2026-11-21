@@ -30,9 +30,10 @@ import (
 type EmptyResponse struct{}
 
 // GateRegisterRequest records the document version an architect asked a human to approve, for one
-// step of the deployment's design gate. Step is the step the document is for, which a deployment
-// that gates one step alone may leave out; the deployment's list says which steps it takes, and
-// each step binds to a document of its own (gateRegister).
+// step of the tree's design gate. Step is the step the document is for, which a deployment that
+// gates one step alone may leave out; the deployment's list says which steps it takes, with
+// criteria beside a list that names spec and not criteria (registeredStep), and each step binds
+// to a document of its own (gateRegister).
 type GateRegisterRequest struct {
 	GrantID    string            `json:"grantId"`
 	Issue      string            `json:"issue"`
@@ -223,12 +224,14 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 
 // childUnderAcceptedParent is what release_children and rerun_child answer for an issue whose
 // ancestor the daemon has already accepted, naming the ancestor and what undoes the refusal.
-// Both routes say one sentence, because they refuse for one reason: a parent's head proves its
-// children's merged work, so nothing enters the workflow beneath a head already accepted.
-// operation is what the caller would do again once the ancestor has closed.
+// Both routes say one sentence, because they refuse for one reason: a parent is accepted only once
+// the work beneath it is done, so nothing enters the workflow beneath an issue already accepted.
+// operation is what the caller would do again once the ancestor has closed. The backward move it
+// names is refused once the ancestor's pull request has merged (record.Accepted holds merging, and
+// merged work never moves back), so the sentence says so.
 func childUnderAcceptedParent(child, ancestor, operation string) string {
-	return fmt.Sprintf("%s is beneath %s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %s now would let it merge a head that does not carry that work; %s once %s has closed, or take %s back with a backward move first",
-		child, ancestor, ancestor, operation, ancestor, ancestor)
+	return fmt.Sprintf("%[1]s is beneath %[2]s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %[2]s now would let it merge a head that does not carry that work; %[3]s once %[2]s has closed, or take %[2]s back with a backward move first, unless the pull request of %[2]s has merged",
+		child, ancestor, operation)
 }
 
 // architectForIssue authorizes an architect's operation on a recorded issue of its tree, and
@@ -371,6 +374,11 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 // which is every call a one-step deployment's architect makes. A deployment of several steps
 // needs the call to say which one it registers, since the document alone would leave the daemon
 // guessing.
+//
+// A deployment that gates spec and not criteria also takes criteria, for the root's Verification
+// document (record.TakesStep): that step is not one every root must register, and a root that
+// registers it is held on it as on the spec (record.TreeSteps), so one approval of both documents
+// opens the tree. Any other step the deployment does not gate is refused.
 func (s *server) registeredStep(w http.ResponseWriter, r *http.Request, named record.DesignStep) (record.DesignStep, bool) {
 	switch {
 	case len(s.steps) == 0:
@@ -381,7 +389,7 @@ func (s *server) registeredStep(w http.ResponseWriter, r *http.Request, named re
 		s.writeFailure(w, r, http.StatusBadRequest, "GATE_STEP_REQUIRED", fmt.Sprintf(
 			"this deployment gates the design-gate steps %s; name the step this document is for", stepNames(s.steps)))
 		return "", false
-	case !slices.Contains(s.steps, named):
+	case !record.TakesStep(s.steps, named):
 		s.writeFailure(w, r, http.StatusConflict, "GATE_STEP_NOT_CONFIGURED", fmt.Sprintf(
 			"this deployment does not gate the design-gate step %s; it gates %s", named, stepNames(s.steps)))
 		return "", false

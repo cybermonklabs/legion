@@ -1,0 +1,30 @@
+kind: Changed
+custom:
+  Issue: pr3995
+body: |-
+  On every new head, not only after a forward merge of the base, the tester's role prompt reads
+  what changed since the head it last tested (`git diff <that head> <new head>`) and tests again
+  only what that change can affect. The implementer's reads what changed since the head its
+  checks' passes name and runs again only each check that change can affect, where before it ran
+  every check that is not CI's again after each merge. Each records a check the change cannot
+  affect again at the new head, and does not run it again, with
+  `--observed 'carried from <old sha>: <why the change cannot affect it>'`. Before, only the
+  tester carried a check, and only across a forward merge. The worker prompt's carry commit, the
+  empty commit that carries the pull request onto a pushed commit, changes no file, so it carries
+  each `before_merge` check that is not CI's from the commit before it and runs none of them
+  again. The reviewer's prompt sizes its review to the change since the `Last reviewed commit` its
+  task names: it reviews again only what that change can affect, and confirms the rest by naming
+  the earlier head. A re-review after a request for changes also checks each of its findings
+  against the new head. The implementer merges the base forward on three triggers: GitHub reports
+  the pull request conflicting, which a merge-forward message from the daemon also tells, the
+  change needs something only the base has, or the pull request was retargeted. Outside
+  `implementing`, the merge-forward message is the only trigger, and a message that asks for a
+  merge and names no conflict is no trigger.
+
+  The root and sub-architect prompts sign off a parent after its last round, on an approved head
+  at which its checks pass. Before, that head had to carry the merges of every child the parent's
+  criteria need, which the forward merge of its last round gave it. The tester's prompt no longer
+  runs a full test round in a parent's last round. The `SIGNOFF_CHILD_IN_WORKFLOW` refusal, and
+  the architect prompts that name it, give its reason as "a parent is accepted only once the work
+  beneath it is done". Before, the reason was that a parent's head proves its children's merged
+  work, which a parent's last round no longer makes true.

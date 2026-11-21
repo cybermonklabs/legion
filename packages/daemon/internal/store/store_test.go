@@ -1087,14 +1087,19 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // `jj diff --from main@origin --to @ --name-only packages/daemon/internal/store/migrations`
 // named on dispatch://INFRA-714's branch. A migration a later branch adds that rewrites
 // outbox_kind_check with a kind of its own belongs in it too, as dispatch://INFRA-3274's
-// 20261114031356, the role-holders publication's 20261116165926 and dispatch://INFRA-4374's
-// 20261119003157 (conflict_confirm and merge_forward) do: the case of a database main
-// migrated applies a version left out of the list before the list's own rewrites of that check,
-// which do not name the later kind, so the row seeded of that kind fails the upgrade. So does one
-// that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
+// 20261114031356, the role-holders publication's 20261116165926, the step record's
+// 20261117000528, the plan record's 20261117023932, dispatch://INFRA-4374's 20261119003157
+// (conflict_confirm and merge_forward) and dispatch://INFRA-175's 20261119203047 do: the case of a
+// database main migrated applies a version left out of the list before the list's own rewrites of
+// that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
+// So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
 // claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
-// column. Any other version left out makes the cases below weaker, never red, which is why the
-// comment says where the list comes from.
+// column. 20261119203047 is the last migration that writes outbox_kind_check: it stands above
+// main's 20261119003157, which writes it too, and main's 20261111090000, 20261111091500 and
+// 20261116144907 write none. The cache trimmer's two, 20261111090000 and 20261111091500, read no
+// column a version of the list adds either, so neither is in the list. Any other version left out
+// makes the cases below weaker, never red, which is why the comment says where the list comes
+// from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -1103,7 +1108,7 @@ var thisRelease = map[int]bool{
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
-	20261117064152: true, 20261119003157: true,
+	20261117064152: true, 20261119003157: true, 20261119203047: true,
 }
 
 const idleRelease = 20261101222956
@@ -1123,7 +1128,13 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // check, and a database that ran 0031 through 0038 before 0029 and 0030 applies those two last, so
 // a queued close suspension must survive them and both kinds must stand at the end in either
 // order. Migrations from 0039 on ship only in binaries that carry 0030, and Migrate applies in
-// ascending order, so none can run before it: 0043 sets the list after every kind it names.
+// ascending order, so none can run before it: 0043 sets the list after every kind it names. On a
+// fresh database the rewrite with the highest version is the last word, so a kind that only a
+// lower one names is refused there: design_changes would be, had its 20261119203047 stood below
+// the role-holders kind's 20261116165926 or the merge forward's 20261119003157, whose lists leave
+// it out, and step_record, plan_record, conflict_confirm and merge_forward are, unless the design
+// news's list, which runs after the step record's 20261117000528, the plan record's 20261117023932
+// and the merge forward's 20261119003157, names them too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
 	all, err := migrations.All()
 	if err != nil {
@@ -1132,7 +1143,8 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 	// Every kind the daemon runs, read from the lanes rather than listed here: a kind added to a
 	// lane and forgotten in a hand-kept list is exactly the omission this case exists to catch,
 	// and it is how a kind of the role-message lane came to be missing from two rewrites of an
-	// earlier release.
+	// earlier release. Every lane is read, the claim lane's claim_release, the documents lane's
+	// design_changes and the record lane's step_record and plan_record among them.
 	var kinds []record.OutboxKind
 	for _, lane := range record.OutboxLanes() {
 		kinds = append(kinds, record.LaneKinds(lane)...)

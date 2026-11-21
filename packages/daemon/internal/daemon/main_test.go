@@ -17,6 +17,9 @@ import (
 // LEGION_KEPT_PROPERTY_RUNS and LEGION_KEPT_PROPERTY_STEPS, its two counts. CI's pull-request
 // lane reduces the runs (.github/workflows/ci-job-daemon-go.yaml) and leaves the steps at the
 // test's own default; the guard keeps all three, so a developer may set any of them by hand. It
+// keeps the news record's model test's four the same way (TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold):
+// LEGION_NEWS_MODEL_SEED, LEGION_NEWS_MODEL_RUNS, LEGION_NEWS_MODEL_STEPS and
+// LEGION_NEWS_MODEL_TRACE, which prints each seed's steps. It
 // drops the migrated template isolatedOutboxPool clones its databases from (testpg.Main), makes
 // the one database this run's tests write in (testdb.RunDatabaseMain), removes the directory the
 // tests' Envoy binaries were built into (testbuild.Main), and removes the NATS container the
@@ -47,7 +50,8 @@ func TestMain(m *testing.M) {
 	if os.Getenv(idleRigURLVariable) != "" {
 		os.Exit(testnats.Main(m))
 	}
-	fixtureenv.MustGuard("LEGION_KEPT_PROPERTY_SEED", "LEGION_KEPT_PROPERTY_RUNS", "LEGION_KEPT_PROPERTY_STEPS")
+	fixtureenv.MustGuard("LEGION_KEPT_PROPERTY_SEED", "LEGION_KEPT_PROPERTY_RUNS", "LEGION_KEPT_PROPERTY_STEPS",
+		"LEGION_NEWS_MODEL_SEED", "LEGION_NEWS_MODEL_RUNS", "LEGION_NEWS_MODEL_STEPS", "LEGION_NEWS_MODEL_TRACE")
 	os.Exit(testpg.Main("legion_daemon_test", func() int {
 		return testdb.RunDatabaseMain("legion_daemon_run", func() int {
 			return testbuild.Main(func() int { return testnats.Main(m) })

@@ -83,7 +83,8 @@ func shortTempDir(t *testing.T) string {
 
 // testConfig is a daemon of its own: its project name is unique, so the boots and claims it
 // records are its own, its port is one nothing else holds, and its state directory is its alone.
-// Every limit and timeout is the shipped default.
+// Every limit and timeout is the shipped default, `review_round_cap` among them: a pane's `legion`
+// tool reads GET /legion/v1/state through the daemon API contract, which takes a positive cap alone.
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	stateDir := shortTempDir(t)
@@ -106,6 +107,7 @@ func testConfig(t *testing.T) config.Config {
 		StateDir:                                stateDir,
 		Runtime:                                 config.Runtime{Name: "tmux"},
 		AdmissionCap:                            4,
+		ReviewRoundCap:                          config.DefaultReviewRoundCap,
 		DaemonURL:                               "http://127.0.0.1:" + strconv.Itoa(port),
 		WorkerStreamPort:                        0,
 		WorkerBootTimeout:                       120 * time.Second,

@@ -54,9 +54,10 @@ import type { z } from "zod";
  * of a type the schema does not describe is still a refusal, and the daemon's golden tests still
  * hold the reader to the daemon's own types, by the equality between each golden's parse and its
  * file in `packages/contracts/src/legion-api.test.ts`. The requests are the claim wire of
- * `packages/daemon/internal/claim/wire.go`, which refuses a member it does not read. There is no
- * secret recovery: the daemon persists a registration's capability before it answers, so a
- * restart forgets no secret.
+ * `packages/daemon/internal/claim/wire.go`. The daemon refuses a member a route does not read
+ * (`readBody`), except on the registration, whose body it reads leniently (`readRegisterBody`).
+ * There is no secret recovery: the daemon persists a registration's capability before it answers,
+ * so a restart forgets no secret.
  */
 
 /** `claim.RegisterRequest`: the pane's boot token and the session this agent became.

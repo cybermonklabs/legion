@@ -56,6 +56,11 @@ const (
 	// left (MergeQueueRemoval).
 	OutboxKindMergeQueueRead    OutboxKind = "merge_queue_read"
 	OutboxKindMergeQueueRemoval OutboxKind = "merge_queue_removal"
+	// OutboxKindDesignChanges reconciles one tree's news of its approved design
+	// (DesignNewsReconcile): it reads what changed between the versions its holders took and the
+	// versions approved now, and queues the starts that tell them. Its issue column is the tree's
+	// root.
+	OutboxKindDesignChanges OutboxKind = "design_changes"
 	// OutboxKindRoleHoldersPublish publishes the live role sessions of one issue onto its Dispatch
 	// row (RoleHoldersPublish).
 	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
@@ -74,7 +79,7 @@ const (
 	OutboxKindPlanRecord OutboxKind = "plan_record"
 )
 
-// OutboxLane is which executor of an issue runs a kind. An issue's rows run on five lanes side by
+// OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
 // side. The lifecycle lane runs the rows that start, stop and tidy the issue's roles and their
 // resources, one at a time in the order they were queued: each assumes the state its predecessor
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
@@ -104,6 +109,11 @@ const (
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
 // is what a place on the board lane would cost it.
+// The documents lane runs the reconcile of a tree's news of its approved design (design_changes),
+// which reads Dispatch for what changed between two versions of a gated document, on a lane of its
+// own: on the lifecycle lane that read would hold every start, stop and suspend of the tree's
+// root behind it, and on the board lane it would wait behind a notice that waits as long as its
+// architect holds no role, while the news it sends is owed to every holder of the tree.
 // The record lane runs the writes of the records of the issue's work — each step's record and the
 // rating a retro gave the plan (step_record), and the plan of each run (plan_record) — on a lane of
 // their own, so a Dispatch that is slow to take a record, or one that backs a record off until it
@@ -116,6 +126,7 @@ const (
 	LaneBoard       OutboxLane = "board"
 	LaneRoleMessage OutboxLane = "role_message"
 	LaneClaim       OutboxLane = "claim"
+	LaneDocuments   OutboxLane = "documents"
 	LaneRecord      OutboxLane = "record"
 )
 
@@ -126,6 +137,7 @@ var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
+	LaneDocuments:   {OutboxKindDesignChanges},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
 }
 
@@ -178,7 +190,9 @@ type pauseHold struct {
 // one role (hook_prompt, role_message, update_ask, merge_forward) and the merger's merge-queue
 // message, and the three rows of a production check (check_wake, check_look, check_bound). Every
 // other row runs while the project is paused: the stops (a supervise row of any other op,
-// issue_suspend, issue_release), the writes to Dispatch, and the controller's notices
+// issue_suspend, issue_release), the writes to Dispatch, the reconcile of a tree's news of its
+// approved design (design_changes), which reads Dispatch and writes the news record and tells a
+// role only by a news-only start, which is a start this list holds, and the controller's notices
 // (controller_notice), since the pause never holds the controller (spec Design item 8).
 //
 // The outbox's claim reads the list as SQL literals (store.go's outboxPauseFree, built from it),
@@ -831,10 +845,12 @@ type CatchUp struct {
 // has still to register.
 //
 // A catch-up carries one entry for each step the root must hold open before its tree works
-// (classify.RequiredSteps), so a deployment that gates nothing carries the one spec entry with
-// Gated false: that registration opens the step at once and asks no person, which is what the
-// policy word `off` said. The list replaced that word, because one word cannot name a list and
-// each entry now says its own step's part of it.
+// (classify.RequiredSteps over the steps the tree is gated on, TreeSteps), so a deployment that
+// gates nothing carries the one spec entry with Gated false: that registration opens the step at
+// once and asks no person, which is what the policy word `off` said. The list replaced that
+// word, because one word cannot name a list and each entry now says its own step's part of it. A
+// criteria row the architect registered beside a deployment that gates spec alone of the two is
+// an entry with Gated true, since that row holds the tree as the spec's does.
 type CatchUpGate struct {
 	Step         DesignStep `json:"step"`
 	Gated        bool       `json:"gated"`
@@ -1121,10 +1137,22 @@ type SuperviseRequest struct {
 	// released (workflow's cutoverMergerRepair), the phase's resume task a ready worker level with
 	// the entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
 	// resume task to a silent worker level with that entry (workflow's workerSilent), a production
-	// check's look (workflow's startLook), the pod wake (workflow's wakeRow) and the resume of a
-	// cancelled idle release (the daemon's outbox). Each hands its role work it was already on, or
-	// work no phase entry numbers at all.
+	// check's look (workflow's startLook), the pod wake (workflow's wakeRow), the resume of a
+	// cancelled idle release (the daemon's outbox) and a start queued for news of the approved
+	// design alone (News below, the daemon's design_changes reconcile). Each hands its role work
+	// it was already on, or work no phase entry numbers at all.
 	Entry int64 `json:"entry,omitempty"`
+	// News marks a start queued for news of the approved design alone: the reconcile of a tree's
+	// news (the daemon's design_changes executor) queues it as a row of its own (Store.Enqueue),
+	// never through workflow.StartOrOwe, which would take the issue's owed phase start out in its
+	// place, and it waits for no admission slot.
+	// It carries no task and no entry of its own: its executor reads, when it runs, what the record
+	// owes the claim it reaches and hands that as the task, and finishes without acting where the
+	// record owes it nothing then. A holder's carries the phase of the member it tells (Phase), so
+	// it finishes once that member has left the phase; an architect's carries none, as every
+	// architect start, and is queued on the architect's own issue: the tree root's for its
+	// summary, and the owning architect's for the holder form of a member in accepting.
+	News bool `json:"news,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
 	// (supervise.Claim.GivenEntry, the queue's entry test). The held phase's retry, by any route
@@ -1389,13 +1417,33 @@ type DesignGatesPublish struct {
 	Gates []DesignGateDocument `json:"gates"`
 }
 
-// DesignGateDocument is one step of a publication and the document that step's gate recorded.
+// DesignGateDocument is one step of a publication, the document that step's gate recorded, and
+// Holds, whether the issue's tree is gated on that step (GateDocuments: TreeSteps over the
+// deployment's steps and the issue's own rows). Dispatch's advice reads Holds to name the gates a
+// new version of an approved document closes: a criteria row a root registered beside a
+// deployment that gates spec and not criteria holds that tree although the project's gated steps
+// do not name criteria, and a row kept under `gates.design: off` holds nothing although the row is
+// there.
+// Holds is nil only in a payload an older daemon queued, which carried no such field; it is sent
+// as null, which Dispatch reads as a row an older daemon published and answers by the project's
+// gated steps, as it answered every row before this field.
 type DesignGateDocument struct {
 	Step       DesignStep `json:"step"`
 	ArtifactID string     `json:"artifactId"`
+	Holds      *bool      `json:"holds"`
 }
 
 func (DesignGatesPublish) OutboxKind() OutboxKind { return OutboxKindDesignGatesPublish }
+
+// DesignNewsReconcile is the reconcile of one tree's news of its approved design: the row's issue
+// column is the tree's root, which is the whole of what it carries. Its executor (the daemon's
+// designChanges) reads what the tree owes (OwedNews) when it runs, never what it owed when the row
+// was queued, so one unrun row stands for every reason to run one, and a write that would queue a
+// second beside it queues nothing (QueueDesignNews). A row already running is not that row: it
+// may have read the record before the write that would queue one, so such a write queues another.
+type DesignNewsReconcile struct{}
+
+func (DesignNewsReconcile) OutboxKind() OutboxKind { return OutboxKindDesignChanges }
 
 // RoleHoldersPublish writes the session of each live Legion role of Issue onto the issue's
 // Dispatch row (PUT /api/v1/issues/{key}/role-holders), which Dispatch reads to take the role of a
@@ -1685,12 +1733,13 @@ func (MergeQueueRead) OutboxKind() OutboxKind { return OutboxKindMergeQueueRead 
 // The row is held as an architect's notice is held, not ended as a hook prompt nobody holds is:
 // it wakes a released merger and waits until the merger's session holds its role, since
 // a merger whose pod was released would otherwise never learn that its pull request is out of the
-// queue. While the root's design gate is closed it neither wakes nor tells a released merger, which
-// could enqueue the pull request again against the gate, and it waits for the gate to open; a
-// merger whose session holds its role is told at once. The row ends undelivered when the issue has
-// left merging at Head (its phase is not merging, it is out of the workflow, its tree lingers, or
-// its pull request is not open at Head), and when the merger's claim is failed or retired. A merger
-// with no claim yet is no end: the row waits for it.
+// queue. While the root's design gate is closed, or while the merger is owed news of the approved
+// design whose change set is not recorded yet, it neither wakes nor tells a released merger, which
+// could enqueue the pull request again against the gate or before it reads what changed, and it
+// waits as the merger's start waits; a merger whose session holds its role is told at once. The
+// row ends undelivered when the issue has left merging at Head (its phase is not merging, it is
+// out of the workflow, its tree lingers, or its pull request is not open at Head), and when the
+// merger's claim is failed or retired. A merger with no claim yet is no end: the row waits for it.
 type MergeQueueRemoval struct {
 	Number int    `json:"number"`
 	Head   string `json:"head"`
@@ -2140,6 +2189,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindDesignChanges:
+		value := DesignNewsReconcile{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	default:
 		return nil, fmt.Errorf("decode outbox row %d: unknown kind %q", row.ID, row.Kind)
 	}
@@ -2198,7 +2253,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 				return fmt.Errorf("a message's artifact %s holds %d bytes, more than the %d of one Dispatch document", artifact.Name, len(artifact.Content), MaxMessageArtifactBytes)
 			}
 		}
-	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
+	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease, DesignNewsReconcile:
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
@@ -2322,6 +2377,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
 			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
+		}
+		if value.News && (value.Op != "start" || value.Task != "" || value.Entry != 0 || value.RuleResume || value.CheckLook != 0 ||
+			(value.Phase == "") != (value.Role == claim.RoleArchitect)) {
+			return fmt.Errorf("a supervise start for news alone carries no task and no entry, and names the phase of the holder it tells, or none for an architect")
 		}
 		if value.Kept != nil {
 			if value.Op != "start" || value.Task == "" {

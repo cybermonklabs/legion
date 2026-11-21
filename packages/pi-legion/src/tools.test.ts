@@ -228,7 +228,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
   "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
-  "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
+  "The architect that owns an issue in accepting moves it, named by `issue`, back to planning, implementing or testing. That move " +
   "counts a review round. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
@@ -244,7 +244,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
   "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
   "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
-  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
+  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent is accepted only once the work beneath it is done: run each one " +
   "to done, and sign off again. " +
   "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
   "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +

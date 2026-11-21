@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr3995
+body: |-
+  The `legion` tool's `sign_off` description gives the reason for its `SIGNOFF_CHILD_IN_WORKFLOW`
+  refusal as "a parent is accepted only once the work beneath it is done", not that a parent's head
+  proves its children's merged work.

@@ -945,6 +945,9 @@ func keptPropertySeeds(t *testing.T) []int64 {
 	return seeds
 }
 
+// keptPropertyEnv is the positive count the environment variable name sets, or fallback where it
+// is unset; a value that is no positive count fails the test. The news model test reads its
+// counts through it too (TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold).
 func keptPropertyEnv(t *testing.T, name string, fallback int) int {
 	t.Helper()
 	set := os.Getenv(name)

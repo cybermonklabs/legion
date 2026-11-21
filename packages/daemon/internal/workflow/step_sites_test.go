@@ -622,7 +622,7 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 				stepChild(t, pool, "LEGION-209", at, nil)
 				seedChildPR(t, pool, record.PullRequestOpen)
 				if tc.state != "" {
-					seedArchitectClaimIn(t, pool, "LEGION-209", tc.state, tc.by)
+					seedArchitectClaimIn(t, pool, "LEGION-1", "LEGION-209", 1, tc.state, tc.by)
 				}
 				engine := stepEngine(agent)
 				enter(pool, engine)

@@ -280,7 +280,13 @@ func (d *pilotDispatch) Handoff(context.Context, string) (dispatch.Handoff, erro
 	return dispatch.Handoff{}, nil
 }
 func (d *pilotDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
-func (d *pilotDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *pilotDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *pilotDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
+func (d *pilotDispatch) PutGatedSteps(context.Context, string, []string) error { return nil }
 func (d *pilotDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
 	return nil
 }
@@ -348,6 +354,12 @@ func (d *filteringDispatch) Handoff(context.Context, string) (dispatch.Handoff, 
 }
 func (d *filteringDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
+}
+func (d *filteringDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *filteringDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
 }
 func (d *filteringDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil

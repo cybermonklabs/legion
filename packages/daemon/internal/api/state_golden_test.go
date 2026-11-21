@@ -1637,7 +1637,8 @@ func operatorClaim() OperatorClaim {
 			Interrupted: true,
 			// The record of the sends that failed, carried here beside the confirmation the way
 			// this fixture carries every other optional at once. A live delivery shows one or
-			// the other: the send that confirms a task clears all three (supervise's confirm).
+			// the other: the send that confirms a task clears all three (supervise's
+			// confirmCarrying).
 			SendFailures:      2,
 			LastSendFailureAt: &lastSendFailure,
 			LastSendError:     "prompt the agent: context deadline exceeded",
