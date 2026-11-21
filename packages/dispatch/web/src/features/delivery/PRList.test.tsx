@@ -119,13 +119,13 @@ test("arrowing past the last rendered row renders and focuses the next, and Home
       await user.keyboard("{ArrowDown}");
     }
     // Row number `lastRendered + 2` (1-based, after the header) was outside the first window.
-    expect(document.activeElement?.getAttribute("aria-rowindex")).toBe(String(lastRendered + 2));
+    expect(document.activeElement).toHaveAttribute("aria-rowindex", String(lastRendered + 2));
     expect(document.activeElement?.textContent).toContain(`feat: widget ${lastRendered + 1}`);
 
     await user.keyboard("{End}");
-    expect(document.activeElement?.getAttribute("aria-rowindex")).toBe("201");
+    expect(document.activeElement).toHaveAttribute("aria-rowindex", "201");
     await user.keyboard("{Home}");
-    expect(document.activeElement?.getAttribute("aria-rowindex")).toBe("2");
+    expect(document.activeElement).toHaveAttribute("aria-rowindex", "2");
 
     await user.keyboard("{Enter}");
     expect(opened).toEqual(["acme/widgets#1"]);

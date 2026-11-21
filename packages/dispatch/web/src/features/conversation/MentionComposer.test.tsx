@@ -900,7 +900,8 @@ test("mention suggestions say the agent list is refilling instead of that no age
     const kept = within(suggestions).getByRole("option", { name: "Planner" });
     // The suggestion kept from the earlier read draws its agent's running state as unknown, never
     // as not running, while the list it would be judged by is refilling.
-    expect(kept.querySelector('[data-agent-name="A"]')?.getAttribute("data-agent-state")).toBe(
+    expect(kept.querySelector('[data-agent-name="A"]')).toHaveAttribute(
+      "data-agent-state",
       "unknown"
     );
 
@@ -948,7 +949,7 @@ test("the mention picker draws each agent with its state and no link", async () 
     for (const option of [session, role]) {
       const agent = option.querySelector('[data-agent-name="A"]');
       expect(agent?.textContent).toBe("Planner");
-      await waitFor(() => expect(agent?.getAttribute("data-agent-state")).toBe("running"));
+      await waitFor(() => expect(agent).toHaveAttribute("data-agent-state", "running"));
     }
     expect(role).toHaveTextContent("Planner · /workspaces/planner");
     expect(listbox.querySelector("a")).toBeNull();
@@ -3416,7 +3417,7 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
     fireEvent.paste(field, { clipboardData: { files: [file] } });
 
     const send = await screen.findByRole("button", { name: "Uploading file…" });
-    expect(send.hasAttribute("disabled")).toBe(true);
+    expect(send).toHaveAttribute("disabled");
     await user.click(send);
     field.focus();
     await user.keyboard("{Control>}{Enter}{/Control}");

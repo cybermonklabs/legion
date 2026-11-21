@@ -28,7 +28,7 @@ import {
 import { commentWithBody } from "./margin-helpers";
 import { setCommentAuthorService } from "./seed";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -47,13 +47,14 @@ async function expandedConversationThread(page: Page, rootId: string): Promise<L
 test("the selection bar comments, suggests, and asks on marks that both users see", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: initialMarkdown,
     title: "Review the spec",
   });
-  const relatedIssue = await createIssue({ project: "CORE", title: "Related work" });
+  const relatedIssue = await createIssue({ project: core, title: "Related work" });
   const artifactId = issue.primary_artifact_id;
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
@@ -174,8 +175,9 @@ test("the selection bar comments, suggests, and asks on marks that both users se
 test("a bar Comment focuses its composer from the margin's rail and from its Pinned tab", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec: initialMarkdown, title: "Focus" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec: initialMarkdown, title: "Focus" });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -209,9 +211,10 @@ test("a bar Comment focuses its composer from the margin's rail and from its Pin
 test("an agent's quote-anchored comment and ask render as highlights in open editors", async ({
   browser,
 }) => {
-  await createProject({ key: "AGENT", name: "Agent marks" });
+  const agent = rowKey("AGENT");
+  await createProject({ key: agent, name: "Agent marks" });
   const issue = await createIssue({
-    project: "AGENT",
+    project: agent,
     spec: initialMarkdown,
     title: "Agent marks",
   });
@@ -257,9 +260,10 @@ test("an agent's quote-anchored comment and ask render as highlights in open edi
 test("highlights follow edits in the other browser and preserve their anchor state @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "FOLLOW", name: "Following highlights" });
+  const follow = rowKey("FOLLOW");
+  await createProject({ key: follow, name: "Following highlights" });
   const issue = await createIssue({
-    project: "FOLLOW",
+    project: follow,
     spec: initialMarkdown,
     title: "Follow edits",
   });
@@ -338,9 +342,10 @@ test("highlights follow edits in the other browser and preserve their anchor sta
 test("accepting a suggestion changes the text in both browsers and names a version; rejecting leaves the text @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "SUG", name: "Suggestions" });
+  const sug = rowKey("SUG");
+  await createProject({ key: sug, name: "Suggestions" });
   const issue = await createIssue({
-    project: "SUG",
+    project: sug,
     spec: initialMarkdown,
     title: "Suggestion actions",
   });
@@ -472,9 +477,10 @@ test("accepting a suggestion changes the text in both browsers and names a versi
 test("anchored and unanchored comments reach Conversation for both viewers", async ({
   browser,
 }) => {
-  await createProject({ key: "COMMENT", name: "Issue comments" });
+  const commentKey = rowKey("COMMENT");
+  await createProject({ key: commentKey, name: "Comment threads" });
   const issue = await createIssue({
-    project: "COMMENT",
+    project: commentKey,
     spec: initialMarkdown,
     title: "No selection needed",
   });
@@ -528,9 +534,10 @@ test("anchored and unanchored comments reach Conversation for both viewers", asy
 test("a document mark opens its thread in the margin and stays on the document", async ({
   browser,
 }) => {
-  await createProject({ key: "FOCUS", name: "Focus marks" });
+  const focus = rowKey("FOCUS");
+  await createProject({ key: focus, name: "Focus marks" });
   const issue = await createIssue({
-    project: "FOCUS",
+    project: focus,
     spec: initialMarkdown,
     title: "Focus marks",
   });
@@ -578,9 +585,10 @@ test("a document mark opens its thread in the margin and stays on the document",
 test("a Conversation reply to an agent's anchored comment carries no anchor and stays in one thread", async ({
   browser,
 }) => {
-  await createProject({ key: "REPLY", name: "Anchored replies" });
+  const replyKey = rowKey("REPLY");
+  await createProject({ key: replyKey, name: "Anchored replies" });
   const issue = await createIssue({
-    project: "REPLY",
+    project: replyKey,
     spec: initialMarkdown,
     title: "Reply threads",
   });
@@ -624,13 +632,16 @@ test("a Conversation reply to an agent's anchored comment carries no anchor and 
 test("margin ask composer sends option choices that the inbox records as a selected answer", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "ASK", name: "Ask options" });
-  const issue = await createIssue({
-    project: "ASK",
-    spec: initialMarkdown,
-    title: "Choose a direction",
-  });
-  const alice = await asUser(browser, "alice");
+  const askKey = rowKey("ASK");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), so the Inbox the row
+  // answers in shows this row's question and no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: askKey, name: "Ask options" }, { login: me });
+  const issue = await createIssue(
+    { project: askKey, spec: initialMarkdown, title: "Choose a direction" },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -684,7 +695,7 @@ test("margin ask composer sends option choices that the inbox records as a selec
     await expect
       .poll(() => getAsk(askId))
       .toMatchObject({
-        ask: { answer: { selected: ["Ship"], user: "alice" }, state: "answered" },
+        ask: { answer: { selected: ["Ship"], user: me }, state: "answered" },
       });
   } finally {
     await alice.close();
@@ -694,9 +705,10 @@ test("margin ask composer sends option choices that the inbox records as a selec
 test("a viewer who opens the issue after an anchored ask is answered sees it in the margin", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "SEES", name: "Sees answered asks" });
+  const sees = rowKey("SEES");
+  await createProject({ key: sees, name: "Sees answered asks" });
   const issue = await createIssue({
-    project: "SEES",
+    project: sees,
     spec: initialMarkdown,
     title: "Answered ask visibility",
   });
@@ -752,9 +764,10 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
 test("long option labels and descriptions wrap inside the margin ask card @phone", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: initialMarkdown,
     title: "Severity table shape",
   });
@@ -844,9 +857,10 @@ test("long option labels and descriptions wrap inside the margin ask card @phone
 test("a comment a verified service token wrote names its service account in the margin", async ({
   browser,
 }) => {
-  await createProject({ key: "SVC", name: "Service" });
+  const svc = rowKey("SVC");
+  await createProject({ key: svc, name: "Service" });
   const issue = await createIssue({
-    project: "SVC",
+    project: svc,
     spec: "Rotate the projected token.",
     title: "Service-token attribution",
   });
@@ -883,8 +897,9 @@ test("a comment a verified service token wrote names its service account in the 
 // update carrying both the replacement text and the marks entry that closes the suggestion. The
 // editor keeps the accepted text and writes nothing back over the server's.
 test("a browser reconnecting after an accept keeps the accepted text", async ({ browser }) => {
-  await createProject({ key: "RCN", name: "Reconnect" });
-  const issue = await createIssue({ project: "RCN", spec: initialMarkdown, title: "Reconnect" });
+  const rcn = rowKey("RCN");
+  await createProject({ key: rcn, name: "Reconnect" });
+  const issue = await createIssue({ project: rcn, spec: initialMarkdown, title: "Reconnect" });
   const suggestion = await createComment(issue.key, {
     anchor: { artifact: "spec", quote: "brown" },
     body: "Suggested replacement.",

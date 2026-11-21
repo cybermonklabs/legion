@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # One `-alone` leg of the Dispatch browser suite: the stack's binaries, the Playwright run of
-# one unsharded project one row at a time, the row count the merge job reads, and the memory and
-# CPU sampler this leg starts and reads back.
+# one unsharded project one row at a time, and the row count the merge job reads.
 #
 # Who runs it, and what it takes:
 #
@@ -9,7 +8,7 @@
 #
 # <project> is this leg's Playwright project, the alone job's `${{ matrix.project }}`, one of
 # the three `-alone` ones: it is the `--project` the run takes, and it names the blob report
-# this leg writes, the row count file beside it and the title of the sampler's readings.
+# this leg writes and the row count file beside it.
 # <connections> is the connection limit the stack's Postgres must allow, which the binaries job
 # reads and hands on as `${{ needs.binaries.outputs.connections }}`, because this job's container
 # has no Go to compute it with; it becomes DISPATCH_E2E_PG_CONNECTIONS below.
@@ -23,8 +22,8 @@
 # is the root the Playwright config path and the reporter path below are read from.
 #
 # It reads two variables the runner sets for every step: $RUNNER_TEMP, under which this leg's
-# reports, record and run directory are written, and $GITHUB_WORKSPACE, the checkout the sampler
-# and the stack's binaries are read from.
+# report and run directory are written, and $GITHUB_WORKSPACE, the checkout the stack's
+# binaries are read from.
 #
 # Run from packages/dispatch, with $RUNNER_TEMP and $GITHUB_WORKSPACE set:
 #   ../../.github/scripts/dispatch-browser-alone-suite.sh webkit-alone 100
@@ -49,17 +48,10 @@ connections=$2
 # step's `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget gives.
 export TMPDIR="$RUNNER_TEMP"
-# The two directories this step's output is sorted into, each of them one artifact
-# below, as the shard job sorts its own and for the same reason: only the first line
-# of a multi-line `path:` is translated into the container's own filesystem.
-mkdir -p "$RUNNER_TEMP/leg-report/rows" "$RUNNER_TEMP/dispatch-e2e-record"
-# The sampler, started as a background process of this step's own shell and killed by
-# the trap below, as the shard job starts and kills it. It writes memory-samples.txt
-# and cpu-samples.txt into the directory it is given, which the record below is, and
-# the reading at the end of this step takes them from there.
-"$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" sample "$RUNNER_TEMP/dispatch-e2e-record" &
-sampler=$!
-trap 'kill "$sampler" 2>/dev/null || true' EXIT
+# The directory this step's report is written into, one artifact below, as the shard
+# job writes its own and for the same reason: only the first line of a multi-line
+# `path:` is translated into the container's own filesystem.
+mkdir -p "$RUNNER_TEMP/leg-report/rows"
 # This image's own PostgreSQL 18 with pgvector, through e2e/harness-postgres.ts's
 # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
 # container has no docker to run the image provider's digest with.
@@ -108,13 +100,8 @@ rm -f "$RUNNER_TEMP/suite-status"
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
 status=0
 [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
-kill "$sampler" 2>/dev/null || true
 # The row count this leg printed, for the merge job's first reading. It travels beside
 # the blob report, in a directory of its own so that `merge-reports` sees zips alone.
 sed -n 's/^Running \([0-9][0-9]*\) tests\? using .*/\1/p' "$RUNNER_TEMP/playwright-log.txt" |
   tail -n 1 > "$RUNNER_TEMP/leg-report/rows/alone-$project.txt"
-# The sampler's two readings, titled with this leg so a run's notices say which
-# machine each is from. After the suite and before the exit below, so this step still
-# ends on the suite's own status.
-"$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" report "$RUNNER_TEMP/dispatch-e2e-record" "$project"
 exit "$status"

@@ -36,14 +36,14 @@ test("an Escape that ends an IME composition leaves the open panel open", () => 
       })
     );
     expect(changes, "the Escape that ended a composition closed the panel").toEqual([]);
-    expect(document.activeElement, "that Escape moved the focus").toBe(field);
+    expect(field, "that Escape moved the focus").toHaveFocus();
     expect(behind.length, "that Escape stopped short of the view behind").toBe(1);
 
     field.dispatchEvent(
       new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
     );
     expect(changes).toEqual([false]);
-    expect(document.activeElement).toBe(trigger);
+    expect(trigger).toHaveFocus();
     expect(behind.length, "the panel's Escape reached the view behind").toBe(1);
   } finally {
     view.unmount();

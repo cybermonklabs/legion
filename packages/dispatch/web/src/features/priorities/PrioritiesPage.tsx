@@ -10,7 +10,7 @@ import type { IssueListing } from "../project/issues-table-data";
 import { runningIssueStatuses } from "../project/issues-table-model";
 import { NewPriority } from "./NewPriority";
 import { PrioritiesTable } from "./PrioritiesTable";
-import { PARKED_STATUSES } from "./priorities-model";
+import { countsLine, PARKED_STATUSES } from "./priorities-model";
 
 /** What each fault is, in the words a reader judges it by. Neither is a judgement: both are
  *  true or false of an issue as it stands now. */
@@ -38,15 +38,6 @@ const PARKED_LAYOUT = {
   key: "priorities-parked",
   shown: ["project", "advances", "moved", "reason", "updated"] satisfies ShownColumnId[],
 };
-
-/** The per-project or per-priority counts under a fault's rule, in plain words: `CORE 12 ·
- *  OPS 7`, greatest first, which is what says where the fault is. */
-function countsLine(by: Readonly<Record<string, number>> | null): string {
-  return Object.entries(by ?? {})
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([name, count]) => `${name} ${count}`)
-    .join(" · ");
-}
 
 /**
  * `/priorities`: the priorities themselves, in their one order, and under them the two faults.

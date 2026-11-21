@@ -1,7 +1,7 @@
 import { type FakeSession, setLiveSessions } from "./agents";
 import { createAgentMessage, publishAgentStreamFrame, replyToMessageDelivery } from "./api";
 import { frontLiveView } from "./live-views";
-import { expect, test } from "./test";
+import { expect, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -22,10 +22,6 @@ import { asUser } from "./users";
  * as the wire carries it, never imported from the SPA or the plugin, so this file reads the
  * same against the commit before the change and each row fails there on its own assertion.
  */
-
-/** The session these rows read: a UUID, which Dispatch's agent routes require, and this file's
- *  own, since the relay's replay is process-global. */
-const SHELL_ID = "01a0e812-0004-7000-8000-000000000001";
 
 /** The person's message. A command that printed something and then failed, so one frame carries
  *  all three things the check reads: the command, its output and its exit status. Its text is
@@ -68,7 +64,10 @@ function livePath(sessionID: string): string {
 }
 
 /** The live session the person talks to. `last_seen` is taken when the row seeds, never at this
- *  module's scope, which a worker evaluates once and every later spec of that worker ages. */
+ *  module's scope, which a worker evaluates once and every later spec of that worker ages. Its
+ *  id is the row's own (`rowSessionId`, e2e/test.ts): a UUID, which Dispatch's agent routes
+ *  require, and one no other row writes to, since Dispatch keeps a session's messages by its id
+ *  for every person at once and the relay's replay is process-global. */
 function shellSession(): FakeSession {
   return {
     capabilities: ["aside", "btw", "steer"],
@@ -76,7 +75,7 @@ function shellSession(): FakeSession {
     last_seen: Date.now() - 5_000,
     machine_id: "shell-host",
     roles: [],
-    session_id: SHELL_ID,
+    session_id: rowSessionId("shell"),
     title: "Shell",
   };
 }
@@ -90,14 +89,15 @@ function shellSession(): FakeSession {
  * pair under.
  */
 async function seedShellCommands(exchanges: readonly ShellExchange[]): Promise<readonly string[]> {
+  const shell = rowSessionId("shell");
   await setLiveSessions([shellSession()]);
   const seeded: { readonly exchange: ShellExchange; readonly id: string }[] = [];
   for (const exchange of exchanges) {
-    const asked = await createAgentMessage(SHELL_ID, { body: exchange.line, delivery: "steer" });
+    const asked = await createAgentMessage(shell, { body: exchange.line, delivery: "steer" });
     seeded.push({ exchange, id: asked.id });
   }
   await publishAgentStreamFrame(
-    SHELL_ID,
+    shell,
     {
       frames: seeded.map(({ exchange, id }, index) => ({
         kind: "message",
@@ -112,7 +112,7 @@ async function seedShellCommands(exchanges: readonly ShellExchange[]): Promise<r
         seq: index + 1,
         v: 1,
       })),
-      session_id: SHELL_ID,
+      session_id: shell,
       v: 1,
     },
     "replay"
@@ -123,7 +123,7 @@ async function seedShellCommands(exchanges: readonly ShellExchange[]): Promise<r
     await replyToMessageDelivery(
       id,
       { attempt: 1, body: exchange.report },
-      { id: SHELL_ID, kind: "session" }
+      { id: shell, kind: "session" }
     );
   }
   return seeded.map(({ id }) => id);
@@ -142,7 +142,7 @@ test("the live view shows a person's shell command, its output and its exit stat
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    await page.goto(livePath(SHELL_ID));
+    await page.goto(livePath(rowSessionId("shell")));
     const own = frontLiveView(page).getByTestId("agent-message-user");
     await expect(own).toContainText(COMMAND_LINE);
     await expect(own).toContainText(OUTPUT);
@@ -175,7 +175,7 @@ test("a shell command's frame and the Dispatch message it answers are one messag
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    await page.goto(livePath(SHELL_ID));
+    await page.goto(livePath(rowSessionId("shell")));
     const own = frontLiveView(page).getByTestId("agent-message-user");
     await expect(own).toHaveCount(2);
     // Each turn is the frame - it carries what the command printed, which Dispatch's stored

@@ -146,7 +146,7 @@ test("lists the person's answers and replies newest first with time, owner, ques
     expect(rows.map((row) => row.dataset.answerRow)).toEqual(["ask-1", "ask-2", "ask-3"]);
 
     const [first, second, third] = rows as [HTMLElement, HTMLElement, HTMLElement];
-    expect(first.querySelector("time")?.getAttribute("datetime")).toBe(shipAnswer.at);
+    expect(first.querySelector("time")).toHaveAttribute("datetime", shipAnswer.at);
     expect(within(first).getByRole("link", { name: /CORE-1/ })).toHaveAttribute(
       "href",
       "/issues/CORE-1"

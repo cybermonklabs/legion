@@ -2,6 +2,7 @@ import {
   AUTH_NO_IDENTITY,
   answerNotKept,
   DISPATCH_LOGIN_HEADER,
+  type DispatchServiceErrorShape,
   everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -30,22 +31,18 @@ import {
   type QueryParams,
   type RequestBody,
   repoParams,
+  routePath,
   routeUrl,
 } from "./paths";
 import { reachable, routeOf, unreachable } from "./reachability";
 
 import type {
   ArtifactVersionContent,
-  ArtifactVersionText,
   AuthenticatedUser,
   CreateArtifactInput,
   DispatchEvent,
   DispatchUser,
-  DuplicateCandidate,
-  IDCandidate,
   IssueAskThreadRow,
-  NewIssueSettings,
-  TargetCandidate,
   UserIssueState,
 } from "./types";
 
@@ -80,15 +77,9 @@ const utf8 = new TextEncoder();
 
 /** One item a refusal lists for the caller to choose between: the items an ambiguous id prefix
  *  names (`ID_AMBIGUOUS`), the issues a duplicate check found, or the positions an anchored
- *  quote resolved at. Each refusal's own `code` says which of the three its list holds. */
-export type ErrorCandidate = IDCandidate | DuplicateCandidate | TargetCandidate;
-
-interface ErrorPayload {
-  code?: string;
-  error?: string;
-  state?: UserIssueState;
-  candidates?: readonly ErrorCandidate[];
-}
+ *  quote resolved at - every candidate shape a refusal carries, read off the generated refusal
+ *  bodies. Each refusal's own `code` says which of them its list holds. */
+export type ErrorCandidate = NonNullable<DispatchServiceErrorShape["candidates"]>[number];
 
 export class ApiError extends Error {
   readonly code: string | undefined;
@@ -103,13 +94,13 @@ export class ApiError extends Error {
    *  undefined when the response carried none. */
   readonly retryAfterMs: number | undefined;
 
-  constructor(status: number, payload: ErrorPayload, retryAfterMs?: number) {
+  constructor(status: number, payload: DispatchServiceErrorShape, retryAfterMs?: number) {
     super(payload.error ?? `Dispatch request failed (${status})`);
     this.name = "ApiError";
     this.code = payload.code;
     this.status = status;
     this.state = payload.state;
-    this.candidates = payload.candidates;
+    this.candidates = payload.candidates ?? undefined;
     this.retryAfterMs = retryAfterMs;
   }
 }
@@ -516,12 +507,6 @@ export function writeRequest<M extends WriteVerb, P extends PathsOf<M>>(
   };
 }
 
-/** The same-origin URL of one GET route, for a reader that makes no request of its own (an
- *  `<img>` loading a stored version's bytes). */
-function readUrl<P extends PathsOf<"get">>(pattern: P, params: PathParams<Op<P, "get">>): string {
-  return routeUrl(pattern, params);
-}
-
 // The requests of the writes that wait their turn on a line (`WriteSpec.request`), each the exact
 // request its client method sends, answered as that method is: a surface names it at the press,
 // and the write is made from it alone (`api.send`), so a write waiting behind another is kept as
@@ -615,20 +600,20 @@ export function agentStateRequest(
 export function artifactVersionPath(owner: ArtifactOwner, slug: string, version: number): string {
   const number = String(version);
   if ("issue" in owner) {
-    return readUrl("/api/v1/issues/{key}/artifacts/{slug}/versions/{number}", {
+    return routePath("get", "/api/v1/issues/{key}/artifacts/{slug}/versions/{number}", {
       key: owner.issue,
       number,
       slug,
     });
   }
   if ("project" in owner) {
-    return readUrl("/api/v1/projects/{key}/artifacts/{slug}/versions/{number}", {
+    return routePath("get", "/api/v1/projects/{key}/artifacts/{slug}/versions/{number}", {
       key: owner.project,
       number,
       slug,
     });
   }
-  return readUrl("/api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}", {
+  return routePath("get", "/api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}", {
     number,
     session_id: owner.session,
     slug,
@@ -678,7 +663,7 @@ function retryAfterMs(response: Response): number | undefined {
 }
 
 async function errorFrom(response: Response): Promise<ApiError> {
-  const payload = (await response.json().catch(() => ({}))) as ErrorPayload;
+  const payload = (await response.json().catch(() => ({}))) as DispatchServiceErrorShape;
   return new ApiError(response.status, payload, retryAfterMs(response));
 }
 
@@ -977,7 +962,7 @@ export class DispatchApiClient {
    *  shaped read, so the trees are part of the body the document holds. A read states a response
    *  shape of its own only where the document cannot hold it - `getIssueEvents` and
    *  `listIssueAskThreads`, each saying beside it what that is - and those two go through `json`
-   *  with `routeUrl`. */
+   *  with `routePath`. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
@@ -1240,7 +1225,9 @@ export class DispatchApiClient {
     key: string,
     query: Query<"/api/v1/issues/{key}/events", "get"> = {}
   ): Promise<DispatchEvent[]> {
-    return this.json<DispatchEvent[]>(routeUrl("/api/v1/issues/{key}/events", { key }, query));
+    return this.json<DispatchEvent[]>(
+      routePath("get", "/api/v1/issues/{key}/events", { key }, query)
+    );
   }
 
   /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
@@ -1336,7 +1323,7 @@ export class DispatchApiClient {
     state: "all" | "open" | "answered" = "all"
   ): Promise<IssueAskThreadRow[]> {
     return this.json<IssueAskThreadRow[]>(
-      routeUrl("/api/v1/issues/{key}/asks", { key }, { state, thread: "1" })
+      routePath("get", "/api/v1/issues/{key}/asks", { key }, { state, thread: "1" })
     );
   }
 
@@ -1640,14 +1627,19 @@ export class DispatchApiClient {
    *  this GET carries none. */
   async getArtifactVersion(id: string, version: number): Promise<ArtifactVersionContent> {
     const response = await this.response(
-      routeUrl("/api/v1/artifacts/{id}/versions/{number}", { id, number: String(version) }),
+      routePath("get", "/api/v1/artifacts/{id}/versions/{number}", {
+        id,
+        number: String(version),
+      }),
       {},
       null
     );
     const mime = response.headers.get("Content-Type") ?? "application/octet-stream";
 
     if (mime.includes("application/json")) {
-      return (await response.json()) as ArtifactVersionText;
+      return (await response.json()) as Json200<
+        Op<"/api/v1/artifacts/{id}/versions/{number}", "get">
+      >;
     }
 
     return { blob: await response.blob(), mime, version };
@@ -1982,8 +1974,8 @@ export class DispatchApiClient {
   /** `GET /api/v1/settings/new-issue`: the label an issue the bar files from a person's typed
    *  words carries and the session it is routed to, as the deployment configured them; each
    *  `""` where it configured none. */
-  getNewIssueSettings(): Promise<NewIssueSettings> {
-    return this.json<NewIssueSettings>("/api/v1/settings/new-issue");
+  getNewIssueSettings() {
+    return this.read("/api/v1/settings/new-issue", {});
   }
 }
 

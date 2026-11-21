@@ -627,8 +627,14 @@ describe("Mermaid diagrams", () => {
     }
   });
 
+  /** The time limit the two rows below set through `resetMermaidDiagrams`. It is theirs, not the
+   *  page's 5 s, so they move the fake clock by it. */
+  const TIME_LIMIT_MS = 50;
+
   test("a source the worker has not drawn within the time limit is refused, and a fresh worker draws the next", async () => {
-    resetMermaidDiagrams(50);
+    await warmMarkdownRenderer();
+    jest.useFakeTimers();
+    resetMermaidDiagrams(TIME_LIMIT_MS);
     const draw = spyOn(mermaidRenderer, "renderMermaidMarkup");
     FakeWorker.answer = (request) =>
       request.source.includes("Stuck") ? undefined : answerMermaidRequest(request);
@@ -636,7 +642,14 @@ describe("Mermaid diagrams", () => {
       <MarkdownBody markdown={`Big:\n\n${fence("sequenceDiagram\n  Stuck->>Bob: Hi")}`} />
     );
     try {
-      await waitFor(() => expect(figuresIn(view.container)).toHaveLength(1));
+      // Half the limit after the worker was handed the source, the source is still the worker's.
+      await tick(TIME_LIMIT_MS / 2);
+      expect(FakeWorker.sent).toEqual([expect.stringContaining("Stuck->>Bob: Hi")]);
+      expect(figuresIn(view.container)).toHaveLength(0);
+      expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([false]);
+
+      await tick(TIME_LIMIT_MS);
+      expect(figuresIn(view.container)).toHaveLength(1);
       const [figure] = figuresIn(view.container);
       expect(figure.querySelector('[role="status"]')?.textContent).toBe(
         "Unable to render Mermaid diagram: it did not finish within 0.05 seconds"
@@ -649,8 +662,10 @@ describe("Mermaid diagrams", () => {
       expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([true]);
 
       view.rerender(<MarkdownBody markdown={fence("sequenceDiagram\n  Alice->>Bob: After")} />);
-      await waitFor(() =>
-        expect(diagramIn(figuresIn(view.container)[0])?.textContent).toContain("After")
+      // Within half the limit, so what draws is the fresh worker's answer, not a refusal.
+      await tick(TIME_LIMIT_MS / 2);
+      expect(diagramIn(figuresIn(view.container)[0] ?? view.container)?.textContent).toContain(
+        "After"
       );
       expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([true, false]);
       // The renderer ran for the next source, inside the stand-in worker; the refused source
@@ -659,6 +674,7 @@ describe("Mermaid diagrams", () => {
       expect(drawn.some((drawnSource) => drawnSource.includes("After"))).toBe(true);
       expect(drawn.some((drawnSource) => drawnSource.includes("Stuck"))).toBe(false);
     } finally {
+      realClock();
       draw.mockRestore();
       view.unmount();
     }
@@ -667,18 +683,30 @@ describe("Mermaid diagrams", () => {
   // A worker's chunk can take longer to download and load than the time limit; the limit is for
   // drawing one source, so it starts when the worker posts `ready` and is handed that source.
   test("a worker that loads slower than the time limit still draws: the limit starts when the worker is ready", async () => {
-    resetMermaidDiagrams(50);
-    FakeWorker.readyDelayMs = 150;
+    await warmMarkdownRenderer();
+    jest.useFakeTimers();
+    resetMermaidDiagrams(TIME_LIMIT_MS);
+    FakeWorker.readyDelayMs = TIME_LIMIT_MS * 3;
     const view = render(
       <MarkdownBody markdown={`Slow:\n\n${fence("sequenceDiagram\n  Alice->>Bob: Loaded")}`} />
     );
     try {
-      await waitFor(() => expect(figuresIn(view.container)).toHaveLength(1));
+      // Twice the limit on, the worker is still loading: it has been handed nothing, and nothing
+      // is refused.
+      await tick(TIME_LIMIT_MS * 2);
+      expect(FakeWorker.sent).toEqual([]);
+      expect(figuresIn(view.container)).toHaveLength(0);
+      expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([false]);
+
+      // Past its ready delay the worker posts `ready`, is handed the source, and draws it.
+      await tick(FakeWorker.readyDelayMs);
+      expect(figuresIn(view.container)).toHaveLength(1);
       const [figure] = figuresIn(view.container);
       expect(figure.querySelector('[role="status"]')?.textContent).toBeUndefined();
       expect(diagramIn(figure)?.textContent).toContain("Loaded");
       expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([false]);
     } finally {
+      realClock();
       view.unmount();
     }
   });
@@ -955,15 +983,10 @@ describe("Mermaid diagrams", () => {
     });
   });
 
+  // A row below whose promise never settles fails at the test's own deadline, the `--timeout` of
+  // `test:web`, rather than on a race of its own: such a race against real time is an assertion
+  // that the draws settle within it, which a slow machine fails for being slow.
   describe("mermaidDrawsSettled", () => {
-    /** Whether `promise` settles within `ms`, so a promise that never resolves fails the case on
-     *  its assertion rather than on the test's timeout. This wait stays on the real clock where
-     *  the rest of the file moved to a fake one (INFRA-1505): a fake clock only moves when the
-     *  test moves it, so the losing side of the race would never come up and the race would
-     *  decide nothing. */
-    const settlesWithin = (promise: Promise<void>, ms: number): Promise<boolean> =>
-      Promise.race([promise.then(() => true), Bun.sleep(ms).then(() => false)]);
-
     test("resolves at once when no source is waiting", async () => {
       let settled = false;
       void mermaidDrawsSettled().then(() => {
@@ -978,10 +1001,9 @@ describe("Mermaid diagrams", () => {
       const events: string[] = [];
       requestMermaidDrawing("sequenceDiagram\n  Alice->>Bob: First", () => events.push("first"));
       requestMermaidDrawing("sequenceDiagram\n  Carol->>Dave: Second", () => events.push("second"));
-      const settled = mermaidDrawsSettled().then(() => {
+      await mermaidDrawsSettled().then(() => {
         events.push("settled");
       });
-      expect(await settlesWithin(settled, 2000)).toBe(true);
       expect(events).toEqual(["first", "second", "settled"]);
     });
 
@@ -993,7 +1015,7 @@ describe("Mermaid diagrams", () => {
         requestMermaidDrawing("sequenceDiagram\n  Alice->>Bob: Never", (drawing) =>
           drawn.push(drawing)
         );
-        expect(await settlesWithin(mermaidDrawsSettled(), 1000)).toBe(true);
+        await mermaidDrawsSettled();
         expect(logged).toHaveBeenCalledTimes(1);
         expect(drawn).toEqual([{ unavailable: true }]);
       } finally {

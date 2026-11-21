@@ -9,6 +9,9 @@
  *  after a reload, that a count moves with no reload at all, and that two pages agree about one
  *  relation.
  */
+import { countsLine } from "../web/src/features/priorities/priorities-model";
+import { statusText } from "../web/src/features/project/board-model";
+import { defaultView } from "../web/src/features/project/issues-table-model";
 import {
   claimIssue,
   createIssue,
@@ -21,8 +24,46 @@ import {
   patchIssue,
   patchPriority,
 } from "./api";
-import { expect, type Locator, type Page, test } from "./test";
+import { sql } from "./psql";
+import { test as base, emptyDatabase, expect, type Locator, type Page, rowKey } from "./test";
 import { asUser } from "./users";
+
+/** This file's `test`: e2e/test.ts's, with the priorities a row wrote taken out again when it
+ *  ends. Every priority is one list for the whole deployment, read whole by the rows below - the
+ *  order a priority's place `P1` is counted in, the page's empty state, the rail's count - and a
+ *  priority a row ended still stands as a node (`endPriority`), so each row deletes the records it
+ *  wrote, as the reset does (`priority_nodes` and `priority_tuples`, which no foreign key
+ *  reaches): every node the stack holds at the row's end that it did not hold at its start, and
+ *  every tuple written after the newest one at its start or written of a node it deletes. The
+ *  second half is for a row that empties the database itself (`emptyDatabase`): the emptying
+ *  starts the tuples' `seq` again from 1, under the newest one at the row's start, so that row's
+ *  tuples are found by their node rather than by their place in the log. Rows of one worker run
+ *  one at a time on that worker's own stack, so what the end holds beyond the start is this
+ *  row's, and the next row's order starts where this one's did. Each priority's title also
+ *  carries the row's own key (`rowKey`, e2e/test.ts), so its id, which the server derives from
+ *  the title and refuses a second time (`PRIORITY_EXISTS`), is the row's own too. */
+const test = base.extend<{ ownPriorities: undefined }>({
+  ownPriorities: [
+    async ({ freshFakes: _resetFirst }, use) => {
+      const held = await sql(`SELECT json_build_object(
+        'nodes', coalesce((SELECT json_agg(kind || ':' || id) FROM priority_nodes), '[]'),
+        'seq', coalesce((SELECT max(seq) FROM priority_tuples), 0))`);
+      await use(undefined);
+      await sql(`WITH held AS (
+  SELECT $held$${held}$held$::jsonb AS rows
+), gone AS (
+  DELETE FROM priority_nodes
+  WHERE kind || ':' || id NOT IN (SELECT jsonb_array_elements_text(rows -> 'nodes') FROM held)
+  RETURNING kind, id
+)
+DELETE FROM priority_tuples
+WHERE seq > (SELECT (rows ->> 'seq')::bigint FROM held)
+  OR (from_kind, from_id) IN (SELECT kind, id FROM gone)
+  OR (to_kind, to_id) IN (SELECT kind, id FROM gone)`);
+    },
+    { auto: true },
+  ],
+});
 
 const PRIORITIES_PATH = "/priorities";
 
@@ -87,10 +128,13 @@ const FIRST_DESCRIPTION =
   "It is finished when no machine is left on the old build and nothing is waiting on one.";
 
 async function seedPriorities(): Promise<Seeded> {
+  const core = rowKey("CORE");
+  const ops = rowKey("OPS");
+  const web = rowKey("WEB");
   await Promise.all([
-    createProject({ key: "CORE", name: "Core" }),
-    createProject({ key: "OPS", name: "Ops" }),
-    createProject({ key: "WEB", name: "Web" }),
+    createProject({ key: core, name: "Core" }),
+    createProject({ key: ops, name: "Ops" }),
+    createProject({ key: web, name: "Web" }),
   ]);
 
   // Created one after another, because a priority takes the last place of the one order as it
@@ -98,29 +142,29 @@ async function seedPriorities(): Promise<Seeded> {
   const first = await createPriority({
     description: FIRST_DESCRIPTION,
     owner: "alice",
-    title: "Ship the daemon everywhere",
+    title: `Ship the daemon everywhere (${core})`,
   });
-  const second = await createPriority({ owner: "bob", title: "Cut the review queue" });
-  const third = await createPriority({ owner: "alice", title: "Retire the old ledger" });
+  const second = await createPriority({ owner: "bob", title: `Cut the review queue (${core})` });
+  const third = await createPriority({ owner: "alice", title: `Retire the old ledger (${core})` });
 
-  const rollout = await createIssue({ project: "CORE", title: "Daemon rollout to the fleet" });
-  const smoke = await createIssue({ project: "CORE", title: "Daemon smoke suite" });
-  const queue = await createIssue({ project: "OPS", title: "Review queue triage" });
-  const ledger = await createIssue({ project: "WEB", title: "Ledger read path" });
-  const cutover = await createIssue({ project: "WEB", title: "Ledger cut-over" });
+  const rollout = await createIssue({ project: core, title: "Daemon rollout to the fleet" });
+  const smoke = await createIssue({ project: core, title: "Daemon smoke suite" });
+  const queue = await createIssue({ project: ops, title: "Review queue triage" });
+  const ledger = await createIssue({ project: web, title: "Ledger read path" });
+  const cutover = await createIssue({ project: web, title: "Ledger cut-over" });
   // The child states nothing of its own: it advances `P3` because the issue above it does
   // (INFRA-2947, R4), which is what the parked list's row and the rail's second count read.
   const child = await createIssue({
     parent: cutover.key,
-    project: "WEB",
+    project: web,
     title: "Ledger client migration",
   });
   // One issue in each of the four statuses the first fault is about, spread over the three
   // projects, so the count line under its rule names more than one board.
-  const clock = await createIssue({ project: "CORE", title: "Audit the clock" });
-  const lease = await createIssue({ project: "CORE", title: "Lease handover" });
-  const mirror = await createIssue({ project: "OPS", title: "Mirror retries" });
-  const sweep = await createIssue({ project: "WEB", title: "Phone layout sweep" });
+  const clock = await createIssue({ project: core, title: "Audit the clock" });
+  const lease = await createIssue({ project: core, title: "Lease handover" });
+  const mirror = await createIssue({ project: ops, title: "Mirror retries" });
+  const sweep = await createIssue({ project: web, title: "Phone layout sweep" });
 
   // One write per issue: a status, and the one relation it states. A write naming no revision
   // asserts one relation at a time, which is what each of these is (`api/issue_advances.go`).
@@ -153,6 +197,78 @@ async function seedPriorities(): Promise<Seeded> {
     smoke: smoke.key,
     titles: [first.title, second.title, third.title],
   };
+}
+
+/** What the deployment holds of the one order and its two faults before a row writes, read
+ *  through the read the page and the rail make (`GET /api/v1/priorities`). Every priority is the
+ *  deployment's and so is every issue in flight, so a row that reads a place in the order, the
+ *  size of a fault or the rail's count reads them beside what another row left: the review
+ *  corpus's priority and the work under it, where the worker seeded the corpus (`reviewCorpus`,
+ *  e2e/test.ts), and every earlier row's issues in flight, which advance nothing once that row's
+ *  priorities are taken out again (`ownPriorities`). A row reads it before its seed and asserts
+ *  what it held and what the row added to it; over an emptied database it holds nothing, and the
+ *  row reads what it always read. */
+interface Held {
+  /** The titles of the priorities standing, in rank order: `P1` onwards on the page. */
+  readonly titles: readonly string[];
+  /** The place the row's own `index`-th priority takes, from 0: the next after every one
+   *  standing, as a priority takes the last place when it is written. */
+  readonly place: (index: number) => string;
+  /** How many issues are in flight under no priority, the first fault. */
+  readonly unplaced: number;
+  /** The first fault's count by project, as the server answers it (`by_project`). */
+  readonly unplacedByProject: Readonly<Record<string, number>>;
+  /** The statuses of the first fault's newest issues, newest first: the fifty the read lists
+   *  (`work_under_no_priority.issues`, by `updated_at`, which `?n.sort=-updated` draws the first
+   *  fault list in). */
+  readonly unplacedStatuses: readonly string[];
+  /** The issues of the second fault, by the name a fault list's row is read by,
+   *  `<KEY> <title>`. */
+  readonly parked: readonly string[];
+  /** How many issues the second fault holds, and how many under each priority, by the title a
+   *  person wrote for it, as the page names it. */
+  readonly parkedCount: number;
+  readonly parkedByTitle: Readonly<Record<string, number>>;
+  /** The rail's number: the two faults added (`Sidebar.tsx`), whatever the summary says of the
+   *  priorities themselves. */
+  readonly faults: number;
+}
+
+async function heldBefore(): Promise<Held> {
+  const read = await listPriorities();
+  const priorities = read.priorities ?? [];
+  const titles = priorities.map((row) => row.title);
+  const titleOf = new Map(priorities.map((row) => [row.id, row.title]));
+  return {
+    faults: read.work_under_no_priority.count + read.priority_work_parked.count,
+    parked: (read.priority_work_parked.issues ?? []).map((row) => `${row.key} ${row.title}`),
+    parkedByTitle: Object.fromEntries(
+      Object.entries(read.priority_work_parked.by_priority ?? {}).map(([id, count]) => [
+        titleOf.get(id) ?? id,
+        count,
+      ])
+    ),
+    parkedCount: read.priority_work_parked.count,
+    place: (index) => `P${titles.length + index + 1}`,
+    titles,
+    unplaced: read.work_under_no_priority.count,
+    unplacedByProject: read.work_under_no_priority.by_project ?? {},
+    unplacedStatuses: (read.work_under_no_priority.issues ?? []).map((row) => row.status),
+  };
+}
+
+/** A fault's count line as the page draws it under the fault's rule: the count, then the count
+ *  under each project or priority in the page's own words (`countsLine`,
+ *  `web/src/features/priorities/priorities-model.ts`). */
+function faultLine(count: number, by: Readonly<Record<string, number>>): string {
+  const counts = countsLine(by);
+  return `${count} ${count === 1 ? "issue" : "issues"}${counts === "" ? "" : ` · ${counts}`}`;
+}
+
+/** The priorities table's rows as `expectRowOrder` reads them, `P<n> <title>`: the ones standing
+ *  before the row, then `own`, the row's, in their places after them. */
+function orderAfter(held: Held, own: readonly string[]): string[] {
+  return [...held.titles, ...own].map((title, index) => `P${index + 1} ${title}`);
 }
 
 /** A page of alice's at a width the sidebar's rail is drawn at (1280 px, `WIDE_LAYOUT_MIN_PX`
@@ -212,17 +328,46 @@ async function cellUnder(table: Locator, row: Locator, header: string): Promise<
   return row.getByRole("cell").nth(await columnIndex(table, header));
 }
 
-/** The text of one column of every row of a table, which is how a row reads the cells R6 names
- *  without spelling each row out. */
+/** Every row of a table, each once, by the name a reader hears, with the text of its cell under
+ *  the column at `index` (none where `index` is -1). A table draws only the rows its box has
+ *  scrolled to and a few beyond them (the virtualizer's `overscan`,
+ *  `web/src/components/DataTable.tsx`), and a fault list holds every issue of the deployment its
+ *  fault names, more than its box draws at once once other rows' issues stand in flight beside
+ *  the row's own. So the box is read as a reader reads it: scrolled from its top to its end a
+ *  box's height at a time, two frames drawn after each step so the rows it reached are drawn,
+ *  each row read once by the name a reader hears, and the box put back at its top. */
+async function everyRow(table: Locator, index: number): Promise<[string, string][]> {
+  return table.evaluate(async (element, at) => {
+    const box = element.closest('[data-testid="issues-table-scroll"]');
+    if (!(box instanceof HTMLElement)) throw new Error("the table is drawn in no scroll box");
+    const drawn = () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      return promise;
+    };
+    const texts = new Map<string, string>();
+    box.scrollTop = 0;
+    for (;;) {
+      await drawn();
+      for (const row of element.querySelectorAll("tr[data-issue-row]")) {
+        texts.set(
+          row.getAttribute("aria-label") ?? "",
+          at === -1 ? "" : (row.querySelectorAll("td")[at]?.textContent?.trim() ?? "")
+        );
+      }
+      const from = box.scrollTop;
+      box.scrollTop = from + box.clientHeight;
+      if (box.scrollTop <= from) break;
+    }
+    box.scrollTop = 0;
+    return [...texts.entries()];
+  }, index);
+}
+
+/** The text of one column of every row of a table (`everyRow`), which is how a row reads the
+ *  cells R6 names without spelling each row out. */
 async function columnTexts(table: Locator, header: string): Promise<string[]> {
-  const at = await columnIndex(table, header);
-  return table
-    .locator("tr[data-issue-row]")
-    .evaluateAll(
-      (rows, index) =>
-        rows.map((row) => row.querySelectorAll("td")[index]?.textContent?.trim() ?? ""),
-      at
-    );
+  return (await everyRow(table, await columnIndex(table, header))).map(([, text]) => text);
 }
 
 /** The badge beside the rail's Priorities entry, which is its last span; an entry with no count
@@ -234,25 +379,31 @@ const railEntry = (page: Page): Locator => page.getByRole("link", { name: /^Prio
 test("the priorities page draws the order first and the two fault lists under it", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
+  const ops = rowKey("OPS");
+  const web = rowKey("WEB");
+  // Every place in the order, every fault and its rows are the deployment's, so the row reads
+  // them beside what stood before it wrote (`heldBefore`): nothing over an emptied database.
+  const held = await heldBefore();
   const seed = await seedPriorities();
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await priorityPage(page);
-    await page.goto(PRIORITIES_PATH);
+    // The first fault list opens newest first, the order the server lists that fault's own rows
+    // in: the row's four, written last, are then on the list's first page whatever stood in
+    // flight before them, and the rows that page draws are the ones the read lists. Nothing
+    // below reads that list's order.
+    await page.goto(`${PRIORITIES_PATH}?n.sort=-updated`);
     await expect(page.getByRole("heading", { level: 1, name: "Priorities" })).toBeVisible();
 
     // The order itself, which is the page's first part: the rows in rank order, each named by
     // its place and its title.
     const priorities = section(page, "Priorities");
     await expect(page.getByRole("table", { name: "Priorities table" })).toBeVisible();
-    await expectRowOrder(priorities, [
-      `P1 ${seed.titles[0]}`,
-      `P2 ${seed.titles[1]}`,
-      `P3 ${seed.titles[2]}`,
-    ]);
+    await expectRowOrder(priorities, orderAfter(held, seed.titles));
     // A closed row shows the first line of its description and no more of it.
-    const firstRow = priorities.getByRole("row", { name: `P1 ${seed.titles[0]}` });
+    const firstRow = priorities.getByRole("row", { name: `${held.place(0)} ${seed.titles[0]}` });
     await expect(firstRow).toContainText(
       "Every machine of the fleet runs the daemon, or the rollout is not done."
     );
@@ -271,9 +422,16 @@ test("the priorities page draws the order first and the two fault lists under it
 
     // Each fault says what it is and how big it is, and neither is a judgement.
     await expect(unplaced.getByText(NO_PRIORITY_RULE)).toBeVisible();
-    await expect(unplaced.getByText(/^4 issues · CORE 2 · OPS 1 · WEB 1$/)).toBeVisible();
+    await expect(
+      unplaced.getByText(
+        faultLine(held.unplaced + 4, { ...held.unplacedByProject, [core]: 2, [ops]: 1, [web]: 1 }),
+        { exact: true }
+      )
+    ).toBeVisible();
     await expect(parked.getByText(PARKED_RULE)).toBeVisible();
-    await expect(parked.getByText(/^1 issue · /)).toBeVisible();
+    await expect(
+      parked.getByText(new RegExp(`^${faultLine(held.parkedCount + 1, {})} · `))
+    ).toBeVisible();
 
     // Each fault list is the application's one Issues table over its own issue listing, which
     // is a read of its own beside the priorities read: its rows are waited for, not assumed
@@ -284,15 +442,17 @@ test("the priorities page draws the order first and the two fault lists under it
     await expect(parked.getByRole("table")).toHaveAccessibleName(PARKED_TABLE);
 
     // The first fault's rows: one issue in each of the four in-flight statuses, and nothing
-    // that advances a priority.
+    // that advances a priority, beside the newest of the work that stood in flight before them,
+    // up to the page the list opens on (`defaultView`).
     const clockRow = unplacedTable.getByRole("row", {
       exact: true,
       name: `${seed.clock} Audit the clock`,
     });
     await expect(clockRow).toBeVisible();
+    const heldStatuses = held.unplacedStatuses.slice(0, defaultView.pageSize - 4).map(statusText);
     await expect
       .poll(async () => (await columnTexts(unplacedTable, "Status")).sort())
-      .toEqual(["In progress", "Needs review", "Retro", "Testing"]);
+      .toEqual(["In progress", "Needs review", "Retro", "Testing", ...heldStatuses].sort());
     // And one row of it cell by cell (R6), each cell read under its column's header: the issue,
     // its title, its status, its project, who holds it, and how long it has stood as it is.
     const clockCell = (header: string) => cellUnder(unplacedTable, clockRow, header);
@@ -304,7 +464,7 @@ test("the priorities page draws the order first and the two fault lists under it
       })
     ).toHaveText("Audit the clock");
     await expect(await clockCell("Status")).toHaveText("In progress");
-    await expect(await clockCell("Project")).toHaveText("CORE");
+    await expect(await clockCell("Project")).toHaveText(core);
     // Who holds it is who claimed it: alice claimed this one in the seed, and the cell is the
     // claim's chip naming her.
     await expect((await clockCell("Claimed by")).getByTestId("issue-claim")).toContainText("alice");
@@ -318,16 +478,17 @@ test("the priorities page draws the order first and the two fault lists under it
       )
     ).toBe(false);
 
-    // The second fault's one row is the child, which advances P3 through the issue above it,
-    // and it names the priority it advances and when it was moved out of the way.
-    await expectRowOrder(parkedTable, [`${seed.child} Ledger client migration`]);
+    // The second fault's row is the child, which advances P3 through the issue above it, beside
+    // the work parked before the row, and it names the priority it advances and when it was
+    // moved out of the way.
+    await expectRowNames(parkedTable, [...held.parked, `${seed.child} Ledger client migration`]);
     const childRow = parkedTable.getByRole("row", {
       exact: true,
       name: `${seed.child} Ledger client migration`,
     });
     const childCell = (header: string) => cellUnder(parkedTable, childRow, header);
     await expect((await childCell("Key")).getByRole("link")).toHaveText(seed.child);
-    await expect(await childCell("Project")).toHaveText("WEB");
+    await expect(await childCell("Project")).toHaveText(web);
     await expect(await childCell("Status")).toHaveText("Backlog");
     // Nobody claimed this one, though it is assigned to alice as the row above is: an assignee
     // is who the work is meant for, and this column says who holds it, so it is empty here, as
@@ -358,7 +519,14 @@ test("the priorities page draws the order first and the two fault lists under it
 test("with no priority the page reads the server's sentence, and writes the first one", async ({
   browser,
 }) => {
-  // No seed: the row starts from the emptied database (`e2e/test.ts`), which holds no priority.
+  // The claim is an empty stack: a priority belongs to no project, and the order is the whole
+  // stack's (`GET /api/v1/priorities` answers every live priority), so no key of this row's makes
+  // a deployment with none, and whatever another row or the review corpus left would stand here.
+  // It empties through `emptyDatabase`, which counts the database as the worker's, so the
+  // datasets the worker keeps are written again for the rows after this one.
+  await emptyDatabase();
+  // Signed in after the emptying, as e2e/issue.e2e.ts's row is: the emptying deletes every
+  // session a sign-in wrote but the ones it writes again for alice and bob (e2e/users.ts).
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -373,8 +541,8 @@ test("with no priority the page reads the server's sentence, and writes the firs
     await expect(railEntry(page).locator("span")).toHaveCount(2);
 
     // The page with no priority is where the first is written, with the control the table's
-    // toolbar carries once there is one.
-    const added = "Ship the daemon everywhere";
+    // toolbar carries once there is one; the priority takes the first place.
+    const added = `Ship the daemon everywhere (${rowKey("CORE")})`;
     await page.getByRole("button", { exact: true, name: "New priority" }).click();
     await page.getByLabel("Title of the new priority").fill(added);
     await page
@@ -400,7 +568,11 @@ test("with no priority the page reads the server's sentence, and writes the firs
 test("a priority row opens its work by status, and four writes survive a reload", async ({
   browser,
 }) => {
+  const held = await heldBefore();
   const seed = await seedPriorities();
+  // The row's three priorities, P1 to P3 over an emptied database, take the places after every
+  // priority that stood before it (`heldBefore`).
+  const [first, second, third] = [held.place(0), held.place(1), held.place(2)];
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -409,7 +581,7 @@ test("a priority row opens its work by status, and four writes survive a reload"
 
     // An opened row shows the work advancing that priority, read by status, which is the
     // grouping the page writes into the address when it opens the row.
-    await page.getByRole("button", { name: `Open P3 ${seed.titles[2]}` }).click();
+    await page.getByRole("button", { name: `Open ${third} ${seed.titles[2]}` }).click();
     const work = section(page, `Work advancing ${seed.titles[2]}`);
     await expect(page).toHaveURL(/w\.group=status/);
     await expect(work.getByRole("button", { name: /Needs review, 1 issue/ })).toBeVisible();
@@ -420,21 +592,21 @@ test("a priority row opens its work by status, and four writes survive a reload"
       `${seed.cutover} Ledger cut-over`,
       `${seed.ledger} Ledger read path`,
     ]);
-    await page.getByRole("button", { name: `Close P3 ${seed.titles[2]}` }).click();
+    await page.getByRole("button", { name: `Close ${third} ${seed.titles[2]}` }).click();
     await expect(section(page, `Work advancing ${seed.titles[2]}`)).toHaveCount(0);
 
     // Renamed where it is read: no edit mode and no Save, so leaving the field writes it.
     const renamed = "Cut the review queue in half";
-    await page.getByLabel("Title of P2").fill(renamed);
-    await page.getByLabel("Title of P2").blur();
+    await page.getByLabel(`Title of ${second}`).fill(renamed);
+    await page.getByLabel(`Title of ${second}`).blur();
 
     // Described in the row that holds it, which is where the whole description is shown: read
     // rendered, every paragraph of it, and opened into its editor by a click on what it reads.
     const described = "The fleet is one build, or the rollout is not done.";
-    const rendered = page.getByRole("group", { exact: true, name: "Description of P1" });
-    const editor = page.getByRole("textbox", { exact: true, name: "Description of P1" });
+    const rendered = page.getByRole("group", { exact: true, name: `Description of ${first}` });
+    const editor = page.getByRole("textbox", { exact: true, name: `Description of ${first}` });
     const finished = "It is finished when no machine is left on the old build";
-    await page.getByRole("button", { name: `Open P1 ${seed.titles[0]}` }).click();
+    await page.getByRole("button", { name: `Open ${first} ${seed.titles[0]}` }).click();
     await expect(rendered).toContainText(finished);
     await rendered.getByText(finished).click();
     await expect(editor).toHaveValue(seed.description);
@@ -443,7 +615,7 @@ test("a priority row opens its work by status, and four writes survive a reload"
     await expect(rendered).toContainText(described);
 
     // Added, which takes the last place of the order.
-    const added = "Keep the fleet on one build";
+    const added = `Keep the fleet on one build (${rowKey("CORE")})`;
     await page.getByRole("button", { name: "New priority" }).click();
     await page.getByLabel("Title of the new priority").fill(added);
     await page
@@ -452,28 +624,24 @@ test("a priority row opens its work by status, and four writes survive a reload"
         name: "Add priority",
       })
       .click();
-    await expect(page.getByRole("row", { name: `P4 ${added}` })).toBeVisible();
+    await expect(page.getByRole("row", { name: `${held.place(3)} ${added}` })).toBeVisible();
 
     // And dragged: the third row onto the second, which writes the place the reader can see.
     const handle = page.getByRole("button", {
-      name: `Move P3 ${seed.titles[2]}: drag it, or press the up and down arrows`,
+      name: `Move ${third} ${seed.titles[2]}: drag it, or press the up and down arrows`,
     });
     await handle.dragTo(page.locator(`tr[data-issue-row="${seed.ids[1]}"]`));
-    await expect(page.getByRole("row", { name: `P2 ${seed.titles[2]}` })).toBeVisible();
+    await expect(page.getByRole("row", { name: `${second} ${seed.titles[2]}` })).toBeVisible();
 
     // Every one of the four is the store's now, not the page's: read back from the server, and
     // then from a page that was loaded again.
+    const order = [seed.titles[0], seed.titles[2], renamed, added];
     await expect
       .poll(async () => (await listPriorities()).priorities?.map((row) => row.title))
-      .toEqual([seed.titles[0], seed.titles[2], renamed, added]);
+      .toEqual([...held.titles, ...order]);
     await page.reload();
-    await expectRowOrder(section(page, "Priorities"), [
-      `P1 ${seed.titles[0]}`,
-      `P2 ${seed.titles[2]}`,
-      `P3 ${renamed}`,
-      `P4 ${added}`,
-    ]);
-    await page.getByRole("button", { name: `Open P1 ${seed.titles[0]}` }).click();
+    await expectRowOrder(section(page, "Priorities"), orderAfter(held, order));
+    await page.getByRole("button", { name: `Open ${first} ${seed.titles[0]}` }).click();
     await expect(rendered).toContainText(described);
     await expect(rendered).not.toContainText("It is finished when no machine is left");
 
@@ -482,17 +650,23 @@ test("a priority row opens its work by status, and four writes survive a reload"
     // is a moment that has passed, and no relative label reads forwards. Each absence is read
     // once the parts that carry dates and counts have drawn - the work under P1 and both fault
     // lists, each a read of its own - since a page still loading them would pass it on text it
-    // never drew.
+    // never drew. Each fault list is the deployment's: the first holds the row's four beside the
+    // issues in flight before it, up to the page the table opens on (`defaultView`), read whole
+    // (`everyRow`), since its box draws fewer rows than that page once other rows' issues stand
+    // in flight; and the second the row's child beside the work parked before it.
     await expectRowNames(section(page, `Work advancing ${seed.titles[0]}`), [
       `${seed.rollout} Daemon rollout to the fleet`,
       `${seed.smoke} Daemon smoke suite`,
     ]);
-    await expect(
-      page
-        .getByRole("table", { exact: true, name: NO_PRIORITY_TABLE })
-        .locator("tr[data-issue-row]")
-    ).toHaveCount(4);
-    await expectRowOrder(page.getByRole("table", { exact: true, name: PARKED_TABLE }), [
+    await expect
+      .poll(
+        async () =>
+          (await everyRow(page.getByRole("table", { exact: true, name: NO_PRIORITY_TABLE }), -1))
+            .length
+      )
+      .toBe(Math.min(held.unplaced + 4, defaultView.pageSize));
+    await expectRowNames(page.getByRole("table", { exact: true, name: PARKED_TABLE }), [
+      ...held.parked,
       `${seed.child} Ledger client migration`,
     ]);
     const future = await page
@@ -521,7 +695,15 @@ test("a priority row opens its work by status, and four writes survive a reload"
 test("the rail's Priorities count falls as work leaves flight and as a parent link moves", async ({
   browser,
 }) => {
+  // The row's last claim is the rail of a deployment with no priority, and only an empty stack
+  // holds one: a priority belongs to no project, and the order and the two faults the rail counts
+  // are the whole stack's, so no key of this row's makes them its own. It empties through
+  // `emptyDatabase`, which counts the database as the worker's, so the datasets the worker keeps
+  // are written again for the rows after this one. The rail's number is then the row's own five.
+  await emptyDatabase();
   const seed = await seedPriorities();
+  // Signed in after the emptying, as e2e/issue.e2e.ts's row is: the emptying deletes every
+  // session a sign-in wrote but the ones it writes again for alice and bob (e2e/users.ts).
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -544,10 +726,12 @@ test("the rail's Priorities count falls as work leaves flight and as a parent li
     await expect(entry.locator("span").last()).toHaveText("3");
 
     // A deployment that has written no priority has nothing off a list that does not exist, so
-    // the entry carries no number: its label and its line, and no badge beside them.
+    // the entry carries no number: its label and its line, and no badge beside them. Ending the
+    // row's three leaves that deployment, whose summary is the server's no-priority sentence.
     for (const id of seed.ids) await endPriority(id);
     await page.reload();
     await expect(railEntry(page)).toBeVisible();
+    expect((await listPriorities({ summary: true })).empty ?? "").toBe(NONE_LIVE);
     await expect(railEntry(page).locator("span")).toHaveCount(2);
   } finally {
     await context.close();
@@ -559,7 +743,11 @@ test("the rail's Priorities count falls as work leaves flight and as a parent li
 test("another person's rename and delete of a priority redraw an open page with no reload", async ({
   browser,
 }) => {
+  // The order, the parked list and the rail's count are the deployment's, so the row reads them
+  // beside what stood before it wrote (`heldBefore`): nothing over an emptied database.
+  const held = await heldBefore();
   const seed = await seedPriorities();
+  const third = held.place(2);
   // P3's one issue in flight leaves flight first, so the delete below moves no issue into the
   // first fault list, and what the rail counts can only fall by the work parked under P3.
   await patchIssue(seed.ledger, { status: "todo" });
@@ -581,41 +769,36 @@ test("another person's rename and delete of a priority redraw an open page with 
       name: `${seed.child} Ledger client migration`,
     });
     const badge = railEntry(reader).locator("span").last();
-    await expectRowOrder(priorities, [
-      `P1 ${seed.titles[0]}`,
-      `P2 ${seed.titles[1]}`,
-      `P3 ${seed.titles[2]}`,
-    ]);
+    await expectRowOrder(priorities, orderAfter(held, seed.titles));
     await expect(childRow).toBeVisible();
-    // Four in flight under no priority plus the one parked.
-    await expect(badge).toHaveText("5");
+    // Four in flight under no priority plus the one parked, on top of the faults held before.
+    await expect(badge).toHaveText(String(held.faults + 5));
 
     // Reader B: bob renames P3 on his own page. Alice's row takes the new title, and so does
     // the parked work's Advances cell, which names a priority by the title a person wrote.
     const renamed = "Retire the old ledger for good";
     const writer = await bob.newPage();
     await writer.goto(PRIORITIES_PATH);
-    await writer.getByLabel("Title of P3").fill(renamed);
-    await writer.getByLabel("Title of P3").blur();
-    await expectRowOrder(priorities, [
-      `P1 ${seed.titles[0]}`,
-      `P2 ${seed.titles[1]}`,
-      `P3 ${renamed}`,
-    ]);
+    await writer.getByLabel(`Title of ${third}`).fill(renamed);
+    await writer.getByLabel(`Title of ${third}`).blur();
+    await expectRowOrder(priorities, orderAfter(held, [seed.titles[0], seed.titles[1], renamed]));
     await expect((await cellUnder(parkedTable, childRow, "Advances")).getByRole("link")).toHaveText(
       renamed
     );
 
     // Then bob retires P3, over the API, since neither page offers a delete. The child advanced
-    // only P3, through its parent, so it is no fault at all now: it leaves the parked list, and
-    // the rail's count falls by it.
+    // only P3, through its parent, so it is no fault at all now: it leaves the parked list, which
+    // holds what it held before the row, and the rail's count falls by it.
     await endPriority(seed.ids[2], { login: "bob" });
-    await expectRowOrder(priorities, [`P1 ${seed.titles[0]}`, `P2 ${seed.titles[1]}`]);
-    await expectRowNames(parkedTable, []);
+    await expectRowOrder(priorities, orderAfter(held, [seed.titles[0], seed.titles[1]]));
+    await expectRowNames(parkedTable, held.parked);
     await expect(
-      section(reader, "Priority work in backlog or icebox").getByText(/^0 issues$/)
+      section(reader, "Priority work in backlog or icebox").getByText(
+        faultLine(held.parkedCount, held.parkedByTitle),
+        { exact: true }
+      )
     ).toBeVisible();
-    await expect(badge).toHaveText("4");
+    await expect(badge).toHaveText(String(held.faults + 4));
 
     expect(await reader.evaluate(() => document.documentElement.dataset.heldOpen)).toBe("yes");
   } finally {
@@ -627,7 +810,11 @@ test("another person's rename and delete of a priority redraw an open page with 
 test("a priority's own page writes its title and description and lists only its work", async ({
   browser,
 }) => {
+  // The order is the deployment's, so the row's first priority takes the place after every
+  // priority standing before it (`heldBefore`): P1 over an emptied database.
+  const held = await heldBefore();
   const seed = await seedPriorities();
+  const first = held.place(0);
   // A description with a heading and a list, so what the page draws of it is read as those
   // elements rather than as the markdown source it is stored as.
   const outline = "# Why\n\n- Every machine runs the daemon\n- Nothing waits on the old build";
@@ -651,8 +838,8 @@ test("a priority's own page writes its title and description and lists only its 
     await page.getByRole("textbox", { name: "Title" }).blur();
 
     // The description reads rendered, and no editor is drawn until the reader asks for one.
-    const rendered = page.getByRole("group", { exact: true, name: "Description of P1" });
-    const editor = page.getByRole("textbox", { exact: true, name: "Description of P1" });
+    const rendered = page.getByRole("group", { exact: true, name: `Description of ${first}` });
+    const editor = page.getByRole("textbox", { exact: true, name: `Description of ${first}` });
     await expect(rendered.getByRole("heading", { name: "Why" })).toBeVisible();
     await expect(rendered.getByRole("listitem")).toHaveText([
       "Every machine runs the daemon",
@@ -688,8 +875,11 @@ test("a priority's own page writes its title and description and lists only its 
     await expect(rendered.getByRole("listitem").last()).toHaveText(line);
     // The keyboard's way in is the one button in the block, named by the words it shows, which
     // is drawn only once it holds the focus; Enter on it opens the editor as a click does.
-    const edit = rendered.getByRole("button", { exact: true, name: "Edit the description of P1" });
-    await expect(edit).toHaveText("Edit the description of P1");
+    const edit = rendered.getByRole("button", {
+      exact: true,
+      name: `Edit the description of ${first}`,
+    });
+    await expect(edit).toHaveText(`Edit the description of ${first}`);
     expect((await edit.boundingBox())?.width ?? 0).toBeLessThanOrEqual(1);
     await edit.focus();
     expect((await edit.boundingBox())?.width ?? 0).toBeGreaterThan(1);
@@ -721,7 +911,11 @@ test("a priority's own page writes its title and description and lists only its 
 test("an issue's header names the priorities it advances and links to each", async ({
   browser,
 }) => {
+  // The order is the deployment's, so the row's priorities take the places after every priority
+  // standing before it (`heldBefore`): P1 and P3 over an emptied database.
+  const held = await heldBefore();
   const seed = await seedPriorities();
+  const [first, third] = [held.place(0), held.place(2)];
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -729,7 +923,7 @@ test("an issue's header names the priorities it advances and links to each", asy
     await page.goto(`/issues/${seed.rollout}`);
     const line = page.getByTestId("issue-advances");
     await expect(line).toContainText("Advances");
-    const link = line.getByRole("link", { name: `P1 ${seed.titles[0]}` });
+    const link = line.getByRole("link", { name: `${first} ${seed.titles[0]}` });
     await expect(link).toBeVisible();
     await link.click();
     await expect(page).toHaveURL(`/priorities/${seed.ids[0]}`);
@@ -748,10 +942,10 @@ test("an issue's header names the priorities it advances and links to each", asy
     // ancestor's, and a relation on a child places nothing above it.
     await page.goto(`/issues/${seed.child}`);
     const inherited = page.getByTestId("issue-advances");
-    await expect(inherited.getByRole("link", { name: `P3 ${seed.titles[2]}` })).toBeVisible();
+    await expect(inherited.getByRole("link", { name: `${third} ${seed.titles[2]}` })).toBeVisible();
     await expect(inherited).toContainText("inherited");
     await expect(
-      page.getByRole("button", { name: `Remove P3 ${seed.titles[2]} from ${seed.child}` })
+      page.getByRole("button", { name: `Remove ${third} ${seed.titles[2]} from ${seed.child}` })
     ).toHaveCount(0);
   } finally {
     await context.close();
@@ -825,7 +1019,11 @@ test("the margin lists a priority's history newest first and keeps the state a r
 test("a person places an issue under a priority from the issue and takes it off again", async ({
   browser,
 }) => {
+  // The order is the deployment's, so the row's second priority takes the place after every
+  // priority standing before it and the row's first (`heldBefore`): P2 over an emptied database.
+  const held = await heldBefore();
   const seed = await seedPriorities();
+  const second = held.place(1);
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -837,7 +1035,7 @@ test("a person places an issue under a priority from the issue and takes it off 
     await page.getByRole("button", { name: "Add", exact: true }).click();
     const named = page
       .getByTestId("issue-advances")
-      .getByRole("link", { name: `P2 ${seed.titles[1]}` });
+      .getByRole("link", { name: `${second} ${seed.titles[1]}` });
     await expect(named).toBeVisible();
     await page.reload();
     await expect(named).toBeVisible();
@@ -854,7 +1052,7 @@ test("a person places an issue under a priority from the issue and takes it off 
     // Taken off from the same line, and gone from both ends after a reload.
     await page.goto(`/issues/${seed.clock}`);
     await page
-      .getByRole("button", { name: `Remove P2 ${seed.titles[1]} from ${seed.clock}` })
+      .getByRole("button", { name: `Remove ${second} ${seed.titles[1]} from ${seed.clock}` })
       .click();
     await expect(page.getByTestId("issue-advances").getByRole("link")).toHaveCount(0);
     await page.reload();
@@ -888,7 +1086,11 @@ test("a person places an issue under a priority from the issue and takes it off 
 test("another person's delete of a priority leaves an open issue page, whose next write lands", async ({
   browser,
 }) => {
+  // The order is the deployment's, so the row's priorities take the places after every priority
+  // standing before it (`heldBefore`): P1, P2 and P3 over an emptied database.
+  const held = await heldBefore();
   const seed = await seedPriorities();
+  const [first, second, third] = [held.place(0), held.place(1), held.place(2)];
   // The daemon's smoke suite advances P1 already; it states P3 beside it - one relation more,
   // which a write with no revision may assert - so the delete of P3 below leaves the issue one
   // relation of its own for the next write to keep.
@@ -905,10 +1107,10 @@ test("another person's delete of a priority leaves an open issue page, whose nex
       document.documentElement.dataset.heldOpen = "yes";
     });
     const line = reader.getByTestId("issue-advances");
-    const kept = line.getByRole("link", { name: `P1 ${seed.titles[0]}` });
+    const kept = line.getByRole("link", { name: `${first} ${seed.titles[0]}` });
     const deleted = line.locator(`a[href="/priorities/${seed.ids[2]}"]`);
     await expect(kept).toBeVisible();
-    await expect(deleted).toHaveText(`P3 ${seed.titles[2]}`);
+    await expect(deleted).toHaveText(`${third} ${seed.titles[2]}`);
 
     // Another person retires P3 over the API. The open header stops naming it, by its title or
     // by its id, with no reload: the issue's read is fetched again, so the set the next write
@@ -922,7 +1124,7 @@ test("another person's delete of a priority leaves an open issue page, whose nex
     await reader.getByRole("button", { name: `Add a priority to ${seed.smoke}` }).click();
     await reader.getByLabel("Priority to advance").selectOption(seed.ids[1]);
     await reader.getByRole("button", { name: "Add", exact: true }).click();
-    const added = line.getByRole("link", { name: `P2 ${seed.titles[1]}` });
+    const added = line.getByRole("link", { name: `${second} ${seed.titles[1]}` });
     await expect(added).toBeVisible();
     expect(await reader.evaluate(() => document.documentElement.dataset.heldOpen)).toBe("yes");
 

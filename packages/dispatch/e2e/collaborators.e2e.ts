@@ -15,7 +15,7 @@ import {
   listComments,
   patchIssue,
 } from "./api";
-import { expect, type Locator, test } from "./test";
+import { expect, type Locator, rowKey, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -43,8 +43,9 @@ interface Fixture {
 }
 
 async function seed(): Promise<Fixture> {
-  await createProject({ key: "E2E", name: "Collaborators" });
-  const issue = await createIssue({ project: "E2E", spec, title: "Asked after it closed" });
+  const e2e = rowKey("E2E");
+  await createProject({ key: e2e, name: "Collaborators" });
+  const issue = await createIssue({ project: e2e, spec, title: "Asked after it closed" });
   const issueKey = issue.key;
   await patchIssue(issueKey, { assignee: "alice" });
   await createComment(issueKey, { body: "Bob was here before the close" }, { login: "bob" });

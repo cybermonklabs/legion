@@ -1,11 +1,12 @@
 import { createProject, createProjectDocument } from "./api";
 import { documentEditor } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 test("typedBlockDirectiveRoundTrip", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createProjectDocument(core, {
     content: ':::callout{#callout-1 kind="warning" title="Read this"}\nBody text.\n:::\n',
     name: "Typed blocks",
   });
@@ -13,7 +14,7 @@ test("typedBlockDirectiveRoundTrip", async ({ browser }) => {
 
   try {
     const page = await alice.newPage();
-    await page.goto("/projects/CORE/documents/typed-blocks");
+    await page.goto(`/projects/${core}/documents/typed-blocks`);
 
     const callout = documentEditor(page).locator('[data-proof-block-type="callout"]');
     await expect(callout).toContainText("Body text.");
@@ -32,8 +33,9 @@ test("typedBlockDirectiveRoundTrip", async ({ browser }) => {
 test("a typed block's header shows the author's attributes and none of the internals @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createProjectDocument(core, {
     content: ':::callout{#callout-1 kind="warning" title="Read this"}\nBody text.\n:::\n',
     name: "Typed blocks",
   });
@@ -41,7 +43,7 @@ test("a typed block's header shows the author's attributes and none of the inter
 
   try {
     const page = await alice.newPage();
-    await page.goto("/projects/CORE/documents/typed-blocks");
+    await page.goto(`/projects/${core}/documents/typed-blocks`);
     const callout = documentEditor(page).locator('[data-proof-block-type="callout"]');
     const header = callout.locator("[data-proof-block-summary]");
     await expect(header).toBeVisible();

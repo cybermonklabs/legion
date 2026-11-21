@@ -19,13 +19,13 @@ test("the question mark opens the panel, which says what ! does, where a command
   const view = render(<Host />);
   try {
     const trigger = screen.getByRole("button", { name: "What the message box does" });
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByTestId("agent-help-popover")).toBeNull();
 
     await user.click(trigger);
 
     const panel = screen.getByRole("dialog", { name: "What the message box does" });
-    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
     const said = panel.textContent ?? "";
     expect(said).toContain("! at the start of a message runs the rest as a shell command");
     expect(said).toContain(
@@ -56,8 +56,8 @@ test("Escape closes the panel and leaves the focus on the question mark", async 
     await user.keyboard("{Escape}");
 
     expect(screen.queryByTestId("agent-help-popover")).toBeNull();
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-    expect(document.activeElement).toBe(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveFocus();
   } finally {
     view.unmount();
   }

@@ -150,11 +150,7 @@ test("the rail lists the pinned agents, oldest pin first, with their state and u
   expect(rowTexts()).toEqual(["Planner2asleep", "Reviewerasleep", "Testerasleep"]);
   expect(screen.queryByRole("link", { name: "Nobody pinned me" })).toBeNull();
   const rows = pinnedRows();
-  expect(
-    within(rows[0] as HTMLElement)
-      .getByRole("img")
-      .getAttribute("aria-label")
-  ).toBe("Running");
+  expect(within(rows[0] as HTMLElement).getByRole("img")).toHaveAttribute("aria-label", "Running");
 });
 
 // The row's state mark is the registry's answer, not a pin's: a session the person pinned that
@@ -168,11 +164,10 @@ test("a pinned session Dispatch no longer lists reads as not running", async () 
   await waitFor(() => expect(rowTexts()).toHaveLength(1));
   const rows = pinnedRows();
   await waitFor(() =>
-    expect(
-      within(rows[0] as HTMLElement)
-        .getByRole("img")
-        .getAttribute("aria-label")
-    ).toBe("Not running")
+    expect(within(rows[0] as HTMLElement).getByRole("img")).toHaveAttribute(
+      "aria-label",
+      "Not running"
+    )
   );
 });
 
@@ -212,16 +207,18 @@ test("the Agents heading folds its rows and still opens the Agents page", async 
 
   await waitFor(() => expect(rowTexts()).toHaveLength(3));
   // The heading keeps its unread pill beside its name, so it reads `Agents New replies 2`.
-  expect(screen.getByRole("link", { name: "Agents New replies 2" }).getAttribute("href")).toBe(
+  expect(screen.getByRole("link", { name: "Agents New replies 2" })).toHaveAttribute(
+    "href",
     "/agents"
   );
   const fold = screen.getByRole("button", { name: "Hide pinned agents" });
-  expect(fold.getAttribute("aria-expanded")).toBe("true");
-  expect(fold.getAttribute("aria-controls")).toBe("rail-pinned-agents");
+  expect(fold).toHaveAttribute("aria-expanded", "true");
+  expect(fold).toHaveAttribute("aria-controls", "rail-pinned-agents");
 
   await user.click(fold);
   expect(document.getElementById("rail-pinned-agents")).toBeNull();
-  expect(screen.getByRole("link", { name: "Agents New replies 2" }).getAttribute("href")).toBe(
+  expect(screen.getByRole("link", { name: "Agents New replies 2" })).toHaveAttribute(
+    "href",
     "/agents"
   );
 

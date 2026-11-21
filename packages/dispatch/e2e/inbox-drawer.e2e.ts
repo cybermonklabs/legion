@@ -14,7 +14,7 @@ import {
   storedValues,
   watchShown,
 } from "./pick-writes";
-import { expect, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -27,7 +27,7 @@ import { asUser } from "./users";
 test("a half-typed message in a live conversation survives opening the drawer, answering an ask in it and closing it", async ({
   browser,
 }, testInfo) => {
-  const { askId } = await seedAsk("Ship the drawer behind a flag?");
+  const { askId } = await seedAsk("Ship the drawer behind a flag?", rowKey("CORE"));
   const sessionID = "01a0e0c1-0000-7000-8000-0000000d4a3e";
   await setAgentStreamResponder(sessionID, true);
   const context = await asUser(browser, "alice");
@@ -76,7 +76,7 @@ test("a half-typed message in a live conversation survives opening the drawer, a
 /** A project, and an issue of it at P3 that `assignee` holds, with a question open on it that
  *  nobody has handed on (`seedAsk`), so it has a row in the Inbox of whoever holds the issue. */
 async function issueWithQuestion(assignee: string): Promise<{ askId: string; key: string }> {
-  const { askId, issueKey } = await seedAsk("Ship it behind a flag?");
+  const { askId, issueKey } = await seedAsk("Ship it behind a flag?", rowKey("CORE"));
   await patchIssue(issueKey, { assignee, priority: 3 });
   return { askId, key: issueKey };
 }
@@ -139,7 +139,10 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
   const inDrawer = '[role="dialog"][aria-label="Inbox"]';
   // Nobody handed the ask on: it waits on bob, the issue's assignee.
   expect((await getAsk(askId)).ask).toMatchObject({ asked_of: null, waiting_on_person: "bob" });
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose drawer lists this
+  // row's question and no other row's.
+  const me = rowPerson("alice");
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     const shownOnPage = await watchShown(page, `Assignee of ${key}`, "main");
@@ -157,8 +160,8 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
 
     // Its people are read once the reader reaches for the control.
     await picker.focus();
-    await picker.selectOption("alice");
-    await expect.poll(() => shownOnPage.values.at(-1)).toBe("alice");
+    await picker.selectOption(me);
+    await expect.poll(() => shownOnPage.values.at(-1)).toBe(me);
     const fromPick = shownOnPage.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
     await openInboxDrawer(page);
@@ -181,7 +184,7 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
     expect(
       shownOnPage.values.slice(fromPick),
       "every assignee the page showed from the pick on"
-    ).toEqual(["alice"]);
+    ).toEqual([me]);
     // From the first paint of the issue's row in the drawer on, the row is listed - `(none)` is
     // the row gone - and waits on alice alone, never on bob.
     const fromListed = listedInDrawer.values.findIndex((value) => value !== "(none)");
@@ -193,9 +196,9 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
     expect(
       waitingInDrawer.values.slice(fromDrawn),
       `the person the drawer's row waits on, from its first paint: ${JSON.stringify(waitingInDrawer.values)}`
-    ).toEqual(["alice"]);
-    expect(await getIssue(key)).toMatchObject({ assignee: "alice", title: renamed });
-    await expect(picker).toHaveValue("alice");
+    ).toEqual([me]);
+    expect(await getIssue(key)).toMatchObject({ assignee: me, title: renamed });
+    await expect(picker).toHaveValue(me);
     await expect(drawer(page).getByRole("combobox", { name: `Priority of ${key}` })).toBeVisible();
   } finally {
     await context.close();

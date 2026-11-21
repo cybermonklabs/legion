@@ -68,7 +68,7 @@ test("a session is named by its live title, else its stored title, else its shor
   );
   try {
     await waitFor(() =>
-      expect(agentNode(view.container, LISTED_ID).getAttribute("data-agent-state")).toBe("running")
+      expect(agentNode(view.container, LISTED_ID)).toHaveAttribute("data-agent-state", "running")
     );
     expect(agentNode(view.container, LISTED_ID).textContent).toBe("Planner");
     expect(agentNode(view.container, "fedcba9876543210").textContent).toBe("Stamped");
@@ -126,13 +126,13 @@ test("the owner and service attribution follow the name, outside its link, read 
     // The link is named by the visible name; the attribution after it is text, so a screen
     // reader hears the byline as it reads, never the attribution twice.
     const owned = await screen.findByRole("link", { name: "Planner" });
-    expect(owned.getAttribute("aria-label")).toBeNull();
+    expect(owned).not.toHaveAttribute("aria-label");
     await waitFor(() =>
       expect(spokenText(agentNode(view.container, LISTED_ID))).toBe("Running Planner (for alice)")
     );
     expect(agentNode(view.container, LISTED_ID).textContent).toBe("Planner (for alice)");
     const service = screen.getByRole("link", { name: "Implementer" });
-    expect(service.getAttribute("aria-label")).toBeNull();
+    expect(service).not.toHaveAttribute("aria-label");
     expect(spokenText(agentNode(view.container, "worker-session"))).toBe(
       "Not running Implementer (as legion/legion-worker)"
     );
@@ -154,12 +154,12 @@ test("a name in the short form carries the full session id as its tooltip", asyn
   );
   try {
     await screen.findByRole("link", { name: "Planner" });
-    expect(agentNode(view.container, LISTED_ID).getAttribute("title")).toBeNull();
-    expect(agentNode(view.container, "fedcba9876543210").getAttribute("title")).toBeNull();
+    expect(agentNode(view.container, LISTED_ID)).not.toHaveAttribute("title");
+    expect(agentNode(view.container, "fedcba9876543210")).not.toHaveAttribute("title");
     // Two sessions minted in the same minute read alike; their tooltips tell them apart.
     for (const id of ["0123456789abcdef", "01234567ffffffff"]) {
       expect(agentNode(view.container, id).textContent).toBe("session:01234567…");
-      expect(agentNode(view.container, id).getAttribute("title")).toBe(id);
+      expect(agentNode(view.container, id)).toHaveAttribute("title", id);
     }
   } finally {
     view.unmount();
@@ -235,10 +235,11 @@ test("before any registry read lands, the state is unknown, never not running", 
     await act(async () => {});
     expect(agents).toHaveBeenCalledTimes(1);
     const node = agentNode(view.container, LISTED_ID);
-    expect(node.getAttribute("data-agent-state")).toBe("unknown");
-    expect(
-      within(node).getByRole("img", { name: "Running state unknown" }).getAttribute("title")
-    ).toBe("Running state unknown");
+    expect(node).toHaveAttribute("data-agent-state", "unknown");
+    expect(within(node).getByRole("img", { name: "Running state unknown" })).toHaveAttribute(
+      "title",
+      "Running state unknown"
+    );
     expect(node.textContent).toBe("Stamped");
   } finally {
     view.unmount();
@@ -253,10 +254,8 @@ test("a registry read that fails before any success leaves the state unknown", a
   );
   try {
     await waitFor(() => expect(client.getQueryState(["agents"])?.status).toBe("error"));
-    expect(agentNode(view.container, LISTED_ID).getAttribute("data-agent-state")).toBe("unknown");
-    expect(mark(view.container, LISTED_ID).getAttribute("aria-label")).toBe(
-      "Running state unknown"
-    );
+    expect(agentNode(view.container, LISTED_ID)).toHaveAttribute("data-agent-state", "unknown");
+    expect(mark(view.container, LISTED_ID)).toHaveAttribute("aria-label", "Running state unknown");
   } finally {
     view.unmount();
     agents.mockRestore();
@@ -273,19 +272,20 @@ test("a listed session is running, an unlisted one not running, and a failed ref
   );
   try {
     await waitFor(() =>
-      expect(agentNode(view.container, LISTED_ID).getAttribute("data-agent-state")).toBe("running")
+      expect(agentNode(view.container, LISTED_ID)).toHaveAttribute("data-agent-state", "running")
     );
     const running = mark(view.container, LISTED_ID);
-    expect(running.getAttribute("aria-label")).toBe("Running");
-    expect(running.getAttribute("title")).toBe("Running · seen 3 minutes ago");
+    expect(running).toHaveAttribute("aria-label", "Running");
+    expect(running).toHaveAttribute("title", "Running · seen 3 minutes ago");
     expect(running.className).toContain(liveDotBg);
     expect(running.className).not.toContain("border");
 
     const stopped = mark(view.container, "gone-session-0000");
-    expect(agentNode(view.container, "gone-session-0000").getAttribute("data-agent-state")).toBe(
+    expect(agentNode(view.container, "gone-session-0000")).toHaveAttribute(
+      "data-agent-state",
       "not-running"
     );
-    expect(stopped.getAttribute("aria-label")).toBe("Not running");
+    expect(stopped).toHaveAttribute("aria-label", "Not running");
     expect(stopped.className).toContain(offlineDotBorder);
     expect(stopped.className).toContain("border-solid");
     expect(stopped.className).not.toContain("bg-");
@@ -297,9 +297,9 @@ test("a listed session is running, an unlisted one not running, and a failed ref
       await client.refetchQueries({ queryKey: ["agents"] });
     });
     for (const id of [LISTED_ID, "gone-session-0000"]) {
-      expect(agentNode(view.container, id).getAttribute("data-agent-state")).toBe("unknown");
+      expect(agentNode(view.container, id)).toHaveAttribute("data-agent-state", "unknown");
       const unknown = mark(view.container, id);
-      expect(unknown.getAttribute("aria-label")).toBe("Running state unknown");
+      expect(unknown).toHaveAttribute("aria-label", "Running state unknown");
       expect(unknown.className).toContain(unknownDotBorder);
       expect(unknown.className).toContain("border-dashed");
     }
@@ -323,9 +323,9 @@ test("the name links to the session's live conversation, its id encoded", async 
   );
   try {
     const [standalone, inline] = await screen.findAllByRole("link", { name: "Odd one" });
-    expect(standalone?.getAttribute("href")).toBe("/agents/team%2Fa%20b%231%3F/live");
+    expect(standalone).toHaveAttribute("href", "/agents/team%2Fa%20b%231%3F/live");
     expect(standalone?.classList.contains("dispatch-inline-link")).toBe(false);
-    expect(inline?.getAttribute("href")).toBe("/agents/team%2Fa%20b%231%3F/live");
+    expect(inline).toHaveAttribute("href", "/agents/team%2Fa%20b%231%3F/live");
     expect(inline?.classList.contains("dispatch-inline-link")).toBe(true);
   } finally {
     view.unmount();
@@ -353,7 +353,7 @@ test("the control variant keeps the host control and puts the live link beside i
     const host = screen.getByRole("button", { name: "Planner" });
     expect(host.contains(live)).toBe(false);
     expect(live.parentElement).toBe(host.parentElement);
-    expect(live.getAttribute("href")).toBe(`/agents/${LISTED_ID}/live`);
+    expect(live).toHaveAttribute("href", `/agents/${LISTED_ID}/live`);
     expect(live.classList.contains("dispatch-inline-link")).toBe(false);
     expect(live.textContent?.trim()).not.toBe("");
     expect(screen.getAllByRole("link")).toHaveLength(1);
@@ -371,7 +371,7 @@ test("the static variant shows the name and state with no link", async () => {
   );
   try {
     await waitFor(() =>
-      expect(agentNode(view.container, LISTED_ID).getAttribute("data-agent-state")).toBe("running")
+      expect(agentNode(view.container, LISTED_ID)).toHaveAttribute("data-agent-state", "running")
     );
     expect(agentNode(view.container, LISTED_ID).textContent).toBe("Planner");
     expect(screen.getByRole("img", { name: "Running" })).toBeDefined();
@@ -428,7 +428,8 @@ test("a withdrawal names the closer once, the Legion daemon by its whole id", as
   try {
     expect(screen.getByTestId("user").textContent).toBe("Withdrawn when alice closed the issue");
     await waitFor(() =>
-      expect(agentNode(view.container, "legion-daemon:CORE").getAttribute("data-agent-state")).toBe(
+      expect(agentNode(view.container, "legion-daemon:CORE")).toHaveAttribute(
+        "data-agent-state",
         "not-running"
       )
     );

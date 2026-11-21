@@ -175,7 +175,8 @@ happy_page() {
     "15|dispatch-browser / merge|null" \
     "16|lint|success" \
     "17|dispatch-multiprocess|success" \
-    "18|dispatch-browser / visual|failure"
+    "18|dispatch-browser / visual|failure" \
+    "19|dispatch-browser / embedder|success"
 }
 
 # fixture <refused calls> [<stderr of a refused call>]: a fresh call log and no out-file, a
@@ -224,25 +225,33 @@ echo "case: this attempt's jobs become the four fields the readings consume"
 fixture 0
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
-check "writes every job of this workflow and none of the caller's" "$(is "$(entries)" 7)"
+check "writes every job of this workflow and none of the caller's" "$(is "$(entries)" 8)"
 check "each entry holds the four fields and no other" \
-  "$(is "$(jq -r '.[0] | keys | join(",")' "$work/out.json")" "conclusion,id,leg,name")"
+  "$(is "$(jq -r '.[0] | keys | join(",")' "$work/out.json")" "conclusion,id,legs,name")"
 check "a shard job's id, name and conclusion travel unchanged" \
   "$(is "$(field 12 '"\(.id) \(.name) \(.conclusion)"')" '12 dispatch-browser / shard (2) failure')"
 check "the alone job's too" \
   "$(is "$(field 13 '"\(.id) \(.name) \(.conclusion)"')" \
     '13 dispatch-browser / alone (webkit-alone) success')"
-check "the first shard leg reads shard-1" "$(is "$(field 11 .leg)" shard-1)"
-check "the second reads shard-2" "$(is "$(field 12 .leg)" shard-2)"
-check "the alone leg reads alone-webkit-alone" "$(is "$(field 13 .leg)" alone-webkit-alone)"
-check "the multiprocess job carries a null leg" "$(is "$(field 14 .leg)" null)"
-check "and keeps its conclusion" "$(is "$(field 14 .conclusion)" skipped)"
-check "the merge job carries a null leg" "$(is "$(field 15 .leg)" null)"
+check "the first shard job runs the leg shard-1" "$(is "$(field 11 '.legs | @json')" '["shard-1"]')"
+check "the second runs shard-2" "$(is "$(field 12 '.legs | @json')" '["shard-2"]')"
+check "the alone job runs alone-webkit-alone" \
+  "$(is "$(field 13 '.legs | @json')" '["alone-webkit-alone"]')"
+# The two jobs that run on the runner itself, each of whose Playwright runs uploads a blob
+# report under its own leg (.github/scripts/dispatch-browser-host-suite.sh): reading one owes
+# each leg a blob, and reading three merges every leg of a job that did not succeed.
+check "the embedder job runs the leg embedder" \
+  "$(is "$(field 19 '.legs | @json')" '["embedder"]')"
+check "the multiprocess job runs its two legs, the dashboard run and the sign-in run" \
+  "$(is "$(field 14 '.legs | @json')" '["multiprocess-dashboard","multiprocess-signin"]')"
+check "and keeps its conclusion, so reading one owes nothing of it when it is skipped" \
+  "$(is "$(field 14 .conclusion)" skipped)"
+check "the merge job runs no leg" "$(is "$(field 15 '.legs | @json')" '[]')"
 check "and its conclusion, which is null while it runs" "$(is "$(field 15 .conclusion)" null)"
-check "the visual job is kept, with a null leg" "$(is "$(field 18 .leg)" null)"
+check "the visual job is kept, with no leg" "$(is "$(field 18 '.legs | @json')" '[]')"
 check "and keeps its conclusion, so reading three can name it when it is red" \
   "$(is "$(field 18 .conclusion)" failure)"
-check "the binaries job is kept, with a null leg" "$(is "$(field 10 .leg)" null)"
+check "the binaries job is kept, with no leg" "$(is "$(field 10 '.legs | @json')" '[]')"
 check "and keeps its conclusion, so reading three can name a build that failed" \
   "$(is "$(field 10 .conclusion)" success)"
 check "the caller's own jobs are dropped" \
@@ -266,8 +275,21 @@ fixture 0
 page "21|dispatch-browser / alone (Edge 2 alone)|success"
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
-check "reads one leg, not three" "$(is "$(entries)" 1)"
-check "holding the project whole" "$(is "$(field 21 .leg)" 'alone-Edge 2 alone')"
+check "reads one job" "$(is "$(entries)" 1)"
+check "running one leg, not three, holding the project whole" \
+  "$(is "$(field 21 '.legs | @json')" '["alone-Edge 2 alone"]')"
+
+echo "case: the nightly's caller names the jobs too"
+# dispatch-browser-nightly.yaml calls this workflow from its own job, so the prefix before
+# ` / ` is that job's name rather than ci.yaml's `dispatch-browser`: the legs are read from the
+# part after it.
+fixture 0
+page "31|full / embedder|failure" "32|full / multiprocess|success"
+drive jobs "$work/out.json"
+check "exits 0" "$(is "$status" 0)"
+check "the embedder leg" "$(is "$(field 31 '.legs | @json')" '["embedder"]')"
+check "and the two multiprocess legs" \
+  "$(is "$(field 32 '.legs | @json')" '["multiprocess-dashboard","multiprocess-signin"]')"
 
 echo "case: every attempt refused with HTTP 502"
 fixture 3 "HTTP 502"
@@ -527,8 +549,8 @@ retry_seconds=1
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
 check "tried twice" "$(is "$(calls)" 2)"
-check "writes the attempt that answered" "$(is "$(entries)" 7)"
-check "with its legs" "$(is "$(field 13 .leg)" alone-webkit-alone)"
+check "writes the attempt that answered" "$(is "$(entries)" 8)"
+check "with its legs" "$(is "$(field 13 '.legs | @json')" '["alone-webkit-alone"]')"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
 check "and waited the ladder's first second" "$(at_least "$seconds" 1)"
 

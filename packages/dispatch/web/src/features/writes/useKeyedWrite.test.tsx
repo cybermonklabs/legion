@@ -1,5 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { onlineManager, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
+import { hashKey, onlineManager, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
@@ -541,10 +541,17 @@ function renderHeldWrite() {
   return { answer, client, hook, reads, server, stopReading };
 }
 
-/** Waits long enough for a read that is not held to have asked. */
-function aMoment(): Promise<void> {
+/** Resolves once a read of `["things"]` calls its query's function, which `DispatchQueryClient`
+ *  tells as the read starts (`onAttempt`), before it looks for a write that holds the read: a held
+ *  read waits from there for its hold to end, and one that is not held asks in that same turn, so
+ *  it has asked by the time this resolves. */
+function readStarted(client: DispatchQueryClient): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, 20);
+  const stop = client.onAttempt((queryHash) => {
+    if (queryHash !== hashKey(["things"])) return;
+    stop();
+    resolve();
+  });
   return promise;
 }
 
@@ -559,8 +566,9 @@ test("a write that holds its query keeps a read asked while it is out until its 
     act(() => hook.result.current.mutate());
     await waitFor(() => expect(client.getQueryData<string>(["things"])).toBe("optimistic"));
     await act(async () => {
+      const started = readStarted(client);
       void client.invalidateQueries({ queryKey: ["things"] });
-      await aMoment();
+      await started;
     });
     expect(reads).toEqual(["before"]);
     expect(client.getQueryData<string>(["things"])).toBe("optimistic");
@@ -568,7 +576,6 @@ test("a write that holds its query keeps a read asked while it is out until its 
     server.value = "after";
     await act(async () => {
       answer.resolve("after");
-      await aMoment();
     });
     await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
     expect(reads.length).toBeGreaterThan(1);
@@ -589,14 +596,14 @@ test("a write that holds its query lets the reads it held go once its refusal is
     await waitFor(() => expect(reads).toEqual(["before"]));
     act(() => hook.result.current.mutate());
     await act(async () => {
+      const started = readStarted(client);
       void client.invalidateQueries({ queryKey: ["things"] });
-      await aMoment();
+      await started;
     });
     expect(reads).toEqual(["before"]);
 
     await act(async () => {
       answer.reject(verdict);
-      await aMoment();
     });
     await waitFor(() => expect(hook.result.current.isError).toBe(true));
     expect(reads.length).toBeGreaterThan(1);

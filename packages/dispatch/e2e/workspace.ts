@@ -13,6 +13,7 @@ import {
   getInbox,
   getIssue,
   patchIssue,
+  type RowKey,
   replyToCommentDelivery,
   replyToMessageDelivery,
   resolveAsk,
@@ -103,21 +104,31 @@ export interface SeededWorkspace {
 }
 
 /** Seeds the workspace into an empty database and the fake Envoy. Every write goes through the
- *  public API, as alice for a human and through the agent bearer for a session. A session's
- *  write carries its title in `origin`, as an agent's Dispatch tools stamp it (`toolActor` in
- *  `packages/envoy-client/src/dispatch-execute.ts`), so the surfaces that read the stamped title
- *  rather than the live registry (the Inbox's author chip) name it too.
+ *  public API, as `person` (alice unless the caller names another) for a human and through the
+ *  agent bearer for a session. A session's write carries its title in `origin`, as an agent's
+ *  Dispatch tools stamp it (`toolActor` in `packages/envoy-client/src/dispatch-execute.ts`), so
+ *  the surfaces that read the stamped title rather than the live registry (the Inbox's author
+ *  chip) name it too.
  *
  *  It waits twice for what the document service settles after a write answered: for the spec's
  *  decision block (`awaitDecisionBlock`), and at the end for the Inbox rows it declares
  *  (`awaitSeededInbox`), which every caller reads next. Each wait gets the whole of `boundMs`, the
  *  bound its caller's own checks use, so a browser row's seed gives up before the row's own
- *  clock ends it and hides the wait's message. The abort of `signal` stops the Inbox wait. */
+ *  clock ends it and hides the wait's message. The abort of `signal` stops the Inbox wait.
+ *
+ *  `projects` are the keys of its two projects and `person` the human it acts as: a real-stack
+ *  row passes its own (`rowKey` and `rowPerson`, e2e/test.ts), and the review corpus, the local
+ *  instance and the docs pictures each pass `CORE` and `OPS` as `fixedKey`s naming why, and
+ *  take alice. */
 export async function seedWorkspace({
   boundMs,
+  person,
+  projects,
   signal,
 }: {
   readonly boundMs: number;
+  readonly person?: string;
+  readonly projects: { readonly core: RowKey; readonly ops: RowKey };
   readonly signal?: AbortSignal;
 }): Promise<SeededWorkspace> {
   const actor = (id: string, origin: Omit<ActorOrigin, "session_title"> = {}): Actor => {
@@ -126,15 +137,16 @@ export async function seedWorkspace({
     return { id, kind: "session", origin: { ...origin, session_title: session.title } };
   };
   const as = (id: string) => ({ actor: actor(id), as: "agent" as const });
-  const alice = { login: "alice" };
+  const human = { login: person ?? "alice" };
+  const { core, ops } = projects;
 
   await setLiveSessions(workspaceSessions);
   await Promise.all([
-    createProject({ key: "CORE", name: "Core" }),
-    createProject({ key: "OPS", name: "Ops" }),
+    createProject({ key: core, name: "Core" }, human),
+    createProject({ key: ops, name: "Ops" }, human),
   ]);
 
-  // A human's issue is assigned to its creator, so every issue here is alice's.
+  // A human's issue is assigned to its creator, so every issue here is the person's.
   //
   // The issues are created ONE AT A TIME rather than in one round, and those six round trips
   // are deliberate: the server numbers an issue's key as it inserts it, so a round of seven
@@ -143,31 +155,32 @@ export async function seedWorkspace({
   // (e2e/visual.e2e.ts), and a key printed on a page is a key in a baseline - the first two
   // container runs of that layer differed on the Children tab, the project's issue list and
   // the Inbox, in the key's own digits and nowhere else.
-  const workflow = await createIssue({
-    project: "CORE",
-    spec: workflowSpec,
-    title: "Local testing workflow for Dispatch",
-  });
-  const child = await createIssue({
-    parent: workflow.key,
-    project: "CORE",
-    title: "Seed the local corpus",
-  });
-  const broadcastOrder = await createIssue({
-    project: "CORE",
-    title: "Broadcast recipients keep their send order",
-  });
-  const snooze = await createIssue({
-    project: "CORE",
-    title: "Snooze an Inbox row until tomorrow",
-  });
-  const folds = await createIssue({ project: "CORE", title: "Agents page freshness folds" });
-  const phone = await createIssue({ project: "CORE", title: "Phone layout of the review sheet" });
-  const retracted = await createIssue({
-    project: "CORE",
-    title: "A retracted ask stays in history",
-  });
-  const rotate = await createIssue({ project: "OPS", title: "Rotate the agent token" });
+  const workflow = await createIssue(
+    { project: core, spec: workflowSpec, title: "Local testing workflow for Dispatch" },
+    human
+  );
+  const child = await createIssue(
+    { parent: workflow.key, project: core, title: "Seed the local corpus" },
+    human
+  );
+  const broadcastOrder = await createIssue(
+    { project: core, title: "Broadcast recipients keep their send order" },
+    human
+  );
+  const snooze = await createIssue(
+    { project: core, title: "Snooze an Inbox row until tomorrow" },
+    human
+  );
+  const folds = await createIssue({ project: core, title: "Agents page freshness folds" }, human);
+  const phone = await createIssue(
+    { project: core, title: "Phone layout of the review sheet" },
+    human
+  );
+  const retracted = await createIssue(
+    { project: core, title: "A retracted ask stays in history" },
+    human
+  );
+  const rotate = await createIssue({ project: ops, title: "Rotate the agent token" }, human);
   // Before the patch below, not after the whole seed: the ask the workflow issue's spec
   // declares is written by the document service on its own, some time after `createIssue`
   // answered, and the patch writes an event of its own against the same issue. Each lands with
@@ -181,11 +194,11 @@ export async function seedWorkspace({
     boundMs
   );
   await Promise.all([
-    patchIssue(workflow.key, { labels: ["dispatch"], priority: 1, status: "in_progress" }),
-    patchIssue(broadcastOrder.key, { status: "needs_review" }),
-    patchIssue(folds.key, { status: "backlog" }),
-    patchIssue(phone.key, { status: "done" }),
-    patchIssue(rotate.key, { status: "triage" }),
+    patchIssue(workflow.key, { labels: ["dispatch"], priority: 1, status: "in_progress" }, human),
+    patchIssue(broadcastOrder.key, { status: "needs_review" }, human),
+    patchIssue(folds.key, { status: "backlog" }, human),
+    patchIssue(phone.key, { status: "done" }, human),
+    patchIssue(rotate.key, { status: "triage" }, human),
   ]);
 
   // Five asks and the runbook, one at a time for the reason the issues above are: an Inbox row
@@ -220,18 +233,19 @@ export async function seedWorkspace({
     { question: "Rotate the token before or after the deploy?", urgency: "med" },
     as(sessionIds.reviewer)
   );
-  const runbook = await createProjectDocument("CORE", {
-    content: "# Runbook\n\nRestart, reseed, reopen the signed-in URL.\n",
-    name: "Runbook",
-  });
+  const runbook = await createProjectDocument(
+    core,
+    { content: "# Runbook\n\nRestart, reseed, reopen the signed-in URL.\n", name: "Runbook" },
+    human
+  );
   const [documentAsk] = await Promise.all([
     createArtifactAsk(
       runbook.artifact.id,
       { question: "Keep the runbook in the repository?" },
       as(sessionIds.tester)
     ),
-    snoozeAsk(snoozed.id, new Date(Date.now() + 24 * 3_600_000).toISOString(), alice),
-    answerAsk(answered.id, { expected_edited_at: null, selected: ["Ship"] }, alice),
+    snoozeAsk(snoozed.id, new Date(Date.now() + 24 * 3_600_000).toISOString(), human),
+    answerAsk(answered.id, { expected_edited_at: null, selected: ["Ship"] }, human),
     resolveAsk(
       withdrawn.id,
       { kind: "retracted", reason: "Answered live." },
@@ -244,15 +258,20 @@ export async function seedWorkspace({
     { body: "Reviewing the diff." },
     as(sessionIds.reviewer)
   );
-  await createComment(broadcastOrder.key, {
-    body: "Thanks - the order the sender ticked is the whole point.",
-    reply_to: review.id,
-  });
-  const mention = await createComment(broadcastOrder.key, {
-    body: "@Tester please re-run the broadcast spec",
-    delivery: "btw",
-    mentions: [{ target: `session:${sessionIds.tester}` }],
-  });
+  await createComment(
+    broadcastOrder.key,
+    { body: "Thanks - the order the sender ticked is the whole point.", reply_to: review.id },
+    human
+  );
+  const mention = await createComment(
+    broadcastOrder.key,
+    {
+      body: "@Tester please re-run the broadcast spec",
+      delivery: "btw",
+      mentions: [{ target: `session:${sessionIds.tester}` }],
+    },
+    human
+  );
   await replyToCommentDelivery(
     mention.id,
     { attempt: 1, body: "Re-ran: 2 passed." },
@@ -262,7 +281,7 @@ export async function seedWorkspace({
   const directMessage = await createAgentMessage(
     sessionIds.planner,
     { body: "How far is the plan?", delivery: "aside" },
-    alice
+    human
   );
   await replyToMessageDelivery(
     directMessage.id,
@@ -277,7 +296,7 @@ export async function seedWorkspace({
       delivery: "steer",
       session_ids: [sessionIds.tester, sessionIds.observer, sessionIds.planner],
     },
-    alice
+    human
   );
   if ((broadcast.excluded ?? []).length > 0) {
     throw new Error(`seedWorkspace: the broadcast excluded ${JSON.stringify(broadcast.excluded)}`);
@@ -292,9 +311,10 @@ export async function seedWorkspace({
     actor(sessionIds.planner)
   );
 
-  // The rows the unfiltered Inbox read returns for alice once the seed has settled: the open asks
-  // on open issues and documents, the snoozed one among them. Every issue here is alice's, and the
-  // document's question waits on CORE's default assignee, alice too, so her default list is these.
+  // The rows the Inbox read returns once the seed has settled: the open asks on open issues and
+  // documents, the snoozed one among them. Every issue here is the person's, and the document's
+  // question waits on CORE's default assignee, the person too, since they made CORE, so their
+  // default list is these.
   const inbox: readonly SeededInboxRow[] = [
     { askId: blocking.id, kind: "ask", made: `the blocking ask on ${folds.key}` },
     { askId: snoozed.id, kind: "ask", made: `the snoozed ask on ${snooze.key}` },
@@ -307,14 +327,18 @@ export async function seedWorkspace({
       made: `the spec decision block on ${workflow.key}`,
     },
   ];
+  // Which read holds exactly these rows: over the emptied database the review corpus, the local
+  // instance and the docs seed into, the unfiltered read (every open question of the stack),
+  // which also says none of the seed's questions reached anybody else. A real-stack row seeds
+  // beside every other row's questions, which that read lists too, so it names a person of its
+  // own and reads that person's list (`?assignee=me`, the list the Inbox opens on), which no
+  // other row adds to.
+  const read = () => (person === undefined ? getInbox(human) : getInbox(human, { assignee: "me" }));
   // Every caller reads the Inbox next, and it can list other rows for a moment after the writes
   // above answered: a 25 ms sampler read five wrong rows here about 230 ms before these five
   // stood (dispatch://INFRA-3052, comment 169c05c4-ab16-4a28-a470-e703dcee23ac). So the seed is
   // done only once these rows stand.
-  const matched = await awaitSeededInbox(inbox, () => getInbox({ login: "alice" }), {
-    boundMs,
-    signal,
-  });
+  const matched = await awaitSeededInbox(inbox, read, { boundMs, signal });
 
   return {
     asks: {

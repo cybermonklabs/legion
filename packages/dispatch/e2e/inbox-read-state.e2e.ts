@@ -2,7 +2,7 @@ import { setLiveSessions } from "./agents";
 import { createIssue, createProject, listMyReplies } from "./api";
 import { hasReadingPane, selectedRow, selectRow } from "./inbox-pane";
 import { replyRowId, seedCommentThread, THREAD_SESSION, unreadThreadRows } from "./inbox-threads";
-import { expect, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -32,24 +32,38 @@ const LONG_REPLY = Array.from(
 test("a reply taller than the reading pane is marked read by reading it, and its row stays @pr", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose threads are this
+  // row's two and no other row's.
+  const me = rowPerson("alice");
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Replay budget" });
-  const thread = await seedCommentThread(issue.key, "Why does it give up?", LONG_REPLY);
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Replay budget" }, { login: me });
+  const thread = await seedCommentThread(
+    issue.key,
+    "Why does it give up?",
+    LONG_REPLY,
+    THREAD_SESSION,
+    me
+  );
   // A second thread, so the selection has somewhere to move once the long one has been read.
   const other = await seedCommentThread(
     issue.key,
     "And how far back does the replay look?",
-    "One hour, then it gives up."
+    "One hour, then it gives up.",
+    THREAD_SESSION,
+    me
   );
-  expect(await unreadThreadRows()).toBe(2);
+  expect(await unreadThreadRows(me)).toBe(2);
   // Whether the long thread itself is still unread. The other row is read as soon as the column
   // draws it, so the count of every unread thread would not say which of the two this is about.
   const longUnread = async (): Promise<boolean> =>
-    ((await listMyReplies({ state: "unread" })).rows ?? []).some((row) => row.thread_id === thread);
+    ((await listMyReplies({ state: "unread" }, { login: me })).rows ?? []).some(
+      (row) => row.thread_id === thread
+    );
   expect(await longUnread()).toBe(true);
 
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await page.goto("/");

@@ -9,7 +9,7 @@ import {
   referenceAgent,
   seedReferenceWorld,
 } from "./reference-surfaces";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -32,10 +32,11 @@ interface Form {
   href(world: ReferenceWorld): string;
   /** For a target that does not exist, the API path whose 404 says so: until that read answers
    *  every card shows what was written, so the cards are read once it has. */
-  readonly missing?: string;
+  missing?(world: ReferenceWorld): string;
 }
 
-const missingIssue = `${baseUrl}/issues/CORE-999999`;
+/** An issue of the world's own `CORE` project that does not exist. */
+const missingIssue = (world: ReferenceWorld) => `${world.projects.core}-999999`;
 
 // A card reads as its target's own title, which for an issue is its words alone: the key stands
 // beside a reference drawn inline, never on the card, whose own line already names the issue.
@@ -73,11 +74,11 @@ const FORMS: readonly Form[] = [
   },
   // A card whose target is missing shows the address as it was written.
   {
-    href: () => "/issues/CORE-999999",
-    missing: "/api/v1/issues/CORE-999999/summary",
+    href: (world) => `/issues/${missingIssue(world)}`,
+    missing: (world) => `/api/v1/issues/${missingIssue(world)}/summary`,
     name: "a dashboard address whose issue is missing",
-    reference: () => missingIssue,
-    title: () => missingIssue,
+    reference: (world) => `${baseUrl}/issues/${missingIssue(world)}`,
+    title: (world) => `${baseUrl}/issues/${missingIssue(world)}`,
   },
 ];
 
@@ -99,7 +100,7 @@ async function expectCards(reply: Locator, cards: readonly Card[]): Promise<void
 }
 
 /** Where `seedReplies` wrote its replies: a margin thread on the host's spec, an open ask in
- *  alice's Inbox, and the host's Conversation messages. */
+ *  the Inbox of the person who made the world, and the host's Conversation messages. */
 interface Replies {
   readonly root: string;
   readonly ask: string;
@@ -176,7 +177,11 @@ for (const form of FORMS) {
   test(`a reply that is only ${form.name} shows its card in the margin, the Inbox thread and a Conversation message; one with text beside it shows none`, async ({
     browser,
   }, testInfo) => {
-    const world = await seedReferenceWorld();
+    // The reader is a person of the row's own (`rowPerson`), who makes the world: from 1280 px
+    // the Inbox draws a card for the selected row alone, its first, which is this row's
+    // question only in a list that holds no other row's.
+    const me = rowPerson("alice");
+    const world = await seedReferenceWorld({ login: me });
     const reference = form.reference(world);
     const card = { href: form.href(world), title: form.title(world) };
     const replies = await seedReplies(world, [
@@ -184,10 +189,10 @@ for (const form of FORMS) {
       `Beside the reference: ${reference} today.`,
     ]);
 
-    const context = await asUser(browser, "alice");
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
-      const { missing } = form;
+      const missing = form.missing?.(world);
       await readReplies(
         page,
         testInfo.project.name,
@@ -221,7 +226,10 @@ for (const form of FORMS) {
 test("a reply made only of a bare key and a dispatch:// address shows a card for each in the margin, the Inbox thread and a Conversation message @pr", async ({
   browser,
 }, testInfo) => {
-  const world = await seedReferenceWorld();
+  // The reader is a person of the row's own, as in the rows above: the Inbox's card is its first
+  // row's alone.
+  const me = rowPerson("alice");
+  const world = await seedReferenceWorld({ login: me });
   const question = world.questions.q2;
   if (question === undefined) {
     throw new Error("setup: the host's spec declares no q2");
@@ -234,7 +242,7 @@ test("a reply made only of a bare key and a dispatch:// address shows a card for
     { href: `/issues/${world.host.key}/asks/${question.id}`, title: question.question },
   ];
 
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await readReplies(page, testInfo.project.name, world, replies, async ([reply]) => {

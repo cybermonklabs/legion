@@ -3,7 +3,7 @@ import { DISPATCH_BLOCK_UNITS } from "@legion/contracts/dispatch-tools";
 import { createIssue, createProject } from "./api";
 import { blockCapRefusal, bodyOf, paragraphsOf } from "./bodies";
 import { barAction, composer, openSpec, selectEditorText } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // INFRA-370: no composer carries a length of its own. A comment field takes a body of 40,000
@@ -20,9 +20,10 @@ import { asUser } from "./users";
 test("the comment composer takes a 40,000-character body, and shows the server's refusal of one long paragraph @pr", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   test.setTimeout(120_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Long comment" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Long comment" });
   const whole = paragraphsOf(40_000);
   const alice = await asUser(browser, "alice");
 
@@ -58,9 +59,10 @@ test("the comment composer takes a 40,000-character body, and shows the server's
 });
 
 test("the ask composer takes a question past the length it used to cut", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "The quick brown fox",
     title: "Long question",
   });

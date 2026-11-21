@@ -278,11 +278,10 @@ test("shows Subscribed agents and unsubscribes after confirming the dialog", asy
     const planner = await within(subscribed).findByRole("link", { name: "Planner (live)" });
     expect(planner).toHaveAttribute("href", "/agents/0123456789abcdef/live");
     await waitFor(() =>
-      expect(
-        subscribed
-          .querySelector('[data-agent-name="0123456789abcdef"]')
-          ?.getAttribute("data-agent-state")
-      ).toBe("running")
+      expect(subscribed.querySelector('[data-agent-name="0123456789abcdef"]')).toHaveAttribute(
+        "data-agent-state",
+        "running"
+      )
     );
 
     await user.click(within(subscribed).getByRole("button", { name: "Unsubscribe" }));

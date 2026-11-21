@@ -1,6 +1,6 @@
 import { createIssue, createIssueArtifact, createProject, editArtifact } from "./api";
 import { documentEditor, openSpec } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // A picture line the editor cannot draw gives way to a link to the artifact's page
@@ -21,12 +21,13 @@ const agentSession = {
 test("a fallback link far down the document opens the artifact's page on a plain click @firefox @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   // Forty paragraphs: the document's start is off screen at every project's viewport, whatever a
   // paragraph's height.
   const filler = Array.from({ length: 40 }, (_, i) => `Filler paragraph ${i + 1}.`).join("\n\n");
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: `# Pictures\n\n${filler}`,
     title: "A link far down the spec",
   });

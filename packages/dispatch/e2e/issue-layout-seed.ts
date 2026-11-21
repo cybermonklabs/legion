@@ -16,6 +16,7 @@ import {
   keepDecision,
   patchIssue,
   putIssueState,
+  type RowKey,
   replyToMessageBlock,
   resolveAsk,
   uploadIssueFile,
@@ -27,8 +28,8 @@ import {
   awaitBlockAsk,
   awaitSeededCheckStates,
   BASELINE_REPO,
+  layoutProject,
   PLANNER,
-  PROJECT,
   REVIEWER,
   seedIssueWithDocuments,
   seedSessions,
@@ -59,17 +60,19 @@ import { ONE_PIXEL_PNG } from "./sends";
 
 /**
  * The whole issues the browser rows of the source's `e2e/issue-layout.e2e.ts` read, and in this
- * tree those of `e2e/issue-page-i.e2e.ts`, for the redesigned issue page. A caller needs
- * `resetDatabase()` and one of these calls in `beforeEach` and nothing else: each seed makes its
- * own project, component model, repository and sessions.
+ * tree those of `e2e/issue-page-i.e2e.ts`, for the redesigned issue page. A row needs one of these
+ * calls and nothing else: each seed makes its own project, under the row's own key
+ * (`layoutProject`), its component model, repository and sessions, beside what the rows before it
+ * wrote, since the suite's `test` empties the database once per worker and not before each row.
  *
  * Every write goes through `e2e/api.ts`, as a person for a human's write and under the agent
  * bearer for a session's, with two exceptions that are not Dispatch's own state: the component
  * model and the pull request come from the fake GitHub (`e2e/fake-github-helpers.ts`), and a
  * subscriber is a fake Envoy interest (`e2e/agents.ts`), because Dispatch stores none and its one
  * subscriber write is a DELETE (`packages/envoy/internal/dispatch/api/routes_table.go:364-365`).
- * `resetDatabase()` clears both fakes. Each seed returns the issue key with a name for every
- * block id its tests read, so no test derives an id from rendered text.
+ * The suite's `test` resets both fakes before every row (`freshFakes`, e2e/test.ts). Each seed
+ * returns the issue key with a name for every block id its tests read, so no test derives an id
+ * from rendered text.
  *
  * ## What today's model cannot hold, and what is seeded instead
  *
@@ -168,7 +171,7 @@ export interface WholeIssueSeed {
 
 /** The whole issue the page's verification document describes, in one call. */
 export async function seedWholeIssue(): Promise<WholeIssueSeed> {
-  const seeded = await seedIssueWithDocuments({
+  const seeded = await seedIssueWithDocuments(layoutProject(), {
     checks: 6,
     children: 7,
     commentReplies: 3,
@@ -321,10 +324,11 @@ export interface SpineSeed {
 /** The spine's three cases: a requirement nothing explains, a requirement a decision links while
  *  the answered question names another node, and a check that serves two requirements. */
 export async function seedSpineCases(): Promise<SpineSeed> {
-  await createProject({ key: PROJECT, name: "Issue layout" });
+  const project = layoutProject();
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     spec: SPINE_SPEC,
     title: "The spine places every node",
   });
@@ -363,12 +367,17 @@ export interface PlainIssueSeed {
   readonly summaryBlockId: string | null;
 }
 
-/** One issue with a three-requirement spec and no children, with or without its summary node. */
-async function seedPlainIssue(summary: boolean, title: string): Promise<PlainIssueSeed> {
-  await createProject({ key: PROJECT, name: "Issue layout" });
+/** One issue in the project `project`, which it makes, with a three-requirement spec and no
+ *  children, with or without its summary node. */
+async function seedPlainIssue(
+  project: RowKey,
+  summary: boolean,
+  title: string
+): Promise<PlainIssueSeed> {
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     spec: specDocument({ openQuestion: false, requirements: 3, summary }),
     title,
   });
@@ -382,12 +391,12 @@ async function seedPlainIssue(summary: boolean, title: string): Promise<PlainIss
 
 /** An issue with no children at all, which draws no children section. */
 export async function seedNoChildren(): Promise<PlainIssueSeed> {
-  return await seedPlainIssue(true, "This issue has no children");
+  return await seedPlainIssue(layoutProject(), true, "This issue has no children");
 }
 
 /** An issue whose spec carries no summary node, so the head of the page says so. */
 export async function seedNoSummary(): Promise<PlainIssueSeed> {
-  return await seedPlainIssue(false, "This spec carries no summary node");
+  return await seedPlainIssue(layoutProject(), false, "This spec carries no summary node");
 }
 
 /** A thread of four comments - its head and three replies, each answering the one before it -
@@ -424,10 +433,11 @@ const NESTING_ASKER = {
  *  the server's own and not a value this seed invented: the write climbs `reply_to` to the head
  *  of the thread and keeps the comment the request named beside it. */
 export async function seedReplyNesting(): Promise<ReplyNestingSeed> {
-  await createProject({ key: PROJECT, name: "Issue layout" });
+  const project = layoutProject();
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     title: "A reply of this thread answers another reply",
   });
   const head = await createComment(issue.key, { body: "The first entry of the thread." });
@@ -483,10 +493,11 @@ export const UNBROKEN_PATH =
 
 /** An issue whose spec marks one requirement whose words hold that run. */
 export async function seedUnbrokenWords(): Promise<PlainIssueSeed> {
-  await createProject({ key: PROJECT, name: "Issue layout" });
+  const project = layoutProject();
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     spec: [
       "# A requirement of this issue names a path",
       "",
@@ -519,16 +530,17 @@ export interface ChildTitleSeed {
  *  surface for the one run `UNBROKEN_PATH` already states, and reads it without touching the
  *  seed the requirement row uses. */
 export async function seedUnbrokenChildTitle(): Promise<ChildTitleSeed> {
-  await createProject({ key: PROJECT, name: "Issue layout" });
+  const project = layoutProject();
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     title: "A child of this issue names a long path",
   });
   const child = await createIssue({
     force: true,
     parent: issue.key,
-    project: PROJECT,
+    project,
     title: `Draw ${UNBROKEN_PATH}`,
   });
   return { childKey: child.key, key: issue.key };
@@ -562,7 +574,7 @@ export interface BaselineSeed {
 async function seedBaseline(multiplier: 1 | 2): Promise<BaselineSeed> {
   const requirements = 12 * multiplier;
   const planTasks = 9 * multiplier;
-  const seeded = await seedIssueWithDocuments({
+  const seeded = await seedIssueWithDocuments(layoutProject(), {
     checks: 6 * multiplier,
     children: 7 * multiplier,
     commentReplies: 8 * multiplier,
@@ -772,10 +784,11 @@ export interface ReviewListSeed {
 /** An issue with two open questions that wait on alice and four agent decisions, of which two
  *  name a statement: only those two wait for her review. */
 export async function seedReviewList(): Promise<ReviewListSeed> {
-  await createProject({ key: PROJECT, name: "Issue layout" });
+  const project = layoutProject();
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     spec: specDocument({ openQuestion: true, requirements: 2, summary: true }),
     title: "Only a decision that changed a statement waits",
   });
@@ -829,10 +842,11 @@ export interface PlanOrderSeed {
  *  need each other, and a task whose `needs` names a task the plan no longer holds. The second
  *  write is what leaves that pointer dangling, and it changes no pointer of its own. */
 export async function seedPlanOrder(): Promise<PlanOrderSeed> {
-  await createProject({ key: PROJECT, name: "Issue layout" });
+  const project = layoutProject();
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     spec: specDocument({ openQuestion: false, requirements: 3, summary: true }),
     title: "The plan is drawn as ordered steps",
   });
@@ -868,10 +882,11 @@ export interface WideCodeSeed {
  * so no seed another row reads changes.
  */
 export async function seedWideCode(): Promise<WideCodeSeed> {
-  await createProject({ key: PROJECT, name: "Issue layout" });
+  const project = layoutProject();
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     title: "A comment holds a code block wider than its row",
   });
   const flags = Array.from({ length: 60 }, (_unused, at) => `--flag${at + 1}`).join(" ");

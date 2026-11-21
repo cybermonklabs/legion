@@ -1,9 +1,10 @@
+import { type Result, routePath } from "../web/src/api/paths";
 import { mintAgentToken } from "./api";
 import {
+  type DeliveryPlace,
   FIXTURE_WINDOW as MEASURES_WINDOW,
   seedDeliveryFixture,
   seedMeasuresFixture,
-  TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
@@ -11,12 +12,26 @@ import { expect, type Page, test } from "./test";
 import { pressFinger } from "./touch";
 import { asUser } from "./users";
 
+// Every row writes its fixture in its own place (`delivery`, e2e/test.ts): its own project, run
+// and pull-request numbers of its own, and the timeline on the place's day, all of which the
+// fixture takes out again when the row ends. So each number or window a row reads is its
+// place's, and the whole timeline of that window - "2 PRs", "Merges (2)", every facet's count -
+// is the row's own.
+
 /** Where the chart draws a run's shape: its series' name, its column on the x axis (the deploys
  *  at 0.15 and the failures at 0.85 of the Deploys/fails column, `Timeline.tsx`'s
  *  GLOBAL_DEPLOY_X/GLOBAL_FAILURE_X) and its time. Run 500's production job finished at 01:40 and
- *  run 501's integration tests failed at 12:20 (`seedDeliveryFixture`). */
-const DEPLOY_500 = { series: "Deploys", x: 0.15, at: "2024-06-01T01:40:00Z" };
-const FAILURE_501 = { series: "Pipeline failures", x: 0.85, at: "2024-06-01T12:20:00Z" };
+ *  run 501's integration tests failed at 12:20 of the place's day (`seedDeliveryFixture`). */
+const deploy500 = (place: DeliveryPlace) => ({
+  series: "Deploys",
+  x: 0.15,
+  at: place.at("2024-06-01T01:40:00Z"),
+});
+const failure501 = (place: DeliveryPlace) => ({
+  series: "Pipeline failures",
+  x: 0.85,
+  at: place.at("2024-06-01T12:20:00Z"),
+});
 
 /** One reading of the chart the page made: where a point of a series stands on the page, and
  *  whether the chart has taken the size of its host. Both answers come from ECharts' own
@@ -92,13 +107,13 @@ async function shapePosition(
  *  on it stands somewhere other than where it will stand, and the page is still being laid out
  *  around it. The poll's answer names both so a failure says which of the two the chart never
  *  reached. */
-async function openTimeline(page: Page, query = ""): Promise<void> {
-  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}${query}`);
+async function openTimeline(page: Page, place: DeliveryPlace): Promise<void> {
+  await page.goto(`/delivery?${place.timelineQuery}`);
   await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
   await page.getByTestId("delivery-chart").scrollIntoViewIfNeeded();
   await expect
     .poll(async () => {
-      const reading = await chartReading(page, DEPLOY_500);
+      const reading = await chartReading(page, deploy500(place));
       return { painted: reading?.position != null, tookItsHost: reading?.tookItsHost === true };
     })
     .toEqual({ painted: true, tookItsHost: true });
@@ -112,8 +127,11 @@ async function clickShape(page: Page, shape: { series: string; x: number; at: st
   await page.mouse.click(position.x, position.y);
 }
 
-test("the Delivery sidebar nav entry opens the delivery timeline", async ({ browser }) => {
-  await seedDeliveryFixture();
+test("the Delivery sidebar nav entry opens the delivery timeline", async ({
+  browser,
+  delivery,
+}) => {
+  await seedDeliveryFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -133,11 +151,12 @@ test("the Delivery sidebar nav entry opens the delivery timeline", async ({ brow
 
 test("a facet lists each value with its count and narrows the PRs, kept in the URL", async ({
   browser,
+  delivery,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await openTimeline(page);
+  await openTimeline(page, delivery);
 
   await expect(page.getByText("2 PRs in current filter/window")).toBeVisible();
   const priority = page.getByRole("button", { name: /^Priority:/ });
@@ -156,11 +175,12 @@ test("a facet lists each value with its count and narrows the PRs, kept in the U
 
 test("colour by priority with swimlanes splits the merges into one column per priority", async ({
   browser,
+  delivery,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await openTimeline(page);
+  await openTimeline(page, delivery);
 
   const lanes = page.getByRole("switch", { name: "Swimlanes" });
   await expect(lanes).toHaveAttribute("aria-checked", "false");
@@ -177,21 +197,26 @@ test("colour by priority with swimlanes splits the merges into one column per pr
 
 test("hovering a deploy names its run, and clicking it lists what it shipped and every job", async ({
   browser,
+  delivery,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await openTimeline(page);
+  await openTimeline(page, delivery);
 
-  const deploy = await shapePosition(page, DEPLOY_500);
+  const deploy = await shapePosition(page, deploy500(delivery));
   if (deploy === null) throw new Error("no deploy dot painted");
   await page.mouse.move(deploy.x, deploy.y);
-  await expect(page.getByText("Run #500: 1 PR(s) shipped")).toBeVisible();
-  await clickShape(page, DEPLOY_500);
+  await expect(page.getByText(`Run #${delivery.number(500)}: 1 PR(s) shipped`)).toBeVisible();
+  await clickShape(page, deploy500(delivery));
 
   const details = page.getByRole("dialog", { name: "Details" });
-  await expect(details.getByRole("heading", { name: "Deploy: run #500" })).toBeVisible();
-  await expect(details.getByText("acme/widgets#1 — feat: a shipped widget")).toBeVisible();
+  await expect(
+    details.getByRole("heading", { name: `Deploy: run #${delivery.number(500)}` })
+  ).toBeVisible();
+  await expect(
+    details.getByText(`acme/widgets#${delivery.number(1)} — feat: a shipped widget`)
+  ).toBeVisible();
   await expect(details.getByText("widgets-release / widgets-release")).toBeVisible();
   await expect(details.getByText("success (480s)")).toBeVisible();
   await details.getByRole("button", { name: "Close details" }).click();
@@ -201,20 +226,25 @@ test("hovering a deploy names its run, and clicking it lists what it shipped and
 
 test("clicking a pipeline failure shows its failed job in red and every job's result", async ({
   browser,
+  delivery,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await openTimeline(page);
+  await openTimeline(page, delivery);
 
-  const failure = await shapePosition(page, FAILURE_501);
+  const failure = await shapePosition(page, failure501(delivery));
   if (failure === null) throw new Error("no failure triangle painted");
   await page.mouse.move(failure.x, failure.y);
-  await expect(page.getByText("Run #501 failed: integration tests")).toBeVisible();
-  await clickShape(page, FAILURE_501);
+  await expect(
+    page.getByText(`Run #${delivery.number(501)} failed: integration tests`)
+  ).toBeVisible();
+  await clickShape(page, failure501(delivery));
 
   const details = page.getByRole("dialog", { name: "Details" });
-  await expect(details.getByRole("heading", { name: "Pipeline failure: run #501" })).toBeVisible();
+  await expect(
+    details.getByRole("heading", { name: `Pipeline failure: run #${delivery.number(501)}` })
+  ).toBeVisible();
   await expect(details.getByText(/^integration tests at /)).toBeVisible();
   await expect(details.getByText("skipped")).toBeVisible();
   await context.close();
@@ -222,11 +252,12 @@ test("clicking a pipeline failure shows its failed job in red and every job's re
 
 test("dragging along the time axis sets a brush window, which the header clears", async ({
   browser,
+  delivery,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await openTimeline(page);
+  await openTimeline(page, delivery);
 
   const chart = page.getByTestId("delivery-chart");
   // `openTimeline` scrolled the chart into view, which waits for it to show, and polled it until
@@ -250,11 +281,14 @@ test("dragging along the time axis sets a brush window, which the header clears"
   await context.close();
 });
 
-test("dragging the zoom slider zooms without setting a brush window", async ({ browser }) => {
-  await seedDeliveryFixture();
+test("dragging the zoom slider zooms without setting a brush window", async ({
+  browser,
+  delivery,
+}) => {
+  await seedDeliveryFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await openTimeline(page);
+  await openTimeline(page, delivery);
 
   // The vertical slider is the chart's rightmost 16 px (Timeline.tsx: `right: 4, width: 12`),
   // outside the plot grid, on the same canvas the brush listens to.
@@ -279,8 +313,9 @@ test("dragging the zoom slider zooms without setting a brush window", async ({ b
 
 test("on a phone a finger dragged along the chart sets a brush window and moves nothing else @phone @phone-only", async ({
   browser,
+  delivery,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(delivery);
   // The reconcile pass the server runs on its own five-minute tick (`ReconcileInterval`,
   // `delivery/reconcile.go`) can land anywhere inside this row: the fake GitHub holds no
   // installation for acme/widgets, so the pass fails its permission check and
@@ -297,7 +332,7 @@ test("on a phone a finger dragged along the chart sets a brush window and moves 
   );
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await openTimeline(page);
+  await openTimeline(page, delivery);
   // The settle `before` is read after: the page's first body already carries that failure, and
   // this is what says so, rather than the drag being measured against rows still rewrapping.
   await expect(page.locator('[data-source="prs"]')).toHaveText(
@@ -319,7 +354,9 @@ test("on a phone a finger dragged along the chart sets a brush window and moves 
     }));
   const before = await layout();
   const finger = await pressFinger(page, dot);
-  await expect(page.getByText("acme/widgets#1: feat: a shipped widget")).toBeVisible();
+  await expect(
+    page.getByText(`acme/widgets#${delivery.number(1)}: feat: a shipped widget`)
+  ).toBeVisible();
   // Nothing the touch brings up stands past the viewport's right edge: ECharts paints the
   // tooltip inside the chart's host, whose wrapper clips it (`Timeline.tsx`), and the rows above
   // the chart hold their column (`SourceFreshness.tsx`). A phone lays its page out to the widest
@@ -354,11 +391,12 @@ test("on a phone a finger dragged along the chart sets a brush window and moves 
 // across it.
 test("on a phone a reconcile error arriving under the finger widens nothing @phone @phone-only", async ({
   browser,
+  delivery,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await openTimeline(page);
+  await openTimeline(page, delivery);
 
   const dot = await shapePosition(page, { series: "PR merges" });
   if (dot === null) throw new Error("no merge dot painted");
@@ -368,7 +406,9 @@ test("on a phone a reconcile error arriving under the finger widens nothing @pho
   const width = () => page.evaluate(() => document.documentElement.scrollWidth);
   const before = await width();
   const finger = await pressFinger(page, dot);
-  await expect(page.getByText("acme/widgets#1: feat: a shipped widget")).toBeVisible();
+  await expect(
+    page.getByText(`acme/widgets#${delivery.number(1)}: feat: a shipped widget`)
+  ).toBeVisible();
   // The failed pass the desktop freshness row below seeds, written here over the page's live
   // socket instead: reconcile.go's RecordReconcileError leaves last_reconcile_at set and
   // last_error naming the failure, and the PRs row carries that name.
@@ -386,11 +426,11 @@ test("on a phone a reconcile error arriving under the finger widens nothing @pho
   await context.close();
 });
 
-test("the Repository facet narrows the list through the server", async ({ browser }) => {
-  await seedDeliveryFixture();
+test("the Repository facet narrows the list through the server", async ({ browser, delivery }) => {
+  await seedDeliveryFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await openTimeline(page);
+  await openTimeline(page, delivery);
 
   await page.getByRole("button", { name: "List", exact: true }).click();
   await expect(page).toHaveURL(/mode=list/);
@@ -411,11 +451,12 @@ test("the Repository facet narrows the list through the server", async ({ browse
 
 test("the list reaches a deploy's drill-down by keyboard, and Escape hands focus back", async ({
   browser,
+  delivery,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}&mode=list`);
+  await page.goto(`/delivery?${delivery.timelineQuery}&mode=list`);
 
   // The rows are one tab stop: the first row takes focus, the arrow key moves to the next.
   const rows = page.locator("tbody tr[aria-rowindex]");
@@ -427,11 +468,13 @@ test("the list reaches a deploy's drill-down by keyboard, and Escape hands focus
   await expect(rows.first()).toBeFocused();
 
   // #1 shipped in run 500: its "deployed" opens that run's drill-down.
-  const deployed = page.getByRole("button", { name: "Open deploy run #500" });
+  const deployed = page.getByRole("button", { name: `Open deploy run #${delivery.number(500)}` });
   await deployed.focus();
   await page.keyboard.press("Enter");
   const details = page.getByRole("dialog", { name: "Details" });
-  await expect(details.getByRole("heading", { name: "Deploy: run #500" })).toBeVisible();
+  await expect(
+    details.getByRole("heading", { name: `Deploy: run #${delivery.number(500)}` })
+  ).toBeVisible();
   await expect(details.getByRole("button", { name: "Close details" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(details).toHaveCount(0);
@@ -441,8 +484,9 @@ test("the list reaches a deploy's drill-down by keyboard, and Escape hands focus
 
 test("the freshness row shows a named reconcile failure, distinct from mere staleness", async ({
   browser,
+  delivery,
 }) => {
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(delivery);
   // A reconcile pass that failed (a missing GitHub App permission here) still advances nothing
   // happy: last_reconcile_at is set (a prior pass did succeed once) but last_error names the most
   // recent failure, and the freshness row must show that failure by name, not the generic
@@ -469,7 +513,7 @@ test("the freshness row shows a named reconcile failure, distinct from mere stal
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
-  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
+  await page.goto(`/delivery?${delivery.timelineQuery}`);
 
   await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
   await expect(
@@ -481,20 +525,23 @@ test("the freshness row shows a named reconcile failure, distinct from mere stal
   await context.close();
 });
 
-test("an unfetchable pull request shows on the freshness row by count", async ({ browser }) => {
-  await seedDeliveryFixture();
+test("an unfetchable pull request shows on the freshness row by count", async ({
+  browser,
+  delivery,
+}) => {
+  await seedDeliveryFixture(delivery);
   // S3: a population pull request whose completing fetch answered a permanent 404/410 from
   // GitHub is marked unfetchable (store.go's MarkPullRequestUnfetchable) rather than retried
   // every reconcile pass forever -- the freshness row surfaces it by count.
   await sql(
     `UPDATE delivery_pull_requests
        SET unfetchable_at = '2024-06-01T05:00:00Z', unfetchable_reason = 'pull request not found or gone (status 404)'
-       WHERE repo = 'acme/widgets' AND number = 2`
+       WHERE repo = 'acme/widgets' AND number = ${delivery.number(2)}`
   );
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
-  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
+  await page.goto(`/delivery?${delivery.timelineQuery}`);
 
   await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
   await expect(
@@ -507,7 +554,12 @@ test("an unfetchable pull request shows on the freshness row by count", async ({
 // @pr: Live delivery: the Delivery page from nothing - the setup form saved against the GitHub App's own read, then the timeline it draws.
 test("an unconfigured Delivery page sets itself up from its form and then shows the timeline @pr", async ({
   browser,
+  delivery,
 }, testInfo) => {
+  // The page starts unconfigured: the settings the worker wrote for the delivery rows are taken
+  // out here, and the `delivery` fixture puts them back when the row ends, whatever this row
+  // saved in their place.
+  await sql("DELETE FROM delivery_settings");
   // The save proves the GitHub App can read the deploy repository (the installation with
   // Contents: read, a minted token, then the repository read under it); the fake answers all
   // three for a seeded repository and 404s an unseeded one.
@@ -516,7 +568,7 @@ test("an unconfigured Delivery page sets itself up from its form and then shows 
   const page = await context.newPage();
 
   try {
-    await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
+    await page.goto(`/delivery?${delivery.timelineQuery}`);
     await expect(page.getByRole("heading", { name: "Set up the delivery timeline" })).toBeVisible();
     await expect(page.getByLabel("Deploy repository")).toHaveValue("");
     await expect(page.getByLabel("Deploy repository")).toHaveAttribute("placeholder", "owner/repo");
@@ -587,15 +639,20 @@ test("an unconfigured Delivery page sets itself up from its form and then shows 
   }
 });
 
-const MEASURES_QUERY = `from=${encodeURIComponent(MEASURES_WINDOW.from)}&to=${encodeURIComponent(MEASURES_WINDOW.to)}`;
+// The measures rows read their place's window (`DeliveryPlace.measuresQuery`): the measures
+// fixture written `MEASURES_DAYS_LATER` days after the review corpus's place
+// (e2e/delivery-seed.ts), past every deploy the corpus writes, which the measures would otherwise
+// read as the deploy of the window's last pull request.
 
 test("the measures panel shows the four measures for the window and follows a facet", async ({
   browser,
+  delivery,
 }) => {
-  await seedMeasuresFixture();
+  const acme = delivery.project;
+  await seedMeasuresFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
+  await page.goto(`/delivery?mode=list&${delivery.measuresQuery}`);
 
   const kpis = page.getByLabel("KPI targets");
   await expect(kpis).toBeVisible();
@@ -603,9 +660,9 @@ test("the measures panel shows the four measures for the window and follows a fa
   // The stored-path median: 510 minutes, each PR's deploy derived from the stored runs.
   await expect(kpis.locator('[data-kpi="Merge → production"]')).toContainText("8.5h");
   const p0 = kpis.locator('[data-kpi="P0 issues with no owner"]').getByRole("link", {
-    name: "ACME-103",
+    name: `${acme}-103`,
   });
-  await expect(p0).toHaveAttribute("href", /\/issues\/ACME-103$/);
+  await expect(p0).toHaveAttribute("href", new RegExp(`/issues/${acme}-103$`));
   const strip = page.getByTestId("measures-strip");
   await expect(strip).toContainText("28.6%");
 
@@ -617,31 +674,36 @@ test("the measures panel shows the four measures for the window and follows a fa
   await context.close();
 });
 
-test("the measures API gives an agent the numbers the panel shows", async ({ browser }) => {
-  await seedMeasuresFixture();
+test("the measures API gives an agent the numbers the panel shows", async ({
+  browser,
+  delivery,
+}) => {
+  await seedMeasuresFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const token = await mintAgentToken("measures-e2e", "alice");
-  const response = await page.request.get(`/api/v1/delivery/measures?${MEASURES_QUERY}`, {
+  // The seed's own query string (`measuresQuery`), on the route's own path.
+  const measures = routePath("get", "/api/v1/delivery/measures", {});
+  const response = await page.request.get(`${measures}?${delivery.measuresQuery}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   expect(response.status()).toBe(200);
-  const body = await response.json();
+  const body = (await response.json()) as Result<"/api/v1/delivery/measures", "get">;
   expect(body.measures.deploy_frequency.successful_deploys).toBe(5);
   expect(body.status.unowned_p0).toBe(false);
   await context.close();
 });
 
-test("a brush window narrows the measures to it", async ({ browser }) => {
-  await seedMeasuresFixture();
+test("a brush window narrows the measures to it", async ({ browser, delivery }) => {
+  await seedMeasuresFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   // The prototype's own computeDora over the brush window 2026-09-05..2026-09-12 (PRs #101-#107,
   // each deploy derived by its containment): 3 deploys, merge → production median 1140 minutes
   // (`bun /tmp/measures567a/dump-dora-stored-window.ts 2026-09-05T00:00:00Z 2026-09-12T00:00:00Z`
-  // from the prototype's web/).
-  const brush = `ws=${encodeURIComponent("2026-09-05T00:00:00.000Z")}&we=${encodeURIComponent("2026-09-12T00:00:00.000Z")}`;
-  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}&${brush}`);
+  // from the prototype's web/). The window is read at the place's moments for it.
+  const brush = `ws=${encodeURIComponent(new Date(delivery.measuresAt("2026-09-05T00:00:00Z")).toISOString())}&we=${encodeURIComponent(new Date(delivery.measuresAt("2026-09-12T00:00:00Z")).toISOString())}`;
+  await page.goto(`/delivery?mode=list&${delivery.measuresQuery}&${brush}`);
   const kpis = page.getByLabel("KPI targets");
   await expect(kpis.locator('[data-kpi="Deploys a day"]')).toContainText("3 deploys");
   await expect(kpis.locator('[data-kpi="Merge → production"]')).toContainText("19.0h");
@@ -651,16 +713,21 @@ test("a brush window narrows the measures to it", async ({ browser }) => {
   await context.close();
 });
 
-test("the definitions fold opens to the per-day table", async ({ browser }, testInfo) => {
-  await seedMeasuresFixture();
+test("the definitions fold opens to the per-day table", async ({ browser, delivery }, testInfo) => {
+  await seedMeasuresFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
+  await page.goto(`/delivery?mode=list&${delivery.measuresQuery}`);
   await expect(page.getByLabel("KPI targets")).toBeVisible();
 
   await page.getByRole("button", { name: "Definitions & alternatives" }).click();
   const table = page.getByRole("table").filter({ hasText: "Reached production" });
-  await expect(table.locator("tbody tr").first()).toHaveText(/^2026-09-27 \(partial\)/);
+  // The window's last day, which its end at 20:00 leaves partial: 2026-09-27 in the corpus's
+  // place, and that day at the place's moment for it here.
+  const lastDay = delivery.measuresAt(MEASURES_WINDOW.to).slice(0, 10);
+  await expect(table.locator("tbody tr").first()).toHaveText(
+    new RegExp(`^${lastDay} \\(partial\\)`)
+  );
   await page.screenshot({ path: testInfo.outputPath("delivery-measures.png"), fullPage: true });
   await context.close();
 });

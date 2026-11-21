@@ -47,6 +47,7 @@
     "fake-indexeddb": "^6.2.5",
     "happy-dom": "^20.14.0",
     "msw": "3.0.4",
+    "recheck": "4.6.2",
     "typescript": "^5",
     "vite": "^5"
   },

@@ -124,6 +124,50 @@ export async function clearIssueCreator(issueKey: string): Promise<void> {
   await sql(`UPDATE issues SET created_by = 'null'::jsonb WHERE key = ${sqlLiteral(issueKey)}`);
 }
 
+/** The id of every broadcast the stack holds: what a row holds at its start, so the broadcasts it
+ *  holds at its end and not in this list are the ones it made (`deleteBroadcastsBut`). */
+export async function broadcastIds(): Promise<string[]> {
+  const listed = await sql("SELECT id FROM broadcasts");
+  return listed === "" ? [] : listed.split("\n");
+}
+
+/**
+ * Deletes every broadcast but `kept`, and what each wrote, so `GET /api/v1/broadcasts` lists what
+ * it listed when `kept` was read. Dispatch has no route that deletes a broadcast, so this is the
+ * schema's own order, in one statement: `messages.broadcast_id` references `broadcasts(id)` with
+ * no cascade (migration 0050), and so do the copies' replies (`messages.in_reply_to`) and every
+ * delivery attempt of a copy or a reply (`message_deliveries.message_id` and `reply_id`, 0016),
+ * each of them NO ACTION, which is checked at the end of the statement (the reset's own delete
+ * relies on the same, `resetDatabaseOnce`). A copy's blocks go with it (0142, ON DELETE CASCADE).
+ * Its events and its references name it by id with no foreign key, so they are deleted beside it
+ * rather than left naming a message that no longer exists: the `message.*` events whose payload
+ * is the message (`id`) or one of its attempts (`message_id`), and the `refs` rows it is the
+ * source of.
+ */
+export async function deleteBroadcastsBut(kept: readonly string[]): Promise<void> {
+  const keptIds = `ARRAY[${kept.map(sqlLiteral).join(", ")}]::uuid[]`;
+  await sql(`WITH RECURSIVE made AS (
+  SELECT id FROM broadcasts WHERE NOT (id = ANY (${keptIds}))
+), thread (id) AS (
+  SELECT id FROM messages WHERE broadcast_id IN (SELECT id FROM made)
+  UNION
+  SELECT messages.id FROM messages JOIN thread ON messages.in_reply_to = thread.id
+), attempts AS (
+  DELETE FROM message_deliveries
+  WHERE message_id IN (SELECT id FROM thread) OR reply_id IN (SELECT id FROM thread)
+), feed AS (
+  DELETE FROM events
+  WHERE type LIKE 'message.%'
+    AND (payload->>'id' IN (SELECT id::text FROM thread)
+      OR payload->>'message_id' IN (SELECT id::text FROM thread))
+), sources AS (
+  DELETE FROM refs WHERE from_kind = 'message' AND from_id IN (SELECT id::text FROM thread)
+), copies AS (
+  DELETE FROM messages WHERE id IN (SELECT id FROM thread)
+)
+DELETE FROM broadcasts WHERE id IN (SELECT id FROM made)`);
+}
+
 // The reset's delete locks its tables one at a time, in its own order, waiting for each while it
 // holds the ones before it. A transaction that reads two of those tables in another order can
 // close a cycle with it (the Inbox reads asks before comments, the sidebar issues before
@@ -269,40 +313,53 @@ async function resetDatabaseOnce(): Promise<void> {
 }
 
 /**
+ * Puts every fake service back to the state it starts in: the fake Envoy, whose sessions,
+ * subscriptions and sent messages a row seeds and reads whole, and whose subscriptions would
+ * otherwise match the recycled issue keys of an emptied database, the fake broker, whose seeded
+ * credential requests would otherwise reach every later row's Inbox, the fake GitHub, whose
+ * installations would otherwise let a later row's reconcile succeed against repositories it
+ * never seeded, and the fake embedder, whose counted calls and seeded markers belong to the row
+ * that made them. No key a row makes separates that state, so the real-stack suite resets the
+ * fakes before every row (`freshFakes`, e2e/test.ts), while it empties the database once per
+ * worker; `resetDatabase` resets them beside its delete. All settle before this returns, a
+ * failed one included, so one failing still lets the others finish and none runs on into the
+ * next row. It is the timing fixture's part `reset-fakes` (e2e/measure.ts).
+ */
+export async function resetFakes(): Promise<void> {
+  await measured("reset-fakes", async () => {
+    const fakes = await Promise.allSettled([
+      resetFakeEnvoy(),
+      resetFakeBroker(),
+      resetFakeGithub(),
+      resetFakeEmbedder(),
+    ]);
+    for (const fake of fakes) if (fake.status === "rejected") throw fake.reason;
+  });
+}
+
+/**
  * Empties every table, after the server has closed every live document and finished the
  * settlements in flight, so the documents the previous scenario had open finish writing before
  * the delete rather than failing against the emptied tables after it. The delete cannot
  * deadlock with whatever else still reaches the database (the comment above resetDatabaseOnce).
- * It also clears the fake Envoy, whose
- * process-local subscriptions outlive an emptied database and otherwise match recycled issue keys,
- * the fake broker, whose seeded credential requests would otherwise reach every later row's
- * Inbox, the fake GitHub, whose installations would otherwise let a later row's reconcile
- * succeed against repositories it never seeded, and the fake embedder, whose counted calls and
- * seeded markers belong to the row that made them; those resets wait on nothing in the database,
- * so they run beside the quiesce and delete, which keep their order. All settle before this
- * returns, a failed one included, so a reset that fails never leaves another running into the
- * next test's.
+ * It also resets the fakes (`resetFakes`); those resets wait on nothing in the database, so they
+ * run beside the quiesce and delete, which keep their order. Both settle before this returns, a
+ * failed one included, so a reset that fails never leaves the other running into the next row.
  * The delete takes `user_sessions` with it and the inserts above put alice's and bob's rows back
  * at generation 0, so their cookies authenticate again and e2e/api.ts keeps those two
  * (`forgetSessions`, which also forgets every other login's and every browser sign-in since the
  * last reset); a context signing in as one of them carries the kept cookie instead of minting
  * (e2e/users.ts).
  *
- * The two sides are the timing fixture's parts `reset-sql` and `reset-fakes` (e2e/measure.ts):
- * the fakes are one part, settled together so one failing still lets the others finish.
+ * The real-stack suite empties a worker's database through it once, before the worker's first
+ * row, and again only where a row empties it itself (`emptyDatabase`, e2e/test.ts). The delete's
+ * side is the timing fixture's part `reset-sql` (e2e/measure.ts), and the fakes are its part
+ * `reset-fakes`.
  */
 export async function resetDatabase(): Promise<void> {
   const resets = await Promise.allSettled([
     measured("reset-sql", () => quiesceDocuments().then(resetDatabaseOnce)),
-    measured("reset-fakes", async () => {
-      const fakes = await Promise.allSettled([
-        resetFakeEnvoy(),
-        resetFakeBroker(),
-        resetFakeGithub(),
-        resetFakeEmbedder(),
-      ]);
-      for (const fake of fakes) if (fake.status === "rejected") throw fake.reason;
-    }),
+    resetFakes(),
   ]);
   for (const reset of resets) if (reset.status === "rejected") throw reset.reason;
   forgetSessions();

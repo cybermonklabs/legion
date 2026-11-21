@@ -9,9 +9,11 @@ import {
   createIssue,
   createProject,
   patchIssue,
+  type RowKey,
   requestApproval,
   withOpenedAsk,
 } from "./api";
+import { type DrawnInbox, expectDrawn } from "./inbox-drawn";
 import { askControls, hasReadingPane, paneScroller, selectRow } from "./inbox-pane";
 
 export const session = {
@@ -19,11 +21,15 @@ export const session = {
   as: "agent" as const,
 };
 
-/** Three asks on three issues, so each row's `Select <owner>` checkbox has its own name. */
-export async function seedInbox(): Promise<void> {
-  await createProject({ key: "CORE", name: "Core" });
+/** Three asks on three issues, so each row's `Select <owner>` checkbox has its own name.
+ *  `project` is the key of the project the issues are made in: `keyboard-inbox.e2e.ts` passes its
+ *  row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `CORE`.
+ *  `login` is the reader the three wait on, alice unless a row names a person of its own
+ *  (`rowPerson`). */
+export async function seedInbox(project: RowKey, login = "alice"): Promise<void> {
+  await createProject({ key: project, name: "Core" }, { login });
   for (const title of ["First", "Second", "Third"]) {
-    const issue = await createIssue({ project: "CORE", title });
+    const issue = await createIssue({ project, title }, { login });
     await createAsk(issue.key, { question: `${title} decision` }, session);
   }
 }
@@ -90,12 +96,11 @@ export interface PaneSeed {
   cardAskId: string;
 }
 
-/** Two questions, in the order the Inbox lists them (the issue's priority first): a request to
- *  approve a long document, and a question in no document. */
-export async function seedPane(): Promise<PaneSeed> {
-  await createProject({ key: "PANE", name: "Pane keyboard" });
+/** The approval request the pane draws as a document: an issue at P0 whose spec is the long
+ *  handover. */
+async function paneApproval(project: string): Promise<string> {
   const handover = await createIssue({
-    project: "PANE",
+    project,
     spec: handoverSpec,
     title: "Ledger handover",
   });
@@ -103,22 +108,56 @@ export async function seedPane(): Promise<PaneSeed> {
   const approval = withOpenedAsk(
     await requestApproval(handover.primary_artifact_id, { summary: "The handover draft." }, session)
   );
-  const retry = await createIssue({ project: "PANE", title: "Retry budget" });
-  await patchIssue(retry.key, { priority: 1 });
+  return approval.ask.id;
+}
+
+/** The question in no document, on an issue at `priority`. */
+async function paneCard(project: string, priority: number): Promise<string> {
+  const retry = await createIssue({ project, title: "Retry budget" });
+  await patchIssue(retry.key, { priority });
   const card = await createAsk(
     retry.key,
     { options: [{ label: "Yes" }, { label: "No" }], question: RETRY_QUESTION },
     session
   );
-  return { approvalAskId: approval.ask.id, cardAskId: card.id };
+  return card.id;
+}
+
+/** Two questions, in the order the Inbox lists them (the issue's priority first): a request to
+ *  approve a long document, and a question in no document. `project` is the key of the project
+ *  they are made in, as `seedInbox` takes it; the stubbed rows' recording was made under `PANE`. */
+export async function seedPane(project: RowKey): Promise<PaneSeed> {
+  await createProject({ key: project, name: "Pane keyboard" });
+  const approvalAskId = await paneApproval(project);
+  const cardAskId = await paneCard(project, 1);
+  return { approvalAskId, cardAskId };
+}
+
+/** The same two questions for a real-stack row, whose cleared Inbox lists every earlier row's
+ *  questions too: both are put at its head, in `seedPane`'s order. The Inbox bands by priority,
+ *  P0 first, and sorts a band newest first (`grouping.ts`), so the card's issue is at P0 as well
+ *  and the card is asked before the approval request: the request is then the newest row of the
+ *  first band and the card the one after it, ahead of every older question an earlier row left. */
+export async function seedPaneAhead(project: RowKey): Promise<PaneSeed> {
+  await createProject({ key: project, name: "Pane keyboard" });
+  const cardAskId = await paneCard(project, 0);
+  const approvalAskId = await paneApproval(project);
+  return { approvalAskId, cardAskId };
 }
 
 /** Opens the Inbox on both seeded rows with the pane beside them. The assignee filter is
- *  cleared, so a request to approve a document nobody holds is listed like any other question. */
-export async function openPane(page: Page, seed: PaneSeed): Promise<void> {
+ *  cleared, so a request to approve a document nobody holds is listed like any other question.
+ *  `drawn` is what the cleared list draws, headed by the two seeded rows: the stubbed rows'
+ *  recording holds those two alone, and a real-stack row reads the rest from the server
+ *  (`clearedInbox`). */
+export async function openPane(
+  page: Page,
+  seed: PaneSeed,
+  drawn: DrawnInbox = { more: [], rows: [seed.approvalAskId, seed.cardAskId] }
+): Promise<void> {
   await page.goto("/?assignee=everyone");
   const rows = page.locator("[data-inbox-row]");
-  await expect(rows).toHaveCount(2);
+  await expectDrawn(page, drawn);
   await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", seed.approvalAskId);
   await expect(rows.nth(1)).toHaveAttribute("data-inbox-row", seed.cardAskId);
   await expect(paneScroller(page)).toBeVisible();

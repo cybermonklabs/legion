@@ -31,14 +31,20 @@ import {
   DISPATCH_SERVER_STARTED_SUBJECT,
   type DispatchEvent,
   DispatchEventSchema,
+  type DispatchRefusal,
   DispatchServerStartedPayloadSchema,
+  type DispatchServiceErrorShape,
   DispatchTargetedCommentPayloadSchema,
   DispatchTargetedMessagePayloadSchema,
   type EditCommentInput,
+  type ErrorBody,
   everyBuildReadsSearch,
   type Handoff,
   HandoffRecordedPayloadSchema,
   type HandoffSummary,
+  ID_AMBIGUOUS,
+  type IDAmbiguousError,
+  type IDCandidate,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_IN_FLIGHT,
@@ -159,6 +165,37 @@ describe("answerNotKept", () => {
     ];
     expect(landed).toEqual(["KEY_COMMITTED", "ANSWER_NOT_KEPT"]);
   });
+});
+
+// The refusal bodies are generated from the Go types the server writes them from, so a client
+// reads each of them through `DispatchServiceErrorShape` with no field written here: the
+// `satisfies` below stop compiling if the ID_AMBIGUOUS body or the common one stops being a
+// refusal the document names, or if a field of either is renamed.
+test("reads the ID_AMBIGUOUS body and the common refusal as refusals of the document", () => {
+  const comment = {
+    kind: "comment",
+    id: "4c9f3e12-0000-4000-8000-000000000001",
+    ref: "dispatch://TEST-1/comments/4c9f3e12-0000-4000-8000-000000000001",
+    issue_key: "TEST-1",
+    first_line: "a comment",
+  } satisfies IDCandidate;
+  const message = {
+    kind: "message",
+    id: "4c9f3e12-0000-4000-8000-000000000002",
+    ref: "",
+  } satisfies IDCandidate;
+  const ambiguous = {
+    candidates: [comment, message],
+    code: ID_AMBIGUOUS,
+    error: 'the id prefix "4c9f3e12" names 2 items; write more of the id',
+  } satisfies IDAmbiguousError satisfies DispatchRefusal;
+  const common = {
+    code: "NOT_FOUND",
+    error: "not found",
+  } satisfies ErrorBody satisfies DispatchRefusal;
+
+  // The row is held by the typecheck: a client reads each refusal through this shape.
+  [ambiguous, common] satisfies DispatchServiceErrorShape[];
 });
 
 test("models Agent activity and open-ask aggregates", () => {

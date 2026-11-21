@@ -13,7 +13,14 @@ import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import type { Ask } from "../web/src/api/types";
 
 import { readField } from "../web/src/features/doc/sync-frame";
-import { createIssue, createProject, getArtifactBlocks, getArtifactText, getIssue } from "./api";
+import {
+  createIssue,
+  createProject,
+  getArtifactBlocks,
+  getArtifactText,
+  getIssue,
+  type RowKey,
+} from "./api";
 import { settledState } from "./settled";
 import { asUser } from "./users";
 
@@ -535,10 +542,11 @@ export async function paste(page: Page, clipboard: Clipboard): Promise<void> {
   }, clipboard);
 }
 
-/** Creates an issue whose spec is `spec` and opens it as alice. */
-export async function openIssue(browser: Browser, title: string, spec: string) {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title });
+/** Creates an issue whose spec is `spec` in the project `project`, the row's own (`rowKey`,
+ *  e2e/test.ts), and opens it as alice. */
+export async function openIssue(browser: Browser, title: string, spec: string, project: RowKey) {
+  await createProject({ key: project, name: "Core" });
+  const issue = await createIssue({ project, spec, title });
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
   await page.goto(`/issues/${issue.key}`);
@@ -582,15 +590,16 @@ export async function indexedBlockAsk(issueKey: string, block: string): Promise<
 
 /** Opens `spec` as alice, with the caret collapsed at the start or the end of the text `quote`:
  * the selection bar is gone once the selection collapses, and a paste before that replaces the
- * selected text. */
+ * selected text. The issue is made in `project`, as `openIssue` makes it. */
 export async function openWithCaret(
   browser: Browser,
   title: string,
   spec: string,
   quote: string,
-  caret: "start" | "end"
+  caret: "start" | "end",
+  project: RowKey
 ) {
-  const { alice, issue, page } = await openIssue(browser, title, spec);
+  const { alice, issue, page } = await openIssue(browser, title, spec, project);
   await selectEditorText(page, quote);
   await page.keyboard.press(caret === "start" ? "ArrowLeft" : "ArrowRight");
   await expect(actionBar(page)).toBeHidden();

@@ -1,10 +1,11 @@
-/** `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>`:
- *  runs one lane of the Dispatch unit suite with every test run `k` times, and reports each row
- *  that failed (INFRA-1511).
+/** `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>]
+ *  [--shard <i>/<n>] --out <dir>`: runs one lane of the Dispatch unit suite, or one shard of its
+ *  files, with every test run `k` times, and reports each row that failed (INFRA-1511).
  *
  *    bun run test:repeat --lane web --out /tmp/repeat-web
  *    bun run test:repeat --lane web-cold --reruns 1 --out /tmp/repeat-web-cold
  *    bun run test:repeat --lane harness --reruns 5 --seed 1234 --out /tmp/repeat-harness
+ *    bun run test:repeat --lane web --seed 1234 --shard 1/2 --out /tmp/repeat-web-1
  *
  *  The web lane is `bun run test:web web/src`. The web-cold lane is
  *  `bun run test:web:cold web/src`: the web lane with each module the web app loads lazily held
@@ -12,9 +13,27 @@
  *  them. A rerun of a file keeps the modules its first run loaded, so only the first run of each
  *  file is cold: run that lane with `--reruns 1`. The harness lane is
  *  `bun run test:harness e2e/__tests__`. The tool runs the lane from this package's directory,
- *  whatever directory it starts in. It adds `--seed`, `--rerun-each` and Bun's junit reporter. It
- *  prints the seed before the run starts, so a run killed midway still names its seed. During the
- *  run it prints only Bun's summary lines. Bun's whole output goes to `<out>/bun.log`.
+ *  whatever directory it starts in. It adds `--seed`, `--rerun-each`, `--shard` where the command
+ *  line names one, and Bun's junit reporter. It prints the seed before the run starts, so a run
+ *  killed midway still names its seed. During the run it prints only Bun's summary lines. Bun's
+ *  whole output goes to `<out>/bun.log`.
+ *
+ *  `--shard <i>/<n>` runs the i-th of n shards of the lane's files, by Bun's own `--shard`. Bun
+ *  1.4.4 deals the files to the shards by their paths, whatever the seed (measured over five files
+ *  under three seeds), so n runs of one lane, one for each shard, run each of its files once
+ *  between them. The workflow runs the web lane so, in two shards a round under the round's one
+ *  seed. The report names the shard. A shard other than two whole numbers `<i>/<n>`, with n at
+ *  least 1 and i from 1 to n, is a bad command line, refused before Bun starts: Bun would refuse
+ *  it only once the tool had started it, and exit 1, the status of a run whose rows failed.
+ *
+ *  A row of a shard is run again as a row of the whole lane is, by the command its report gives:
+ *  `bun run test:web <file> --seed=<n>`, with `--rerun-each=<k>` for a row that first failed on
+ *  run k, and no `--shard`. The shard picks which files run, and Bun orders a file's rows by the
+ *  seed and the file alone: a file's rows ran in the same order in its shard as alone, under two
+ *  seeds (measured on Bun 1.4.4), and e2e/__tests__/unit-repeat.test.ts runs each failing row's
+ *  command of a sharded run to hold that. So the command the report gave before shards is still
+ *  true of a row of a shard. A `--shard` there would be false: one file alone is all of the first
+ *  shard and none of any other.
  *
  *  `<out>` then holds `junit.xml`, `bun.log`, `report.json` and `report.md`. Where
  *  `GITHUB_STEP_SUMMARY` is set, `report.md` is also appended to the file it names. Under GitHub
@@ -114,7 +133,7 @@ const laneChoice = `<${laneNames.join("|")}>`;
 const laneList = `${laneNames.slice(0, -1).join(", ")} or ${laneNames.at(-1)}`;
 
 const usage =
-  `usage: bun run test:repeat --lane ${laneChoice} [--reruns <k>] [--seed <n>] --out <dir>\n` +
+  `usage: bun run test:repeat --lane ${laneChoice} [--reruns <k>] [--seed <n>] [--shard <i>/<n>] --out <dir>\n` +
   `  --lane ${laneChoice}\n                        ` +
   Object.entries(lanes)
     .map(([lane, { script, target }]) => `${lane} runs \`bun run ${script} ${target}\``)
@@ -123,14 +142,24 @@ const usage =
   `  --reruns <k>          how many times Bun runs each test, at least 1 (default ${DEFAULT_RERUNS})\n` +
   `  --seed <n>            the seed of Bun's random order, from 0 to ${MAX_SEED}\n` +
   "                        (default: a random one)\n" +
+  "  --shard <i>/<n>       run the i-th of n shards of the lane's files, by Bun's --shard,\n" +
+  "                        n at least 1 and i from 1 to n (default: every file)\n" +
   "  --out <dir>           where junit.xml, bun.log, report.json and report.md go;\n" +
   "                        made if missing. A relative path is read from the directory the\n" +
   "                        tool runs in, which `bun run` makes packages/dispatch.";
+
+/** One shard of a lane's files, as `--shard <index>/<count>` names it. */
+export interface Shard {
+  readonly index: number;
+  readonly count: number;
+}
 
 export interface RepeatOptions {
   readonly lane: Lane;
   readonly reruns: number;
   readonly seed: number;
+  /** The shard of the lane's files to run, or null for every file. */
+  readonly shard: Shard | null;
   readonly out: string;
 }
 
@@ -149,13 +178,40 @@ function wholeNumber(text: string): number | undefined {
   return Number.isSafeInteger(value) ? value : undefined;
 }
 
+/** The shard `text` names as `<i>/<n>`, two whole numbers with n at least 1 and i from 1 to n, or
+ *  undefined for anything else. */
+function shardOf(text: string): Shard | undefined {
+  const parts = /^([0-9]+)\/([0-9]+)$/.exec(text);
+  if (parts === null) return undefined;
+  const index = wholeNumber(parts[1]);
+  const count = wholeNumber(parts[2]);
+  if (index === undefined || count === undefined || index < 1 || index > count) return undefined;
+  return { count, index };
+}
+
+/** `shard` as Bun's `--shard` and the report write it: `1/2`. */
+function shardText(shard: Shard): string {
+  return `${shard.index}/${shard.count}`;
+}
+
+/** What the tool gives `bun run <script> <target>` before Bun's junit reporter: the run's seed,
+ *  its reruns and, where it names one, its shard. The report's command is the script, the target
+ *  and these. */
+export function runArguments(run: Pick<RepeatOptions, "reruns" | "seed" | "shard">): string[] {
+  return [
+    `--seed=${run.seed}`,
+    `--rerun-each=${run.reruns}`,
+    ...(run.shard === null ? [] : [`--shard=${shardText(run.shard)}`]),
+  ];
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 /** Reads the command line. `seed` gives the seed when the command line names none. */
 export function parseArguments(argv: readonly string[], seed: () => number = randomSeed): Parsed {
-  let values: { lane?: string; reruns?: string; seed?: string; out?: string };
+  let values: { lane?: string; reruns?: string; seed?: string; shard?: string; out?: string };
   try {
     ({ values } = parseArgs({
       args: [...argv],
@@ -164,6 +220,7 @@ export function parseArguments(argv: readonly string[], seed: () => number = ran
         out: { type: "string" },
         reruns: { type: "string" },
         seed: { type: "string" },
+        shard: { type: "string" },
       },
       strict: true,
     }));
@@ -184,7 +241,13 @@ export function parseArguments(argv: readonly string[], seed: () => number = ran
   if (chosen === undefined || chosen > MAX_SEED) {
     return { problem: `--seed is a whole number from 0 to ${MAX_SEED}, not ${values.seed}` };
   }
-  return { options: { lane, out, reruns, seed: chosen } };
+  const shard = values.shard === undefined ? null : shardOf(values.shard);
+  if (shard === undefined) {
+    return {
+      problem: `--shard is <i>/<n>, two whole numbers with n at least 1 and i from 1 to n, not ${values.shard}`,
+    };
+  }
+  return { options: { lane, out, reruns, seed: chosen, shard } };
 }
 
 export type Outcome = "passed" | "failed" | "skipped";
@@ -418,6 +481,8 @@ export interface LaneRun {
   /** What the lane tested: its directory, or the narrower path a smoke run gives `runLane`. */
   readonly target: string;
   readonly seed: number;
+  /** The shard of the lane's files it ran, or null where it ran every file. */
+  readonly shard: Shard | null;
   readonly reruns: number;
   readonly wallMs: number;
   /** Bun's exit code. It is null when a signal ended Bun. */
@@ -501,6 +566,9 @@ export interface Report {
   readonly github: GithubRun;
   readonly lane: Lane;
   readonly seed: number;
+  /** The shard of the lane's files the run ran, as `--shard` names it (`1/2`), or null where it
+   *  ran every file. */
+  readonly shard: string | null;
   readonly reruns: number;
   /** The lane's command, without the reporter flags. */
   readonly command: string;
@@ -629,9 +697,10 @@ export function summarise(run: LaneRun): Report {
     const { file, describe, name } = runs[0];
     // The message of a failed `expect` ends with a newline. The report would show an empty line.
     const message = failed[0].message.trimEnd();
-    // Bun runs a file's rows in an order that depends only on the seed and the file, and it
-    // keeps that order on every rerun (measured on Bun 1.4.4). So the file alone with the seed
-    // and `--rerun-each=n` runs as it did up to run n, the run this row first failed on.
+    // Bun runs a file's rows in an order that depends only on the seed and the file, in a shard
+    // or not, and it keeps that order on every rerun (measured on Bun 1.4.4). So the file alone
+    // with the seed and `--rerun-each=n` runs as it did up to run n, the run this row first failed
+    // on. The command names no shard: the file alone is all of the first shard and none of another.
     const rerun = first > 1 ? ` --rerun-each=${first}` : "";
     failingRows.push({
       file,
@@ -668,8 +737,9 @@ export function summarise(run: LaneRun): Report {
     github: githubRun(run.environment),
     lane: run.lane,
     seed: run.seed,
+    shard: run.shard === null ? null : shardText(run.shard),
     reruns: run.reruns,
-    command: `bun run ${script} ${run.target} --seed=${run.seed} --rerun-each=${run.reruns}`,
+    command: `bun run ${script} ${run.target} ${runArguments(run).join(" ")}`,
     bunExit,
     wallSeconds: Math.round(run.wallMs / 100) / 10,
     oneRun: {
@@ -711,6 +781,11 @@ function counted(count: number, one: string, many = `${one}s`): string {
   return `${count} ${count === 1 ? one : many}`;
 }
 
+/** What the run was of: its lane, and its shard where it ran one (`web lane, shard 1/2`). */
+function legName(report: Report): string {
+  return `${report.lane} lane${report.shard === null ? "" : `, shard ${report.shard}`}`;
+}
+
 function oneRunText(report: Report): string {
   const { files, rows, skippedRows } = report.oneRun;
   return `${counted(files, "file")}, ${counted(rows, "row")}, ${counted(skippedRows, "skipped row")}`;
@@ -740,7 +815,7 @@ function memoryText(memory: MachineMemory | null): string {
 
 /** The report as markdown, for report.md and the step summary. */
 export function markdown(report: Report): string {
-  const lines = [`## Repeated unit tests: ${report.lane} lane`, ""];
+  const lines = [`## Repeated unit tests: ${legName(report)}`, ""];
   const { github } = report;
   if (github.event !== null) lines.push(`- Event: ${code(github.event)}`);
   if (github.commit !== null) lines.push(`- Commit: ${code(github.commit)}`);
@@ -750,6 +825,9 @@ export function markdown(report: Report): string {
   }
   lines.push(
     `- Lane: ${code(report.lane)}, run as ${code(report.command)}`,
+    ...(report.shard === null
+      ? []
+      : [`- Shard: ${code(report.shard)} of the lane's files, as Bun's \`--shard\` deals them`]),
     `- Seed: ${code(String(report.seed))}`,
     `- Reruns: ${report.reruns}`,
     `- Bun's exit status: ${report.bunExit}`,
@@ -868,7 +946,7 @@ export function annotations(report: Report): string[] {
   lines.push(
     workflowCommand(
       "notice",
-      { title: `Repeated unit tests: ${report.lane} lane` },
+      { title: `Repeated unit tests: ${legName(report)}` },
       `Seed ${report.seed}, ${report.reruns} reruns, ${report.wallSeconds.toFixed(1)} s. ` +
         `One run: ${oneRunText(report)}. All runs: ${testcasesText(report)}. ` +
         `${failuresText(report)} Machine memory, which counts every process and not Bun's ` +
@@ -928,7 +1006,7 @@ export async function runLane(
   options: RepeatOptions,
   target: string = lanes[options.lane].target
 ): Promise<0 | 1 | 2> {
-  const { lane, reruns, seed } = options;
+  const { lane, reruns, seed, shard } = options;
   const { script } = lanes[lane];
   const out = resolve(options.out);
   const junitPath = join(out, "junit.xml");
@@ -944,7 +1022,9 @@ export async function runLane(
   } catch (error) {
     return refuse(`--out ${options.out} cannot be the output directory: ${errorText(error)}`);
   }
-  console.log(`seed=${seed} lane=${lane} reruns=${reruns}`);
+  console.log(
+    `seed=${seed} lane=${lane} reruns=${reruns}${shard === null ? "" : ` shard=${shardText(shard)}`}`
+  );
   console.log(`running bun run ${script} ${target} in ${packageDirectory}; its output: ${logPath}`);
 
   const started = performance.now();
@@ -954,8 +1034,7 @@ export async function runLane(
       "run",
       script,
       target,
-      `--seed=${seed}`,
-      `--rerun-each=${reruns}`,
+      ...runArguments(options),
       "--reporter=junit",
       `--reporter-outfile=${junitPath}`,
     ],
@@ -981,6 +1060,7 @@ export async function runLane(
     lane,
     target,
     seed,
+    shard,
     reruns,
     wallMs,
     exitCode: child.exitCode,

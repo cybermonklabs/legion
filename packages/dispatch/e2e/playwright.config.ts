@@ -13,6 +13,7 @@ import { harnessProcessCount } from "./harness-processes";
 import { harnessSignIn } from "./harness-signin";
 import { measuring } from "./measure";
 import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
+import { quarantine, quarantined, quarantineRun } from "./quarantine";
 import { stubOrigin } from "./stub/origin";
 import { stubSelection } from "./stub/selection";
 import { inVisualOrder, visualOrder } from "./visual-order";
@@ -75,9 +76,10 @@ const multiprocessSpecs = /\.multiprocess\.e2e\.ts$/;
 // `stub` project at the end of this file runs them and nothing else runs them: this config's own
 // `testIgnore` holds the pattern, and so does every project that names a `testIgnore` of its own,
 // since a project's overrides this one's. A moved row lives in such a file rather than carrying an
-// annotation, because a real-stack spec takes its `test` from e2e/test.ts, which resets the
-// database before every row and signs the default context in: a stubbed row left among them would
-// pay that fixture for nothing (packages/dispatch/README.md, "The stubbed layer").
+// annotation, because a real-stack spec takes its `test` from e2e/test.ts, which empties the
+// database once per worker, resets the fakes before every row and signs the default context in: a
+// stubbed row left among them would pay that fixture for nothing (packages/dispatch/README.md,
+// "The stubbed layer").
 const stubSpecs = /\.stub\.e2e\.ts$/;
 // The one spec of DISPATCH_E2E_SIGNIN=oidc (e2e/harness-signin.ts), whose servers sign people in
 // through the dev OIDC issuer alone: it runs only then, and every other multiprocess spec, which
@@ -109,6 +111,16 @@ function refuseUnknownReuseServers(): void {
 }
 
 refuseUnknownReuseServers();
+
+// What this run asks of the quarantine (e2e/quarantine.ts), read once here so that a value
+// outside the three is refused in every run, a listing included, as the reuse-servers value
+// above is. The shard job of .github/workflows/dispatch-browser.yaml sets `exclude`, which takes
+// the quarantined rows out of the pull-request lane and the merge queue's full lane, and the
+// nightly's quarantine leg sets `only`, which runs those rows and nothing else. A run that sets
+// nothing - a person's, and every listing the bun tests under e2e/__tests__ read the suite from -
+// runs every row, so each project below is passed through `quarantined` unchanged. The
+// workers re-evaluate this file with the same environment, so they select the same rows.
+const quarantineSelection = quarantineRun(process.env.DISPATCH_E2E_QUARANTINE);
 
 // THE PORTS ARE UNSET WHEN THIS EVALUATES, AND THAT IS THE DESIGN. Playwright loads this config
 // before it runs `globalSetup`, which is what starts the stacks (e2e/global-setup.ts), so in this
@@ -254,23 +266,19 @@ const actionTimeout = 45_000;
 // Two-process mode's one project: the multiprocess specs, in Chromium, the sign-in spec alone under
 // DISPATCH_E2E_SIGNIN=oidc and every other one without it.
 //
-// `retries: 0`, against the one retry the run takes on CI, and for a reason of its own: the
-// `-alone` projects below also set it, but their argument is about the wall clock and does not
-// reach here. This project's argument is that nothing publishes its flaky rows. The job that
-// runs it (.github/workflows/dispatch-browser.yaml's multiprocess job) writes no blob report,
-// and the merge job that reports the run's flake rate reads the shard and alone legs' blobs
-// alone, so a row that failed and passed on a retry here would appear in no rate and no list.
-// Its test-results upload is `if: failure()`, so a retried row would leave no trace either. With
-// no retry the job stays what it has always been: a failed row fails it, the upload runs, and
-// the trace of that one attempt is kept (`trace: 'retain-on-first-failure'` below). A blob leg
-// for this job would end the argument, and there is none.
+// It takes the run's own retries, one on CI, as the shard legs' rows do. It set `retries: 0` while
+// nothing published its flaky rows: the job that runs it wrote no blob report, so a row that failed
+// and passed on a retry here would have appeared in no rate and no list. Each of that job's two runs
+// now writes one (.github/scripts/dispatch-browser-host-suite.sh), which the merge job joins into
+// the run's report, so a row retried here is counted and named in the flake rate like a shard row,
+// and the job uploads its rows' traces on a green run too, the trace of the attempt that failed
+// among them (`trace: 'retain-on-first-failure'` below).
 const multiprocessProjects = [
   {
     name: "chromium",
     testMatch: harnessSignIn === "oidc" ? signInSpecs : multiprocessSpecs,
     testIgnore: harnessSignIn === "oidc" ? undefined : signInSpecs,
     use: { ...devices["Desktop Chrome"] },
-    retries: 0,
   },
 ];
 
@@ -694,8 +702,9 @@ export default defineConfig({
   // project names `testIgnore: []`, which is what lets those rows reach it.
   testIgnore: harnessProcessCount === 1 ? [multiprocessSpecs, stubSpecs] : [stubSpecs],
   outputDir: "test-results",
-  // Every row is independent: it empties its stack's database and fake listeners itself
-  // (e2e/seed.ts), and a worker never runs two rows at once, so rows of one file may run in
+  // Every row is independent: it makes its data under keys of its own on its stack's database,
+  // which its worker emptied before its first row, and the stack's fake listeners are reset before
+  // it (e2e/test.ts); a worker never runs two rows at once, so rows of one file may run in
   // different stacks. A file whose rows must run in order says so itself, with
   // `test.describe.configure({ mode: "serial" })` and the reason.
   fullyParallel: true,
@@ -709,18 +718,19 @@ export default defineConfig({
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
   // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
   // at, and `bun run e2e` is read as pass or fail. This is the value of every project that sets
-  // none of its own: the three `-alone` projects, the two `visual` ones, the two stubbed ones
-  // and the multiprocess one each set `retries: 0`, each for a reason its own comment gives.
+  // none of its own, the multiprocess one among them: the three `-alone` projects, the two
+  // `visual` ones and the two stubbed ones each set `retries: 0`, each for a reason its own
+  // comment gives.
   retries: process.env.CI ? 1 : 0,
   // `failure-reporter.ts` writes nothing and prints nothing, and is the one way `globalTeardown`
   // learns how this run's rows ended, which is what decides whether its stack logs are kept
   // (e2e/run-outcome.ts says why no other way reaches it). It is in every run that takes this
   // list - and a `--reporter` on the command line REPLACES this list rather than adding to it,
   // which is why a run given one keeps its logs whatever it did, and why
-  // .github/scripts/dispatch-browser-shard-suite.sh and dispatch-browser-alone-suite.sh name
-  // this file in theirs. With E2E_MEASURE_FILE set, the timing fixture's reporter writes one
-  // row per test beside the list reporter's own output (e2e/measure-reporter.ts); without it
-  // the run is untouched.
+  // .github/scripts/dispatch-browser-shard-suite.sh, dispatch-browser-alone-suite.sh and
+  // dispatch-browser-host-suite.sh name this file in theirs. With E2E_MEASURE_FILE set, the
+  // timing fixture's reporter writes one row per test beside the list reporter's own output
+  // (e2e/measure-reporter.ts); without it the run is untouched.
   reporter: [
     ["list"],
     [fileURLToPath(new URL("./failure-reporter.ts", import.meta.url))],
@@ -786,15 +796,19 @@ export default defineConfig({
   // and builds no `web/dist` to serve. `stub.declared` is that answer, and `holdsStubRow`
   // above is built on the same one, so a server can never start for a project this list leaves
   // out, nor a project be declared with no server to answer it.
-  projects:
-    harnessProcessCount === 2
-      ? multiprocessProjects
-      : [
-          ...parallelProjects,
-          ...aloneProjects,
-          // The phone project first in a reverse run, so the whole run is the other way round
-          // (e2e/visual-order.ts). Both are declared in every run, as their comment says.
-          ...inVisualOrder(visualProjects, visualOrder()),
-          ...(stub.declared ? stubProjects : []),
-        ],
+  //
+  // Every project, whichever list it is in, passes through `quarantined`, which adds the one
+  // `grepInvert` pattern this run's quarantine selection asks for, beside the project's own
+  // (e2e/quarantine.ts says how the pattern reads a row).
+  projects: (harnessProcessCount === 2
+    ? multiprocessProjects
+    : [
+        ...parallelProjects,
+        ...aloneProjects,
+        // The phone project first in a reverse run, so the whole run is the other way round
+        // (e2e/visual-order.ts). Both are declared in every run, as their comment says.
+        ...inVisualOrder(visualProjects, visualOrder()),
+        ...(stub.declared ? stubProjects : []),
+      ]
+  ).map((project) => quarantined(project, quarantine, quarantineSelection)),
 });

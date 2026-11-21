@@ -291,7 +291,8 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   // has stood as it is (R6), and shows none of the parked columns.
   const inFlight = await cellsOf(faults, "OPS-12 Work OPS-12");
   expect(inFlight("Project").textContent).toBe("OPS");
-  expect(within(inFlight("Updated")).getByRole("time").getAttribute("datetime")).toBe(
+  expect(within(inFlight("Updated")).getByRole("time")).toHaveAttribute(
+    "datetime",
     "2026-11-01T00:00:00Z"
   );
   const faultHeaders = within(faults)
@@ -306,15 +307,15 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   // there cell: absent is absent, and that cell does not say a record is missing.
   const moved = await cellsOf(parked, "CORE-9 Work CORE-9");
   expect(moved("Project").textContent).toBe("CORE");
-  expect(within(moved("Updated")).getByRole("time").getAttribute("datetime")).toBe(
+  expect(within(moved("Updated")).getByRole("time")).toHaveAttribute(
+    "datetime",
     "2026-11-01T00:00:00Z"
   );
   expect(
-    within(moved("Advances"))
-      .getByRole("link", { name: "Linkage closure eval" })
-      .getAttribute("href")
-  ).toBe("/priorities/linkage-closure");
-  expect(within(moved("Moved there")).getByRole("time").getAttribute("datetime")).toBe(
+    within(moved("Advances")).getByRole("link", { name: "Linkage closure eval" })
+  ).toHaveAttribute("href", "/priorities/linkage-closure");
+  expect(within(moved("Moved there")).getByRole("time")).toHaveAttribute(
+    "datetime",
     "2026-11-09T12:00:00Z"
   );
   expect(moved("Moved there").textContent).toContain("bob");
@@ -330,7 +331,8 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   // records one as a link to it (R6).
   for (const reason of [moved("Reason"), unrecorded("Reason")]) {
     expect(reason.textContent).toBe("Not recorded until INFRA-2934");
-    expect(within(reason).getByRole("link", { name: "INFRA-2934" }).getAttribute("href")).toBe(
+    expect(within(reason).getByRole("link", { name: "INFRA-2934" })).toHaveAttribute(
+      "href",
       "/issues/INFRA-2934"
     );
   }
@@ -376,7 +378,7 @@ test("a row counts the work in flight, waiting, parked and closed in the last 7 
   // third count is backlog and icebox; the fourth is what the read says closed in 7 days.
   expect(cells.slice(3, 7)).toEqual(["7", "12", "0", "22"]);
   // The newest event is read as a time, whose words follow the clock.
-  expect(within(row).getByRole("time").getAttribute("datetime")).toBe("2026-11-11T10:00:00Z");
+  expect(within(row).getByRole("time")).toHaveAttribute("datetime", "2026-11-11T10:00:00Z");
   const second = screen.getByRole("row", { name: "P2 Linkage closure eval" });
   expect(
     within(second)

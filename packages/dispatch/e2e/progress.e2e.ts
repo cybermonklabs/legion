@@ -1,22 +1,23 @@
 import { createIssue, createProject, getIssue, listIssues, patchIssue } from "./api";
 import { navigateInApp } from "./sends";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // @pr: The progress surface's only row: the spec's task list and the children count, on the issue page, the list and the board.
 test("an issue shows its spec's task list and its children counted, on its page, in the list and on the board @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const root = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "## Plan\n\n- [x] decide\n- [ ] build\n  - [x] nested done\n- [ ] ship\n",
     title: "Tracked work",
   });
-  const first = await createIssue({ parent: root.key, project: "CORE", title: "First child" });
-  await createIssue({ parent: root.key, project: "CORE", title: "Second child" });
+  const first = await createIssue({ parent: root.key, project: core, title: "First child" });
+  await createIssue({ parent: root.key, project: core, title: "Second child" });
   await patchIssue(first.key, { status: "done" });
-  const plain = await createIssue({ project: "CORE", spec: "Just prose.\n", title: "Plain" });
+  const plain = await createIssue({ project: core, spec: "Just prose.\n", title: "Plain" });
 
   // The API, before any screen: the contract the check-in collector reads.
   const read = await getIssue(root.key);
@@ -24,7 +25,7 @@ test("an issue shows its spec's task list and its children counted, on its page,
     tasks: { done: 2, total: 4 },
     children: { done: 1, total: 2 },
   });
-  const rows = await listIssues("CORE");
+  const rows = await listIssues(core);
   expect(rows.find((row) => row.key === root.key)?.progress).toEqual(read.progress);
   expect(rows.find((row) => row.key === plain.key)?.progress).toEqual({
     tasks: null,
@@ -56,7 +57,7 @@ test("an issue shows its spec's task list and its children counted, on its page,
     await expect(page.getByTestId("issue-progress-tasks")).toHaveCount(0);
     await expect(page.getByTestId("issue-progress-children")).toHaveCount(0);
 
-    await navigateInApp(page, "/projects/CORE/issues");
+    await navigateInApp(page, `/projects/${core}/issues`);
     const rootRow = page.getByRole("row", { name: `${root.key} Tracked work`, exact: true });
     await expect(rootRow.getByTestId("issue-progress-tasks")).toHaveText("2/4 tasks");
     await expect(rootRow.getByTestId("issue-progress-children")).toHaveText("1/2 children");

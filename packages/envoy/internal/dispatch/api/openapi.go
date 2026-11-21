@@ -274,7 +274,7 @@ func openAPIRequestBodyTypes() (map[reflect.Type]bool, []reflect.Type) {
 		}
 		reach(shape.Response, response, nil)
 		reach(shape.Advice, response, nil)
-		for _, answer := range slices.Concat(shape.Also, shape.Refusals) {
+		for _, answer := range slices.Concat(shape.Also, routeRefusals(name, shape)) {
 			reach(answer.Body, response, nil)
 		}
 	}
@@ -308,11 +308,13 @@ func openAPIReach(t reflect.Type, into map[reflect.Type]bool, carried *[]reflect
 }
 
 // openAPIReachFields walks the fields one object's JSON holds: owner's own, and those an
-// embedded struct with no json name of its own carries into it. Such a struct is no object of
-// its own — the reflector writes its fields where they stand, as it writes an unnamed struct's,
-// and the document declares no schema for it — so it is walked here rather than reached as a
-// type, and a rawFieldSchemas row naming one of its fields is keyed by the object that carries
-// it, which is how the emitter reads the row back (rawFieldKey).
+// embedded struct with no json name of its own carries into it, by value or through a pointer.
+// Such a struct is no object of its own — the reflector writes its fields where they stand, as it
+// writes an unnamed struct's, and the document declares no schema for it — so it is walked here
+// rather than reached as a type, and a rawFieldSchemas row naming one of its fields is keyed by
+// the object that carries it, which is how the emitter reads the row back (rawFieldKey). A field
+// an embedded pointer carries is in the object only while that pointer is set, which is
+// interceptProp's to say (openAPIBehindEmbeddedPointer); what it reaches is reached either way.
 func openAPIReachFields(owner, t reflect.Type, into map[reflect.Type]bool, carried *[]reflect.Type) {
 	for index := range t.NumField() {
 		field := t.Field(index)
@@ -372,6 +374,13 @@ func openAPIStructOf(t reflect.Type) reflect.Type {
 // before this runs. A field rawFieldSchemas names is left out of required by its json tag alone —
 // absent is one of its three states — and carries the schema that table gives it.
 //
+// A field an embedded pointer struct promotes into the object, at any depth of the embedding
+// chain, is not required whatever its own tag says: the marshaller leaves out every field of a
+// nil embedded pointer, so a reader gets it only on the answers that set the pointer
+// (writeAdvice's *documentBlocks and *editBlocks, nil on an issue write). Whether it may be null
+// is still its own tag's, by the rule above: where the pointer is set, a field with neither
+// `,omitempty` nor `,omitzero` is always written, and written null when its value is nil.
+//
 // A name is added to required once however often it is reflected. A shaped read shadows a field
 // of the row it embeds - architectureTreeRead declares `components` in front of the
 // model.ArchitectureTree it embeds - and the reflector walks the embedded struct's fields into
@@ -405,7 +414,8 @@ func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 		return err
 	}
 	if !openAPIOmitsEmpty(p.Field.Tag.Get("json")) {
-		if !e.requestBodies[openAPIStructOf(p.ParentSchema.ReflectType)] &&
+		owner := openAPIStructOf(p.ParentSchema.ReflectType)
+		if !e.requestBodies[owner] && !openAPIBehindEmbeddedPointer(owner, p.Field) &&
 			!slices.Contains(p.ParentSchema.Required, p.Name) {
 			p.ParentSchema.Required = append(p.ParentSchema.Required, p.Name)
 		}
@@ -417,6 +427,53 @@ func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 		p.PropertySchema.RemoveType(jsonschema.Null)
 	}
 	return nil
+}
+
+// openAPIBehindEmbeddedPointer is whether field reaches owner's object only through an embedded
+// pointer struct, at any depth of the embedding chain: writeAdvice's `*documentBlocks`, or a
+// struct embedded by value that embeds such a pointer itself. encoding/json writes a field it
+// promotes that way only while every pointer on its way is set, and leaves it out whenever one
+// of them is nil, so a reader does not always get it whatever its own json tag says.
+//
+// The reflector hands interceptProp the field as its own struct declares it and nothing of the
+// embedding it came through, so the field is found again here by walking owner's embedded
+// structs as the reflector walks them (an anonymous field with no json name of its own,
+// openAPIReachFields) and comparing it with the fields each declares. A field one embedding
+// reaches by value and another through a pointer, which takes one struct embedded twice, keeps
+// the required its own tag gives it.
+func openAPIBehindEmbeddedPointer(owner reflect.Type, field reflect.StructField) bool {
+	if owner == nil {
+		return false
+	}
+	byPointer, byValue := false, false
+	var walk func(t reflect.Type, throughPointer bool)
+	walk = func(t reflect.Type, throughPointer bool) {
+		for index := range t.NumField() {
+			candidate := t.Field(index)
+			name, _, _ := strings.Cut(candidate.Tag.Get("json"), ",")
+			if name == "-" {
+				continue
+			}
+			if candidate.Anonymous && name == "" {
+				if embedded := openAPIStructOf(candidate.Type); embedded != nil {
+					walk(embedded, throughPointer || candidate.Type.Kind() == reflect.Pointer)
+					continue
+				}
+			}
+			if candidate.Name != field.Name || candidate.Type != field.Type ||
+				candidate.Tag != field.Tag || candidate.Offset != field.Offset ||
+				!slices.Equal(candidate.Index, field.Index) {
+				continue
+			}
+			if throughPointer {
+				byPointer = true
+			} else {
+				byValue = true
+			}
+		}
+	}
+	walk(owner, false)
+	return byPointer && !byValue
 }
 
 // openAPIEnumOntoItems moves a slice field's enum from the array to its items. jsonschema-go
@@ -836,8 +893,8 @@ type openAPIAnswer struct {
 }
 
 // responses are every answer the row gives: its success with the shapes that ride it, each of the
-// row's other answers, each refusal richer than errorBody, and the default answer every other
-// refusal writes.
+// row's other answers, each refusal richer than errorBody - its handler's and the prefix layer's
+// in front of it (idRoute.refusals) - and the default answer every other refusal writes.
 func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31.Responses, error) {
 	answers := map[int]*openAPIAnswer{}
 	var order []int
@@ -893,7 +950,7 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 			return nil, err
 		}
 	}
-	for _, refusal := range shape.Refusals {
+	for _, refusal := range routeRefusals(route.Method+" "+route.Pattern, shape) {
 		if err := add(refusal.Status, refusal.Body); err != nil {
 			return nil, err
 		}

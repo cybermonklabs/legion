@@ -9,7 +9,7 @@ import {
 } from "./api";
 import { connectedDot, expectMark, markSpan, openedThreadCard, setSheet } from "./editor";
 import { setCreatedAt } from "./seed";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -25,9 +25,10 @@ const initialMarkdown = "The quick brown fox";
 test("the margin lists replies written in the same second in the order they were written @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "ORDER", name: "Reply order" });
+  const order = rowKey("ORDER");
+  await createProject({ key: order, name: "Reply order" });
   const issue = await createIssue({
-    project: "ORDER",
+    project: order,
     spec: initialMarkdown,
     title: "Reply order",
   });
@@ -82,8 +83,9 @@ test("the margin lists replies written in the same second in the order they were
 test("the margin lists unplaced threads written in the same second newest first", async ({
   browser,
 }) => {
-  await createProject({ key: "UNPL", name: "Unplaced order" });
-  const document = await createProjectDocument("UNPL", {
+  const unpl = rowKey("UNPL");
+  await createProject({ key: unpl, name: "Unplaced order" });
+  const document = await createProjectDocument(unpl, {
     content: "The astrolabe handbook is a project document.",
     name: "handbook.md",
   });
@@ -105,7 +107,7 @@ test("the margin lists unplaced threads written in the same second newest first"
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/projects/UNPL/documents/${document.artifact.slug}`);
+    await page.goto(`/projects/${unpl}/documents/${document.artifact.slug}`);
     await expect(connectedDot(page)).toHaveText("connected");
     await setSheet(page, "chromium", true);
     const cards = page.getByTestId("margin-sheet").locator('[data-testid^="margin-comment-"]');

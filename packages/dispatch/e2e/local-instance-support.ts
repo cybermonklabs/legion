@@ -578,8 +578,10 @@ function shownInboxRead(diff: SeededInboxDiff): string {
 /**
  * Reads the Inbox with `read` until it lists exactly the rows `declared`, and answers the pass
  * line, or throws a block that names every missing and every unexpected row once `boundMs` has
- * passed. `read` is ONE UNFILTERED Inbox read (`GET /api/v1/inbox` with no query): the seed
- * declares that set, and a filtered read (`?assignee=unassigned`, say) holds another.
+ * passed. `read` is ONE Inbox read of the list the seed declares (`seedWorkspace`): the
+ * unfiltered read (`GET /api/v1/inbox` with no query) over an emptied database, or the list of a
+ * person no other row writes for (`?assignee=me`, signed in as that person) beside other rows'
+ * questions. Any other filter (`?assignee=unassigned`, say) holds another set.
  *
  * Each declared row takes the first Inbox row it names that no declared row took before it; a
  * declared row that takes none is missing, and an Inbox row that none took is unexpected, a

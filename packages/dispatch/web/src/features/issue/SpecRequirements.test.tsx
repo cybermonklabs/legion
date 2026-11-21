@@ -67,9 +67,9 @@ test("an uncovered requirement is flagged with what it lacks and a covered one i
     HTMLElement,
     HTMLElement,
   ];
-  expect(covered.getAttribute("data-covered")).toBe("true");
+  expect(covered).toHaveAttribute("data-covered", "true");
   expect(within(covered).queryByTestId("spec-requirement-gap")).toBeNull();
-  expect(uncovered.getAttribute("data-covered")).toBe("false");
+  expect(uncovered).toHaveAttribute("data-covered", "false");
   // The server's own words for the gap, with the block id it names stripped.
   expect(
     within(uncovered)

@@ -12,7 +12,7 @@ import {
   railAgentsFold,
   railIsSheet,
 } from "./rail";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -25,6 +25,9 @@ import { asUser } from "./users";
  * it is made and unmade from three places, it reaches the person's other browser from the event
  * the write announces, and the list a browser kept under the old local-storage key becomes the
  * person's own at the first load after the change.
+ *
+ * Pins are the person's, so the person of every row is one of the row's own (`rowPerson`,
+ * e2e/test.ts): the rail lists this row's pins and no pin another row's alice made.
  */
 
 const ALPHA = "01a0e200-4848-7473-acc5-00000000000a";
@@ -55,10 +58,11 @@ function railSessions(): FakeSession[] {
 
 /** `count` replies of `sessionId`'s to the viewer, which is what the rail row's badge counts. */
 async function seedUnreadReplies(sessionId: string, count: number): Promise<void> {
-  const asked = await createAgentMessage(sessionId, {
-    body: "Where did the build go?",
-    delivery: "aside",
-  });
+  const asked = await createAgentMessage(
+    sessionId,
+    { body: "Where did the build go?", delivery: "aside" },
+    { login: rowPerson("alice") }
+  );
   for (let index = 0; index < count; index += 1) {
     await replyToMessageDelivery(
       asked.id,
@@ -96,11 +100,12 @@ async function openLiveViewFromAgentsPage(page: Page, sessionId: string, title: 
 test("the Agents heading folds rows that are exactly the person's pinned agents @phone", async ({
   browser,
 }) => {
+  const me = rowPerson("alice");
   await setLiveSessions(railSessions());
   await seedUnreadReplies(ALPHA, 2);
-  await putAgentState(ALPHA, { pinned: true });
-  await putAgentState(BETA, { pinned: true });
-  const context = await asUser(browser, "alice");
+  await putAgentState(ALPHA, { pinned: true }, { login: me });
+  await putAgentState(BETA, { pinned: true }, { login: me });
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await page.goto("/");
@@ -137,7 +142,10 @@ test("the Agents heading folds rows that are exactly the person's pinned agents 
     await expect(fold).toHaveAttribute("aria-controls", RAIL_AGENTS_ID);
     await fold.click();
     await expect(railAgents(page)).toHaveCount(0);
-    await expect(page.getByRole("link", { name: "Agents" })).toHaveAttribute("href", "/agents");
+    // The heading's link is the one whose name starts with the word: the rail also lists every
+    // project of the stack, and a project another row named "Agents" is a link whose name holds
+    // it after its key ("AGTKQZVM Agents").
+    await expect(page.getByRole("link", { name: /^Agents\b/ })).toHaveAttribute("href", "/agents");
 
     await fold.click();
     await expect(fold).toHaveAttribute("aria-expanded", "true");
@@ -154,7 +162,7 @@ test("a pin from the Agents page and a pin from a live view are both under the h
   browser,
 }) => {
   await setLiveSessions(railSessions());
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/agents");
@@ -183,11 +191,12 @@ test("a pin from the Agents page and a pin from a live view are both under the h
 // the Agents page's row, and the live view's header.
 // SLOW(>=2s): three unpins, each from another surface, with a live view opened for the third.
 test("the rail row, the Agents row and the live view each unpin @phone", async ({ browser }) => {
+  const me = rowPerson("alice");
   await setLiveSessions(railSessions());
-  await putAgentState(ALPHA, { pinned: true });
-  await putAgentState(BETA, { pinned: true });
-  await putAgentState(GAMMA, { pinned: true });
-  const context = await asUser(browser, "alice");
+  await putAgentState(ALPHA, { pinned: true }, { login: me });
+  await putAgentState(BETA, { pinned: true }, { login: me });
+  await putAgentState(GAMMA, { pinned: true }, { login: me });
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await page.goto("/agents");
@@ -227,8 +236,8 @@ test("a second browser context of the same person shows the pin without a reload
   browser,
 }) => {
   await setLiveSessions(railSessions());
-  const first = await asUser(browser, "alice");
-  const second = await asUser(browser, "alice");
+  const first = await asUser(browser, rowPerson("alice"));
+  const second = await asUser(browser, rowPerson("alice"));
   try {
     const pinning = await first.newPage();
     const watching = await second.newPage();
@@ -255,25 +264,28 @@ test("a second browser context of the same person shows the pin without a reload
 test("pins kept in local storage are in the rail after the first load, and the key is gone", async ({
   browser,
 }) => {
+  const me = rowPerson("alice");
   await setLiveSessions(railSessions());
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await page.addInitScript(
       ({ ids, key }) => {
         window.localStorage.setItem(key, JSON.stringify(ids));
       },
-      { ids: [ALPHA, BETA], key: "dispatch.agents.pinned:alice" }
+      { ids: [ALPHA, BETA], key: `dispatch.agents.pinned:${me}` }
     );
     await page.goto("/");
 
     await expect(railAgentRows(page)).toHaveCount(2);
     expect([...(await railAgentIds(page))].sort()).toEqual([ALPHA, BETA]);
     await expect
-      .poll(() => page.evaluate(() => window.localStorage.getItem("dispatch.agents.pinned:alice")))
+      .poll(() =>
+        page.evaluate((key) => window.localStorage.getItem(key), `dispatch.agents.pinned:${me}`)
+      )
       .toBeNull();
     // The person's, not this browser's: Dispatch holds both pins.
-    const states = await getAgentStates();
+    const states = await getAgentStates({ login: me });
     expect(states[ALPHA]?.pinned_at).toBeDefined();
     expect(states[BETA]?.pinned_at).toBeDefined();
   } finally {
@@ -287,14 +299,15 @@ test("a person with no pins sees the Agents heading and one line saying where th
   browser,
 }) => {
   await setLiveSessions(railSessions());
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
     await expect(railAgents(page)).toHaveText(NO_PINS_TEXT);
     await expect(page.locator(`#${RAIL_AGENTS_ID}`)).toHaveJSProperty("tagName", "P");
 
-    await page.getByRole("link", { name: "Agents" }).click();
+    // The heading's link, by a name that starts with the word, as in the first row above.
+    await page.getByRole("link", { name: /^Agents\b/ }).click();
     await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
     await expect(railAgents(page)).toHaveText(NO_PINS_TEXT);
   } finally {
@@ -307,20 +320,21 @@ test("a person with no pins sees the Agents heading and one line saying where th
 // a pin made again goes to the end.
 // SLOW(>=2s): five pin writes, each a round trip of its own, read back through the rail.
 test("the rail lists the pinned agents oldest pin first", async ({ browser }) => {
+  const me = rowPerson("alice");
   await setLiveSessions(railSessions());
-  await putAgentState(GAMMA, { pinned: true });
-  await putAgentState(BETA, { pinned: true });
-  await putAgentState(ALPHA, { pinned: true });
-  const context = await asUser(browser, "alice");
+  await putAgentState(GAMMA, { pinned: true }, { login: me });
+  await putAgentState(BETA, { pinned: true }, { login: me });
+  await putAgentState(ALPHA, { pinned: true }, { login: me });
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await page.goto("/");
     await expectRailAgents(page, [GAMMA, BETA, ALPHA]);
 
     // Unpinned and pinned again, the oldest pin is now the newest and goes last.
-    await putAgentState(GAMMA, { pinned: false });
+    await putAgentState(GAMMA, { pinned: false }, { login: me });
     await expect(railAgentRow(page, GAMMA)).toHaveCount(0);
-    await putAgentState(GAMMA, { pinned: true });
+    await putAgentState(GAMMA, { pinned: true }, { login: me });
     await expect(railAgentRow(page, GAMMA)).toHaveCount(1);
     await expectRailAgents(page, [BETA, ALPHA, GAMMA]);
   } finally {

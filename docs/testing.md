@@ -182,6 +182,232 @@ itself, whose tests import its sources by relative path.
   own volume, which Legion's runtime does for every role (`/legion/scratch/cache`). With
   `XDG_CACHE_HOME` unset in a pod, that cache is no longer a tool's cache but the pod's death.
 
+## Where a Dispatch test belongs
+
+Dispatch (`packages/dispatch`) is tested in four layers. A test goes in the lowest layer that can
+decide what it claims: each layer above costs more for each row and proves less about the code
+under it. Each `web/src/` and `e2e/` path below is under `packages/dispatch`.
+
+- **Unit and component**: `bun run test:web` over `web/src`, with happy-dom, Testing Library,
+  `@testing-library/user-event`, `@testing-library/jest-dom` and MSW
+  (`web/src/__tests__/network.ts`). It owns rendering, state, the keyboard, the error paths, what
+  the client sends and what it does with an answer. `bun run test:harness` over `e2e/__tests__`
+  tests the browser harness and the suite's own tools, and drives no browser.
+
+- **Contract**: `packages/contracts/schemas/dispatch-openapi.json`, which
+  `go run ./cmd/dispatch openapi --out <file>` in `packages/envoy` writes from the Go route table
+  (`packages/envoy/internal/dispatch/api/routes_table.go`; `openapi --check` fails when the
+  committed file differs), and `packages/contracts/src/dispatch-api.generated.ts`, which
+  `bun run gen:api` in `packages/contracts` generates from that JSON file.
+  The web client and the end-to-end client take their types from the generated file. It owns the
+  shape of every request and every response: a route change
+  that the client does not follow fails `bun run typecheck`, and
+  `e2e/__tests__/stub-recordings.test.ts` holds every committed recording to that schema. So no
+  browser row proves a response shape.
+
+- **Browser against a stubbed API**: the `stub` and `stub-phone` projects, in files named
+  `*.stub.e2e.ts`, run by `bun run e2e:stub`. A real engine reads a recorded API, with no server,
+  no database and no sign-in.
+
+- **Browser against the real stack**: `bun run e2e`, with the real Go server and Postgres, one stack for each Playwright worker.
+  A spec takes its `test` from `e2e/test.ts`, whose fixtures empty the worker's database once, before the worker's first row, and before each row reset the fake services, whose state no key separates, and sign the default context in.
+  A real-stack row makes its data under names of its own (`rowKey`, `rowPerson`, `rowSessionId` and `rowNumber` in `e2e/test.ts`), so it needs no emptied database: it seeds beside what the rows before it wrote, under names none of them used.
+  A row empties the database inside itself in three cases only: for a claim about an empty list that is the whole stack's, which no key of the row's can make its own; for a row whose claim is the emptying itself; and for an opt-in probe that a person compares by hand against a run on another checkout.
+  Such a row empties through `emptyDatabase` (`e2e/test.ts`), which counts the emptying, so the datasets the worker keeps are written again for the rows after it.
+  The empty-list rows are these.
+  `e2e/legion.e2e.ts`'s "the Settings page refuses a state URL that is not a daemon's, and its Remove stops the reading" ends on a Legion daemons section that lists no daemon, and that section lists every project's daemon of the stack.
+  `e2e/priorities.e2e.ts`'s "with no priority the page reads the server's sentence, and writes the first one" and "the rail's Priorities count falls as work leaves flight and as a parent link moves" read a deployment with no priority, and a priority belongs to no project: the order and the rail's count are the whole stack's.
+  `e2e/keyboard-palette.e2e.ts`'s "an arrow pressed before the search answers reaches no action the query finds mid-label" and "a stale answer refreshing for the same query keeps the arrows off the actions it finds mid-label" read a search bar that lists no project above the actions for `issue`, and the bar lists every project of the stack whose key or name holds the word; no key fits, because the word must be one inside the fixed action label `Close issue`.
+  The rows whose claim is the emptying itself are `e2e/issue.e2e.ts`'s "database reset clears fake Envoy subscribers before the next issue", which proves that the fake Envoy's subscribers go with the tables, and `e2e/read-marker-disk-stall.multiprocess.e2e.ts`'s "a read marker whose page closed while the database's disk did not answer holds nothing the next reset empties", which empties while the database's disk is silent.
+  The opt-in probe is `e2e/failed-room.e2e.ts`'s "a writer inside the docs layer when its room fails is told, and the room recovers", skipped unless `DISPATCH_FAILED_ROOM_PROBE=1`: a person compares it by hand against a run on another checkout, so both runs start from the same empty database.
+  Every other real-stack row keys its data and empties no database.
+  A stubbed row's seed is no such case: `stubbed` (`e2e/stub/stub-test.ts`) empties the database before each row's seed in record mode alone, since that seed's keys are the ones its recording holds, and no gating lane records.
+  A real-stack row makes its projects under `rowKey(...)` (`e2e/test.ts`), a key no other row makes, and `createProject` (`e2e/api.ts`) takes only the `RowKey` type that `rowKey` answers, so a row that writes a literal key fails the typecheck.
+  A helper that makes a project under a key its caller passes takes a `RowKey` too, and a key built from the row's own, as `XCORE` is `CORE` behind an `X`, is `rowKeyBehind("X", core)`.
+  A helper that inserts its project straight into Postgres (`e2e/legion-seed.ts`, and the fixtures of `e2e/delivery-seed.ts` under the place `deliveryPlace` makes) inserts it with no `ON CONFLICT`, so a second project under one key fails the row rather than leaving the first in its place.
+  A caller whose key is fixed on purpose writes it as `fixedKey(key, why)`, and `why` names the reason a fixed key is right there: the recording a stubbed row replays, the review corpus seeded once into each database a worker holds, the docs' pictures, the local instance, or a project another service names (`e2e/read-token-live.ts`).
+
+Two rules set the edges of those layers:
+
+- A rule that the Go server and the browser both implement, such as how a markdown document is
+  read, is one row of a fixture table that both suites read:
+  `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md` and the `fixtures.json` in
+  `pmdoc/testdata/`, beside the `corpus/` directory.
+  Add the shape there, not a row on each surface.
+
+- A row that drives no browser is no browser row. A command-line row goes to the tests of the
+  client package, a row about the Go reader to the Go tests, a server timing to a Go benchmark.
+  `e2e/__tests__/no-browser-rows.test.ts` fails a browser row that drives no browser, unless
+  `exemptions` in `e2e/no-browser-rows.ts` names the row with its reason.
+
+When a row may be added to the browser suite:
+
+- Only when no lower layer can decide its claim: the claim needs a real engine (ProseMirror and
+  Milkdown, Mermaid in a worker, `contenteditable`, the highlight API, forced colours, a phone's
+  layout or touch), or it follows one path through the real server that no unit test and no Go
+  test can join. A row that asserts only what a component draws from an answer is a unit test.
+
+- A new browser row is a stubbed row, unless its claim is one that only the real stack can decide
+  (the next list).
+
+- A project selects its rows by tag and by its own `grep` and `grepInvert` in
+  `e2e/playwright.config.ts` (`@phone`, `@phone-only`, `@webkit`, `@firefox`; `tagged` in
+  `e2e/configurations.ts`). A new row that a project must not run is kept out by that project's
+  grep. It is not selected there and then skipped by a `test.skip` whose condition names the
+  project. A `test.skip` is right only where its condition is about the run's environment, such as
+  a server that reads no fake broker (`e2e/fake-broker-helpers.ts`).
+
+- A row joins the pull-request lane only with the `@pr` tag, and a real-stack row carries that tag
+  only when a pull request must see its failure first, with a `// @pr: ` line above it that says
+  why. Every stubbed row carries the tag. `e2e/__tests__/pull-request-lane.test.ts` holds the lane
+  to at most 330 rows, at most 150 of them outside the stubbed projects, and counts in both the two
+  rows the `embedder` job of `.github/workflows/dispatch-browser.yaml` runs on every pull request.
+  A row without the tag runs in the full lane: the merge queue, a pull request with the `full-ci`
+  label, and the nightly run.
+
+- A row that fails and then passes on its retry is flaky, and the `merge` job of
+  `.github/workflows/dispatch-browser.yaml` names each one in the run's summary. A row that the
+  scheduled run of `.github/workflows/dispatch-browser-nightly.yaml` names, flaky in two runs of 14
+  days or held in the quarantine longer than 14 days, is a defect: that run's quarantine check
+  fails the run and names the row in its summary. The run posts no check, files no issue and
+  sends no message; GitHub tells only the person who last edited the workflow's cron line (the
+  workflow's own header says so). The check counts a flaky run only when it was made
+  after the last change to the row's own lines. `e2e/quarantine.ts` holds two kinds of entry, each
+  naming the row and the issue that owns it. A quarantine entry, with the date it was added, takes
+  the row out of the pull-request lane and the merge queue, and the row keeps running in the
+  scheduled run, where it gates nothing. A fix entry names the commit on `main` that fixed the row
+  elsewhere than in its own lines: the row stays in every lane, and the check counts only its
+  flaky runs made after that commit. `e2e/__tests__/quarantine.test.ts` holds the file to at most
+  10 quarantine entries, each with its issue and its date.
+
+What a stubbed row may assert, and what only a real-stack row may:
+
+- A stubbed row asserts what the browser does with a fixed answer: a layout, a width, a computed
+  colour, focus and roving, a chord, an address, an accessibility scan, what the page draws from
+  the answer, and a rule that the page applies itself, which the row proves by asserting that the
+  page sent no request.
+
+- Only a real-stack row asserts what the server decides. A row stays on the real stack when it
+  reads something that the server computes, enforces, refuses or ranks; when it writes and then
+  reads its own write, because a recording answers the second read with the state from before the
+  write, so the row would pass and prove nothing; when it needs a frame that the server sends (a
+  delivery, a turn that streams, the live document); or when it reads a clock that the server
+  keeps moving. `packages/dispatch/README.md`, "The stubbed layer", says how a stubbed row is
+  declared and recorded, and what a new spec file needs.
+
+The clock of a unit test:
+
+- A unit test never waits on the real clock, unless a comment above the wait says why it stays
+  there in the words "stays on the real clock", as the kept ones do
+  (`web/src/features/margin/Margin.landing.test.tsx`'s `quiet` and its 500 ms long task,
+  `web/src/features/refs/MarkdownBody.test.tsx`'s `nextTask`, and the parse worker stand-in's
+  `tick` in `web/src/features/refs/parse-worker-fixture.ts`), and
+  `web/src/__tests__/real-clock-waits.test.ts` fails an awaited timer or a `Bun.sleep` without one,
+  whatever its delay: it reads each file with the TypeScript parser, and an awaited timer is a
+  `setTimeout`, global or a member such as `window.setTimeout`, whose callback is a promise's
+  resolver or calls one, whatever the resolver is called.
+  A zero-delay timer is such a wait too: what has run by its turn depends on how loaded the machine
+  is, so a row waits for the condition its step stands for, with `waitFor` or an `expect` of what it
+  reads next, or runs the product's own zero-delay timer on the fake clock with `tick(0)`.
+  Apart from those, a row uses no `Bun.sleep`, no awaited `setTimeout` and no wait timed by
+  `performance.now()`, and it asserts no `Date.now()` difference.
+  A row that waits for a product timer installs the fake clock (`onFakeClock` from
+  `web/src/__tests__/fake-clock.ts`, or `jest.useFakeTimers()`) and moves it with `tick` or `jump`
+  from that file.
+  A row that stands in for an answer that takes time to come, a server's or a sign-in check's, sets
+  its timer with `afterOnFakeClock` from that file, which refuses the real clock.
+  happy-dom runs a zero-delay timer set while another one waits in that one's task, and the fake
+  clock holds a timer of the real clock still, so a row installs the fake clock before the product
+  sets the zero-delay timer the row runs, at a moment no zero-delay timer of the real clock waits:
+  `zeroDelaysOnFakeClock` in `web/src/features/issue-page/outline-fixtures.ts` refuses to start
+  otherwise.
+  It restores the real clock with `realClock` in its `finally` or in its file's `afterEach`, because
+  a fake clock left behind stops the timers of every row after it.
+  The row moves the clock by the delay that the product's module exports, not by a literal copy of
+  it, so a change of that delay changes the test too.
+  Under the fake clock, user-event comes from `userOnFakeClock` in `web/src/__tests__/user.ts`.
+
+- The deadline of each `web/src` test is the `--timeout 60000` of `package.json`'s `test:web`
+  script, and `web/src/__tests__/setup.ts` says how it was sized.
+  The one deadline above 60 s is the 510 s, `explorationTimeout`, of the eight rows of
+  `web/src/features/issue/useIssueDrafts.test.ts` that read its sweep of 186,538 sequences.
+  The reason is the sweep's first computation: whichever of the eight runs first in a process
+  computes the sweep, which took up to 255 s in an issue pod beside its other roles' work, and the
+  rest read its result.
+  The comment above `explorationTimeout` gives the readings and how 510 s was sized from them.
+  A row sets a shorter one only with a comment that says what it bounds.
+  The one shorter deadline left is `WHOLE_TABLE_TIMEOUT_MS` in
+  `web/src/features/refs/fixture-table-readings.test.ts`, which two of its rows set.
+  On Bun 1.4.4, the pin, that deadline fires under a held clock too: a row that held the clock and
+  awaited a promise that nothing resolved ended at 3.04 s under `--timeout 3000`. A harness row in
+  `e2e/__tests__` that starts a child states its own limit with `rowLimit` from
+  `e2e/__tests__/bounded-subprocess.ts`: the sum of the bounds of what it waits for, plus 30 s.
+
+- A harness test in `e2e/__tests__` that waits on a real process or a real socket keeps a bounded
+  real wait, because only real time moves that peer (`local-instance-support.test.ts`,
+  `round-robin-proxy.test.ts`).
+
+- Testing Library's `waitFor` and `findBy*` move a fake clock only when they find a global `jest`
+  (`jestFakeTimersAreEnabled` in `@testing-library/dom`), and Bun's `jest` is a module binding of
+  `bun:test`, not a global. The preload `web/src/__tests__/setup.ts` sets that global. Without it,
+  every such wait under `jest.useFakeTimers()` polls a clock that nothing moves.
+  `web/src/__tests__/testing-library-fake-timers.test.tsx` holds the line in place. So a web test
+  runs through `bun run test:web <file>`, which loads the preloads, and never through a bare
+  `bun test <file>`.
+
+- `web/src/__tests__/register-dom.ts`, the first preload of `test:web`, registers happy-dom by a
+  hand call, at the origin `http://dispatch.test`. Bun 1.4.4, the pin, has no setting that could
+  do it: its `bunfig.toml` reader reads no `environment` key under `[test]`
+  (`src/bunfig/bunfig.rs` at tag `bun-v1.4.4`), so the call stays until a Bun release reads one.
+
+How a unit test acts on the page and reads it:
+
+- A row acts as a person does, through user-event. A `fireEvent` call carries a comment within
+  the five lines above it that says why user-event has no form for it.
+
+- A row reads focus and attributes through jest-dom. Focus is `expect(el).toHaveFocus()`, never
+  `expect(document.activeElement).toBe(el)`, `expect(el).toBe(document.activeElement)` or an
+  `expect` of a comparison with `document.activeElement`. An attribute is
+  `expect(el).toHaveAttribute(name, value)`, never `expect(el.getAttribute(name))` with `.toBe()`,
+  `.toBeNull()`, `.toContain()` or `.toMatch()`, and never `expect(el.hasAttribute(name))` with
+  `.toBe()`. Each form named with `.toBe()` counts with `.toEqual()` and `.toStrictEqual()` too.
+  `expect.stringContaining` and `expect.stringMatching` give `toHaveAttribute` a part
+  of the value. A site that keeps the hand-written form carries its reason the same way.
+  `.github/scripts/check-fireevent-reasons.sh`, which CI's lint job runs, refuses a call or a read
+  without one. A read of a property of the focused element, such as its `tagName`, is not one of
+  these forms. Bun 1.4.4 prints no `expect` message for a matcher that `expect.extend` registered,
+  jest-dom's among them, so a read whose message names what a failure needs, such as the key or the
+  path a loop is on, keeps the hand-written form with that reason, and a read whose message is a
+  fixed sentence goes to the matcher, which keeps the sentence as the claim it states.
+
+Pages under `docs/solutions/` that describe what this layout replaced. They stay as history, and
+no role edits them:
+
+- These seven describe the wrapper runner `e2e/run.ts`, its lanes, `DISPATCH_E2E_LANES` and
+  `DISPATCH_E2E_WORKERS`. Playwright's own `globalSetup` and `globalTeardown` now start one stack
+  for each worker, `--workers <n>` sets the count, and the run is
+  `bunx playwright test --config e2e/playwright.config.ts`. Each page carries a dated update that
+  says so:
+  `legion/a-port-held-in-an-issue-pod-is-a-sibling-roles-harness-move-your-run-with-the-five-port-variables-and-your-own-database-and-never-stop-the-holder-LEGION-695.md`,
+  `testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-INFRA-43.md`,
+  `testing/dispatch-playwright-harness-from-a-legion-pane-the-harness-owns-its-envoy-own-your-ports-database-and-paths.md`,
+  `testing/playwright-gets-os-chosen-ports-from-a-wrapper-that-starts-the-servers-before-it-runs-INFRA-253.md`,
+  `testing/playwright-project-swallows-the-spec-files-written-after-it-so-name-files-first-INFRA-527.md`,
+  `testing/run-one-whole-playwright-project-at-a-time-in-an-issue-pod-and-re-run-a-shared-cpu-failure-alone-INFRA-521.md`
+  and
+  `testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md`.
+
+- `envoy/an-execfile-timeout-sends-sigterm-and-waits-so-a-child-that-keeps-waiting-is-unbounded-race-the-call-and-kill-it-with-sigkill.md`
+  says that on Bun 1.3.14 a per-test deadline does not fire under a held clock. On Bun 1.4.4 it
+  does (above).
+
+- `legion/worker-pane-shell-gotchas.md` names a `bunfig.toml` preload. The preloads are now flags
+  of `package.json`'s `test:web` script, and `bunfig.toml` holds none.
+
+- A page that names the `dispatch` job of `.github/workflows/ci.yaml` names a job that no longer
+  exists. Its unit steps are the `dispatch-ui` job, and its browser rows are the
+  `dispatch-browser` job, which calls `.github/workflows/dispatch-browser.yaml`.
+
 ## A test that looks for a process it started
 
 A test, and each script library that a test runs, reads one process by its pid: its command line
@@ -250,9 +476,10 @@ and each command runs there.
   `bun run test:harness e2e/__tests__/<file> --seed=<n>`. Add `--rerun-each=<k>` for a row that
   first failed on run k, which the report of `bun run test:repeat` names. The order of the tests in
   a file depends only on the seed and on that file, so this repeats the order the row failed in. A
-  row that failed from the lane's load, such as one that times a real process, or from another file
-  that ran beside it, can pass alone: run it with the files that ran beside it, or under the same
-  load.
+  row of a leg that ran one shard of its lane (`--shard`) is run again by the same command, with no
+  `--shard`: the shard picks which files run and leaves each file's order to the seed. A row that
+  failed from the lane's load, such as one that times a real process, or from another file that ran
+  beside it, can pass alone: run it with the files that ran beside it, or under the same load.
 
 - No flag of `bun test` turns random order off: `--randomize=false` is refused, and
   `--no-randomize` still shuffles. `bun --config=<file> test …` reads that file in place of
@@ -263,11 +490,14 @@ and each command runs there.
 - Read the order a run used from its junit file (`--reporter=junit --reporter-outfile=<f>`), not
   from its console: Bun prints no `(pass)` lines where `CLAUDECODE` or `AGENT` is set.
 
-- `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>` runs
-  one lane with every test run k times (`--rerun-each`), 20 when `--reruns` is left out, and writes
-  a report of every row that failed, with how many of its runs failed, its seed and the command
-  that runs it again, and of every failure that belongs to no row.
-  `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three seeds.
+- `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] [--shard <i>/<n>]
+  --out <dir>` runs one lane with every test run k times (`--rerun-each`), 20 when `--reruns` is
+  left out, and writes a report of every row that failed, with how many of its runs failed, its
+  seed and the command that runs it again, and of every failure that belongs to no row. With
+  `--shard <i>/<n>` it runs only the i-th of n shards of the lane's files, as Bun's own `--shard`
+  deals them, and the report names the shard. `.github/workflows/dispatch-unit-repeat.yaml` runs
+  it weekly, each lane in three rounds under a seed for each round, and the web lane's round as two
+  legs, its shards 1/2 and 2/2, under that round's one seed.
 
 - A rerun of a file keeps every module the run before loaded, so a module-level store or cache
   keeps what that run left in it. Where a row needs such state empty, the module exports a reset and

@@ -113,7 +113,8 @@ test("a plan task shows the requirements it serves and the tasks it needs", asyn
   const serves = within(task.getByTestId("plan-task-serves"));
   expect(serves.getByRole("link", { name: "Every issue page shows a Plan tab." })).toBeTruthy();
   const needs = within(task.getByTestId("plan-task-needs"));
-  expect(needs.getByRole("link", { name: "Add the routes." }).getAttribute("href")).toBe(
+  expect(needs.getByRole("link", { name: "Add the routes." })).toHaveAttribute(
+    "href",
     "/issues/CORE-1/artifacts/plan-md#b-t0"
   );
 });

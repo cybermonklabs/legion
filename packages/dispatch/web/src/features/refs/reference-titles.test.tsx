@@ -83,7 +83,7 @@ test("an issue reference reads as its key then its title", async () => {
 
   try {
     const link = await within(view.container).findByRole("link", { name: "CORE-1 Fix the thing" });
-    expect(link.getAttribute("href")).toBe("/issues/CORE-1");
+    expect(link).toHaveAttribute("href", "/issues/CORE-1");
   } finally {
     view.unmount();
   }
@@ -155,7 +155,7 @@ test("a reference whose id is a prefix reads the item under the whole id, cachin
     // element, so the anchor is read from the container each time rather than held.
     const link = () => view.container.querySelector("a");
     await waitFor(() => expect(link()?.textContent).toBe("Ship it?"));
-    expect(link()?.getAttribute("data-dispatch-ref")).toBe(whole);
+    expect(link()).toHaveAttribute("data-dispatch-ref", whole);
     expect(getReferences).toHaveBeenCalledWith("dispatch://CORE-1/ask/2a7f1c90");
     expect(getAsk).toHaveBeenCalledWith(ASK_ID);
     expect(getAsk).not.toHaveBeenCalledWith("2a7f1c90");

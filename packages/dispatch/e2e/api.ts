@@ -15,9 +15,10 @@ import {
   type RequestBody,
   type Result,
   repoParams,
+  routePath,
   routeUrl,
 } from "../web/src/api/paths";
-import type { Actor, GatedStep } from "../web/src/api/types";
+import type { Actor } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
 
@@ -152,10 +153,13 @@ const sessionCookies = new Map<string, CachedSession>();
 /** The session cookie the server issues `login` at its dev sign-in route, minted once per
  *  spelling of a login and process asked, and kept until something revokes it: the generation
  *  the cookie names lives in `user_sessions`, which `resetDatabase` empties and refills for
- *  `resetLogins` alone (it calls `forgetSessions`), and a browser context's Sign out as the same
- *  login advances it. With `target` set the sign-in is pinned to that process, so every request
- *  a pinned call makes, its sign-in included, is served by the process it names. A sign-in that
- *  fails, by its answer or by the request itself, is not kept, so the next call asks again. */
+ *  `resetLogins` alone (it calls `forgetSessions`) - once per worker, before its first row, and
+ *  where a row empties the database itself (`emptyDatabase`, e2e/test.ts) - and a browser
+ *  context's Sign out as the same login advances it, so a row signs out only a person of its own
+ *  (`rowPerson`, e2e/test.ts). With `target` set the sign-in is pinned to that process, so every
+ *  request a pinned call makes, its sign-in included, is served by the process it names. A
+ *  sign-in that fails, by its answer or by the request itself, is not kept, so the next call asks
+ *  again. */
 export function sessionCookie(login: string, target?: DispatchProcess): Promise<Cookie> {
   const key = `${target ?? ""} ${login}`;
   const cached = sessionCookies.get(key);
@@ -201,7 +205,8 @@ const reusedSignIns = new Set<string>();
  *  cookie outlives it. Only the first sign-in of that login since the reset reuses: a row that
  *  signs the same login in twice has almost always signed it out in between, which advances the
  *  login's generation, and the cached cookie, which names the generation before it, would then be
- *  refused. */
+ *  refused. The suite resets the database once per worker (e2e/test.ts), so that first sign-in
+ *  is the worker's, and every later one mints until a row empties the database itself. */
 export function reusableSessionCookie(login: string): Promise<Cookie> | undefined {
   if (!resetLogins.includes(login) || reusedSignIns.has(login)) {
     return undefined;
@@ -211,15 +216,18 @@ export function reusableSessionCookie(login: string): Promise<Cookie> | undefine
 }
 
 /** Forgets the cached session cookies the reset leaves unusable, and the sign-ins it undoes;
- *  `resetDatabase` calls it after emptying the tables.
+ *  `resetDatabase` calls it after emptying the tables, which the suite does once per worker,
+ *  before its first row, and where a row empties the database itself (`emptyDatabase`,
+ *  e2e/test.ts).
  *
  *  The cookies of `resetLogins`, alice and bob, are kept: the reset re-inserts their people rows
  *  and their `user_sessions` rows at generation 0 (e2e/seed.ts), the generation a cookie minted
- *  after the previous reset names, so those two cookies authenticate again and the next row pays
- *  no sign-in for them. Every other login's cookie is forgotten, since the reset re-creates no
- *  other person, and so is a kept login's cookie minted at a later generation, which a sign-out
- *  in the row just ended leaves behind. A kept cookie carries no state of its row into the next
- *  one: it names a login and a generation, both of which the emptied database holds again. */
+ *  after the previous reset names, so those two cookies authenticate again and the rows after
+ *  the reset pay no sign-in for them. Every other login's cookie is forgotten, since the reset
+ *  re-creates no other person, and so is a kept login's cookie minted at a later generation,
+ *  which a sign-out before the reset leaves behind. A kept cookie carries no state from before
+ *  the reset into the rows after it: it names a login and a generation, both of which the emptied
+ *  database holds again. */
 export function forgetSessions(): void {
   for (const [key, session] of sessionCookies) {
     if (!resetLogins.includes(session.login) || !session.atGenerationZero) {
@@ -363,8 +371,37 @@ function del<P extends PathsOf<"delete">>(
   return send(pattern, "DELETE", args, options);
 }
 
-export function createProject(input: Body<"/api/v1/projects", "post">, options: ApiOptions = {}) {
+/** A project key `createProject` takes: the running row's own, `rowKey(...)` (e2e/test.ts), or a
+ *  key fixed on purpose, `fixedKey(...)`, which names why. A real-stack row that wrote a literal
+ *  key would make a project another row of its worker makes too, since no reset empties the
+ *  database between them (e2e/test.ts), so the brand turns that row into a type error on its own
+ *  pull request rather than a collision in a later run. */
+export type RowKey = string & { readonly rowKey: unique symbol };
+
+/** `key` as a key `createProject` takes, for a caller that makes its project under a fixed key on
+ *  purpose: a stubbed row's seed, whose key the committed recording holds; the review corpus,
+ *  seeded once into each database a worker holds; the docs pictures, which show the key; the
+ *  local instance; a live proof whose project another service names (e2e/read-token-live.ts).
+ *  `why` names that reason where the key is written, and a call without one throws. A real-stack
+ *  row's key is `rowKey(...)`, never this. */
+export function fixedKey(key: string, why: string): RowKey {
+  if (why.trim() === "") {
+    throw new Error(`fixedKey: the fixed key ${JSON.stringify(key)} must name why it is fixed`);
+  }
+  return key as RowKey;
+}
+
+export function createProject(
+  input: Omit<Body<"/api/v1/projects", "post">, "key"> & { key: RowKey },
+  options: ApiOptions = {}
+) {
   return post("/api/v1/projects", { body: input }, options);
+}
+
+/** `GET /api/v1/projects`: every project of the stack, as the SPA's own `["projects"]` query
+ *  reads them - the read the search bar lists its Projects rows from. */
+export function listProjects(options: ApiOptions = {}) {
+  return get("/api/v1/projects", {}, options);
 }
 
 /** `PUT /api/v1/projects/{key}/gated-steps`: the design-gate steps the Legion deployment that
@@ -374,13 +411,12 @@ export function createProject(input: Body<"/api/v1/projects", "post">, options: 
  *  deployment that gates nothing. */
 export function setGatedSteps(
   project: string,
-  steps: GatedStep[],
+  steps: Body<"/api/v1/projects/{key}/gated-steps", "put">["steps"],
   options: ApiOptions = { as: "agent" }
-): Promise<{ project: string; steps: GatedStep[] }> {
-  return request<{ project: string; steps: GatedStep[] }>(
-    `/api/v1/projects/${encodeURIComponent(project)}/gated-steps`,
-    "PUT",
-    { steps },
+) {
+  return put(
+    "/api/v1/projects/{key}/gated-steps",
+    { body: { steps }, params: { key: project } },
     options
   );
 }
@@ -484,15 +520,10 @@ export function getIssueResults(issue: string, options: ApiOptions = {}) {
  *  DISPATCH_TEST_HOOKS=1, see run-server.sh); the server starts with both unset, and no
  *  deployment setting can change while it runs. */
 export function setNewIssueSettings(
-  input: { label: string; session: string },
+  input: Body<"/api/v1/settings/new-issue/_test", "post">,
   options: ApiOptions = {}
-): Promise<{ label: string; session: string }> {
-  return request<{ label: string; session: string }>(
-    "/api/v1/settings/new-issue/_test",
-    "POST",
-    input,
-    options
-  );
+) {
+  return post("/api/v1/settings/new-issue/_test", { body: input }, options);
 }
 
 /** `GET /api/v1/issues/{key}/coverage`: what each requirement of the issue's spec lacks. */
@@ -506,6 +537,18 @@ export function getIssueCoverage(issue: string, options: ApiOptions = {}) {
  *  the whole list otherwise; this read asks for neither. */
 export async function listIssues(project: string, options: ApiOptions = {}) {
   const answered = await get("/api/v1/issues", { query: { project } }, options);
+  if (!Array.isArray(answered)) {
+    throw new Error("GET /api/v1/issues answered a page where the whole list was asked for");
+  }
+  return answered;
+}
+
+/** Every open issue of the stack, in the server's order (lifecycle status, rank, creation time,
+ *  key): the read the Agents page's issue picker makes, `api.listIssues({ open: true })`
+ *  (`web/src/features/agents/AgentMessageComposer.tsx`), so a row reads here the list its picker
+ *  offers. Like `listIssues`, it asks for the whole list rather than a page. */
+export async function listOpenIssues(options: ApiOptions = {}) {
+  const answered = await get("/api/v1/issues", { query: { open: true } }, options);
   if (!Array.isArray(answered)) {
     throw new Error("GET /api/v1/issues answered a page where the whole list was asked for");
   }
@@ -557,15 +600,30 @@ export function getPriorityHistory(id: string, options: ApiOptions = {}) {
   return get("/api/v1/priorities/{id}/history", { params: { id } }, options);
 }
 
-/** The viewer's Inbox rows, as the SPA's own `["inbox"]` query reads them. */
-export function getInbox(options: ApiOptions = {}) {
-  return get("/api/v1/inbox", {}, options);
+/** The viewer's Inbox rows, as the SPA's own `["inbox"]` query reads them: every open question
+ *  of the stack, unless `query` narrows them (`assignee: "me"` is the viewer's own list, the one
+ *  the page opens on). */
+export function getInbox(options: ApiOptions = {}, query: Query<"/api/v1/inbox", "get"> = {}) {
+  return get("/api/v1/inbox", { query }, options);
 }
 
 /** `GET /api/v1/search`: the palette's own read, so a row's `href` here is the path a reader
  *  lands on by clicking that hit. */
 export function search(query: string, options: ApiOptions = {}) {
   return get("/api/v1/search", { query: { q: query } }, options);
+}
+
+/** `GET /api/v1/search/results` as the palette asks it on a project's or an issue's page once
+ *  the reader stops typing (`useTieredSearch`, web/src/features/search/useTieredSearch.ts): the
+ *  whole search, with a bare issue number read in `numberProject`, the project of the page. Its
+ *  answer is the one the palette's list ends on, so a row that holds the palette's hits to the
+ *  server's own answer reads that answer here, by the request the page makes. */
+export function paletteSearch(query: string, numberProject: string, options: ApiOptions = {}) {
+  return get(
+    "/api/v1/search/results",
+    { query: { number_project: numberProject, q: query } },
+    options
+  );
 }
 
 /** `GET /api/v1/me/answers`: the caller's own answers and ask replies, newest first, one page. */
@@ -689,7 +747,7 @@ export async function uploadIssueFile(
   form.append("name", input.name);
   form.append("file", new Blob([input.bytes], { type: input.contentType }), input.name);
   const response = await fetch(
-    new URL(routeUrl("/api/v1/issues/{key}/artifacts", { key: issue }), baseUrl),
+    new URL(routePath("post", "/api/v1/issues/{key}/artifacts", { key: issue }), baseUrl),
     { body: form, headers: await userHeaders(login), method: "POST" }
   );
   if (!response.ok) {
@@ -1251,6 +1309,16 @@ export function putArchitectureSource(
   return put(
     "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
     { body: { branch: input.branch }, params: { key: project, ...repoParams(input.repo) } },
+    options
+  );
+}
+
+/** `DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}`: removes one of
+ *  `project`'s architecture sources and the components it projected. */
+export function deleteArchitectureSource(project: string, repo: string, options: ApiOptions = {}) {
+  return del(
+    "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
+    { params: { key: project, ...repoParams(repo) } },
     options
   );
 }

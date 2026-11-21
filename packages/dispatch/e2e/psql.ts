@@ -25,8 +25,10 @@ const psqlEnvironment: NodeJS.ProcessEnv = Object.fromEntries(
  *  the `DATABASE_URL` of this process's stack, which is the one the caller supplied for a run of
  *  one stack (`e2e/harness-ports.ts`). A leftover deployed URL must not override a local
  *  harness's DATABASE_URL, and nothing falls back to libpq's default database, because
- *  `resetDatabase` empties whatever this names. It is read when the session connects rather than
- *  at import, so a module that only imports `sql` never refuses before the harness has set it. */
+ *  `resetDatabase` empties whatever this names: once per worker, before its first row, and where
+ *  a row empties it itself (`emptyDatabase`, e2e/test.ts). It is read when the session connects
+ *  rather than at import, so a module that only imports `sql` never refuses before the harness
+ *  has set it. */
 function databaseUrl(): string {
   const deployed = process.env.PLAYWRIGHT_BASE_URL
     ? process.env.PLAYWRIGHT_DATABASE_URL

@@ -17,14 +17,16 @@ import {
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
-import { clearIssueCreator, resetDatabase } from "./seed";
-import { expect, type Locator, test } from "./test";
+import { clearedInbox, expectDrawn } from "./inbox-drawn";
+import { clearIssueCreator } from "./seed";
+import { emptyDatabase, expect, type Locator, rowKey, rowNumber, rowPerson, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
 test("database reset clears fake Envoy subscribers before the next issue", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const staleIssue = await createIssue({ project: "CORE", title: "Stale subscriber" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const staleIssue = await createIssue({ project: core, title: "Stale subscriber" });
   await setLiveSessions([{ session_id: "stale-session", title: "Stale session" }]);
   await setInterests([
     {
@@ -36,12 +38,15 @@ test("database reset clears fake Envoy subscribers before the next issue", async
     },
   ]);
   // The one reset this file calls itself, and the row is about it: the `test` of this suite
-  // empties the database before the row (e2e/test.ts), and this call proves what a reset does
-  // IN a row - the fake Envoy's subscribers go with the tables, so the recycled issue key below
-  // starts with none. Deleting it would leave the row asserting nothing.
-  await resetDatabase();
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "No stale subscriber" });
+  // empties the database once per worker and resets the fakes before each row (e2e/test.ts), and
+  // this call proves what an emptying of the database does IN a row - the fake Envoy's
+  // subscribers go with the tables, so the recycled issue key below starts with none. Deleting it
+  // would leave the row asserting nothing. It empties through `emptyDatabase`, which counts the
+  // database as the worker's, so the datasets the worker keeps are written again for the rows
+  // after this one.
+  await emptyDatabase();
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "No stale subscriber" });
   expect(issue.key).toBe(staleIssue.key);
 
   const context = await asUser(browser, "alice");
@@ -60,8 +65,9 @@ test("database reset clears fake Envoy subscribers before the next issue", async
 
 // @pr: Create through answer to close: the header's own Close, and the Reopen that puts the issue back into Backlog.
 test("issue header closes an issue and reopens it into Backlog @pr", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Close from the header" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Close from the header" });
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -86,7 +92,7 @@ test("issue header closes an issue and reopens it into Backlog @pr", async ({ br
         status: "done",
       });
 
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     await page.getByRole("button", { name: "Board" }).click();
     // Done is a collapsed rail by default: it counts the closed card until the edges are shown.
     await expect(page.getByRole("region", { name: "Done (collapsed)" })).toContainText("1");
@@ -109,7 +115,7 @@ test("issue header closes an issue and reopens it into Backlog @pr", async ({ br
       .poll(() => getIssue(issue.key))
       .toMatchObject({ closed_at: null, status: "backlog" });
 
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     await page.getByRole("button", { name: "Board" }).click();
     const backlog = page.getByRole("region", { name: "Backlog" });
     await expect(
@@ -130,7 +136,8 @@ const session = {
 };
 
 test("issue header identifies session and human creators", async ({ browser }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   await setLiveSessions([
     {
       session_id: "e2e-session",
@@ -138,11 +145,11 @@ test("issue header identifies session and human creators", async ({ browser }, t
     },
   ]);
   const sessionIssue = await createIssue(
-    { project: "CORE", title: "Session-authored issue" },
+    { project: core, title: "Session-authored issue" },
     session
   );
-  const humanIssue = await createIssue({ project: "CORE", title: "Human-authored issue" });
-  const historicalIssue = await createIssue({ project: "CORE", title: "Historical issue" });
+  const humanIssue = await createIssue({ project: core, title: "Human-authored issue" });
+  const historicalIssue = await createIssue({ project: core, title: "Historical issue" });
   await clearIssueCreator(historicalIssue.key);
 
   const context = await asUser(browser, "alice");
@@ -186,8 +193,9 @@ test("issue header identifies session and human creators", async ({ browser }, t
 test("issue header copies its key and persists its title, status, and route", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "First decision" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "First decision" });
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -300,21 +308,27 @@ test("issue header copies its key and persists its title, status, and route", as
 });
 
 test("issue pages show subscribers, external-link fallbacks, and children", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "First decision" });
+  const core = rowKey("CORE");
+  // The linked GitHub issue's number is the row's own (`rowNumber`, e2e/test.ts): Dispatch links
+  // one address from one issue alone (`EXTERNAL_LINK_TAKEN`).
+  const linked = rowNumber("issue");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "First decision" });
   const child = await createIssue({
     parent: issue.key,
-    project: "CORE",
+    project: core,
     title: "Child decision",
   });
   const grandchild = await createIssue({
     parent: child.key,
-    project: "CORE",
+    project: core,
     title: "Grandchild decision",
   });
   await patchIssue(grandchild.key, { status: "done" });
   await patchIssue(issue.key, {
-    external_links: [{ kind: "github_issue", url: "https://github.com/sjawhar/legion/issues/815" }],
+    external_links: [
+      { kind: "github_issue", url: `https://github.com/sjawhar/legion/issues/${linked}` },
+    ],
   });
   await createAsk(issue.key, { question: "First ask" }, session);
   await subscribeSession(issue.key);
@@ -334,12 +348,12 @@ test("issue pages show subscribers, external-link fallbacks, and children", asyn
     await expect(subscribedAgents.getByText("e2e-session", { exact: true })).toHaveCount(0);
     await expect(subscribedAgents.locator("[title='e2e-session']")).toHaveCount(1);
     // Without GitHub App credentials the link still reads as the reference, never the raw address.
-    await expect(page.getByRole("link", { name: "#815 sjawhar/legion" })).toHaveAttribute(
+    await expect(page.getByRole("link", { name: `#${linked} sjawhar/legion` })).toHaveAttribute(
       "title",
       "GitHub details are unavailable for this repository."
     );
     await expect(
-      page.getByRole("link", { name: "https://github.com/sjawhar/legion/issues/815" })
+      page.getByRole("link", { name: `https://github.com/sjawhar/legion/issues/${linked}` })
     ).toHaveCount(0);
     // No component attached anywhere on the chain: the rail's read-only line says so.
     await expect(page.getByTestId("issue-components")).toContainText("Components:Not attached");
@@ -366,8 +380,9 @@ test("issue pages show subscribers, external-link fallbacks, and children", asyn
 test("a subscriber no longer live shows its last heartbeat, not its subscription's last write", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Heartbeat of a departed agent" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Heartbeat of a departed agent" });
   const subscribedAt = Date.now() - 3 * 60 * 60 * 1000;
   const lastHeartbeat = Date.now() - 60 * 60 * 1000;
   // No live session at all: a session the registry still listed would carry its own heartbeat,
@@ -406,12 +421,13 @@ test("a subscriber no longer live shows its last heartbeat, not its subscription
 // SLOW(>=2s): two open pages, and two parent changes made through the mover's own UI, each
 // landing live on the page that watches.
 test("editing the parent line moves the issue across Children tabs live", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const oldParent = await createIssue({ project: "CORE", title: "Old parent" });
-  const newParent = await createIssue({ project: "CORE", title: "New parent" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const oldParent = await createIssue({ project: core, title: "Old parent" });
+  const newParent = await createIssue({ project: core, title: "New parent" });
   const mover = await createIssue({
     parent: oldParent.key,
-    project: "CORE",
+    project: core,
     title: "Moving decision",
   });
 
@@ -461,8 +477,9 @@ test("editing the parent line moves the issue across Children tabs live", async 
 });
 
 test("an answered ask remains in the issue conversation", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "First decision" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "First decision" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Newest ask" },
@@ -488,9 +505,10 @@ test("an answered ask remains in the issue conversation", async ({ browser }) =>
 test("a quote-anchored ask identifies its document in the margin and Conversation", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "A quoted passage.",
     title: "Anchored decision",
   });
@@ -531,13 +549,19 @@ test("a quote-anchored ask identifies its document in the margin and Conversatio
 test("closing an issue removes its asks from the inbox and pinning stays private @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "First decision" });
-  const otherIssue = await createIssue({ project: "CORE", title: "Second decision" });
-  await createAsk(issue.key, { question: "First ask" }, session);
-  await createAsk(otherIssue.key, { question: "Second ask" }, session);
+  const core = rowKey("CORE");
+  // The reader and bob are people of the row's own (`rowPerson`, e2e/test.ts): her Inbox holds
+  // this row's two questions alone, and his pins are none another row's bob made.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "First decision" }, { login: me });
+  const otherIssue = await createIssue({ project: core, title: "Second decision" }, { login: me });
+  // The questions name the row's key: the cleared filter below lists every open question of the
+  // stack, so its text is this row's own only when no other row writes it.
+  const firstAsk = await createAsk(issue.key, { question: `First ask of ${core}` }, session);
+  const secondAsk = await createAsk(otherIssue.key, { question: `Second ask of ${core}` }, session);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   // The Inbox is a second tab of alice's own browser: it makes no write, so sharing the keyed
   // write registry and `navigator.locks` with the issue page costs this row nothing.
@@ -556,19 +580,26 @@ test("closing an issue removes its asks from the inbox and pinning stays private
       });
     await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
     await expect(inbox.locator("[data-inbox-row]")).toHaveCount(1);
-    await expect(inbox.getByText("First ask", { exact: true })).toHaveCount(0);
+    await expect(inbox.getByText(`First ask of ${core}`, { exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Pin issue" }).click();
     await expect(page.getByRole("button", { name: "Unpin issue" })).toBeEnabled();
     await page.reload();
     await expect(page.getByRole("heading", { name: "Pinned" })).toBeVisible();
-    const bob = await asUser(browser, "bob");
+    const bobLogin = rowPerson("bob");
+    const bob = await asUser(browser, bobLogin);
     const bobPage = await bob.newPage();
     try {
       // Alice's issues are nobody else's own work; the closed one is gone from the cleared
-      // filter too.
+      // filter too. That filter lists every open question of the stack, every earlier row's
+      // beside this one's, so what it draws is read from the server and banded by the Inbox's
+      // own rules (`clearedInbox`): the open question is the newest of its band, so it is drawn,
+      // and the closed one is on neither the server's list nor the page.
+      const cleared = await clearedInbox(bobLogin);
+      expect(cleared.rows).not.toContain(firstAsk.id);
       await bobPage.goto("/?assignee=everyone");
-      await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(1);
-      await expect(bobPage.getByText("First ask", { exact: true })).toHaveCount(0);
+      await expectDrawn(bobPage, cleared);
+      await expect(bobPage.locator(`[data-inbox-row="${secondAsk.id}"]`)).toHaveCount(1);
+      await expect(bobPage.getByText(`First ask of ${core}`, { exact: true })).toHaveCount(0);
       await expect(bobPage.getByRole("heading", { name: "Pinned" })).toHaveCount(0);
     } finally {
       await bob.close();
@@ -579,8 +610,9 @@ test("closing an issue removes its asks from the inbox and pinning stays private
 });
 
 test("pinning survives an immediate full navigation", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Navigation-safe event pin" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Navigation-safe event pin" });
   await createMessage(issue.key, { body: "Pinned before navigation" });
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
@@ -651,8 +683,9 @@ test("pinning survives an immediate full navigation", async ({ browser }) => {
 test("a human can unsubscribe an agent from an issue and the session is told", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Subscriber removal" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Subscriber removal" });
   await setLiveSessions([{ session_id: "e2e-unsub-session", title: "Worker (e2e)" }]);
   await setInterests([
     {
@@ -727,10 +760,14 @@ async function subscribeSession(issueKey: string): Promise<void> {
 test("issue header keeps every control in a shared row on a phone and the whose-turn indicator in view at every width @phone", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Header on a phone" });
+  const core = rowKey("CORE");
+  // The pull request's number is the row's own (`rowNumber`, e2e/test.ts): Dispatch links one
+  // address from one issue alone (`EXTERNAL_LINK_TAKEN`).
+  const pull = rowNumber("pull");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Header on a phone" });
   await patchIssue(issue.key, {
-    external_links: [{ kind: "github_pr", url: "https://github.com/sjawhar/legion/pull/1051" }],
+    external_links: [{ kind: "github_pr", url: `https://github.com/sjawhar/legion/pull/${pull}` }],
     labels: ["Frontend", "api"],
     priority: 1,
   });
@@ -755,12 +792,12 @@ test("issue header keeps every control in a shared row on a phone and the whose-
     const indicator = page.getByTestId("issue-whose-turn");
     const openedBy = page.getByText("Opened by:", { exact: true });
     const subscribers = page.getByRole("button", { name: "Subscribers: 1" });
-    const link = page.getByRole("link", { name: "#1051 sjawhar/legion" });
+    const link = page.getByRole("link", { name: `#${pull} sjawhar/legion` });
     await expect(indicator).toHaveText("Waiting on you (1)");
     await expect(subscribers).toBeVisible();
     await expect(link).toBeVisible();
     await expect(
-      page.getByRole("link", { name: "https://github.com/sjawhar/legion/pull/1051" })
+      page.getByRole("link", { name: `https://github.com/sjawhar/legion/pull/${pull}` })
     ).toHaveCount(0);
 
     // Close shares the state row; creator, labels, subscribers, and the GitHub link share the
@@ -823,8 +860,9 @@ test("issue header keeps every control in a shared row on a phone and the whose-
 test("issue header flips between Waiting on you and Waiting on agents as the newest reply changes", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Whose turn" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Whose turn" });
   const ask = await createAsk(issue.key, { question: "Which layout?" }, session);
 
   const context = await asUser(browser, "alice");
@@ -851,8 +889,12 @@ test("issue header flips between Waiting on you and Waiting on agents as the new
 test("issue header gives the title the row's free space beside a short details line", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Header keeps its title readable" });
+  const core = rowKey("CORE");
+  // The pull request's number is the row's own (`rowNumber`, e2e/test.ts): Dispatch links one
+  // address from one issue alone (`EXTERNAL_LINK_TAKEN`).
+  const pullUrl = `https://github.com/sjawhar/legion/pull/${rowNumber("pull")}`;
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Header keeps its title readable" });
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -918,14 +960,10 @@ test("issue header gives the title the row's free space beside a short details l
     await expect(title).toHaveText("Migrate the issue header to a single row");
     await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (1)");
     await expect(page.getByRole("button", { name: "Subscribers: 1" })).toBeVisible();
-    const githubLink = page.locator(
-      '[data-testid=issue-header] a[href="https://github.com/sjawhar/legion/pull/1051"]'
-    );
+    const githubLink = page.locator(`[data-testid=issue-header] a[href="${pullUrl}"]`);
     for (const withLink of [false, true]) {
       await patchIssue(issue.key, {
-        external_links: withLink
-          ? [{ kind: "github_pr", url: "https://github.com/sjawhar/legion/pull/1051" }]
-          : [],
+        external_links: withLink ? [{ kind: "github_pr", url: pullUrl }] : [],
       });
       // The link's own state is what the measurement below depends on, so it is waited for.
       await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
@@ -949,8 +987,9 @@ test("issue header gives the title the row's free space beside a short details l
 test("issue header delivers the click that ends a title edit to the control under the pointer", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Short title" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Short title" });
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -1012,12 +1051,10 @@ test("issue header delivers the click that ends a title edit to the control unde
 test("issue header reassigns through the Assignee picker; a personal token's issues go to its owner", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   // A human's issue is assigned to its creator, whatever casing their sign-in carries.
-  const issue = await createIssue(
-    { project: "CORE", title: "Who answers this?" },
-    { login: "Bob" }
-  );
+  const issue = await createIssue({ project: core, title: "Who answers this?" }, { login: "Bob" });
   expect(issue.assignee).toBe("bob");
 
   const context = await asUser(browser, "alice");
@@ -1071,10 +1108,10 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
       as: "agent" as const,
       token,
     };
-    const hers = await createIssue({ project: "CORE", title: "Minted for Alice" }, agent);
+    const hers = await createIssue({ project: core, title: "Minted for Alice" }, agent);
     expect(hers.assignee).toBe("alice");
     const child = await createIssue(
-      { parent: hers.key, project: "CORE", title: "Child of Alice's issue" },
+      { parent: hers.key, project: core, title: "Child of Alice's issue" },
       { actor: agent.actor, as: "agent" }
     );
     expect(child.assignee).toBe("alice");
@@ -1096,17 +1133,20 @@ async function repoSuggestions(box: Locator): Promise<string[]> {
 test("issue header picks the issue's repository from its project's mappings, and a child resolves to it", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Ops" });
-  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-  await putRepoProject("acme/gadgets", { project: "CORE" });
-  await putRepoProject("acme/elsewhere", { default: true, project: "OPS" });
-  const parent = await createIssue({ project: "CORE", title: "Change the pinned toolchain" });
+  const core = rowKey("CORE");
+  const ops = rowKey("OPS");
+  const bareKey = rowKey("BARE");
+  await createProject({ key: core, name: "Core" });
+  await createProject({ key: ops, name: "Ops" });
+  await putRepoProject("acme/widgets", { default: true, project: core });
+  await putRepoProject("acme/gadgets", { project: core });
+  await putRepoProject("acme/elsewhere", { default: true, project: ops });
+  const parent = await createIssue({ project: core, title: "Change the pinned toolchain" });
   expect(parent).toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
   const child = await createIssue({
     force: true,
     parent: parent.key,
-    project: "CORE",
+    project: core,
     title: "Bump",
   });
 
@@ -1169,8 +1209,8 @@ test("issue header picks the issue's repository from its project's mappings, and
 
     // A project that maps no repository has nothing to suggest, and its issues take a repository
     // all the same: the rail carries the item with an empty suggestion list.
-    await createProject({ key: "BARE", name: "Bare" });
-    const bare = await createIssue({ project: "BARE", title: "No repository mapped" });
+    await createProject({ key: bareKey, name: "Bare" });
+    const bare = await createIssue({ project: bareKey, title: "No repository mapped" });
     expect(bare.resolved_repo).toBeNull();
     const mappingsRead = page.waitForResponse(
       (response) => new URL(response.url()).pathname === "/api/v1/settings/repo-projects"
@@ -1191,11 +1231,13 @@ test("issue header picks the issue's repository from its project's mappings, and
 test("an open issue's header follows its project's default repository as the mappings change", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Ops" });
-  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-  await putRepoProject("acme/gadgets", { project: "CORE" });
-  const issue = await createIssue({ project: "CORE", title: "Follows the default" });
+  const core = rowKey("CORE");
+  const ops = rowKey("OPS");
+  await createProject({ key: core, name: "Core" });
+  await createProject({ key: ops, name: "Ops" });
+  await putRepoProject("acme/widgets", { default: true, project: core });
+  await putRepoProject("acme/gadgets", { project: core });
+  const issue = await createIssue({ project: core, title: "Follows the default" });
   expect(issue).toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
 
   const context = await asUser(browser, "alice");
@@ -1211,7 +1253,7 @@ test("an open issue's header follows its project's default repository as the map
     await expect(control).toHaveAttribute("placeholder", "acme/widgets");
 
     // A new default: the page shows it without a reload.
-    await putRepoProject("acme/gadgets", { default: true, project: "CORE" });
+    await putRepoProject("acme/gadgets", { default: true, project: core });
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
     await expect(control).toHaveAttribute("placeholder", "acme/gadgets");
 
@@ -1223,10 +1265,10 @@ test("an open issue's header follows its project's default repository as the map
 
     // The default again, then moved to another project: CORE maps nothing left to suggest, and
     // the item stays, since the issue takes a repository whatever its project maps.
-    await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+    await putRepoProject("acme/widgets", { default: true, project: core });
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
     await expect(control).toHaveAttribute("placeholder", "acme/widgets");
-    await putRepoProject("acme/widgets", { project: "OPS" });
+    await putRepoProject("acme/widgets", { project: ops });
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
     await expect(control).toHaveAttribute("placeholder", "owner/name");
     await expect.poll(() => repoSuggestions(control)).toEqual([]);
@@ -1238,10 +1280,11 @@ test("an open issue's header follows its project's default repository as the map
 test("an issue page whose mappings read fails says so and retries it, rather than hiding the repository", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await putRepoProject("acme/widgets", { project: "CORE" });
-  await putRepoProject("acme/gadgets", { project: "CORE" });
-  const issue = await createIssue({ project: "CORE", title: "No default to inherit" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await putRepoProject("acme/widgets", { project: core });
+  await putRepoProject("acme/gadgets", { project: core });
+  const issue = await createIssue({ project: core, title: "No default to inherit" });
   expect(issue.resolved_repo).toBeNull();
 
   const context = await asUser(browser, "alice");
@@ -1260,19 +1303,25 @@ test("an issue page whose mappings read fails says so and retries it, rather tha
     // before the rail may say so; those waits are page timers its own clock fires.
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
+    // One turn per retry, and no poll of its own: each turn waits on `expect.poll` for the read
+    // before it to be refused, and only then fires the next retry's delay on the page's clock.
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       await expect.poll(() => refused).toBeGreaterThanOrEqual(attempt);
       await page.clock.fastForward(QUERY_RETRY_DELAY_MS);
     }
     const rail = page.getByTestId("issue-metadata-rail");
-    await expect(rail.getByText("Could not load the repositories mapped to CORE.")).toBeVisible();
+    await expect(
+      rail.getByText(`Could not load the repositories mapped to ${core}.`)
+    ).toBeVisible();
     await expect(rail.getByText("Repository:")).toBeVisible();
 
     failing = false;
     await rail.getByRole("button", { name: "Retry" }).click();
     const control = page.getByLabel(`Repository of ${issue.key}`, { exact: true });
     await expect.poll(() => repoSuggestions(control)).toEqual(["acme/gadgets", "acme/widgets"]);
-    await expect(rail.getByText("Could not load the repositories mapped to CORE.")).toHaveCount(0);
+    await expect(rail.getByText(`Could not load the repositories mapped to ${core}.`)).toHaveCount(
+      0
+    );
   } finally {
     await context.close();
   }
@@ -1284,9 +1333,10 @@ test("an issue page whose mappings read fails says so and retries it, rather tha
 test("an issue takes a repository its project does not map, and keeps it across a reload @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-  const issue = await createIssue({ project: "CORE", title: "Work in another repository" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await putRepoProject("acme/widgets", { default: true, project: core });
+  const issue = await createIssue({ project: core, title: "Work in another repository" });
   expect(issue).toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
 
   const context = await asUser(browser, "alice");
@@ -1328,18 +1378,19 @@ test("an issue takes a repository its project does not map, and keeps it across 
 test("an issue's whole title wraps at every width, whether prose or one unbroken word @phone", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   // Five repeats of a 48-character sentence, cut to exactly 200: the length the spec names. It
   // ends mid-sentence on a letter, so the server trims nothing and the page shows all 200.
   const title200 = "Dispatch cuts off titles that are far too long. ".repeat(5).slice(0, 200);
-  const prose = await createIssue({ project: "CORE", title: title200 });
+  const prose = await createIssue({ project: core, title: title200 });
   expect(prose.title).toHaveLength(200);
   // A single unbroken 100-character string: no space for the browser to break on, so wrapping
   // depends on `break-words` rather than the ordinary word-wrap every other title gets for free.
   const title100 = "supercalifragilisticexpialidocious".repeat(3).slice(0, 100);
   expect(title100).toHaveLength(100);
   expect(title100).not.toContain(" ");
-  const oneWord = await createIssue({ project: "CORE", title: title100 });
+  const oneWord = await createIssue({ project: core, title: title100 });
 
   const context = await asUser(browser, "alice");
   try {
@@ -1366,8 +1417,9 @@ test("an issue's whole title wraps at every width, whether prose or one unbroken
 test("the details rail fades its trailing edge only while it has somewhere to scroll @phone @phone-only", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Rail fade" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Rail fade" });
 
   const context = await asUser(browser, "alice");
   try {

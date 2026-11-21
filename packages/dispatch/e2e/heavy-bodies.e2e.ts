@@ -42,7 +42,7 @@ import {
 } from "./heavy-bodies";
 import { expectSettled, markdownBody } from "./heavy-bodies-page";
 import { expectUnderTheBound, measureDraw, record } from "./main-thread-hold";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 declare global {
@@ -174,8 +174,9 @@ async function expectTheBodyFilledAcrossTasks(page: Page): Promise<void> {
 }
 
 async function seedIssue(title: string): Promise<{ key: string }> {
-  await createProject({ key: "CORE", name: "Core" });
-  return await createIssue({ project: "CORE", title });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  return await createIssue({ project: core, title });
 }
 
 interface Row {

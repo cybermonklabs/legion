@@ -1,7 +1,7 @@
 import { type FakeSession, setLiveSessions, setSessionSendStatus } from "./agents";
 import { createIssue, createProject, listComments } from "./api";
 import { selectMention } from "./mention";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const planner: FakeSession = {
@@ -31,9 +31,10 @@ async function post(page: Page): Promise<Record<string, unknown>> {
 test("/btw with a surviving mention strips its token and sends one comment-level mode @pr", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "BTW comment" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "BTW comment" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -56,8 +57,9 @@ test("/btw with a surviving mention strips its token and sends one comment-level
 test("/btw without a surviving mention remains verbatim and never sends delivery", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Plain BTW comment" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Plain BTW comment" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -77,10 +79,11 @@ test("/btw without a surviving mention remains verbatim and never sends delivery
 });
 
 test("an unsupported selected mode warns but does not prevent Send", async ({ browser }) => {
+  const core = rowKey("CORE");
   const offline: FakeSession = { ...planner, capabilities: [], session_id: "s2", title: "worker" };
   await setLiveSessions([offline]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Unadvertised delivery" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Unadvertised delivery" });
   const alice = await asUser(browser, "alice");
 
   try {

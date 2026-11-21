@@ -1,9 +1,11 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { jump, realClock } from "../../../__tests__/fake-clock";
+import { userOnFakeClock } from "../../../__tests__/user";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { presetPath } from "../issue-address";
 import { CONTROL_LABELS } from "../page-words";
@@ -71,22 +73,18 @@ test("a failed read's Retry reads busy and stays enabled while its read runs aga
   );
   try {
     const retry = view.getByRole("button", { name: "Retry" }) as HTMLButtonElement;
-    expect(retry.getAttribute("aria-busy"), "the Retry reads busy before it was pressed").toBe(
-      null
-    );
+    expect(retry, "the Retry reads busy before it was pressed").not.toHaveAttribute("aria-busy");
     await act(async () => retry.focus());
     await user.keyboard("{Enter}");
     expect(asks, "Enter on Retry did not ask the read again").toBe(1);
     // The fixup's observer runs once React has drawn the read running.
     await act(async () => {});
-    expect(document.activeElement, "the read running again took the focus off its Retry").toBe(
-      retry
-    );
+    expect(retry, "the read running again took the focus off its Retry").toHaveFocus();
     expect(retry.disabled, "the Retry is disabled while its read runs again").toBe(false);
-    expect(
-      retry.getAttribute("aria-busy"),
-      "the Retry does not read busy while its read runs again"
-    ).toBe("true");
+    expect(retry, "the Retry does not read busy while its read runs again").toHaveAttribute(
+      "aria-busy",
+      "true"
+    );
     await user.keyboard("{Enter}");
     expect(asks, "a second press while the read runs asked it again").toBe(1);
   } finally {
@@ -163,7 +161,7 @@ test("a read that fails again while its line stays drawn says the failure again,
     expect(view.getByRole("button", { name: "Retry" }), "the second failure drew a new Retry").toBe(
       retry
     );
-    expect(document.activeElement, "the second failure took the focus off the Retry").toBe(retry);
+    expect(retry, "the second failure took the focus off the Retry").toHaveFocus();
   } finally {
     view.unmount();
   }
@@ -189,7 +187,7 @@ test("a read that names its failures says each again while its line stays drawn,
       "the read's third failure, from a run the line never saw, kept the alert of its second"
     ).not.toBe(second);
     expect(view.getByRole("button", { name: "Retry" }), "a failure drew a new Retry").toBe(retry);
-    expect(document.activeElement, "a failure took the focus off the Retry").toBe(retry);
+    expect(retry, "a failure took the focus off the Retry").toHaveFocus();
   } finally {
     view.unmount();
   }
@@ -246,20 +244,20 @@ test("a failed read's line that leaves with the focus in it gives the focus to w
   const view = render(drawn("failed", "failed"));
   try {
     const [statements, results] = view.getAllByRole("button", { name: "Retry" });
-    await waitFor(() => expect(document.activeElement).toBe(statements));
+    await waitFor(() => expect(statements).toHaveFocus());
     view.rerender(drawn("answered", "failed"));
     await waitFor(() =>
       expect(
-        document.activeElement,
+        results,
         "the statements answered and their line left the focus elsewhere than the results' Retry"
-      ).toBe(results)
+      ).toHaveFocus()
     );
     view.rerender(drawn("answered", "answered"));
     await waitFor(() =>
       expect(
-        document.activeElement,
+        view.container.querySelector(TAB_STOP_ROW),
         "the results answered and their line left the focus elsewhere than the view's first row"
-      ).toBe(view.container.querySelector(TAB_STOP_ROW))
+      ).toHaveFocus()
     );
   } finally {
     view.unmount();
@@ -271,21 +269,21 @@ test("a failed read's line that leaves with the focus in it gives the focus to w
   const again = render(drawn("answered", "failed"));
   try {
     const retry = again.getByRole("button", { name: "Retry" });
-    await waitFor(() => expect(document.activeElement).toBe(retry));
+    await waitFor(() => expect(retry).toHaveFocus());
     again.rerender(drawn("answered", "out"));
     const tree = again.getByRole("tree", { name: CONTROL_LABELS.tree });
     await waitFor(() =>
       expect(
-        document.activeElement,
+        tree,
         "the results' read out again left the focus elsewhere than the tree"
-      ).toBe(tree)
+      ).toHaveFocus()
     );
     again.rerender(drawn("answered", "answered"));
     await waitFor(() =>
       expect(
-        document.activeElement,
+        again.container.querySelector(TAB_STOP_ROW),
         "the rows that came left the focus elsewhere than the view's first row"
-      ).toBe(again.container.querySelector(TAB_STOP_ROW))
+      ).toHaveFocus()
     );
   } finally {
     again.unmount();
@@ -330,9 +328,9 @@ test("a failed read's line that leaves over drawn rows gives the focus to the ne
     view.rerender(<RowsUnderLinesView first={false} />);
     await waitFor(() =>
       expect(
-        document.activeElement,
+        results,
         "the statements' line left the focus elsewhere than the results' Retry"
-      ).toBe(results)
+      ).toHaveFocus()
     );
   } finally {
     view.unmount();
@@ -377,14 +375,14 @@ test("a focus the view puts on a control in the render its failed read's line le
   const view = render(<FocusingView answered={false} />);
   try {
     const retry = view.getByRole("button", { name: "Retry" });
-    await waitFor(() => expect(document.activeElement).toBe(retry));
+    await waitFor(() => expect(retry).toHaveFocus());
     view.rerender(<FocusingView answered />);
     const control = view.getByRole("button", { name: "A control the view focuses" });
     await frames(2);
     expect(
-      document.activeElement,
+      control,
       "the line that left took the focus off the control the view focused in that render"
-    ).toBe(control);
+    ).toHaveFocus();
   } finally {
     view.unmount();
   }
@@ -392,14 +390,19 @@ test("a focus the view puts on a control in the render its failed read's line le
 
 const ISSUE = "CORE-1";
 
+/** How long after it mounts a view whose read is refused late draws the refused read's line: past
+ *  the frame in which the chord that opened the view reaches its tree (`reachPart`). */
+const REFUSED_LATE_MS = 40;
+
 /** A view whose read is refused from its first load, which draws its tree at once and with no
  *  row, as a view does while a read is out. The refused read's line over it is drawn at once, or
- *  where `late` a moment after the view mounts, once the chord has reached the tree. */
+ *  where `late` `REFUSED_LATE_MS` after the view mounts, once the chord has reached the tree. A
+ *  row that draws it late runs on the fake clock and moves it over that wait. */
 function RefusedTreeView({ late }: { late: boolean }): ReactNode {
   const [refused, setRefused] = useState(!late);
   useEffect(() => {
     if (!late) return;
-    const failed = window.setTimeout(() => setRefused(true), 40);
+    const failed = window.setTimeout(() => setRefused(true), REFUSED_LATE_MS);
     return () => window.clearTimeout(failed);
   }, [late]);
   return (
@@ -434,9 +437,10 @@ function ChordPage({ late }: { late: boolean }): ReactNode {
 }
 
 test("the chord that opens a view with no row reaches its failed read's Retry from anywhere on the page", async () => {
-  const user = userEvent.setup();
   for (const from of ["a control elsewhere", "the page's body"] as const) {
     for (const late of [false, true]) {
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
       const page = render(
         <MemoryRouter initialEntries={[presetPath(ISSUE, "conversation")]}>
           <KeymapProvider>
@@ -448,15 +452,20 @@ test("the chord that opens a view with no row reaches its failed read's Retry fr
         if (from === "the page's body") (document.activeElement as HTMLElement | null)?.blur();
         else await act(async () => page.getByRole("button", { name: "Elsewhere" }).focus());
         await user.keyboard("tk");
-        const retry = await page.findByRole("button", { name: "Retry" });
+        // The chord looks for the tree a frame after it opens the view and focuses it there, and
+        // a read refused late is refused once those frames have passed.
+        await frames(3);
+        await jump(REFUSED_LATE_MS);
+        const retry = page.getByRole("button", { name: "Retry" });
         const said = `t k from ${from}, with the read refused ${late ? "after" : "before"} the chord reached the tree, left the focus elsewhere than the Retry`;
-        await waitFor(() => expect(document.activeElement, said).toBe(retry));
-        // The chord looks for the tree a frame after it opens the view and focuses it there, so
-        // the focus is read again once those frames have passed.
+        // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the case.
+        expect(document.activeElement, said).toBe(retry);
+        // The focus is read again once more frames have passed.
         await frames(3);
         expect(document.activeElement, said).toBe(retry);
       } finally {
         page.unmount();
+        realClock();
       }
     }
   }
@@ -485,7 +494,7 @@ test("the chord that opens a view with no row brings its failed read's Retry on 
     await act(async () => page.getByRole("button", { name: "Elsewhere" }).focus());
     await user.keyboard("tk");
     const retry = await page.findByRole("button", { name: "Retry" });
-    await waitFor(() => expect(document.activeElement).toBe(retry));
+    await waitFor(() => expect(retry).toHaveFocus());
     await frames(2);
     // Its top is brought 8 px below the band, which nothing publishes here (`bringOnScreen`).
     expect(scrolled, "the Retry the chord reached was left above the screen").toHaveBeenCalledWith({
@@ -543,9 +552,10 @@ test("a focus the reader moves off a failed read's Retry onto the view's tree st
       const retry = page.getByRole("button", { name: "Retry" });
       const tree = page.getByRole("tree", { name: CONTROL_LABELS.tree });
       await user.tab();
-      expect(document.activeElement, "Tab from the control elsewhere left the Retry").toBe(retry);
+      expect(retry, "Tab from the control elsewhere left the Retry").toHaveFocus();
       await moveOnto(tree, move, user);
       await frames(3);
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
       expect(
         document.activeElement,
         `${move} moved the focus off the Retry onto the tree, and the stage took it back`
@@ -555,9 +565,9 @@ test("a focus the reader moves off a failed read's Retry onto the view's tree st
       await act(async () => tree.focus());
       await waitFor(() =>
         expect(
-          document.activeElement,
+          retry,
           "a focus on the tree from the control elsewhere left the focus elsewhere than the Retry"
-        ).toBe(retry)
+        ).toHaveFocus()
       );
     } finally {
       page.unmount();
@@ -575,11 +585,12 @@ test("a focus the reader moves onto the view's tree, a frame after the stage gav
     const page = render(<RefusedViewPage drawn late={false} />);
     try {
       const retry = page.getByRole("button", { name: "Retry" });
-      await waitFor(() => expect(document.activeElement).toBe(retry));
+      await waitFor(() => expect(retry).toHaveFocus());
       await frames(1);
       const tree = page.getByRole("tree", { name: CONTROL_LABELS.tree });
       await moveOnto(tree, move, user);
       await frames(3);
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
       expect(
         document.activeElement,
         `${move} a frame after the stage gave the Retry the focus moved it onto the tree, and the stage took it back`
@@ -599,7 +610,7 @@ test("a view turned off before the frame after it placed the focus focuses nothi
   const retry = page.getByRole("button", { name: "Retry" });
   const focused = spyOn(retry, "focus");
   try {
-    expect(document.activeElement, "the view gave its Retry no focus").toBe(retry);
+    expect(retry, "the view gave its Retry no focus").toHaveFocus();
     page.rerender(<RefusedViewPage drawn={false} late={false} />);
     await frames(1);
     expect(
@@ -630,9 +641,9 @@ test("a focus on a view's tree that draws rows stays on the tree, from outside t
     await user.click(tree);
     await frames(3);
     expect(
-      document.activeElement,
+      tree,
       "a press on the tree from a control outside the view moved the focus off the tree"
-    ).toBe(tree);
+    ).toHaveFocus();
   } finally {
     page.unmount();
   }
@@ -645,22 +656,24 @@ test("a focus on a view's tree that draws rows stays on the tree, from outside t
 // for the app's main element.
 test("a view opened from another page gives its failed read's Retry the focus the app put on what holds the view", async () => {
   for (const late of [false, true]) {
+    jest.useFakeTimers();
     const page = render(<RefusedViewPage drawn={false} late={late} />);
     try {
       const { container } = page;
       container.tabIndex = -1;
       await act(async () => container.focus());
-      expect(document.activeElement).toBe(container);
+      expect(container).toHaveFocus();
       page.rerender(<RefusedViewPage drawn late={late} />);
-      const retry = await page.findByRole("button", { name: "Retry" });
-      await waitFor(() =>
-        expect(
-          document.activeElement,
-          `the view, with its read refused ${late ? "after" : "as"} it mounted, left the focus on what holds it`
-        ).toBe(retry)
-      );
+      await jump(REFUSED_LATE_MS);
+      const retry = page.getByRole("button", { name: "Retry" });
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the case.
+      expect(
+        document.activeElement,
+        `the view, with its read refused ${late ? "after" : "as"} it mounted, left the focus on what holds it`
+      ).toBe(retry);
     } finally {
       page.unmount();
+      realClock();
     }
   }
 });
@@ -694,14 +707,14 @@ test("a view that draws its failed read's Retry in the commit its page mounts in
   );
   try {
     expect(
-      document.activeElement,
+      page.getByRole("main"),
       "the app's main element did not take the focus after the stage placed it"
-    ).toBe(page.getByRole("main"));
+    ).toHaveFocus();
     await frames(1);
     expect(
-      document.activeElement,
+      page.getByRole("button", { name: "Retry" }),
       "the view drew its Retry as its page mounted, and left the focus on the app's main element"
-    ).toBe(page.getByRole("button", { name: "Retry" }));
+    ).toHaveFocus();
   } finally {
     page.unmount();
   }
@@ -719,14 +732,14 @@ test("a view that draws its rows in the commit its page mounts in takes back the
   );
   try {
     expect(
-      document.activeElement,
+      page.getByRole("main"),
       "the app's main element did not take the focus after the stage placed it"
-    ).toBe(page.getByRole("main"));
+    ).toHaveFocus();
     await frames(1);
     expect(
-      document.activeElement,
+      page.container.querySelector(TAB_STOP_ROW),
       "the view drew its rows as its page mounted, and left the focus on the app's main element"
-    ).toBe(page.container.querySelector(TAB_STOP_ROW));
+    ).toHaveFocus();
   } finally {
     page.unmount();
   }

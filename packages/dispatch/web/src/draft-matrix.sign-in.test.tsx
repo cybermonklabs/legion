@@ -69,7 +69,7 @@ import {
   planner,
   replyField,
 } from "./__tests__/draft-matrix-fixture";
-import { realClock, settle, tick } from "./__tests__/fake-clock";
+import { afterOnFakeClock, realClock, settle, tick } from "./__tests__/fake-clock";
 import { answerRequests } from "./__tests__/network";
 import { answerAgentStates } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
@@ -186,10 +186,10 @@ async function olderCheckAnswersLast(queryClient: QueryClient): Promise<void> {
   let asked = 0;
   const older = Promise.withResolvers<SignedInUser>();
   let olderLanded = false;
-  setTimeout(() => {
+  afterOnFakeClock(OLDER_ANSWER_MS, () => {
     olderLanded = true;
     older.resolve(named("alice"));
-  }, OLDER_ANSWER_MS);
+  });
   const app = renderApp({
     at: "/agents",
     queryClient,

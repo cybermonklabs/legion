@@ -22,7 +22,7 @@ import {
 } from "./api";
 import { barAction, documentEditor, selectEditorText } from "./editor";
 import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const planner: FakeSession = {
@@ -103,9 +103,10 @@ async function sendBesideReply(page: Page, issueKey: string, parent: string): Pr
 test("E1 and E2: explicit role mentions deliver once while /btw without a mention stays a plain comment @pr", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Mention behavior" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Mention behavior" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -133,14 +134,15 @@ test("E1 and E2: explicit role mentions deliver once while /btw without a mentio
 test("E2b: a project-document comment preserves the canonical mention and strips /aside", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  await createProjectDocument("CORE", { content: "# Notes\n\nMention this.", name: "Notes" });
+  await createProject({ key: core, name: "Core" });
+  await createProjectDocument(core, { content: "# Notes\n\nMention this.", name: "Notes" });
   const alice = await asUser(browser, "alice");
 
   try {
     const page = await alice.newPage();
-    await page.goto("/projects/CORE/documents/notes");
+    await page.goto(`/projects/${core}/documents/notes`);
     await expect(documentEditor(page)).toContainText("Mention this.");
     await selectEditorText(page, "Mention this");
     await barAction(page, "Comment");
@@ -166,8 +168,9 @@ test("E2b: a project-document comment preserves the canonical mention and strips
 test("a conversation send holds Reply and refuses Ctrl+K from the same task", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Held conversation" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Held conversation" });
   await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -202,8 +205,9 @@ test("a conversation send holds Reply and refuses Ctrl+K from the same task", as
 // A send's address is fixed in the task that starts it. A Reply clicked in that same task, before
 // React disables it, must not turn the comment on its way into a reply.
 test("a same-task Reply cannot make a conversation comment a reply", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Held conversation" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Held conversation" });
   await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -221,9 +225,10 @@ test("a same-task Reply cannot make a conversation comment a reply", async ({ br
 test("a same-task Reply cannot send a conversation comment to an agent's message thread", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Held conversation" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Held conversation" });
   await createMessage(issue.key, {
     body: "Can this ship?",
     delivery: "btw",
@@ -245,8 +250,9 @@ test("a same-task Reply cannot send a conversation comment to an agent's message
 test("a conversation thread's own reply holds Collapse thread while it is out", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Held thread" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Held thread" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -285,8 +291,9 @@ test("a conversation thread's own reply holds Collapse thread while it is out", 
 // comments, so the docked composer holds the draft until the server answers, and the comment the
 // server takes lands in the Conversation as on an open issue.
 test("a docked send out when its issue closes posts", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Closed under a send" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Closed under a send" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -331,8 +338,9 @@ test("a docked send out when its issue closes posts", async ({ browser }) => {
 test("a docked send the server answers at 35 s is one keyed write and shows once, with no Retry at the deadline", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Slow server" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Slow server" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -377,8 +385,9 @@ test("a docked send the server answers at 35 s is one keyed write and shows once
 test("a docked send refused while its issue closes offers Retry, which posts on the closed issue", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Closed under a refusal" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Closed under a refusal" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -429,8 +438,9 @@ test("a docked send refused while its issue closes offers Retry, which posts on 
 test("a thread resolved while its own reply is out stays open with the reply and its refusal", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Resolved under a reply" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Resolved under a reply" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -464,8 +474,9 @@ test("a thread resolved while its own reply is out stays open with the reply and
 test("a thread's own reply out when the viewport narrows to a phone keeps its draft and refusal", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Narrowed under a reply" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Narrowed under a reply" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -494,6 +505,7 @@ test("a thread's own reply out when the viewport narrows to a phone keeps its dr
 test("E7b and Retry: removing a prefilled mention creates a plain reply, and retries name their target", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   // Two failed sends run end to end here, the seeded mention's and the Retry's, and each waits
   // out the listener take-over window before it settles failed: half a second under the
   // harness's DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW (e2e/run-server.sh), of the twelve seconds
@@ -503,8 +515,8 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
   // retry of a delivery that landed is a repeat that is recognised and dropped, so the row no
   // longer carries a Retry (LEGION-271).
   await setSessionSendStatus("planner", 404);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Reply behavior" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Reply behavior" });
   const parent = await createComment(issue.key, {
     body: "Parent",
     delivery: "steer",
@@ -550,9 +562,10 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
 test("a duplicated mention delivery says the listener already had it, and offers no safe retry", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Duplicate mention" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Duplicate mention" });
   const comment = await createComment(issue.key, {
     body: "@Planner take a look",
     delivery: "steer",
@@ -588,9 +601,10 @@ test("a duplicated mention delivery says the listener already had it, and offers
 test("a mention reaches a session the listener's list has dropped while its record stands", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Mention through a refilling cache" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Mention through a refilling cache" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -620,9 +634,10 @@ test("a mention reaches a session the listener's list has dropped while its reco
 test("a mention of a session the listener holds no record of is still refused as no live session", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Mention of an ended session" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Mention of an ended session" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -653,9 +668,10 @@ test("a mention of a session the listener holds no record of is still refused as
 test("a mention of a session the listener could not read is refused with the listener's reason, not as no live session", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Mention through a silent bus" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Mention through a silent bus" });
   const alice = await asUser(browser, "alice");
 
   try {

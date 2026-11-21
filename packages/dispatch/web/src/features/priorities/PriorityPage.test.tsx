@@ -161,9 +161,7 @@ test("the header carries the order, the title in place, the owner and the three 
   expect(screen.getByRole("combobox", { name: "Owner" })).toBeDefined();
   expect(screen.getByText("Order P2, dragged on the priorities page")).toBeDefined();
   expect(screen.getByText(/In flight 3 · waiting 11 · in backlog or icebox 5/)).toBeDefined();
-  expect(screen.getByRole("link", { name: "‹ Priorities" }).getAttribute("href")).toBe(
-    "/priorities"
-  );
+  expect(screen.getByRole("link", { name: "‹ Priorities" })).toHaveAttribute("href", "/priorities");
 });
 
 test("the description is a disclosure that closes, and the work stays below it", async () => {
@@ -193,7 +191,7 @@ test("the description reads rendered, opens on a click on its text and is saved 
   expect(screen.queryByRole("textbox", { name: "Description of P2" })).toBeNull();
   await user.click(within(described).getByText("Speedruns run again."));
   const field = await screen.findByRole("textbox", { name: "Description of P2" });
-  expect(document.activeElement).toBe(field);
+  expect(field).toHaveFocus();
   await user.type(field, " More.");
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1), { timeout: 3000 });
   expect(patch.mock.calls[0]?.[0]).toBe("rocq-lean");
@@ -217,7 +215,7 @@ test("the rendered description is no control: the keyboard opens the editor with
   const edit = within(described).getByRole("button");
   expect(edit).toBe(screen.getByRole("button", { name: "Edit the description of P2" }));
   expect(edit.textContent).toBe("Edit the description of P2");
-  expect(edit.getAttribute("aria-label")).toBeNull();
+  expect(edit).not.toHaveAttribute("aria-label");
   edit.focus();
   await user.keyboard("{Enter}");
   expect(await screen.findByRole("textbox", { name: "Description of P2" })).toBeDefined();
@@ -228,7 +226,7 @@ test("a link in the description is drawn as a link, and a click on it is followe
   page("runbook");
   const described = await screen.findByRole("group", { name: "Description of P3" });
   const link = await within(described).findByRole("link", { name: "the runbook" });
-  expect(link.getAttribute("href")).toBe("https://example.com/runbook");
+  expect(link).toHaveAttribute("href", "https://example.com/runbook");
   // The test document follows no link; the press itself is what reaches the block.
   link.addEventListener("click", (event) => event.preventDefault());
   await user.click(link);
@@ -288,7 +286,8 @@ test("the page carries no tab strip, no version control and no delete", async ()
 test("one link out leaves the scope, naming the issues and why", async () => {
   page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
   const out = await screen.findByRole("link", { name: "CORE’s issues table" });
-  expect(out.getAttribute("href")).toBe(
+  expect(out).toHaveAttribute(
+    "href",
     "/projects/CORE/issues?only=CORE-1%2CCORE-4&onlyLabel=Rocq+and+Lean+speed+work+restarted&nofilter=1"
   );
 });

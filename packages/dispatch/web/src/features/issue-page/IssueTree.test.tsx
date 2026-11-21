@@ -19,7 +19,7 @@ import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
 import { displayTree } from "../../__tests__/display-trees";
-import { jump, realClock } from "../../__tests__/fake-clock";
+import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
@@ -55,7 +55,7 @@ import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
-import { readComment, TWO_THREADS, waitInAct } from "./outline-fixtures";
+import { readComment, TWO_THREADS, zeroDelaysOnFakeClock } from "./outline-fixtures";
 import {
   OutlineRequestProvider,
   useAskOutline,
@@ -561,6 +561,18 @@ async function nextFrame(): Promise<void> {
   await act(async () => frame.promise);
 }
 
+/** Makes `press` - one the reader makes, with the user it is handed - on the fake clock, and runs
+ *  the zero-delay timers it leaves: a press is over a task after its click (`press-focus.ts`'s
+ *  `trackPress`), the row being edited is looked at then (`useNodeEditing.ts`), and a focus that
+ *  end moved off the row is looked at a task later. A row reads what the press's end did, or did
+ *  not do, once this resolves. */
+function pressToItsEnd(press: (user: UserEvent) => Promise<void>): Promise<void> {
+  return zeroDelaysOnFakeClock(async () => {
+    await press(userOnFakeClock());
+    await tick(0);
+  });
+}
+
 /** Holds every frame asked for from here on until `run` runs them - the ones named, or every one
  *  still asked for - as the next frame would; a frame cancelled first is not run. `asked` names
  *  the frames asked for and not run yet, and `restore` gives the frames back to happy-dom. */
@@ -680,7 +692,7 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
     await waitFor(() => expect(view.getByRole("button", { name: "Keep" })).toBeTruthy());
     const stops = [...view.container.querySelectorAll('[tabindex="0"]')];
     expect(stops.length).toBe(1);
-    expect(stops[0]?.getAttribute("data-node-row")).toBe("");
+    expect(stops[0]).toHaveAttribute("data-node-row", "");
 
     // So each control of the row takes a key instead, and the keys reach what no Tab does
     // (WCAG 2.1.1): `f` steps to the chip's link, Escape gives the row back, Shift+K presses
@@ -688,7 +700,7 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
     await user.keyboard("f");
     expect((document.activeElement as HTMLElement).textContent).toBe("The spec block");
     await user.keyboard("{Escape}");
-    expect(document.activeElement).toBe(row);
+    expect(row).toHaveFocus();
 
     await user.keyboard("{Shift>}K{/Shift}");
     await waitFor(() => expect(kept).toHaveBeenCalled());
@@ -696,7 +708,7 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
 
     await user.keyboard("{Shift>}C{/Shift}");
     const field = await view.findByRole("textbox", { name: "Your change" });
-    await waitFor(() => expect(document.activeElement).toBe(field));
+    await waitFor(() => expect(field).toHaveFocus());
   } finally {
     kept.mockRestore();
   }
@@ -787,12 +799,12 @@ test("Keep keeps the focus on its decision's row while its write is out, and aft
     await user.click(keep);
     await waitFor(() => expect(kept).toHaveBeenCalled());
     await waitFor(() => expect(keep).toHaveProperty("disabled", true));
-    expect(document.activeElement, "the focus stayed on Keep, which its write disables").toBe(row);
+    expect(row, "the focus stayed on Keep, which its write disables").toHaveFocus();
     expect(row.querySelector("[data-node-body]"), "the decision's body closed").not.toBeNull();
 
     await act(async () => answer.resolve({ ...decision, waiting_review: false } as never));
     await waitFor(() => expect(view.queryByRole("button", { name: "Keep" })).toBeNull());
-    expect(document.activeElement).toBe(row);
+    expect(row).toHaveFocus();
     expect(view.getByRole("button", { name: "Change" })).toBeTruthy();
   } finally {
     kept.mockRestore();
@@ -821,15 +833,12 @@ test("Send change keeps the focus on its decision's row while the comment is out
     await user.click(send);
     await waitFor(() => expect(sent).toHaveBeenCalled());
     await waitFor(() => expect(send).toHaveProperty("disabled", true));
-    expect(
-      document.activeElement,
-      "the focus stayed on Send change, which its write disables"
-    ).toBe(row);
+    expect(row, "the focus stayed on Send change, which its write disables").toHaveFocus();
     expect(row.querySelector("[data-node-body]"), "the decision's body closed").not.toBeNull();
 
     await act(async () => answer.resolve({ id: "comment-1" } as never));
     await waitFor(() => expect(view.queryByRole("textbox", { name: "Your change" })).toBeNull());
-    expect(document.activeElement).toBe(row);
+    expect(row).toHaveFocus();
     expect(view.getByRole("button", { name: "Change" })).toBeTruthy();
   } finally {
     sent.mockRestore();
@@ -862,11 +871,11 @@ test("a Change the reader typed in comes back with its decision's body", async (
   await view.findByRole("button", { name: "Change" });
   await user.keyboard("{Shift>}C{/Shift}");
   const field = await view.findByRole("textbox", { name: "Your change" });
-  await waitFor(() => expect(document.activeElement).toBe(field));
+  await waitFor(() => expect(field).toHaveFocus());
   await user.keyboard("Say more about the flag.");
   // Out of the field by the keyboard alone: Tab to the form's Send change, Escape to the row.
   await user.keyboard("{Tab}{Escape}");
-  expect(document.activeElement).toBe(row);
+  expect(row).toHaveFocus();
 
   // The next row takes the focus and the decision's body closes; the row above opens it again.
   await user.keyboard("j");
@@ -955,9 +964,7 @@ test("a press on a control outside the outline keeps the focused row's body thro
   );
 
   await user.pointer({ keys: "[MouseLeft>]", target: outside.control });
-  expect(document.activeElement, "the press did not focus the control it went down on").toBe(
-    outside.control
-  );
+  expect(outside.control, "the press did not focus the control it went down on").toHaveFocus();
   expect(
     first.querySelector("[data-node-body]"),
     "the press on a control outside the outline closed the focused row's body"
@@ -1009,7 +1016,7 @@ test("Tab out of the outline lets go of the row at once: no body, no focused loo
   expect(first.querySelector("[data-node-card]")?.className).toContain(pageFocusedRow);
 
   await user.tab();
-  expect(document.activeElement).toBe(outside.control);
+  expect(outside.control).toHaveFocus();
   await waitFor(() =>
     expect(rowReport(view.container), "Tab out of the outline left the key's report drawn").toBe(
       undefined
@@ -1046,7 +1053,7 @@ test("Escape closes the body a press outside the outline keeps, from the page or
   await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
 
   await user.pointer({ keys: "[MouseLeft>]", target: outside.control });
-  expect(document.activeElement).toBe(outside.control);
+  expect(outside.control).toHaveFocus();
   expect(
     first.querySelector("[data-node-body]"),
     "the press held on a control outside the outline closed the focused row's body"
@@ -1062,7 +1069,7 @@ test("Escape closes the body a press outside the outline keeps, from the page or
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
   await user.keyboard("{Escape}");
-  expect(document.activeElement).toBe(document.body);
+  expect(document.body).toHaveFocus();
   await waitFor(() => expect(first.querySelector("[data-node-body]")).toBeNull());
 });
 
@@ -1110,7 +1117,7 @@ test("a press outside the outline that leaves the focus on no control keeps the 
   await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
   await user.pointer({ keys: "[MouseLeft>]", target: plain });
   expect(blurredTo, "the press did not blur the row to no element").toEqual([null, null]);
-  expect(document.activeElement).toBe(document.body);
+  expect(document.body).toHaveFocus();
   expect(
     first.querySelector("[data-node-body]"),
     "the press outside the outline that left the focus on no control closed the row's body"
@@ -1238,7 +1245,7 @@ test("Home from a chip of the first row brings the row back on screen after the 
 
     scrolledOff = true;
     await user.keyboard("{Home}");
-    expect(document.activeElement).toBe(rowsFor(container, "comment-1")[0]);
+    expect(rowsFor(container, "comment-1")[0]).toHaveFocus();
     expect(scrolled, "Home left the row the reader scrolled off the screen").toHaveBeenCalledTimes(
       1
     );
@@ -1306,7 +1313,7 @@ test("on a block of the focused row that keeps its tab stop, the keys the browse
     await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
     const [row] = rowsFor(container, "comment-1");
     if (row === undefined) throw new Error("the comment has no row");
-    expect(row.getAttribute("aria-expanded"), "the comment's reply is drawn").toBe("false");
+    expect(row, "the comment's reply is drawn").toHaveAttribute("aria-expanded", "false");
     /** The block of the focused row that keeps its tab stop under `name`, marked as kept. */
     const kept = (name: string): HTMLElement => {
       const block = row.querySelector<HTMLElement>(
@@ -1341,6 +1348,7 @@ test("on a block of the focused row that keeps its tab stop, the keys the browse
       act(() => code.focus());
       // `f` steps from the block to the row's one link, the table's.
       if (on === link) await user.keyboard("f");
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the block.
       expect(document.activeElement, `the focus did not reach ${what}`).toBe(on);
       for (const key of [
         "ArrowRight",
@@ -1355,11 +1363,13 @@ test("on a block of the focused row that keeps its tab stop, the keys the browse
       ]) {
         const name = key === " " ? "Space" : key;
         expect(press(key).defaultPrevented, `the page took ${name} from ${what}`).toBe(false);
+        // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the key.
         expect(document.activeElement, `${name} moved the focus off ${what}`).toBe(on);
         expect(drawn(), `${name} on ${what} moved through the tree or folded it`).toEqual(rows);
         expect(rowReport(container), `${name} on ${what} said something`).toBe(report);
       }
       press("Escape");
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the block.
       expect(document.activeElement, `Escape on ${what} did not give the row back`).toBe(row);
     }
 
@@ -1534,7 +1544,7 @@ test("Escape leaves the caret for the placement it was taken from, not the node'
   await waitFor(() => expect(view.edited.at(-1)).toBe("artifact-spec"));
   await user.keyboard("{Escape}");
   await waitFor(() => expect(view.edited.at(-1)).toBeUndefined());
-  expect(document.activeElement).toBe(second);
+  expect(second).toHaveFocus();
 });
 
 /** An Escape that ends an input-method composition, as the browser sends it to `target`. */
@@ -1580,9 +1590,7 @@ test("an Escape that ends an input-method composition in a row's editor leaves t
   expect(view.edited.at(-1), "an Escape that ended a composition ended the editing").toBe(
     "artifact-spec"
   );
-  expect(document.activeElement, "an Escape that ended a composition moved the focus").toBe(
-    focused
-  );
+  expect(focused, "an Escape that ended a composition moved the focus").toHaveFocus();
 });
 
 // Safari sends the Escape that ends a composition after the composition's end, unmarked -
@@ -1600,10 +1608,7 @@ test("an Escape that ends an input-method composition in a row's editor, sent un
   expect(view.edited.at(-1), "an Escape that ended a composition ended the editing").toBe(
     "artifact-spec"
   );
-  expect(
-    document.activeElement === editable,
-    "an Escape that ended a composition moved the focus"
-  ).toBe(true);
+  expect(editable, "an Escape that ended a composition moved the focus").toHaveFocus();
 });
 
 // A press on another row while a row is edited ends the editing once the press is over, as Tab
@@ -1623,17 +1628,16 @@ test("a press on another row ends the editing, and Escape there leaves the outli
     "comment-1"
   );
   await user.pointer({ keys: "[/MouseLeft]" });
-  // The press is over a task after its click.
-  await waitInAct(0);
+  // The press is over a task after its click, and its end ends the editing.
+  await waitFor(() =>
+    expect(view.edited.at(-1), "the press on another row did not end the editing").toBeUndefined()
+  );
   await user.keyboard("{Escape}");
   expect(
     focusedRow(view.container),
     "Escape on the row the press focused left the focus on a row, not off the outline"
   ).toBeUndefined();
-  expect(document.activeElement === document.body, "Escape left the focus on a control").toBe(true);
-  await waitFor(() =>
-    expect(view.edited.at(-1), "the press on another row did not end the editing").toBeUndefined()
-  );
+  expect(document.body, "Escape left the focus on a control").toHaveFocus();
 });
 
 // A press outside the outline leaves the row edited. Enter on the row being edited set the editing
@@ -1649,11 +1653,10 @@ test("a press outside the outline, then Enter on the row being edited, puts the 
   const statement = rowsFor(view.container, "spec#b-r1")[0];
   if (statement === undefined) throw new Error("the statement's row is not drawn");
 
-  await user.click(plain);
-  expect(document.activeElement === document.body, "the press did not take the focus off").toBe(
-    true
-  );
-  await waitInAct(0);
+  await pressToItsEnd(async (user) => {
+    await user.click(plain);
+    expect(document.body, "the press did not take the focus off").toHaveFocus();
+  });
   expect(view.edited.at(-1), "the press outside the outline ended the editing").toBe(
     "artifact-spec"
   );
@@ -1669,12 +1672,16 @@ test("a press outside the outline, then Enter on the row being edited, puts the 
   if (drawn === null) throw new Error("the row took no editor");
   // An editor drawn anew for the row draws the document once it has read it.
   if (drawn.querySelector('[data-block-id="r1"]') === null) await drawStatementBlocks(drawn);
-  await waitFor(() =>
+  await waitFor(() => {
     expect(
-      document.activeElement === drawn && caretBlock() === "r1",
+      drawn,
       "Enter on the row after a press outside the outline put no caret in its block"
-    ).toBe(true)
-  );
+    ).toHaveFocus();
+    expect(
+      caretBlock(),
+      "Enter on the row after a press outside the outline put no caret in its block"
+    ).toBe("r1");
+  });
   expect(view.edited.at(-1), "the editing is not on").toBe("artifact-spec");
 });
 
@@ -1695,11 +1702,10 @@ test("a press on a control in the row's editor box keeps the editing, and a pres
   );
   await drawStatementBlocks(editable);
   await waitFor(
-    () =>
-      expect(
-        document.activeElement === editable && caretBlock() === "r1",
-        "Enter did not put the caret in the statement"
-      ).toBe(true),
+    () => {
+      expect(editable, "Enter did not put the caret in the statement").toHaveFocus();
+      expect(caretBlock(), "Enter did not put the caret in the statement").toBe("r1");
+    },
     { timeout: 10_000 }
   );
   const control = view.getByRole("button", { name: inBox });
@@ -1712,13 +1718,12 @@ test("a press on a control in the row's editor box keeps the editing, and a pres
     statement?.querySelector('[contenteditable="true"]') != null,
   ];
 
-  await user.click(control);
-  await waitInAct(0);
+  await pressToItsEnd((user) => user.click(control));
   expect(editing(), "a press on a control in the editor's box ended the editing").toEqual([
     "artifact-spec",
     true,
   ]);
-  expect(document.activeElement === control, "the press left the focus off its control").toBe(true);
+  expect(control, "the press left the focus off its control").toHaveFocus();
 
   await user.click(tree);
   await waitFor(() =>
@@ -1753,11 +1758,9 @@ test("a press in Details keeps the row's editing, and a press on another row of 
     statement.querySelector('[contenteditable="true"]') !== null,
   ];
 
-  await user.click(card);
-  // The press is over a task after its click.
-  await waitInAct(0);
+  await pressToItsEnd((user) => user.click(card));
   expect(editing(), "a press in Details ended the editing").toEqual(["artifact-spec", true]);
-  expect(document.activeElement === card, "the press left the focus off the card").toBe(true);
+  expect(card, "the press left the focus off the card").toHaveFocus();
 
   await user.click(words);
   await waitFor(() =>
@@ -1792,21 +1795,18 @@ test("the focus given back to a row's editor after a press in Details brings the
   const heading = details.getByRole("heading", { name: "Details" });
   // Opening Details puts the focus on its Close (`margin/Margin.tsx`).
   await act(async () => details.getByRole("button", { name: "Close" }).focus());
-  await user.click(heading);
-  // The press is over a task after its click.
-  await waitInAct(0);
+  await pressToItsEnd((user) => user.click(heading));
   expect(
-    [
-      document.activeElement === document.body,
-      heading.contains(window.getSelection()?.anchorNode ?? null),
-    ],
-    "the press on Details' heading left the focus off the page's body or the selection off its words"
-  ).toEqual([true, true]);
+    document.body,
+    "the press on Details' heading left the focus off the page's body"
+  ).toHaveFocus();
+  expect(
+    heading.contains(window.getSelection()?.anchorNode ?? null),
+    "the press on Details' heading left the selection off its words"
+  ).toBe(true);
 
   await focusByScript(editable);
-  expect(document.activeElement === editable, "the focus did not come back to the editor").toBe(
-    true
-  );
+  expect(editable, "the focus did not come back to the editor").toHaveFocus();
   expect(selected(), "the caret came back elsewhere").toEqual(["r1:5", "r1:5"]);
   const { $head } = view.state.selection;
   expect(
@@ -1815,16 +1815,27 @@ test("the focus given back to a row's editor after a press in Details brings the
   ).toEqual(["r1", 5]);
 });
 
+/** How long ProseMirror waits after its editable takes the focus before it reads the selection
+ *  (`prosemirror-view`'s `handlers.focus`), and before its DOM observer reads a selection change
+ *  (`DOMObserver.flushSoon`): 20 ms each, which the library does not export. */
+const PROSEMIRROR_LOOK_MS = 20;
+
 /** Gives `editable` the focus as a script does - Details' Close gives it back to where Details
  *  took it from (`margin/Margin.tsx`) - and moves the page's selection as a browser does then: a
  *  selection that stands outside the editable once the editable holds the focus goes to its start,
  *  a reset ProseMirror reads as one (`prosemirror-view`'s `DOMObserver.flush`), and the move is
- *  reported. happy-dom moves no selection on a focus, so that move is made here. Waits out
- *  ProseMirror's own look at the selection, 20 ms after its editable takes the focus. */
+ *  reported. happy-dom moves no selection on a focus, so that move is made here. Moves the fake
+ *  clock over ProseMirror's own look at the selection, `PROSEMIRROR_LOOK_MS` after its editable
+ *  takes the focus. */
 async function focusByScript(editable: HTMLElement): Promise<void> {
-  await act(async () => editable.focus({ preventScroll: true }));
-  if (!editable.contains(window.getSelection()?.anchorNode ?? null)) await select(editable, 0);
-  await waitInAct(30);
+  jest.useFakeTimers();
+  try {
+    await act(async () => editable.focus({ preventScroll: true }));
+    if (!editable.contains(window.getSelection()?.anchorNode ?? null)) await select(editable, 0);
+    await jump(PROSEMIRROR_LOOK_MS);
+  } finally {
+    realClock();
+  }
 }
 
 // A press in Details between Enter and the caret's placement keeps the editing and puts off the
@@ -1866,13 +1877,12 @@ for (const [name, comeBack] of COMING_BACK) {
       if (row === undefined) throw new Error("the statement's row is not drawn");
       await drawStatementBlocks(editable, BLOCKS_AROUND);
       await nextFrame();
-      await user.click(cardInDetails());
-      // The press is over a task after its click.
-      await waitInAct(0);
+      await pressToItsEnd((user) => user.click(cardInDetails()));
       await act(async () => held.resolve(parts));
       await nextFrame();
 
       await comeBack(user, row, editable);
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
       await waitFor(() =>
         expect(
           document.activeElement === editable && caretBlock() === "r1",
@@ -1915,23 +1925,22 @@ test("a press on a control that keeps the focus where it was, as the fold contro
   const control = fold();
   if (control === null) throw new Error("the second comment's row draws no fold control");
   const expanded = control.getAttribute("aria-expanded");
+  if (expanded === null) throw new Error("the fold control says nothing of its fold");
   const statement = editable.closest<HTMLElement>("[data-node-row]");
 
-  await user.click(control);
-  // The press is over a task after its click.
-  await waitInAct(0);
-  expect(
-    fold()?.getAttribute("aria-expanded"),
-    "the press on the fold control did nothing"
-  ).not.toBe(expanded);
+  await pressToItsEnd((user) => user.click(control));
+  expect(fold(), "the press on the fold control did nothing").toHaveAttribute(
+    "aria-expanded",
+    expanded === "true" ? "false" : "true"
+  );
   expect(
     [view.edited.at(-1), statement?.querySelector('[contenteditable="true"]') != null],
     "a press that left the focus in the row's editor ended the editing"
   ).toEqual(["artifact-spec", true]);
   expect(
-    document.activeElement === editable,
+    editable,
     "the press on the fold control took the focus out of the row's editor"
-  ).toBe(true);
+  ).toHaveFocus();
 });
 
 // The focus can come back to the row being edited with the editing still on - a script's focus
@@ -1948,12 +1957,10 @@ test("Enter on the row being edited, the focus back on the row, puts the caret i
   expect(view.edited.at(-1), "the focus on the row ended the editing").toBe("artifact-spec");
 
   await user.keyboard("{Enter}");
-  await waitFor(() =>
-    expect(
-      document.activeElement === editable && caretBlock() === "r1",
-      "Enter on the row being edited put no caret in its block"
-    ).toBe(true)
-  );
+  await waitFor(() => {
+    expect(editable, "Enter on the row being edited put no caret in its block").toHaveFocus();
+    expect(caretBlock(), "Enter on the row being edited put no caret in its block").toBe("r1");
+  });
   expect(view.edited.at(-1), "Enter ended the editing").toBe("artifact-spec");
 });
 
@@ -2001,7 +2008,7 @@ test("a script's focus on another row ends the editing, and a Tab out of the tre
 
   await act(async () => row.focus());
   await user.tab();
-  expect(document.activeElement, "Tab did not leave the outline").toBe(control);
+  expect(control, "Tab did not leave the outline").toHaveFocus();
   await waitFor(() =>
     expect(rowLetGo(row), "the row Tab left kept its body or its focused look").toBe(true)
   );
@@ -2029,19 +2036,22 @@ test("a focus moved onto another row while a press in the row's editor is held e
   if (row === undefined) throw new Error("the last comment's row is not drawn");
 
   await user.pointer({ keys: "[MouseLeft>]", target: editable });
-  await act(async () => row.focus());
-  expect(focusedRow(view.container), "the script's focus is not on the last comment's row").toBe(
-    "comment-2"
-  );
-  await waitInAct(0);
+  await zeroDelaysOnFakeClock(async () => {
+    await act(async () => row.focus());
+    expect(focusedRow(view.container), "the script's focus is not on the last comment's row").toBe(
+      "comment-2"
+    );
+    // A task on, with the press still held: the row being edited is looked at a task after the
+    // focus left it.
+    await tick(0);
+  });
   expect(
     view.edited.at(-1),
     "the focus on another row ended the editing while the press was held"
   ).toBe("artifact-spec");
 
   await user.pointer({ keys: "[/MouseLeft]" });
-  // The press is over a task after its click.
-  await waitInAct(0);
+  // The press is over a task after its click, and its end ends the editing.
   await waitFor(() =>
     expect(
       view.edited.at(-1),
@@ -2075,7 +2085,7 @@ test("Escape in an editor outside the outline, after a row's editing has ended, 
     focusedRow(view.container),
     "Escape in an editor outside the outline moved to a row"
   ).toBeUndefined();
-  expect(document.activeElement === elsewhere, "Escape took the focus off the editor").toBe(true);
+  expect(elsewhere, "Escape took the focus off the editor").toHaveFocus();
 });
 
 // The tester's red row on c-keys (`the caret Enter puts in a statement deep in its document
@@ -2466,11 +2476,10 @@ async function editStatement(
   const { editable } = await enterStatement(user, editor);
   await drawStatementBlocks(editable, blocks);
   await waitFor(
-    () =>
-      expect(
-        document.activeElement === editable && caretBlock() === "r1",
-        "Enter did not put the caret in the statement"
-      ).toBe(true),
+    () => {
+      expect(editable, "Enter did not put the caret in the statement").toHaveFocus();
+      expect(caretBlock(), "Enter did not put the caret in the statement").toBe("r1");
+    },
     { timeout: 10_000 }
   );
   return editable;
@@ -2486,11 +2495,10 @@ async function caretInStatement(user: UserEvent, after: readonly TreeNode[] = []
   );
   await drawStatementBlocks(entered.editable);
   await waitFor(
-    () =>
-      expect(
-        document.activeElement === entered.editable && caretBlock() === "r1",
-        "Enter did not put the caret in the statement"
-      ).toBe(true),
+    () => {
+      expect(entered.editable, "Enter did not put the caret in the statement").toHaveFocus();
+      expect(caretBlock(), "Enter did not put the caret in the statement").toBe("r1");
+    },
     { timeout: 10_000 }
   );
   return entered;
@@ -2736,12 +2744,16 @@ test("a key that leaves the focus on the row before its editor has drawn the doc
   // The editor draws the document a frame later.
   await nextFrame();
   await drawStatementBlocks(editable);
-  await waitFor(() =>
+  await waitFor(() => {
     expect(
-      document.activeElement === editable && caretBlock() === "r1",
+      editable,
       "a Delete pressed before the editor drew the document kept the caret out of the statement"
-    ).toBe(true)
-  );
+    ).toHaveFocus();
+    expect(
+      caretBlock(),
+      "a Delete pressed before the editor drew the document kept the caret out of the statement"
+    ).toBe("r1");
+  });
   expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
 });
 
@@ -2760,21 +2772,25 @@ test("Enter puts no caret in the row's editor until it has drawn the node's own 
   await drawStatementBlocks(editable, [["r0", "The words above the statement."]]);
   await nextFrame();
   expect(
-    document.activeElement,
+    statement,
     "the focus left the row before the editor drew the statement's block"
-  ).toBe(statement);
+  ).toHaveFocus();
   expect(
     editable.contains(window.getSelection()?.anchorNode ?? null),
     "a caret was put in the editor before it drew the statement's block"
   ).toBe(false);
   // And the statement a frame later.
   await drawStatementBlocks(editable, [["r1", "A statement of the spec."]]);
-  await waitFor(() =>
+  await waitFor(() => {
     expect(
-      document.activeElement === editable && caretBlock() === "r1",
+      editable,
       "the caret did not go into the statement once the editor drew its block"
-    ).toBe(true)
-  );
+    ).toHaveFocus();
+    expect(
+      caretBlock(),
+      "the caret did not go into the statement once the editor drew its block"
+    ).toBe("r1");
+  });
   expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
 });
 
@@ -2801,17 +2817,20 @@ test("a press out of the outline before the row's editor has drawn the document 
       statement.querySelector("[data-node-body]"),
       "the statement's row drew no body as it was edited"
     ).not.toBeNull();
-    await user.click(control);
-    expect(document.activeElement === control, "the press did not focus the control").toBe(true);
-    // The editor draws the document a frame later, and its hold goes on then.
+    await pressToItsEnd(async (user) => {
+      await user.click(control);
+      expect(control, "the press did not focus the control").toHaveFocus();
+    });
+    // The editor draws the document a frame later, and its hold goes on then; a task on, the row
+    // has looked at what the hold's going on left it.
     await nextFrame();
-    await drawStatementBlocks(editable);
-    await act(async () => held.resolve(parts));
-    await nextFrame();
-    await waitInAct(20);
-    expect(document.activeElement === control, "the caret took the focus from the control").toBe(
-      true
-    );
+    await zeroDelaysOnFakeClock(async () => {
+      await drawStatementBlocks(editable);
+      await act(async () => held.resolve(parts));
+      await nextFrame();
+      await tick(0);
+    });
+    expect(control, "the caret took the focus from the control").toHaveFocus();
     expect(
       editable.contains(window.getSelection()?.anchorNode ?? null),
       "a caret went into the editor while the focus was out of the outline"
@@ -2848,15 +2867,16 @@ test("a press out of the outline keeps the editing of a row whose editor never d
   const { control } = controlOutside();
   const statement = rowsFor(view.container, "spec#b-r1")[0];
   if (statement === undefined) throw new Error("the statement's row is not drawn");
-  await user.click(control);
-  expect(document.activeElement === control, "the press did not focus the control").toBe(true);
   // The press is over a task after its click, and the row is looked at then.
-  await waitInAct(20);
+  await pressToItsEnd(async (user) => {
+    await user.click(control);
+    expect(control, "the press did not focus the control").toHaveFocus();
+  });
   await nextFrame();
   expect(view.edited.at(-1), "the press out of the outline ended the editing").toBe(
     "artifact-spec"
   );
-  expect(document.activeElement === control, "the focus left the control pressed").toBe(true);
+  expect(control, "the focus left the control pressed").toHaveFocus();
   expect(
     statement.querySelector("[data-node-body]"),
     "the statement's row no longer draws its body"
@@ -2877,24 +2897,26 @@ test("a key pressed while a press out of the outline is held before the row's ca
   try {
     const { editable, view } = await enterBeforeDrawn(user);
     const { control } = controlOutside();
-    await user.pointer({ keys: "[MouseLeft>]", target: control });
-    expect(document.activeElement === control, "the press did not focus the control").toBe(true);
-    await user.keyboard("{Shift}");
-    await user.pointer({ keys: "[/MouseLeft]", target: control });
     // The press is over a task after it ends, and the row is looked at then.
-    await waitInAct(20);
+    await pressToItsEnd(async (user) => {
+      await user.pointer({ keys: "[MouseLeft>]", target: control });
+      expect(control, "the press did not focus the control").toHaveFocus();
+      await user.keyboard("{Shift}");
+      await user.pointer({ keys: "[/MouseLeft]", target: control });
+    });
     expect(
       view.edited.at(-1),
       "a key pressed while the press out of the outline was held ended the editing"
     ).toBe("artifact-spec");
-    // The editor draws the statement, and its hold goes on.
-    await drawStatementBlocks(editable);
-    await act(async () => held.resolve(parts));
-    await nextFrame();
-    await waitInAct(20);
-    expect(document.activeElement === control, "the caret took the focus from the control").toBe(
-      true
-    );
+    // The editor draws the statement, and its hold goes on; a task on, the row has looked at
+    // what that left it.
+    await zeroDelaysOnFakeClock(async () => {
+      await drawStatementBlocks(editable);
+      await act(async () => held.resolve(parts));
+      await nextFrame();
+      await tick(0);
+    });
+    expect(control, "the caret took the focus from the control").toHaveFocus();
     expect(
       editable.contains(window.getSelection()?.anchorNode ?? null),
       "a caret went into the editor while the focus was out of the outline"
@@ -2968,13 +2990,13 @@ test("a later act that takes the focus out of the outline ends the editing of a 
   const statement = rowsFor(view.container, "spec#b-r1")[0];
   if (statement === undefined) throw new Error("the statement's row is not drawn");
   await user.keyboard("{Shift}");
-  expect(document.activeElement, "Shift moved the focus off the row").toBe(statement);
+  expect(statement, "Shift moved the focus off the row").toHaveFocus();
   await user.tab();
-  expect(document.activeElement, "Tab from the row did not stop in its editor").toBe(editable);
+  expect(editable, "Tab from the row did not stop in its editor").toHaveFocus();
   await user.tab();
-  expect(document.activeElement, "Tab did not leave the outline").toBe(control);
+  expect(control, "Tab did not leave the outline").toHaveFocus();
   await waitFor(() => expect(view.edited.at(-1), "the editing went on").toBeUndefined());
-  expect(document.activeElement, "the focus left the control Tab moved it to").toBe(control);
+  expect(control, "the focus left the control Tab moved it to").toHaveFocus();
   await waitFor(() =>
     expect(
       statement.querySelector("[data-node-body]"),
@@ -3003,11 +3025,11 @@ test("a key that takes the focus to a control inside the row before its editor d
     throw new Error("the statement's row draws no control");
   await user.keyboard("{Shift}");
   await act(async () => inner.focus());
-  expect(document.activeElement, "the control inside the row did not take the focus").toBe(inner);
+  expect(inner, "the control inside the row did not take the focus").toHaveFocus();
   await nextFrame();
   await drawStatementBlocks(editable);
   await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
-  expect(document.activeElement, "the caret took the focus from the row's control").toBe(inner);
+  expect(inner, "the caret took the focus from the row's control").toHaveFocus();
 });
 
 // The box the row's editor is drawn in is the row's own, unlike a control inside the row: a
@@ -3020,16 +3042,20 @@ test("a press inside the row's editor before it has drawn the node's block keeps
   const { editable, view } = await enterBeforeDrawn(user);
   await user.click(editable);
   expect(view.edited.at(-1), "the press inside the editor ended the editing").toBe("artifact-spec");
-  expect(document.activeElement, "the press did not focus the editor").toBe(editable);
+  expect(editable, "the press did not focus the editor").toHaveFocus();
   // The editor draws the document a frame later.
   await nextFrame();
   await drawStatementBlocks(editable);
-  await waitFor(() =>
+  await waitFor(() => {
     expect(
-      document.activeElement === editable && caretBlock() === "r1",
+      editable,
       "the caret did not go into the statement once the editor drew its block"
-    ).toBe(true)
-  );
+    ).toHaveFocus();
+    expect(
+      caretBlock(),
+      "the caret did not go into the statement once the editor drew its block"
+    ).toBe("r1");
+  });
   expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
 });
 
@@ -3042,16 +3068,20 @@ test("a focus a script moves out of the row before its editor has drawn the docu
   const { editable, view } = await enterBeforeDrawn(user);
   const { control } = controlOutside();
   await act(async () => control.focus());
-  expect(document.activeElement, "the script did not focus the control").toBe(control);
+  expect(control, "the script did not focus the control").toHaveFocus();
   // The editor draws the document a frame later.
   await nextFrame();
   await drawStatementBlocks(editable);
-  await waitFor(() =>
+  await waitFor(() => {
     expect(
-      document.activeElement === editable && caretBlock() === "r1",
+      editable,
       "a focus a script moved before the editor drew the document kept the caret out of the statement"
-    ).toBe(true)
-  );
+    ).toHaveFocus();
+    expect(
+      caretBlock(),
+      "a focus a script moved before the editor drew the document kept the caret out of the statement"
+    ).toBe("r1");
+  });
   expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
 });
 
@@ -3098,7 +3128,7 @@ test("a caret the editor drops or moves goes back to the node's block until the 
     "the caret was moved back after the reader acted"
   ).toBe(5);
   await wrapAgain(editable);
-  await waitFor(() => expect(document.activeElement).toBe(editable));
+  await waitFor(() => expect(editable).toHaveFocus());
   expect(
     window.getSelection()?.anchorOffset,
     "the caret was put back at the block's start after the reader acted"
@@ -3126,21 +3156,17 @@ test("a focus the editor drops while the reader writes comes back at their caret
   await select(statement, 5);
   await wrapAgain(editable);
   await waitFor(() =>
-    expect(document.activeElement, "the focus the editor dropped did not come back").toBe(editable)
+    expect(editable, "the focus the editor dropped did not come back").toHaveFocus()
   );
   expect(window.getSelection()?.anchorNode, "the caret came back elsewhere").toBe(statement);
   expect(window.getSelection()?.anchorOffset, "the caret came back elsewhere").toBe(5);
 
   // A press on blank space takes the focus off the editable to nothing, and it stays there.
   await user.pointer({ keys: "[MouseLeft>]", target: plain });
-  expect(document.activeElement, "the press did not take the focus off the editor").toBe(
-    document.body
-  );
+  expect(document.body, "the press did not take the focus off the editor").toHaveFocus();
   await user.pointer({ keys: "[/MouseLeft]" });
   await nextFrame();
-  expect(document.activeElement, "the focus a press took off the editor came back").toBe(
-    document.body
-  );
+  expect(document.body, "the focus a press took off the editor came back").toHaveFocus();
 });
 
 // The editor can redraw its text while the editable has no focus - the words the reader's caret
@@ -3180,7 +3206,7 @@ test("a focus the editor drops after it redrew the words of the reader's caret c
     } finally {
       frames.restore();
     }
-    expect(document.activeElement, "the focus the editor dropped did not come back").toBe(editable);
+    expect(editable, "the focus the editor dropped did not come back").toHaveFocus();
     expect(selected(), "the caret did not come back at the start of the node's block").toEqual([
       "r1:0",
       "r1:0",
@@ -3219,9 +3245,9 @@ test("a focus the editor drops after it redrew the reader's caret and took the n
     frames.restore();
   }
   expect(
-    document.activeElement,
+    document.body,
     "the focus came back to an editor that no longer draws the node's block"
-  ).toBe(document.body);
+  ).toHaveFocus();
   expect(
     editable.contains(window.getSelection()?.anchorNode ?? null),
     "a caret was put in the editor outside the node's block"
@@ -3250,9 +3276,7 @@ test("the caret a dropped focus comes back at is the editor's own in the task th
     expect(own.offset, "the editor read a move the browser had not reported").toBe(0);
     await wrapAgain(editable);
     await waitFor(() =>
-      expect(document.activeElement, "the focus the editor dropped did not come back").toBe(
-        editable
-      )
+      expect(editable, "the focus the editor dropped did not come back").toHaveFocus()
     );
     expect(selected(), "the caret came back elsewhere").toEqual(["r1:5", "r1:5"]);
     expect(own.offset, "the editor's own selection is not the caret the focus came back at").toBe(
@@ -4145,13 +4169,11 @@ test("Tab from the row's editor goes past a control another block draws to the f
   if (row === null) throw new Error("the statement's row does not hold the editor");
   const before = blocksOf(view);
   await user.tab();
-  expect(document.activeElement === link, "Tab stopped on the link the next block draws").toBe(
-    false
-  );
+  expect(link, "Tab stopped on the link the next block draws").not.toHaveFocus();
   expect(
-    document.activeElement === outside.control,
+    outside.control,
     "Tab from the row's editor did not go to the first tab stop after its box"
-  ).toBe(true);
+  ).toHaveFocus();
   expect(blocksOf(view), "Tab changed the document").toEqual(before);
   await waitFor(() =>
     expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
@@ -4182,14 +4204,8 @@ test("Shift+Tab from the row's editor goes to the row past a control another blo
   box.prepend(aside);
   const before = blocksOf(view);
   await user.tab({ shift: true });
-  expect(
-    document.activeElement === above,
-    "Shift+Tab stopped on the references button of the block above"
-  ).toBe(false);
-  expect(
-    document.activeElement === row,
-    "Shift+Tab from the row's editor did not go to the row"
-  ).toBe(true);
+  expect(above, "Shift+Tab stopped on the references button of the block above").not.toHaveFocus();
+  expect(row, "Shift+Tab from the row's editor did not go to the row").toHaveFocus();
   expect(blocksOf(view), "Shift+Tab changed the document").toEqual(before);
   await waitFor(() =>
     expect(row.querySelector('[contenteditable="true"]') === null, "the editing did not end").toBe(
@@ -4197,7 +4213,7 @@ test("Shift+Tab from the row's editor goes to the row past a control another blo
     )
   );
   await nextFrame();
-  expect(document.activeElement === row, "the focus left the row as the editing ended").toBe(true);
+  expect(row, "the focus left the row as the editing ended").toHaveFocus();
 });
 
 // A Tab pressed in an input method's composition is the input method's - marked `isComposing`,
@@ -4216,9 +4232,9 @@ test.each([
   });
   await nextFrame();
   expect(
-    document.activeElement === editable,
+    editable,
     "a Tab pressed in a composition moved the focus out of the row's editor"
-  ).toBe(true);
+  ).toHaveFocus();
   expect(view.edited.at(-1), "a Tab pressed in a composition ended the editing").toBe(
     "artifact-spec"
   );
@@ -4241,9 +4257,9 @@ test("Tab from the row's editor stops at a link the node's own block draws, and 
   if (row === null) throw new Error("the statement's row does not hold the editor");
   await user.tab();
   expect(
-    document.activeElement === linkOf(editable, "r1"),
+    linkOf(editable, "r1"),
     "Tab did not stop at the link the node's block draws"
-  ).toBe(true);
+  ).toHaveFocus();
   await nextFrame();
   expect(
     row.querySelector('[contenteditable="true"]') === editable,
@@ -4251,9 +4267,9 @@ test("Tab from the row's editor stops at a link the node's own block draws, and 
   ).toBe(true);
   await user.tab();
   expect(
-    document.activeElement === outside.control,
+    outside.control,
     "Tab from the node's link did not go to the first tab stop after the editor's box"
-  ).toBe(true);
+  ).toHaveFocus();
   await waitFor(() =>
     expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
   );
@@ -4305,9 +4321,9 @@ test("Tab from the row's editor stops at each control of the action bar its sele
   }
   await user.tab();
   expect(
-    document.activeElement === outside.control,
+    outside.control,
     "Tab from the action bar did not go to the first tab stop after the editor's box"
-  ).toBe(true);
+  ).toHaveFocus();
   await waitFor(() =>
     expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
   );
@@ -4366,9 +4382,9 @@ test("Tab from the row's editor stops at the references button of the node's own
   expect(focused(), "Tab did not stop at the node's block's references button again").toBe("r1");
   await user.tab();
   expect(
-    document.activeElement === outside.control,
-    `Tab from the node's references button went to ${focused()}, not the first tab stop after the editor's box`
-  ).toBe(true);
+    outside.control,
+    "Tab from the node's references button did not go to the first tab stop after the editor's box"
+  ).toHaveFocus();
   await waitFor(() =>
     expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
   );
@@ -4656,7 +4672,7 @@ test("no key edits the document while the node's block of the row's editor is no
   // The editor draws the words above the statement, and not the statement.
   await drawStatementBlocks(editable, [["r0", "The words above the statement."]]);
   await user.tab();
-  expect(document.activeElement, "Tab from the row did not stop in its editor").toBe(editable);
+  expect(editable, "Tab from the row did not stop in its editor").toHaveFocus();
   await select(wordsOf(editable, "r0"), 5);
   for (const [key, modifiers, refused] of [
     ["x", {}, true],
@@ -4705,10 +4721,7 @@ test("the caret goes into the row's editor only once the editor holds its edits 
     await waitFor(() => wordsOf(editable, "r1"));
     await nextFrame();
     await nextFrame();
-    expect(
-      document.activeElement === row,
-      "the focus left the row before the editor held its edits"
-    ).toBe(true);
+    expect(row, "the focus left the row before the editor held its edits").toHaveFocus();
     expect(
       editable.contains(window.getSelection()?.anchorNode ?? null),
       "a caret went into an editor that does not hold its edits yet"
@@ -4719,12 +4732,15 @@ test("the caret goes into the row's editor only once the editor holds its edits 
     );
 
     await act(async () => held.resolve(parts));
-    await waitFor(() =>
+    await waitFor(() => {
       expect(
-        document.activeElement === editable && caretBlock() === "r1",
+        editable,
         "no caret went into the statement once the editor held its edits"
-      ).toBe(true)
-    );
+      ).toHaveFocus();
+      expect(caretBlock(), "no caret went into the statement once the editor held its edits").toBe(
+        "r1"
+      );
+    });
     expect(selected(), "the caret is not at the statement's start").toEqual(["r1:0", "r1:0"]);
     const view = room.editor?.view;
     if (view === undefined) throw new Error("the row's editor was never made");
@@ -4838,7 +4854,7 @@ for (const [name, modifiers] of [
       const view = room.editor?.view;
       if (view === undefined) throw new Error("the row's editor was never made");
       await user.tab();
-      expect(document.activeElement, "Tab from the row did not stop in its editor").toBe(editable);
+      expect(editable, "Tab from the row did not stop in its editor").toHaveFocus();
       await select(wordsOf(editable, "q1"), 3);
       expect(
         view.state.selection.$head.parent.textContent,
@@ -4854,10 +4870,12 @@ for (const [name, modifiers] of [
   });
 }
 
-/** Fails the load of what the hold is built of, held back so far, with `reject`, and waits a
- *  task on: a rejection nothing handled is reported then, and fails the case it happens in. */
+/** Fails the load of what the hold is built of, held back so far, with `reject`, inside `act`:
+ *  the row answers the failure in the promises it chained on the load, and React draws what they
+ *  changed as `act` ends, a task on (React's `act` ends on a task of its own), by which a
+ *  rejection nothing handled is reported, and fails the case it happens in. */
 function failLoad(reject: (reason: Error) => void): Promise<void> {
-  return waitInAct(20, () => reject(new Error("the hold's parts did not load")));
+  return act(async () => reject(new Error("the hold's parts did not load")));
 }
 
 // What the hold is built of can fail to load - a chunk the network did not bring. No hold goes on
@@ -4877,10 +4895,7 @@ test("a row whose editor's hold fails to load ends the editing and says its edit
     expect(view.edited.at(-1), "the editing ended while the hold was still loading").toBe(
       "artifact-spec"
     );
-    expect(
-      document.activeElement === row,
-      "the focus left the row while the hold was still loading"
-    ).toBe(true);
+    expect(row, "the focus left the row while the hold was still loading").toHaveFocus();
 
     await failLoad(held.reject);
     await waitFor(() =>
@@ -4900,7 +4915,7 @@ test("a row whose editor's hold fails to load ends the editing and says its edit
         "the row still holds the editor"
       ).toBe(true)
     );
-    expect(document.activeElement === row, "the focus is not on the statement's row").toBe(true);
+    expect(row, "the focus is not on the statement's row").toHaveFocus();
 
     // The next Enter asks for the load again, which now answers.
     load.mockRestore();
@@ -4911,12 +4926,10 @@ test("a row whose editor's hold fails to load ends the editing and says its edit
       return found;
     });
     await drawStatementBlocks(again);
-    await waitFor(() =>
-      expect(
-        document.activeElement === again && caretBlock() === "r1",
-        "the second Enter put no caret in the statement"
-      ).toBe(true)
-    );
+    await waitFor(() => {
+      expect(again, "the second Enter put no caret in the statement").toHaveFocus();
+      expect(caretBlock(), "the second Enter put no caret in the statement").toBe("r1");
+    });
   } finally {
     load.mockRestore();
   }
@@ -4942,7 +4955,7 @@ test("a hold that fails to load before the row is handed an editor ends the edit
       ).toBe(KEY_REPORTS.editor_closed)
     );
     expect(view.edited.at(-1), "the editing did not end").toBeUndefined();
-    expect(document.activeElement === row, "the focus is not on the statement's row").toBe(true);
+    expect(row, "the focus is not on the statement's row").toHaveFocus();
   } finally {
     load.mockRestore();
   }
@@ -4965,10 +4978,7 @@ test("a second Enter on the row while its editor's hold is loading starts no new
     const [row] = rowsFor(view.container, "spec#b-r1");
     await drawStatementBlocks(editable);
     await nextFrame();
-    expect(
-      document.activeElement === row,
-      "the focus left the row while the hold was still loading"
-    ).toBe(true);
+    expect(row, "the focus left the row while the hold was still loading").toHaveFocus();
 
     await user.keyboard("{Enter}");
     expect(view.edited.at(-1), "the second Enter ended the editing").toBe("artifact-spec");
@@ -4979,7 +4989,7 @@ test("a second Enter on the row while its editor's hold is loading starts no new
         "the focus moved off the row after the second Enter left the editing on"
       ).toBeUndefined()
     );
-    expect(document.activeElement, "the focus left the control it was moved to").toBe(control);
+    expect(control, "the focus left the control it was moved to").toHaveFocus();
   } finally {
     load.mockRestore();
   }
@@ -5008,28 +5018,23 @@ test("a press in Details while the row's editor is still loading keeps the editi
     await waitFor(() => wordsOf(editable, "r1"));
     await nextFrame();
     await nextFrame();
-    expect(
-      document.activeElement === row,
-      "the focus left the row before the editor held its edits"
-    ).toBe(true);
+    expect(row, "the focus left the row before the editor held its edits").toHaveFocus();
     const card = cardInDetails();
 
-    await user.click(card);
-    // The press is over a task after its click.
-    await waitInAct(0);
+    await pressToItsEnd((user) => user.click(card));
     expect(
       view.edited.at(-1),
       "a press in Details while the editor was loading ended the editing"
     ).toBe("artifact-spec");
-    expect(document.activeElement === card, "the press left the focus off the card").toBe(true);
+    expect(card, "the press left the focus off the card").toHaveFocus();
 
     await act(async () => held.resolve(parts));
     await nextFrame();
     await nextFrame();
     expect(
-      document.activeElement === card,
+      card,
       "the caret took the focus back from Details once the editor held its edits"
-    ).toBe(true);
+    ).toHaveFocus();
   } finally {
     load.mockRestore();
   }
@@ -5053,14 +5058,12 @@ test("a hold that fails to load while a press in Details has put off the row's c
     await drawStatementBlocks(editable);
     await nextFrame();
     const card = cardInDetails();
-    await user.click(card);
-    // The press is over a task after its click.
-    await waitInAct(0);
+    await pressToItsEnd((user) => user.click(card));
     expect(
       view.edited.at(-1),
       "a press in Details while the editor's hold was loading ended the editing"
     ).toBe("artifact-spec");
-    expect(document.activeElement === card, "the press left the focus off the card").toBe(true);
+    expect(card, "the press left the focus off the card").toHaveFocus();
 
     await failLoad(held.reject);
     await waitFor(() =>
@@ -5076,9 +5079,7 @@ test("a hold that fails to load while a press in Details has put off the row's c
       ).toBeNull()
     );
     await nextFrame();
-    expect(document.activeElement === card, "the editing's end took the focus from Details").toBe(
-      true
-    );
+    expect(card, "the editing's end took the focus from Details").toHaveFocus();
     expect(
       rowReport(view.container),
       "a row says its editor could not open, with the focus out of the tree"
@@ -5118,7 +5119,7 @@ test("a page that hands the row no editor gets no caret: the editing ends and th
     editable.contains(window.getSelection()?.anchorNode ?? null),
     "a caret went into an editor the row was never handed"
   ).toBe(false);
-  expect(document.activeElement === row, "the focus is not on the statement's row").toBe(true);
+  expect(row, "the focus is not on the statement's row").toHaveFocus();
 });
 
 // The same for a page that hands the row no editor, which is seen a task after the editor has
@@ -5134,9 +5135,7 @@ test("a page that hands the row no editor, drawing the node's block after a pres
   const [row] = rowsFor(view.container, "spec#b-r1");
   if (row === undefined) throw new Error("the statement's row is not drawn");
   const card = cardInDetails();
-  await user.click(card);
-  // The press is over a task after its click.
-  await waitInAct(0);
+  await pressToItsEnd((user) => user.click(card));
   expect(view.edited.at(-1), "a press in Details ended the editing").toBe("artifact-spec");
 
   await drawStatementBlocks(editable);
@@ -5153,9 +5152,7 @@ test("a page that hands the row no editor, drawing the node's block after a pres
     ).toBeNull()
   );
   await nextFrame();
-  expect(document.activeElement === card, "the editing's end took the focus from Details").toBe(
-    true
-  );
+  expect(card, "the editing's end took the focus from Details").toHaveFocus();
   expect(
     rowReport(view.container),
     "a row says its editor could not open, with the focus out of the tree"
@@ -5187,9 +5184,7 @@ test("a hold that fails to load while a press on another row is held, after a pr
     await drawStatementBlocks(editable);
     await nextFrame();
     const card = cardInDetails();
-    await user.click(card);
-    // The press is over a task after its click.
-    await waitInAct(0);
+    await pressToItsEnd((user) => user.click(card));
     expect(
       view.edited.at(-1),
       "a press in Details while the editor's hold was loading ended the editing"
@@ -5202,8 +5197,7 @@ test("a hold that fails to load while a press on another row is held, after a pr
     await failLoad(held.reject);
     expect(view.edited.at(-1), "the editing ended while the press was held").toBe("artifact-spec");
     await user.pointer({ keys: "[/MouseLeft]", target: words });
-    // The press is over a task after its click.
-    await waitInAct(0);
+    // The press is over a task after its click, and its end ends the editing.
     await waitFor(() =>
       expect(view.edited.at(-1), "the editing did not end once the press was over").toBeUndefined()
     );
@@ -5238,14 +5232,12 @@ test("a hold that fails to load after a press on words outside the tree put off 
     const { editable, view } = await enterBeforeDrawn(user);
     await drawStatementBlocks(editable);
     await nextFrame();
-    await user.click(outside);
-    // The press is over a task after its click.
-    await waitInAct(0);
+    await pressToItsEnd((user) => user.click(outside));
     expect(
       view.edited.at(-1),
       "a press outside the tree while the editor's hold was loading ended the editing"
     ).toBe("artifact-spec");
-    expect(document.activeElement, "the press left the focus on an element").toBe(document.body);
+    expect(document.body, "the press left the focus on an element").toHaveFocus();
 
     const reports = reportsDrawn(view.container);
     await failLoad(held.reject);
@@ -5261,9 +5253,7 @@ test("a hold that fails to load after a press on words outside the tree put off 
       focusedRow(view.container),
       "the editing's end took the focus from the page's body to a row"
     ).toBeUndefined();
-    expect(document.activeElement, "the editing's end took the focus from the page's body").toBe(
-      document.body
-    );
+    expect(document.body, "the editing's end took the focus from the page's body").toHaveFocus();
     expect(
       rowReport(view.container),
       "a row says its editor could not open, with the focus out of the tree"
@@ -5298,13 +5288,15 @@ for (const blur of [true, false]) {
       if (row === undefined) throw new Error("the statement's row is not drawn");
       await drawStatementBlocks(editable);
       await nextFrame();
-      await act(async () => (blur ? row.blur() : control.focus()));
-      expect(
-        view.container.contains(document.activeElement),
-        `the script's ${name} left the focus in the tree`
-      ).toBe(false);
-      // The row is looked at a task after the focus left it.
-      await waitInAct(0);
+      await zeroDelaysOnFakeClock(async () => {
+        await act(async () => (blur ? row.blur() : control.focus()));
+        expect(
+          view.container.contains(document.activeElement),
+          `the script's ${name} left the focus in the tree`
+        ).toBe(false);
+        // The row is looked at a task after the focus left it.
+        await tick(0);
+      });
       expect(view.edited.at(-1), `the script's ${name} ended the editing`).toBe("artifact-spec");
 
       const reports = reportsDrawn(view.container);
@@ -5342,21 +5334,27 @@ test("an editor that has drawn the node's block microtasks before the page hands
   });
   const handed = standInView();
   try {
-    await act(async () => {
-      appendBlocks(editable);
-      // The row's watch on the drawing looks at the row here, before the editor is handed over.
-      await Promise.resolve();
-      await Promise.resolve();
-      handOver?.({ view: handed });
+    await zeroDelaysOnFakeClock(async () => {
+      await act(async () => {
+        appendBlocks(editable);
+        // The row's watch on the drawing looks at the row here, before the editor is handed over.
+        await Promise.resolve();
+        await Promise.resolve();
+        handOver?.({ view: handed });
+      });
+      await waitFor(() => {
+        expect(
+          editable,
+          "the editor handed over in the task it drew the block in took no caret"
+        ).toHaveFocus();
+        expect(
+          caretBlock(),
+          "the editor handed over in the task it drew the block in took no caret"
+        ).toBe("r1");
+      });
+      // The task after, in which the row reads whether it was handed an editor.
+      await tick(0);
     });
-    await waitFor(() =>
-      expect(
-        document.activeElement === editable && caretBlock() === "r1",
-        "the editor handed over in the task it drew the block in took no caret"
-      ).toBe(true)
-    );
-    // The task after, in which the row reads whether it was handed an editor.
-    await waitInAct(20);
     expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
     expect(rowReport(view.container), "the row said its editor could not open").toBeUndefined();
   } finally {
@@ -5453,57 +5451,62 @@ test("an editor that draws the node's block and goes unhanded leaves the row wai
   });
   const [row] = rowsFor(view.container, "spec#b-r1");
   const handed = standInView();
-  // More than a task on: the row has read by then whether it was handed an editor.
-  const aTaskOn = () => waitInAct(20);
+  // More than a task on: the row has read by then whether it was handed an editor, which it reads
+  // a task after the editor drew the block (`useNodeEditing.ts`'s `handing`).
+  const aTaskOn = async () => {
+    await tick(0);
+    await tick(0);
+  };
   try {
-    // The refused connection's editor draws the statement, the row's watch on the drawing looks
-    // at the row, and the editor goes, all in one task.
-    appendBlocks(editable);
-    await Promise.resolve();
-    await Promise.resolve();
-    act(() => remake.gone?.());
-    expect(
-      row?.querySelector('[contenteditable="true"]') == null,
-      "the editor that went unhanded is still in the row"
-    ).toBe(true);
-    await aTaskOn();
-    expect(
-      rowReport(view.container),
-      "the row said its editor could not open, of an editor that drew the block and went"
-    ).toBeUndefined();
-    expect(view.edited.at(-1), "the editing ended with the next editor still to come").toBe(
-      "artifact-spec"
-    );
-
-    // The next connection's editor is made, draws the statement and is handed over.
-    await act(async () => remake.again?.());
-    const next = row?.querySelector<HTMLElement>('[contenteditable="true"]');
-    if (next == null || next === editable) throw new Error("the next editor was not made");
-    await act(async () => {
-      appendBlocks(next);
+    await zeroDelaysOnFakeClock(async () => {
+      // The refused connection's editor draws the statement, the row's watch on the drawing
+      // looks at the row, and the editor goes, all in one task.
+      appendBlocks(editable);
       await Promise.resolve();
       await Promise.resolve();
-      handOver?.({ view: handed });
-    });
-    await waitFor(() =>
+      act(() => remake.gone?.());
       expect(
-        document.activeElement === next && caretBlock() === "r1",
-        "the next editor, handed over, took no caret"
-      ).toBe(true)
-    );
-    await aTaskOn();
-    expect(rowReport(view.container), "the row said its editor could not open").toBeUndefined();
-    expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
+        row?.querySelector('[contenteditable="true"]') == null,
+        "the editor that went unhanded is still in the row"
+      ).toBe(true);
+      await aTaskOn();
+      expect(
+        rowReport(view.container),
+        "the row said its editor could not open, of an editor that drew the block and went"
+      ).toBeUndefined();
+      expect(view.edited.at(-1), "the editing ended with the next editor still to come").toBe(
+        "artifact-spec"
+      );
+
+      // The next connection's editor is made, draws the statement and is handed over.
+      await act(async () => remake.again?.());
+      const next = row?.querySelector<HTMLElement>('[contenteditable="true"]');
+      if (next == null || next === editable) throw new Error("the next editor was not made");
+      await act(async () => {
+        appendBlocks(next);
+        await Promise.resolve();
+        await Promise.resolve();
+        handOver?.({ view: handed });
+      });
+      await waitFor(() => {
+        expect(next, "the next editor, handed over, took no caret").toHaveFocus();
+        expect(caretBlock(), "the next editor, handed over, took no caret").toBe("r1");
+      });
+      await aTaskOn();
+      expect(rowReport(view.container), "the row said its editor could not open").toBeUndefined();
+      expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
+    });
   } finally {
     handOver?.(undefined);
     handed.destroy();
   }
 });
 
-/** Makes `change` to the page inside the row's editor, as the browser makes an edit there, and
- *  waits for the editor to read the change back (its `MutationObserver`). */
-async function changePage(change: () => void): Promise<void> {
-  await waitInAct(50, change);
+/** Makes `change` to the page inside the row's editor, as the browser makes an edit there, inside
+ *  `act`, by whose end the editor has read the change back: happy-dom hands a `MutationObserver`
+ *  its records in a microtask, and ProseMirror reads them as they come (`DOMObserver`). */
+function changePage(change: () => void): Promise<void> {
+  return act(async () => change());
 }
 
 // While the editor's document holds no block of the node's - before the room has sent it - no
@@ -5625,6 +5628,11 @@ test("a paste of two lines into the row's heading is refused, and one line goes 
   );
 });
 
+/** How long the editor's drop indicator waits after a drop before it hides itself
+ *  (`prosemirror-drop-indicator`'s `scheduleHide`, under `@milkdown/plugin-cursor`): 30 ms, which
+ *  the library does not export. */
+const DROP_INDICATOR_MS = 30;
+
 // A drop edits the document where it lands, in whichever block that is, and words dragged out of
 // the node's block within the editor are moved, not copied. The editor refuses a drop outside the
 // node's block, and words dragged out of it to another (`holdEditsToBlock`). happy-dom lays
@@ -5654,6 +5662,7 @@ test("a drop into the row's editor outside the node's block, and a drag of its w
       editable.querySelector(`[data-block-id="${id}"]`)?.dispatchEvent(event);
     });
   };
+  jest.useFakeTimers();
   try {
     const outside = new DataTransfer();
     outside.setData("text/plain", "Dropped words");
@@ -5666,10 +5675,11 @@ test("a drop into the row's editor outside the node's block, and a drag of its w
     pointed = inBlock("r0", 4);
     drag("drop", "r0", dragged);
     expect(blocksOf(view), "words dragged out of the statement moved").toEqual(before);
-    // The editor's drop indicator hides itself 30 ms after a drop, which it is let do while the
-    // editor stands.
-    await waitInAct(50);
+    // The editor's drop indicator hides itself `DROP_INDICATOR_MS` after a drop, which it is let
+    // do while the editor stands: the fake clock the drops were made on is moved over it.
+    await jump(DROP_INDICATOR_MS);
   } finally {
+    realClock();
     points.mockRestore();
   }
 });
@@ -5737,13 +5747,13 @@ test("the frame after Escape gives the row back a focus the editor dropped, and 
       ).toBeTruthy()
     );
     await user.keyboard("{Escape}");
-    expect(document.activeElement, "Escape left the focus off the row").toBe(statement);
+    expect(statement, "Escape left the focus off the row").toHaveFocus();
   };
   const frames = framesByHand();
   try {
     // A key: `k` moves the focus to the row above.
     await user.keyboard("{Escape}");
-    expect(document.activeElement, "Escape left the focus off the row").toBe(statement);
+    expect(statement, "Escape left the focus off the row").toHaveFocus();
     await user.keyboard("k");
     expect(focusedRow(tree)).toBe("comment-1");
     await frames.run();
@@ -5758,36 +5768,32 @@ test("the frame after Escape gives the row back a focus the editor dropped, and 
     await act(async () => control.focus());
     await frames.run();
     expect(
-      document.activeElement,
+      control,
       "the frame after Escape took the focus back from the control a script focused"
-    ).toBe(control);
+    ).toHaveFocus();
 
     // A second Escape, which leaves the outline from the row: the focus is on the page.
     await act(async () => statement.focus());
     await editThenEscape();
     await user.keyboard("{Escape}");
-    expect(document.activeElement, "the second Escape did not leave the outline").toBe(
-      document.body
-    );
+    expect(document.body, "the second Escape did not leave the outline").toHaveFocus();
     await frames.run();
     expect(
-      document.activeElement,
+      document.body,
       "the frame after Escape took the focus back from where a second Escape left it"
-    ).toBe(document.body);
+    ).toHaveFocus();
 
     // A press on blank space, which takes the focus to the page.
     await act(async () => statement.focus());
     await editThenEscape();
     await user.pointer({ keys: "[MouseLeft>]", target: plain });
     await user.pointer({ keys: "[/MouseLeft]" });
-    expect(document.activeElement, "the press did not take the focus off the row").toBe(
-      document.body
-    );
+    expect(document.body, "the press did not take the focus off the row").toHaveFocus();
     await frames.run();
     expect(
-      document.activeElement,
+      document.body,
       "the frame after Escape took the focus back from where a press on blank space left it"
-    ).toBe(document.body);
+    ).toHaveFocus();
 
     // The editor leaving the row drops the focus to the page, which is no act of the reader's.
     await act(async () => statement.focus());
@@ -5795,9 +5801,9 @@ test("the frame after Escape gives the row back a focus the editor dropped, and 
     await act(async () => statement.blur());
     await frames.run();
     expect(
-      document.activeElement,
+      statement,
       "the frame after Escape left the focus the editor dropped on the page"
-    ).toBe(statement);
+    ).toHaveFocus();
   } finally {
     frames.restore();
   }
@@ -6648,6 +6654,7 @@ test("a row keeps its key, and its pin, through a zoom in and back out", async (
   const [requirement] = rowsFor(view.container, "spec#b-r1");
   if (check === undefined || requirement === undefined) throw new Error("the tree drew no rows");
   const keyOfCheck = check.getAttribute("data-row-key");
+  if (keyOfCheck === null) throw new Error("the check's row has no key");
 
   await act(async () => check.focus());
   await user.keyboard("o");
@@ -6659,7 +6666,7 @@ test("a row keeps its key, and its pin, through a zoom in and back out", async (
   await user.keyboard(".");
   await waitFor(() => expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull());
   const [zoomedCheck] = rowsFor(view.container, "verification#b-c1");
-  expect(zoomedCheck?.getAttribute("data-row-key")).toBe(keyOfCheck);
+  expect(zoomedCheck).toHaveAttribute("data-row-key", keyOfCheck);
   expect(zoomedCheck?.querySelector("[data-pinned]")).toBeTruthy();
 
   // A pin made while zoomed is on the same row once the reader is back out of the zoom.
@@ -6937,7 +6944,7 @@ test("a focus taken off the opening's row while the row stays on the page ends t
     })
   );
   expect(rowsFor(container, "comment-0")).toHaveLength(1);
-  expect(document.activeElement).toBe(document.body);
+  expect(document.body).toHaveFocus();
 });
 
 // The same for the question the page opened on, which is where the page stays until the reader
@@ -7158,9 +7165,7 @@ test("an address's node takes the focus back until the reader acts, and not afte
   expect(focusedRow(view.container)).toBe("comment-2");
   await act(async () => (document.activeElement as HTMLElement | null)?.blur());
   view.redraw();
-  expect(document.activeElement, "a tree drawn after the reader acted took the focus back").toBe(
-    document.body
-  );
+  expect(document.body, "a tree drawn after the reader acted took the focus back").toHaveFocus();
 });
 
 // The tester's red row on c-outline (`an issue opened by a link opens with the focus on its
@@ -7187,7 +7192,7 @@ test("the page opens on its question, or its first row, with the focus on what h
     const { container } = tree.view;
     container.tabIndex = -1;
     await act(async () => container.focus());
-    expect(document.activeElement).toBe(container);
+    expect(container).toHaveFocus();
     tree.redraw(node({ children: [...children], id: KEY, type: "issue" }));
     await waitFor(() =>
       expect(
@@ -7397,9 +7402,9 @@ test("a focus a script puts on a control before the question's landing frame sta
     expect(rowsFor(container, "ask-1")[0], "the read kept the question's row").not.toBe(asked);
     await frames.run();
     expect(
-      document.activeElement,
+      control,
       "the question's row drawn again took the focus from the control a script focused"
-    ).toBe(control);
+    ).toHaveFocus();
   } finally {
     frames.restore();
   }
@@ -7558,7 +7563,7 @@ test("a row the page lands on takes the focus in the next frame, without a scrol
       const row = rowsFor(view.container, landsOn)[0];
       expect(row, `${what} draws no row`).toBeDefined();
       expect(focusesOf(row), `${what} took the focus in the commit that drew it`).toEqual([]);
-      expect(document.activeElement).toBe(document.body);
+      expect(document.body).toHaveFocus();
 
       await nextFrame();
       expect(focusedRow(view.container), `${what} has no focus after the next frame`).toBe(landsOn);
@@ -7606,9 +7611,10 @@ test("a row the page lands on takes the focus in the next frame, without a scrol
       ] as const) {
         focuses.length = 0;
         const view = renderTree(root, reveal === undefined ? {} : { reveal });
-        expect(document.activeElement).toBe(document.body);
+        expect(document.body).toHaveFocus();
         await act(async () => run());
         await nextFrame();
+        // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
         expect(document.activeElement, `${what} took the focus from where ${came} left it`).toBe(
           stays
         );
@@ -7929,7 +7935,7 @@ async function expectFoldKept(container: HTMLElement, user: UserEvent, how: stri
     expect(rowsFor(container, "reply-1").length, `${how} drew the branch still open`).toBe(0)
   );
   expect(rowsFor(container, "reply-2").length, `${how} folded another branch`).toBe(1);
-  expect(rowsFor(container, "comment-1")[0]?.getAttribute("aria-expanded")).toBe("false");
+  expect(rowsFor(container, "comment-1")[0]).toHaveAttribute("aria-expanded", "false");
   await user.keyboard("z");
   await waitFor(() => expect(rowsFor(container, "reply-2").length).toBe(0));
   expect(
@@ -7962,7 +7968,7 @@ test("a row's fold control in the cycle's last state folds that branch at once a
   const control = rowsFor(view.container, "comment-1")[0]?.querySelector<HTMLElement>(
     "button[data-node-bullet]"
   );
-  expect(control?.getAttribute("aria-label")).toBe(CONTROL_LABELS.fold);
+  expect(control).toHaveAttribute("aria-label", CONTROL_LABELS.fold);
   await user.click(control as HTMLElement);
   await expectFoldKept(view.container, user, "the fold control");
   view.unmount();
@@ -8052,6 +8058,7 @@ test("the row the tree is zoomed to draws no fold control and stays expanded, an
     await waitFor(() => expect(view.container.querySelector("[data-crumb]")).not.toBeNull());
     await waitFor(() => expect(rowsFor(view.container, "reply-1").length).toBe(1));
     expect(control(), `the zoom's own row draws a fold control at ${width} px`).toBeNull();
+    // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the width.
     expect(
       rowsFor(view.container, "comment-1")[0]?.getAttribute("aria-expanded"),
       `the zoom's own row does not say it is expanded at ${width} px`
@@ -8119,7 +8126,7 @@ test("Left on a branch of the address's own path folds it at once after the land
       "Left drew the branch the address goes through still open"
     ).toBe(0)
   );
-  expect(rowsFor(view.container, "comment-1")[0]?.getAttribute("aria-expanded")).toBe("false");
+  expect(rowsFor(view.container, "comment-1")[0]).toHaveAttribute("aria-expanded", "false");
   expect(focusedRow(view.container), "Left moved off the row it folded").toBe("comment-1");
   view.unmount();
 });
@@ -8135,7 +8142,7 @@ test("the Fold control of the address's own node folds it at once at 390 px", as
   const control = rowsFor(view.container, "reply-1")[0]?.querySelector<HTMLElement>(
     "button[data-node-bullet]"
   );
-  expect(control?.getAttribute("aria-label")).toBe(CONTROL_LABELS.fold);
+  expect(control).toHaveAttribute("aria-label", CONTROL_LABELS.fold);
   await user.click(control as HTMLElement);
   await waitFor(() =>
     expect(
@@ -8143,7 +8150,7 @@ test("the Fold control of the address's own node folds it at once at 390 px", as
       "the Fold control drew the address's own node still open"
     ).toBe(0)
   );
-  expect(rowsFor(view.container, "reply-1")[0]?.getAttribute("aria-expanded")).toBe("false");
+  expect(rowsFor(view.container, "reply-1")[0]).toHaveAttribute("aria-expanded", "false");
   view.unmount();
 });
 
@@ -8319,7 +8326,7 @@ test("an outline drawn again while Focus branch is on draws the last request's b
     ).toEqual(branch);
     expect(rowsFor(container, "comment-2")).toHaveLength(0);
     expect(container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull();
-    expect(document.activeElement, "drawing the outline again moved the focus").toBe(control);
+    expect(control, "drawing the outline again moved the focus").toHaveFocus();
 
     await tree.focusBranch(false);
     await tree.ask("comment-1", false);
@@ -8361,7 +8368,7 @@ test("an outline drawn again on Focus branch's node opens on that node, not on a
 
   await tree.show(false);
   await act(async () => (document.activeElement as HTMLElement | null)?.blur());
-  expect(document.activeElement).toBe(document.body);
+  expect(document.body).toHaveFocus();
   await tree.show(true);
   await waitFor(() =>
     expect(focusedRow(container), "the outline drawn again opened on another row").toBe("comment-1")
@@ -8990,8 +8997,10 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
     // A press of another view, more than 30 s after the load, mounts the slot again.
     setSystemTime(Date.now() + 31_000);
     view.rerender(draw(true));
-    // Long enough for a read the mount started to have been sent.
-    await waitInAct(50);
+    // The mount's effects, where a read of the slot would start: React Query starts a read in
+    // the observer's subscribe, which runs in an effect, and calls the read's function in that
+    // same turn, so a started read shows in the count below.
+    await act(async () => {});
     expect(sent(), "the outline mounted again read again what it waits on").toBe(loaded);
   } finally {
     setSystemTime();
@@ -9107,7 +9116,7 @@ test("Back to an address after a fold on its path draws its node again", async (
         "Back to the address drew its node nowhere, folded under the branch"
       ).toBe(1)
     );
-    expect(rowsFor(container, "head-b")[0]?.getAttribute("aria-expanded")).toBe("true");
+    expect(rowsFor(container, "head-b")[0]).toHaveAttribute("aria-expanded", "true");
   } finally {
     names.mockRestore();
   }
@@ -9214,7 +9223,7 @@ test("an address naming an item no node holds draws the item's failure once the 
     );
     expect(read).toHaveBeenCalledWith(GONE_COMMENT);
     await waitFor(() =>
-      expect(document.activeElement, "the failure's line does not hold the focus").toBe(heading)
+      expect(heading, "the failure's line does not hold the focus").toHaveFocus()
     );
     expect(heading.parentElement?.textContent).toContain(
       `That link doesn't name a comment on ${KEY} — it may have been deleted.`
@@ -9246,7 +9255,7 @@ test("an item's failed line stays drawn, with the focus on it and the same alert
       body.view.getByRole("heading", { name: "Couldn't load this comment" })
     );
     await waitFor(() =>
-      expect(document.activeElement, "the failure's line does not hold the focus").toBe(heading)
+      expect(heading, "the failure's line does not hold the focus").toHaveFocus()
     );
     const alert = body.view.getByRole("alert");
 
@@ -9268,7 +9277,7 @@ test("an item's failed line stays drawn, with the focus on it and the same alert
       heading.isConnected,
       "the item's failed line was drawn anew once the added documents' blocks answered"
     ).toBe(true);
-    expect(document.activeElement, "the focus left the item's failed line").toBe(heading);
+    expect(heading, "the focus left the item's failed line").toHaveFocus();
     expect(
       body.view.getByRole("alert"),
       "the item's alert was drawn again, which says a failure again that came only once"
@@ -9415,16 +9424,16 @@ test("an item's failure drawn after the reader pressed a key leaves the focus wh
     await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
     await nextFrame();
     expect(
-      document.activeElement,
+      outside.control,
       "the failure's line took the focus from the control the reader pressed a key on"
-    ).toBe(outside.control);
+    ).toHaveFocus();
 
     await body.follow(address);
     await waitFor(() =>
       expect(
-        document.activeElement,
+        body.view.getByRole("heading", { name: "Comment not found" }),
         "the same address followed again, with no act since, left the focus off the failure's line"
-      ).toBe(body.view.getByRole("heading", { name: "Comment not found" }))
+      ).toHaveFocus()
     );
   } finally {
     names.mockRestore();
@@ -9476,11 +9485,13 @@ test("an item's failure drawn after the reader left the focus on the page's body
       );
       await waitFor(() => expect(read).toHaveBeenCalledWith(GONE_COMMENT));
       await leave(body.view.container);
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
       expect(document.activeElement, `${what} left the focus on an element`).toBe(document.body);
 
       await act(async () => answer.reject(noSuchComment()));
       await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
       await nextFrame();
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
       expect(
         document.activeElement,
         `the line that names no comment, drawn after ${what}, took the focus`
@@ -9529,9 +9540,9 @@ test("an item's failure drawn in place of the outline after the reader moved to 
     );
     await waitFor(() =>
       expect(
-        document.activeElement,
+        heading,
         "the line that names no comment, drawn in place of the outline the reader had moved in, left the focus on the page's body"
-      ).toBe(heading)
+      ).toHaveFocus()
     );
   } finally {
     names.mockRestore();
@@ -9572,19 +9583,19 @@ test("a line drawn after the reader's row left the outline and they pressed a co
     await waitFor(() => expect(rowsFor(container, moved)).toEqual([]));
     expect(body.view.queryByRole("tree"), "the outline left the page with the row").not.toBeNull();
     expect(
-      document.activeElement,
+      document.body,
       "the row's leaving left the focus on an element, not the page's body"
-    ).toBe(document.body);
+    ).toHaveFocus();
     await user.click(outside.control);
-    expect(document.activeElement).toBe(outside.control);
+    expect(outside.control).toHaveFocus();
 
     await act(async () => answer.reject(noSuchComment()));
     await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
     await nextFrame();
     expect(
-      document.activeElement,
+      outside.control,
       "the line that names no comment, drawn after the reader's row left the outline and they pressed a control outside it, took the focus from that control"
-    ).toBe(outside.control);
+    ).toHaveFocus();
     body.view.unmount();
   } finally {
     names.mockRestore();
@@ -9620,9 +9631,9 @@ test("the line that names no row of a block, drawn in place of the outline after
     const title = await waitFor(() => view.getByRole("heading", { name: "No row for this block" }));
     await waitFor(() =>
       expect(
-        document.activeElement,
+        title,
         "the line that names no row of the block, drawn in place of the outline the reader had moved in, left the focus on the page's body"
-      ).toBe(title)
+      ).toHaveFocus()
     );
     view.unmount();
   } finally {
@@ -9665,19 +9676,17 @@ test("a line drawn after the focus left a portal inside the outline's box for a 
     await act(async () => box.append(stage));
     const portalled = body.view.getByRole("button", { name });
     await user.click(portalled);
-    expect(document.activeElement, "the press left the focus off the portal's control").toBe(
-      portalled
-    );
+    expect(portalled, "the press left the focus off the portal's control").toHaveFocus();
     await user.click(outside.control);
-    expect(document.activeElement).toBe(outside.control);
+    expect(outside.control).toHaveFocus();
 
     await act(async () => answer.reject(noSuchComment()));
     await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
     await nextFrame();
     expect(
-      document.activeElement,
+      outside.control,
       "the line that names no comment, drawn after the focus left a portal inside the outline's box for a control outside it, took the focus from that control"
-    ).toBe(outside.control);
+    ).toHaveFocus();
     body.view.unmount();
   } finally {
     names.mockRestore();
@@ -9732,9 +9741,9 @@ test("a line drawn in place of the outline takes the focus though taking out the
     );
     await waitFor(() =>
       expect(
-        document.activeElement,
+        heading,
         "the line that names no comment, drawn in place of the outline whose focused row fired focusout as it was taken out, left the focus on the page's body"
-      ).toBe(heading)
+      ).toHaveFocus()
     );
   } finally {
     names.mockRestore();
@@ -9946,10 +9955,7 @@ test("a failed asks read draws its line over the tree and opens the page on its 
       expect.arrayContaining(["head-a", "head-b"])
     );
     const onRetry = () =>
-      expect(
-        document.activeElement === retry,
-        `the page's first focus is on ${focusedRow(container) ?? "no row"} and not on the asks' Retry`
-      ).toBe(true);
+      expect(retry, "the page's first focus is not on the asks' Retry").toHaveFocus();
     await waitFor(onRetry, OWN_WORDS);
     // The opening places its focus once: no frame after moves it to a row.
     await framesPass();
@@ -10020,6 +10026,7 @@ test("a failed read's line stays drawn, busy, with the focus on its Retry while 
         [container.querySelectorAll("[data-failed-read]").length, retry.isConnected],
         `the asks' line left the page while the ${run} Retry's read was out`
       ).toEqual([1, true]);
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the run.
       await waitFor(
         () =>
           expect(
@@ -10042,10 +10049,9 @@ test("a failed read's line stays drawn, busy, with the focus on its Retry while 
     await act(async () => failing.reject(serverDown()));
     await waitFor(
       () =>
-        expect(
-          retry.getAttribute("aria-busy"),
-          "the Retry is still busy once its read failed again"
-        ).toBeNull(),
+        expect(retry, "the Retry is still busy once its read failed again").not.toHaveAttribute(
+          "aria-busy"
+        ),
       OWN_WORDS
     );
     expect(
@@ -10427,10 +10433,9 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
       line.querySelector('[role="alert"]'),
       "the names' alert was drawn again, which says a failure again that came only once"
     ).toBe(alert);
-    expect(
-      retry.getAttribute("aria-busy"),
-      "the names' Retry reads busy while only the asks read runs"
-    ).toBeNull();
+    expect(retry, "the names' Retry reads busy while only the asks read runs").not.toHaveAttribute(
+      "aria-busy"
+    );
     expect(names.mock.calls.length, "the names were read again while the asks read ran").toBe(1);
   } finally {
     await act(async () => out.resolve([] as never));
@@ -10598,9 +10603,9 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
       "the names' alert was drawn again, which says a failure again that came only once"
     ).toBe(alert);
     expect(
-      retry.getAttribute("aria-busy"),
+      retry,
       "the names' Retry does not read busy while the one more read runs under the new addresses"
-    ).toBe("true");
+    ).toHaveAttribute("aria-busy", "true");
   } finally {
     await act(async () => moreOut.resolve({ targets: [] } as never));
     blocks.mockRestore();
@@ -10692,9 +10697,9 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
       "the names' alert was drawn again, which says a failure again that came only once"
     ).toBe(alert);
     expect(
-      retry.getAttribute("aria-busy"),
+      retry,
       "the names' Retry does not read busy while the batched read is out"
-    ).toBe("true");
+    ).toHaveAttribute("aria-busy", "true");
   } finally {
     await act(async () => batchedOut.resolve({ targets: [] } as never));
     blocks.mockRestore();
@@ -10941,6 +10946,7 @@ test("under a view whose slot is not filled, an item's address beside the view's
             ),
         }
       );
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the view.
       await waitFor(() =>
         expect(
           document.activeElement,
@@ -11019,6 +11025,7 @@ test("a block or the children an address names that the tree holds none of draw 
             ),
         }
       );
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the path.
       await waitFor(() =>
         expect(document.activeElement, `${path}'s line does not hold the focus`).toBe(title)
       );
@@ -11047,7 +11054,7 @@ test("the line that the issue has no children stays drawn, with the focus on it,
       body.view.getByRole("heading", { name: "No child issues" })
     );
     await waitFor(() =>
-      expect(document.activeElement, "the children's line does not hold the focus").toBe(heading)
+      expect(heading, "the children's line does not hold the focus").toHaveFocus()
     );
 
     // The issue's read answers with its spec and its decisions document, whose blocks are then
@@ -11062,9 +11069,9 @@ test("the line that the issue has no children stays drawn, with the focus on it,
       "the children's line left the page while the added documents' blocks were read"
     ).toBe(true);
     expect(
-      document.activeElement,
+      heading,
       "the focus left the children's line while the added documents' blocks were read"
-    ).toBe(heading);
+    ).toHaveFocus();
 
     await act(async () => blocksOut.resolve([]));
     await nextFrame();
@@ -11072,7 +11079,7 @@ test("the line that the issue has no children stays drawn, with the focus on it,
       heading.isConnected,
       "the children's line was drawn anew once the added documents' blocks answered"
     ).toBe(true);
-    expect(document.activeElement, "the focus left the children's line").toBe(heading);
+    expect(heading, "the focus left the children's line").toHaveFocus();
   } finally {
     blocks.mockRestore();
     names.mockRestore();
@@ -11100,15 +11107,19 @@ test("a comment the address landed on that leaves the tree leaves the outline dr
     const { container } = body.view;
     await waitFor(() => expect(focusedRow(container)).toBe("reply-b"));
 
-    await act(async () => {
-      body.client.setQueryData(
-        ["comments", KEY],
-        TWO_THREADS.filter((comment) => comment.id !== "reply-b")
-      );
+    await zeroDelaysOnFakeClock(async () => {
+      await act(async () => {
+        body.client.setQueryData(
+          ["comments", KEY],
+          TWO_THREADS.filter((comment) => comment.id !== "reply-b")
+        );
+      });
+      await waitFor(() => expect(rowsFor(container, "reply-b")).toEqual([]));
+      // A task on, by which a read of the comment the mount started has answered and React Query
+      // has handed its answer on, which it does a task after the answer lands: the read is a
+      // rejection the spy already holds, which settles in microtasks.
+      await tick(0);
     });
-    await waitFor(() => expect(rowsFor(container, "reply-b")).toEqual([]));
-    // Long enough for a read of the comment to have answered.
-    await waitInAct(50);
     expect(
       body.view.queryByRole("heading", { name: "Comment not found" }),
       "the comment that left the tree replaced the outline with the line that names no comment"
@@ -11236,7 +11247,7 @@ test("a read that drops the row being edited ends the editing, and a Tab out of 
   ).toBe("comment-2");
 
   await user.tab();
-  expect(document.activeElement, "Tab did not leave the outline").toBe(control);
+  expect(control, "Tab did not leave the outline").toHaveFocus();
   const row = rowsFor(view.container, "comment-2")[0];
   if (row === undefined) throw new Error("the last comment's row is not drawn");
   await waitFor(() =>
@@ -11256,9 +11267,7 @@ test("a read that drops the row being edited ends the editing with the focus in 
   const { view } = await caretInStatement(user);
   const card = cardInDetails();
 
-  await user.click(card);
-  // The press is over a task after its click.
-  await waitInAct(0);
+  await pressToItsEnd((user) => user.click(card));
   expect(view.edited.at(-1), "a press in Details ended the editing").toBe("artifact-spec");
   await dropStatement(view);
   await waitFor(() =>
@@ -11269,7 +11278,7 @@ test("a read that drops the row being edited ends the editing with the focus in 
   );
   // The frame the editing's end asks for comes.
   await nextFrame();
-  expect(document.activeElement === card, "the focus left Details").toBe(true);
+  expect(card, "the focus left Details").toHaveFocus();
 });
 
 /** Draws the tree `caretInStatement` drew again as two reads do: one with a comment arrived after
@@ -11312,27 +11321,28 @@ test("a read that takes the row being edited out during a press ends the editing
     clicks += 1;
   });
 
-  await user.pointer({ keys: "[MouseLeft>]", target: words });
-  expect(focusedRow(view.container), "the press did not focus the row it went down on").toBe(
-    "comment-1"
-  );
-  await dropStatement(view);
-  expect(
-    view.edited.at(-1),
-    "the read that took the row being edited out left its editing on while the press was held"
-  ).toBeUndefined();
-  expect(
-    document.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`),
-    "the editor's box is still drawn"
-  ).toBeNull();
-  expect(focusedRow(view.container), "the read took the focus off the row pressed").toBe(
-    "comment-1"
-  );
-
-  await user.pointer({ keys: "[/MouseLeft]" });
-  expect(clicks, "the press's click did not land on the row it went down on").toBe(1);
   // The press is over a task after its click.
-  await waitInAct(0);
+  await pressToItsEnd(async (user) => {
+    await user.pointer({ keys: "[MouseLeft>]", target: words });
+    expect(focusedRow(view.container), "the press did not focus the row it went down on").toBe(
+      "comment-1"
+    );
+    await dropStatement(view);
+    expect(
+      view.edited.at(-1),
+      "the read that took the row being edited out left its editing on while the press was held"
+    ).toBeUndefined();
+    expect(
+      document.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`),
+      "the editor's box is still drawn"
+    ).toBeNull();
+    expect(focusedRow(view.container), "the read took the focus off the row pressed").toBe(
+      "comment-1"
+    );
+
+    await user.pointer({ keys: "[/MouseLeft]" });
+    expect(clicks, "the press's click did not land on the row it went down on").toBe(1);
+  });
   await nextFrame();
   expect(focusedRow(view.container), "the focus left the row the press put it on").toBe(
     "comment-1"
@@ -11412,8 +11422,11 @@ test("an item found missing keeps its line while window focus reads it again", a
       "the read run again on window focus took away the line that names no comment"
     ).toBe(heading);
 
-    await act(async () => again.reject(noSuchComment()));
-    await waitInAct(20);
+    // The read run again fails, and React Query hands that answer on a task after it lands.
+    await zeroDelaysOnFakeClock(async () => {
+      await act(async () => again.reject(noSuchComment()));
+      await tick(0);
+    });
     expect(body.view.queryByRole("heading", { name: "Comment not found" })).toBe(heading);
     expect(body.view.queryByRole("heading", { name: "Couldn't load this comment" })).toBeNull();
   } finally {
@@ -11480,15 +11493,17 @@ test("an item's failed line drawn for the same address followed again stays draw
     const again = Promise.withResolvers<never>();
     read.mockReturnValueOnce(again.promise);
     await user.click(retry);
+    // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names whether
+    // the Retry is still drawn.
     await waitFor(() =>
       expect(
         retry.getAttribute("aria-busy"),
         `the Retry of the address followed again is not busy while its read runs again; ${retry.isConnected ? "it is drawn" : "its line left the page"}`
       ).toBe("true")
     );
-    expect(document.activeElement, "the Retry pressed lost the focus").toBe(retry);
+    expect(retry, "the Retry pressed lost the focus").toHaveFocus();
     await act(async () => again.reject(serverDown()));
-    await waitFor(() => expect(retry.getAttribute("aria-busy")).toBeNull());
+    await waitFor(() => expect(retry).not.toHaveAttribute("aria-busy"));
     expect(retry.isConnected, "the failed line left the page once its read failed again").toBe(
       true
     );
@@ -11526,9 +11541,9 @@ test("a Retry whose read answers that the item is gone leaves the focus on the l
     );
     await waitFor(() =>
       expect(
-        document.activeElement,
+        heading,
         "the line that names no comment, drawn in place of the Retry the reader pressed, left the focus on the page's body"
-      ).toBe(heading)
+      ).toHaveFocus()
     );
   } finally {
     names.mockRestore();
@@ -11587,9 +11602,9 @@ test("a Retry whose read answers that the id names several items leaves the focu
     });
     await waitFor(() =>
       expect(
-        document.activeElement,
+        list,
         "the list of matches, drawn in place of the Retry the reader pressed, left the focus on the page's body"
-      ).toBe(list)
+      ).toHaveFocus()
     );
   } finally {
     names.mockRestore();
@@ -11650,6 +11665,7 @@ test("a comment's row drawn after the reader acted since following its address m
       );
       await waitFor(() => expect(comments).toHaveBeenCalled());
       await run();
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
       expect(document.activeElement, `${what} left the focus elsewhere`).toBe(stays);
       for (const scroll of scrolls) scroll.mockClear();
 
@@ -11657,6 +11673,7 @@ test("a comment's row drawn after the reader acted since following its address m
       await waitFor(() => expect(rowsFor(body.view.container, "reply-b")).not.toEqual([]));
       await nextFrame();
       await nextFrame();
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the move.
       expect(
         document.activeElement,
         `the comment's row, drawn after ${what}, took the focus from where it was`
@@ -11735,6 +11752,7 @@ test("a failed read of an id written short, of an ask and of a message draws a R
       const again = Promise.withResolvers<never>();
       read.mockReturnValueOnce(again.promise as never);
       await user.click(retry);
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the read.
       await waitFor(() =>
         expect(
           retry.getAttribute("aria-busy"),
@@ -11742,6 +11760,7 @@ test("a failed read of an id written short, of an ask and of a message draws a R
         ).toBe("true")
       );
       await act(async () => again.reject(serverDown()));
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the read.
       await waitFor(() =>
         expect(
           retry.getAttribute("aria-busy"),

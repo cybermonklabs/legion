@@ -21,6 +21,13 @@ on:
           job. Empty for the nightly workflow, which reports no check.
         type: string
         default: ""
+      quarantine:
+        description: >-
+          Run the quarantined rows (packages/dispatch/e2e/quarantine.ts) in the `quarantine`
+          job, which reports how each ended and fails nothing. The nightly workflow's call
+          alone: ci.yaml's call gates a change, and the rows it runs leave the quarantine out.
+        type: boolean
+        default: false
 
 env:
   # why: .github/ci-notes/dispatch-browser.md#why-goproxy-falls-through-to-direct
@@ -83,8 +90,8 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 540 + 120 + 120 + 524 = 1,304 s, 21 min 44 s, rounded up to the 22 minutes below.
-    timeout-minutes: 22
+    # 720 + 120 + 120 + 524 = 1,484 s, 24 min 44 s, rounded up to the 25 minutes below.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-two-places
@@ -135,7 +142,7 @@ jobs:
           ls -l web/dist/THIRD_PARTY_NOTICES.txt
         working-directory: packages/dispatch
       # why: .github/ci-notes/dispatch-browser.md#what-the-shard-jobs-postgresql-reading-records-and-why-it-is-a-script
-      - name: Read the lanes' PostgreSQL and time its provider
+      - name: Read the stacks' PostgreSQL and time its provider
         run: .github/scripts/dispatch-browser-postgres.sh 4
       # why: .github/ci-notes/dispatch-browser.md#the-file-store-the-shard-job-starts-and-the-flags-it-needs
       - name: Start an S3-compatible server for uploaded files
@@ -149,8 +156,8 @@ jobs:
         run: .github/scripts/dispatch-browser-wait-for-store.sh
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
         # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is
-        # 419 x 1.15 = 482 s -> 9 min.
-        timeout-minutes: 9
+        # 585 x 1.15 = 673 s -> 12 min, 585 s the longest uncut leg of the last seven days.
+        timeout-minutes: 12
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ inputs.lane }}" \
             "${{ needs.binaries.outputs.connections }}"
@@ -241,7 +248,7 @@ jobs:
           ls -l web/dist/THIRD_PARTY_NOTICES.txt
         working-directory: packages/dispatch
       # why: .github/ci-notes/dispatch-browser.md#what-the-alone-jobs-postgresql-reading-records
-      - name: Read the lanes' PostgreSQL and time its provider
+      - name: Read the stacks' PostgreSQL and time its provider
         run: .github/scripts/dispatch-browser-postgres.sh 1
       - name: Browser-test dispatch dashboard (${{ matrix.project }})
         # why: .github/ci-notes/dispatch-browser.md#why-the-alone-job-runs-one-stack-and-no-file-store-and-what-its-browser-steps-budget-is
@@ -266,6 +273,7 @@ jobs:
         with:
           name: dispatch-browser-record-alone-${{ matrix.project }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/dispatch-e2e-record
+          if-no-files-found: ignore
       # why: .github/ci-notes/dispatch-browser.md#why-the-alone-job-uploads-the-failed-rows-traces
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
@@ -279,7 +287,7 @@ jobs:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-two-process-jobs-measured-steps-and-its-budgets
-    # 4 + 4 + 2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min.
+    # 4 + 4 + 2 + 2 min plus 135 s, 120 s and 3 + 3 + 4 s = 16 min 25 s -> 17 min.
     timeout-minutes: 17
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -327,6 +335,7 @@ jobs:
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against two server processes
+        id: multiprocess-dashboard
         # why: .github/ci-notes/dispatch-browser.md#what-the-two-process-dashboard-step-runs-against
         # 202 s x 1.15 = 232 s -> 4 min.
         timeout-minutes: 4
@@ -334,26 +343,41 @@ jobs:
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
           export DISPATCH_E2E_PG_STALL_DIR="$RUNNER_TEMP/pg-stall"
-          bun run e2e:multiprocess
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-host-suite.sh" multiprocess-dashboard bun run e2e:multiprocess
         working-directory: packages/dispatch
+      # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-jobs-blob-uploads-are-always
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-blob-multiprocess-dashboard-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/leg-report/multiprocess-dashboard
       - name: Browser-test a sign-in across two server processes
         # why: .github/ci-notes/dispatch-browser.md#what-the-sign-in-row-across-two-processes-reads
         # 13 s x 1.15 = 15 s -> the two-minute floor.
+        if: ${{ !cancelled() && steps.multiprocess-dashboard.outcome != 'skipped' }}
         timeout-minutes: 2
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
-          DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bunx playwright test --config e2e/playwright.config.ts
+          DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-host-suite.sh" \
+            multiprocess-signin bunx playwright test --config e2e/playwright.config.ts
         working-directory: packages/dispatch
-      # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-jobs-upload-runs-on-failure-alone
+      # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-jobs-blob-uploads-are-always
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        if: always()
+        with:
+          name: dispatch-browser-blob-multiprocess-signin-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/leg-report/multiprocess-signin
+      # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-uploads-the-failed-rows-traces-always
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
         with:
           name: dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
+          if-no-files-found: ignore
 
   # why: .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets
-  # 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s -> 15 min.
+  # 4 + 4 + 2 min plus 135 s, 120 s and 3 + 4 s = 14 min 22 s -> 15 min.
   embedder:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -409,22 +433,28 @@ jobs:
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
-          bun run e2e:embedder
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-host-suite.sh" embedder bun run e2e:embedder
         working-directory: packages/dispatch
-      # `if: failure()`, as the multiprocess job's upload is: the chromium project retries a
-      # failed row, but a row that fails after its retries fails this job and this upload runs.
+      # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-blob-upload-is-always
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        if: always()
+        with:
+          name: dispatch-browser-blob-embedder-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/leg-report/embedder
+      # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-job-uploads-the-failed-rows-traces-always
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
         with:
           name: dispatch-browser-embedder-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
+          if-no-files-found: ignore
 
   # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
-  # 240 + 333 + 120 = 693 s -> 12 min; 12 + 4 = 16 min with the reverse-order step.
+  # 360 + 333 + 120 = 813 s -> 14 min; 14 + 6 = 20 min with the reverse-order step.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 16
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -472,15 +502,15 @@ jobs:
         working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines
         id: visual-normal
-        # 183 x 1.15 = 211 s -> 4 min.
-        timeout-minutes: 4
+        # (183 + 91) x 1.15 = 315 s -> 6 min, 91 s the seed's wait for a new UTC day at most.
+        timeout-minutes: 6
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-visual-suite.sh" "${{ steps.connections.outputs.connections }}"
         working-directory: packages/dispatch
       - name: Browser-test dispatch dashboard against its baselines, rows in reverse order
         # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-runs-its-rows-again-in-reverse-order
         if: ${{ !cancelled() && steps.visual-normal.outcome != 'skipped' }}
-        timeout-minutes: 4
+        timeout-minutes: 6
         run: |
           # Exported on the command line, as the first step's script exports them, for the reason
           # .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets gives.
@@ -501,6 +531,133 @@ jobs:
             packages/dispatch/e2e/test-results-reverse
             packages/dispatch/e2e/__screenshots__
             ${{ runner.temp }}/dispatch-e2e-run-*/worker-*/log/*.log
+          if-no-files-found: ignore
+
+  # why: .github/ci-notes/dispatch-browser.md#how-many-rows-the-quarantine-holds-read-before-the-quarantine-job
+  quarantine-rows:
+    if: inputs.quarantine
+    runs-on: ubuntu-24.04-arm
+    # why: .github/ci-notes/dispatch-browser.md#the-quarantine-count-jobs-budget
+    # 18 s, so the two-minute floor.
+    timeout-minutes: 2
+    outputs:
+      rows: ${{ steps.rows.outputs.rows }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Count the quarantined rows
+        id: rows
+        run: |
+          rows=$(bun -e 'import { quarantine } from "./e2e/quarantine.ts"; console.log(quarantine.length)')
+          case "$rows" in
+            '' | *[!0-9]*)
+              echo "::error::e2e/quarantine.ts answered '$rows' for its row count, not a whole number"
+              exit 1
+              ;;
+          esac
+          echo "rows=$rows" >> "$GITHUB_OUTPUT"
+          echo "::notice title=dispatch-browser quarantine::the quarantine holds $rows rows"
+        working-directory: packages/dispatch
+
+  # why: .github/ci-notes/dispatch-browser.md#the-quarantine-job-where-the-quarantined-rows-gate-nothing
+  quarantine:
+    needs: [binaries, quarantine-rows]
+    if: inputs.quarantine && needs.quarantine-rows.outputs.rows != '0'
+    runs-on: ubuntu-24.04
+    # why: .github/ci-notes/dispatch-browser.md#the-quarantine-jobs-steps-and-what-they-keep-of-the-shard-jobs
+    container:
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+      options: --user 1001 --ipc=host --init
+    # why: .github/ci-notes/dispatch-browser.md#the-quarantine-jobs-budget
+    # 540 + 120 + 120 + 524 + 1 = 1,305 s: its own 9-minute browser step, the shard job's others.
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The shard job's four steps of the binaries, for the reasons that job's `# why:` lines give.
+      - id: binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-1
+      - name: Download the binaries again, after a first attempt that did not complete
+        if: steps.binaries.outcome != 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-2
+      - name: Place the binaries of the attempt that completed
+        env:
+          FIRST: ${{ steps.binaries.outcome }}
+        run: |
+          attempt=1
+          [ "$FIRST" = success ] || attempt=2
+          mkdir -p packages/envoy/out/dispatch-e2e-broker
+          cp -R "packages/envoy/out/dispatch-e2e-binaries-$attempt/." packages/envoy/out/dispatch-e2e-broker/
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for dispatch e2e
+        run: bun run build:dispatch
+        working-directory: packages/contracts
+      - name: Build dispatch dashboard
+        run: |
+          bun run build:web
+          ls -l web/dist/THIRD_PARTY_NOTICES.txt
+        working-directory: packages/dispatch
+      # The shard job's file store and its readiness wait, for the reasons that job's `# why:`
+      # lines give.
+      - name: Start an S3-compatible server for uploaded files
+        run: |
+          mkdir -p "$RUNNER_TEMP/weed"
+          nohup weed server -s3 -dir="$RUNNER_TEMP/weed" -ip=127.0.0.1 -s3.port=18333 \
+            -volume.max=0 -master.volumePreallocate -master.volumeSizeLimitMB=1024 \
+            > "$RUNNER_TEMP/weed.log" 2>&1 &
+      - name: Wait for the S3-compatible server
+        run: .github/scripts/dispatch-browser-wait-for-store.sh
+      - name: Browser-test the quarantined rows
+        # why: .github/ci-notes/dispatch-browser.md#why-the-quarantine-jobs-browser-step-fails-nothing-and-what-its-budget-is
+        # 3 rows x 2 attempts x 60 s = 360 s, which leaves 180 s of 9 min for the stacks' start.
+        continue-on-error: true
+        timeout-minutes: 9
+        run: |
+          export TMPDIR="$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/quarantine"
+          export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
+          export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+          export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
+          export PLAYWRIGHT_JSON_OUTPUT_NAME="$RUNNER_TEMP/quarantine/report.json"
+          export DISPATCH_E2E_QUARANTINE=only
+          bunx playwright test --config e2e/playwright.config.ts --workers 4 --reporter=list,json,./e2e/failure-reporter.ts
+        working-directory: packages/dispatch
+        # why: .github/ci-notes/dispatch-browser.md#why-the-file-stores-address-is-set-on-the-step-and-not-in-the-environment
+        env:
+          DISPATCH_E2E_FILE_STORE_ENDPOINT: http://127.0.0.1:18333
+          DISPATCH_E2E_FILE_STORE_BUCKET: dispatch-e2e-files
+      # why: .github/ci-notes/dispatch-browser.md#how-the-quarantine-jobs-reading-names-each-row
+      - name: Reading the quarantined rows
+        if: always()
+        run: .github/scripts/dispatch-browser-reading-quarantined-rows.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-quarantine-report-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/quarantine
+          if-no-files-found: ignore
+      # The failed rows' traces, as the shard job uploads its own.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-quarantine-test-results-${{ github.run_attempt }}
+          path: packages/dispatch/e2e/test-results
           if-no-files-found: ignore
 
   # why: .github/ci-notes/dispatch-browser.md#what-the-merge-job-reports-and-why-it-is-never-skipped
@@ -555,8 +712,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}"
-      # Reading two. Read from the merged JSON report with jq, and nowhere else: a flake is a row
-      # that failed and passed on its retry, which only the report of the whole run holds.
+      # why: .github/ci-notes/dispatch-browser.md#what-reading-two-reads-and-how-it-names-a-flaky-row
       - name: Reading two, the flake rate
         if: always()
         run: .github/scripts/dispatch-browser-reading-flake-rate.sh

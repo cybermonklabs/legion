@@ -13,7 +13,7 @@ import {
   rowMore,
   unfoldEveryBranch,
 } from "./issue-page-g";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 
 /**
  * Part G of the new issue page, decision 261: no cut changes a row the reader can see. A slice
@@ -25,7 +25,6 @@ import { expect, test } from "./test";
  * holds them - for 60 frames after each jump, and allows no change at all.
  */
 
-const PROJECT = "VIEW";
 const asPlanner = { actor: plannerActor, as: "agent" as const };
 
 /** How many long rows of the planner's the seed writes. */
@@ -52,10 +51,12 @@ interface TallRowsSeed {
  * row and its place, so the words under one point of the view name where the reader is.
  */
 async function seedTallRows(): Promise<TallRowsSeed> {
-  await createProject({ key: PROJECT, name: "View" });
+  // The row's own project (`rowKey`, e2e/test.ts).
+  const project = rowKey("VIEW");
+  await createProject({ key: project, name: "View" });
   const { key } = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     title: "A conversation with rows taller than the view",
   });
   const head = await createComment(key, { body: "Each reply under this one is long." });

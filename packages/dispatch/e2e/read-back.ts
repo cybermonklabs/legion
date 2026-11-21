@@ -4,10 +4,12 @@ import { fileURLToPath } from "node:url";
 import type { DocumentReading } from "@legion/proof-editor/reading";
 
 import { createIssue, getArtifactText } from "./api";
+import { rowKey } from "./test";
 
-/** Go's reading of stored markdown: written as a new issue's spec, parsed and rendered again. */
+/** Go's reading of stored markdown: written as a new issue's spec, parsed and rendered again. The
+ *  issue is made in the row's own `CORE` (`rowKey`), which the row made before it reads back. */
 export async function goReadBack(markdown: string): Promise<string> {
-  const issue = await createIssue({ project: "CORE", spec: markdown, title: "Read back" });
+  const issue = await createIssue({ project: rowKey("CORE"), spec: markdown, title: "Read back" });
   return (await getArtifactText(issue.primary_artifact_id)).markdown;
 }
 

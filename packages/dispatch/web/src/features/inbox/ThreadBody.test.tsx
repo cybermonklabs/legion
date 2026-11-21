@@ -151,8 +151,8 @@ test("an Agent row's card draws the message, the session's reply and the compose
     "message-1",
     "reply-1",
   ]);
-  expect(turns[0]?.hasAttribute("data-inbox-thread-unread")).toBe(false);
-  expect(turns[1]?.hasAttribute("data-inbox-thread-unread")).toBe(true);
+  expect(turns[0]).not.toHaveAttribute("data-inbox-thread-unread");
+  expect(turns[1]).toHaveAttribute("data-inbox-thread-unread");
   expect(within(turns[1] as HTMLElement).getByText("New")).toBeTruthy();
   await waitFor(() => expect(body.querySelector("[data-inbox-agent-composer]")).not.toBeNull());
 });
@@ -192,7 +192,7 @@ test("a reply the session took as a user turn says so and links the live view", 
   const note = await screen.findByTestId("agent-reply-accepted");
   expect(note.textContent).toBe("Taken as a turn of the live conversation.");
   const live = screen.getByRole("link", { name: "Live view" });
-  expect(live.getAttribute("href")).toBe("/agents/planner/live");
+  expect(live).toHaveAttribute("href", "/agents/planner/live");
 });
 
 test("a session the live list no longer holds says so and offers no composer", async () => {
@@ -282,8 +282,8 @@ test("a comment thread's card draws the quote it is anchored to and the thread w
   expect(body.textContent).toContain("Agreed.");
   // Written after the row's read mark, so only the reply is new.
   const turns = [...body.querySelectorAll("[data-inbox-thread-turn]")];
-  expect(turns[0]?.hasAttribute("data-inbox-thread-unread")).toBe(false);
-  expect(turns[1]?.hasAttribute("data-inbox-thread-unread")).toBe(true);
+  expect(turns[0]).not.toHaveAttribute("data-inbox-thread-unread");
+  expect(turns[1]).toHaveAttribute("data-inbox-thread-unread");
 });
 
 // A thread box in the Inbox stands for its thread: its reply is the box's own address, which

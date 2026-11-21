@@ -14,6 +14,7 @@ import type { ReactElement, ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
+import { settle } from "../../../__tests__/fake-clock";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
@@ -537,7 +538,7 @@ test("a statement that a child's check covers draws one line of the checks drawn
     ]);
     // The line stands after the statement's group of checks, inside its card.
     const line = unfiltered.container.querySelector("[data-verification-elsewhere]");
-    expect(line?.previousElementSibling?.getAttribute("role")).toBe("group");
+    expect(line?.previousElementSibling).toHaveAttribute("role", "group");
     // A statement only a child's checks serve carries no gap, and the covered count holds it.
     expect(unfiltered.container.querySelectorAll("[data-gap]")).toHaveLength(0);
     expect(textsOf(unfiltered, "[data-verification-covered]")).toEqual([
@@ -674,9 +675,9 @@ test("a check's facts open where the reader's focus is: when as words, the run a
       words?.hasAttribute("role"),
       words?.hasAttribute("aria-expanded"),
     ]).toEqual([0, false, false]);
-    expect(card?.getAttribute("aria-expanded")).toBe("false");
+    expect(card).toHaveAttribute("aria-expanded", "false");
     act(() => words?.focus());
-    expect(card?.getAttribute("aria-expanded")).toBe("true");
+    expect(card).toHaveAttribute("aria-expanded", "true");
 
     expect((card?.textContent ?? "").includes(CHECK_WHEN_WORDS.before_merge)).toBe(true);
     expect(card?.textContent).not.toContain("before_merge");
@@ -693,7 +694,7 @@ test("a check's facts open where the reader's focus is: when as words, the run a
     // The focus leaving it closes what the focus opened.
     act(() => words?.blur());
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
-    expect(card?.getAttribute("aria-expanded")).toBe("false");
+    expect(card).toHaveAttribute("aria-expanded", "false");
     // The reader pressed it open, so it stays open with the focus elsewhere.
     await user.click(words as Element);
     act(() => words?.blur());
@@ -701,18 +702,18 @@ test("a check's facts open where the reader's focus is: when as words, the run a
     // And a press on an open one closes it, which is what the control says it does.
     await user.click(words as Element);
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
-    expect(card?.getAttribute("aria-expanded")).toBe("false");
+    expect(card).toHaveAttribute("aria-expanded", "false");
 
     // Enter and Space on the words are the same press, the focus on them, and Space scrolls
     // nothing: each key's own default is held back.
-    expect(document.activeElement).toBe(words);
+    expect(words).toHaveFocus();
     const { held, stop } = holdKeys();
     try {
       await user.keyboard("{Enter}");
-      expect(card?.getAttribute("aria-expanded")).toBe("true");
+      expect(card).toHaveAttribute("aria-expanded", "true");
       expect(view.container.querySelectorAll("[data-node-body]").length).toBeGreaterThan(0);
       await user.keyboard(" ");
-      expect(card?.getAttribute("aria-expanded")).toBe("false");
+      expect(card).toHaveAttribute("aria-expanded", "false");
       expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
     } finally {
       stop();
@@ -722,10 +723,10 @@ test("a check's facts open where the reader's focus is: when as words, the run a
     // A pointer's press on the latest result's cell opens the facts, and they stay open once
     // the focus that press brought has gone.
     act(() => words?.blur());
-    expect(card?.getAttribute("aria-expanded")).toBe("false");
+    expect(card).toHaveAttribute("aria-expanded", "false");
     await user.click(view.container.querySelector("[data-verification-result]") as Element);
     act(() => (document.activeElement as HTMLElement | null)?.blur());
-    expect(card?.getAttribute("aria-expanded")).toBe("true");
+    expect(card).toHaveAttribute("aria-expanded", "true");
     expect(view.container.querySelectorAll("[data-node-body]").length).toBeGreaterThan(0);
   } finally {
     view.unmount();
@@ -750,8 +751,8 @@ test("a statement is marked as context, with its words and the node they came fr
   const view = drawBody([askedBy], [served]);
   try {
     const card = view.container.querySelector("[data-verification-card]");
-    expect(card?.hasAttribute("data-node-context")).toBe(true);
-    expect(card?.getAttribute("data-node-id")).toBe(statement.id);
+    expect(card).toHaveAttribute("data-node-context");
+    expect(card).toHaveAttribute("data-node-id", statement.id);
     expect(card?.querySelector("[data-node-words]")?.textContent).toBe(statement.text);
     expect([
       card?.querySelector("[data-node-parent-line]")?.getAttribute("data-parent-type"),
@@ -852,9 +853,9 @@ test("a check draws its newest result, folds the rest behind their count, and ma
     expect(earlier?.textContent?.replace(/\s+/gu, " ")).toBe(
       `2 ${VERIFICATION_WORDS.earlier_many}`
     );
-    expect(earlier?.getAttribute("aria-expanded")).toBe("false");
+    expect(earlier).toHaveAttribute("aria-expanded", "false");
     await user.click(earlier as Element);
-    expect(earlier?.getAttribute("aria-expanded")).toBe("true");
+    expect(earlier).toHaveAttribute("aria-expanded", "true");
     expect(drawn()).toEqual([
       ["newest", true],
       ["middle", false],
@@ -901,7 +902,7 @@ test("a check under a statement keeps the reader's focus and its open earlier re
     await user.click(view.container.querySelector("[data-verification-earlier]") as Element);
     const words = view.container.querySelector<HTMLElement>("[data-verification-check-words]");
     act(() => words?.focus());
-    expect(document.activeElement).toBe(words);
+    expect(words).toHaveFocus();
     expect(standing()).toEqual({
       earlier: "true",
       opened: "true",
@@ -912,7 +913,7 @@ test("a check under a statement keeps the reader's focus and its open earlier re
     // The same element of the check's words, still in the page, still holds the focus.
     expect(view.container.querySelector("[data-verification-check-words]")).toBe(words);
     expect(words?.isConnected).toBe(true);
-    expect(document.activeElement).toBe(words);
+    expect(words).toHaveFocus();
     expect(standing()).toEqual({
       earlier: "true",
       opened: "true",
@@ -982,11 +983,11 @@ test("a chip draws the statements in one state alone, and pressing it again draw
         card.getAttribute("data-statement-state")
       )
     ).toEqual(["met"]);
-    expect(metChip?.getAttribute("aria-pressed")).toBe("true");
+    expect(metChip).toHaveAttribute("aria-pressed", "true");
 
     await user.click(metChip as Element);
     expect(view.container.querySelectorAll("[data-verification-card]")).toHaveLength(2);
-    expect(metChip?.getAttribute("aria-pressed")).toBe("false");
+    expect(metChip).toHaveAttribute("aria-pressed", "false");
   } finally {
     view.unmount();
   }
@@ -1018,9 +1019,9 @@ test("a chip whose state holds no statement draws the page's line for it", async
     await user.tab();
     await user.tab();
     await user.tab();
-    expect(document.activeElement).toBe(unknown);
+    expect(unknown).toHaveFocus();
     await user.keyboard("{Enter}");
-    expect(unknown?.getAttribute("aria-pressed")).toBe("true");
+    expect(unknown).toHaveAttribute("aria-pressed", "true");
     expect(textsOf(view, "[data-verification-none]")).toEqual([
       EMPTY_STATE_LINES.verification_none,
     ]);
@@ -1028,7 +1029,7 @@ test("a chip whose state holds no statement draws the page's line for it", async
 
     // A second press draws every statement again, and the line goes.
     await user.click(unknown as Element);
-    expect(unknown?.getAttribute("aria-pressed")).toBe("false");
+    expect(unknown).toHaveAttribute("aria-pressed", "false");
     expect(view.container.querySelectorAll("[data-verification-card]")).toHaveLength(1);
     expect(view.container.querySelectorAll("[data-verification-none]")).toHaveLength(0);
   } finally {
@@ -1120,7 +1121,7 @@ test("a query that matches nothing keeps the summary of the whole issue and says
     ).toHaveLength(0);
     // The issue's row is still the tree's first row and its one tab stop.
     const issueRow = filtered.container.querySelector('[role="tree"] > [data-verification-issue]');
-    expect(issueRow?.getAttribute("tabindex")).toBe("0");
+    expect(issueRow).toHaveAttribute("tabindex", "0");
     expect(issueRow?.querySelector("[data-verification-summary]")).not.toBeNull();
     // Its summary, its legend of seven and its chips are the whole issue's, as with no query.
     for (const selector of [
@@ -1157,7 +1158,7 @@ test("a query that matches nothing keeps the summary of the whole issue and says
     );
     expect(lines).toHaveLength(1);
     expect(lines[0]?.closest("[data-verification-table]")).not.toBeNull();
-    expect(lines[0]?.previousElementSibling?.hasAttribute("data-verification-head")).toBe(true);
+    expect(lines[0]?.previousElementSibling).toHaveAttribute("data-verification-head");
     expect(unfiltered.container.textContent).not.toContain(line);
   } finally {
     filtered.unmount();
@@ -1254,14 +1255,14 @@ test("a query that keeps only a result draws it with its check under its stateme
   try {
     const line = earlier.container.querySelector("[data-verification-earlier]");
     expect(cardsOf(earlier)).toEqual(drawnEarlier);
-    expect(line?.getAttribute("aria-expanded")).toBe("false");
+    expect(line).toHaveAttribute("aria-expanded", "false");
     // Pressed, the line draws every earlier result, the kept one among them, each once.
     await user.click(line as Element);
-    expect(line?.getAttribute("aria-expanded")).toBe("true");
+    expect(line).toHaveAttribute("aria-expanded", "true");
     expect(cardsOf(earlier)).toEqual(servedCard(["41 passed", failure, "40 passed"]));
     // Pressed again, it folds them and leaves the kept one drawn.
     await user.click(line as Element);
-    expect(line?.getAttribute("aria-expanded")).toBe("false");
+    expect(line).toHaveAttribute("aria-expanded", "false");
     expect(cardsOf(earlier)).toEqual(drawnEarlier);
   } finally {
     earlier.unmount();
@@ -1343,17 +1344,17 @@ test("the view's tree holds the issue's row first, and only it is a tab stop", (
     const tree = trees[0];
     expect(body?.childElementCount).toBe(1);
     expect(body?.firstElementChild).toBe(tree);
-    expect(tree?.getAttribute("aria-label")).toBe(CONTROL_LABELS.tree);
-    expect(tree?.getAttribute("tabindex")).toBe("-1");
+    expect(tree).toHaveAttribute("aria-label", CONTROL_LABELS.tree);
+    expect(tree).toHaveAttribute("tabindex", "-1");
 
     const rows = [...view.container.querySelectorAll('[role="treeitem"]')];
     const issueRow = rows[0];
     expect(tree?.firstElementChild).toBe(issueRow);
-    expect(issueRow?.hasAttribute("data-verification-issue")).toBe(true);
-    expect(issueRow?.hasAttribute("data-node-row")).toBe(true);
-    expect(issueRow?.getAttribute("data-node-id")).toBe(ISSUE_KEY);
-    expect(issueRow?.getAttribute("aria-level")).toBe("1");
-    expect(issueRow?.getAttribute("tabindex")).toBe("0");
+    expect(issueRow).toHaveAttribute("data-verification-issue");
+    expect(issueRow).toHaveAttribute("data-node-row");
+    expect(issueRow).toHaveAttribute("data-node-id", ISSUE_KEY);
+    expect(issueRow).toHaveAttribute("aria-level", "1");
+    expect(issueRow).toHaveAttribute("tabindex", "0");
     expect(issueRow?.querySelector("[data-verification-summary]")).not.toBeNull();
     expect(issueRow?.querySelector("[data-verification-chips]")).not.toBeNull();
     // Every other row, in the order the page draws them: each statement and its checks, the
@@ -1379,9 +1380,9 @@ test("the view's tree holds the issue's row first, and only it is a tab stop", (
     const served = rows[1];
     expect(served?.querySelectorAll('[role="group"]')).toHaveLength(1);
     expect(served?.querySelector('[role="group"] > [role="treeitem"]')).toBe(rows[2] ?? null);
-    expect(served?.getAttribute("aria-expanded")).toBe("true");
+    expect(served).toHaveAttribute("aria-expanded", "true");
     expect(rows[3]?.querySelectorAll('[role="group"]')).toHaveLength(0);
-    expect(rows[3]?.hasAttribute("aria-expanded")).toBe(false);
+    expect(rows[3]).not.toHaveAttribute("aria-expanded");
     // The outline's own mark is no mark of this view's rows.
     expect(view.container.querySelectorAll("[data-row-key]")).toHaveLength(0);
   } finally {
@@ -1572,29 +1573,26 @@ test("Enter on a Retry keeps the focus in the view: on the next refused read's R
     expect(retried).toEqual(["coverage"]);
     // The coverage read is out again, and the blocks read is still refused.
     await redraw(failed("blocks"));
-    expect(document.activeElement, "the focus left the view with coverage's line").toBe(
-      retryOf("blocks")
-    );
+    expect(retryOf("blocks"), "the focus left the view with coverage's line").toHaveFocus();
     await user.keyboard("{Enter}");
     expect(retried).toEqual(["coverage", "blocks"]);
     // The blocks read is out again, and no read is refused.
     await redraw({ state: "waiting" });
-    expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement, "the focus left the view while the read is out").toBe(tree());
+    expect(document.body).not.toHaveFocus();
+    expect(tree(), "the focus left the view while the read is out").toHaveFocus();
     // Refused again: its line comes back, and its Retry takes the focus from the tree.
     await redraw(failed("blocks"));
-    expect(document.activeElement, "the read refused again left the focus on the tree").toBe(
-      retryOf("blocks")
-    );
+    expect(retryOf("blocks"), "the read refused again left the focus on the tree").toHaveFocus();
     await user.keyboard("{Enter}");
     expect(retried).toEqual(["coverage", "blocks", "blocks"]);
     await redraw({ state: "waiting" });
-    expect(document.activeElement).toBe(tree());
+    expect(tree()).toHaveFocus();
     // It answers: the tree's tab stop, the issue's row, takes the focus.
     await redraw({ state: "answered" });
-    expect(document.activeElement, "the rows that came left the focus on the tree").toBe(
-      view.container.querySelector("[data-verification-issue]")
-    );
+    expect(
+      view.container.querySelector("[data-verification-issue]"),
+      "the rows that came left the focus on the tree"
+    ).toHaveFocus();
   } finally {
     view.unmount();
   }
@@ -1659,9 +1657,10 @@ test("the failed reads' lines stand in the body's own order whatever order they 
       "results",
       "blocks",
     ]);
-    expect(document.activeElement, "the focus moved elsewhere than the next line's Retry").toBe(
-      retryOf("results")
-    );
+    expect(
+      retryOf("results"),
+      "the focus moved elsewhere than the next line's Retry"
+    ).toHaveFocus();
   } finally {
     view.unmount();
   }
@@ -1690,22 +1689,22 @@ test("a refused read's line that leaves with no press keeps the focus in the vie
     ).getByRole("button", { name: "Retry" });
   try {
     act(() => retry().focus());
-    expect(document.activeElement).toBe(retry());
+    expect(retry()).toHaveFocus();
     // Asked again with nothing pressed: the read is out, and its line is gone.
     await redraw({ state: "waiting" });
-    expect(document.activeElement, "the focus left the view while the read is out").toBe(
-      view.container.querySelector('[role="tree"]')
-    );
+    expect(
+      view.container.querySelector('[role="tree"]'),
+      "the focus left the view while the read is out"
+    ).toHaveFocus();
     // Refused again: its line comes back, and its Retry takes the focus from the tree.
     await redraw(refused);
-    expect(document.activeElement, "the read refused again left the focus on the tree").toBe(
-      retry()
-    );
+    expect(retry(), "the read refused again left the focus on the tree").toHaveFocus();
     // Asked again once more, it answers: the tree's tab stop, the issue's row, takes the focus.
     await redraw({ state: "answered" });
-    expect(document.activeElement, "the read that answered left the focus off the view").toBe(
-      view.container.querySelector("[data-verification-issue]")
-    );
+    expect(
+      view.container.querySelector("[data-verification-issue]"),
+      "the read that answered left the focus off the view"
+    ).toHaveFocus();
   } finally {
     view.unmount();
   }
@@ -1723,13 +1722,14 @@ test("with a read refused, the view's tree gives its focus to that read's Retry"
   try {
     const tree = refused.container.querySelector<HTMLElement>('[role="tree"]');
     act(() => tree?.focus());
-    expect(document.activeElement, "the focused tree kept the focus with a read refused").toBe(
+    expect(
       within(
         refused.container.querySelector<HTMLElement>(
           '[data-verification-unreadable="results"]'
         ) as HTMLElement
-      ).getByRole("button", { name: "Retry" })
-    );
+      ).getByRole("button", { name: "Retry" }),
+      "the focused tree kept the focus with a read refused"
+    ).toHaveFocus();
   } finally {
     refused.unmount();
   }
@@ -1740,9 +1740,9 @@ test("with a read refused, the view's tree gives its focus to that read's Retry"
     const tree = drawn.container.querySelector<HTMLElement>('[role="tree"]');
     act(() => tree?.focus());
     expect(
-      document.activeElement,
+      tree,
       "a tree with rows gave the focus a click on its headings gave it to a row"
-    ).toBe(tree);
+    ).toHaveFocus();
   } finally {
     drawn.unmount();
   }
@@ -1770,7 +1770,9 @@ test("the view's own reads of the coverage and the results send no request when 
   try {
     const pressed = renderHook(() => useVerificationReads(ISSUE_KEY), { wrapper });
     try {
-      await act(() => Bun.sleep(20));
+      // A read stale at mount is asked as its observer subscribes, inside `renderHook`'s act, so
+      // every promise such an ask would chain has run once `settle`'s turns have.
+      await act(settle);
       expect(pressed.result.current.reads).toEqual({ state: "answered" });
       expect(coverageRead, "the view read the coverage again").toHaveBeenCalledTimes(0);
       expect(resultsRead, "the view read the results again").toHaveBeenCalledTimes(0);
@@ -1811,7 +1813,8 @@ async function retried(
     const failed = before.state === "failed" ? before.failed : undefined;
     expect(Object.keys(failed ?? {})).toEqual([refused]);
     act(() => failed?.[refused]?.retry());
-    await act(() => Bun.sleep(20));
+    // The read the Retry asked again answers, and with it the reads stand answered.
+    await waitFor(() => expect(hook.result.current.reads).toEqual({ state: "answered" }));
     return {
       asked: {
         blocks: blocksRead.mock.calls.length,
@@ -1951,7 +1954,9 @@ test("a refused read asked again while the browser is offline still reads as fai
     const refused = hook.result.current.reads;
     act(() => onlineManager.setOnline(false));
     act(() => (refused.state === "failed" ? refused.failed.coverage?.retry() : undefined));
-    await act(() => Bun.sleep(20));
+    // A read asked again while the browser is offline pauses as it is asked, inside the act
+    // above, so every promise a request of it would chain has run once `settle`'s turns have.
+    await act(settle);
     expect(
       hook.result.current.reads,
       "the coverage read asked again while the browser is offline does not still read as failed"
@@ -2076,7 +2081,7 @@ test("a check's words draw their links from the results read's tree", async () =
     view.container.addEventListener("click", (event) => event.preventDefault());
     await user.click(runbook);
     act(() => runbook.blur());
-    expect(card?.getAttribute("aria-expanded")).toBe("false");
+    expect(card).toHaveAttribute("aria-expanded", "false");
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(0);
   } finally {
     view.unmount();
@@ -2577,8 +2582,8 @@ test("each row of the view's tree carries its own id, and a key gives the tab st
     ]);
     expect(view.container.querySelectorAll('[role="treeitem"]')).toHaveLength(rows.length);
     // The loose check's own element, and the named node's.
-    expect(rows[4]?.hasAttribute("data-verification-loose")).toBe(true);
-    expect(rows[5]?.hasAttribute("data-verification-other")).toBe(true);
+    expect(rows[4]).toHaveAttribute("data-verification-loose");
+    expect(rows[5]).toHaveAttribute("data-verification-other");
     const names = ["issue", "r1", "c-one", "r2", "c-loose", "comment"];
     /** The row the focus is on, and each row whose own element holds the tree's tab stop, by
      *  their names. */
@@ -2833,7 +2838,7 @@ test("a query that keeps only a result of a check that serves no statement draws
     ]);
     act(() => rows[0]?.focus());
     await user.keyboard("j");
-    expect(document.activeElement).toBe(rows[1]);
+    expect(rows[1]).toHaveFocus();
     expect(rows.map((row) => row.getAttribute("tabindex"))).toEqual(["-1", "0", "-1"]);
   } finally {
     view.unmount();

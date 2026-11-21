@@ -7,7 +7,7 @@ import {
   putIssueState,
 } from "./api";
 import { barAction, selectEditorText } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -19,10 +19,13 @@ const session = {
 test("a failed pin shows a retryable error, never lies to the sidebar, and recovers on retry @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "WR", name: "Writes" });
-  const issue = await createIssue({ project: "WR", title: "Pin me" });
+  const wr = rowKey("WR");
+  await createProject({ key: wr, name: "Writes" });
+  const issue = await createIssue({ project: wr, title: "Pin me" });
 
-  const context = await asUser(browser, "alice");
+  // The sidebar's Pinned group is the reader's own pins: a person of the row's own
+  // (`rowPerson`), who has pinned nothing until this row's pin lands.
+  const context = await asUser(browser, rowPerson("alice"));
   const page = await context.newPage();
   let putAttempts = 0;
   let retryRequests = 0;
@@ -86,9 +89,10 @@ test("a failed pin shows a retryable error, never lies to the sidebar, and recov
 
 // @pr: An idempotent repeat: a double-clicked Submit posts exactly one comment.
 test("double-clicking Submit posts exactly one comment @pr", async ({ browser }) => {
-  await createProject({ key: "WR", name: "Writes" });
+  const wr = rowKey("WR");
+  await createProject({ key: wr, name: "Writes" });
   const issue = await createIssue({
-    project: "WR",
+    project: wr,
     spec: "The quick brown fox",
     title: "Double submit",
   });
@@ -117,9 +121,10 @@ test("double-clicking Submit posts exactly one comment @pr", async ({ browser })
 });
 
 test("a pre-fold comment lifecycle pin remains removable from Pinned", async ({ browser }) => {
-  await createProject({ key: "WR", name: "Writes" });
+  const wr = rowKey("WR");
+  await createProject({ key: wr, name: "Writes" });
   const issue = await createIssue({
-    project: "WR",
+    project: wr,
     spec: "The quick brown fox",
     title: "Resolve pending",
   });
@@ -129,7 +134,11 @@ test("a pre-fold comment lifecycle pin remains removable from Pinned", async ({ 
     session
   );
 
-  const context = await asUser(browser, "alice");
+  // The pin is the reader's own, so the reader is a person of the row's own (`rowPerson`), whose
+  // page draws one Unpin: the Pinned tab's, for this pin. alice's sidebar draws the sessions the
+  // rows before this one pinned for her, each with an Unpin of its own.
+  const me = rowPerson("alice");
+  const context = await asUser(browser, me);
   const page = await context.newPage();
   await page.goto(`/issues/${issue.key}/conversation`);
   await page
@@ -153,7 +162,11 @@ test("a pre-fold comment lifecycle pin remains removable from Pinned", async ({ 
   if (lifecycle === undefined) {
     throw new Error("The resolved comment lifecycle event was not recorded.");
   }
-  await putIssueState(issue.key, { dismissed: [`pinned_items:event:${lifecycle.id}`] });
+  await putIssueState(
+    issue.key,
+    { dismissed: [`pinned_items:event:${lifecycle.id}`] },
+    { login: me }
+  );
 
   await page.goto(`/issues/${issue.key}`);
   await page.getByRole("tab", { name: "Pinned" }).click();

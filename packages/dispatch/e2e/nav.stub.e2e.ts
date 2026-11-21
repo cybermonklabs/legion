@@ -13,16 +13,20 @@
 import { expect, type Page } from "@playwright/test";
 
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
-import { createAsk, createIssue, createProject } from "./api";
+import { createAsk, createIssue, createProject, fixedKey } from "./api";
 import { stubbed } from "./stub/stub-test";
 
 const session = { actor: { id: "e2e-nav", kind: "session" as const }, as: "agent" as const };
 
+/** The keys this file's recordings were made under. */
+const ARC = fixedKey("ARC", "this file's recordings were made under it");
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+
 // ARC sorts first in the project list the create dialog falls back to, so only the route's own
 // project can make that dialog's selector read CORE.
 const test = stubbed(async () => {
-  await createProject({ key: "ARC", name: "Archive" });
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: ARC, name: "Archive" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Ship the release" });
   await createIssue({ parent: issue.key, project: "CORE", title: "Child task" });
   return { issueKey: issue.key, issueTitle: issue.title, project: "CORE" };
@@ -30,7 +34,7 @@ const test = stubbed(async () => {
 
 /** One open ask, which is the count both badges carry. */
 const badgeTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Badge colour" });
   await createAsk(issue.key, { question: "Which colour?" }, session);
   return { asks: 1, issueKey: issue.key };

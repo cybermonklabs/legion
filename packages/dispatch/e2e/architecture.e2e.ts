@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { routePath } from "../web/src/api/paths";
 import {
   createIssue,
   createProject,
@@ -10,7 +11,7 @@ import {
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 async function expectTouchTarget(locator: Locator): Promise<void> {
@@ -39,22 +40,23 @@ const modelCommit = createHash("sha1").update(JSON.stringify(model)).digest("hex
  *  in progress with a child inheriting Web, one done), one on API, one unassigned, one not
  *  architectural. */
 async function seedArchitecture() {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   await seedFakeGithub({ "legion/arch": { contents: "read", files: model, installation_id: 101 } });
-  await putArchitectureSource("CORE", { branch: "main", repo: "legion/arch" });
-  const source = await syncArchitectureSource("CORE", "legion/arch");
+  await putArchitectureSource(core, { branch: "main", repo: "legion/arch" });
+  const source = await syncArchitectureSource(core, "legion/arch");
   expect(source.last_error).toBeNull();
 
-  const login = await createIssue({ project: "CORE", title: "Web login" });
-  const shipped = await createIssue({ project: "CORE", title: "Web shipped" });
-  const child = await createIssue({ parent: login.key, project: "CORE", title: "Login child" });
-  const contract = await createIssue({ project: "CORE", title: "API contract" });
+  const login = await createIssue({ project: core, title: "Web login" });
+  const shipped = await createIssue({ project: core, title: "Web shipped" });
+  const child = await createIssue({ parent: login.key, project: core, title: "Login child" });
+  const contract = await createIssue({ project: core, title: "API contract" });
   // A long title, so the phone assertion on its Unassigned row link is not vacuous.
   const loose = await createIssue({
-    project: "CORE",
+    project: core,
     title: "Loose end: consolidate every remaining flag into the shared runtime configuration",
   });
-  const hire = await createIssue({ project: "CORE", title: "Hire someone" });
+  const hire = await createIssue({ project: core, title: "Hire someone" });
   await patchIssue(login.key, { components: { ids: ["web"], mode: "explicit" } });
   await patchIssue(login.key, { status: "in_progress" });
   await patchIssue(shipped.key, { components: { ids: ["web"], mode: "explicit" } });
@@ -84,14 +86,15 @@ async function screenshot(page: Page, projectName: string, name: string): Promis
 test("a project with a source opens on its Architecture: bars, drill-down, details, a bar that moves on a status change, and the Unassigned picker @pr", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   const issues = await seedArchitecture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
   try {
     // Spec item 1: the project opens at /architecture (the URL changes; Back stays sane).
-    await page.goto("/projects/CORE");
-    await expect(page).toHaveURL(/\/projects\/CORE\/architecture$/);
+    await page.goto(`/projects/${core}`);
+    await expect(page).toHaveURL(new RegExp(`/projects/${core}/architecture$`));
     await expect(page.getByRole("tab", { name: "Architecture" })).toHaveAttribute(
       "aria-selected",
       "true"
@@ -148,7 +151,7 @@ test("a project with a source opens on its Architecture: bars, drill-down, detai
     await expect(details.getByText("packages/web")).toBeVisible();
     await expect(details.getByRole("link", { exact: true, name: "API" })).toHaveAttribute(
       "href",
-      "/projects/CORE/architecture?component=api"
+      `/projects/${core}/architecture?component=api`
     );
     await screenshot(page, "chromium", "architecture-tree");
 
@@ -216,12 +219,13 @@ test("a project with a source opens on its Architecture: bars, drill-down, detai
 test("the Architecture page keeps its titles inside their links and its Unassigned controls touch-sized @phone @phone-only", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
   const issues = await seedArchitecture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
   try {
-    await page.goto("/projects/CORE/architecture");
+    await page.goto(`/projects/${core}/architecture`);
     const chevron = page.getByRole("link", { name: "Open the components inside Platform" });
     await expectTouchTarget(chevron);
     // A long title truncates inside its row: neither the link nor the page scrolls sideways
@@ -236,7 +240,7 @@ test("the Architecture page keeps its titles inside their links and its Unassign
 
     // A work row's title is readable on a phone: it takes its own line under the chevron, so the
     // status pill and timestamp wrap beneath it instead of squeezing it to "CORE-1 · We".
-    await page.goto("/projects/CORE/architecture?component=web");
+    await page.goto(`/projects/${core}/architecture?component=web`);
     const workRow = page.getByTestId(`work-${issues.login.key}`);
     const workLink = workRow.getByRole("link", { name: `${issues.login.key} · Web login` });
     await expect(workLink).toBeVisible();
@@ -252,7 +256,7 @@ test("the Architecture page keeps its titles inside their links and its Unassign
     // The Unassigned row's head takes its own line and the long title ellipsizes inside its link
     // (the controls stack under it): the link itself never overflows, and the Attach button and
     // the component search it opens are both touch-sized.
-    await page.goto("/projects/CORE/architecture?component=web&view=unassigned");
+    await page.goto(`/projects/${core}/architecture?component=web&view=unassigned`);
     const unassigned = page.getByTestId("unassigned-list");
     const looseLink = unassigned.getByRole("link", {
       name: `${issues.loose.key} · Loose end: consolidate every remaining flag into the shared runtime configuration`,
@@ -278,13 +282,15 @@ test("the Architecture page keeps its titles inside their links and its Unassign
 test("Refresh with a broken model keeps the last model up behind an error banner; /issues keeps its filter; a project without a source opens on Issues", async ({
   browser,
 }) => {
+  const ops = rowKey("OPS");
+  const core = rowKey("CORE");
   await seedArchitecture();
-  await createProject({ key: "OPS", name: "Ops" });
+  await createProject({ key: ops, name: "Ops" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
   try {
-    await page.goto("/projects/CORE/architecture");
+    await page.goto(`/projects/${core}/architecture`);
     await expect(row(page, "Platform")).toBeVisible();
 
     // Api.md and api.md are both component "api": the push is rejected whole and the tree
@@ -299,7 +305,7 @@ test("Refresh with a broken model keeps the last model up behind an error banner
     const synced = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().endsWith("/api/v1/projects/CORE/architecture-sources/legion/arch/sync") &&
+        response.url().endsWith(`/api/v1/projects/${core}/architecture-sources/legion/arch/sync`) &&
         response.ok()
     );
     await page
@@ -316,7 +322,7 @@ test("Refresh with a broken model keeps the last model up behind an error banner
     await expect(page.getByTestId("architecture-source")).toContainText(
       `at ${modelCommit.slice(0, 8)}`
     );
-    const tree = await getArchitecture("CORE");
+    const tree = await getArchitecture(core);
     expect((tree.sources ?? []).map((source) => [source.repo, source.last_commit])).toEqual([
       ["legion/arch", modelCommit],
     ]);
@@ -330,8 +336,8 @@ test("Refresh with a broken model keeps the last model up behind an error banner
     ]);
 
     // The Issues tab lives at /issues now and keeps its filter parameters.
-    await page.goto("/projects/CORE/issues?label=frontend");
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?label=frontend$/);
+    await page.goto(`/projects/${core}/issues?label=frontend`);
+    await expect(page).toHaveURL(new RegExp(`/projects/${core}/issues\\?label=frontend$`));
     await expect(page.getByRole("tab", { name: "Issues" })).toHaveAttribute(
       "aria-selected",
       "true"
@@ -340,8 +346,8 @@ test("Refresh with a broken model keeps the last model up behind an error banner
 
     // A project without a source has no Architecture tab and opens on Issues, the filter
     // parameters forwarded.
-    await page.goto("/projects/OPS?label=frontend");
-    await expect(page).toHaveURL(/\/projects\/OPS\/issues\?label=frontend$/);
+    await page.goto(`/projects/${ops}?label=frontend`);
+    await expect(page).toHaveURL(new RegExp(`/projects/${ops}/issues\\?label=frontend$`));
     await expect(page.getByRole("tab", { name: "Architecture" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeVisible();
   } finally {
@@ -352,8 +358,9 @@ test("Refresh with a broken model keeps the last model up behind an error banner
 test("a project with no architecture source answers the read, so its pages make no failed request", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "No model here" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "No model here" });
 
   const context = await asUser(browser, "alice");
   try {
@@ -366,15 +373,17 @@ test("a project with no architecture source answers the read, so its pages make 
     });
 
     // The read itself: having no source is an answer, not a refusal.
-    const read = await page.request.get("/api/v1/projects/CORE/architecture-sources");
+    const read = await page.request.get(
+      routePath("get", "/api/v1/projects/{key}/architecture-sources", { key: core })
+    );
     expect(read.status()).toBe(200);
     expect(await read.json()).toEqual([]);
 
     // Both surfaces that ask the question on every visit.
     await page.goto(`/issues/${issue.key}`);
     await expect(page.getByTestId("issue-metadata-rail")).toBeVisible();
-    await page.goto("/projects/CORE");
-    await expect(page).toHaveURL("/projects/CORE/issues");
+    await page.goto(`/projects/${core}`);
+    await expect(page).toHaveURL(`/projects/${core}/issues`);
     await expect(page.getByRole("tab", { name: "Architecture" })).toHaveCount(0);
     expect(failures).toEqual([]);
   } finally {

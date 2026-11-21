@@ -1,6 +1,6 @@
 import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
 import { createIssue, createProject, patchIssue } from "./api";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const planner: FakeSession = {
@@ -45,9 +45,10 @@ async function postPayload(page: Page): Promise<Record<string, unknown>> {
 test("the unified composer offers live roles and sessions and posts canonical mention targets @pr", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner, worker]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Mention the worker" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Mention the worker" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -66,9 +67,10 @@ test("the unified composer offers live roles and sessions and posts canonical me
 });
 
 test("an issue route remains an owner route, not a recipient control", async ({ browser }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Plain comment" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Plain comment" });
   await patchIssue(issue.key, { route: "role:legion-planner" });
   const alice = await asUser(browser, "alice");
 
@@ -90,9 +92,10 @@ test("an issue route remains an owner route, not a recipient control", async ({ 
 test("an offline selected mention is posted and exposes its failed delivery", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([worker]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Offline mention" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Offline mention" });
   const alice = await asUser(browser, "alice");
 
   try {

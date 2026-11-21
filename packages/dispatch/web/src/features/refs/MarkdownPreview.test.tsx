@@ -175,7 +175,7 @@ test("a lead with no body shows the lead alone", async () => {
   });
   try {
     await waitFor(() => expect(preview().textContent).toBe("Replying to a message"));
-    expect(preview().getAttribute("data-markdown-fallback")).toBeNull();
+    expect(preview()).not.toHaveAttribute("data-markdown-fallback");
   } finally {
     view.unmount();
   }
@@ -192,9 +192,7 @@ test("a Dispatch picture shows as its thumbnail beside its caption, a link only 
   try {
     await waitFor(() => expect(preview().querySelector("img")).not.toBeNull());
     const thumbnail = preview().querySelector("img");
-    expect(thumbnail?.getAttribute("src")).toBe(
-      "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1"
-    );
+    expect(thumbnail).toHaveAttribute("src", "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1");
     expect(thumbnail?.className.split(" ")).toEqual(
       expect.arrayContaining(["h-10", "w-10", "object-cover"])
     );
@@ -206,7 +204,8 @@ test("a Dispatch picture shows as its thumbnail beside its caption, a link only 
     // A host whose own control is a toggle keeps the picture's link to its page.
     rerender({ lines: 2, links: "live", markdown });
     await waitFor(() => expect(preview().querySelector("a img")).not.toBeNull());
-    expect(preview().querySelector("a")?.getAttribute("href")).toBe(
+    expect(preview().querySelector("a")).toHaveAttribute(
+      "href",
       "/issues/CORE-1/artifacts/shot-png?v=1"
     );
   } finally {
@@ -245,7 +244,7 @@ test("a body that is only a code fence shows its code on the line, with no fence
     expect(preview().textContent).not.toContain("```");
     // Code is code: a reference written inside the fence is not resolved.
     expect(preview().querySelector("[data-dispatch-ref]")).toBeNull();
-    expect(preview().getAttribute("data-markdown-fallback")).toBeNull();
+    expect(preview()).not.toHaveAttribute("data-markdown-fallback");
   } finally {
     view.unmount();
   }
@@ -330,7 +329,7 @@ test("a body the engine cannot parse shows its literal text, led, and never as H
     // Edited into a body that parses, it renders formatted and stops being the fallback.
     rerender({ lines: 2, markdown: "**fixed** astrolabe" });
     await waitFor(() => expect(preview().querySelector("strong")?.textContent).toBe("fixed"));
-    expect(preview().getAttribute("data-markdown-fallback")).toBeNull();
+    expect(preview()).not.toHaveAttribute("data-markdown-fallback");
     expect(preview().textContent).toBe("fixed astrolabe");
   } finally {
     view.unmount();

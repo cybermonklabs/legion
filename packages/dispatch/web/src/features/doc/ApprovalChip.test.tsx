@@ -323,7 +323,7 @@ test("Request changes requires a reason before it can submit, then posts it", as
     await user.click(screen.getByRole("button", { name: "Request changes" }));
     const dialog = screen.getByRole("dialog", { name: "Request changes" });
     const submit = within(dialog).getByRole("button", { name: "Request changes" });
-    expect(submit.hasAttribute("disabled")).toBe(true);
+    expect(submit).toHaveAttribute("disabled");
 
     await user.click(within(dialog).getByLabelText("Reason"));
     await user.paste("Needs another pass");

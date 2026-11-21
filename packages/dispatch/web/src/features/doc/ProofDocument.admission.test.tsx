@@ -755,9 +755,7 @@ test("a reopened issue's document is admitted again and takes edits once that ad
 
     act(() => admit(false));
     expect(editors[0]?.access).toBe("edit");
-    expect(within(view.container).getByRole("article").getAttribute("data-read-only")).toBe(
-      "false"
-    );
+    expect(within(view.container).getByRole("article")).toHaveAttribute("data-read-only", "false");
     expect(within(view.container).queryByText("Reload to edit.")).toBeNull();
 
     rerender({ isClosed: false });

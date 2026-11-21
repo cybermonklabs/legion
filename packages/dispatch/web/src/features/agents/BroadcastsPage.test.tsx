@@ -49,13 +49,13 @@ test("a broadcast row draws its session sender outside the row's link", async ()
   try {
     const row = await screen.findByRole("listitem");
     const rowLink = within(row).getByRole("link", { name: /1 of 2 answered/ });
-    expect(rowLink.getAttribute("href")).toBe("/agents/broadcasts/broadcast-1");
+    expect(rowLink).toHaveAttribute("href", "/agents/broadcasts/broadcast-1");
     const sender = await within(row).findByRole("link", { name: "Planner" });
-    expect(sender.getAttribute("href")).toBe("/agents/planner-session/live");
+    expect(sender).toHaveAttribute("href", "/agents/planner-session/live");
     expect(rowLink.contains(sender)).toBe(false);
     expect(sender.contains(rowLink)).toBe(false);
     const agent = row.querySelector('[data-agent-name="planner-session"]');
-    await waitFor(() => expect(agent?.getAttribute("data-agent-state")).toBe("running"));
+    await waitFor(() => expect(agent).toHaveAttribute("data-agent-state", "running"));
   } finally {
     view.unmount();
     listAgents.mockRestore();

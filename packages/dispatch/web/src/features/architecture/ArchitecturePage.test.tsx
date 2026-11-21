@@ -192,13 +192,13 @@ test("the header reads the source and scope, and root rows carry bars, counts, a
     ]);
     // Legion is partial: a fill inside the track, sized to done/total.
     const legion = rowFor("Legion");
-    expect(legion.querySelector("[data-tone]")?.getAttribute("data-tone")).toBe("partial");
+    expect(legion.querySelector("[data-tone]")).toHaveAttribute("data-tone", "partial");
     expect((legion.querySelector('[data-testid="progress-fill"]') as HTMLElement).style.width).toBe(
       "33%"
     );
     // Docs is fully done with no descendants: a solid green bar and no fill element.
     const docs = rowFor("Docs");
-    expect(docs.querySelector("[data-tone]")?.getAttribute("data-tone")).toBe("done");
+    expect(docs.querySelector("[data-tone]")).toHaveAttribute("data-tone", "done");
     expect(docs.querySelector('[data-testid="progress-fill"]')).toBeNull();
     // Nothing is hatched while the model is fresh and the last import succeeded.
     expect(legion.classList.contains("border-dashed")).toBe(false);
@@ -228,7 +228,7 @@ test("a chevron descends into a component's children with a breadcrumb back; ext
     await user.click(screen.getByRole("link", { name: "Open the components inside Dispatch" }));
     expect(crumbs.textContent).toBe("All components/Legion/Dispatch");
     const server = rowFor("Dispatch server");
-    expect(server.querySelector("[data-tone]")?.getAttribute("data-tone")).toBe("no-work");
+    expect(server.querySelector("[data-tone]")).toHaveAttribute("data-tone", "no-work");
     expect(within(server).getByText("No tracked work")).toBeTruthy();
     expect(server).toHaveAttribute("aria-label", "Dispatch server, no tracked work");
 
@@ -422,7 +422,7 @@ test("never synced: the source line says so and an empty model shows the Refresh
       name: "Refreshing legion/legion…",
     });
     expect(refreshing.textContent).toBe("Refreshing…");
-    expect(refreshing.hasAttribute("disabled")).toBe(true);
+    expect(refreshing).toHaveAttribute("disabled");
     settle?.();
     await screen.findByRole("button", { name: "Refresh legion/legion" });
   } finally {

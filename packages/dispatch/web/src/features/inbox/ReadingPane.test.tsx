@@ -1365,7 +1365,7 @@ test("an orphaned anchor falls back to the thread alone, with its quote", async 
   try {
     const body = await paneBody();
     expect(body).toHaveAttribute("data-inbox-pane-body", "document");
-    expect(body.hasAttribute("data-inbox-pane-fallback")).toBe(true);
+    expect(body).toHaveAttribute("data-inbox-pane-fallback");
     expect(body.querySelector("[data-inbox-thread-quote]")?.textContent).toBe("three attempts");
     // Nothing opened the document: an anchor nothing can be placed at opens no room.
     await tick(SETTLE_MS * 2);

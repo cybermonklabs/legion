@@ -1,13 +1,15 @@
 import { createIssue, createProject, patchIssue } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { type Browser, expect, test } from "./test";
+import { type Browser, expect, rowKey, rowNumber, test } from "./test";
 import { asUser } from "./users";
 
 // The repository is used by no other spec: the server remembers which installation covers a
 // repository it has read, so reusing one another spec expects to be unavailable would leak.
 const repository = "acme/checks-pill";
 
-/** Seeds pull request #7 of `repository` at `headSHA` with those runs and opens its issue. */
+/** Seeds a pull request of `repository` at `headSHA` with those runs and opens its issue. The
+ *  pull request's number is the row's own (`rowNumber`, e2e/test.ts): Dispatch links one address
+ *  from one issue alone (`EXTERNAL_LINK_TAKEN`), so a fixed one is taken by the row before. */
 async function expectChecksPill(
   browser: Browser,
   headSHA: string,
@@ -22,28 +24,30 @@ async function expectChecksPill(
   workflowRuns: { check_suite_id: number; event: string; id: number; name: string }[],
   checks: string
 ): Promise<void> {
+  const core = rowKey("CORE");
+  const pull = rowNumber("pull");
   await seedFakeGithub({
     [repository]: {
       check_runs: { [headSHA]: checkRuns },
       contents: "read",
       installation_id: 256,
-      pulls: { "7": { head_sha: headSHA, state: "open", title } },
+      pulls: { [pull]: { head_sha: headSHA, state: "open", title } },
       pull_requests: "read",
       workflow_runs: { [headSHA]: workflowRuns },
     },
   });
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Checks pill" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Checks pill" });
   await patchIssue(issue.key, {
-    external_links: [{ kind: "github_pr", url: `https://github.com/${repository}/pull/7` }],
+    external_links: [{ kind: "github_pr", url: `https://github.com/${repository}/pull/${pull}` }],
   });
 
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.goto(`/issues/${issue.key}`);
-    const link = page.getByRole("link", { name: `#7 ${title}` });
-    await expect(link).toHaveAttribute("title", `${repository}#7: ${title}`);
+    const link = page.getByRole("link", { name: `#${pull} ${title}` });
+    await expect(link).toHaveAttribute("title", `${repository}#${pull}: ${title}`);
     await expect(link.getByText(/^checks: /)).toHaveText(`checks: ${checks}`);
   } finally {
     await context.close();

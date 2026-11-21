@@ -1,7 +1,7 @@
 import { createAsk, createIssue, createProject, getIssue } from "./api";
 import { barAction, selectEditorText } from "./editor";
 import { leaveFocus, onBody, openIssue } from "./keyboard-issue";
-import { expect, type Request, test } from "./test";
+import { expect, type Request, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -26,8 +26,9 @@ function isPinWrite(request: Request): boolean {
 test("the issue scope reaches the header controls and the tab chords, and ? lists them under Issue", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Keyboard issue" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Keyboard issue" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -179,8 +180,9 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
 test("a priority the server refuses shows the header's own failure, whether the digit key or the picker sent it", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Refused priority" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Refused priority" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -227,8 +229,9 @@ test("a priority the server refuses shows the header's own failure, whether the 
 test("Escape leaves a focused header select, so the next chord is a chord and not type-ahead", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Type-ahead" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Type-ahead" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -283,8 +286,9 @@ test.describe("issue page", () => {
   test("a digit on an ask's option writes no priority, while the same digit on the page does", async ({
     browser,
   }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const issue = await createIssue({ project: "CORE", title: "Priority and options" });
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
+    const issue = await createIssue({ project: core, title: "Priority and options" });
     await createAsk(
       issue.key,
       { options: [{ label: "Ship" }, { label: "Hold" }], question: "Which way?" },
@@ -362,9 +366,10 @@ test.describe("issue page", () => {
   test("a digit on a page checkbox writes no priority, and neither does Shift+P", async ({
     browser,
   }) => {
-    await createProject({ key: "CORE", name: "Core" });
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
     const issue = await createIssue({
-      project: "CORE",
+      project: core,
       spec: "The quick brown fox",
       title: "Composer and priority",
     });

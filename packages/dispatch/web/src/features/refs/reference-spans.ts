@@ -1,3 +1,5 @@
+import { readerStep } from "./reader-steps";
+
 export interface ReferenceSpan {
   start: number;
   /** Where the span the pattern matched ends, before `trimReference` cut what trails it in
@@ -17,7 +19,7 @@ export interface ReferenceSpan {
  * server's `text.ExtractAt` indexes mentions by, and `DISPATCH_TEXT_REFERENCES` in
  * `@legion/contracts` is the table both are tested against.
  */
-const referencePattern =
+export const referencePattern =
   /(?:dispatch:\/\/|https?:\/\/(?:\[[0-9A-Fa-f:.]+\])?)[^\t\n\f\r \p{Z}<>"'`[\]|]+/gu;
 
 /**
@@ -28,6 +30,7 @@ const referencePattern =
 export function referenceSpans(text: string, prefix = ""): ReferenceSpan[] {
   const spans: ReferenceSpan[] = [];
   for (const match of text.matchAll(referencePattern)) {
+    readerStep();
     if (match[0].startsWith(prefix)) {
       spans.push({
         end: match.index + match[0].length,
@@ -53,12 +56,14 @@ export function trimReference(value: string): string {
   let opened = 0;
   let closed = 0;
   for (let index = 0; index < value.length; index += 1) {
+    readerStep();
     const char = value.charAt(index);
     if (char === "(") opened += 1;
     else if (char === ")") closed += 1;
   }
   let end = value.length;
   for (; end > 0; end -= 1) {
+    readerStep();
     const char = value.charAt(end - 1);
     if (char === ")") {
       if (opened >= closed) break;

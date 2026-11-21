@@ -1,6 +1,15 @@
 import { createAsk, createComment, createIssue, createMessage, createProject } from "./api";
 import { boxesApart } from "./layout";
-import { type BrowserContext, expect, type Locator, type Page, type Route, test } from "./test";
+import {
+  type BrowserContext,
+  expect,
+  type Locator,
+  type Page,
+  type Route,
+  rowKey,
+  rowPerson,
+  test,
+} from "./test";
 import { asUser } from "./users";
 
 // The iPhone 13 viewport INFRA-95 measured the landing fault at. At the `phone` layout
@@ -15,12 +24,19 @@ const session = {
 /** Seeds project CORE and an issue titled `title` whose Conversation holds one ask, one root
  *  comment, 8 older messages and then the newest message. The newest is created last, so it is
  *  newer than every ask and comment: a held or failing asks read cannot change which
- *  conversation is newest, only whether the list is on the page yet. */
-async function seedConversation(title: string) {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title });
+ *  conversation is newest, only whether the list is on the page yet.
+ *
+ *  The project, the issue and the comment are `reader`'s, the row's own person (`rowPerson`,
+ *  e2e/test.ts), who is who each row signs in. The phone's header draws the reader's Inbox and
+ *  New replies counts, and alice's, which every row before on the worker raises, take a second
+ *  line, which moves the turns against the docked composer each row's landing is measured
+ *  beside. */
+async function seedConversation(title: string, reader: string) {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" }, { login: reader });
+  const issue = await createIssue({ project: core, title }, { login: reader });
   await createAsk(issue.key, { question: "Which landing should the reader get?" }, session);
-  await createComment(issue.key, { body: "A root comment under the ask" });
+  await createComment(issue.key, { body: "A root comment under the ask" }, { login: reader });
   for (let index = 0; index < 8; index += 1) {
     await createMessage(issue.key, { body: `Older message ${index}` }, session);
   }
@@ -192,8 +208,9 @@ async function openWithReadLast(
 test("on a phone, the Conversation opens with its newest message in view whichever read answers last @phone @pr", async ({
   browser,
 }) => {
-  const { issue, newest } = await seedConversation("Landing on the newest message");
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const { issue, newest } = await seedConversation("Landing on the newest message", me);
+  const alice = await asUser(browser, me);
 
   try {
     let page: Page | undefined;
@@ -233,8 +250,9 @@ test("on a phone, the Conversation opens with its newest message in view whichev
 test("on a phone, a Conversation whose read failed opens on its newest message once a refetch brings the list @phone", async ({
   browser,
 }) => {
-  const { issue, newest } = await seedConversation("Landing after a failed read");
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const { issue, newest } = await seedConversation("Landing after a failed read", me);
+  const alice = await asUser(browser, me);
 
   try {
     const page = await openPhonePage(alice);
@@ -284,8 +302,9 @@ test("on a phone, a Conversation whose read failed opens on its newest message o
 test("on a phone, a reader who leaves the Conversation while it loads lands on its newest message when they come back @phone", async ({
   browser,
 }) => {
-  const { issue, newest } = await seedConversation("Leaving while it loads");
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const { issue, newest } = await seedConversation("Leaving while it loads", me);
+  const alice = await asUser(browser, me);
 
   try {
     const page = await openPhonePage(alice);

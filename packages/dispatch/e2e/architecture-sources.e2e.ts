@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { createIssue, createProject, getIssue } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // A project imports its component model from two repositories, each its own source, and the
@@ -40,13 +40,14 @@ function componentRow(page: Page, title: string): Locator {
 /** Saves `repo` on `main` as a CORE source through the Settings form. The response predicate
  *  matches the one-source route and the per-repository one alike. */
 async function addSource(page: Page, repo: string): Promise<void> {
-  await page.getByLabel("Source project").selectOption("CORE");
+  const core = rowKey("CORE");
+  await page.getByLabel("Source project").selectOption(core);
   await page.getByLabel("Source repository").fill(repo);
   await page.locator("#architecture-source-branch").fill("main");
   const saved = page.waitForResponse(
     (response) =>
       response.request().method() === "PUT" &&
-      new URL(response.url()).pathname.startsWith("/api/v1/projects/CORE/architecture-source") &&
+      new URL(response.url()).pathname.startsWith(`/api/v1/projects/${core}/architecture-source`) &&
       response.ok()
   );
   await page.getByRole("button", { name: "Add source" }).click();
@@ -59,9 +60,10 @@ async function addSource(page: Page, repo: string): Promise<void> {
 test("a project with two architecture sources shows both in Settings, on its Architecture page and in an issue's Components picker @pr", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   // Step 1: project CORE and two repositories, each with its own component files.
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Route the SPA through the edge" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Route the SPA through the edge" });
   await seedFakeGithub({
     "acme/infra": { contents: "read", files: infraFiles, installation_id: 102 },
     "legion/arch": { contents: "read", files: legionFiles, installation_id: 101 },
@@ -76,7 +78,7 @@ test("a project with two architecture sources shows both in Settings, on its Arc
     await expect(section).toBeVisible();
     const coreRows = section
       .getByRole("row")
-      .filter({ has: page.getByRole("cell", { exact: true, name: "CORE" }) });
+      .filter({ has: page.getByRole("cell", { exact: true, name: core }) });
     const sourceRow = (repo: string) =>
       coreRows.filter({ has: page.getByRole("cell", { exact: true, name: repo }) });
 
@@ -92,11 +94,11 @@ test("a project with two architecture sources shows both in Settings, on its Arc
       const synced = page.waitForResponse(
         (response) =>
           response.request().method() === "POST" &&
-          response.url().endsWith(`/api/v1/projects/CORE/architecture-sources/${repo}/sync`) &&
+          response.url().endsWith(`/api/v1/projects/${core}/architecture-sources/${repo}/sync`) &&
           response.ok()
       );
       await sourceRow(repo)
-        .getByRole("button", { name: `Refresh architecture source ${repo} for CORE` })
+        .getByRole("button", { name: `Refresh architecture source ${repo} for ${core}` })
         .click();
       await synced;
     }
@@ -111,8 +113,8 @@ test("a project with two architecture sources shows both in Settings, on its Arc
     // Step 3: the project opens on its Architecture, whose top level holds each source's roots.
     // In-app, as the rail's own link is: the redirect to /architecture is the router's, and this
     // page has read no architecture data yet, so the tree below is a fresh server read either way.
-    await navigateInApp(page, "/projects/CORE");
-    await expect(page).toHaveURL(/\/projects\/CORE\/architecture$/);
+    await navigateInApp(page, `/projects/${core}`);
+    await expect(page).toHaveURL(new RegExp(`/projects/${core}/architecture$`));
     await expect(componentRow(page, "Platform")).toBeVisible();
     await expect(componentRow(page, "Cluster")).toBeVisible();
     await expect(componentRow(page, "DNS")).toBeVisible();

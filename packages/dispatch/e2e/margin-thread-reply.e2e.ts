@@ -7,7 +7,7 @@ import {
   WRITE_REFUSED,
   WRITE_REFUSED_TEXT,
 } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // A margin thread's own reply holds its draft until the server answers, like every composer.
@@ -20,8 +20,9 @@ const refused = WRITE_REFUSED_TEXT;
 
 /** An issue whose spec carries two comment threads, and the route a reply to either posts to. */
 async function seed(title: string) {
-  await createProject({ key: "HOLD", name: "Margin replies" });
-  const issue = await createIssue({ project: "HOLD", spec, title });
+  const hold = rowKey("HOLD");
+  await createProject({ key: hold, name: "Margin replies" });
+  const issue = await createIssue({ project: hold, spec, title });
   const first = await createComment(issue.key, {
     anchor: { artifact: "spec", quote: "brown" },
     body: "On brown",

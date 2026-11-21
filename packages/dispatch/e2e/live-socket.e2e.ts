@@ -11,7 +11,7 @@ import {
 import { seedDeliveryFixture } from "./delivery-seed";
 import { connect, isLiveSocket, type LiveSockets, watchLiveSockets } from "./live-socket-watch";
 import { navigateInApp } from "./sends";
-import { expect, type Page, type Request, test, type WebSocketRoute } from "./test";
+import { expect, type Page, type Request, rowKey, test, type WebSocketRoute } from "./test";
 import { asUser } from "./users";
 
 const agent: FakeSession = {
@@ -149,10 +149,12 @@ function trackDocumentLoads(page: Page): string[] {
 // @pr: The live socket: one socket per tab, read over three live views at once.
 test("a tab holds one live socket for every live view @webkit @firefox @pr", async ({
   browser,
+  delivery,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Board issue" });
-  await seedDeliveryFixture();
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createIssue({ project: core, title: "Board issue" });
+  await seedDeliveryFixture(delivery);
   await setLiveSessions([agent]);
   await setAgentStreamResponder(agent.session_id, true);
 
@@ -161,7 +163,7 @@ test("a tab holds one live socket for every live view @webkit @firefox @pr", asy
     const page = await alice.newPage();
     const sockets = watchLiveSockets(page);
 
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     await page.getByRole("button", { name: "Board" }).click();
     await expect(page.getByRole("region", { name: "Todo" })).toBeVisible();
     await expect.poll(() => sockets.open.size).toBe(1);
@@ -211,12 +213,13 @@ const SILENCE_CHECK_MS = 15_000;
 // SLOW(>=2s): real idling is the measurement. The ages below are read in this process, in real
 // wall time, and a connection Dispatch holds open ages whatever the page's timers believe, so no
 // page clock can stand in for the idle itself.
-test("no request to Dispatch stays open while the page idles", async ({ browser }) => {
+test("no request to Dispatch stays open while the page idles", async ({ browser, delivery }) => {
+  const core = rowKey("CORE");
   // The 5 s idle and three page loads are all this row spends.
   test.setTimeout(40_000);
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Board issue" });
-  await seedDeliveryFixture();
+  await createProject({ key: core, name: "Core" });
+  await createIssue({ project: core, title: "Board issue" });
+  await seedDeliveryFixture(delivery);
   await setLiveSessions([agent]);
   await setAgentStreamResponder(agent.session_id, true);
 
@@ -231,7 +234,7 @@ test("no request to Dispatch stays open while the page idles", async ({ browser 
     const pending = pages.map(trackApiRequests);
     const sockets = pages.map(watchLiveSockets);
 
-    await board.goto("/projects/CORE");
+    await board.goto(`/projects/${core}`);
     await board.getByRole("button", { name: "Board" }).click();
     await expect(board.getByRole("region", { name: "Todo" })).toBeVisible();
     await live.goto(`/agents/${agent.session_id}/live`);
@@ -286,8 +289,9 @@ test("no request to Dispatch stays open while the page idles", async ({ browser 
 test("a rotation loses no event and makes no extra read of the issue @phone @firefox", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const baselineIssue = await createIssue({ project: "CORE", title: "Comment request control" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const baselineIssue = await createIssue({ project: core, title: "Comment request control" });
 
   const alice = await asUser(browser, "alice");
   try {
@@ -317,7 +321,7 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
     const expectedReads = controlReads.slice(controlWindow).sort();
     await control.close();
 
-    const issue = await createIssue({ project: "CORE", title: "Rotation target" });
+    const issue = await createIssue({ project: core, title: "Rotation target" });
     const page = await alice.newPage();
     const pending = trackApiRequests(page);
     const reads = trackIssueReads(page, issue.key);
@@ -375,8 +379,9 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
 test("a change committed while the page loads is shown without a reload @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Before the page load" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Before the page load" });
 
   const alice = await asUser(browser, "alice");
   try {
@@ -412,8 +417,9 @@ test("a change committed while the page loads is shown without a reload @pr", as
 });
 
 test("a first live socket opening without a change makes no API request", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Quiet page load" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Quiet page load" });
 
   const alice = await asUser(browser, "alice");
   try {

@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -25,19 +24,6 @@ import (
 // two and which name none is stated by the test rather than drawn.
 func chosenID(prefix string, nth int) string {
 	return fmt.Sprintf("%s-0000-4000-8000-%012d", prefix, nth)
-}
-
-// ambiguousIDAnswer is the 409 of an id prefix two items or more carry.
-type ambiguousIDAnswer struct {
-	Error      string           `json:"error"`
-	Code       string           `json:"code"`
-	Candidates []refs.Candidate `json:"candidates"`
-}
-
-// refusedAnswer is the error and code of any refusal.
-type refusedAnswer struct {
-	Error string `json:"error"`
-	Code  string `json:"code"`
 }
 
 // idPrefixFixture is one project with, for each kind an id prefix names, an item whose
@@ -226,7 +212,7 @@ func TestAnIDPrefixNamesOneItemOnEveryOwnerFreeRoute(t *testing.T) {
 			if shared.Code != http.StatusConflict {
 				t.Fatalf("read by the prefix %s: status=%d body=%s, want 409", prefixes.two, shared.Code, shared.Body.String())
 			}
-			ambiguous := decodeBody[ambiguousIDAnswer](t, shared)
+			ambiguous := decodeBody[idAmbiguousError](t, shared)
 			if ambiguous.Code != contracts.IDAmbiguous {
 				t.Fatalf("refusal = %+v, want %s", ambiguous, contracts.IDAmbiguous)
 			}
@@ -272,7 +258,7 @@ func TestAnIDPrefixNamesOneItemOnEveryOwnerFreeRoute(t *testing.T) {
 					t.Fatalf("%s (%s): status=%d body=%s, want %d",
 						unresolved.name, unresolved.value, answer.Code, answer.Body.String(), unresolved.status)
 				}
-				if code := decodeBody[refusedAnswer](t, answer).Code; code != unresolved.code {
+				if code := decodeBody[errorBody](t, answer).Code; code != unresolved.code {
 					t.Fatalf("%s (%s): code=%q, want %q", unresolved.name, unresolved.value, code, unresolved.code)
 				}
 			}
@@ -330,7 +316,7 @@ func TestABlockIDPrefixIsMatchedWithinTheDocumentItsRouteNames(t *testing.T) {
 	if shared.Code != http.StatusConflict {
 		t.Fatalf("a block prefix two blocks carry: status=%d body=%s, want 409", shared.Code, shared.Body.String())
 	}
-	ambiguous := decodeBody[ambiguousIDAnswer](t, shared)
+	ambiguous := decodeBody[idAmbiguousError](t, shared)
 	if ambiguous.Code != contracts.IDAmbiguous || len(ambiguous.Candidates) != 2 {
 		t.Fatalf("refusal = %+v, want %s naming both blocks", ambiguous, contracts.IDAmbiguous)
 	}
@@ -458,7 +444,7 @@ func TestADirectMessagePrefixKeepsTheConversationGuard(t *testing.T) {
 	for _, spelling := range []struct{ name, written string }{{"the whole id", chosenID("e0000001", 1)}, {"its prefix", "e0000001"}} {
 		name, written := spelling.name, spelling.written
 		refused := bearerRequest(t, handler, http.MethodGet, "/api/v1/messages/"+written+"?session=s2", nil)
-		if refused.Code != http.StatusForbidden || decodeBody[refusedAnswer](t, refused).Code != "THREAD_FORBIDDEN" {
+		if refused.Code != http.StatusForbidden || decodeBody[errorBody](t, refused).Code != "THREAD_FORBIDDEN" {
 			t.Fatalf("s2 reading s1's conversation by %s: status=%d body=%s, want 403 THREAD_FORBIDDEN",
 				name, refused.Code, refused.Body.String())
 		}
@@ -471,7 +457,7 @@ func TestADirectMessagePrefixKeepsTheConversationGuard(t *testing.T) {
 	if outside.Code != http.StatusConflict {
 		t.Fatalf("an ambiguous prefix as s2: status=%d body=%s, want 409", outside.Code, outside.Body.String())
 	}
-	ambiguous := decodeBody[ambiguousIDAnswer](t, outside)
+	ambiguous := decodeBody[idAmbiguousError](t, outside)
 	if ambiguous.Code != contracts.IDAmbiguous || len(ambiguous.Candidates) != 2 {
 		t.Fatalf("refusal = %+v, want %s with both messages", ambiguous, contracts.IDAmbiguous)
 	}
@@ -488,7 +474,7 @@ func TestADirectMessagePrefixKeepsTheConversationGuard(t *testing.T) {
 	if person.Code != http.StatusConflict {
 		t.Fatalf("an ambiguous prefix as a person: status=%d body=%s, want 409", person.Code, person.Body.String())
 	}
-	for nth, candidate := range decodeBody[ambiguousIDAnswer](t, person).Candidates {
+	for nth, candidate := range decodeBody[idAmbiguousError](t, person).Candidates {
 		if candidate.FirstLine == "" {
 			t.Fatalf("candidate %d = %+v, want the line a person reads to tell them apart", nth, candidate)
 		}
@@ -696,14 +682,14 @@ func TestTheQuestionMapRouteAnswersEverySourceKind(t *testing.T) {
 	`, direct, idPrefixAuthor)
 	missing := dispatchRequest(t, handler, http.MethodGet,
 		"/api/v1/references/questions?kind=message&id=be000001", nil, "alice")
-	if missing.Code != http.StatusNotFound || decodeBody[refusedAnswer](t, missing).Code != "NOT_FOUND" {
+	if missing.Code != http.StatusNotFound || decodeBody[errorBody](t, missing).Code != "NOT_FOUND" {
 		t.Fatalf("a source whose text belongs to no document: status=%d body=%s, want 404 NOT_FOUND",
 			missing.Code, missing.Body.String())
 	}
 
 	wrongKind := dispatchRequest(t, handler, http.MethodGet,
 		"/api/v1/references/questions?kind=issue&id="+issue.PrimaryArtifactID, nil, "alice")
-	if wrongKind.Code != http.StatusBadRequest || decodeBody[refusedAnswer](t, wrongKind).Code != "INVALID_KIND" {
+	if wrongKind.Code != http.StatusBadRequest || decodeBody[errorBody](t, wrongKind).Code != "INVALID_KIND" {
 		t.Fatalf("a kind that is no reference source: status=%d body=%s, want 400 INVALID_KIND",
 			wrongKind.Code, wrongKind.Body.String())
 	}
@@ -773,7 +759,7 @@ func TestTheQuestionMapRouteReadsEveryUuidSpellingAsTheCanonicalID(t *testing.T)
 	const unknown = "00000000-0000-4000-8000-000000000000"
 	for _, written := range []string{unknown, "urn:uuid:" + unknown, "{" + unknown + "}"} {
 		missing := questions("ask", written)
-		if missing.Code != http.StatusNotFound || decodeBody[refusedAnswer](t, missing).Code != "NOT_FOUND" {
+		if missing.Code != http.StatusNotFound || decodeBody[errorBody](t, missing).Code != "NOT_FOUND" {
 			t.Fatalf("an ask nothing carries, written %q: status=%d body=%s, want 404 NOT_FOUND",
 				written, missing.Code, missing.Body.String())
 		}
@@ -922,7 +908,7 @@ func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 				if each.want == notFoundNone {
 					if answer.Code == http.StatusNotFound {
 						t.Fatalf("%s answers 404 %s for %s nothing carries; idRoutes says it answers none: %s",
-							name, decodeBody[refusedAnswer](t, answer).Code, each.what, answer.Body.String())
+							name, decodeBody[errorBody](t, answer).Code, each.what, answer.Body.String())
 					}
 					continue
 				}
@@ -930,7 +916,7 @@ func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 					t.Fatalf("%s answers %d for %s nothing carries, not the 404 idRoutes names (%s): %s",
 						name, answer.Code, each.what, each.want, answer.Body.String())
 				}
-				if code := decodeBody[refusedAnswer](t, answer).Code; code != each.want {
+				if code := decodeBody[errorBody](t, answer).Code; code != each.want {
 					t.Fatalf("%s answers 404 %q for %s nothing carries; idRoutes names %q, which is what a prefix nothing carries gets",
 						name, code, each.what, each.want)
 				}

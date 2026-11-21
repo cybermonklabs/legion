@@ -121,13 +121,13 @@ test("a machine draws one part per tmux server, each with its windows and one dr
       ["@2", "legion:1 builds"],
     ]);
     // No `?window=` in the address: the server's first window is drawn.
-    expect(within(first).getByTestId("window-drawing").getAttribute("data-window")).toBe("@1");
+    expect(within(first).getByTestId("window-drawing")).toHaveAttribute("data-window", "@1");
     expect(
       within(first)
         .getAllByTestId("window-pane")
         .map((box) => box.getAttribute("data-pane"))
     ).toEqual(["%0", "%1", "%2"]);
-    expect(within(servers[1]).getByTestId("window-drawing").getAttribute("data-window")).toBe("@7");
+    expect(within(servers[1]).getByTestId("window-drawing")).toHaveAttribute("data-window", "@7");
   } finally {
     machine.close();
   }
@@ -160,7 +160,7 @@ test("picking a window puts it in the address and draws it", async () => {
     await user.click(picks[1]);
 
     await waitFor(() =>
-      expect(screen.getByTestId("window-drawing").getAttribute("data-window")).toBe("@2")
+      expect(screen.getByTestId("window-drawing")).toHaveAttribute("data-window", "@2")
     );
     expect(
       screen.getAllByTestId("window-pick").map((pick) => pick.getAttribute("data-picked"))
@@ -222,14 +222,14 @@ test("a window id two servers both hold picks one window, on the server whose st
       SOCKET_B,
     ]);
     // With nothing in the address, each server draws its own first window.
-    expect(within(person).getByTestId("window-drawing").getAttribute("data-window")).toBe("@0");
-    expect(within(daemon).getByTestId("window-drawing").getAttribute("data-window")).toBe("@0");
+    expect(within(person).getByTestId("window-drawing")).toHaveAttribute("data-window", "@0");
+    expect(within(daemon).getByTestId("window-drawing")).toHaveAttribute("data-window", "@0");
 
     await user.click(within(person).getAllByTestId("window-pick")[1]);
 
     // The person's server draws its own `@1`: the pane that window holds, and no other.
     await waitFor(() =>
-      expect(within(person).getByTestId("window-drawing").getAttribute("data-window")).toBe("@1")
+      expect(within(person).getByTestId("window-drawing")).toHaveAttribute("data-window", "@1")
     );
     expect(
       within(person)
@@ -238,7 +238,7 @@ test("a window id two servers both hold picks one window, on the server whose st
     ).toEqual(["%1"]);
     // The daemon's server is where it was: its own `@1` was not picked, and its first window
     // is still drawn and still the highlighted one.
-    expect(within(daemon).getByTestId("window-drawing").getAttribute("data-window")).toBe("@0");
+    expect(within(daemon).getByTestId("window-drawing")).toHaveAttribute("data-window", "@0");
     expect(
       within(daemon)
         .getAllByTestId("window-pick")
@@ -278,7 +278,8 @@ test("a machine whose sessions are in no pane says so and opens the Agents page 
     expect((await screen.findByTestId("machine-none-in-tmux")).textContent).toBe(
       "No session on this machine is in tmux, so there is no layout to draw."
     );
-    expect(screen.getByRole("link", { name: "Agents on this machine" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Agents on this machine" })).toHaveAttribute(
+      "href",
       "/agents?machine=sand-devbox"
     );
     expect(screen.queryByTestId("machine-server")).toBeNull();
@@ -359,7 +360,7 @@ test("a pane whose session the viewer has unread replies from reads Needs you", 
   try {
     const state = await screen.findByTestId("window-pane-state");
 
-    await waitFor(() => expect(state.getAttribute("data-state")).toBe("needs-you"));
+    await waitFor(() => expect(state).toHaveAttribute("data-state", "needs-you"));
     expect(state.textContent).toBe("Needs you");
   } finally {
     machine.close();

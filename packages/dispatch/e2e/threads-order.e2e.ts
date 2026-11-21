@@ -1,4 +1,4 @@
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import {
   DECISION_BLOCK,
   expand,
@@ -29,7 +29,7 @@ test("a document block's thread folds and places its box by the chosen order", a
 }) => {
   // Two live documents, each opened with its own room and editor.
   test.slow();
-  const seeded = await seedThreads();
+  const seeded = await seedThreads(rowKey("CORE"));
   // The block's card marks the thread read as the reader looks at it, so it folds by the
   // reader's unread set rather than by count alone: read through reply 4, leaving 5 and 6.
   await readAskThrough(seeded.blockIssue, seeded.blockAsk, 4);
@@ -62,7 +62,7 @@ test("a margin thread and the Conversation show every reply in the chosen order"
   browser,
 }) => {
   test.slow();
-  const seeded = await seedThreads();
+  const seeded = await seedThreads(rowKey("CORE"));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();

@@ -747,7 +747,7 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # Playwright bump needs a library this list lacks.
 # postgresql-client-18 (psql): `bun run e2e`, the Dispatch browser suite this deployment's
 # instructions require before a reader-facing Dispatch change merges, reaches psql through
-# packages/dispatch/e2e/psql.ts, which seed.ts calls for every spec's database reset; and the local
+# packages/dispatch/e2e/psql.ts, which seed.ts calls to empty each worker's database; and the local
 # stack `bun run dispatch:local` (packages/dispatch/e2e/local-instance.ts) refuses to start without
 # psql on PATH — so a role whose image lacks psql cannot run the suite its own change owes. The
 # Debian psql is a Perl wrapper around the versioned client; perl-base is already in the image, so

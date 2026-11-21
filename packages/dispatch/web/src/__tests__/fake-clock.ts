@@ -92,3 +92,18 @@ export async function onFakeClock(body: () => Promise<void>): Promise<void> {
     realClock();
   }
 }
+
+/** Runs `fn` once the fake clock the row holds has moved `ms` on: the timer of an answer a row
+ *  stands in for that takes `ms` to come - a server's, a sign-in check's - so that it lands inside
+ *  the `tick` or `jump` that crosses it. It refuses to run on the real clock, where a row waiting
+ *  for that answer would wait `ms` of real time (docs/testing.md, "The clock of a unit test"):
+ *  `real-clock-waits.test.ts` finds a `setTimeout` of a test that settles a promise, and a row
+ *  sets this one for its answer instead, held to the fake clock here. */
+export function afterOnFakeClock(ms: number, fn: () => void): void {
+  if (!jest.isFakeTimers()) {
+    throw new Error(
+      `afterOnFakeClock(${ms}) runs on the fake clock alone: install it first (onFakeClock, or jest.useFakeTimers())`
+    );
+  }
+  setTimeout(fn, ms);
+}

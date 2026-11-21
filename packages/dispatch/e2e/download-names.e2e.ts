@@ -1,6 +1,12 @@
 import { readFile } from "node:fs/promises";
 
-import type { ArtifactUploadResponse } from "../web/src/api/types";
+import {
+  type Op,
+  type PathParams,
+  type PathsOf,
+  type Result,
+  routePath,
+} from "../web/src/api/paths";
 import { setLiveSessions } from "./agents";
 import {
   createIssue,
@@ -13,7 +19,7 @@ import {
 import { connectedDot, documentEditor } from "./editor";
 import { ONE_PIXEL_PNG } from "./sends";
 import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 
 // Every "Download version N" link goes to the download address,
 // `/api/v1/artifacts/<id>/versions/<n>?download=true`, where the server names the file in
@@ -37,20 +43,22 @@ function pdf(name: string, text: string): UploadFile {
   return { buffer: Buffer.from(`%PDF-1.4\n% ${text}\n`), mimeType: "application/pdf", name };
 }
 
-/** Uploads `file` as the signed-in page through `path`, an owner's artifacts route, as a multipart
- *  write. `page.request` sends the page's session cookie and no `Origin`, and the server refuses a
- *  cookie-authenticated write whose `Origin` is not the dashboard's (enforceCookieOrigin). */
-async function upload(
+/** Uploads `file` as the signed-in page through `pattern`, an owner's artifacts route, as a
+ *  multipart write, and answers what the route answers. `page.request` sends the page's session
+ *  cookie and no `Origin`, and the server refuses a cookie-authenticated write whose `Origin` is
+ *  not the dashboard's (enforceCookieOrigin). */
+async function upload<P extends PathsOf<"post">>(
   page: Page,
-  path: string,
+  pattern: P,
+  params: PathParams<Op<P, "post">>,
   file: UploadFile
-): Promise<ArtifactUploadResponse["artifact"]> {
-  const answer = await page.request.post(path, {
+): Promise<Result<P, "post">> {
+  const answer = await page.request.post(routePath("post", pattern, params), {
     headers: { Origin: dashboardOrigin },
     multipart: { file, name: file.name },
   });
   expect(answer.status(), await answer.text()).toBeLessThan(300);
-  return ((await answer.json()) as ArtifactUploadResponse).artifact;
+  return answer.json();
 }
 
 /** Picks `file` in the Artifacts tab's own upload control and confirms it, as a person does:
@@ -86,15 +94,21 @@ async function openArtifactsTab(page: Page, issueKey: string): Promise<void> {
 test("each Download version link names the download address and each picture the version address @webkit @firefox", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Download addresses" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Download addresses" });
   const picture = {
     buffer: Buffer.from(ONE_PIXEL_PNG, "base64"),
     mimeType: "image/png",
     name: "diagram.png",
   };
-  const diagram = await upload(page, `/api/v1/issues/${issue.key}/artifacts`, picture);
-  await upload(page, `/api/v1/issues/${issue.key}/artifacts`, picture);
+  const { artifact: diagram } = await upload(
+    page,
+    "/api/v1/issues/{key}/artifacts",
+    { key: issue.key },
+    picture
+  );
+  await upload(page, "/api/v1/issues/{key}/artifacts", { key: issue.key }, picture);
 
   await openArtifactsTab(page, issue.key);
   const row = page.getByTestId("artifact-diagram-png");
@@ -136,8 +150,9 @@ test("each Download version link names the download address and each picture the
 test("a file saves under its own name, and its older version under its number once a newer one exists @webkit @firefox", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Report downloads" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Report downloads" });
   await openArtifactsTab(page, issue.key);
   const row = page.getByTestId("artifact-report-pdf");
 
@@ -172,8 +187,9 @@ test("a file whose name holds spaces and a character outside ASCII saves under t
   page,
   browserName,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Accented downloads" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Accented downloads" });
   await openArtifactsTab(page, issue.key);
 
   const name = "Q3 final résumé.pdf";
@@ -192,9 +208,10 @@ test("a file whose name holds spaces and a character outside ASCII saves under t
 // and the row reads back from disk.
 // @webkit @firefox: the name the engine saves a document's Markdown under, and the bytes it writes.
 test("the spec saves as spec.md holding its Markdown @webkit @firefox", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Launch plan\n\nEvery download keeps its own name.\n",
     title: "Spec download",
   });
@@ -215,8 +232,9 @@ test("the spec saves as spec.md holding its Markdown @webkit @firefox", async ({
 test("an older version of a document saves with its number and its own Markdown @webkit @firefox", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Notes download" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Notes download" });
   // A document that is not the issue's spec: the issue page draws no Versions list on its spec's
   // route, only on another document's (`ArtifactRoutePanel`).
   const notes = await createIssueArtifact(issue.key, {
@@ -263,17 +281,33 @@ test("an older version of a document saves with its number and its own Markdown 
 test("a project's file and a conversation's file save under their own names, an older version with its number @webkit @firefox", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const brief = await upload(page, "/api/v1/projects/CORE/artifacts", pdf("brief.pdf", "brief"));
-  await page.goto(`/projects/CORE/documents/${brief.slug}`);
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const { artifact: brief } = await upload(
+    page,
+    "/api/v1/projects/{key}/artifacts",
+    { key: core },
+    pdf("brief.pdf", "brief")
+  );
+  await page.goto(`/projects/${core}/documents/${brief.slug}`);
   const projectFile = await saveFrom(page, page.getByRole("link", { name: "Download version 1" }));
   expect(projectFile.suggestedFilename()).toBe("brief.pdf");
 
   const planner = { session_id: sessionIds.planner, title: "Planner" };
   await setLiveSessions([planner]);
-  const conversation = `/api/v1/agents/${planner.session_id}/artifacts`;
-  const trace = await upload(page, conversation, pdf("trace.pdf", "first run"));
-  await upload(page, conversation, pdf("trace.pdf", "second run"));
+  const conversation = "/api/v1/agents/{session_id}/artifacts";
+  const { artifact: trace } = await upload(
+    page,
+    conversation,
+    { session_id: planner.session_id },
+    pdf("trace.pdf", "first run")
+  );
+  await upload(
+    page,
+    conversation,
+    { session_id: planner.session_id },
+    pdf("trace.pdf", "second run")
+  );
   await page.goto(`/agents/${planner.session_id}/artifacts/${trace.slug}`);
   const shown = page.getByRole("region", { exact: true, name: "trace.pdf version 2" });
   const current = await saveFrom(page, shown.getByRole("link", { name: "Download version 2" }));

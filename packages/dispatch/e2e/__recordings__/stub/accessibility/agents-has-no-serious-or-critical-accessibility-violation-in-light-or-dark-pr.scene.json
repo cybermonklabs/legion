@@ -1,0 +1,12 @@
+{
+  "broadcast": "758c1598-6ae7-45a0-9062-7da0580c8d7d",
+  "deliveryQuery": "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z",
+  "issue": "CORE-1",
+  "issueArtifactSlug": "requirements-md",
+  "machine": "build-host",
+  "pipelineAt": "2026-10-02T12:00:00Z",
+  "priority": "local-testing-is-one-command",
+  "project": "CORE",
+  "projectDocumentSlug": "runbook",
+  "seededAt": "2026-11-19T14:39:52.632Z"
+}

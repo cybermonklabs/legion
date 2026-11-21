@@ -229,10 +229,32 @@ function paragraphOf(lines: readonly string[]): DisplayTree {
   return { content: [{ text: lines.join(" "), type: "text" }], type: "paragraph" };
 }
 
+/** What `parsedReading` calls once for each text it parses. Outside `countParses` it does
+ *  nothing. */
+const noParse = (): void => {};
+let parseMade: () => void = noParse;
+
+/** How many texts `read` parses (`parsedReading`). A draw that reads what it remembered parses
+ *  none, and no clock can tell it from one that parses every text again on a fast machine, so
+ *  `stored-reading.test.ts` counts the parses instead. */
+export function countParses(read: () => void): number {
+  let parses = 0;
+  parseMade = () => {
+    parses += 1;
+  };
+  try {
+    read();
+  } finally {
+    parseMade = noParse;
+  }
+  return parses;
+}
+
 /** The reading of a stored text by the parse alone (`STORED_TEXT_PARSE`), with no plain path and
  *  nothing remembered: what `storedReading` reads a text by where it holds no reading of it, and
  *  what a test holds the plain path (`plainReading`) equal to. */
 export function parsedReading(markdown: string): DisplayTree {
+  parseMade();
   return withContent("doc", blocksOf(fromMarkdown(markdown, STORED_TEXT_PARSE).children));
 }
 

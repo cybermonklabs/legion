@@ -1,5 +1,5 @@
 import { createAsk, createIssue, createProject } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // Escape belongs to the layer the reader is in. Every popover in Dispatch hangs off one
@@ -9,12 +9,13 @@ import { asUser } from "./users";
 test("the command bar over an open popover takes the first Escape, the popover the second", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Escape ownership row" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createIssue({ project: core, title: "Escape ownership row" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     const trigger = page
       .getByRole("columnheader", { name: /Status/ })
       .getByRole("button", { name: "Filter Status" });
@@ -46,8 +47,9 @@ test("the command bar over an open popover takes the first Escape, the popover t
 test("Escape in a filter inside the inbox peek closes the filter, not the peek", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Peek dialog row" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Peek dialog row" });
   // The peek draws its filters only once it has a row to filter.
   await createAsk(
     issue.key,

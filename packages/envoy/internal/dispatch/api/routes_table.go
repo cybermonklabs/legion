@@ -276,6 +276,25 @@ const notFoundNone = "none"
 // one that resolves nothing still has its {id} canonicalized there (resolveIDPrefixes).
 func (route idRoute) resolves() bool { return route.Kind != "" || route.Blocks }
 
+// refusals are the answers richer than errorBody the prefix layer gives a route in front of its
+// handler: the 409 ID_AMBIGUOUS of a prefix two items or more carry (writeAmbiguousID), on every
+// route that resolves one. A prefix nothing carries gets the route's own NotFound, an errorBody
+// like every other refusal the route writes. The OpenAPI document reads these beside the route's
+// own (routeShape.Refusals), so a route added here answers its 409 in the document unasked.
+func (route idRoute) refusals() []routeAnswer {
+	if !route.resolves() {
+		return nil
+	}
+	return []routeAnswer{{Status: http.StatusConflict, Body: idAmbiguousError{}}}
+}
+
+// routeRefusals are the answers richer than errorBody of the route keyed key ("<method>
+// <pattern>") whose shape is shape: its own (routeShape.Refusals), then the prefix layer's in
+// front of its handler (idRoute.refusals). The OpenAPI document reads both from here.
+func routeRefusals(key string, shape routeShape) []routeAnswer {
+	return slices.Concat(shape.Refusals, idRoutes[key].refusals())
+}
+
 // idRoutes is, by "<method> <pattern>", what the {id} and {block_id} of every route that
 // carries one name: the kind whose prefix is resolved into it and the 404 that route answers
 // for an id of that kind it does not hold, or the reason it resolves none. It stands beside the

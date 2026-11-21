@@ -70,7 +70,7 @@ test("AskRecipients names followers by registry title, else by shortened id, wit
     const section = screen.getByRole("region", { name: "Recipients" });
     expect(within(section).getByRole("button", { name: /^Reaches/ }).textContent).toBe("Reaches 2");
     const planner = await within(section).findByText("Planner");
-    expect(planner.closest("[title]")?.getAttribute("title")).toBe("0123456789abcdef");
+    expect(planner.closest("[title]")).toHaveAttribute("title", "0123456789abcdef");
     const items = within(section).getAllByRole("listitem");
     const running = items[0]?.querySelector('[data-agent-name="0123456789abcdef"]');
     const stopped = items[1]?.querySelector('[data-agent-name="fedcba9876543210"]');
@@ -207,7 +207,8 @@ test("AskRecipients adds the issue's subscribers once each, removes one through 
     expect(rows).toHaveLength(2);
     const po = rows[0] as HTMLElement;
     const wide = rows[1] as HTMLElement;
-    expect(within(po).getByText("Platform PO").closest("[title]")?.getAttribute("title")).toBe(
+    expect(within(po).getByText("Platform PO").closest("[title]")).toHaveAttribute(
+      "title",
       "b0b0b0b0b0b0b0b0"
     );
     expect(within(wide).getByText("via notifications.dispatch.>")).toBeTruthy();
@@ -382,9 +383,10 @@ test("AskRecipients lists the issue's claimant via claim, drawn by AgentName, wi
     expect(reachesText(section)).toBe("Reaches 3");
     const issueRows = within(section).getByRole("list", { name: "Via claim or route" });
     const row = within(issueRows).getByRole("listitem");
-    expect(
-      (await within(row).findByText("Implementer")).closest("[title]")?.getAttribute("title")
-    ).toBe(claimant);
+    expect((await within(row).findByText("Implementer")).closest("[title]")).toHaveAttribute(
+      "title",
+      claimant
+    );
     expect(within(row).getByText("via claim")).toBeTruthy();
     expect(await within(row).findByRole("img", { name: "Running" })).toBeTruthy();
     expect(within(row).getByRole("link", { name: "Implementer" })).toHaveAttribute(
@@ -422,9 +424,10 @@ test("AskRecipients lists a session route's session via route", async () => {
     const row = within(within(section).getByRole("list", { name: "Via claim or route" })).getByRole(
       "listitem"
     );
-    expect(
-      within(row).getByText("session:e2e2e2e2…").closest("[title]")?.getAttribute("title")
-    ).toBe(routed);
+    expect(within(row).getByText("session:e2e2e2e2…").closest("[title]")).toHaveAttribute(
+      "title",
+      routed
+    );
     expect(within(row).getByText("via route")).toBeTruthy();
     expect(await within(row).findByRole("img", { name: "Not running" })).toBeTruthy();
     expect(within(row).queryByRole("button")).not.toBeInTheDocument();
@@ -445,9 +448,10 @@ test("AskRecipients names a role route's holder via the route, live, and counts 
     const row = within(within(section).getByRole("list", { name: "Via claim or route" })).getByRole(
       "listitem"
     );
-    expect(
-      (await within(row).findByText("Reviewer")).closest("[title]")?.getAttribute("title")
-    ).toBe(holder);
+    expect((await within(row).findByText("Reviewer")).closest("[title]")).toHaveAttribute(
+      "title",
+      holder
+    );
     expect(within(row).getByText("via route (role:reviewer)")).toBeTruthy();
     expect(await within(row).findByRole("img", { name: "Running" })).toBeTruthy();
     expect(within(row).queryByRole("button")).not.toBeInTheDocument();
@@ -572,9 +576,10 @@ test("AskRecipients still counts a session route's session when its reach is unk
     const row = within(within(section).getByRole("list", { name: "Via claim or route" })).getByRole(
       "listitem"
     );
-    expect(
-      within(row).getByText("session:e2e2e2e2…").closest("[title]")?.getAttribute("title")
-    ).toBe(routed);
+    expect(within(row).getByText("session:e2e2e2e2…").closest("[title]")).toHaveAttribute(
+      "title",
+      routed
+    );
     expect(within(row).getByText("via route")).toBeTruthy();
     expect(within(row).getByText("Route reach unknown")).toBeTruthy();
     await waitFor(() => expect(page.queryClient.getQueryState(["agents"])?.status).toBe("error"));

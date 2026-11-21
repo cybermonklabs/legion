@@ -325,7 +325,7 @@ test("a delivered recipient offers nothing", async () => {
     // its live conversation.
     const heading = within(row).getByRole("heading", { level: 3 });
     const recipient = heading.querySelector('[data-agent-name="planner-session"]');
-    expect(recipient?.getAttribute("data-agent-state")).toBe("running");
+    expect(recipient).toHaveAttribute("data-agent-state", "running");
     expect(within(heading).getByRole("link", { name: "Planner" })).toHaveAttribute(
       "href",
       "/agents/planner-session/live"

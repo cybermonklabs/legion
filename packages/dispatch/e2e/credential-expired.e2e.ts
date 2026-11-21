@@ -6,8 +6,8 @@ import {
   setPendingCredentialRequests,
 } from "./fake-broker-helpers";
 import { expectInboxCount } from "./inbox-threads";
-import { expect, test } from "./test";
-import { withAlice } from "./users";
+import { type Browser, expect, type Page, rowPerson, test } from "./test";
+import { asUser, withAlice } from "./users";
 
 /**
  * dispatch://INFRA-3921: a credential request whose deadline passed before anybody decided it
@@ -31,65 +31,73 @@ const askedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
 /** The deadline of each pending row, an hour from now. */
 const pendingUntil = new Date(Date.now() + 3_600_000).toISOString();
 
-/** A secret request waiting on alice, as a current broker lists it: marked pending, with the page
- *  on the broker where she decides it. */
+/** A secret request waiting on `approver`, as a current broker lists it: marked pending, with
+ *  the page on the broker where they decide it. */
 const ledgerSecretPage = "https://secrets.internal.example/approve/record-ledger";
-const pendingSecret: FakePendingRequest = {
-  approve_url: ledgerSecretPage,
-  approver: "alice",
-  expires_at: pendingUntil,
-  identifiers: ["LEDGER_API_KEY"],
-  kind: "agent_secret",
-  record_id: "record-ledger",
-  requested_at: new Date().toISOString(),
-  session: { enrollment: null, request: null },
-  state: "pending",
-};
+function pendingSecret(approver: string): FakePendingRequest {
+  return {
+    approve_url: ledgerSecretPage,
+    approver,
+    expires_at: pendingUntil,
+    identifiers: ["LEDGER_API_KEY"],
+    kind: "agent_secret",
+    record_id: "record-ledger",
+    requested_at: new Date().toISOString(),
+    session: { enrollment: null, request: null },
+    state: "pending",
+  };
+}
 
-/** Alice's secret request nobody decided in time. The broker still names its page, which a
+/** `approver`'s secret request nobody decided in time. The broker still names its page, which a
  *  decision there would now refuse, so the row must not lead to it. */
 const retiredSecretPage = "https://secrets.internal.example/approve/record-retired";
-const expiredSecret = expiredCredentialRequest(
-  {
-    approve_url: retiredSecretPage,
-    approver: "alice",
-    identifiers: ["RETIRED_API_KEY"],
-    kind: "agent_secret",
-    record_id: "record-retired",
-    requested_at: askedAt,
-    session: { enrollment: null, request: null },
-  },
-  deadline
-);
+function expiredSecret(approver: string): FakePendingRequest {
+  return expiredCredentialRequest(
+    {
+      approve_url: retiredSecretPage,
+      approver,
+      identifiers: ["RETIRED_API_KEY"],
+      kind: "agent_secret",
+      record_id: "record-retired",
+      requested_at: askedAt,
+      session: { enrollment: null, request: null },
+    },
+    deadline
+  );
+}
 
-/** A machine login waiting on alice: its row leads to the machine-code page, which also proves
- *  this deployment serves that page, so the expired row's missing link is the row's own. */
-const pendingMachine: FakePendingRequest = {
-  approver: "alice",
-  expires_at: pendingUntil,
-  identifiers: ["worker-8.example.com"],
-  kind: "launcher_credential",
-  record_id: "record-machine-pending",
-  requested_at: new Date().toISOString(),
-  session: { enrollment: null, request: null },
-  state: "pending",
-};
+/** A machine login waiting on `approver`: its row leads to the machine-code page, which also
+ *  proves this deployment serves that page, so the expired row's missing link is the row's own. */
+function pendingMachine(approver: string): FakePendingRequest {
+  return {
+    approver,
+    expires_at: pendingUntil,
+    identifiers: ["worker-8.example.com"],
+    kind: "launcher_credential",
+    record_id: "record-machine-pending",
+    requested_at: new Date().toISOString(),
+    session: { enrollment: null, request: null },
+    state: "pending",
+  };
+}
 
 /** The machine login `agent-secrets machine login` opened on worker-9 and nobody decided in
  *  time: its row in the list, and the code its machine printed with the record the broker keeps
  *  for it, still pending, which the broker reads as expired since its deadline passed. */
 const expiredMachineRecordID = "record-machine-expired";
-const expiredMachine = expiredCredentialRequest(
-  {
-    approver: "alice",
-    identifiers: ["worker-9.example.com"],
-    kind: "launcher_credential",
-    record_id: expiredMachineRecordID,
-    requested_at: askedAt,
-    session: { enrollment: null, request: null },
-  },
-  deadline
-);
+function expiredMachine(approver: string): FakePendingRequest {
+  return expiredCredentialRequest(
+    {
+      approver,
+      identifiers: ["worker-9.example.com"],
+      kind: "launcher_credential",
+      record_id: expiredMachineRecordID,
+      requested_at: askedAt,
+      session: { enrollment: null, request: null },
+    },
+    deadline
+  );
+}
 const expiredMachineCode = "QRST-5678";
 const expiredLogin = expiredMachineLogin(
   expiredMachineCode,
@@ -109,14 +117,30 @@ const expiredLogin = expiredMachineLogin(
   deadline
 );
 
+/** Runs `check` on a page signed in as the row's own person for alice (`rowPerson`, e2e/test.ts),
+ *  whom the broker's requests name: the Inbox count those rows read is one person's, and holds
+ *  the work of no other row only for a person no other row signs in as. */
+async function withOwnAlice(
+  browser: Browser,
+  check: (page: Page, me: string) => Promise<void>
+): Promise<void> {
+  const me = rowPerson("alice");
+  const context = await asUser(browser, me);
+  try {
+    await check(await context.newPage(), me);
+  } finally {
+    await context.close();
+  }
+}
+
 // The pending request beside it is the control: it is a link to its broker page and is the one
 // thing "Needs you" counts, before the dismissal and after it, so the expired row's lack of a
 // link and of a count is its own and not a list that failed to load.
 test("an expired secret request is marked with its deadline, leads to no decision page, is not counted, and Dismiss takes it off for good", async ({
   browser,
 }) => {
-  await withAlice(browser, async (page) => {
-    await setPendingCredentialRequests([pendingSecret, expiredSecret]);
+  await withOwnAlice(browser, async (page, me) => {
+    await setPendingCredentialRequests([pendingSecret(me), expiredSecret(me)]);
     await page.goto("/");
 
     const requests = page.getByRole("region", { name: "Credential requests" });
@@ -160,8 +184,8 @@ test("an expired secret request is marked with its deadline, leads to no decisio
 test("an expired machine login is marked with its deadline, leads to no machine-code page, and Dismiss takes it off for good", async ({
   browser,
 }) => {
-  await withAlice(browser, async (page) => {
-    await setPendingCredentialRequests([pendingMachine, expiredMachine]);
+  await withOwnAlice(browser, async (page, me) => {
+    await setPendingCredentialRequests([pendingMachine(me), expiredMachine(me)]);
     await page.goto("/");
 
     const requests = page.getByRole("region", { name: "Credential requests" });

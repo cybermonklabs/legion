@@ -26,7 +26,7 @@ import { askCard, inboxList } from "./inbox-pane";
 import { expectConsecutiveLinksClear } from "./layout";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowNumber, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -39,6 +39,12 @@ const initialMarkdown =
   "| --- | --- | --- | --- | --- | --- |\n" +
   "| 1 | 2 | 3 | 4 | 5 | 6 |";
 const pinnedMessage = "Pin me before you forget";
+
+// The rows below that press the margin sheet's composer, at a phone's width, read as a person of
+// their own (`rowPerson`, e2e/test.ts), who makes the row's project and issue as alice did. The
+// phone's header draws the reader's Inbox and New replies counts, and alice's, which every row
+// before on the worker raises, take a second line: that moves the document, and the selection's
+// action bar beside its text, down onto the sheet's composer, whose Send the bar then covers.
 
 function turn(page: Page, text: string) {
   return page
@@ -70,15 +76,20 @@ async function assertTabTrapped(page: Page, selector: string): Promise<void> {
 test("the phone shell traps focus, dismisses on Escape at the right nesting level, never wraps a key, and renders a pinned event's own description @phone @pr", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
   const isPhone = testInfo.project.name === "iphone";
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: initialMarkdown,
-    title: "Cache invalidation issue with a long descriptive title",
-  });
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: core,
+      spec: initialMarkdown,
+      title: "Cache invalidation issue with a long descriptive title",
+    },
+    { login: me }
+  );
   await createMessage(issue.key, { body: pinnedMessage }, session);
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -93,7 +104,7 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await expect(closeButton).toBeFocused();
       await assertTabTrapped(page, '[aria-label="Navigation"]');
 
-      const keySpan = page.getByText("CORE", { exact: true });
+      const keySpan = page.getByText(core, { exact: true });
       const [keyBox, lineHeight] = await Promise.all([
         keySpan.boundingBox(),
         keySpan.evaluate((element) => Number.parseFloat(getComputedStyle(element).lineHeight)),
@@ -128,7 +139,7 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await expect
         .poll(() => getAsk(openAsk.id))
         .toMatchObject({
-          ask: { answer: { text: "Yes.", user: "alice" }, state: "answered" },
+          ask: { answer: { text: "Yes.", user: me }, state: "answered" },
         });
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
@@ -209,13 +220,18 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
 test("a phone thread trap skips a held composer's disabled controls @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: initialMarkdown,
-    title: "Held composer focus trap",
-  });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: core,
+      spec: initialMarkdown,
+      title: "Held composer focus trap",
+    },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -270,13 +286,18 @@ test("a phone thread trap skips a held composer's disabled controls @phone", asy
 test("a phone sheet trap wraps Shift+Tab from its first control past a held composer @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: initialMarkdown,
-    title: "Held composer reverse focus trap",
-  });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: core,
+      spec: initialMarkdown,
+      title: "Held composer reverse focus trap",
+    },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -326,8 +347,9 @@ test("a phone sheet trap wraps Shift+Tab from its first control past a held comp
 test("a project document has no horizontal overflow, 44px controls, and a Comments margin sheet @phone", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createProjectDocument(core, {
     content: "# Design notes\\n\\nProject document body.",
     name: "Design notes",
   });
@@ -335,7 +357,7 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
 
   try {
     const page = await alice.newPage();
-    await page.goto("/projects/CORE/documents/design-notes");
+    await page.goto(`/projects/${core}/documents/design-notes`);
     await expect(documentEditor(page)).toContainText("Project document body.");
     expect(
       await page.evaluate(
@@ -349,14 +371,22 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
       const reviewToggle = page.getByRole("button", { name: /Open review panel/ });
       await expect(reviewToggle).toBeVisible();
       // The waits above saw the editor, the toolbar and the review toggle drawn, so every part
-      // of the page that holds a control is here when it is read.
+      // of the page that holds a control is here when it is read. The set and every box come
+      // from one evaluateAll: a locator per control runs the `:visible` filter over the live
+      // page again for each one, so a control that hides or appears before another moves the
+      // index the later ones measure, and an index past the end of a shorter set waits out its
+      // whole action timeout. evaluateAll finds the set and measures it in two calls into the
+      // page, so a control gone from the page between them is skipped, not read as a zero box.
       const controls = await page
         .getByRole("main")
         .locator("button:visible, a:visible, select:visible")
-        .all();
-      for (const control of controls) {
-        const box = await control.boundingBox();
-        expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+        .evaluateAll((elements) =>
+          elements.flatMap((element, index) =>
+            element.isConnected ? [{ height: element.getBoundingClientRect().height, index }] : []
+          )
+        );
+      for (const { height, index } of controls) {
+        expect(height, `document control ${index} is a touch target`).toBeGreaterThanOrEqual(44);
       }
       await reviewToggle.click();
       await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible();
@@ -370,6 +400,7 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
 test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @phone @phone-only", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([
     {
       capabilities: ["aside", "btw"],
@@ -380,8 +411,8 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
       title: "planner",
     },
   ]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone inline mentions" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Phone inline mentions" });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -393,10 +424,18 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
     const option = picker.getByRole("option", { exact: true, name: "planner" });
     await expect(option).toBeVisible();
     // The planner option above shows the live list has drawn, and a new issue has no
-    // collaborators to add a Not running option, so one read lists every control.
-    for (const control of await composer.locator("button:visible, textarea:visible").all()) {
-      const box = await control.boundingBox();
-      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+    // collaborators to add a Not running option, so one read lists every control. The set and
+    // every box come from one evaluateAll, which skips a control gone from the page between its
+    // find and its measure, for the reasons the document row above gives.
+    const controls = await composer
+      .locator("button:visible, textarea:visible")
+      .evaluateAll((elements) =>
+        elements.flatMap((element, index) =>
+          element.isConnected ? [{ height: element.getBoundingClientRect().height, index }] : []
+        )
+      );
+    for (const { height, index } of controls) {
+      expect(height, `composer control ${index} is a touch target`).toBeGreaterThanOrEqual(44);
     }
     await option.click();
     await composer.getByRole("button", { name: "Send" }).click();
@@ -422,11 +461,16 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
 test("an inline link keeps its line and grows its hit box without covering its neighbours @phone @phone-only", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   // The settle proof below is bounded at 20 s and two trial clicks at 5 s each stand after it,
   // all of them failure budget: a passing run spends none of it.
   test.setTimeout(60_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Inline links" });
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): the Inbox below is read
+  // by every link it draws, and draws this row's questions alone only in a list holding no other
+  // row's - an earlier run of this row asks the same question, with the same links.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Inline links" }, { login: me });
   const ask = await createAsk(
     issue.key,
     { question: "Which transport?" },
@@ -470,7 +514,7 @@ test("an inline link keeps its line and grows its hit box without covering its n
     { actor: { id: "e2e-session", kind: "session" }, as: "agent" }
   );
 
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   const page = await context.newPage();
   try {
     // The `view` link is an event line's - "<author> replied to … view" - and the event lines
@@ -772,14 +816,18 @@ async function expectStacked(control: Locator): Promise<void> {
 test("a long name ends in an ellipsis wherever a link or control truncates it @phone", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
   // A passing run is seconds; the budget is for a failing one, where each `expect.soft` below
   // burns the 15 s expect timeout before the next is tried.
   test.setTimeout(60_000);
-  const longName =
-    "legion-go-coordinator-stage-4b-sandbox-tree-runbook-with-every-checkpoint-and-the-evidence-each-one-left-on-the-production-cluster.md";
+  // The document's name and the external link's address are the row's own: the cleared Inbox
+  // below lists every open question of the stack, an earlier run of this row's among them under
+  // the same name, and an address names one external link of the whole stack
+  // (`EXTERNAL_LINK_TAKEN`). Each stays as long as it was, so each is still cut.
+  const longName = `${core.toLowerCase()}-legion-go-coordinator-stage-4b-sandbox-tree-runbook-with-every-checkpoint-and-the-evidence-each-one-left-on-the-production-cluster.md`;
   const longQuestion =
     "Which checkpoint gates the sandbox tree before the daemon restarts mid-tree: the fence, the node release, or the linger close that follows both of them?";
-  const longUrl = `https://docs.example.com/runbooks/legion/go-coordinator/stage-4b/${"sandbox-tree-".repeat(4)}checkpoints`;
+  const longUrl = `https://docs.example.com/runbooks/legion/go-coordinator/stage-4b/${"sandbox-tree-".repeat(4)}checkpoints/${rowNumber("runbook")}`;
   const longRoute = "role:merge-queue-controller-for-legion";
   // A label's 40-character cap is still wider than the label picker's 256 px popover.
   const longLabel = "sandbox-tree-checkpoint-evidence-runbook";
@@ -805,13 +853,13 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
       title: longTitle,
     },
   ]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Stage 4b runbook" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Stage 4b runbook" });
   await patchIssue(issue.key, { route: longRoute });
-  const labelled = await createIssue({ project: "CORE", title: "Labelled" });
+  const labelled = await createIssue({ project: core, title: "Labelled" });
   await patchIssue(labelled.key, { labels: [longLabel] });
   await createIssueArtifact(issue.key, { content: "# Runbook\n", name: longName });
-  const document = await createProjectDocument("CORE", { content: "# Runbook\n", name: longName });
+  const document = await createProjectDocument(core, { content: "# Runbook\n", name: longName });
   const documentAsk = await createArtifactAsk(
     document.artifact.id,
     { question: "Does this runbook cover it?" },
@@ -841,7 +889,7 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
   try {
     // The project's Documents list: the name ends in an ellipsis, and its kind (with the latest
     // version's size after it) and time share one line rather than stacking in a second column.
-    await page.goto("/projects/CORE/documents");
+    await page.goto(`/projects/${core}/documents`);
     const row = page.getByRole("listitem", { name: longName });
     await expectEllipsis(row.getByRole("link", { name: longName }));
     const details = await row.evaluate((node) => {

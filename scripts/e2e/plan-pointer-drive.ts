@@ -66,6 +66,7 @@ import {
   createPlanReview,
   createProject,
   editArtifact,
+  fixedKey,
 } from "../../packages/dispatch/e2e/api";
 import { workerPane } from "../../packages/pi-legion/scripts/skill-scenarios/daemon-pane";
 
@@ -139,7 +140,7 @@ const designs: readonly Design[] = [early, standing, unapproved, mid];
 
 /** The project the staged issue is filed under. The daemon's own token for a claim is this key
  *  in lower case, which is what the pane the shell composes is launched for. */
-const projectKey = "DRIVE";
+const projectKey = fixedKey("DRIVE", "the pane the shell composes is launched for this key");
 /** How many versions plan.md holds when the session begins. */
 const versionsAtStart = 8;
 /** The first plan.md version `standing` is written at. */

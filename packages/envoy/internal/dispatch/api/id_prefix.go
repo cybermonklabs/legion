@@ -15,17 +15,26 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
+// idAmbiguousError is the 409 ID_AMBIGUOUS body: the items an id written as a prefix names, at
+// most ten in id order, beside the code and the message. It is writeAmbiguousTarget's shape -
+// {candidates, code, error} - because it is the same kind of answer: the request named something
+// the server cannot narrow to one thing, and the caller picks. The prefix layer writes it in
+// front of the handler of every route idRoutes has resolve an id (idRoute.refusals), and the two
+// reference reads that resolve a prefix of their own name it among their refusals (routeShapes).
+type idAmbiguousError struct {
+	Candidates []refs.Candidate `json:"candidates"`
+	Code       string           `json:"code"`
+	Error      string           `json:"error"`
+}
+
 // writeAmbiguousID refuses an id written as a prefix two items or more carry, listing them for
-// the caller to choose between or to write more of the id. It is writeAmbiguousTarget's shape -
-// {error, code, candidates} under a 409 - because it is the same kind of answer: the request
-// named something the server cannot narrow to one thing, and the caller picks. The page that
-// lists the candidates is the dashboard's, rendered from this answer; there is no route of its
-// own to read them from.
+// the caller to choose between or to write more of the id. The page that lists the candidates is
+// the dashboard's, rendered from this answer; there is no route of its own to read them from.
 func writeAmbiguousID(w http.ResponseWriter, ambiguous *refs.ErrPrefixAmbiguous) {
-	WriteJSON(w, http.StatusConflict, map[string]any{
-		"error":      ambiguous.Error(),
-		"code":       contracts.IDAmbiguous,
-		"candidates": ambiguous.Candidates,
+	WriteJSON(w, http.StatusConflict, idAmbiguousError{
+		Candidates: ambiguous.Candidates,
+		Code:       contracts.IDAmbiguous,
+		Error:      ambiguous.Error(),
 	})
 }
 

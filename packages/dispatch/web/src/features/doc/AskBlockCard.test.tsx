@@ -251,7 +251,7 @@ test.each([
   try {
     const pill = card.section.querySelector("[data-dispatch-ask-pill]");
     expect(pill?.textContent).toBe(label);
-    expect(pill?.getAttribute("data-dispatch-ask-pill")).toBe(urgency);
+    expect(pill).toHaveAttribute("data-dispatch-ask-pill", urgency);
     expect(card.header.getByText("Decision")).toBeDefined();
     // The card, not the header, says who asked and when — once, not twice.
     expect(card.section.querySelector("[data-dispatch-ask-asked]")).toBeNull();

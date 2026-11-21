@@ -1,7 +1,7 @@
 import { createComment, createIssue, createProject, patchIssue } from "./api";
 import { usesFakeEmbedder } from "./harness-embedder";
 import { sql } from "./psql";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // Check k18 of dispatch://INFRA-1042/artifact/verification-md, serving R16: the operator forms
@@ -49,13 +49,17 @@ function threeDaysBack(): { text: string; value: string } {
 test("the operator forms are offered as the words are typed, and each narrows the rows", async ({
   browser,
 }) => {
+  const infra = rowKey("INFRA");
   // Every check here carries the suite's own 15 s deadline, and a run where the bar shows none
   // of this reports each miss, which takes longer than one row's default budget.
   test.setTimeout(120_000);
-  await createProject({ key: "INFRA", name: "INFRA work" });
+  await createProject({ key: infra, name: `${infra} work` });
+  // Each title names the row's own key (`rowKey`, e2e/test.ts), and each search below adds it to
+  // the words it narrows: search reads every project of the stack, and only this row's five
+  // issues hold the key.
   for (const title of operatorTitles) {
     // These titles share their words on purpose, which is what the related-item check refuses.
-    await createIssue({ force: true, project: "INFRA", title });
+    await createIssue({ force: true, project: infra, title: `${title} (${infra})` });
   }
   const context = await asUser(browser, "alice");
 
@@ -81,22 +85,22 @@ test("the operator forms are offered as the words are typed, and each narrows th
     await expect.soft(inUse("phrase")).toHaveCount(0);
 
     // The words as they stand: every issue holding both of them.
-    await search.fill("brass astrolabe");
+    await search.fill(`brass astrolabe ${infra}`);
     await expect(options).toHaveCount(4);
 
     // The quotes narrow that list to the issues whose words are that phrase.
-    await search.fill('"brass astrolabe"');
+    await search.fill(`"brass astrolabe" ${infra}`);
     await expect(options).toHaveCount(3);
     await expect.soft(inUse("phrase")).toHaveCount(1);
 
     // `OR` narrows it again: of those three, the two that also name a sextant or a theodolite.
-    await search.fill('"brass astrolabe" sextant OR theodolite');
+    await search.fill(`"brass astrolabe" sextant OR theodolite ${infra}`);
     await expect(options).toHaveCount(2);
     await expect.soft(inUse("or")).toHaveCount(1);
     await expect.soft(inUse("phrase")).toHaveCount(1);
 
     // `-word` narrows it to the one of those two that does not name steel.
-    await search.fill('"brass astrolabe" sextant OR theodolite -steel');
+    await search.fill(`"brass astrolabe" sextant OR theodolite -steel ${infra}`);
     await expect(options).toHaveCount(1);
     await expect.soft(inUse("exclude")).toHaveCount(1);
     await expect(options.first()).toContainText("sextant case");
@@ -122,19 +126,30 @@ test("the operator forms are offered as the words are typed, and each narrows th
 test("each chip narrows the same list and reads back in the words the person chose", async ({
   browser,
 }) => {
-  await createProject({ key: "INFRA", name: "INFRA work" });
-  await createProject({ key: "LINUX", name: "LINUX work" });
-  const kept = await createIssue({ project: "INFRA", title: "Instrument log" });
-  const elsewhere = await createIssue({ project: "LINUX", title: "Kernel log" });
-  const started = await createIssue({ project: "INFRA", title: "Retired notes" });
+  const infra = rowKey("INFRA");
+  const linux = rowKey("LINUX");
+  await createProject({ key: infra, name: `${infra} work` });
+  await createProject({ key: linux, name: `${linux} work` });
+  const kept = await createIssue({ project: infra, title: "Instrument log" });
+  const elsewhere = await createIssue({ project: linux, title: "Kernel log" });
+  const started = await createIssue({ project: infra, title: "Retired notes" });
   await patchIssue(kept.key, { status: "todo" });
   await patchIssue(elsewhere.key, { status: "todo" });
   await patchIssue(started.key, { status: "in_progress" });
-  await createComment(kept.key, { body: "The astrolabe case is ready." });
-  await createComment(elsewhere.key, { body: "The kernel astrolabe demo runs." });
-  await createComment(started.key, { body: "This astrolabe is retired." });
-  await createComment(kept.key, { body: "I polished the astrolabe mirror." }, { login: "bob" });
-  const older = await createComment(kept.key, { body: "The astrolabe arrived last week." });
+  // Each comment names the row's own key (`rowKey`, e2e/test.ts) beside the word it is found
+  // by: search reads every project of the stack, and only this row's five comments hold both.
+  const words = `astrolabe ${infra}`;
+  await createComment(kept.key, { body: `The astrolabe case is ready in ${infra}.` });
+  await createComment(elsewhere.key, { body: `The kernel astrolabe demo runs for ${infra}.` });
+  await createComment(started.key, { body: `This astrolabe is retired from ${infra}.` });
+  await createComment(
+    kept.key,
+    { body: `I polished the astrolabe mirror for ${infra}.` },
+    { login: "bob" }
+  );
+  const older = await createComment(kept.key, {
+    body: `The astrolabe arrived at ${infra} last week.`,
+  });
   await sql(`update comments set created_at = now() - interval '10 days' where id = '${older.id}'`);
   // The chip's words are the reader's own: this context reads dates as `3 November`.
   const context = await asUser(browser, "alice", { locale: "en-GB", timezoneId: "UTC" });
@@ -152,11 +167,11 @@ test("each chip narrows the same list and reads back in the words the person cho
     // The row the four chips are added from, before any of them is used: a bar without it
     // fails here rather than at a click on a control that does not exist.
     await expect(chips).toBeVisible();
-    await search.fill("astrolabe");
+    await search.fill(words);
     await expect(options).toHaveCount(5);
 
     await dialog.getByRole("button", { name: "Project" }).click();
-    await dialog.getByRole("button", { name: "INFRA" }).click();
+    await dialog.getByRole("button", { name: infra }).click();
     await expect(options).toHaveCount(4);
 
     await dialog.getByRole("button", { name: "Status" }).click();
@@ -173,12 +188,12 @@ test("each chip narrows the same list and reads back in the words the person cho
 
     // Each chip says what it narrowed by in the words it was chosen with, and none of them was
     // written into the words the person typed.
-    await expect(chips).toContainText("Project INFRA");
+    await expect(chips).toContainText(`Project ${infra}`);
     await expect(chips).toContainText("Status Todo");
     await expect(chips).toContainText("Author alice");
     await expect(chips).toContainText(`Updated since ${since.text}`);
-    await expect(chips).not.toContainText("project:INFRA");
-    await expect(search).toHaveValue("astrolabe");
+    await expect(chips).not.toContainText(`project:${infra}`);
+    await expect(search).toHaveValue(words);
 
     // A chip comes off on its own, and the rows it was holding back come back.
     await dialog.getByRole("button", { name: "Remove Author alice" }).click();

@@ -21,7 +21,7 @@ import {
 } from "./api";
 import { expectRailAgents } from "./rail";
 import { setEventCreatedAt } from "./seed";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -150,6 +150,7 @@ async function openFilter(page: Page, filter: "group" | "machine" | "role"): Pro
 test("the Agents page lists its sessions in four collapsible counted groups", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([
     session(ASKER, "Asker"),
     session(TALKER, "Talker"),
@@ -157,8 +158,8 @@ test("the Agents page lists its sessions in four collapsible counted groups", as
     session(DOZING, "Dozing", 5 * 60_000),
     session(SLEEPER, "Sleeper", 60 * 60_000),
   ]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Grouping" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Grouping" });
   await seedOpenAsk(ASKER, issue.key, "Which release do we cut?");
   await seedActivity(TALKER, issue.key, 60_000);
 
@@ -228,9 +229,10 @@ test("the Agents page lists its sessions in four collapsible counted groups", as
 test("a session with an open ask is in Needs you however long the registry has been silent", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([session(ASKER, "Asker", 2 * 60 * 60_000)]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Precedence" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Precedence" });
   await seedOpenAsk(ASKER, issue.key, "Which of the two do we keep?");
 
   const context = await asUser(browser, "alice");
@@ -308,18 +310,22 @@ test("an ended session that replied is under Replied, no longer connected and in
 test("each filter on the Agents page is a multi-select with a text box, a count and a clear", async ({
   browser,
 }) => {
+  // Sessions of the row's own (`rowSessionId`, e2e/test.ts): which group a session is in is
+  // read off its Dispatch activity, which Dispatch keeps by the session's id for every person
+  // at once, so under an id another row wrote with a quiet session is `Active`.
+  const silent = rowSessionId("silent");
   await setLiveSessions([
-    session(SILENT, "Silent"),
-    session(DOZING, "Dozing", 5 * 60_000),
-    session(SLEEPER, "Sleeper", 60 * 60_000),
-    session(TALKER, "Talker", 60 * 60_000),
+    session(silent, "Silent"),
+    session(rowSessionId("dozing"), "Dozing", 5 * 60_000),
+    session(rowSessionId("sleeper"), "Sleeper", 60 * 60_000),
+    session(rowSessionId("talker"), "Talker", 60 * 60_000),
   ]);
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
     await page.goto("/agents");
-    await expect(agentRow(page, SILENT)).toBeVisible();
+    await expect(agentRow(page, silent)).toBeVisible();
 
     // The group filter: its own text box narrows the four group names to the one typed.
     await openFilter(page, "group");
@@ -429,9 +435,10 @@ test("the machine filter narrows forty machines to the ones typed, and two picks
 test("an agent row carries its state, its name, its age, its directory and its pin, which reaches the rail", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([session(TALKER, "Talker")]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Row shape" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Row shape" });
   await seedActivity(TALKER, issue.key, 60_000);
 
   const context = await asUser(browser, "alice");

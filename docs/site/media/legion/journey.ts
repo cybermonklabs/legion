@@ -141,7 +141,10 @@ export async function seedProject(keys: readonly string[]): Promise<void> {
       }))
     )
   );
-  await api.createProject({ key: PROJECT, name: "Storefront" });
+  await api.createProject({
+    key: api.fixedKey(PROJECT, "the Legion section's pictures and walkthrough show this key"),
+    name: "Storefront",
+  });
 }
 
 /** A human files the issue with its spec. */

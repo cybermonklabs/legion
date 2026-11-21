@@ -16,6 +16,16 @@ export const PARKED_STATUSES: readonly IssueStatus[] = ["backlog", "icebox"];
 /** What the newest-event column files a row under when nothing under the priority has moved. */
 export const NEVER_MOVED = "Never";
 
+/** The per-project or per-priority counts under a fault's rule, in plain words: `CORE 12 ·
+ *  OPS 7`, greatest first and by name between equals, which is what says where the fault is.
+ *  The priorities page draws it under each fault's count (`PrioritiesPage.tsx`). */
+export function countsLine(by: Readonly<Record<string, number>> | null): string {
+  return Object.entries(by ?? {})
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([name, count]) => `${name} ${count}`)
+    .join(" · ");
+}
+
 /** One row of the priorities table: the priority as the server answers it, its place in the one
  *  order, and the four counts the row shows, added up once rather than per cell. */
 export interface PriorityItem {

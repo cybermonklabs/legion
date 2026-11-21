@@ -1,5 +1,5 @@
 import { createIssue, createProject } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // Closing a picker that saves what the close committed must leave the reader where Escape put
@@ -7,8 +7,9 @@ import { asUser } from "./users";
 // the keyboard place would be gone a frame later, with nothing to say so. happy-dom has no
 // browser focus or blur of a disabled control, which is why this is a browser row.
 test("Escape after picking a label leaves focus on the labels trigger", async ({ browser }) => {
-  await createProject({ key: "SCR", name: "Scratch" });
-  const issue = await createIssue({ project: "SCR", title: "Labels focus row", labels: ["bug"] });
+  const scr = rowKey("SCR");
+  await createProject({ key: scr, name: "Scratch" });
+  const issue = await createIssue({ project: scr, title: "Labels focus row", labels: ["bug"] });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();

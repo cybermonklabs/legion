@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
+import { routePath } from "../web/src/api/paths";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { scrollFadeTrailingPx } from "../web/src/theme/classes";
 
@@ -19,7 +20,17 @@ import {
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
 import { navigateInApp } from "./sends";
 import { expandedState } from "./settled";
-import { expect, type Locator, type Page, type Request, type TestInfo, test } from "./test";
+import {
+  expect,
+  type Locator,
+  own,
+  type Page,
+  type Request,
+  rowKey,
+  rowPerson,
+  type TestInfo,
+  test,
+} from "./test";
 
 const tinyPng =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
@@ -68,144 +79,164 @@ function postAsPage(page: Page, path: string, data?: object) {
   return page.request.post(path, { data, headers: { Origin: dashboardOrigin } });
 }
 
-// SLOW(>=2s): three real uploads with the versions they build, the artifact page's version list
-// and comparison, and the references and phone layout read after them.
-// @pr: Upload and download: three real uploads, the versions they build, the Download link on a version, and the references that cite them.
-test("artifacts upload, version, references, and phone layout @phone @pr", async ({
-  page,
-}, testInfo) => {
-  const sockets = countDocumentSockets(page);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: "# Initial spec\n\nThe original document.",
-    title: "Artifact review",
-  });
-  await createAsk(issue.key, { question: "Can this ship?" });
+// The row reads its own ask as the Inbox's first card on a phone, and presses the review panel's
+// toggle there, so its default context is a person of its own (`own`, e2e/test.ts), who makes the
+// row's project, issue, ask and comments as alice did: alice's Inbox holds every earlier row's
+// questions, and her counts give the phone's header a second line.
+test.describe(() => {
+  test.use({ signedIn: own("alice") });
 
-  await page.goto(`/issues/${issue.key}`);
-  await page.getByRole("tab", { name: "Spec" }).click();
-  await expect(documentEditor(page)).toContainText("The original document.");
-  await expect.poll(sockets).toBe(1);
-  await openArtifacts(page, testInfo.project.name === "iphone");
+  // SLOW(>=2s): three real uploads with the versions they build, the artifact page's version list
+  // and comparison, and the references and phone layout read after them.
+  // @pr: Upload and download: three real uploads, the versions they build, the Download link on a version, and the references that cite them.
+  test("artifacts upload, version, references, and phone layout @phone @pr", async ({
+    page,
+  }, testInfo) => {
+    const core = rowKey("CORE");
+    const me = rowPerson("alice");
+    const sockets = countDocumentSockets(page);
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const issue = await createIssue(
+      {
+        project: core,
+        spec: "# Initial spec\n\nThe original document.",
+        title: "Artifact review",
+      },
+      { login: me }
+    );
+    await createAsk(issue.key, { question: "Can this ship?" }, { login: me });
 
-  const upload = page.getByLabel("Upload artifact");
-  const diagramUpload = await diagramFile(testInfo);
-  await upload.setInputFiles(diagramUpload);
-  await confirmUpload(page);
-  const diagram = page.getByTestId("artifact-diagram-png");
-  await expect(diagram).toContainText("diagram.png");
-  await expect(diagram).toContainText("1 version");
-  await expect(diagram.getByRole("img", { name: "diagram.png version 1" })).toBeVisible();
+    await page.goto(`/issues/${issue.key}`);
+    await page.getByRole("tab", { name: "Spec" }).click();
+    await expect(documentEditor(page)).toContainText("The original document.");
+    await expect.poll(sockets).toBe(1);
+    await openArtifacts(page, testInfo.project.name === "iphone");
 
-  await upload.setInputFiles(diagramUpload);
-  await confirmUpload(page);
-  await expect(diagram).toContainText("2 versions");
-  await expect(diagram.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
-    "download",
-    ""
-  );
-  // The tab is a compact row list now — versions, compare, and references live on the
-  // artifact's own page, not stacked under every row.
-  await expect(diagram.getByRole("button", { name: "Show all versions" })).toHaveCount(0);
-  await expect(page.getByLabel("Filter artifacts")).toBeVisible();
+    const upload = page.getByLabel("Upload artifact");
+    const diagramUpload = await diagramFile(testInfo);
+    await upload.setInputFiles(diagramUpload);
+    await confirmUpload(page);
+    const diagram = page.getByTestId("artifact-diagram-png");
+    await expect(diagram).toContainText("diagram.png");
+    await expect(diagram).toContainText("1 version");
+    await expect(diagram.getByRole("img", { name: "diagram.png version 1" })).toBeVisible();
 
-  await navigateInApp(page, `/issues/${issue.key}/artifacts/diagram-png`);
-  await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
-  await expect(page.getByTestId("artifact-header")).toContainText("diagram.png");
-  expect(sockets()).toBe(1);
-  await page.getByRole("button", { name: "Show all versions" }).click();
-  const versions = page.getByRole("region", { exact: true, name: "Versions for diagram.png" });
-  await expect(versions).toContainText("Version 1");
-  await expect(versions).toContainText("Version 2");
-  await expect(versions).toContainText("SHA-256");
-  await expect(versions.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
-    "download",
-    ""
-  );
-  const compare = page.getByRole("region", { name: "Compare versions for diagram.png" });
-  await expect(compare).toBeVisible();
-  await expect(compare).not.toContainText("From · Version");
-  await compare.getByRole("button", { name: "Show comparison" }).click();
-  await expect(compare).toContainText("From · Version");
-  await expect(compare).toContainText("To · Version");
+    await upload.setInputFiles(diagramUpload);
+    await confirmUpload(page);
+    await expect(diagram).toContainText("2 versions");
+    await expect(diagram.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
+      "download",
+      ""
+    );
+    // The tab is a compact row list now — versions, compare, and references live on the
+    // artifact's own page, not stacked under every row.
+    await expect(diagram.getByRole("button", { name: "Show all versions" })).toHaveCount(0);
+    await expect(page.getByLabel("Filter artifacts")).toBeVisible();
 
-  await navigateInApp(page, `/issues/${issue.key}`);
-  await openArtifacts(page, testInfo.project.name === "iphone");
+    await navigateInApp(page, `/issues/${issue.key}/artifacts/diagram-png`);
+    await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
+    await expect(page.getByTestId("artifact-header")).toContainText("diagram.png");
+    expect(sockets()).toBe(1);
+    await page.getByRole("button", { name: "Show all versions" }).click();
+    const versions = page.getByRole("region", { exact: true, name: "Versions for diagram.png" });
+    await expect(versions).toContainText("Version 1");
+    await expect(versions).toContainText("Version 2");
+    await expect(versions).toContainText("SHA-256");
+    await expect(versions.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
+      "download",
+      ""
+    );
+    const compare = page.getByRole("region", { name: "Compare versions for diagram.png" });
+    await expect(compare).toBeVisible();
+    await expect(compare).not.toContainText("From · Version");
+    await compare.getByRole("button", { name: "Show comparison" }).click();
+    await expect(compare).toContainText("From · Version");
+    await expect(compare).toContainText("To · Version");
 
-  await upload.setInputFiles(await notesFile(testInfo));
-  await confirmUpload(page);
-  const notes = page.getByTestId("artifact-notes-md");
-  await expect(notes).toContainText("notes.md");
-  await expect(notes.getByRole("button", { name: /make primary/i })).toHaveCount(0);
-  await page.getByRole("tab", { name: "Spec" }).click();
-  await expect(documentEditor(page)).toContainText("The original document.");
-
-  await createComment(issue.key, {
-    body: `See dispatch://${issue.key}/artifact/notes-md@v1 before deciding.`,
-  });
-
-  await createComment(issue.key, {
-    body: `See dispatch://${issue.key}/artifact/diagram-png before deciding.`,
-  });
-  // No reload: both citations reach the open page on its event feed, and the panel below reads
-  // what the feed left.
-  await openArtifacts(page, testInfo.project.name === "iphone");
-
-  await diagram.getByRole("link", { name: "diagram.png" }).click();
-  await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
-  // The panel names the record that cites this artifact and quotes it; its link goes to that
-  // source, not back to the artifact the reader is already on.
-  const diagramReferencedBy = page.getByRole("region", { name: "Referenced by" });
-  await expect(diagramReferencedBy).toContainText(`Comment · ${issue.key}`);
-  await expect(diagramReferencedBy).toContainText(
-    `See dispatch://${issue.key}/artifact/diagram-png before deciding.`
-  );
-  await diagramReferencedBy.getByRole("link", { name: `Comment · ${issue.key}` }).click();
-  await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/comments/`));
-
-  // One cold load, so the notes.md panel below is read by a page that cached nothing.
-  await page.goto(`/issues/${issue.key}`);
-  await openArtifacts(page, testInfo.project.name === "iphone");
-  await notes.getByRole("link", { name: "notes.md" }).click();
-  await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/notes-md`);
-  const notesReferencedBy = page.getByRole("region", { name: "Referenced by" });
-  await expect(notesReferencedBy).toContainText(`Comment · ${issue.key}`);
-  await expect(notesReferencedBy).toContainText(
-    `See dispatch://${issue.key}/artifact/notes-md@v1 before deciding.`
-  );
-  await navigateInApp(page, `/issues/${issue.key}`);
-  await openArtifacts(page, testInfo.project.name === "iphone");
-  await page.screenshot({ path: testInfo.outputPath("artifacts-tab.png"), fullPage: true });
-
-  if (testInfo.project.name === "iphone") {
-    await page.goto("/");
-    await expect(page.getByTestId(/ask-/).first()).toContainText("Can this ship?");
-    await page.screenshot({ path: testInfo.outputPath("iphone-inbox.png"), fullPage: true });
-
-    const openNavigation = page.getByRole("button", { name: "Open navigation" });
-    await expect(openNavigation).toBeVisible();
-    await openNavigation.click();
-    await expect(page.getByRole("navigation", { name: "Navigation" })).toBeVisible();
-    await page.getByRole("button", { name: "Close navigation" }).click();
     await navigateInApp(page, `/issues/${issue.key}`);
-    const openMargin = reviewPanelToggle(page);
-    await shutReviewPanel(page);
-    const [navigationBox, marginBox] = await Promise.all([
-      openNavigation.boundingBox(),
-      openMargin.boundingBox(),
-    ]);
-    expect(navigationBox?.width).toBeGreaterThanOrEqual(44);
-    expect(navigationBox?.height).toBeGreaterThanOrEqual(44);
-    expect(marginBox?.width).toBeGreaterThanOrEqual(44);
-    expect(marginBox?.height).toBeGreaterThanOrEqual(44);
-    await openMargin.click();
-    await expect(page.getByTestId("margin-sheet")).toHaveAttribute("data-expanded", "true");
-    await page.screenshot({ path: testInfo.outputPath("iphone-margin-sheet.png"), fullPage: true });
-    expect(
-      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
-    ).toBe(true);
-  }
+    await openArtifacts(page, testInfo.project.name === "iphone");
+
+    await upload.setInputFiles(await notesFile(testInfo));
+    await confirmUpload(page);
+    const notes = page.getByTestId("artifact-notes-md");
+    await expect(notes).toContainText("notes.md");
+    await expect(notes.getByRole("button", { name: /make primary/i })).toHaveCount(0);
+    await page.getByRole("tab", { name: "Spec" }).click();
+    await expect(documentEditor(page)).toContainText("The original document.");
+
+    await createComment(
+      issue.key,
+      { body: `See dispatch://${issue.key}/artifact/notes-md@v1 before deciding.` },
+      { login: me }
+    );
+
+    await createComment(
+      issue.key,
+      { body: `See dispatch://${issue.key}/artifact/diagram-png before deciding.` },
+      { login: me }
+    );
+    // No reload: both citations reach the open page on its event feed, and the panel below reads
+    // what the feed left.
+    await openArtifacts(page, testInfo.project.name === "iphone");
+
+    await diagram.getByRole("link", { name: "diagram.png" }).click();
+    await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
+    // The panel names the record that cites this artifact and quotes it; its link goes to that
+    // source, not back to the artifact the reader is already on.
+    const diagramReferencedBy = page.getByRole("region", { name: "Referenced by" });
+    await expect(diagramReferencedBy).toContainText(`Comment · ${issue.key}`);
+    await expect(diagramReferencedBy).toContainText(
+      `See dispatch://${issue.key}/artifact/diagram-png before deciding.`
+    );
+    await diagramReferencedBy.getByRole("link", { name: `Comment · ${issue.key}` }).click();
+    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/comments/`));
+
+    // One cold load, so the notes.md panel below is read by a page that cached nothing.
+    await page.goto(`/issues/${issue.key}`);
+    await openArtifacts(page, testInfo.project.name === "iphone");
+    await notes.getByRole("link", { name: "notes.md" }).click();
+    await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/notes-md`);
+    const notesReferencedBy = page.getByRole("region", { name: "Referenced by" });
+    await expect(notesReferencedBy).toContainText(`Comment · ${issue.key}`);
+    await expect(notesReferencedBy).toContainText(
+      `See dispatch://${issue.key}/artifact/notes-md@v1 before deciding.`
+    );
+    await navigateInApp(page, `/issues/${issue.key}`);
+    await openArtifacts(page, testInfo.project.name === "iphone");
+    await page.screenshot({ path: testInfo.outputPath("artifacts-tab.png"), fullPage: true });
+
+    if (testInfo.project.name === "iphone") {
+      await page.goto("/");
+      await expect(page.getByTestId(/ask-/).first()).toContainText("Can this ship?");
+      await page.screenshot({ path: testInfo.outputPath("iphone-inbox.png"), fullPage: true });
+
+      const openNavigation = page.getByRole("button", { name: "Open navigation" });
+      await expect(openNavigation).toBeVisible();
+      await openNavigation.click();
+      await expect(page.getByRole("navigation", { name: "Navigation" })).toBeVisible();
+      await page.getByRole("button", { name: "Close navigation" }).click();
+      await navigateInApp(page, `/issues/${issue.key}`);
+      const openMargin = reviewPanelToggle(page);
+      await shutReviewPanel(page);
+      const [navigationBox, marginBox] = await Promise.all([
+        openNavigation.boundingBox(),
+        openMargin.boundingBox(),
+      ]);
+      expect(navigationBox?.width).toBeGreaterThanOrEqual(44);
+      expect(navigationBox?.height).toBeGreaterThanOrEqual(44);
+      expect(marginBox?.width).toBeGreaterThanOrEqual(44);
+      expect(marginBox?.height).toBeGreaterThanOrEqual(44);
+      await openMargin.click();
+      await expect(page.getByTestId("margin-sheet")).toHaveAttribute("data-expanded", "true");
+      await page.screenshot({
+        path: testInfo.outputPath("iphone-margin-sheet.png"),
+        fullPage: true,
+      });
+      expect(
+        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+      ).toBe(true);
+    }
+  });
 });
 
 // The base a multipart upload names: the value of its `precondition` form field, parsed, and
@@ -232,8 +263,9 @@ function uploadedBase(request: Request): unknown {
 test("an upload over a document carries the token the page read, and says what a change under it means", async ({
   page,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Upload over a document" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Upload over a document" });
   const notes = await createIssueArtifact(issue.key, {
     content: "# Review notes\n\nThe ledger keeps three leases.\n",
     name: "notes.md",
@@ -310,9 +342,10 @@ test("an upload over a document carries the token the page read, and says what a
 test("the version history compares two versions of a document with the change view", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Lease handover\n\nThe spec itself is the primary document.\n",
     title: "Version compare",
   });
@@ -347,8 +380,9 @@ test("the version history compares two versions of a document with the change vi
 });
 
 test("the artifacts tab filter narrows rows by name and kind", async ({ page }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Artifact filtering" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Artifact filtering" });
   await page.goto(`/issues/${issue.key}`);
   await openArtifacts(page, false);
 
@@ -380,8 +414,9 @@ test("the artifacts tab filter narrows rows by name and kind", async ({ page }, 
 test("an uploaded document is linked from the Activity tab and counted on its own tab", async ({
   page,
 }, testInfo) => {
-  await createProject({ key: "OPS", name: "Ops" });
-  const issue = await createIssue({ project: "OPS", title: "Customer update" });
+  const opsKey = rowKey("OPS");
+  await createProject({ key: opsKey, name: "Ops" });
+  const issue = await createIssue({ project: opsKey, title: "Customer update" });
   await page.goto(`/issues/${issue.key}/conversation`);
   // Every issue has its own document, so the tab opens counting one.
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 1" })).toBeVisible();
@@ -538,8 +573,9 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
 test("the issue's tab strip rests where its last layout puts the selected tab, whatever narrower layout came first", async ({
   page,
 }) => {
-  await createProject({ key: "OPS", name: "Ops" });
-  const issue = await createIssue({ project: "OPS", title: "A strip that settles" });
+  const opsKey = rowKey("OPS");
+  await createProject({ key: opsKey, name: "Ops" });
+  const issue = await createIssue({ project: opsKey, title: "A strip that settles" });
   await page.goto(`/issues/${issue.key}/artifacts`);
   const tablist = page.getByRole("tablist", { name: "Issue detail" });
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 1" })).toHaveAttribute(
@@ -587,9 +623,10 @@ test("the issue's tab strip rests where its last layout puts the selected tab, w
 test("the Artifacts badge counts the rows the tab lists, and a row's details are not truncated @phone", async ({
   page,
 }) => {
-  await createProject({ key: "OPS", name: "Ops" });
+  const opsKey = rowKey("OPS");
+  await createProject({ key: opsKey, name: "Ops" });
   const issue = await createIssue({
-    project: "OPS",
+    project: opsKey,
     spec: "# Spec\n\nThe issue's own document.\n",
     title: "Counted tab",
   });
@@ -616,15 +653,16 @@ test("the Artifacts badge counts the rows the tab lists, and a row's details are
 test("an out-of-schema document names its repair and uploads replacement markdown", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Repair an unreadable document" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Repair an unreadable document" });
   const upload = await createIssueArtifact(issue.key, {
     content: "before\n",
     name: "repair.md",
   });
   const corrupted = await postAsPage(
     page,
-    `/api/v1/artifacts/${upload.artifact.id}/_test/outside-schema`
+    routePath("post", "/api/v1/artifacts/{id}/_test/outside-schema", { id: upload.artifact.id })
   );
   expect(corrupted.status()).toBe(204);
 
@@ -645,8 +683,9 @@ test("an out-of-schema document names its repair and uploads replacement markdow
 // repair; connecting on the cached text would open a socket into a tree outside the schema. The
 // count is this document's sockets alone: the issue's own spec holds a socket of its own.
 test("an out-of-schema document does not reconnect from cached text", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Do not reconnect from stale text" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Do not reconnect from stale text" });
   const upload = await createIssueArtifact(issue.key, {
     content: "before\n",
     name: "cached-repair.md",
@@ -667,7 +706,7 @@ test("an out-of-schema document does not reconnect from cached text", async ({ p
   await expect(row).toBeVisible();
   const corrupted = await postAsPage(
     page,
-    `/api/v1/artifacts/${upload.artifact.id}/_test/outside-schema`
+    routePath("post", "/api/v1/artifacts/{id}/_test/outside-schema", { id: upload.artifact.id })
   );
   expect(corrupted.status()).toBe(204);
   await openDocument();
@@ -685,11 +724,12 @@ test("an out-of-schema document does not reconnect from cached text", async ({ p
 test("a mounted editor does not reconnect into a document made unreadable while its socket was down", async ({
   page,
 }) => {
+  const core = rowKey("CORE");
   const sockets = countDocumentSockets(page);
   const transport = await documentTransport(page);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     title: "No reconnect into an unreadable room",
   });
   const upload = await createIssueArtifact(issue.key, {
@@ -710,7 +750,7 @@ test("a mounted editor does not reconnect into a document made unreadable while 
   await transport.sever();
   const corrupted = await postAsPage(
     page,
-    `/api/v1/artifacts/${upload.artifact.id}/_test/outside-schema`
+    routePath("post", "/api/v1/artifacts/{id}/_test/outside-schema", { id: upload.artifact.id })
   );
   expect(corrupted.status()).toBe(204);
   await transport.release();
@@ -720,7 +760,9 @@ test("a mounted editor does not reconnect into a document made unreadable while 
 
   await expect(page.getByText("A person decides whether to replace the document")).toBeVisible();
   await expect(documentEditor(page)).toBeHidden();
-  const text = await page.request.get(`/api/v1/artifacts/${upload.artifact.id}/text`);
+  const text = await page.request.get(
+    routePath("get", "/api/v1/artifacts/{id}/text", { id: upload.artifact.id })
+  );
   expect(text.status()).toBe(409);
   await expect(text.text()).resolves.toContain(`"code":"DOC_SCHEMA"`);
   expect(sockets()).toBe(2);
@@ -732,9 +774,10 @@ test("a mounted editor does not reconnect into a document made unreadable while 
 test("an edit typed while the socket was down survives a text refetch the server answers 503", async ({
   page,
 }) => {
+  const core = rowKey("CORE");
   const transport = await documentTransport(page);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Keep an offline edit" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Keep an offline edit" });
   const upload = await createIssueArtifact(issue.key, {
     content: "before\n",
     name: "offline-edit.md",
@@ -800,8 +843,9 @@ test("an edit typed while the socket was down survives a text refetch the server
 });
 
 test("a live document refuses a rebuild", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Refuse live rebuild" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Refuse live rebuild" });
   const upload = await createIssueArtifact(issue.key, {
     content: "before\n",
     name: "live-rebuild.md",
@@ -809,7 +853,11 @@ test("a live document refuses a rebuild", async ({ page }) => {
 
   await page.goto(`/issues/${issue.key}/artifacts/${upload.artifact.slug}`);
   await expect(documentEditor(page)).toContainText("before");
-  const rebuilt = await postAsPage(page, `/api/v1/artifacts/${upload.artifact.id}/rebuild`, {});
+  const rebuilt = await postAsPage(
+    page,
+    routePath("post", "/api/v1/artifacts/{id}/rebuild", { id: upload.artifact.id }),
+    {}
+  );
   expect(rebuilt.status()).toBe(409);
   await expect(rebuilt.text()).resolves.toContain(`"code":"DOCUMENT_LIVE"`);
   await expect(documentEditor(page)).toContainText("before");

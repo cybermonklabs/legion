@@ -29,7 +29,7 @@ import {
   watchShown,
 } from "./pick-writes";
 import { navigateInApp } from "./sends";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -45,19 +45,20 @@ const session = { actor: { id: "e2e-project", kind: "session" as const }, as: "a
 test("project table filters narrow issues; documents stay scoped to the project", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const triage = await createIssue({ project: "CORE", title: "Triage work" });
-  const icebox = await createIssue({ project: "CORE", title: "Icebox work" });
-  const backlog = await createIssue({ project: "CORE", title: "Backlog work" });
-  const parent = await createIssue({ project: "CORE", title: "Parent work" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const triage = await createIssue({ project: core, title: "Triage work" });
+  const icebox = await createIssue({ project: core, title: "Icebox work" });
+  const backlog = await createIssue({ project: core, title: "Backlog work" });
+  const parent = await createIssue({ project: core, title: "Parent work" });
   await createIssueArtifact(parent.key, {
     content: "# Issue-only document\n",
     name: "Issue-only document",
   });
-  const needsYou = await createIssue({ project: "CORE", title: "Needs attention" });
-  const unread = await createIssue({ project: "CORE", title: "Unread work" });
-  const child = await createIssue({ parent: parent.key, project: "CORE", title: "Child work" });
-  const done = await createIssue({ project: "CORE", title: "Done work" });
+  const needsYou = await createIssue({ project: core, title: "Needs attention" });
+  const unread = await createIssue({ project: core, title: "Unread work" });
+  const child = await createIssue({ parent: parent.key, project: core, title: "Child work" });
+  const done = await createIssue({ project: core, title: "Done work" });
   await patchIssue(triage.key, { status: "triage" });
   await patchIssue(icebox.key, { status: "icebox" });
   await patchIssue(backlog.key, { status: "backlog" });
@@ -68,7 +69,7 @@ test("project table filters narrow issues; documents stay scoped to the project"
   await patchIssue(done.key, { status: "done" });
   await createAsk(needsYou.key, { question: "Does this need review?" }, session);
   // The negative control for the header's pill: another person's question in this same project.
-  const bobs = await createIssue({ project: "CORE", title: "Bob's work" }, { login: "bob" });
+  const bobs = await createIssue({ project: core, title: "Bob's work" }, { login: "bob" });
   await patchIssue(bobs.key, { status: "in_progress" });
   await createAsk(bobs.key, { question: "Does Bob need to answer this?" }, session);
   // Seven read marks, one round of round trips: the rows differ, the writes do not wait on
@@ -85,8 +86,8 @@ test("project table filters narrow issues; documents stay scoped to the project"
   await page.setViewportSize({ width: 1280, height: 800 });
 
   try {
-    await page.goto("/projects/CORE");
-    await expect(page).toHaveTitle("CORE · Core · Dispatch");
+    await page.goto(`/projects/${core}`);
+    await expect(page).toHaveTitle(`${core} · Core · Dispatch`);
     await expect(page.getByRole("heading", { name: "Core" })).toBeVisible();
     // The pill counts this project's questions waiting on the signed-in reader.
     await expect(
@@ -146,16 +147,16 @@ test("project table filters narrow issues; documents stay scoped to the project"
     await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
 
     await page.getByRole("tab", { name: "Documents" }).click();
-    await expect(page).toHaveURL("/projects/CORE/documents");
+    await expect(page).toHaveURL(`/projects/${core}/documents`);
     await page.getByRole("button", { name: "New document" }).click();
     await page.getByRole("textbox", { name: "Title" }).fill("Design notes");
     await page.getByRole("button", { name: "Create" }).click();
-    await expect(page).toHaveURL("/projects/CORE/documents/design-notes");
+    await expect(page).toHaveURL(`/projects/${core}/documents/design-notes`);
     // The document opens empty, under the title the person typed: the title is the page's
     // heading, and the editor holds nothing until the person writes in it.
     await expect(page.getByRole("heading", { name: "Design notes" })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Document editor" })).toHaveText("");
-    await navigateInApp(page, "/projects/CORE/documents");
+    await navigateInApp(page, `/projects/${core}/documents`);
     await expect(page.getByRole("link", { name: "Design notes", exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("project-documents.png"), fullPage: true });
     await expect(page.getByText("Issue-only document", { exact: true })).toHaveCount(0);
@@ -174,8 +175,9 @@ test("project table filters narrow issues; documents stay scoped to the project"
 /** A project, and an issue of it at P3, which the server keeps while the row holds its saves:
  *  a value that reaches the screen from the server shows as P3, never one of the row's picks. */
 async function issueAtP3(): Promise<string> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Priority under a held save" });
   await patchIssue(issue.key, { priority: 3 });
   return issue.key;
 }
@@ -220,7 +222,10 @@ test("picker keeps the newest pick: a pick made after leaving and coming back is
   browser,
 }) => {
   const key = await issueAtP3();
-  const other = await createIssue({ project: "CORE", title: "Another issue of the project" });
+  const other = await createIssue({
+    project: rowKey("CORE"),
+    title: "Another issue of the project",
+  });
   const seq = await lastEventSeq(key);
   const context = await asUser(browser, "alice");
   try {
@@ -357,10 +362,11 @@ test("picker keeps a pick on screen: the priority on the issue page, over a read
 test("picker keeps a pick on screen: the repository on the issue page, over a read that answers while its save is out", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-  await putRepoProject("acme/gadgets", { project: "CORE" });
-  const issue = await createIssue({ project: "CORE", title: "Repository under a held save" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await putRepoProject("acme/widgets", { default: true, project: core });
+  await putRepoProject("acme/gadgets", { project: core });
+  const issue = await createIssue({ project: core, title: "Repository under a held save" });
   await patchIssue(issue.key, { repo: "acme/widgets" });
   const renamed = "Repository under a held save, renamed while it is out";
   const context = await asUser(browser, "alice");

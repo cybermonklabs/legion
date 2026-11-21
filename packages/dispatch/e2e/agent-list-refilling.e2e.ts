@@ -1,3 +1,4 @@
+import { type Refusal, routePath } from "../web/src/api/paths";
 import { agentRow, type FakeSession, setInterests, setListsState, setLiveSessions } from "./agents";
 import {
   baseUrl,
@@ -10,7 +11,7 @@ import {
   userHeaders,
 } from "./api";
 import { frontLiveView } from "./live-views";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 // The Envoy listener refuses its two list reads while its copy of a bucket cannot be served: 503,
@@ -48,13 +49,19 @@ const planner: FakeSession = {
   dir: "/srv/refill-planner",
   machine_id: "box-refill",
   roles: [PLANNER_ROLE],
-  session_id: "refill-planner-session",
+  // The row's own (`rowSessionId`, e2e/test.ts), read when a row names it: Dispatch keeps a
+  // session's asks and messages by its id, for every person at once.
+  get session_id() {
+    return rowSessionId("refillplanner");
+  },
   title: "Planner (refill)",
 };
 const watcher: FakeSession = {
   dir: "/srv/refill-watcher",
   machine_id: "box-refill",
-  session_id: "refill-watcher-session",
+  get session_id() {
+    return rowSessionId("refillwatcher");
+  },
   title: "Watcher (refill)",
 };
 
@@ -65,18 +72,21 @@ interface RefillFixture {
 
 /** One issue routed to the planner's role with an open ask the planner wrote (so the planner
  *  follows it), one project document, and the watcher subscribed to both. `sessions` is what the
- *  listener's list names while it answers. */
-async function seedRefillFixture(sessions: FakeSession[]): Promise<RefillFixture> {
+ *  listener's list names while it answers. `reader` makes the project and the issue, so the ask
+ *  waits on her and her Inbox draws its card: the row's own person (`rowPerson`, e2e/test.ts),
+ *  whose Inbox holds no other row's question to select in its place. */
+async function seedRefillFixture(sessions: FakeSession[], reader: string): Promise<RefillFixture> {
+  const core = rowKey("CORE");
   await setLiveSessions(sessions);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Refilling route" });
+  await createProject({ key: core, name: "Core" }, { login: reader });
+  const issue = await createIssue({ project: core, title: "Refilling route" }, { login: reader });
   await patchIssue(issue.key, { route: `role:${PLANNER_ROLE}` });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship the refill?" },
     { actor: { id: planner.session_id, kind: "session" }, as: "agent" }
   );
-  await createProjectDocument("CORE", {
+  await createProjectDocument(core, {
     content: "# Refill notes\n\nWho is listening.\n",
     name: "Refill notes",
   });
@@ -85,15 +95,21 @@ async function seedRefillFixture(sessions: FakeSession[]): Promise<RefillFixture
       session_id: watcher.session_id,
       topics: [
         `notifications.dispatch.issue.${issue.key}.>`,
-        `notifications.dispatch.document.CORE.${DOCUMENT_SLUG}.>`,
+        `notifications.dispatch.document.${core}.${DOCUMENT_SLUG}.>`,
       ],
     },
   ]);
   return { askId: ask.id, issueKey: issue.key };
 }
 
-const livePath = `/agents/${planner.session_id}/live`;
-const documentPath = `/projects/CORE/documents/${DOCUMENT_SLUG}`;
+/** The planner's live view. */
+function livePath(): string {
+  return `/agents/${planner.session_id}/live`;
+}
+/** The fixture's project document, under the running row's own project. */
+function documentPath(): string {
+  return `/projects/${rowKey("CORE")}/documents/${DOCUMENT_SLUG}`;
+}
 
 function refillingNotice(scope: Page | Locator): Locator {
   return scope.getByTestId("agent-list-refilling");
@@ -114,10 +130,10 @@ async function agentsAnswer(): Promise<{
   retryAfter: string | null;
   status: number;
 }> {
-  const response = await fetch(new URL("/api/v1/agents", baseUrl), {
+  const response = await fetch(new URL(routePath("get", "/api/v1/agents", {}), baseUrl), {
     headers: await userHeaders(),
   });
-  const body = (await response.json()) as { code?: unknown };
+  const body = (await response.json()) as Refusal<"/api/v1/agents", "get">;
   return {
     code: body.code,
     retryAfter: response.headers.get("Retry-After"),
@@ -175,7 +191,7 @@ function askRecipients(page: Page, askId: string): Locator {
 }
 
 async function openProjectList(page: Page, issueKey: string): Promise<void> {
-  await page.goto("/projects/CORE/issues");
+  await page.goto(`/projects/${rowKey("CORE")}/issues`);
   await expect(
     page
       .getByRole("table", { name: "Project issues table" })
@@ -206,7 +222,7 @@ async function expectFreshViewsRefilling(page: Page, fixture: RefillFixture): Pr
   await expectNoAbsenceClaim(page);
   await expectNoUnreachableWording(page);
 
-  await page.goto(documentPath);
+  await page.goto(documentPath());
   await expect(refillingNotice(page)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
   await expect(page.getByRole("region", { name: "Subscribed agents" })).toHaveCount(0);
   await expectNoAbsenceClaim(page);
@@ -235,8 +251,9 @@ test("a list that starts refilling after a complete read claims no agent absent,
   browser,
 }) => {
   test.setTimeout(300_000);
-  const fixture = await seedRefillFixture([planner, watcher]);
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const fixture = await seedRefillFixture([planner, watcher], me);
+  const alice = await asUser(browser, me);
   try {
     // A complete read: every view names the agents and counts what it reaches.
     const agentsPage = await alice.newPage();
@@ -245,7 +262,7 @@ test("a list that starts refilling after a complete read claims no agent absent,
     await expectNoRefillingWording(agentsPage);
 
     const livePage = await alice.newPage();
-    await livePage.goto(livePath);
+    await livePage.goto(livePath());
     await expectPlannerFacts(livePage);
     await expectNoRefillingWording(livePage);
 
@@ -259,7 +276,7 @@ test("a list that starts refilling after a complete read claims no agent absent,
     await expectNoRefillingWording(issuePage);
 
     const page = await alice.newPage();
-    await page.goto(documentPath);
+    await page.goto(documentPath());
     const subscribed = page.getByRole("region", { name: "Subscribed agents" });
     await expect(subscribed.getByText(watcher.title, { exact: true })).toBeVisible();
     await expect(subscribed.getByRole("img", { exact: true, name: "Running" })).toHaveCount(1);
@@ -316,7 +333,7 @@ test("a list that starts refilling after a complete read claims no agent absent,
     await expect(refilled.getByRole("button", { name: "Reaches 2" })).toBeVisible();
     await expectNoRefillingWording(page);
 
-    await page.goto(documentPath);
+    await page.goto(documentPath());
     await expect(
       page
         .getByRole("region", { name: "Subscribed agents" })
@@ -330,8 +347,9 @@ test("a list that starts refilling after a complete read claims no agent absent,
 
 test("an empty list that starts refilling never says nobody is connected", async ({ browser }) => {
   test.setTimeout(300_000);
-  const fixture = await seedRefillFixture([]);
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const fixture = await seedRefillFixture([], me);
+  const alice = await asUser(browser, me);
   try {
     // A complete, empty read is a true absence, and each view says so.
     const agentsPage = await alice.newPage();
@@ -341,7 +359,7 @@ test("an empty list that starts refilling never says nobody is connected", async
     );
 
     const livePage = await alice.newPage();
-    await livePage.goto(livePath);
+    await livePage.goto(livePath());
     await expect(
       livePage.getByText("Not in the live session list — it may have ended.")
     ).toBeVisible();
@@ -356,7 +374,7 @@ test("an empty list that starts refilling never says nobody is connected", async
     await expect(before.getByText("No live agents match.")).toBeVisible();
 
     const page = await alice.newPage();
-    await page.goto(documentPath);
+    await page.goto(documentPath());
     await expect(
       page
         .getByRole("region", { name: "Subscribed agents" })
@@ -395,7 +413,8 @@ test("an empty list that starts refilling never says nobody is connected", async
 
 test("a listener refilling from the first read shows every view refilling", async ({ browser }) => {
   test.setTimeout(200_000);
-  const fixture = await seedRefillFixture([planner, watcher]);
+  const me = rowPerson("alice");
+  const fixture = await seedRefillFixture([planner, watcher], me);
   await setListsState("refilling");
   // What every view below reads: Dispatch's own refilling answer, not an unreachable listener.
   expect(await agentsAnswer()).toEqual({ code: "ENVOY_REFILLING", retryAfter: "5", status: 503 });
@@ -403,7 +422,7 @@ test("a listener refilling from the first read shows every view refilling", asyn
     route_status: "unknown",
     route_status_reason: "refilling",
   });
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
@@ -413,7 +432,7 @@ test("a listener refilling from the first read shows every view refilling", asyn
     await expectNoAbsenceClaim(page);
     await expectNoUnreachableWording(page);
 
-    await page.goto(livePath);
+    await page.goto(livePath());
     await expect(refillingNotice(page)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
     await expect(page.getByTestId("agent-list-loading")).toHaveCount(0);
     await expectNoAbsenceClaim(page);
@@ -429,14 +448,15 @@ test("a listener that cannot answer reads as unreachable on every view, never as
   browser,
 }) => {
   test.setTimeout(150_000);
-  const fixture = await seedRefillFixture([planner, watcher]);
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const fixture = await seedRefillFixture([planner, watcher], me);
+  const alice = await asUser(browser, me);
   try {
     const agentsPage = await alice.newPage();
     await agentsPage.goto("/agents");
     await expect(agentRow(agentsPage, planner.session_id)).toBeVisible();
     const livePage = await alice.newPage();
-    await livePage.goto(livePath);
+    await livePage.goto(livePath());
     await expectPlannerFacts(livePage);
 
     await setListsState("down");
@@ -456,7 +476,7 @@ test("a listener that cannot answer reads as unreachable on every view, never as
     await expectNoRefillingWording(page);
     await expectNoAbsenceClaim(page);
 
-    await page.goto(livePath);
+    await page.goto(livePath());
     await expect(page.getByTestId("agent-list-unreachable")).toHaveText(
       "Could not check the live session list — Envoy listener unreachable."
     );
@@ -478,7 +498,7 @@ test("a listener that cannot answer reads as unreachable on every view, never as
     await expectNoRefillingWording(page);
     await expectNoAbsenceClaim(page);
 
-    await page.goto(documentPath);
+    await page.goto(documentPath());
     await expect(
       page
         .getByRole("alert")

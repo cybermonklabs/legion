@@ -13,7 +13,7 @@ import {
 } from "./api";
 import { documentEditor } from "./editor";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -47,14 +47,18 @@ async function expectFocusedAskTurn(page: Page, id: string): Promise<void> {
 test("the answers page lists a person's answers and replies, opens each ask, and changes an answer @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const anchoredIssue = await createIssue({
-    project: "CORE",
-    spec: "Ship the release tonight.\n",
-    title: "Release train",
-  });
-  const changedIssue = await createIssue({ project: "CORE", title: "Billing freeze" });
-  const repliedIssue = await createIssue({ project: "CORE", title: "Build question" });
+  const core = rowKey("CORE");
+  // The reader and bob are people of the row's own (`rowPerson`, e2e/test.ts): each one's list
+  // of answers holds this row's and no other row's.
+  const me = rowPerson("alice");
+  const bobLogin = rowPerson("bob");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const anchoredIssue = await createIssue(
+    { project: core, spec: "Ship the release tonight.\n", title: "Release train" },
+    { login: me }
+  );
+  const changedIssue = await createIssue({ project: core, title: "Billing freeze" }, { login: me });
+  const repliedIssue = await createIssue({ project: core, title: "Build question" }, { login: me });
   const anchored = await createAsk(
     anchoredIssue.key,
     { anchor: { artifact: "spec", quote: "release" }, options: shipOrHold, question: "Ship it?" },
@@ -72,16 +76,20 @@ test("the answers page lists a person's answers and replies, opens each ask, and
   );
 
   // Oldest to newest: alice's reply, then her two answers.
-  await createComment(repliedIssue.key, { ask_id: replied.id, body: "Does nightly count?" });
-  await answerAsk(anchored.id, { expected_edited_at: null, selected: ["Ship"] });
-  await answerAsk(changed.id, {
-    expected_edited_at: null,
-    selected: ["Ship"],
-    text: "Freeze after the run.",
-  });
+  await createComment(
+    repliedIssue.key,
+    { ask_id: replied.id, body: "Does nightly count?" },
+    { login: me }
+  );
+  await answerAsk(anchored.id, { expected_edited_at: null, selected: ["Ship"] }, { login: me });
+  await answerAsk(
+    changed.id,
+    { expected_edited_at: null, selected: ["Ship"], text: "Freeze after the run." },
+    { login: me }
+  );
 
   // The server names each issue ask by its item route, which is what Open follows.
-  const listed = await listMyAnswers();
+  const listed = await listMyAnswers({}, { login: me });
   expect(listed.total).toBe(3);
   expect((listed.rows ?? []).map((row) => [row.kind, row.ask_id, row.ref])).toEqual([
     ["answer", changed.id, `/issues/${changedIssue.key}/asks/${changed.id}`],
@@ -89,7 +97,7 @@ test("the answers page lists a person's answers and replies, opens each ask, and
     ["reply", replied.id, `/issues/${repliedIssue.key}/asks/${replied.id}`],
   ]);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -164,7 +172,7 @@ test("the answers page lists a person's answers and replies, opens each ask, and
     await expect(top).not.toContainText("Changed since");
     await expect(older).toContainText("Changed since");
     await expect(older.getByRole("button", { name: "Change answer" })).toHaveCount(0);
-    await expect(card).toContainText("Answered by alice");
+    await expect(card).toContainText(`Answered by ${me}`);
     await expect(card.locator('ul[aria-label="Options"] li[data-selected="true"]')).toContainText(
       "Hold"
     );
@@ -173,8 +181,8 @@ test("the answers page lists a person's answers and replies, opens each ask, and
 
     const read = await getAsk(changed.id);
     expect((read.answers ?? []).map((answer) => [answer.user, answer.selected])).toEqual([
-      ["alice", ["Ship"]],
-      ["alice", ["Hold"]],
+      [me, ["Ship"]],
+      [me, ["Hold"]],
     ]);
     const answered = (await getIssueEvents(changedIssue.key)).flatMap((event) =>
       event.type === "ask.answered" ? [event.payload] : []
@@ -188,8 +196,8 @@ test("the answers page lists a person's answers and replies, opens each ask, and
   }
 
   // Another person's page holds none of alice's answers.
-  expect((await listMyAnswers({}, { login: "bob" })).rows).toEqual([]);
-  const bob = await asUser(browser, "bob");
+  expect((await listMyAnswers({}, { login: bobLogin })).rows).toEqual([]);
+  const bob = await asUser(browser, bobLogin);
   try {
     const page = await bob.newPage();
     await page.goto("/answers");
@@ -203,8 +211,9 @@ test("the answers page lists a person's answers and replies, opens each ask, and
 test("an issue page's decided ask offers Change answer to its answerer alone, and lists the earlier answer after a change", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Release train" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Release train" });
   const ask = await createAsk(issue.key, { options: shipOrHold, question: "Ship it?" }, session);
   await answerAsk(ask.id, { expected_edited_at: null, selected: ["Ship"] });
 
@@ -244,9 +253,10 @@ test("an issue page's decided ask offers Change answer to its answerer alone, an
 test("changing a decision block's answer rewrites the block in the document", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "## Specification\n\nContext\n",
     title: "Ask block",
   });

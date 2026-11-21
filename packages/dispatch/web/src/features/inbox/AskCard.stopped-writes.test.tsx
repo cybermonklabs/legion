@@ -3,7 +3,7 @@ import { beforeAll, expect, jest, mock, spyOn, test } from "bun:test";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { afterOnFakeClock, realClock, tick } from "../../__tests__/fake-clock";
 import { stopTheLateWrite, untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError, type WriteBounds } from "../../api/client";
@@ -236,7 +236,7 @@ async function retryTheRefusal() {
 function answersOnTheClock<T>(answer: T): () => Promise<T> {
   return () => {
     const { promise, resolve } = Promise.withResolvers<T>();
-    setTimeout(() => resolve(answer), 100);
+    afterOnFakeClock(100, () => resolve(answer));
     return promise;
   };
 }

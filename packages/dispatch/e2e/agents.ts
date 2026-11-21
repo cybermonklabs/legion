@@ -3,9 +3,18 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { BroadcastCreated, CreateBroadcastInput, TmuxPlace } from "../web/src/api/types";
 import type { AgentGroup } from "../web/src/features/agents/agent-groups";
-import { createAsk, createComment, createIssue, createProject } from "./api";
+import {
+  createAsk,
+  createComment,
+  createIssue,
+  createProject,
+  listOpenIssues,
+  patchIssue,
+  type RowKey,
+} from "./api";
 import { harnessPorts } from "./harness-ports";
 import { type KeyedWrite, keyedWrite, watchWrites } from "./keyed-writes";
+import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
 import { expandedState } from "./settled";
 
@@ -366,24 +375,140 @@ export const reviewerSession: FakeSession = {
   title: "Reviewer",
 };
 
+/** The two sessions `seedAgents` makes live and writes with. */
+export interface AgentSessions {
+  readonly planner: FakeSession;
+  readonly reviewer: FakeSession;
+}
+
+/** `plannerSession` and `reviewerSession` under the ids `sessionId` names them by: a real-stack
+ *  spec passes `rowSessionId` (e2e/test.ts), which this module cannot import (e2e/test.ts imports
+ *  it through e2e/seed.ts), so each session reads its id when a row names it, from a getter.
+ *  Dispatch keeps what a session said and what was said to it by its id, for every person at
+ *  once, so a fixed id would give each row's Planner every earlier row's asks and messages. A
+ *  spread or a JSON body of the session takes the row's id with it. */
+export function agentSessions(sessionId: (logical: string) => string): AgentSessions {
+  return {
+    planner: {
+      ...plannerSession,
+      get session_id() {
+        return sessionId("planner");
+      },
+    },
+    reviewer: {
+      ...reviewerSession,
+      get session_id() {
+        return sessionId("reviewer");
+      },
+    },
+  };
+}
+
 /** Both sessions live, both with Dispatch activity, and two open issues for the picker to offer:
- *  a keyboard reader has to be able to pass the first to reach the second. Returns the first. */
-export async function seedAgents(): Promise<string> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Keyboard issue" });
-  await createIssue({ project: "CORE", title: "Rollout plan" });
+ *  a keyboard reader has to be able to pass the first to reach the second. Returns the first.
+ *  `project` is the key of the project the issues are made in, the row's own (`rowKey`): it is
+ *  passed in rather than made here because e2e/test.ts imports this module through e2e/seed.ts.
+ *  `sessions` are the two sessions, the row's own on the real stack (`agentSessions`); the
+ *  fixed ones are the default. */
+export async function seedAgents(
+  project: RowKey,
+  { planner, reviewer }: AgentSessions = { planner: plannerSession, reviewer: reviewerSession }
+): Promise<string> {
+  await createProject({ key: project, name: "Core" });
+  const issue = await createIssue({ project, title: "Keyboard issue" });
+  await createIssue({ project, title: "Rollout plan" });
   await createAsk(
     issue.key,
     { question: "Which release?" },
-    { actor: { id: plannerSession.session_id, kind: "session" }, as: "agent" }
+    { actor: { id: planner.session_id, kind: "session" }, as: "agent" }
   );
   await createComment(
     issue.key,
     { body: "Reviewing the diff." },
-    { actor: { id: reviewerSession.session_id, kind: "session" }, as: "agent" }
+    { actor: { id: reviewer.session_id, kind: "session" }, as: "agent" }
   );
-  await setLiveSessions([plannerSession, reviewerSession]);
+  await setLiveSessions([planner, reviewer]);
   return issue.key;
+}
+
+/** An issue as the Agents page's issue picker names it. */
+interface PickerIssue {
+  readonly key: string;
+  readonly title: string;
+}
+
+/** What the Agents page's issue picker offers the row that read it. */
+export interface PickerList {
+  /** Every open issue of the stack, in the server's order, as the server answered the picker's
+   *  own read when the row began: the options after `No issue`. */
+  readonly open: readonly PickerIssue[];
+  /** Three issues of the row's own, in the order the listing rule puts them, which the row knows
+   *  from how it made them: the rule tested by the row rather than read from the server it
+   *  checks. */
+  readonly ruleOrder: readonly PickerIssue[];
+}
+
+/** An option of the issue picker: `KEY · title` (`AgentMessageComposer.tsx`). */
+export function pickerLabel(issue: PickerIssue): string {
+  return `${issue.key} · ${issue.title}`;
+}
+
+/**
+ * Seeds the list the Agents page's issue picker offers, and reads it. The list is every open
+ * issue of the stack, every earlier row's of the worker included, ordered by status, then rank,
+ * then creation time (`issueListOrder`, packages/envoy/internal/dispatch/api/issue_queries.go).
+ *
+ * It first makes three open issues in `project` whose order follows from that rule alone: the
+ * first made is moved to `todo` and so comes after both `triage` ones, though it is the oldest and
+ * was ranked first; the last made is ranked before the second, and so comes before it, though it
+ * is newer.
+ *
+ * Then it puts `ahead` - the row's own issues its keyboard steps reach, in the order they reach
+ * them, each still in `triage`, the first status - at the head of the list, so that a step never
+ * lands on, and a pick never acts on, another row's issue. Only a rank below every other issue's
+ * does that, and Dispatch writes a rank only between neighbours of one project, so the ranks are
+ * written here: a rank is a base-62 string compared byte by byte (`rank.Between`,
+ * packages/envoy/internal/dispatch/rank), and none ends in `0`, so one `0` more than the longest
+ * run of leading zeros any other issue's rank holds, then `U`, `V` and on, sorts below them all
+ * and in `ahead`'s order. Each is still a rank `rank.Between` takes as a bound.
+ *
+ * The read is `listOpenIssues`, the picker's own, made once the row has written every issue it
+ * makes, so a row calls this after its seeds and before it opens the page.
+ */
+export async function seedPickerList(
+  project: string,
+  ahead: readonly string[]
+): Promise<PickerList> {
+  const parked = await createIssue({ project, title: "Parked, made first" });
+  const second = await createIssue({ project, title: "Triage, ranked second" });
+  const first = await createIssue({ project, title: "Triage, ranked first" });
+  await patchIssue(parked.key, { status: "todo" });
+  await patchIssue(first.key, { rank: { before: second.key } });
+  for (const key of ahead) {
+    if (!/^[A-Z][A-Z0-9]*-[0-9]+$/.test(key)) throw new Error(`not an issue key: ${key}`);
+  }
+  const keys = ahead.map((key) => `'${key}'`).join(", ");
+  const suffixes = ahead.map((key, index) => `('${key}', '${"UVWXYZ"[index]}')`).join(", ");
+  await sql(
+    `WITH zeros AS (
+  SELECT repeat('0', coalesce(max(length(substring(rank FROM '^0*'))), 0) + 1) AS run
+  FROM issues WHERE NOT (key = ANY (ARRAY[${keys}]::text[]))
+)
+UPDATE issues SET rank = zeros.run || ahead.suffix
+FROM zeros, (VALUES ${suffixes}) AS ahead (key, suffix)
+WHERE issues.key = ahead.key`
+  );
+  const open = (await listOpenIssues()).map(({ key, title }) => ({ key, title }));
+  return { open, ruleOrder: [first, second, parked].map(({ key, title }) => ({ key, title })) };
+}
+
+/** The issue picker draws `No issue` and then exactly `list.open`, in its order, and draws the
+ *  row's own three issues in the order the rule puts them. */
+export async function expectPickerOffers(picker: Locator, list: PickerList): Promise<void> {
+  await expect(picker.locator("option")).toHaveText(["No issue", ...list.open.map(pickerLabel)]);
+  await expect(
+    picker.locator(list.ruleOrder.map(({ key }) => `option[value="${key}"]`).join(", "))
+  ).toHaveText(list.ruleOrder.map(pickerLabel));
 }
 
 /** The keymap binds only once sign-in resolves (`AuthGate` renders a skeleton until

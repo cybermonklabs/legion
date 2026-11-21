@@ -163,7 +163,7 @@ test("a changes-requested step says who sent it back, on which version, and why"
       "Decisions: alice requested changes on v2 · Name the rollback step."
     );
     // The whole reason is readable on a phone: no tooltip standing in for clipped text.
-    expect(line?.getAttribute("title")).toBeNull();
+    expect(line).not.toHaveAttribute("title");
     // Only the step that was sent back gets a line.
     expect(view.container.querySelector('[data-approval-step-reason="spec"]')).toBeNull();
   } finally {

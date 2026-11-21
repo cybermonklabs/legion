@@ -135,9 +135,9 @@ export class DispatchServiceError extends Error {
     readonly code: string,
     readonly status: number,
     message: string,
-    readonly candidates?: DispatchServiceErrorShape["candidates"],
+    readonly candidates?: NonNullable<DispatchServiceErrorShape["candidates"]>,
     readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
+    readonly mismatches?: NonNullable<DispatchServiceErrorShape["mismatches"]>
   ) {
     super(message);
   }
@@ -2654,9 +2654,10 @@ export class DispatchClient {
           error.code ?? `HTTP_${response.status}`,
           response.status,
           error.error,
-          error.candidates,
+          // A refusal's lists are null where Go's slice was nil, which says what absent says.
+          error.candidates ?? undefined,
           error.current,
-          error.mismatches
+          error.mismatches ?? undefined
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

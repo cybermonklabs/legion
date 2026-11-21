@@ -81,15 +81,16 @@ expect.extend(reportableJestDomMatchers());
 // holds every test file of that directory to that rule, and `e2e/__tests__/row-limits.test.ts`
 // runs it on that lane, so a limit there is checked rather than listed here. `web/src` has no
 // such rule, and its rows that set less than the flag are the ones the flag does not protect. A
-// grep of its test files and a parse of them with the TypeScript parser find three rows that
-// set a limit, all of them less: `web/src/features/refs/MarkdownBody.test.tsx`'s "ends formatted
-// on the page's own thread when the worker misses its deadline" sets 40 s, above the 25 s wait
-// that row must let run out, and `web/src/features/refs/fixture-table-readings.test.ts` sets
-// 30 s, as `WHOLE_TABLE_TIMEOUT_MS`, on "every document of the table reads in a DOM as the table
-// says it reads" and "no mark element stands between an inline leaf and its paragraph, in any
-// document of the table". The list is checked by nothing: a row added tomorrow may set any
-// number. What lowering the flag would cut is every row that sets none, and what raising it
-// would not reach is every row that sets one.
+// parse of its test files with the TypeScript parser finds two rows that set less, both in
+// `web/src/features/refs/fixture-table-readings.test.ts`: 30 s, as `WHOLE_TABLE_TIMEOUT_MS`, on
+// "every document of the table reads in a DOM as the table says it reads" and "no mark element
+// stands between an inline leaf and its paragraph, in any document of the table". The eight rows
+// of `web/src/features/issue/useIssueDrafts.test.ts` that read its sweep set more: 510 s, as
+// `explorationTimeout`, because whichever of them runs first in a process computes the sweep,
+// which read up to 255 s in an issue pod beside its other roles' work; it is sized where it is
+// set. The list is checked by nothing: a row added tomorrow may set any number. What lowering the
+// flag would cut is every row that sets none, and what raising it would not reach is every row
+// that sets one.
 //
 // The wait budget is the line below. Testing Library's default `asyncUtilTimeout` is 1000 ms,
 // which a loaded run of this suite passes while a page is still rendering: it failed

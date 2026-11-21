@@ -4834,8 +4834,8 @@ export interface components {
     };
     DocumentWriteAdvice: {
       decision_block_checks?: components["schemas"]["DecisionBlockCheck"][];
-      decision_blocks: number;
-      decision_blocks_added: number;
+      decision_blocks?: number;
+      decision_blocks_added?: number;
       moved_approval_request?: components["schemas"]["MovedApprovalRequest"];
       superseded_approval?: components["schemas"]["SupersededApproval"];
       unparsed_openers?: components["schemas"]["UnparsedOpeners"];
@@ -5081,6 +5081,20 @@ export interface components {
     };
     HoldPersistenceInput: {
       duration: string;
+    };
+    IDAmbiguousError: {
+      candidates: components["schemas"]["IDCandidate"][] | null;
+      code: string;
+      error: string;
+    };
+    IDCandidate: {
+      document?: string;
+      first_line?: string;
+      id: string;
+      issue_key?: string;
+      /** @enum {string} */
+      kind: "ask" | "comment" | "message" | "artifact" | "block";
+      ref: string;
     };
     InboxDismissRequest: {
       artifact?: string;
@@ -6752,8 +6766,8 @@ export interface components {
     };
     WriteAdvice: {
       decision_block_checks?: components["schemas"]["DecisionBlockCheck"][];
-      decision_blocks: number;
-      decision_blocks_added: number;
+      decision_blocks?: number;
+      decision_blocks_added?: number;
       declined_asks?: components["schemas"]["AdviceDeclinedAsk"][];
       issue_status: string;
       legion_managed_status?: boolean;
@@ -7209,6 +7223,15 @@ export interface operations {
           "application/json": components["schemas"]["ArtifactWithTrees"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -7240,6 +7263,15 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
@@ -7277,6 +7309,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["Artifact"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7451,6 +7492,15 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -7482,6 +7532,15 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
@@ -7564,6 +7623,15 @@ export interface operations {
           "application/json": components["schemas"]["ApprovalRequestResponse"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -7597,6 +7665,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AskWithTrees"][];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7639,6 +7716,15 @@ export interface operations {
           };
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -7671,6 +7757,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ArtifactBlock"][];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7706,6 +7801,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["BlockPath"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7747,6 +7851,15 @@ export interface operations {
           "application/json": components["schemas"]["DecisionKeep"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -7779,6 +7892,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CommentWithTrees"][];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7819,6 +7941,15 @@ export interface operations {
           "application/json": components["schemas"]["CommentWriteResponse"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7870,7 +8001,8 @@ export interface operations {
           "application/json":
             | components["schemas"]["EditPreconditionError"]
             | components["schemas"]["EditLostError"]
-            | components["schemas"]["AmbiguousTargetError"];
+            | components["schemas"]["AmbiguousTargetError"]
+            | components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7912,6 +8044,15 @@ export interface operations {
           "application/json": components["schemas"]["Event"][];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -7948,6 +8089,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ArtifactReview"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7988,6 +8138,15 @@ export interface operations {
           "application/json": components["schemas"]["ArtifactRebuildReport"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8022,6 +8181,15 @@ export interface operations {
           "application/json": components["schemas"]["ArtifactReferences"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8054,6 +8222,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ArtifactReviewRead"][];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8094,6 +8271,15 @@ export interface operations {
           "application/json": components["schemas"]["ArtifactReview"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8126,6 +8312,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["Subscriber"][];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8161,6 +8356,15 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8194,6 +8398,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ArtifactText"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8234,6 +8447,15 @@ export interface operations {
           "application/json": components["schemas"]["Version"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8270,6 +8492,15 @@ export interface operations {
           "application/json": components["schemas"]["ArtifactVersionText"];
           "application/octet-stream": unknown;
           "text/markdown": unknown;
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8309,6 +8540,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ArtifactReview"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8380,6 +8620,15 @@ export interface operations {
           "application/json": components["schemas"]["AskRead"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8416,6 +8665,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AskWithTrees"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8456,6 +8714,15 @@ export interface operations {
           "application/json": components["schemas"]["AskWithTrees"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8492,6 +8759,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AskWithTrees"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8532,6 +8808,15 @@ export interface operations {
           "application/json": components["schemas"]["AskWithTrees"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8564,6 +8849,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AskFollowersRead"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8603,6 +8897,15 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8640,6 +8943,15 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8676,6 +8988,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AskWithTrees"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8880,6 +9201,15 @@ export interface operations {
           "application/json": components["schemas"]["CommentRead"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8916,6 +9246,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CommentWithTrees"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8956,6 +9295,15 @@ export interface operations {
           "application/json": components["schemas"]["AcceptSuggestionResponse"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8988,6 +9336,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ItemBlocks"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9028,6 +9385,15 @@ export interface operations {
           "application/json": components["schemas"]["CommentDelivery"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -9066,6 +9432,15 @@ export interface operations {
           "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -9098,6 +9473,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CommentWithTrees"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9149,6 +9533,15 @@ export interface operations {
           "application/json": components["schemas"]["CommentWriteResponse"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -9185,6 +9578,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CommentWithTrees"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11210,6 +11612,15 @@ export interface operations {
           "application/json": components["schemas"]["MessageRead"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -12165,6 +12576,15 @@ export interface operations {
           "application/json": components["schemas"]["AskSnooze"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -12196,6 +12616,15 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
@@ -12229,6 +12658,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DocumentRead"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12267,6 +12705,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DocumentRead"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12561,6 +13008,15 @@ export interface operations {
           "application/json": components["schemas"]["MessageRead"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -12593,6 +13049,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ItemBlocks"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12633,6 +13098,15 @@ export interface operations {
           "application/json": components["schemas"]["MessageDelivery"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -12670,6 +13144,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AcceptedMessageDelivery"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12720,6 +13203,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["MessageReplyResult"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -14088,6 +14580,15 @@ export interface operations {
           "application/json": components["schemas"]["GraphReferences"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -14120,6 +14621,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ReferenceQuestions"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IDAmbiguousError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -15026,6 +15536,8 @@ export type GraphReferences = components["schemas"]["GraphReferences"];
 export type Handoff = components["schemas"]["Handoff"];
 export type HandoffSummary = components["schemas"]["HandoffSummary"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];
+export type IDAmbiguousError = components["schemas"]["IDAmbiguousError"];
+export type IDCandidate = components["schemas"]["IDCandidate"];
 export type InboxDismissRequest = components["schemas"]["InboxDismissRequest"];
 export type InboxDismissResponse = components["schemas"]["InboxDismissResponse"];
 export type InboxIssue = components["schemas"]["InboxIssue"];
@@ -15232,3 +15744,16 @@ export type SplitOwnedSchemaName =
   | "InboxDocument"
   | "ReplyBlock"
   | "Suggestion";
+
+/** Every body a route refuses a request with: each schema an operation answers at a 4xx or
+ * 5xx status or as its default answer. A client reads a refusal as `DispatchServiceErrorShape`
+ * before its `code` says which of these it holds. */
+export type DispatchRefusal =
+  | components["schemas"]["AmbiguousTargetError"]
+  | components["schemas"]["EditLostError"]
+  | components["schemas"]["EditPreconditionError"]
+  | components["schemas"]["ErrorBody"]
+  | components["schemas"]["IDAmbiguousError"]
+  | components["schemas"]["IssueClaimedError"]
+  | components["schemas"]["IssueDuplicateError"]
+  | components["schemas"]["UserStateStaleError"];

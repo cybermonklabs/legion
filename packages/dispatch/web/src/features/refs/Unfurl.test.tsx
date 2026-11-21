@@ -1,11 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
 import { DISPATCH_BLOCK_UNITS } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { displayTree } from "../../__tests__/display-trees";
+import { expectOnePass, ONE_PASS_SLACK, stepsAtNAndFourN } from "../../__tests__/one-pass";
 import { ApiError, api } from "../../api/client";
 import type {
   AskRead,
@@ -15,18 +16,13 @@ import type {
   ReferenceQuestions,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "./markdown-engine";
+import { readerStep } from "./reader-steps";
 import { Unfurl } from "./Unfurl";
 
 /** The test DOM is happy-dom's window (`__tests__/setup.ts` registers it), which TypeScript
  *  knows only as the DOM's; a dashboard address is read against the page's own origin, so the
  *  test that writes one puts the page on an origin first. */
 const testWindow = window as unknown as HappyDOMWindow;
-
-/** A wall-clock budget, not one of the machine-sensitive waits this package's defaults cover
- *  (`web/src/__tests__/setup.ts`): the regression the rows that read it guard, catastrophic
- *  backtracking, costs minutes rather than milliseconds, so a budget far above what any loaded
- *  pod spends on a single pass fails a rewrite that backtracks and nothing else. */
-const BACKTRACKING_BUDGET_MS = 2_000;
 
 function renderUnfurl(body: string, source?: Parameters<typeof Unfurl>[0]["source"]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -177,7 +173,8 @@ test("Unfurl unfurls a dispatch project document reference with its name and doc
     expect(getProjectArtifact).not.toHaveBeenCalled();
     expect(getIssue).not.toHaveBeenCalled();
     expect(getIssueSummary).not.toHaveBeenCalled();
-    expect(screen.getByRole("link", { name: /Design notes/ }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: /Design notes/ })).toHaveAttribute(
+      "href",
       "/projects/CORE/documents/design-notes?version=3"
     );
     view.unmount();
@@ -354,7 +351,7 @@ test("Unfurl cards an issue key written bare, once its issue exists", async () =
 
   try {
     const card = await within(view.container).findByRole("link", { name: /Design decision/ });
-    expect(card.getAttribute("href")).toBe("/issues/CORE-1");
+    expect(card).toHaveAttribute("href", "/issues/CORE-1");
     expect(getIssueSummary).toHaveBeenCalledWith("CORE-1");
   } finally {
     getIssueSummary.mockRestore();
@@ -377,10 +374,8 @@ test("Unfurl cards a reference that ends in the punctuation the grammar trims", 
 
   try {
     expect(
-      (
-        await within(address.container).findByRole("link", { name: /Design decision/ })
-      ).getAttribute("href")
-    ).toBe("/issues/CORE-1");
+      await within(address.container).findByRole("link", { name: /Design decision/ })
+    ).toHaveAttribute("href", "/issues/CORE-1");
     await within(key.container).findByRole("link", { name: /Design decision/ });
     await within(question.container).findByRole("link", {
       name: "Which region do we deploy to?",
@@ -403,7 +398,7 @@ test("Unfurl cards a dashboard address of this dashboard", async () => {
 
   try {
     const card = await within(view.container).findByRole("link", { name: /Design decision/ });
-    expect(card.getAttribute("href")).toBe("/issues/CORE-1");
+    expect(card).toHaveAttribute("href", "/issues/CORE-1");
   } finally {
     getIssueSummary.mockRestore();
     view.unmount();
@@ -422,7 +417,7 @@ test("Unfurl cards a #id against the document the body's text belongs to", async
     const card = await within(view.container).findByRole("link", {
       name: "Which region do we deploy to?",
     });
-    expect(card.getAttribute("href")).toBe("/issues/CORE-1/asks/ask-1");
+    expect(card).toHaveAttribute("href", "/issues/CORE-1/asks/ask-1");
     expect(getReferenceQuestions).toHaveBeenCalledWith("message", "message-1");
   } finally {
     getAsk.mockRestore();
@@ -497,31 +492,63 @@ test("Unfurl shows no card, and asks nothing, for a body with prose beside its r
 // comment holds up to DISPATCH_BLOCK_UNITS UTF-16 units. A body of repeated schemes splits into
 // references in exponentially many ways, and a pattern that tried them ran for minutes in V8 on
 // one of these bodies, hanging every reader's tab; JavaScriptCore, which runs these tests, gives
-// up after a second or so per body.
+// up after a second or so per body. One pass is what a count shows, not a clock: the reading's
+// loops (`reader-steps.ts`) take at most four times their steps, and a few more, on a body of
+// four times the schemes, the bodies at the bound being those longer ones. The expressions it
+// runs over a body are checked as they are written (`reader-expressions.test.ts`).
 test(`Unfurl reads ${DISPATCH_BLOCK_UNITS}-character bodies of repeated schemes in one pass`, () => {
-  const start = performance.now();
-  const views = [];
-  for (const scheme of ["http://", "https://", "dispatch://"]) {
-    // The repeat leaves room for the two units the ` x` and `\nx` cases append, so every body
-    // here is at or just under the bound.
-    const references = scheme.repeat(Math.floor((DISPATCH_BLOCK_UNITS - 2) / scheme.length));
-    views.push(renderUnfurl(`${references} x`), renderUnfurl(`${references}\nx`));
-    // The run itself names nothing - no scheme repeated is a reference - so it cards nothing
-    // either; what this holds is that reading it costs one pass.
-    views.push(renderUnfurl(references));
-  }
+  const views: RenderResult[] = [];
   try {
+    for (const scheme of ["http://", "https://", "dispatch://"]) {
+      // A quarter of the repeat that leaves room for the two units the ` x` and `\nx` cases
+      // append, so every body four times as long is at or just under the bound.
+      const quarter = Math.floor((DISPATCH_BLOCK_UNITS - 2) / scheme.length / 4);
+      for (const body of [
+        (references: string) => `${references} x`,
+        (references: string) => `${references}\nx`,
+        // The run itself names nothing - no scheme repeated is a reference - so it cards nothing
+        // either; what this holds is that reading it costs one pass.
+        (references: string) => references,
+      ]) {
+        expectOnePass((n) => {
+          views.push(renderUnfurl(body(scheme.repeat(n))));
+        }, quarter);
+      }
+    }
     for (const view of views) {
       expect(view.container.querySelector("section")).toBeNull();
     }
-    // This row reads 0.03 s idle and 0.16 s loaded on a 2-core pod, and the budget is 12 times
-    // that slowest loaded reading, so no loaded pod can fail it by being slow.
-    expect(performance.now() - start).toBeLessThan(BACKTRACKING_BUDGET_MS);
   } finally {
     for (const view of views) {
       view.unmount();
     }
   }
+});
+
+/** Whether a scheme of `body` starts a run that reaches its end, read the way the pattern the
+ *  row above guards against read a body, held to quadratic: from every scheme the body holds it
+ *  reads the rest of the body again, where that pattern tried every way of splitting it. */
+function schemeRunsToTheEnd(body: string): boolean {
+  for (let at = body.indexOf("://"); at !== -1; at = body.indexOf("://", at + 1)) {
+    let end = at;
+    while (end < body.length && !/\s/.test(body.charAt(end))) {
+      readerStep();
+      end += 1;
+    }
+    if (end === body.length) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The control of this file's two one-pass rows: the same bound fails a reading that rereads the
+// rest of a body at every scheme in it, so a reading that went back to that would fail them.
+test("the one-pass bound fails a reading that rereads a body from every scheme in it", () => {
+  const body = (n: number) => `${"http://".repeat(n)} x`;
+  const { atN, atFourN } = stepsAtNAndFourN((n) => schemeRunsToTheEnd(body(n)), 1 << 6);
+  expect(schemeRunsToTheEnd(body(1 << 6))).toBe(false);
+  expect(atFourN).toBeGreaterThan(4 * atN + ONE_PASS_SLACK);
 });
 
 test("Unfurl links a GitHub pull request's card to the URL the body wrote", async () => {
@@ -536,7 +563,8 @@ test("Unfurl links a GitHub pull request's card to the URL the body wrote", asyn
     await waitFor(() => {
       expect(githubRest).toHaveBeenCalledWith("/repos/owner/repository/issues/2");
     });
-    expect(within(view.container).getByRole("link").getAttribute("href")).toBe(
+    expect(within(view.container).getByRole("link")).toHaveAttribute(
+      "href",
       "https://github.com/owner/repository/pull/2"
     );
   } finally {
@@ -546,24 +574,23 @@ test("Unfurl links a GitHub pull request's card to the URL the body wrote", asyn
 });
 
 // The trim once rescanned the closing run from every position in it, taking seconds on 64 KiB.
+// One pass is a count here too, the body at 64 KiB being the longer of the two read.
 test("Unfurl reads a GitHub link trailed by a long closing run in one pass", () => {
   const githubRest = spyOn(api, "githubRest");
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const start = performance.now();
-  const view = render(
-    <QueryClientProvider client={queryClient}>
-      <Unfurl body={`https://github.com/owner/repository/pull/3${")".repeat(1 << 16)}x`} />
-    </QueryClientProvider>
-  );
-
+  const views: RenderResult[] = [];
   try {
-    // This row reads 0.01 s idle and 0.07 s loaded on a 2-core pod.
-    expect(performance.now() - start).toBeLessThan(BACKTRACKING_BUDGET_MS);
-    expect(view.container.querySelector("section")).toBeNull();
+    expectOnePass((n) => {
+      views.push(renderUnfurl(`https://github.com/owner/repository/pull/3${")".repeat(n)}x`));
+    }, 1 << 14);
+    for (const view of views) {
+      expect(view.container.querySelector("section")).toBeNull();
+    }
     expect(githubRest).not.toHaveBeenCalled();
   } finally {
     githubRest.mockRestore();
-    view.unmount();
+    for (const view of views) {
+      view.unmount();
+    }
   }
 });
 

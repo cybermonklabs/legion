@@ -19,7 +19,7 @@ import {
   selectEditorQuote,
   typeAtEnd,
 } from "./editor";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 // A closed issue still takes comments and messages (dispatch://INFRA-448), so a finished issue's
@@ -55,11 +55,17 @@ interface Fixture {
   readonly testerMessageId: string;
 }
 
-async function seedClosedIssue(): Promise<Fixture> {
+/** The closed issue, held by `holder`: alice, or the row's own person for a row that reads as
+ *  one. */
+async function seedClosedIssue(holder = "alice"): Promise<Fixture> {
+  const e2e = rowKey("E2E");
   await setLiveSessions([planner, tester]);
   await setSessionSendStatus(tester.session_id, 503);
-  await createProject({ key: "E2E", name: "Closed issues" });
-  const issue = await createIssue({ project: "E2E", spec, title: "Asked after it closed" });
+  await createProject({ key: e2e, name: "Closed work" }, { login: holder });
+  const issue = await createIssue(
+    { project: e2e, spec, title: "Asked after it closed" },
+    { login: holder }
+  );
   const question = await createMessage(issue.key, { body: "Bob's question" }, { login: "bob" });
   const toPlanner = await createMessage(
     issue.key,
@@ -237,11 +243,18 @@ test("Retry of a failed delivery on a closed issue posts a new attempt", async (
 // A closed issue's document takes no edit, so the browser writes no mark: the selection bar offers
 // Comment alone, the comment names its text by quote, the server writes the mark, and the thread
 // arrives in the margin.
+//
+// This row and the next press the margin sheet's Send at a phone's width, so each reads as a
+// person of its own (`rowPerson`, e2e/test.ts), who holds the issue as alice did. The phone's
+// header draws the reader's Inbox and New replies counts, and alice's, which every row before on
+// the worker raises, take a second line: that moves the document, and the selection's action bar
+// beside its text, down onto the sheet's composer, whose Send the bar then covers.
 test("a margin comment on a closed issue's spec posts with its quote @phone", async ({
   browser,
 }) => {
-  const { issueKey } = await seedClosedIssue();
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const { issueKey } = await seedClosedIssue(me);
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -279,9 +292,14 @@ test("a margin comment on a closed issue's spec posts with its quote @phone", as
 test("a margin comment on a spec whose issue closed while the page was open posts with its quote @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "E2E", name: "Closed issues" });
-  const issue = await createIssue({ project: "E2E", spec, title: "Closes while it is open" });
-  const alice = await asUser(browser, "alice");
+  const e2e = rowKey("E2E");
+  const me = rowPerson("alice");
+  await createProject({ key: e2e, name: "Closed work" }, { login: me });
+  const issue = await createIssue(
+    { project: e2e, spec, title: "Closes while it is open" },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();

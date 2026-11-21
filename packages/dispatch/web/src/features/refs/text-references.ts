@@ -1,6 +1,7 @@
 import { isIdPrefix } from "@legion/contracts";
 
 import { itemOfBlock } from "./block-reference";
+import { readerStep } from "./reader-steps";
 import { referenceSpans } from "./reference-spans";
 import {
   buildDispatchReference,
@@ -256,6 +257,7 @@ function keyEnds(text: string, end: number): boolean {
 function keyAt(text: string, start: number): number | undefined {
   let end = start + 1;
   while (end < text.length && /[A-Z0-9]/.test(text.charAt(end))) {
+    readerStep();
     end += 1;
   }
   const letters = end - start;
@@ -270,6 +272,7 @@ function keyAt(text: string, start: number): number | undefined {
   }
   end += 2;
   while (end < text.length && /[0-9]/.test(text.charAt(end))) {
+    readerStep();
     end += 1;
   }
   return keyEnds(text, end) ? end : undefined;
@@ -289,6 +292,7 @@ interface BareCandidate {
  *  the span after the gap is read whole and then names nothing. */
 function bareCandidates(text: string, from: number, to: number, found: BareCandidate[]): void {
   for (let at = from; at < to; at += 1) {
+    readerStep();
     const character = text.charAt(at);
     const isKeyStart = character >= "A" && character <= "Z";
     if ((character !== "#" && !isKeyStart) || !isMentionStart(text, at)) {
@@ -297,6 +301,7 @@ function bareCandidates(text: string, from: number, to: number, found: BareCandi
     if (character === "#") {
       let end = at + 1;
       while (end < text.length && blockIdCharacter.test(text.charAt(end))) {
+        readerStep();
         end += 1;
       }
       if (end > at + 1) {
@@ -317,10 +322,17 @@ function bareCandidates(text: string, from: number, to: number, found: BareCandi
 /** `written` without the trailing `_` and `-` an emphasis or a sentence leaves on a mention, or
  *  undefined where it has none or is nothing without them. It is the one statement of that
  *  trim: a mention is resolved as written first and this way second, and the characters it
- *  resolved without are the author's own (`TextReference.named`). */
+ *  resolved without are the author's own (`TextReference.named`). It walks back from the end, so
+ *  a long run of them anywhere in `written` costs one pass; the expression it replaces,
+ *  `/[_-]+$/`, read such a run again from every position in it, which took seconds on a
+ *  dashboard address of 32,768 underscores and a letter. */
 function trimmedMention(written: string): string | undefined {
-  const trimmed = written.replace(/[_-]+$/, "");
-  return trimmed === written || trimmed === "" ? undefined : trimmed;
+  let end = written.length;
+  while (end > 0 && (written.charAt(end - 1) === "_" || written.charAt(end - 1) === "-")) {
+    readerStep();
+    end -= 1;
+  }
+  return end === written.length || end === 0 ? undefined : written.slice(0, end);
 }
 
 /** The ask the question map gives `#id`: the id as written, else the id without the trailing `_`
@@ -541,6 +553,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
   const spans = referenceSpans(text);
   let from = 0;
   for (const span of spans) {
+    readerStep();
     bareCandidates(text, from, span.start, bare);
     from = span.end;
     const address = readAddress(span.value, origin, items);
@@ -575,6 +588,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
   bareCandidates(text, from, text.length, bare);
 
   for (const candidate of bare) {
+    readerStep();
     const written = text.slice(candidate.start, candidate.end);
     if (candidate.key !== undefined) {
       const key = candidate.key;

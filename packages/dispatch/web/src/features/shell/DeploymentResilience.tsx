@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { REQUEST_DEADLINE_MS } from "../../api/client";
+import { type Result, routePath } from "../../api/paths";
 import {
   borderStrong,
   card,
@@ -27,7 +28,7 @@ const VERSION_CHECK_INTERVAL_MS = 60_000;
 const INDEX_ASSET_PATH = /^\/assets\/index-[^/]+\.js$/;
 // GET /api/v1/dashboard/builds answers `{serving, live}`: the entry chunk of the build the
 // answering process serves, and the entry chunks of the builds every live server process serves.
-const DASHBOARD_BUILDS_PATH = "/api/v1/dashboard/builds";
+const DASHBOARD_BUILDS_PATH = routePath("get", "/api/v1/dashboard/builds", {});
 
 declare const __DISPATCH_BUILD__: string;
 
@@ -89,7 +90,7 @@ async function deploymentChanged(): Promise<boolean> {
   if (response.status !== 200) {
     return false;
   }
-  const { live } = (await response.json()) as { live?: unknown };
+  const { live } = (await response.json()) as Result<"/api/v1/dashboard/builds", "get">;
   if (!Array.isArray(live) || live.length !== 1) {
     return false;
   }

@@ -9,7 +9,7 @@
  */
 import { expect } from "@playwright/test";
 
-import { createAsk, createIssue, createProject, patchIssue } from "./api";
+import { createAsk, createIssue, createProject, fixedKey, patchIssue } from "./api";
 import {
   assigneeFilter,
   assigneeOptions,
@@ -32,15 +32,19 @@ import {
 } from "./keyboard-inbox";
 import { stubbed } from "./stub/stub-test";
 
+/** The keys this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+const PANE = fixedKey("PANE", "this file's recordings were made under it");
+
 /** The three asks the marks are made on. */
 const test = stubbed(async () => {
-  await seedInbox();
+  await seedInbox(CORE);
   return { rows: 3 };
 });
 
 /** Two questions on one issue and a third on its own, for the names the controls carry. */
 const twinsTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const twins = await createIssue({ project: "CORE", title: "Two asks on one issue" });
   // Two questions that agree far past any cut: only the position tells these two apart.
   await createAsk(
@@ -61,7 +65,7 @@ const twinsTest = stubbed(async () => {
 /** One ask of the reader's own and one of Bob's, so narrowing to the reader takes a row off the
  *  list while its mark is still made. */
 const assigneeTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const mine = await createIssue({ project: "CORE", title: "Mine to answer" });
   await patchIssue(mine.key, { assignee: "alice" });
   await createAsk(mine.key, { question: "Ship it?" }, session);
@@ -73,7 +77,7 @@ const assigneeTest = stubbed(async () => {
 
 /** Two agents asking on one issue, so the `?agent=` chip narrows the list to one of them. */
 const agentFilterTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Two agents, one issue" });
   await patchIssue(issue.key, { assignee: "alice" });
   const other = {
@@ -91,7 +95,7 @@ const agentFilterTest = stubbed(async () => {
 
 /** One question to mark and one with options to answer. */
 const answeringTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const marked = await createIssue({ project: "CORE", title: "Marked" });
   await createAsk(marked.key, { question: "Which release?" }, session);
   const answering = await createIssue({ project: "CORE", title: "Answering" });
@@ -104,7 +108,7 @@ const answeringTest = stubbed(async () => {
 });
 
 /** The reading pane's two questions: a request to approve a document, and a question in none. */
-const paneTest = stubbed(seedPane);
+const paneTest = stubbed(() => seedPane(PANE));
 
 /** Nothing at all, for the Inbox that lists nothing. */
 const emptyTest = stubbed(async () => ({ rows: 0 }));

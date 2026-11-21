@@ -17,7 +17,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { type APIResponse, expect, type Page, type Route, test } from "./test";
+import { type APIResponse, expect, type Page, type Route, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // INFRA-492: what an open page shows must still follow the writes it shows, once an event
@@ -72,16 +72,17 @@ async function holdNextRead(page: Page, pattern: RegExp): Promise<HeldRead> {
 test("document panel: a new comment citing a project document shows in its open Referenced by panel within 2 s", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Citing issue" });
-  const doc = await createProjectDocument("CORE", { content: "# Runbook\n", name: "Runbook" });
-  const reference = `dispatch://CORE/artifact/${doc.artifact.slug}`;
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Citing issue" });
+  const doc = await createProjectDocument(core, { content: "# Runbook\n", name: "Runbook" });
+  const reference = `dispatch://${core}/artifact/${doc.artifact.slug}`;
   await createComment(issue.key, { body: `First cite of ${reference}.` }, bob);
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await openLive(page, `/projects/CORE/documents/${doc.artifact.slug}`);
+    await openLive(page, `/projects/${core}/documents/${doc.artifact.slug}`);
     const panel = page.getByRole("region", { name: "Referenced by" });
     await expect(panel).toContainText(`First cite of ${reference}.`);
 
@@ -95,9 +96,10 @@ test("document panel: a new comment citing a project document shows in its open 
 test("reference: a title written while the reference's read is in flight shows after leaving the page and coming back", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const target = await createIssue({ project: "CORE", title: "Target v1" });
-  const holder = await createIssue({ project: "CORE", title: "Holder" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const target = await createIssue({ project: core, title: "Target v1" });
+  const holder = await createIssue({ project: core, title: "Holder" });
   await createMessage(holder.key, { body: `See dispatch://${target.key}.` }, bob);
 
   const alice = await asUser(browser, "alice");
@@ -146,10 +148,11 @@ test("reference: a title written while the reference's read is in flight shows a
 test("inbox: an issue closed while the Inbox read is in flight drops its ask from the Inbox", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const other = await createIssue({ project: "CORE", title: "Quarterly budget review" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const other = await createIssue({ project: core, title: "Quarterly budget review" });
   const staying = await createAsk(other.key, { question: "An ask that stays" }, bob);
-  const closing = await createIssue({ project: "CORE", title: "Flaky deploy step" });
+  const closing = await createIssue({ project: core, title: "Flaky deploy step" });
 
   const alice = await asUser(browser, "alice");
   try {
@@ -185,7 +188,8 @@ test("inbox: an issue closed while the Inbox read is in flight drops its ask fro
 test("architecture: an attached issue's new title shows in its component's open work list within 2 s", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   await seedFakeGithub({
     "legion/arch": {
       contents: "read",
@@ -193,16 +197,16 @@ test("architecture: an attached issue's new title shows in its component's open 
       installation_id: 101,
     },
   });
-  await putArchitectureSource("CORE", { branch: "main", repo: "legion/arch" });
-  const source = await syncArchitectureSource("CORE", "legion/arch");
+  await putArchitectureSource(core, { branch: "main", repo: "legion/arch" });
+  const source = await syncArchitectureSource(core, "legion/arch");
   expect(source.last_error).toBeNull();
-  const issue = await createIssue({ project: "CORE", title: "Web login" });
+  const issue = await createIssue({ project: core, title: "Web login" });
   await patchIssue(issue.key, { components: { ids: ["web"], mode: "explicit" } });
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await openLive(page, "/projects/CORE/architecture?component=web");
+    await openLive(page, `/projects/${core}/architecture?component=web`);
     const work = page.getByTestId(`work-${issue.key}`);
     await expect(work).toContainText("Web login");
 
@@ -217,8 +221,9 @@ test("architecture: an attached issue's new title shows in its component's open 
 test("inbox: a snooze from alice's other tab moves the row to Later in this tab within 2 s @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Snoozed elsewhere" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Snoozed elsewhere" });
   const ask = await createAsk(issue.key, { question: "Snooze me from the other tab" }, bob);
 
   const alice = await asUser(browser, "alice");
@@ -240,8 +245,9 @@ test("inbox: a snooze from alice's other tab moves the row to Later in this tab 
 test("replies: an issue's new title shows on the open Inbox's Reply row within 2 s", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Release train" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Release train" });
   const root = await createComment(issue.key, { body: "Please fix the flaky test." });
   await createComment(issue.key, { body: "Done: the build is green.", reply_to: root.id }, bob);
 
@@ -263,9 +269,10 @@ test("replies: an issue's new title shows on the open Inbox's Reply row within 2
 test("children: a child's priority write moves its active time in the open parent's Children tab within 2 s", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const parent = await createIssue({ project: "CORE", title: "Parent" });
-  const child = await createIssue({ parent: parent.key, project: "CORE", title: "Child" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const parent = await createIssue({ project: core, title: "Parent" });
+  const child = await createIssue({ parent: parent.key, project: core, title: "Child" });
 
   const alice = await asUser(browser, "alice");
   try {
@@ -293,15 +300,16 @@ test("children: a child's priority write moves its active time in the open paren
 test("document panel: an edit of a comment on a project document shows its new text in the document's open Referenced by panel within 2 s", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const doc = await createProjectDocument("CORE", { content: "# Runbook\n", name: "Runbook" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const doc = await createProjectDocument(core, { content: "# Runbook\n", name: "Runbook" });
   // Alice's own comment, edited from her other tab: only a person may edit a comment.
   const comment = await createArtifactComment(doc.artifact.id, { body: "Original remark" });
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await openLive(page, `/projects/CORE/documents/${doc.artifact.slug}`);
+    await openLive(page, `/projects/${core}/documents/${doc.artifact.slug}`);
     const panel = page.getByRole("region", { name: "Referenced by" });
     await expect(panel).toContainText("Original remark");
 
@@ -315,19 +323,23 @@ test("document panel: an edit of a comment on a project document shows its new t
 test("budget: a document in another project citing 25 documents reads no issue detail, Inbox or ask list for an open issue page", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OTHER", name: "Other" });
-  const issue = await createIssue({ project: "CORE", title: "Open issue page" });
+  const core = rowKey("CORE");
+  const otherKey = rowKey("OTHER");
+  await createProject({ key: core, name: "Core" });
+  await createProject({ key: otherKey, name: "Other" });
+  const issue = await createIssue({ project: core, title: "Open issue page" });
   // Twenty-five documents to cite; nothing here reads the order they were written in.
   const cited = await Promise.all(
     Array.from({ length: 25 }, (_, number) =>
-      createProjectDocument("OTHER", {
+      createProjectDocument(otherKey, {
         content: `# Chapter ${number + 1}\n`,
         name: `Chapter ${String(number + 1).padStart(2, "0")}`,
       })
     )
   );
-  const index = cited.map((doc) => `dispatch://OTHER/artifact/${doc.artifact.slug}`).join(" ");
+  const index = cited
+    .map((doc) => `dispatch://${otherKey}/artifact/${doc.artifact.slug}`)
+    .join(" ");
 
   const alice = await asUser(browser, "alice");
   try {
@@ -364,7 +376,7 @@ test("budget: a document in another project citing 25 documents reads no issue d
     gets.length = 0;
 
     // One document in another project whose one paragraph cites 25 documents.
-    await createProjectDocument("OTHER", { content: `Index: ${index}\n`, name: "Index" }, bob);
+    await createProjectDocument(otherKey, { content: `Index: ${index}\n`, name: "Index" }, bob);
     // The citation's event is batched for 100 ms and any read it owes is deferred up to
     // `MIN_REFETCH_INTERVAL_MS`; one jump fires both, and the margin is for a request they make
     // reaching Playwright's counter.
@@ -389,8 +401,9 @@ test("budget: a document in another project citing 25 documents reads no issue d
 test("snooze: another person's event feed carries nothing that names the ask alice snoozed", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Private triage" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Private triage" });
 
   // Bob's open tab: every event frame its live socket carries.
   const bobContext = await asUser(browser, "bob");

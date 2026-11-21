@@ -1272,12 +1272,10 @@ test("a tree mounted again past 30 s reads nothing, and a comment event reads th
     setSystemTime(Date.now() + 31_000);
     const again = renderHook(() => useIssueTree(issue).root, { wrapper });
     expect(taskWords(again.result.current)).toBe(TASK_WORDS);
-    // Long enough for a read the mount started to have been sent.
-    await act(async () => {
-      const waited = Promise.withResolvers<void>();
-      setTimeout(waited.resolve, 50);
-      await waited.promise;
-    });
+    // The mount's effects, where a read of the slot would start: React Query starts a read in
+    // the observer's subscribe, which runs in an effect, and the preload's synchronous
+    // notifyManager reports it at once, so a started read shows in isFetching() below.
+    await act(async () => {});
     expect(client.isFetching()).toBe(0);
     expect(requests(), "no read is sent for a slot mounted again").toBe(loaded);
 

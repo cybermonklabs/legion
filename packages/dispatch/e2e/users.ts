@@ -9,9 +9,11 @@ import { measured } from "./measure";
  *  holds for that login into the context (`reusableSessionCookie`), rather than asking the
  *  harness server for one: the reset re-created the `user_sessions` row that cookie names
  *  (e2e/seed.ts), so it authenticates again, and one cache serves both the row's API seeds and
- *  its browser contexts, which therefore act as the same session. The row still starts clean: the
- *  cookie names a login and a generation the emptied database holds again, and no row, document
- *  or fake state of the row before reaches this one.
+ *  its browser contexts, which therefore act as the same session. The reset runs once per worker,
+ *  before its first row, and where a row empties the database itself (`emptyDatabase`,
+ *  e2e/test.ts). The cookie itself carries no state of an earlier row into this one: it names a
+ *  login and a generation, which no row moves (a row signs out only a person of its own,
+ *  `rowPerson`).
  *
  *  Every other sign-in mints at the harness server's dev sign-in route, as every sign-in did: the
  *  context's request client shares the context's cookie jar, and a relative URL resolves against

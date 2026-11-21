@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the `error` events below are a picture failing to load, which user-event has no form for.
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { onFakeClock, realClock, tick } from "../../__tests__/fake-clock";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
@@ -59,7 +60,11 @@ describe("Dispatch pictures", () => {
   // body past `markdownWorkerThreshold` and so in the parse worker's hands. The page's own
   // `new Worker(…)` names a module this process cannot serve, so these rows drive the faked one
   // (`parse-worker-fixture.ts`) and answer it: what they prove - a long name drawn and opened -
-  // is proved on the path the dashboard itself takes for a body that size.
+  // is proved on the path the dashboard itself takes for a body that size. The engine sends such
+  // a body only once its lazily loaded modules have loaded, and no row here warms it first: in the
+  // cold lane (`web/src/__tests__/hold-lazy-loads.ts`) that load is held back a second when such a
+  // row runs first in the file, past the 500 tasks `answer` waits for its body. So each row waits
+  // for the body to reach the worker before it answers it.
   let worker: InstalledParseWorker;
 
   beforeEach(() => {
@@ -94,16 +99,17 @@ describe("Dispatch pictures", () => {
         expect.arrayContaining(["max-w-full", "w-auto", "h-auto", "object-contain"])
       );
       expect(classes.some((name) => name.startsWith("max-h-"))).toBe(false);
-      expect(shot.closest("a")?.getAttribute("href")).toBe("/issues/CORE-1/artifacts/shot-png?v=1");
+      expect(shot.closest("a")).toHaveAttribute("href", "/issues/CORE-1/artifacts/shot-png?v=1");
       // A picture with no caption is named by its slug.
       const plan = within(view.container).getByRole("img", { name: "plan-png" });
       expect(plan).toHaveAttribute("src", "/api/v1/projects/CORE/artifacts/plan-png/versions/3");
-      expect(plan.closest("a")?.getAttribute("href")).toBe(
+      expect(plan.closest("a")).toHaveAttribute(
+        "href",
         "/projects/CORE/documents/plan-png?version=3"
       );
       const face = within(view.container).getByRole("img", { name: "face.png" });
       expect(face).toHaveAttribute("src", "/api/v1/agents/ses-1/artifacts/face-png/versions/2");
-      expect(face.closest("a")?.getAttribute("href")).toBe("/agents/ses-1/artifacts/face-png?v=2");
+      expect(face.closest("a")).toHaveAttribute("href", "/agents/ses-1/artifacts/face-png?v=2");
     } finally {
       view.unmount();
     }
@@ -145,7 +151,8 @@ describe("Dispatch pictures", () => {
     try {
       const link = await within(view.container).findByRole("link", { name: "shot.png" });
       const thumbnail = link.querySelector("img");
-      expect(thumbnail?.getAttribute("src")).toBe(
+      expect(thumbnail).toHaveAttribute(
+        "src",
         "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1"
       );
       expect(thumbnail?.className.split(" ")).toEqual(
@@ -170,7 +177,7 @@ describe("Dispatch pictures", () => {
       expect(shot).toHaveAttribute("src", "/api/v1/issues/CORE-1/artifacts/shot-png/versions/2");
       expect(shot.className.split(" ")).toContain("max-w-full");
       expect(shot.className.split(" ")).not.toContain("h-10");
-      expect(shot.closest("a")?.getAttribute("href")).toBe("/issues/CORE-1/artifacts/shot-png");
+      expect(shot.closest("a")).toHaveAttribute("href", "/issues/CORE-1/artifacts/shot-png");
     } finally {
       getIssueSummary.mockRestore();
       view.unmount();
@@ -250,7 +257,8 @@ describe("Dispatch pictures", () => {
         '[data-testid="picture-lightbox"]'
       );
       expect(lightbox?.open).toBe(true);
-      expect(lightbox?.querySelector("img")?.getAttribute("src")).toBe(
+      expect(lightbox?.querySelector("img")).toHaveAttribute(
+        "src",
         "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1"
       );
       lightbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -280,7 +288,8 @@ describe("Dispatch pictures", () => {
       const link = await within(view.container).findByRole("link", { name: "shot.png" });
       const thumbnail = await waitFor(() => {
         const image = link.querySelector("img");
-        expect(image?.getAttribute("src")).toBe(
+        expect(image).toHaveAttribute(
+          "src",
           "/api/v1/issues/CORE-1/artifacts/shot-png/versions/99"
         );
         return image as HTMLImageElement;
@@ -357,10 +366,11 @@ describe("Dispatch pictures", () => {
     );
 
     try {
+      await waitFor(() => expect(worker.requests).toHaveLength(1));
       await act(() => worker.answer(0));
       const shot = await within(view.container).findByRole("img", { name: "shot" });
       expect(shot).toHaveAttribute("src", `/api/v1/issues/CORE-1/artifacts/${slug}/versions/1`);
-      expect(shot.closest("a")?.getAttribute("href")).toBe(`/issues/CORE-1/artifacts/${slug}?v=1`);
+      expect(shot.closest("a")).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}?v=1`);
       const link = await within(view.container).findByRole("link", { name: "design.md" });
       expect(link).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
       expect(link).toHaveAttribute("data-dispatch-ref", `dispatch://CORE-1/artifact/${slug}`);
@@ -399,6 +409,7 @@ describe("Dispatch pictures", () => {
     );
 
     try {
+      await waitFor(() => expect(worker.requests).toHaveLength(1));
       await act(() => worker.answer(0));
       const designs = await within(view.container).findAllByRole("link", { name: "design.md" });
       expect(designs).toHaveLength(2);
@@ -414,7 +425,7 @@ describe("Dispatch pictures", () => {
       }
       const bare = within(view.container).getByRole("link", { name: page });
       expect(bare).toHaveAttribute("href", page);
-      expect(bare.getAttribute("data-dispatch-ref")).toBeNull();
+      expect(bare).not.toHaveAttribute("data-dispatch-ref");
     } finally {
       getArtifactText.mockRestore();
       getIssueSummary.mockRestore();
@@ -452,11 +463,12 @@ describe("Dispatch pictures", () => {
     );
 
     try {
+      await waitFor(() => expect(worker.requests).toHaveLength(1));
       await act(() => worker.answer(0));
       const designs = await within(view.container).findAllByRole("link", { name: "design.md" });
       expect(designs).toHaveLength(1);
-      expect(designs[0]?.getAttribute("href")).toBe(`/issues/CORE-1/artifacts/${slug}`);
-      expect(designs[0]?.getAttribute("data-dispatch-ref")).toBe(long);
+      expect(designs[0]).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
+      expect(designs[0]).toHaveAttribute("data-dispatch-ref", long);
       const plans = await within(view.container).findAllByRole("link", { name: "plan.md" });
       expect(plans).toHaveLength(2);
       for (const link of plans) {
@@ -490,7 +502,7 @@ describe("Dispatch pictures", () => {
       const image = await within(view.container).findByRole("img", { name: "chart" });
       expect(image).toHaveAttribute("src", "https://example.com/a.png");
       expect(image.closest("a")).toBeNull();
-      expect(image.getAttribute("loading")).toBeNull();
+      expect(image).not.toHaveAttribute("loading");
     } finally {
       view.unmount();
     }
@@ -873,7 +885,7 @@ test("raw unsupported HTML renders as literal text with no element created", asy
       const body = view.container.firstElementChild as HTMLElement;
       expect(body.querySelector(tag)).toBeNull();
       expect(body.querySelector("p")?.textContent).toBe(markdown);
-      await waitFor(() => expect(body.getAttribute("data-markdown-fallback")).toBeNull());
+      await waitFor(() => expect(body).not.toHaveAttribute("data-markdown-fallback"));
     } finally {
       view.unmount();
     }
@@ -892,7 +904,7 @@ test("a clock time such as 16:25Z renders as Markdown, not as the literal-text f
     const strong = await within(view.container).findByText("held", { selector: "strong" });
     expect(strong).toBeDefined();
     expect(view.container.querySelector("li")?.textContent).toBe("retry at 04:20Z");
-    expect(view.container.firstElementChild?.getAttribute("data-markdown-fallback")).toBeNull();
+    expect(view.container.firstElementChild).not.toHaveAttribute("data-markdown-fallback");
   } finally {
     view.unmount();
   }
@@ -1284,7 +1296,7 @@ test("a task item draws one disabled checkbox, ticked as its source is, in every
     const plain = Array.from(view.container.querySelectorAll("li")).find(
       (item) => item.textContent === "plain"
     );
-    expect(plain?.hasAttribute("data-item-type")).toBe(false);
+    expect(plain).not.toHaveAttribute("data-item-type");
     expect(plain?.querySelector("input")).toBeNull();
 
     // A tight item's paragraph is unwrapped with its box in it: box and words sit in the item.
@@ -1371,9 +1383,8 @@ function looseText(container: HTMLElement): string {
  *  out, and that budget is read from `performance.now()` (`useRenderedMarkdown`,
  *  `paintAcrossTasks`), which `jest.useFakeTimers()` freezes: under a fake clock one task
  *  paints the whole body, so the rows below - which read what a single slice left in the
- *  element - would have nothing to read. The rows also drive the parse worker through
- *  `parse-worker-fixture.ts`, whose own `tick` is a zero-delay `setTimeout` that a fake clock
- *  leaves waiting for an advance nothing makes. */
+ *  element - would have nothing to read. The parse worker's stand-in steps these rows on the
+ *  real clock with its own `tick` for the same reason (`parse-worker-fixture.ts`). */
 function nextTask(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, 0);
@@ -1476,10 +1487,11 @@ describe("A long body parsed in the worker", () => {
       await act(() => worker.answer(0));
       await waitFor(() => expect(topItems(view.container)).toHaveLength(longItems));
       const shot = view.container.querySelector("[data-dispatch-picture]");
-      expect(shot?.getAttribute("data-dispatch-picture")).toBe(
+      expect(shot).toHaveAttribute(
+        "data-dispatch-picture",
         "dispatch://CORE-1/artifact/shot-png@v1"
       );
-      expect(shot?.getAttribute("data-picture-caption")).toBe("shot.png");
+      expect(shot).toHaveAttribute("data-picture-caption", "shot.png");
       await waitFor(() => expect(pendingMark(view.container)).toBeNull());
       expect(fallbackMark(view.container)).toBeNull();
     } finally {
@@ -1884,31 +1896,38 @@ describe("A long body parsed in the worker", () => {
     }
   });
 
+  /** The parse deadline the two rows below set through `setParseDeadline`. It is theirs, not the
+   *  page's 10 s, so they move the fake clock by it. */
+  const PARSE_DEADLINE_MS = 50;
+
   // Nothing ever answers this body. The engine's deadline ends with the body parsed on the page;
   // this row shortens it through `setParseDeadline`, the seam `resetMermaidDiagrams` is for the
-  // diagram renderer's own limit, so it proves what the deadline ends in without waiting out the
-  // page's own 10 s. The 25 s wait below is above this package's 10 s default
-  // (`web/src/__tests__/setup.ts`) because the row waits out a parse deadline on a parse the test
-  // itself slowed to a stop - its worker never answers - and then the long body's own parse on
-  // the page's thread.
+  // diagram renderer's own limit, and moves the fake clock across it, so it proves what the
+  // deadline ends in without waiting out the page's own 10 s.
   test("ends formatted on the page's own thread when the worker misses its deadline", async () => {
     const worker = installFakeParseWorker();
-    setParseDeadline(50);
+    setParseDeadline(PARSE_DEADLINE_MS);
+    jest.useFakeTimers();
     const view = render(<MarkdownBody markdown={longBody("A worker that never answers")} />);
 
     try {
-      await worker.waitForRequests(1);
-      await waitFor(() => expect(topItems(view.container)).toHaveLength(longItems), {
-        interval: 250,
-        timeout: 25_000,
-      });
+      // Half the deadline after the worker was posted the body, the body is still the worker's:
+      // it reads as its pending text, parsed nowhere.
+      await tick(PARSE_DEADLINE_MS / 2);
+      expect(worker.requests).toHaveLength(1);
+      expect(pendingMark(view.container)).toBe("true");
+      expect(topItems(view.container)).toHaveLength(0);
+
+      await tick(PARSE_DEADLINE_MS);
+      await waitFor(() => expect(topItems(view.container)).toHaveLength(longItems));
       await waitFor(() => expect(pendingMark(view.container)).toBeNull());
       expect(fallbackMark(view.container)).toBeNull();
     } finally {
+      realClock();
       setParseDeadline();
       view.unmount();
     }
-  }, 40_000); // the 25 s wait must run out inside the test; below the package's 60 s deadline
+  });
 
   // The other end of the same deadline. An element keeps its place on the parse the worker is
   // holding when it goes (`keepIfPosted`), which is how a streaming turn is shown the frame the
@@ -1917,21 +1936,31 @@ describe("A long body parsed in the worker", () => {
   // throws such an answer away - the freeze a reader who navigated away would feel for a body
   // nobody is looking at (sjawhar/legion#2519). A parse on the page would have cached its
   // answer, so the mount below would need no worker at all; it asks for one, which is what says
-  // the page parsed nothing.
+  // the page parsed nothing. Only the deadline runs on the fake clock: the mount below is
+  // answered and painted on the real clock, as this file's other worker rows are (`nextTask`).
   test("parses nothing on the page when the deadline passes for a body its reader left", async () => {
     const worker = installFakeParseWorker();
-    setParseDeadline(50);
     const markdown = longBody("A body left with the worker");
-    const left = render(<MarkdownBody markdown={markdown} />);
+    setParseDeadline(PARSE_DEADLINE_MS);
     try {
-      await worker.waitForRequests(1);
+      await onFakeClock(async () => {
+        const left = render(<MarkdownBody markdown={markdown} />);
+        try {
+          await tick(PARSE_DEADLINE_MS / 2);
+          expect(worker.requests).toHaveLength(1);
+        } finally {
+          left.unmount();
+        }
+        // The deadline fires with the element gone and its place still on the job, and stopping
+        // the worker it was holding is what it does: the worker outlives the element, and is
+        // stopped once the deadline has passed.
+        expect(worker.workers[0]?.terminated).toBe(false);
+        await tick(PARSE_DEADLINE_MS);
+        expect(worker.workers[0]?.terminated).toBe(true);
+      });
     } finally {
-      left.unmount();
+      setParseDeadline();
     }
-    // The deadline fires with the element gone and its place still on the job, and stopping the
-    // worker it was holding is what it does: that, rather than a wait of the test's, is what
-    // says it has passed.
-    await waitFor(() => expect(worker.workers[0]?.terminated).toBe(true));
 
     const back = render(<MarkdownBody markdown={markdown} />);
     try {
@@ -1945,7 +1974,6 @@ describe("A long body parsed in the worker", () => {
       await waitFor(() => expect(pendingMark(back.container)).toBeNull());
       expect(fallbackMark(back.container)).toBeNull();
     } finally {
-      setParseDeadline();
       back.unmount();
     }
   });

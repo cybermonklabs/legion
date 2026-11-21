@@ -1,5 +1,5 @@
 import { answerAsk, createAsk, createIssue, createProject } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /** The ask the check finds. Its question carries the rare words the draft title is typed with,
@@ -23,9 +23,10 @@ const session = {
 test("the dialog lists the answered ask it found and claims nothing about what settles the draft", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "The mast is repainted each spring, before the sailing season.\n",
     title: mastTitle,
   });
@@ -52,6 +53,9 @@ test("the dialog lists the answered ask it found and claims nothing about what s
     await expect(dialog).toBeVisible();
     const title = dialog.getByRole("textbox", { name: "Title" });
     await expect(title).toBeFocused();
+    // The check searches the project the dialog names, and with no project in the route the
+    // dialog preselects the first project of the stack, which can be another row's.
+    await dialog.getByRole("combobox", { name: "Project" }).selectOption(core);
     const related = dialog.getByRole("region", { name: "Related items" });
 
     await title.fill(draftTitle);

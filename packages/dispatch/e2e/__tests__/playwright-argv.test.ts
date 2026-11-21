@@ -97,8 +97,8 @@ test("a required-value option takes the next token whatever it looks like", () =
 
 test("an optional-value option takes the next token only when it is no dash token", () => {
   expect(valuesTakenAt(["--shuffle", "--ui", "--list"], 0)).toBe(0);
-  expect(valuesTakenAt(["--shuffle", "e2e/claim.e2e.ts"], 0)).toBe(1);
-  expect(valuesTakenAt(["--only-changed", "e2e/claim.e2e.ts"], 0)).toBe(1);
+  expect(valuesTakenAt(["--shuffle", "e2e/claim-unresponsive.e2e.ts"], 0)).toBe(1);
+  expect(valuesTakenAt(["--only-changed", "e2e/claim-unresponsive.e2e.ts"], 0)).toBe(1);
 });
 
 test("a variadic option takes its first value like a required one and stops at the next dash", () => {

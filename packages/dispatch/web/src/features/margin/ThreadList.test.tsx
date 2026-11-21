@@ -257,7 +257,7 @@ test("a saving card is busy but every card's actions stay clickable", async () =
     const firstCard = screen.getByTestId("margin-comment-first");
     const secondCard = screen.getByTestId("margin-comment-second");
     expect(firstCard).toHaveAttribute("aria-busy", "true");
-    expect(secondCard.getAttribute("aria-busy")).toBeNull();
+    expect(secondCard).not.toHaveAttribute("aria-busy");
     expect(within(firstCard).queryByRole("status")).not.toBeNull();
     // A disabled button would drop the focus it holds and swallow the click; the margin queues
     // the click instead, so the buttons stay live while a save is in flight.

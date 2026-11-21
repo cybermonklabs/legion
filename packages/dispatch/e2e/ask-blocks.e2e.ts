@@ -21,7 +21,7 @@ import {
   selectEditorText,
 } from "./editor";
 import { navigateInApp } from "./sends";
-import { type Browser, expect, type Locator, type Page, test } from "./test";
+import { type Browser, expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /** The shared ask card a decision block hosts once the server has indexed the block: the same
@@ -62,9 +62,10 @@ const answeredDecisionSpec =
 
 /** Seeds a spec holding the decision `decision`, answers it with A, and opens it as alice. */
 async function openAnsweredDecision(browser: Browser) {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: answeredDecisionSpec,
     title: "Copied ask",
   });
@@ -80,7 +81,7 @@ async function openAnsweredDecision(browser: Browser) {
 
 /** Opens a spec holding only "End.", with the caret at its start or its end. */
 function openEnd(browser: Browser, title: string, caret: "start" | "end") {
-  return openWithCaret(browser, title, "End.\n", "End.", caret);
+  return openWithCaret(browser, title, "End.\n", "End.", caret, rowKey("CORE"));
 }
 
 async function alertsIn(page: Page): Promise<Locator> {
@@ -88,9 +89,10 @@ async function alertsIn(page: Page): Promise<Locator> {
 }
 
 test("agentWrittenAskBlockAppearsAndAnswersInPlace", async ({ browser }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "## Specification\n\nContext\n",
     title: "Ask block",
   });
@@ -192,12 +194,19 @@ test("agentWrittenAskBlockAppearsAndAnswersInPlace", async ({ browser }, testInf
 test("a reader asks back from a decision block: the question threads under the block, the decision stays open, and the Inbox row shows the reply @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: "## Specification\n\nContext before the decision.\n",
-    title: "Ask back in a spec",
-  });
+  const core = rowKey("CORE");
+  // The reader is a person of the row's own (`rowPerson`): at 1280 px the Inbox draws a card for
+  // its first row alone, which is this row's question only in a list that holds no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: core,
+      spec: "## Specification\n\nContext before the decision.\n",
+      title: "Ask back in a spec",
+    },
+    { login: me }
+  );
   await editArtifact(
     issue.primary_artifact_id,
     {
@@ -214,10 +223,9 @@ test("a reader asks back from a decision block: the question threads under the b
   );
   const blockAsk = await indexedBlockAsk(issue.key, "ship-decision");
   // Written as a reader writes: a question, a list, and a fenced command.
-  const question =
-    "Ship to staging first, or straight to production?\n\n- staging has the new schema\n- prod does not\n\n```sh\nlegion status CORE\n```";
+  const question = `Ship to staging first, or straight to production?\n\n- staging has the new schema\n- prod does not\n\n\`\`\`sh\nlegion status ${core}\n\`\`\``;
   const questionLead = "Ship to staging first, or straight to production?";
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });
@@ -274,8 +282,9 @@ test("a reader asks back from a decision block: the question threads under the b
 });
 
 test("a resolved decision block is read-only", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec: "Context\n", title: "Resolved ask" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec: "Context\n", title: "Resolved ask" });
   await editArtifact(
     issue.primary_artifact_id,
     {
@@ -314,8 +323,9 @@ test("a resolved decision block is read-only", async ({ browser }) => {
 test("a failed in-document decision answer reports inside the failed block and can be retried", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec: "Context\n", title: "Failing ask" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec: "Context\n", title: "Failing ask" });
   await editArtifact(
     issue.primary_artifact_id,
     {
@@ -362,8 +372,9 @@ test("a failed in-document decision answer reports inside the failed block and c
 test("malformed decision with a blank option label disables the answer form", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec: "Context\n", title: "Malformed ask" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec: "Context\n", title: "Malformed ask" });
   const malformed = await createIssueArtifact(
     issue.key,
     {
@@ -396,8 +407,9 @@ test("malformed decision with a blank option label disables the answer form", as
 });
 
 test("open decision navigation cycles through the available decisions", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec: "Context\n", title: "Two decisions" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec: "Context\n", title: "Two decisions" });
   await editArtifact(
     issue.primary_artifact_id,
     {
@@ -442,9 +454,10 @@ const DECISION_SPEC = [
 test("decision blocks read as urgency-accented cards in the document and its version view", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "## Specification\n\nContext paragraph before the first decision.\n",
     title: "Decision rendering",
   });
@@ -628,9 +641,10 @@ test("a copied decision block carries its content, not its attribute header", as
 test("a pasted rendered callout and decision keep attributes, content, and the original answer", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec:
       'Intro.\n\n:::callout{#callout kind="warning" title="Risk"}\nCareful.\n:::\n\n' +
       ':::ask{#decision urgency="med" multiple="false"}\nWhich one?\n\n- A\n- B\n:::\n\nAfter.\n',
@@ -900,7 +914,14 @@ for (const [target, spec, quote, pasted, stored] of [
   test(`a lone ${block} pasted as plain text into ${target} keeps its block`, async ({
     browser,
   }) => {
-    const { alice, issue, page } = await openWithCaret(browser, "Paste", spec, quote, "end");
+    const { alice, issue, page } = await openWithCaret(
+      browser,
+      "Paste",
+      spec,
+      quote,
+      "end",
+      rowKey("CORE")
+    );
     try {
       await paste(page, { html: "", text: pasted });
 
@@ -957,7 +978,8 @@ for (const [shape, before, clipboard, stored] of [
       "Paste into a question",
       `:::ask{#q1 urgency="med" multiple="false"}\n${before}\n\n- X\n- Y\n:::\n`,
       before.replaceAll("*", ""),
-      "end"
+      "end",
+      rowKey("CORE")
     );
     try {
       await paste(page, clipboard);

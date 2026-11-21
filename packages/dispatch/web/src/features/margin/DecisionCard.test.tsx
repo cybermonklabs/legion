@@ -56,7 +56,7 @@ test("a decision card names the decision, who made it, and opens it in decisions
   try {
     const card = screen.getByRole("article", { name: "Decision: Store notices in a table" });
     expect(card).toHaveAttribute("data-margin-item", "decision:d-1:p-plan");
-    expect(card.getAttribute("data-decision-unsure")).toBeNull();
+    expect(card).not.toHaveAttribute("data-decision-unsure");
     expect(screen.getByText("Agent's decision")).toBeDefined();
     expect(await screen.findByText("A table keeps them through a restart.")).toBeDefined();
     const link = screen.getByRole("link", { name: "Store notices in a table" });

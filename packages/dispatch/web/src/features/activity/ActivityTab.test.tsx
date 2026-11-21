@@ -150,7 +150,7 @@ test("ActivityTab names a session author by its registered title", async () => {
     const list = await screen.findByRole("list", { name: "Issue activity" });
     const name = await within(list).findByRole("link", { name: "Reviewing PR #1478" });
     expect(name).toHaveAttribute("href", "/agents/e2e-long-title-session/live");
-    expect(name.closest("[title]")?.getAttribute("title")).toBe("Reviewing PR #1478");
+    expect(name.closest("[title]")).toHaveAttribute("title", "Reviewing PR #1478");
     expect(within(list).queryByText(/^session:/)).not.toBeInTheDocument();
   } finally {
     view.unmount();

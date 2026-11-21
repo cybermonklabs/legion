@@ -23,9 +23,9 @@
 #   .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir>
 # Each entry of <download-dir> must be a directory named `dispatch-browser-blob-<leg>-<attempt>`,
 # where <attempt> is the run of digits at the end and <leg> is everything between the prefix and
-# it (`shard-1`, `alone-webkit-alone`). A name that does not read is a failure, not a file passed
-# over: a blob silently dropped is a merged report short of a leg's rows, which reads as a
-# shorter suite rather than as an error.
+# it (`shard-1`, `alone-webkit-alone`, `embedder`, `multiprocess-signin`). A name that does not
+# read is a failure, not a file passed over: a blob silently dropped is a merged report short of a
+# leg's rows, which reads as a shorter suite rather than as an error.
 #
 # It writes <out-dir>/blob-report and <out-dir>/rows, holding each leg's selected attempt's files
 # and no other's, and prints one line per leg saying which attempt it took and which it passed

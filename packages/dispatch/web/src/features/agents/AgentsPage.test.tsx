@@ -495,10 +495,10 @@ test("Agents lists an unresponsive session with its state, neither dropped nor d
     const row = card(screen.getByRole("region", { name: "Agents" }), "Stalled");
     const note = within(row).getByTestId("agent-unresponsive");
     expect(note).toHaveTextContent("Unresponsive");
-    expect(note.getAttribute("title")).toContain("It has not ended");
+    expect(note).toHaveAttribute("title", expect.stringContaining("It has not ended"));
     // The name's own mark reads the row's state, never the list's membership.
     const mark = within(row).getByRole("img", { name: "Unresponsive" });
-    expect(mark.getAttribute("title")).toContain("seen 6 minutes ago");
+    expect(mark).toHaveAttribute("title", expect.stringContaining("seen 6 minutes ago"));
     expect(within(row).queryByRole("img", { name: "Not running" })).not.toBeInTheDocument();
     expect(within(row).queryByRole("img", { name: "Running" })).not.toBeInTheDocument();
     // A live row beside it says nothing of the kind.
@@ -685,7 +685,7 @@ test("Agents counts a card's two numbers in their own right: the reader's own, a
     const waiting = within(builderCard).getByRole("link", { name: "Waiting on agent 2" });
     // The filter cleared, so the list it opens holds the question it counted whoever holds it.
     expect(waiting).toHaveAttribute("href", "/?agent=builder-session&assignee=everyone");
-    expect(waiting.getAttribute("title")).toContain("Builder");
+    expect(waiting).toHaveAttribute("title", expect.stringContaining("Builder"));
 
     const reviewer = card(region, "Reviewer");
     // Every card carries the Open action; what this card must not carry is a whose-turn pill.
@@ -1705,7 +1705,7 @@ test("Use Send instead is disabled when the target does not advertise steer", as
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     await expand(user, planner, "Planner");
     const retry = await within(planner).findByRole("button", { name: "Use Send instead" });
-    expect(retry.hasAttribute("disabled")).toBe(true);
+    expect(retry).toHaveAttribute("disabled");
     expect(retry).not.toHaveAttribute("title");
     await within(planner).findByText(wholeText("Planner does not support Send — use BTW."));
     expect(within(planner).getByRole("button", { name: "Retry" })).not.toHaveAttribute("disabled");
@@ -2128,7 +2128,7 @@ test("Agents Clear hides every exchange up to now for this viewer and persists t
       within(planner).queryByRole("button", { name: "Clear conversation" })
     ).not.toBeInTheDocument();
     const cleared = within(planner).getByText(/^Cleared/);
-    expect(cleared.querySelector("time")?.getAttribute("datetime")).toBe("2026-09-14T02:00:00Z");
+    expect(cleared.querySelector("time")).toHaveAttribute("datetime", "2026-09-14T02:00:00Z");
     await releaseReads();
     const showAnyway = within(planner).getByRole("button", { name: "Show anyway" });
 
@@ -2526,7 +2526,7 @@ test("a root targeted-message retry on the Agents page checks the role's current
     await expand(user, reviewerCard, "New reviewer");
     // The new holder dropped steer, so the same-mode Retry of a steer attempt is refused.
     const sendNormally = await within(reviewerCard).findByRole("button", { name: "Retry" });
-    expect(sendNormally.hasAttribute("disabled")).toBe(true);
+    expect(sendNormally).toHaveAttribute("disabled");
     expect(
       within(reviewerCard).getByRole("button", { name: "Use BTW instead" })
     ).not.toHaveAttribute("disabled");
@@ -2607,7 +2607,7 @@ test("a reply's targeted-message retry on the Agents page checks the thread's cu
     await expand(user, reviewerCard, "New reviewer");
     // The new holder dropped steer, so the same-mode Retry of a steer attempt is refused.
     const sendNormally = await within(reviewerCard).findByRole("button", { name: "Retry" });
-    expect(sendNormally.hasAttribute("disabled")).toBe(true);
+    expect(sendNormally).toHaveAttribute("disabled");
     expect(
       within(reviewerCard).getByRole("button", { name: "Use BTW instead" })
     ).not.toHaveAttribute("disabled");
@@ -2766,7 +2766,7 @@ test("Restore draft refuses, and says why on screen, while the composer holds a 
     const sends = await screen.findByRole("region", { name: "Sends" });
     await within(sends).findByText(`Could not send to 1 agent: ${BROADCAST_REFUSED}`);
     const restore = within(sends).getByRole("button", { name: "Restore draft" });
-    expect(restore.getAttribute("aria-disabled")).toBeNull();
+    expect(restore).not.toHaveAttribute("aria-disabled");
 
     // A message started since the press: Restore draft would overwrite it, so it refuses, and the
     // line under its row, which it is described by, says why.
@@ -2791,7 +2791,7 @@ test("Restore draft refuses, and says why on screen, while the composer holds a 
 
     // With nothing begun, the refused send's message and selection come back.
     await user.click(planner);
-    expect(restore.getAttribute("aria-disabled")).toBeNull();
+    expect(restore).not.toHaveAttribute("aria-disabled");
     expect(within(sends).queryByText(reason)).not.toBeInTheDocument();
     await user.click(restore);
     expect(message()).toHaveProperty("value", "Keep this.");
@@ -3004,7 +3004,7 @@ test("a selected agent that went away does not change what Restore draft re-send
     // The deselect button keeps the name; the agent's live link and its state sit beside it, the
     // link outside the button.
     const chipAgent = chip.closest("[data-agent-name]");
-    expect(chipAgent?.getAttribute("data-agent-state")).toBe("not-running");
+    expect(chipAgent).toHaveAttribute("data-agent-state", "not-running");
     const chipLive = within(chipAgent as HTMLElement).getByRole("link", {
       name: "Open live conversation with session:reviewer…",
     });
@@ -4096,7 +4096,7 @@ test("a refilling registry keeps every row, says it is refilling, and ends no se
     expect((await screen.findByTestId("agent-list-refilling")).textContent).toBe(
       AGENT_LIST_REFILLING
     );
-    expect(screen.getByTestId("agent-list-refilling").getAttribute("role")).toBe("status");
+    expect(screen.getByTestId("agent-list-refilling")).toHaveAttribute("role", "status");
     expect(screen.queryByRole("alert")).toBeNull();
     expect(card(region, "Planner")).toBe(planner);
     expect(screen.queryByRole("region", { name: "Replied, no longer connected" })).toBeNull();
@@ -4427,7 +4427,7 @@ test("/ focuses the Agents search box instead of opening the Dispatch-wide searc
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
     const search = within(region).getByRole("searchbox", { name: "Search agents" });
-    expect(search).not.toBe(document.activeElement);
+    expect(search).not.toHaveFocus();
 
     // The keymap listens on the document, so the key with nothing focused reaches it.
     await user.keyboard("/");
@@ -5005,12 +5005,12 @@ test("j from the bottom of the drawn range reaches the next session and focuses 
     expect(region.querySelector(`[data-agent-row="${next}"]`)).toBeNull();
 
     act(() => bottom?.focus());
-    expect(document.activeElement).toBe(bottom ?? null);
+    expect(bottom).toHaveFocus();
     await user.keyboard("j");
 
     const landed = region.querySelector(`[data-agent-row="${next}"]`);
     expect(landed).not.toBeNull();
-    expect(document.activeElement).toBe(landed);
+    expect(landed).toHaveFocus();
   } finally {
     layout.restore();
     page.view.unmount();

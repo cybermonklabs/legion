@@ -1,4 +1,6 @@
-/** The serious and critical axe findings `e2e/accessibility.e2e.ts` accepts, one entry each.
+/** The serious and critical axe findings the accessibility layer accepts, one entry each: the
+ *  scan of `e2e/accessibility-scan.ts`, which `e2e/accessibility.e2e.ts` and
+ *  `e2e/accessibility.stub.e2e.ts` both run.
  *
  *  A violation the gate lets through is an entry here, never a disabled rule or a quiet filter:
  *  the gate fails on any serious or critical finding no entry covers, and it also fails on an

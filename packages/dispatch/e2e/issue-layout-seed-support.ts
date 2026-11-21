@@ -22,6 +22,7 @@ import {
   patchIssue,
   putArchitectureSource,
   putRepoProject,
+  type RowKey,
   recordCheckResult,
   replyToCommentBlock,
   syncArchitectureSource,
@@ -41,8 +42,17 @@ import {
   specDocument,
   verificationDocument,
 } from "./issue-layout-seed-text";
+import { rowKey } from "./test";
 
-export const PROJECT = "LAY";
+/** The project every seed of `e2e/issue-layout-seed.ts` makes, and the one the rows of
+ *  `e2e/issue-page-i.e2e.ts` write their own issues in beside a seed's: the running row's own key
+ *  for `LAY` (`rowKey`, e2e/test.ts), since the database is emptied once per worker and not
+ *  before each row. Every call in one phase of a row (`phase`, e2e/issue-page.ts) answers the
+ *  same key, so an issue a row writes after its seed lands in the project the seed made. */
+export function layoutProject(): RowKey {
+  return rowKey("LAY");
+}
+
 const ARCHITECTURE_REPO = "legion/issue-layout-arch";
 /** The repository the whole issue carries, which each seed suffixes with a name of its own
  *  (`seedIssueWithDocuments`); the request baseline carries its own, so the two never share the
@@ -148,8 +158,12 @@ export async function awaitBlockAsk(issueKey: string, block: string): Promise<st
 }
 
 /** The imported component model, the repository and the pull request the results are measured
- *  against, whose title attributes it to `issueKey`. */
-async function seedProjectSurroundings(issueKey: string, repository: string): Promise<void> {
+ *  against, whose title attributes it to `issueKey`, for the issue's project `project`. */
+async function seedProjectSurroundings(
+  project: RowKey,
+  issueKey: string,
+  repository: string
+): Promise<void> {
   await seedFakeGithub({
     [ARCHITECTURE_REPO]: { contents: "read", files: ARCHITECTURE_MODEL, installation_id: 311 },
     [repository]: {
@@ -170,12 +184,12 @@ async function seedProjectSurroundings(issueKey: string, repository: string): Pr
       },
     },
   });
-  await putArchitectureSource(PROJECT, { branch: "main", repo: ARCHITECTURE_REPO });
-  const source = await syncArchitectureSource(PROJECT, ARCHITECTURE_REPO);
+  await putArchitectureSource(project, { branch: "main", repo: ARCHITECTURE_REPO });
+  const source = await syncArchitectureSource(project, ARCHITECTURE_REPO);
   if (source.last_error !== null) {
     throw new Error(`the component model did not import: ${source.last_error}`);
   }
-  await putRepoProject(repository, { default: false, project: PROJECT });
+  await putRepoProject(repository, { default: false, project });
 }
 
 /** The sessions a seeded issue routes to, is claimed by and is subscribed by. A subscriber is a
@@ -285,21 +299,24 @@ export interface SeededSkeleton {
   readonly verificationArtifactId: string;
 }
 
-/** One whole issue: a parent, every property the identity block draws, its children with one
- *  blocked and one done, its spec, Verification, plan and decisions documents, one result per
- *  check, its comment threads and two handoffs. */
-export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededSkeleton> {
-  await createProject({ key: PROJECT, name: "Issue layout" });
+/** One whole issue in the project `project`, which it makes: a parent, every property the
+ *  identity block draws, its children with one blocked and one done, its spec, Verification, plan
+ *  and decisions documents, one result per check, its comment threads and two handoffs. */
+export async function seedIssueWithDocuments(
+  project: RowKey,
+  shape: IssueShape
+): Promise<SeededSkeleton> {
+  await createProject({ key: project, name: "Layout" });
   // `force` past the possible-duplicate guard: these titles are deliberately close to each other.
   const parent = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     title: "The issue page is redesigned",
   });
   const issue = await createIssue({
     force: true,
     parent: parent.key,
-    project: PROJECT,
+    project,
     spec: specDocument({ openQuestion: true, requirements: shape.requirements, summary: true }),
     title: shape.title,
   });
@@ -309,7 +326,7 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
   // answer once the App is gone. A repository of this seed's own is read afresh here, while the
   // App is installed, so no answer an earlier row left behind decides them.
   const repository = `${shape.repository}-${crypto.randomUUID().slice(0, 8)}`;
-  await seedProjectSurroundings(issue.key, repository);
+  await seedProjectSurroundings(project, issue.key, repository);
   await seedSessions(issue.key, [PLANNER, REVIEWER, TESTER]);
   await patchIssue(issue.key, {
     assignee: "alice",
@@ -330,7 +347,7 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
     const child = await createIssue({
       force: true,
       parent: issue.key,
-      project: PROJECT,
+      project,
       title: `Child ${index} of the redesign`,
     });
     children.push(child.key);

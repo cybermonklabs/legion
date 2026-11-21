@@ -125,7 +125,7 @@ test("an added artifact's name links to the artifact", () => {
 
   try {
     const link = screen.getByRole("link", { name: "cu-update-2026-09-15.md" });
-    expect(link.getAttribute("href")).toBe("/issues/OPS-52/artifacts/cu-update-2026-09-15-md");
+    expect(link).toHaveAttribute("href", "/issues/OPS-52/artifacts/cu-update-2026-09-15-md");
     expect(screen.getByText(/^added/).textContent).toBe("added cu-update-2026-09-15.md");
   } finally {
     cleanup();
@@ -154,7 +154,7 @@ test("a saved version's name links to that version once the issue's artifacts ar
 
   try {
     const link = await screen.findByRole("link", { name: "cu-update-2026-09-15.md" });
-    expect(link.getAttribute("href")).toBe("/issues/OPS-52/artifacts/cu-update-2026-09-15-md?v=2");
+    expect(link).toHaveAttribute("href", "/issues/OPS-52/artifacts/cu-update-2026-09-15-md?v=2");
     expect(screen.getByText(/^saved/).textContent).toBe("saved cu-update-2026-09-15.md v2");
   } finally {
     cleanup();
@@ -188,7 +188,8 @@ test("a comment activity keeps its view link", () => {
 
   try {
     expect(screen.getByText("commented on spec.md")).not.toBeNull();
-    expect(screen.getByRole("link", { name: "view" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "view" })).toHaveAttribute(
+      "href",
       "/issues/OPS-52/comments/comment-1"
     );
   } finally {
@@ -221,7 +222,8 @@ test("an agent the line names links to its live conversation", () => {
 
   try {
     expect(view.container.textContent).toBe("took the claim from Implementer");
-    expect(screen.getByRole("link", { name: "Implementer" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Implementer" })).toHaveAttribute(
+      "href",
       "/agents/session-one/live"
     );
   } finally {

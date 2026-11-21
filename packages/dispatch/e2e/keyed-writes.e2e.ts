@@ -30,7 +30,7 @@ import {
 } from "./keyed-writes";
 import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, rowPerson, test } from "./test";
 import { asPlainHttpUser, asUser } from "./users";
 
 // Every write the page makes goes under an `Idempotency-Key` minted for the person's one action,
@@ -113,8 +113,9 @@ async function queueBehindAHeldStatus(page: Page, issue: string, label: string):
 test("a comment whose answer is lost lands once, under one key @webkit @firefox @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A comment once" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A comment once" });
   const path = `/api/v1/issues/${issue.key}/comments`;
   const alice = await asUser(browser, "alice");
   try {
@@ -165,8 +166,9 @@ test("a comment whose answer is lost lands once, under one key @webkit @firefox 
 test("a comment whose answer the browser cannot read is written once @webkit @firefox", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A comment the browser cannot read" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A comment the browser cannot read" });
   const path = `/api/v1/issues/${issue.key}/comments`;
   const alice = await asUser(browser, "alice");
   try {
@@ -222,8 +224,9 @@ test("a comment whose answer the browser cannot read is written once @webkit @fi
 test("a write whose key has expired stops and offers a new write @webkit @firefox", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A key that runs out" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A key that runs out" });
   const before = (await getIssue(issue.key)).status;
   const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
@@ -290,8 +293,9 @@ test("a write whose key has expired stops and offers a new write @webkit @firefo
 test("a status change whose answer is lost survives a reload, lands once, and the pending-writes indicator shows and clears @webkit @firefox", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A status once" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A status once" });
   const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
   try {
@@ -340,8 +344,9 @@ test("a status change whose answer is lost survives a reload, lands once, and th
 test("an ask answer whose answer is lost lands once, under one key @webkit", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "An answer once" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "An answer once" });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -390,8 +395,9 @@ test("an ask answer whose answer is lost lands once, under one key @webkit", asy
 test("a repeat while the first is still running is answered 409 KEY_IN_FLIGHT, and the page asks again until it lands once @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "In flight" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "In flight" });
   const path = `/api/v1/issues/${issue.key}/comments`;
   const alice = await asUser(browser, "alice");
   try {
@@ -469,8 +475,9 @@ test("a repeat while the first is still running is answered 409 KEY_IN_FLIGHT, a
 test("a comment Dispatch takes 20 s to make lands once from the page, every repeat waiting on the first @webkit @firefox", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A slow comment" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A slow comment" });
   const path = `/api/v1/issues/${issue.key}/comments`;
   await slowWrites("POST", path, 4_000);
   const alice = await asUser(browser, "alice");
@@ -540,9 +547,10 @@ test("an upload throttled to take 30 s is one attempt and lands once @pr", async
   browser,
   browserName,
 }) => {
+  const kw = rowKey("KW");
   test.skip(browserName !== "chromium", "only Chromium's DevTools protocol paces a page's upload");
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A slow upload" });
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A slow upload" });
   const path = `/api/v1/issues/${issue.key}/artifacts`;
   const bytes = 1024 * 1024;
   const alice = await asUser(browser, "alice");
@@ -629,9 +637,10 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
   browser,
   browserName,
 }) => {
+  const kw = rowKey("KW");
   test.setTimeout(60_000);
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A repeated upload" });
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A repeated upload" });
   const path = `/api/v1/issues/${issue.key}/artifacts`;
   const bytes = 20 * 1024 * 1024;
   await slowWrites("POST", path, 5_000);
@@ -725,8 +734,9 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
 // reload - WebKit's stores no `File` at all, which is why this row keeps the bytes with the name
 // and type and rebuilds the `File` on the way out (`web/src/features/writes/kept-files.ts`).
 test("a retried upload survives a reload with its file @webkit @firefox", async ({ browser }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A retried upload" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A retried upload" });
   const path = `/api/v1/issues/${issue.key}/artifacts`;
   const alice = await asUser(browser, "alice");
   try {
@@ -869,16 +879,18 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
 });
 
 // Signing out discards the person's unsent writes and starts none of them. In each of two tabs of
-// alice's, a status change is held at the network, out and never answered, and a label added
-// behind it on the same issue waits its turn. Tab 1 signs out and the person confirms the discard:
-// tab 1 drops its writes, and tab 2, told over the sign-in channel, drops alice's. Dropping the
-// held write must not start the one queued behind it - a page that advanced the line as it
-// dropped sent the label at the confirm, and it landed: neither tab makes another write after the
-// confirm, and neither issue changes. Both tabs are loaded before either write is pressed, so the
-// sign-out comes seconds after the held attempts, well inside the 15 s the page waits on a silent
-// one before asking again. The `chromium-plain-http-sign-out` project runs it on a page that is no
-// secure context, whose browser has no `navigator.locks`: there the other tab's hold is the lease
-// the signing-out tab renews, not its lock.
+// the row's own person (`rowPerson`, e2e/test.ts) - never alice, whose logout would leave the
+// cookie e2e/api.ts keeps for her refused in every row after this one - a status change is held
+// at the network, out and never answered, and a label added behind it on the same issue waits its
+// turn. Tab 1 signs out and the person confirms the discard: tab 1 drops its writes, and tab 2,
+// told over the sign-in channel, drops that person's. Dropping the held write must not start the
+// one queued behind it - a page that advanced the line as it dropped sent the label at the
+// confirm, and it landed: neither tab makes another write after the confirm, and neither issue
+// changes. Both tabs are loaded before either write is pressed, so the sign-out comes seconds
+// after the held attempts, well inside the 15 s the page waits on a silent one before asking
+// again. The `chromium-plain-http-sign-out` project runs it on a page that is no secure context,
+// whose browser has no `navigator.locks`: there the other tab's hold is the lease the signing-out
+// tab renews, not its lock.
 // SLOW(>=2s): Two tabs are the property - the discard has to reach the tab that did not sign out
 // - and each is a real page load with a status change held at the network and a label queued
 // behind it. That setup is what is left; the straggler window costs no real time.
@@ -886,19 +898,21 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
 test("a sign-out confirmed with a write queued behind a held one sends nothing after the confirm, in either tab @pr", async ({
   browser,
 }, testInfo) => {
+  const kw = rowKey("KW");
   test.skip(
     testInfo.project.name.startsWith("chromium-plain-http") && httpsTarget,
     plainHttpSkipReason
   );
-  await createProject({ key: "KW", name: "Keyed writes" });
+  await createProject({ key: kw, name: "Keyed writes" });
   const issues = [
-    await createIssue({ project: "KW", title: "Tab one's change" }),
-    await createIssue({ project: "KW", title: "Tab two's change" }),
+    await createIssue({ project: kw, title: "Tab one's change" }),
+    await createIssue({ project: kw, title: "Tab two's change" }),
   ];
   const before = await Promise.all(issues.map((issue) => getIssue(issue.key)));
+  const me = rowPerson("alice");
   const alice = testInfo.project.name.startsWith("chromium-plain-http")
-    ? await asPlainHttpUser(browser, "alice")
-    : await asUser(browser, "alice");
+    ? await asPlainHttpUser(browser, me)
+    : await asUser(browser, me);
   try {
     let confirmedAt: number | undefined;
     const writes: { at: number; body: string }[] = [];
@@ -954,32 +968,36 @@ test("a sign-out confirmed with a write queued behind a held one sends nothing a
 });
 
 // A sign-out whose tab goes before it hears how the sign-out ended leaves the other tabs to ask
-// Dispatch. Alice's status change in tab 2 is failing at the connection when tab 1 signs her out,
-// so tab 2 holds it, `Waiting for a sign-out in another tab`. Tab 1's `POST /auth/logout` goes to
-// a server that takes it and never answers, so the page never hears how it ended: a route left
-// unanswered is not enough, since Chromium sends a paused request on to Dispatch once its page
-// closes. Either nothing else ends alice's session (the sign-out did not land), or the test ends
-// it at Dispatch itself (it landed). Then tab 1 closes, with the network back. Tab 2 reads who is
-// signed in: still alice, and the change goes out and lands once; nobody, and it is discarded with
-// nothing sent. A page where a closing tab said its sign-out was still out let the change go out
-// under a session Dispatch had ended, and kept it for the next sign-in. The
+// Dispatch. The person's status change in tab 2 is failing at the connection when tab 1 signs
+// them out, so tab 2 holds it, `Waiting for a sign-out in another tab`. Tab 1's `POST /auth/logout`
+// goes to a server that takes it and never answers, so the page never hears how it ended: a route
+// left unanswered is not enough, since Chromium sends a paused request on to Dispatch once its
+// page closes. Either nothing else ends the person's session (the sign-out did not land), or the
+// test ends it at Dispatch itself (it landed). Then tab 1 closes, with the network back. Tab 2
+// reads who is signed in: still the person, and the change goes out and lands once; nobody, and
+// it is discarded with nothing sent. A page where a closing tab said its sign-out was still out
+// let the change go out under a session Dispatch had ended, and kept it for the next sign-in. The
+// person is the row's own (`rowPerson`, e2e/test.ts), never alice: a logout of alice would leave
+// the cookie e2e/api.ts keeps for her refused in every row after this one. The
 // `chromium-plain-http-sign-out` project runs these on the lease a page without `navigator.locks`
 // holds by.
 for (const landed of [false, true]) {
   test(`a sign-out ${landed ? "that landed" : "that never reached Dispatch"}, its tab closed before the answer, ${landed ? "discards" : "lets go on"} the write another tab held for it`, async ({
     browser,
   }, testInfo) => {
+    const kw = rowKey("KW");
     test.skip(
       testInfo.project.name.startsWith("chromium-plain-http") && httpsTarget,
       plainHttpSkipReason
     );
-    await createProject({ key: "KW", name: "Keyed writes" });
-    const issue = await createIssue({ project: "KW", title: "Held for a sign-out" });
+    await createProject({ key: kw, name: "Keyed writes" });
+    const issue = await createIssue({ project: kw, title: "Held for a sign-out" });
     const before = await getIssue(issue.key);
     const path = `/api/v1/issues/${issue.key}`;
+    const me = rowPerson("alice");
     const alice = testInfo.project.name.startsWith("chromium-plain-http")
-      ? await asPlainHttpUser(browser, "alice")
-      : await asUser(browser, "alice");
+      ? await asPlainHttpUser(browser, me)
+      : await asUser(browser, me);
     // Where the page's sign-out goes in place of Dispatch: it takes the request and never answers.
     const held: Socket[] = [];
     const silent = createServer((socket) => held.push(socket));
@@ -1011,13 +1029,13 @@ for (const landed of [false, true]) {
       await signingOut.bringToFront();
       await signingOut.getByRole("button", { name: "Sign out" }).click();
       await sent.promise;
-      // The hold is read before alice's session ends: Dispatch closes the holding tab's live
+      // The hold is read before the person's session ends: Dispatch closes the holding tab's live
       // socket as soon as it does, and that tab then reads whoami, so its lapse would otherwise
       // overtake the hold and leave the sign-in page, with no indicator to read.
       await expect(pendingWrites(holding)).toContainText("Waiting for a sign-out in another tab");
       if (landed) {
         const ended = await fetch(new URL("/auth/logout", baseUrl), {
-          headers: await userHeaders("alice"),
+          headers: await userHeaders(me),
           method: "POST",
         });
         expect(ended.status).toBe(200);
@@ -1078,8 +1096,9 @@ for (const landed of [false, true]) {
 test("alice's write queued behind her held one sends nothing once bob signs in from another tab", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "Alice's line" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "Alice's line" });
   const before = await getIssue(issue.key);
   const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
@@ -1135,8 +1154,9 @@ test("alice's write queued behind her held one sends nothing once bob signs in f
 test("a pin on a turn pressed during an outage survives a reload and lands once the network is back", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A pin through a reload" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A pin through a reload" });
   await createMessage(issue.key, { body: "Pinned through the outage" });
   const alice = await asUser(browser, "alice");
   try {
@@ -1175,8 +1195,9 @@ test("a pin on a turn pressed during an outage survives a reload and lands once 
 test("the issue header's pin pressed during an outage survives a reload and lands once the network is back @webkit @firefox", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "A header pin through a reload" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "A header pin through a reload" });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -1214,8 +1235,9 @@ test("the issue header's pin pressed during an outage survives a reload and land
 test("a write pending for alice is dropped when bob signs in from another tab, and nothing runs as bob @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "KW", name: "Keyed writes" });
-  const issue = await createIssue({ project: "KW", title: "Alice's change" });
+  const kw = rowKey("KW");
+  await createProject({ key: kw, name: "Keyed writes" });
+  const issue = await createIssue({ project: kw, title: "Alice's change" });
   const before = (await getIssue(issue.key)).status;
   const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");

@@ -2,7 +2,7 @@ import { shownAgentRows } from "./agents";
 import { expectTimeout } from "./expect-timeout";
 import { askCard, inboxRow } from "./inbox-pane";
 import { navigateInApp } from "./sends";
-import { expect, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 import { seedWorkspace } from "./workspace";
 
@@ -16,16 +16,23 @@ test("the seeded workspace fills every surface the person scope opens @pr", asyn
 }, testInfo) => {
   // The seed waits for the Inbox rows this row reads first, and gives up at the bound the row's
   // own assertions use, well before the row's clock would end it and hide the seed's message.
-  const seeded = await seedWorkspace({ boundMs: expectTimeout });
+  // Its human is a person of the row's own (`rowPerson`, e2e/test.ts), whose list holds the
+  // seed's five questions and none of another row's.
+  const me = rowPerson("alice");
+  const seeded = await seedWorkspace({
+    boundMs: expectTimeout,
+    person: me,
+    projects: { core: rowKey("CORE"), ops: rowKey("OPS") },
+  });
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
-    // The Inbox opens on the reader's own work: alice's issues' asks, with the snoozed one
-    // folded under Later. From 1280 px the questions are short rows and only the selected one
-    // is a card (INFRA-575), so a question's urgency and its author chip are read on the card
-    // the pane draws for it: a session's ask names it by the title its write stamped, as a real
-    // agent's does, rather than by its raw id.
+    // The Inbox opens on the reader's own work: the asks on the issues of the row's own person,
+    // with the snoozed one folded under Later. From 1280 px the questions are short rows and only
+    // the selected one is a card (INFRA-575), so a question's urgency and its author chip are read
+    // on the card the pane draws for it: a session's ask names it by the title its write stamped,
+    // as a real agent's does, rather than by its raw id.
     await page.goto("/");
     await expect(await askCard(page, seeded.asks.blocking)).toHaveAttribute(
       "aria-label",
@@ -40,7 +47,8 @@ test("the seeded workspace fills every surface the person scope opens @pr", asyn
       })
     ).toBeVisible();
     // The runbook's question is on a document, which holds nobody, so it reaches the default
-    // assignee of its project - alice, who made CORE - and her own list holds it with the rest.
+    // assignee of its project - the row's own person, who made CORE - and their own list holds
+    // it with the rest.
     await expect(inboxRow(page, seeded.asks.document)).toContainText("Runbook");
     await page.screenshot({ path: testInfo.outputPath("workspace-inbox.png"), fullPage: true });
 

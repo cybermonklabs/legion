@@ -1,18 +1,23 @@
+import { type PathsOf, type Result, routePath } from "../web/src/api/paths";
 import {
   agentRow,
+  agentSessions,
   type FakeSession,
   openAgents,
   pickAgentFilter,
-  plannerSession,
-  reviewerSession,
   seedAgents,
   setLiveSessions,
   shownAgentRows,
 } from "./agents";
 import { createAgentMessage, createMessage, replyToMessageDelivery } from "./api";
 import { holdPosts, MESSAGE_REFUSED, pasteFile, refusePosts } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
+
+/** `seedAgents`' Planner and Reviewer, each under an id of the row's own (`rowSessionId`). */
+const sessions = agentSessions(rowSessionId);
+const plannerSession = sessions.planner;
+const reviewerSession = sessions.reviewer;
 
 // The reader's dwell on a row before its read mark is written: `DWELL_MS`,
 // `web/src/features/shell/useDwell.ts`, which exports nothing a spec can import.
@@ -27,15 +32,17 @@ const DWELL_MS = 1_000;
 
 /** `seedAgents`, plus `Quiet` and `Silent`: live sessions with no Dispatch activity, which the
  *  page lists under `Idle` - the rows a pin moves within - and any `others` a row needs beside
- *  them. */
+ *  them. Each folded session's id is the row's own (`rowSessionId`, e2e/test.ts): a pin and
+ *  the messages and sends a row leaves on a session are kept by its id, so a fixed id would
+ *  start the next row on a pinned `Silent` holding every earlier row's composer state. */
 async function seedWithFold(others: readonly FakeSession[] = []): Promise<void> {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"), sessions);
   const folded = (id: string, title: string): FakeSession => ({
     capabilities: ["aside", "btw"],
     dir: `/srv/${id}`,
     machine_id: "box-1",
     roles: ["tester"],
-    session_id: `${id}-session`,
+    session_id: rowSessionId(id),
     title,
   });
   await setLiveSessions([
@@ -52,7 +59,7 @@ async function seedWithFold(others: readonly FakeSession[] = []): Promise<void> 
  *  among the Idle rows is the pin's to decide; the first row below asserts that place
  *  explicitly. */
 async function roveToSilent(page: Page): Promise<Locator> {
-  const row = agentRow(page, "silent-session");
+  const row = agentRow(page, rowSessionId("silent"));
   await expect(row).toBeVisible();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   // Each `j` moves focus to the next row in a render after the key, so each turn waits for focus
@@ -69,7 +76,7 @@ async function roveToSilent(page: Page): Promise<Locator> {
         return focused;
       })
       .not.toBe(before);
-    if (focused === "silent-session") break;
+    if (focused === rowSessionId("silent")) break;
   }
   await expect(row).toBeFocused();
   return row;
@@ -77,8 +84,8 @@ async function roveToSilent(page: Page): Promise<Locator> {
 
 /** Back on the row itself - a click on its directory, beside its controls, which is how a
  *  reader leaves a written composer without its Discard prompt - and pinned from the keyboard.
- *  Shift+P toggles, so each caller starts from an unpinned row (`e2e/seed.ts` clears the pins
- *  between rows) and this waits for the pin it made. */
+ *  Shift+P toggles, so each caller starts from an unpinned row (the session is the row's own,
+ *  `seedWithFold`) and this waits for the pin it made. */
 async function pinFromRow(row: Locator, title: string): Promise<void> {
   await row.locator("[data-agent-dir]").click();
   await expect(row).toBeFocused();
@@ -109,7 +116,7 @@ test.describe("agents page pins", () => {
       // row out of its group (INFRA-812's D3). `j` then goes on from there.
       await page.keyboard.press("Shift+P");
       await expect(silentRow.getByRole("button", { name: "Unpin Silent" })).toBeVisible();
-      await expect(rows.nth(2)).toHaveAttribute("data-agent-row", "silent-session");
+      await expect(rows.nth(2)).toHaveAttribute("data-agent-row", rowSessionId("silent"));
       await expect(silentRow).toBeFocused();
       await page.keyboard.press("j");
       await expect(rows.nth(3)).toBeFocused();
@@ -119,7 +126,7 @@ test.describe("agents page pins", () => {
       // Unpinned, it is back under the Quiet session, where its title orders it.
       await page.keyboard.press("Shift+P");
       await expect(silentRow.getByRole("button", { name: "Pin Silent" })).toBeVisible();
-      await expect(rows.nth(3)).toHaveAttribute("data-agent-row", "silent-session");
+      await expect(rows.nth(3)).toHaveAttribute("data-agent-row", rowSessionId("silent"));
       await expect(silentRow).toBeFocused();
 
       // The group closed over it: the row is mounted, hidden, and its heading counts it.
@@ -144,7 +151,7 @@ test.describe("agents page pins", () => {
         last_seen: Date.now() - 45 * 60_000,
         machine_id: "box-1",
         roles: ["tester"],
-        session_id: "stale-session",
+        session_id: rowSessionId("stale"),
         title: "Stale",
       },
     ]);
@@ -157,13 +164,13 @@ test.describe("agents page pins", () => {
 
       await quiet.focus();
       await page.keyboard.press("j");
-      await expect(agentRow(page, "stale-session")).toBeFocused();
+      await expect(agentRow(page, rowSessionId("stale"))).toBeFocused();
       await idle.focus();
       await page.keyboard.press("k");
       await expect(agentRow(page, reviewerSession.session_id)).toBeFocused();
       await idle.focus();
       await page.keyboard.press("j");
-      await expect(agentRow(page, "quiet-session")).toBeFocused();
+      await expect(agentRow(page, rowSessionId("quiet"))).toBeFocused();
 
       // With `Idle` closed its rows are out of the walk: `k` from `Quiet` steps over that
       // heading to the last row still shown above it.
@@ -184,6 +191,7 @@ test.describe("agents page pins", () => {
   test("Shift+P carries the row's open state, its draft and its issue across the move", async ({
     browser,
   }) => {
+    const core = rowKey("CORE");
     await seedWithFold();
     const context = await asUser(browser, "alice");
     try {
@@ -198,17 +206,17 @@ test.describe("agents page pins", () => {
       await page.keyboard.press("Enter");
       await expect(field).toBeFocused();
       await toggle.click();
-      await silentRow.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
+      await silentRow.getByRole("combobox", { name: "Issue" }).selectOption(`${core}-1`);
       await field.click();
       await page.keyboard.press("End");
       await page.keyboard.type(" can you take this");
       await expect(field).toHaveValue("@Silent can you take this");
 
       await pinFromRow(silentRow, "Silent");
-      await expect(rows.nth(2)).toHaveAttribute("data-agent-row", "silent-session");
+      await expect(rows.nth(2)).toHaveAttribute("data-agent-row", rowSessionId("silent"));
       await expect(silentRow).toBeFocused();
       await expect(opener).toHaveAttribute("aria-expanded", "true");
-      await expect(toggle).toContainText("CORE-1");
+      await expect(toggle).toContainText(`${core}-1`);
       await expect(field).toHaveValue("@Silent can you take this");
 
       // The mention travelled as a record, not just as text: it is on the wire.
@@ -219,10 +227,10 @@ test.describe("agents page pins", () => {
       await field.click();
       await page.keyboard.press("Control+Enter");
       const request = await posted;
-      expect(new URL(request.url()).pathname).toBe("/api/v1/issues/CORE-1/comments");
+      expect(new URL(request.url()).pathname).toBe(`/api/v1/issues/${core}-1/comments`);
       expect(request.postDataJSON()).toMatchObject({
         body: "@Silent can you take this",
-        mentions: [{ target: "session:silent-session" }],
+        mentions: [{ target: `session:${rowSessionId("silent")}` }],
       });
     } finally {
       await context.close();
@@ -235,7 +243,7 @@ test.describe("agents page pins", () => {
     browser,
   }) => {
     await seedWithFold();
-    const asked = await createAgentMessage("silent-session", {
+    const asked = await createAgentMessage(rowSessionId("silent"), {
       body: "Are you free?",
       delivery: "btw",
     });
@@ -255,7 +263,7 @@ test.describe("agents page pins", () => {
       await field.fill("Yes, go ahead");
       await pinFromRow(silentRow, "Silent");
 
-      await expect(rows.nth(2)).toHaveAttribute("data-agent-row", "silent-session");
+      await expect(rows.nth(2)).toHaveAttribute("data-agent-row", rowSessionId("silent"));
       await expect(silentRow).toBeFocused();
       await expect(cancelReply).toBeVisible();
       await expect(field).toHaveValue("Yes, go ahead");
@@ -267,7 +275,9 @@ test.describe("agents page pins", () => {
       await field.click();
       await page.keyboard.press("Control+Enter");
       const request = await posted;
-      expect(new URL(request.url()).pathname).toBe("/api/v1/agents/silent-session/messages");
+      expect(new URL(request.url()).pathname).toBe(
+        `/api/v1/agents/${rowSessionId("silent")}/messages`
+      );
       expect(request.postDataJSON()).toMatchObject({
         body: "Yes, go ahead",
         in_reply_to: asked.id,
@@ -283,11 +293,12 @@ test.describe("agents page pins", () => {
   test("a reply on an issue keeps exactly its text across a pin and a collapse", async ({
     browser,
   }) => {
+    const core = rowKey("CORE");
     await seedWithFold();
-    const root = await createMessage("CORE-1", {
+    const root = await createMessage(`${core}-1`, {
       body: "Can this ship?",
       delivery: "btw",
-      target: "session:silent-session",
+      target: `session:${rowSessionId("silent")}`,
     });
     const context = await asUser(browser, "alice");
     try {
@@ -317,7 +328,7 @@ test.describe("agents page pins", () => {
       await field.click();
       await page.keyboard.press("Control+Enter");
       const request = await posted;
-      expect(new URL(request.url()).pathname).toBe("/api/v1/issues/CORE-1/messages");
+      expect(new URL(request.url()).pathname).toBe(`/api/v1/issues/${core}-1/messages`);
       expect(request.postDataJSON()).toMatchObject({
         body: "Yes, go ahead",
         in_reply_to: root.id,
@@ -351,7 +362,7 @@ test.describe("agents page pins", () => {
       await expect(field).toBeDisabled();
       await pinFromRow(silentRow, "Silent");
 
-      await expect(rows.nth(2)).toHaveAttribute("data-agent-row", "silent-session");
+      await expect(rows.nth(2)).toHaveAttribute("data-agent-row", rowSessionId("silent"));
       await expect(silentRow).toBeFocused();
       await expect(silentRow.getByRole("button", { exact: true, name: "Silent" })).toHaveAttribute(
         "aria-expanded",
@@ -384,14 +395,17 @@ test.describe("agents page pins", () => {
 
       await page.keyboard.press("Enter");
       await silentRow.getByRole("button", { name: "Choose issue" }).click();
-      await silentRow.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
+      await silentRow.getByRole("combobox", { name: "Issue" }).selectOption(`${rowKey("CORE")}-1`);
       await expect(field).toHaveValue("@Silent");
       await pasteFile(field, "notes.md", "# Notes\n");
       const uploading = silentRow.getByRole("button", { name: "Uploading file…" });
       await expect(uploading).toBeDisabled();
 
       await pinFromRow(silentRow, "Silent");
-      await expect(shownAgentRows(page).nth(2)).toHaveAttribute("data-agent-row", "silent-session");
+      await expect(shownAgentRows(page).nth(2)).toHaveAttribute(
+        "data-agent-row",
+        rowSessionId("silent")
+      );
       await expect(uploading).toBeDisabled();
       upload.release();
       await expect(field).toHaveValue(/^@Silent\s+dispatch:\/\/\S*notes/);
@@ -406,7 +420,7 @@ test.describe("agents page pins", () => {
   // reader reads it, however long that takes. A pin that took the row's unread set with it
   // would fold those exchanges away behind `Show N older` in front of the reader.
   test("Shift+P keeps the exchanges the row opened unread on screen", async ({ browser }) => {
-    await seedAgents();
+    await seedAgents(rowKey("CORE"), sessions);
     const stale: FakeSession = {
       // Steer, so the message the row sends is delivered and the list holds only what is read.
       capabilities: ["aside", "btw", "steer"],
@@ -416,7 +430,7 @@ test.describe("agents page pins", () => {
       last_seen: Date.now() - 45 * 60_000,
       machine_id: "box-1",
       roles: ["tester"],
-      session_id: "stale-session",
+      session_id: rowSessionId("stale"),
       title: "Stale",
     };
     await setLiveSessions([plannerSession, reviewerSession, stale]);
@@ -435,7 +449,7 @@ test.describe("agents page pins", () => {
     try {
       const page = await context.newPage();
       await openAgents(page);
-      const staleRow = agentRow(page, "stale-session");
+      const staleRow = agentRow(page, rowSessionId("stale"));
       const conversation = staleRow.getByRole("list", { name: "Conversation with Stale" });
       const field = staleRow.getByRole("textbox", { name: "Comment" });
 
@@ -473,7 +487,7 @@ test.describe("agents page pins", () => {
   test("a row hidden in a closed group marks nothing read, and reopening the group shows the reply", async ({
     browser,
   }) => {
-    await seedAgents();
+    await seedAgents(rowKey("CORE"), sessions);
     const stale: FakeSession = {
       capabilities: ["aside", "btw", "steer"],
       dir: "/srv/stale",
@@ -481,7 +495,7 @@ test.describe("agents page pins", () => {
       last_seen: Date.now() - 45 * 60_000,
       machine_id: "box-1",
       roles: ["tester"],
-      session_id: "stale-session",
+      session_id: rowSessionId("stale"),
       title: "Stale",
     };
     await setLiveSessions([plannerSession, reviewerSession, stale]);
@@ -514,9 +528,11 @@ test.describe("agents page pins", () => {
       // The row is under `Needs you` while a reply is unread, and `Active` once reading it
       // makes Dispatch activity of its own.
       // What the navigation's badge shows, read from the server.
-      const unread = async () =>
-        (await (await page.request.get("/api/v1/me/agents/state")).json())[stale.session_id]
-          ?.unread_replies ?? 0;
+      const unread = async () => {
+        const read = await page.request.get(routePath("get", "/api/v1/me/agents/state", {}));
+        const states = (await read.json()) as Result<"/api/v1/me/agents/state", "get">;
+        return states[stale.session_id]?.unread_replies ?? 0;
+      };
 
       await staleRow.getByRole("button", { exact: true, name: "Stale" }).click();
       await expect(conversation).toContainText("First answer");
@@ -545,7 +561,9 @@ test.describe("agents page pins", () => {
       // reader's dwell (`DWELL_MS`), a page timer the jump fires; the round trip after it is
       // answered only once any `PUT` that jump started had left the page.
       await page.clock.runFor(DWELL_MS * 2);
-      await page.evaluate(() => fetch("/api/v1/me/agents/state").then(({ status }) => status));
+      await page.evaluate(() =>
+        fetch("/api/v1/me/agents/state" satisfies PathsOf<"get">).then(({ status }) => status)
+      );
       expect(readMarks).toHaveLength(marked);
       expect(await unread()).toBe(1);
 
@@ -569,7 +587,7 @@ test.describe("agents page pins", () => {
   // filter, then on screen - and each arrival waits out the page's own refresh of the agents
   // list, which is the path the read mark is written on.
   test("an open row a filter hides marks nothing read there", async ({ browser }) => {
-    await seedAgents();
+    await seedAgents(rowKey("CORE"), sessions);
     const stale: FakeSession = {
       capabilities: ["aside", "btw", "steer"],
       dir: "/srv/stale",
@@ -577,7 +595,7 @@ test.describe("agents page pins", () => {
       last_seen: Date.now() - 45 * 60_000,
       machine_id: "box-1",
       roles: ["tester"],
-      session_id: "stale-session",
+      session_id: rowSessionId("stale"),
       title: "Stale",
     };
     await setLiveSessions([plannerSession, reviewerSession, stale]);
@@ -589,9 +607,11 @@ test.describe("agents page pins", () => {
       await page.clock.install();
       await openAgents(page);
       const staleRow = agentRow(page, stale.session_id);
-      const unread = async () =>
-        (await (await page.request.get("/api/v1/me/agents/state")).json())[stale.session_id]
-          ?.unread_replies ?? 0;
+      const unread = async () => {
+        const read = await page.request.get(routePath("get", "/api/v1/me/agents/state", {}));
+        const states = (await read.json()) as Result<"/api/v1/me/agents/state", "get">;
+        return states[stale.session_id]?.unread_replies ?? 0;
+      };
 
       // Open, then hidden by a role filter it does not match.
       await staleRow.getByRole("button", { exact: true, name: "Stale" }).click();
@@ -602,7 +622,7 @@ test.describe("agents page pins", () => {
 
       const marks: string[] = [];
       page.on("request", (request) => {
-        if (request.method() === "PUT" && request.url().endsWith("/stale-session/state")) {
+        if (request.method() === "PUT" && request.url().endsWith(`/${stale.session_id}/state`)) {
           marks.push(request.postData() ?? "");
         }
       });
@@ -618,7 +638,9 @@ test.describe("agents page pins", () => {
       // The hidden row's list has the reply: a row reading it would mark it now.
       await expect(staleRow.getByText("Yes, here")).toBeAttached();
       await page.clock.runFor(DWELL_MS * 2);
-      await page.evaluate(() => fetch("/api/v1/me/agents/state").then(({ status }) => status));
+      await page.evaluate(() =>
+        fetch("/api/v1/me/agents/state" satisfies PathsOf<"get">).then(({ status }) => status)
+      );
       expect(marks).toEqual([]);
       expect(await unread()).toBe(1);
 
@@ -637,7 +659,7 @@ test.describe("agents page pins", () => {
   test("a row a filter hides mid-send keeps its send, and the refusal comes back with it", async ({
     browser,
   }) => {
-    await seedAgents();
+    await seedAgents(rowKey("CORE"), sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();

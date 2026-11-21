@@ -190,11 +190,13 @@ test("ArtifactDetails links each inbound source to the record that cites it", as
   try {
     const view = renderDetails(artifact);
 
-    expect(
-      (await screen.findByRole("link", { name: "Comment · CORE-1" })).getAttribute("href")
-    ).toBe("/issues/CORE-1/comments/comment-1");
+    expect(await screen.findByRole("link", { name: "Comment · CORE-1" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1/comments/comment-1"
+    );
     // A citing document navigates to that document, never to its owning issue.
-    expect(screen.getByRole("link", { name: "Artifact · CORE-1" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Artifact · CORE-1" })).toHaveAttribute(
+      "href",
       "/issues/CORE-1/artifacts/source-doc"
     );
     view.unmount();
@@ -348,7 +350,7 @@ test("ArtifactDetails encodes an author-set block id in the source deep link", a
     const view = renderDetails(artifact);
     const references = await screen.findByRole("region", { name: "Referenced by" });
     const source = await within(references).findByRole("link", { name: "Artifact · CORE-1" });
-    expect(source.getAttribute("href")).toContain("#b-two%20words%25");
+    expect(source).toHaveAttribute("href", expect.stringContaining("#b-two%20words%25"));
     view.unmount();
   } finally {
     getReferences.mockRestore();

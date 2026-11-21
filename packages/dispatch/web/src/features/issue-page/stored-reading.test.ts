@@ -2,35 +2,24 @@ import { expect, test } from "bun:test";
 
 import { wordsOf } from "../refs/tree-fragment";
 import { lineWordsRaw } from "./issue-tree";
-import { isPlainText, parsedReading, plainReading, storedReading } from "./stored-reading";
+import {
+  countParses,
+  isPlainText,
+  parsedReading,
+  plainReading,
+  storedReading,
+} from "./stored-reading";
 import { plainWords, plainWordsRaw, withShortAddresses } from "./tree-drafts";
-
-/** A wall-clock budget for one stored text read to words, not one of the machine-sensitive waits
- *  this package's defaults cover (`web/src/__tests__/setup.ts`). The regression it guards, a
- *  parse with no bound on how deeply lists nest, spends about 9 s on the body below, and the
- *  bounded parse well under one, so a budget far above what a loaded pod spends on the bounded
- *  parse fails only an unbounded one. */
-const NESTING_BUDGET_MS = 3_000;
-
-/** A wall-clock budget for drawing again the lines of an issue's stored texts, each read once
- *  already. A result whose read carries no reading - a server of the build before sends none -
- *  has its line read from its stored text, and an issue under review holds hundreds of results:
- *  the redesign's own root issue held 431 results and 492 distinct stored texts on 2026-11-18.
- *  Reading 900 such texts again from what the first draw read costs tens of milliseconds; parsing
- *  each again, as a first draw does, costs about a second on a pod's CPU. So a budget far above
- *  the first and far below the second fails only a draw that parses every text again. */
-const REDRAW_BUDGET_MS = 300;
 
 // sjawhar/legion#2519: a stored text is read on the page's own thread, and micromark gives every
 // open list or quote a turn on every line, so a body that opens thousands of them cost seconds or
 // overflowed the stack. The parse holds lists and quotes to the document service's bound of 100
 // blocks, where a list marker opens two (the list and its item), so the first 50 markers open
-// lists and the rest read as the text they are, as the server reads them.
+// lists and the rest read as the text they are, as the server reads them. The words are the
+// proof: a parse with no bound opens a list for every marker and leaves none of them as text,
+// and one that overflows the stack throws, so neither reads to these words, and no clock is read.
 test("a stored text of thousands of nested list markers reads to words within the nesting bound", () => {
-  const start = performance.now();
-  const words = plainWordsRaw(`${"- ".repeat(3000)}x`);
-  expect(performance.now() - start).toBeLessThan(NESTING_BUDGET_MS);
-  expect(words).toBe(`${"- ".repeat(2950)}x`);
+  expect(plainWordsRaw(`${"- ".repeat(3000)}x`)).toBe(`${"- ".repeat(2950)}x`);
 });
 
 // A quote marker opens one block, so the first 100 of 150 open quotes and the 50 past the bound
@@ -55,21 +44,25 @@ test("a stored text's front matter reads as its fenced lines, and an unclosed fe
 // A page draws its rows again on every read that lands and every event, and a row's line is read
 // from its stored text where the node has no reading, as a result's is from a server that sends
 // none. The readings of the texts a draw read are remembered so that the next draw reads them
-// rather than parses them again: 900 distinct stored texts, each reading held by what asked for
-// it, must draw again within the budget, the second draw in the same order as the first, as a
-// page draws its rows.
-test("the lines of more stored texts than the memo holds are drawn again without parsing them again", () => {
+// rather than parses them again: 900 distinct stored texts, drawn twice in the same order as a
+// page draws its rows, are parsed once each by the first draw and not at all by the second. The
+// parses are counted (`countParses`), since a draw that parses every text again is quick on a
+// fast machine and a timed bound would pass it there. Each run of this row reads texts of its
+// own, so a `--rerun-each` run finds none of them remembered from the run before it.
+test("the lines of 900 stored texts are drawn again without parsing them again", () => {
+  const run = crypto.randomUUID();
   const texts = Array.from(
     { length: 900 },
     (_, at) =>
-      `The run \`bun run test:web web/src/case-${at}.test.ts\` ends with **0 fail**, and names each test below as passed.\n` +
+      `The run \`bun run test:web web/src/case-${at}.test.ts\` ends with **0 fail**, and names each test below as passed (${run}).\n` +
       `- the first named test of case ${at}: pass\n- the second named test of case ${at}: pass\n` +
       `${"It held at the head, read with the junit report. ".repeat(12)}`
   );
-  for (const text of texts) lineWordsRaw({ text });
-  const start = performance.now();
-  for (const text of texts) lineWordsRaw({ text });
-  expect(performance.now() - start).toBeLessThan(REDRAW_BUDGET_MS);
+  const draw = () => {
+    for (const text of texts) lineWordsRaw({ text });
+  };
+  expect(countParses(draw)).toBe(texts.length);
+  expect(countParses(draw)).toBe(0);
 });
 
 /** `words` on one line, its white space collapsed to single spaces, as every one-line reading of

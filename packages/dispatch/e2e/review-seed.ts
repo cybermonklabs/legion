@@ -12,6 +12,7 @@ import {
   createIssueArtifact,
   createPlanReview,
   createPriority,
+  fixedKey,
   getArtifact,
   getBroadcast,
   getIssue,
@@ -35,6 +36,14 @@ import { seedWorkspace, workspaceSessions } from "./workspace";
  *  and the Spec tab draws beside the block it shaped. */
 const DECISION = "Seed one corpus for both review layers";
 const REASON = "Chosen so a scan and a shot read the same page.";
+
+/** Why the corpus's project keys are fixed rather than a row's own: it is seeded once into each
+ *  database a worker holds, and every review row of that worker reads that one copy
+ *  (`reviewCorpus`, e2e/test.ts), so no two rows make it; the visual review's baselines and the
+ *  accessibility pass's recording were taken under these keys. */
+const SEEDED_ONCE = "the review corpus is seeded once into each database a worker holds";
+/** The corpus's two projects, the ones `seedWorkspace` makes. */
+const PROJECTS = { core: fixedKey("CORE", SEEDED_ONCE), ops: fixedKey("OPS", SEEDED_ONCE) };
 
 /** A `serves` pointer is refused unless it names a `requirement` block that exists, and
  *  `seedWorkspace`'s spec carries none. Rather than edit `e2e/workspace.ts`, whose spec every
@@ -145,13 +154,13 @@ export async function seedReviewRoutes({
 }: {
   readonly boundMs: number;
 }): Promise<ReviewSeed> {
-  const workspace = await seedWorkspace({ boundMs });
+  const workspace = await seedWorkspace({ boundMs, projects: PROJECTS });
   const issue = workspace.issues.workflow;
 
-  // `seedPipelineFixture()` is `seedDeliveryFixture()`'s settings row written a second time and
-  // then the Pipeline's own rows, and `delivery_settings` holds one row, so the two fixtures are
-  // seeded as their halves: the settings and the timeline's rows, then `seedPipelineRows()`,
-  // which only updates that one row's job names before writing the Pipeline's runs.
+  // The timeline's fixture writes the delivery settings, which `delivery_settings` holds as one
+  // row, and its own rows; `seedPipelineRows()` then only updates that row's job names before
+  // writing the Pipeline's runs. Both are written in the place the fixtures spell, with no place
+  // of a row's (e2e/delivery-seed.ts).
   await seedDeliveryFixture();
   await seedPipelineRows();
 
@@ -237,7 +246,7 @@ Each page is read once it is drawn.
 
   // The slug of the `Runbook` document `seedWorkspace` creates: read back rather than assumed,
   // so a rename there fails this seed instead of the page it opens.
-  const runbook = await getProjectArtifact("CORE", "runbook");
+  const runbook = await getProjectArtifact(PROJECTS.core, "runbook");
 
   // Last, so the spec's newest version is the one its tab will show.
   await markWhatTheShotPagesRead(workspace.broadcast.id, issue, specId);
@@ -254,7 +263,7 @@ Each page is read once it is drawn.
     // The id the create answered, which is this title written as a slug: read back rather than
     // spelled again here, so the rule that derives it stays the server's.
     priority: priority.id,
-    project: "CORE",
+    project: PROJECTS.core,
     projectDocumentSlug: runbook.slug,
   };
 }

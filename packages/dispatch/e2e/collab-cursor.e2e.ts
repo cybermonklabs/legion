@@ -1,6 +1,6 @@
 import { createIssue, createProject, getArtifactText } from "./api";
 import { connectedDot, documentEditor, placeCaret } from "./editor";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // Every row here carries `@webkit`, the tag the `webkit` project selects by
@@ -41,8 +41,9 @@ for (const { name, edge, type, code } of cases) {
   test(`typing at a collaborator's cursor keeps what was typed: ${name} @webkit`, async ({
     browser,
   }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const issue = await createIssue({ project: "CORE", spec, title: "Shared cursor" });
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
+    const issue = await createIssue({ project: core, spec, title: "Shared cursor" });
     const alice = await asUser(browser, "alice");
     const bob = await asUser(browser, "bob");
 
@@ -81,8 +82,9 @@ for (const { name, edge, type, code } of cases) {
 test("a reader outside the editor sees a collaborator's cursor even where their own stale selection sits @webkit @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title: "Shared cursor" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title: "Shared cursor" });
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
 

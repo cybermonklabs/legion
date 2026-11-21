@@ -1,6 +1,6 @@
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { filterPicker, pickFilterOption } from "./filters";
-import { expect, type Locator, test } from "./test";
+import { expect, type Locator, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 async function expectTouchTarget(locator: Locator): Promise<void> {
@@ -12,10 +12,11 @@ async function expectTouchTarget(locator: Locator): Promise<void> {
 test("edits issue labels from a searchable multi-select and filters project issues by every selected label @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const edited = await createIssue({ project: "CORE", title: "Editable labels" });
-  const matching = await createIssue({ project: "CORE", title: "Frontend documentation" });
-  const other = await createIssue({ project: "CORE", title: "Backend documentation" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const edited = await createIssue({ project: core, title: "Editable labels" });
+  const matching = await createIssue({ project: core, title: "Frontend documentation" });
+  const other = await createIssue({ project: core, title: "Backend documentation" });
   await patchIssue(edited.key, { labels: ["Frontend", "api"] });
   await patchIssue(matching.key, { labels: ["Frontend", "docs"] });
   await patchIssue(other.key, { labels: ["backend", "docs"] });
@@ -62,8 +63,8 @@ test("edits issue labels from a searchable multi-select and filters project issu
         labels: ["Frontend", "api", "urgent"],
       });
 
-    await page.goto("/projects/CORE?label=docs");
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?label=docs$/);
+    await page.goto(`/projects/${core}?label=docs`);
+    await expect(page).toHaveURL(new RegExp(`/projects/${core}/issues\\?label=docs$`));
     await filterPicker(page, "Labels").click();
     await expect(page.getByRole("option", { exact: true, name: "docs, 2 issues" })).toHaveAttribute(
       "aria-selected",
@@ -74,7 +75,7 @@ test("edits issue labels from a searchable multi-select and filters project issu
     await expect(page.getByText("Editable labels", { exact: true })).toHaveCount(0);
     await pickFilterOption(page, "Labels", "docs");
     await expect(page).toHaveURL(
-      (url) => url.pathname === "/projects/CORE/issues" && !url.searchParams.has("label")
+      (url) => url.pathname === `/projects/${core}/issues` && !url.searchParams.has("label")
     );
     await pickFilterOption(page, "Labels", "Frontend");
     await expect(page.getByText("Editable labels", { exact: true })).toBeVisible();
@@ -96,9 +97,10 @@ test("edits issue labels from a searchable multi-select and filters project issu
 test("the label controls keep touch-sized targets and the filtered list fits the screen @phone @phone-only", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const edited = await createIssue({ project: "CORE", title: "Editable labels" });
-  const matching = await createIssue({ project: "CORE", title: "Frontend documentation" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const edited = await createIssue({ project: core, title: "Editable labels" });
+  const matching = await createIssue({ project: core, title: "Frontend documentation" });
   await patchIssue(edited.key, { labels: ["Frontend", "api"] });
   await patchIssue(matching.key, { labels: ["Frontend", "docs"] });
 
@@ -121,7 +123,7 @@ test("the label controls keep touch-sized targets and the filtered list fits the
     }
     await editLabels.click();
 
-    await page.goto("/projects/CORE?label=docs");
+    await page.goto(`/projects/${core}?label=docs`);
     await expect(page.getByText("Frontend documentation", { exact: true })).toBeVisible();
     await filterPicker(page, "Labels").click();
     await expectTouchTarget(filterPicker(page, "Labels"));
@@ -140,8 +142,9 @@ test("the label controls keep touch-sized targets and the filtered list fits the
 test("eight thirty-character labels scroll inside the header's details line without widening the page", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Long labels" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Long labels" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();

@@ -10,7 +10,7 @@ import {
   toggleAgentGroup,
 } from "./agents";
 import { createAsk, createComment, createIssue, createProject } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // Three sessions with no field in common, so a match on one field never comes from another: the
@@ -46,9 +46,10 @@ const archivist: FakeSession = {
  *  `Active`. Returns the issue key the Scrum session's ask names - the only issue key any
  *  session's ask names. */
 async function seed(): Promise<string> {
+  const core = rowKey("CORE");
   await setLiveSessions([scrum, release, archivist]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Sprint planning" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Sprint planning" });
   await createAsk(
     issue.key,
     { question: "Which sprint?" },

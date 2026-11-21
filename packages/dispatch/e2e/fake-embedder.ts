@@ -19,7 +19,9 @@ import { harnessPorts } from "./harness-ports";
 // wants a hit by meaning seeds a group of words through `/__fixture/markers`: every text
 // holding one of a group's words is embedded as that group, so a query and the item a row means
 // it to find take one vector - a cosine of exactly 1 - while nothing else comes near either.
-// The words are matched without regard to case, as the dev embedder reads a text's words.
+// The vector is drawn from the group's own words, so another row's group, of other words, is
+// near-orthogonal to it too (`keyOf`). The words are matched without regard to case, as the dev
+// embedder reads a text's words.
 
 /** Cohere Embed v4's width, which the server asks for and the embeddings column is sized for
  *  (`embed.Dimension`). An answer of any other width is refused by the client. */
@@ -93,13 +95,18 @@ function vectorOf(text: string): number[] {
   return vector.map((component) => component * scale);
 }
 
-/** The text a vector is drawn from: the group whose words the text holds, so a query and the
+/** The text a vector is drawn from: the words of the group the text holds, so a query and the
  *  item a row means it to find are one text to this fake, and the text itself where it holds
- *  none of them. */
+ *  none of them. The group's words and not its place in the list: every row seeds its groups
+ *  from the first place, and the vectors the server stored for an earlier row's items stay in
+ *  the database, which the worker empties once, before its first row. Keyed by place, a later
+ *  row's query would take the vector of every earlier row's first group, a cosine of 1 with
+ *  items it never wrote. A row whose words hold its own key (`keyedSearchWord`, e2e/search.ts)
+ *  takes a vector no other row's items were given. */
 function keyOf(text: string): string {
   const lowered = text.toLowerCase();
-  const group = state.markers.findIndex((words) => words.some((word) => lowered.includes(word)));
-  return group === -1 ? text : `marker group ${group}`;
+  const group = state.markers.find((words) => words.some((word) => lowered.includes(word)));
+  return group === undefined ? text : `marker group ${group.join(" ")}`;
 }
 
 // FAKE_EMBEDDER_PORT, or with it unset port 0, so the OS chooses; the line at the end reports

@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  `DispatchServiceError` reads a refusal's `candidates` and `mismatches` through the generated
+  refusal types of `@legion/contracts`, and reads a list that Dispatch sends as `null` as absent.

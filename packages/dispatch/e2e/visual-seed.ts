@@ -22,6 +22,25 @@ if (path === undefined) {
   process.exit(2);
 }
 
+// The corpus and the moment the rows pin their page clock to (`seededAt` and a minute after it,
+// e2e/visual.e2e.ts) must fall on one day: the margin and the activity feed head their entries
+// "Today" or "Yesterday" by the reader's day, which is UTC in the container that takes the shots,
+// so a seed written in the last minutes before midnight UTC drew "Yesterday" over a baseline
+// taken as "Today" (run 44840127934, seeded 23:59:46Z: issue-activity and priority, light and
+// dark). So a seed that would start within `dayEndMarginMs` of midnight waits for the new day.
+// 90 s is the seed's 15 s bound below, the minute the pin adds and 15 s for the reset before it;
+// the wait is the wall clock's, as the day the page reads is, and at most 91 s, which the visual
+// job's two browser steps' budgets hold (.github/ci-notes/dispatch-browser.md).
+const dayEndMarginMs = 90_000;
+const now = Date.now();
+const nextUtcMidnight = Math.ceil((now + 1) / 86_400_000) * 86_400_000;
+if (nextUtcMidnight - now < dayEndMarginMs) {
+  const wait = nextUtcMidnight - now + 1_000;
+  console.error(`e2e/visual-seed.ts waits ${wait} ms for the next UTC day before it seeds`);
+  // The wall clock's own day is what the page reads, so this waits on the wall clock for it.
+  await Bun.sleep(wait);
+}
+
 await resetDatabase();
 // No Playwright row runs this seed, so no expect timeout applies; 15 s is far above the 230 ms
 // the Inbox was read settling in (the sampler e2e/workspace.ts cites), so only a seed that does

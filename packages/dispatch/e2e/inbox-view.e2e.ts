@@ -1,7 +1,7 @@
 import { createIssue, createProject, listMyReplies, patchIssue } from "./api";
 import { holdReadMarks, replyRowId, seedBulkReplyThreads, unreadThreadRows } from "./inbox-threads";
 import { drawnIds, openField } from "./inbox-view";
-import { expect, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -21,29 +21,34 @@ import { asUser } from "./users";
 test("a hundred and twenty threads sort by priority, count up, and follow their issue's priority live", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const urgent = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  const core = rowKey("CORE");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose hundred and twenty
+  // threads are this row's and no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const urgent = await createIssue({ project: core, title: "Ledger rollout" }, { login: me });
   await patchIssue(urgent.key, { priority: 0 });
-  const later = await createIssue({ project: "CORE", title: "Mirror retries" });
+  const later = await createIssue({ project: core, title: "Mirror retries" }, { login: me });
   await patchIssue(later.key, { priority: 2 });
   // A hundred and twenty threads across the two priorities, in one statement apiece. The P0
   // issue's one thread is seeded wholly behind the rest, so its last message is the oldest of
   // all of them and recency alone would put its row last.
-  await seedBulkReplyThreads({ count: 119, issueKey: later.key, prefix: "Mirror" });
+  await seedBulkReplyThreads({ count: 119, issueKey: later.key, login: me, prefix: "Mirror" });
   await seedBulkReplyThreads({
     count: 1,
     issueKey: urgent.key,
+    login: me,
     olderThan: 600,
     prefix: "Ledger",
   });
-  expect(await unreadThreadRows()).toBe(120);
-  const listed = await listMyReplies({ state: "unread" });
+  expect(await unreadThreadRows(me)).toBe(120);
+  const listed = await listMyReplies({ state: "unread" }, { login: me });
   const oldest = [...(listed.rows ?? [])].sort((left, right) =>
     left.reply.created_at < right.reply.created_at ? -1 : 1
   )[0];
   expect(oldest?.subject).toBe("Ledger root 1");
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     // Every row here is a thread, so the pane marks the row it selects read as it draws it

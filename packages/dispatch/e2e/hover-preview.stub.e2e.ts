@@ -12,10 +12,14 @@ import {
   REF_PREVIEW_CLOSE_DELAY_MS,
   REF_PREVIEW_OPEN_DELAY_MS,
 } from "../web/src/features/refs/ref-preview-timing";
+import { fixedKey } from "./api";
 import { seedReference } from "./hover-preview";
 import { stubbed } from "./stub/stub-test";
 
-const test = stubbed(seedReference);
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+
+const test = stubbed(() => seedReference(CORE));
 
 // The reader's dwell on a turn before its read mark is written: `DWELL_MS`,
 // `web/src/features/shell/useDwell.ts`, which exports nothing a spec can import.

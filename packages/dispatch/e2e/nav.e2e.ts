@@ -1,5 +1,5 @@
 import { createAsk, createIssue, createProject } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -14,16 +14,21 @@ const session = { actor: { id: "e2e-nav", kind: "session" as const }, as: "agent
 test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, and Settings — never an issue row — on desktop and in the phone drawer @phone", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Operations" });
+  const core = rowKey("CORE");
+  const ops = rowKey("OPS");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), so the Inbox count and
+  // the badges are this row's questions and no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  await createProject({ key: ops, name: "Operations" }, { login: me });
   const coreIssues = await Promise.all(
     Array.from({ length: 12 }, (_value, index) =>
-      createIssue({ project: "CORE", title: `Core issue ${index + 1}` })
+      createIssue({ project: core, title: `Core issue ${index + 1}` }, { login: me })
     )
   );
   const opsIssues = await Promise.all(
     Array.from({ length: 8 }, (_value, index) =>
-      createIssue({ project: "OPS", title: `Operations issue ${index + 1}` })
+      createIssue({ project: ops, title: `Operations issue ${index + 1}` }, { login: me })
     )
   );
   await Promise.all([
@@ -35,7 +40,7 @@ test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, 
       .map((issue) => createAsk(issue.key, { question: "Operations ask" }, session)),
   ]);
 
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   const page = await context.newPage();
   // The sidebar must never fan out per issue. The one sanctioned per-issue request on the
   // Inbox is each ask card's `GET /issues/{key}/subscribers` (`AskRecipients`, for `Reaches N`),
@@ -63,10 +68,12 @@ test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, 
     const navigation = page.getByRole("navigation", { name: "Navigation" });
     await expect(navigation.getByRole("link", { name: "Inbox" })).toContainText("3");
     await expect(navigation.getByRole("heading", { name: "Pinned" })).toHaveCount(0);
-    await expect(navigation.locator('a[href="/projects/CORE"]')).toContainText("2");
-    await expect(navigation.locator('a[href="/projects/OPS"]')).toContainText("1");
+    await expect(navigation.locator(`a[href="/projects/${core}"]`)).toContainText("2");
+    await expect(navigation.locator(`a[href="/projects/${ops}"]`)).toContainText("1");
     await expect(navigation.getByRole("link", { name: "Settings" })).toBeVisible();
-    await expect(navigation.getByRole("link", { name: /^(CORE|OPS)-\d+/ })).toHaveCount(0);
+    await expect(
+      navigation.getByRole("link", { name: new RegExp(`^(${core}|${ops})-\\d+`) })
+    ).toHaveCount(0);
     // The Inbox makes no per-issue read of its own either: the list is one `GET /inbox`, and
     // the reading pane (INFRA-575) draws the selected question from the row it already holds.
     // Only a question written as a decision block has its issue read, for the one field the

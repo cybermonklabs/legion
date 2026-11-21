@@ -135,18 +135,19 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
   },
   {
     title: "an option's value before a filter that names a spec of the default projects",
-    argv: playwrightArgv("--reporter", "list", "e2e/claim.e2e.ts"),
+    argv: playwrightArgv("--reporter", "list", "e2e/claim-unresponsive.e2e.ts"),
   },
   {
-    // `--list --shuffle e2e/claim.e2e.ts` lists the whole default selection, the path having
-    // become the seed, so the command names no file and Playwright runs it.
+    // `--list --shuffle e2e/claim-unresponsive.e2e.ts` lists the whole default selection,
+    // `Total: 1479 tests in 209 files` and exit 0, the path having become the seed, so the
+    // command names no file and Playwright runs it.
     title: "a wall-clock path behind `--shuffle`, which Playwright takes as the seed",
     argv: playwrightArgv("--shuffle", "e2e/heavy-bodies.e2e.ts"),
   },
   {
-    // `--list --debug e2e/claim.e2e.ts` exits 1 with "option '--debug [mode]' argument
-    // 'e2e/claim.e2e.ts' is invalid. Allowed choices are inspector, cli.": the path is the
-    // option's own value, which Playwright's choices refuse.
+    // `--list --debug e2e/claim-unresponsive.e2e.ts` exits 1 with "option '--debug [mode]'
+    // argument 'e2e/claim-unresponsive.e2e.ts' is invalid. Allowed choices are inspector, cli.":
+    // the path is the option's own value, which Playwright's choices refuse.
     title: "a wall-clock path behind `--debug`, a value its own choices refuse",
     argv: playwrightArgv("--debug", "e2e/heavy-bodies.e2e.ts"),
   },
@@ -171,7 +172,7 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
   },
   {
     title: "a spec of the default projects",
-    argv: playwrightArgv("e2e/claim.e2e.ts"),
+    argv: playwrightArgv("e2e/claim-unresponsive.e2e.ts"),
   },
   {
     title: "a wall-clock name standing behind the `--` separator",
@@ -222,18 +223,19 @@ const allowed: readonly { title: string; argv: readonly string[] }[] = [
   },
   {
     // `--grep` takes the `--` after it as its value, so the `--ui` that follows is the mode and
-    // no file is named here at all. Driven at this head, `--list e2e/claim.e2e.ts --grep --
-    // --ui` is not refused: it reaches the user interface's own path and exits 1 on
-    // `ProtocolError: Protocol error (Browser.getVersion): Internal server error, session
-    // closed.`
+    // no file is named here at all. Driven at this head, `--list e2e/claim-unresponsive.e2e.ts
+    // --grep -- --ui` is not refused: it reaches the user interface's own path (`runUIMode`)
+    // and, run where no browser is installed, exits 1 on `Error: No chromium-based browser
+    // found on the system.`
     title: "an ordinary spec where a `--` is `--grep`'s value and the `--ui` after it the mode",
-    argv: playwrightArgv("e2e/claim.e2e.ts", "--grep", "--", "--ui"),
+    argv: playwrightArgv("e2e/claim-unresponsive.e2e.ts", "--grep", "--", "--ui"),
   },
   {
     // The same line with the wall-clock file in it: the scan holds that file, steps over the
     // `--` as `--grep`'s value rather than stopping at it, and gives the file up when it reaches
     // the `--ui`. Driven at this head, `--list e2e/heavy-bodies.e2e.ts --grep -- --ui` is not
-    // refused and exits 1 on the same `ProtocolError` line.
+    // refused and exits 1 on the `ProtocolError` line the `e2e/heavy-bodies.e2e.ts --ui` row
+    // above quotes.
     title: "that line with a wall-clock file, which the `--ui` past the `--` yields",
     argv: playwrightArgv("e2e/heavy-bodies.e2e.ts", "--grep", "--", "--ui"),
   },

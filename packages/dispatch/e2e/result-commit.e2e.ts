@@ -6,7 +6,7 @@ import {
   recordCheckResult,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // Dispatch stored a result at a mistyped commit once, and a reader could not tell it from the
@@ -45,9 +45,10 @@ A recorded result names the commit it ran at, whole.
 test("a result's line names the whole commit, so a result at a mistyped commit is told from one at the head @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "VER", name: "Verification" });
-  await putRepoProject(repository, { default: true, project: "VER" });
-  const issue = await createIssue({ project: "VER", spec, title: "Whole commits in a result" });
+  const ver = rowKey("VER");
+  await createProject({ key: ver, name: "Verification" });
+  await putRepoProject(repository, { default: true, project: ver });
+  const issue = await createIssue({ project: ver, spec, title: "Whole commits in a result" });
   // A result at a commit the repository does not hold is refused (`refuseUnknownCommit`), so the
   // mistyped commit is seeded as one the fake GitHub answers for: `commits` is the field that
   // says the repository holds it and nothing else does, which is what keeps it a commit of its

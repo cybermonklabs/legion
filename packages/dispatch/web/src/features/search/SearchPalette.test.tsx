@@ -643,7 +643,7 @@ test("a re-rank that drops the highlighted hit leaves no row highlighted, and En
     // crosses the 500 ms pause here deliberately: this row is about what firing it does.
     await tick(500);
     await waitFor(() => expect(optionIds()).toEqual([optionId(first)]), { timeout: 3000 });
-    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+    expect(input).not.toHaveAttribute("aria-activedescendant");
     await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe("/");
 
@@ -772,7 +772,7 @@ test("while the search is in flight no action found inside its label is highligh
     await tick(150);
     await waitFor(() => expect(search).toHaveBeenCalled());
     expect(optionIds()).toEqual([CLOSE_ROW]);
-    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+    expect(input).not.toHaveAttribute("aria-activedescendant");
     await user.keyboard("{Enter}");
     expect(screen.getByRole("dialog", { name: "Search" })).toBeTruthy();
     expect(ran).toEqual([]);
@@ -809,7 +809,7 @@ test("a search that finds nothing still leaves an action found inside its label 
     await tick(150);
     await screen.findByText('No results for "issue"');
     expect(optionIds()).toEqual([CLOSE_ROW]);
-    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+    expect(input).not.toHaveAttribute("aria-activedescendant");
     await user.keyboard("{Enter}");
     expect(screen.getByRole("dialog", { name: "Search" })).toBeTruthy();
     expect(ran).toEqual([]);
@@ -838,13 +838,13 @@ test("an arrow pressed before the search answers reaches no action found inside 
     // Down and Enter in one burst, inside the debounce and again once the request is out.
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{Enter}");
-    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+    expect(input).not.toHaveAttribute("aria-activedescendant");
     // Past the debounce now, so the request for these words is out and still unanswered.
     await tick(150);
     await waitFor(() => expect(search).toHaveBeenCalled());
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{ArrowUp}");
-    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+    expect(input).not.toHaveAttribute("aria-activedescendant");
     await user.keyboard("{Enter}");
     expect(ran).toEqual([]);
 

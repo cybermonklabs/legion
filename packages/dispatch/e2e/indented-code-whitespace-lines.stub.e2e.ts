@@ -6,7 +6,7 @@ import { expect, type Locator } from "@playwright/test";
 
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
 import { listsSpacedByIndentedCodeReading } from "../web/src/__tests__/pmdoc-leaf-readings";
-import { createIssue, createProject } from "./api";
+import { createIssue, createProject, fixedKey } from "./api";
 import { stubbed } from "./stub/stub-test";
 
 // The whitespace-only lines that end an indented code block read as the browser's engine
@@ -38,8 +38,11 @@ const agentSession = {
 
 const entry = fixture("lists-spaced-by-indented-code-whitespace-lines");
 
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+
 const test = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue(
     { project: "CORE", spec: entry.markdown, title: "Indented code whitespace lines" },
     agentSession

@@ -1,7 +1,7 @@
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { createIssue, createProject, getArtifactText, patchIssue } from "./api";
 import { connectedDot, documentEditor, documentTransport, typeAtEnd } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const INITIAL = "# Offline edits\n\nOriginal paragraph.\n";
@@ -59,8 +59,9 @@ async function pendingEditCount(page: Parameters<typeof documentTransport>[0], a
 }
 
 async function makeIssue() {
-  await createProject({ key: "OFFLINE", name: "Offline edits" });
-  return createIssue({ project: "OFFLINE", spec: INITIAL, title: "Persist local edits" });
+  const offline = rowKey("OFFLINE");
+  await createProject({ key: offline, name: "Offline edits" });
+  return createIssue({ project: offline, spec: INITIAL, title: "Persist local edits" });
 }
 
 async function waitForPersistedTyping(

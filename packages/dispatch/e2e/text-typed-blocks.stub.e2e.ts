@@ -13,14 +13,17 @@
  */
 import { expect } from "@playwright/test";
 
-import { createIssue, createProject } from "./api";
+import { createIssue, createProject, fixedKey } from "./api";
 import { expectTextOnlyDecisions, seedDecisionBody } from "./decision-bodies";
 import { stubbed } from "./stub/stub-test";
 
 const author = { id: "e2e-text-blocks-agent", kind: "session" as const };
 
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+
 const test = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Decision in a comment" });
   const comment = await seedDecisionBody({
     author,

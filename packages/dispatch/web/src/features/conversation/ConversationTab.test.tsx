@@ -640,7 +640,8 @@ test("a mention its session answered with an error is pointed at a new comment, 
     await screen.findByText(
       wholeText(`session:worker… · failed · worker failed. ${answeredWithErrorGuidance("mention")}`)
     );
-    expect(document.querySelector('[data-agent-name="worker"] a')?.getAttribute("href")).toBe(
+    expect(document.querySelector('[data-agent-name="worker"] a')).toHaveAttribute(
+      "href",
       "/agents/worker/live"
     );
     screen.getByText(
@@ -691,7 +692,7 @@ test("a targeted message asked by a session names that session as the asker", as
     // The recipient is the session the attempt reached, by its registry title, and links to it.
     // The headline comes first; the retry row's sentences name the same session.
     const [recipient] = await screen.findAllByRole("link", { name: "planner" });
-    expect(recipient?.getAttribute("href")).toBe("/agents/s1/live");
+    expect(recipient).toHaveAttribute("href", "/agents/s1/live");
     expect(recipient?.closest("p")?.textContent?.startsWith("Asking planner (BTW) ·")).toBe(true);
     expect(screen.getByRole("link", { name: "reviewer" })).toHaveAttribute(
       "href",
@@ -891,7 +892,7 @@ test("a retracted ask is listed, and landing on one resets a filter that hides i
       expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true")
     );
     const card = view.container.querySelector('[data-turn="ask:ask-retracted"]');
-    expect(card?.getAttribute("aria-current")).toBe("true");
+    expect(card).toHaveAttribute("aria-current", "true");
   } finally {
     view.unmount();
     scrollIntoView.mockRestore();
@@ -989,7 +990,7 @@ test("a handoff body that is not a JSON object shows as its raw text", async () 
   try {
     await user.click(await screen.findByRole("button", { name: "Show fields" }));
     const raw = await screen.findByText("not { json");
-    expect(raw.hasAttribute("data-handoff-raw")).toBe(true);
+    expect(raw).toHaveAttribute("data-handoff-raw");
     expect(view.container.querySelector("[data-handoff-field]")).toBeNull();
   } finally {
     view.unmount();
@@ -1019,10 +1020,10 @@ test("a handoff is Closed, and landing on one resets a filter that hides it", as
       tab({ "CORE-1": issueState() }, true, queryClient, false, new Map(), "handoff-1")
     );
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true")
+      expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true")
     );
     const card = view.container.querySelector('[data-turn="handoff:handoff-1"]');
-    expect(card?.getAttribute("aria-current")).toBe("true");
+    expect(card).toHaveAttribute("aria-current", "true");
   } finally {
     view.unmount();
     scrollIntoView.mockRestore();
@@ -1060,10 +1061,11 @@ test("landing on a reply under an ask marks that ask's card and the reply's own 
     // The oldest reply sits behind the card's fold, which the landing opens.
     const marked = await screen.findByText("The oldest reply");
     const row = marked.closest("[data-reply]");
-    expect(row?.getAttribute("aria-current")).toBe("true");
-    expect(
-      view.container.querySelector('[data-turn="ask:ask-1"]')?.getAttribute("aria-current")
-    ).toBe("true");
+    expect(row).toHaveAttribute("aria-current", "true");
+    expect(view.container.querySelector('[data-turn="ask:ask-1"]')).toHaveAttribute(
+      "aria-current",
+      "true"
+    );
     // The row's own thread seeds the card, so the page makes no per-ask thread request.
     expect(getAsk).not.toHaveBeenCalled();
   } finally {
@@ -2155,7 +2157,7 @@ test("a root targeted-message retry checks the role's current holder after a han
   try {
     // The new holder dropped steer, so the same-mode Retry of a steer attempt is refused.
     const sendNormally = await screen.findByRole("button", { name: "Retry" });
-    expect(sendNormally.hasAttribute("disabled")).toBe(true);
+    expect(sendNormally).toHaveAttribute("disabled");
     expect(screen.getByRole("button", { name: "Use BTW instead" })).not.toHaveAttribute("disabled");
   } finally {
     view.unmount();
@@ -2207,7 +2209,7 @@ test("a reply's targeted-message retry checks the thread's current role holder a
     await screen.findByText("Any update?");
     // The new holder dropped steer, so the same-mode Retry of a steer attempt is refused.
     const sendNormally = await screen.findByRole("button", { name: "Retry" });
-    expect(sendNormally.hasAttribute("disabled")).toBe(true);
+    expect(sendNormally).toHaveAttribute("disabled");
     expect(screen.getByRole("button", { name: "Use BTW instead" })).not.toHaveAttribute("disabled");
   } finally {
     view.unmount();
@@ -2473,9 +2475,10 @@ test("at a desktop width, landing on a comment opens its thread inline and readi
   try {
     const replyItem = (await screen.findByText("Reply comment")).closest("li");
     if (replyItem === null) throw new Error("expected the reply's item");
-    expect(
-      page.turn("comment:root-comment").querySelector("article")?.getAttribute("aria-expanded")
-    ).toBe("true");
+    expect(page.turn("comment:root-comment").querySelector("article")).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
     await dwellOnFakeClock(page.viewport, replyItem);
     expect(page.mark.mock.calls).toEqual([
       ["root-comment", { read_through: reply.created_at }, keyedAttempt],
@@ -2495,7 +2498,7 @@ test("landing on a comment's reply opens the thread it belongs to and marks that
   const page = renderThreads({ comments: [root, reply] }, [], "reply-comment");
   try {
     const marked = await screen.findByText("Reply comment");
-    expect(marked.closest("[data-reply]")?.getAttribute("aria-current")).toBe("true");
+    expect(marked.closest("[data-reply]")).toHaveAttribute("aria-current", "true");
     expect(page.turn("comment:root-comment")).toHaveAttribute("aria-current", "true");
   } finally {
     page.cleanup();
@@ -2729,11 +2732,10 @@ test("a message that is nothing but a reference shows its card", async () => {
       return found;
     });
     const cards = await within(turn).findByRole("region", { name: "References" });
-    expect(
-      within(cards)
-        .getByRole("link", { name: /The other issue/ })
-        .getAttribute("href")
-    ).toBe("/issues/CORE-2");
+    expect(within(cards).getByRole("link", { name: /The other issue/ })).toHaveAttribute(
+      "href",
+      "/issues/CORE-2"
+    );
   } finally {
     view.unmount();
     stub.restore();
@@ -2786,8 +2788,8 @@ test("a Conversation turn links the `#q2` the question map of its message names"
       if (found === null) throw new Error("the `#q2` is still plain text");
       return found;
     });
-    expect(link.getAttribute("data-dispatch-ref")).toBe("dispatch://CORE-1/ask/ask-2");
-    expect(link.getAttribute("href")).toBe("/issues/CORE-1/asks/ask-2");
+    expect(link).toHaveAttribute("data-dispatch-ref", "dispatch://CORE-1/ask/ask-2");
+    expect(link).toHaveAttribute("href", "/issues/CORE-1/asks/ask-2");
     expect(getReferenceQuestions).toHaveBeenCalledWith("message", "message-1");
   } finally {
     view.unmount();

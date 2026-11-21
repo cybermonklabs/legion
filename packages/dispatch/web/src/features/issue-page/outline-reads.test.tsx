@@ -1,15 +1,16 @@
 import { expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { tick } from "../../__tests__/fake-clock";
 import { api } from "../../api/client";
 import type { IssueDetails } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
-import { TWO_THREADS, waitInAct } from "./outline-fixtures";
+import { TWO_THREADS, zeroDelaysOnFakeClock } from "./outline-fixtures";
 import * as outlineReads from "./outline-reads";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
@@ -119,8 +120,10 @@ test("the body and a second caller of the outline's reads send each read once an
     view.rerender(draw(false));
     setSystemTime(Date.now() + 31_000);
     view.rerender(draw(true));
-    // Long enough for a read the mount started to have been sent.
-    await waitInAct(50);
+    // The mount's effects, where a read of the second caller would start: React Query starts a
+    // read in the observer's subscribe, which runs in an effect, and calls the read's function in
+    // that same turn, so a started read shows in the count below.
+    await act(async () => {});
     expect(
       sent(),
       "the second caller mounted again past 30 s read the outline's reads again"
@@ -184,10 +187,15 @@ test("the outline's reads are settled once each read and each document's blocks 
     try {
       const view = renderReads(issue, client, held);
       await waitFor(() => expect(api.listIssueMessages).toHaveBeenCalled());
-      // The read that is not the last answers.
-      if (last === "messages") blocks.resolve([] as never);
-      else messages.resolve([]);
-      await waitInAct(20);
+      // The read that is not the last answers, and React Query hands its answer on a task after
+      // it lands.
+      await zeroDelaysOnFakeClock(async () => {
+        await act(async () => {
+          if (last === "messages") blocks.resolve([] as never);
+          else messages.resolve([]);
+        });
+        await tick(0);
+      });
       expect(held.second?.readsSettled, `settled with the ${last} read still out`).toBe(false);
       // The last fails.
       if (last === "messages") messages.reject(new Error("the messages' read failed"));

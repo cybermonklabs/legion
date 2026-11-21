@@ -1,0 +1,5 @@
+kind: Fixed
+body: The generated contract no longer requires a field that reaches its object through an embedded pointer, such as the document counts of an issue write's advice (WriteAdvice.decision_blocks), which the server leaves out.
+time: 2026-11-20T16:57:44.26131271Z
+custom:
+    Issue: pr4523

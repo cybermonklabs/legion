@@ -1,6 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
+import type { Result } from "../web/src/api/paths";
 import type { CreateBroadcastInput, Message } from "../web/src/api/types";
+import { OVERSCAN_ROWS } from "../web/src/features/delivery/lib/rowWindow";
 import {
   agentGroupToggle,
   agentRow,
@@ -38,8 +40,7 @@ import { holdFirstRequest } from "./editor";
 import { inboxList } from "./inbox-pane";
 import { type KeyedWrite, keyedWrite } from "./keyed-writes";
 import { setCreatedAt } from "./seed";
-import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -48,13 +49,20 @@ import { asUser } from "./users";
  *  own clock cannot skip, covers one deferred a task or two past it. */
 const ABSENCE_MARGIN_MS = 150;
 
+// The four sessions these rows seed. Each one's id is the running row's own (`rowSessionId`,
+// e2e/test.ts), read where a row names it, so it is a getter: Dispatch keeps what a session said
+// and what was said to it by the session's id, for every person at once, so a fixed id would
+// give each row's conversation, unread replies and open asks every earlier row's as well. A
+// spread or a JSON body of the session takes the row's id with it.
 const planner: FakeSession = {
   capabilities: ["aside", "btw"],
   dir: "/workspaces/planner",
   last_seen: Date.now() - 30_000,
   machine_id: "planner-host",
   roles: ["planner"],
-  session_id: sessionIds.planner,
+  get session_id() {
+    return rowSessionId("planner");
+  },
   title: "Planner",
 };
 const reviewer: FakeSession = {
@@ -63,7 +71,9 @@ const reviewer: FakeSession = {
   last_seen: Date.now() - 5 * 60_000,
   machine_id: "reviewer-host",
   roles: ["reviewer"],
-  session_id: sessionIds.reviewer,
+  get session_id() {
+    return rowSessionId("reviewer");
+  },
   title: "Reviewer",
 };
 const silent: FakeSession = {
@@ -72,7 +82,9 @@ const silent: FakeSession = {
   last_seen: Date.now() - 10_000,
   machine_id: "silent-host",
   roles: [],
-  session_id: sessionIds.silent,
+  get session_id() {
+    return rowSessionId("silent");
+  },
   title: "Silent",
 };
 const archivist: FakeSession = {
@@ -81,7 +93,9 @@ const archivist: FakeSession = {
   last_seen: Date.now() - 45 * 60_000,
   machine_id: "archivist-host",
   roles: [],
-  session_id: sessionIds.archivist,
+  get session_id() {
+    return rowSessionId("archivist");
+  },
   title: "Archivist",
 };
 
@@ -92,9 +106,14 @@ const archivist: FakeSession = {
 test("Agents puts who needs you first, groups the rest by what each is doing, shows one whose-turn pill per side, pins a card, copies identifiers, and holds an issue-less BTW conversation @pr", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): no other row's agent
+  // replies are unread for her, so the shell's Agents link carries no New replies, and no pin
+  // of hers puts another row's session on the page.
+  const me = rowPerson("alice");
   await setLiveSessions([planner, reviewer, silent, archivist]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Agent page activity" });
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Agent page activity" }, { login: me });
   const asPlanner = {
     actor: { id: planner.session_id, kind: "session" as const },
     as: "agent" as const,
@@ -102,14 +121,11 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
   await createAsk(issue.key, { question: "First" }, asPlanner);
   // Alice has replied to the second ask, so its next move is the Planner's.
   const answered = await createAsk(issue.key, { question: "Second" }, asPlanner);
-  await createComment(issue.key, { ask_id: answered.id, body: "Which release?" });
+  await createComment(issue.key, { ask_id: answered.id, body: "Which release?" }, { login: me });
   // The same two turns on an issue Bob holds: the card's first number is Alice's own work, so
   // neither of these is in it, while the second counts what waits on the Planner whoever holds
   // the issue.
-  const theirs = await createIssue(
-    { project: "CORE", title: "Bob's agent work" },
-    { login: "bob" }
-  );
+  const theirs = await createIssue({ project: core, title: "Bob's agent work" }, { login: "bob" });
   await createAsk(theirs.key, { question: "Third" }, asPlanner);
   const theirsAnswered = await createAsk(theirs.key, { question: "Fourth" }, asPlanner);
   await createComment(
@@ -125,7 +141,7 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     { actor: { id: reviewer.session_id, kind: "session" }, as: "agent" }
   );
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     const copied = await recordClipboard(page);
@@ -296,7 +312,10 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
       input: { body: sentBody, delivery: "btw" },
       key: expect.any(String),
     });
-    const message = (await request.json()) as { id: string };
+    const message = (await request.json()) as Result<
+      "/api/v1/agents/{session_id}/messages",
+      "post"
+    >;
     expect(await getSentMessages()).toMatchObject([{ target_session: planner.session_id }]);
 
     await replyToMessageDelivery(
@@ -398,10 +417,10 @@ test("a message to an agent no store knows any more is queued for it, and its ca
       input: { body, delivery: "steer" },
       key: expect.any(String),
     });
-    const message = (await response.json()) as {
-      deliveries: { delivery: string; state: string }[];
-      id: string;
-    };
+    const message = (await response.json()) as Result<
+      "/api/v1/agents/{session_id}/messages",
+      "post"
+    >;
     expect(message.deliveries).toEqual([
       expect.objectContaining({ delivery: "steer", state: "queued" }),
     ]);
@@ -489,8 +508,13 @@ test("Agents shows the newest exchange, folds the older ones, and lets the viewe
         response.ok()
     );
     await clearButton.click();
-    const state = (await (await saved).json()) as { cleared_before: string };
-    expect(Date.parse(state.cleared_before)).toBeLessThanOrEqual(Date.now());
+    const state = (await (await saved).json()) as Result<
+      "/api/v1/me/agents/{session_id}/state",
+      "put"
+    >;
+    // The route leaves `cleared_before` out of a state no Clear has set: absent, it parses to NaN,
+    // which no time is at or before.
+    expect(Date.parse(state.cleared_before ?? "")).toBeLessThanOrEqual(Date.now());
     await expect(conversation).toHaveCount(0);
     await expect(clearButton).toHaveCount(0);
     await expect(plannerCard.getByText(/^Cleared/)).toContainText("just now");
@@ -533,9 +557,10 @@ test("Agents shows the newest exchange, folds the older ones, and lets the viewe
 });
 
 test("a session's untargeted reply lands in the open conversation", async ({ browser }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Untargeted reply" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Untargeted reply" });
   // Dispatch activity of its own, so the card sits under `Active` at the top of the list.
   await createComment(
     issue.key,
@@ -573,9 +598,10 @@ test("a session's untargeted reply lands in the open conversation", async ({ bro
 // SLOW(>=2s): a seed, one page load and the live delivery the row observes; the disconnect hook
 // already stands in for every wait a reconnect would otherwise cost.
 test("a reconnect picks up a Clear made from another device", async ({ browser }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Cleared elsewhere" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Cleared elsewhere" });
   await createComment(
     issue.key,
     { body: "Looking at it." },
@@ -614,21 +640,26 @@ test("a reconnect picks up a Clear made from another device", async ({ browser }
 test("opening a row marks read the newer of two replies written in one millisecond", async ({
   browser,
 }) => {
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): no other row's agent
+  // reply is unread for her, so the page's New replies are this row's two alone.
+  const me = rowPerson("alice");
   await setLiveSessions([planner]);
   const plannerActor = { id: planner.session_id, kind: "session" as const };
-  const askA = await createAgentMessage(planner.session_id, {
-    body: "Question A",
-    delivery: "aside",
-  });
+  const askA = await createAgentMessage(
+    planner.session_id,
+    { body: "Question A", delivery: "aside" },
+    { login: me }
+  );
   const answerA = (await replyToMessageDelivery(
     askA.id,
     { attempt: 1, body: "Answer A" },
     plannerActor
   )) as Message;
-  const askB = await createAgentMessage(planner.session_id, {
-    body: "Question B",
-    delivery: "aside",
-  });
+  const askB = await createAgentMessage(
+    planner.session_id,
+    { body: "Question B", delivery: "aside" },
+    { login: me }
+  );
   const answerB = (await replyToMessageDelivery(
     askB.id,
     { attempt: 1, body: "Answer B" },
@@ -636,11 +667,11 @@ test("opening a row marks read the newer of two replies written in one milliseco
   )) as Message;
   // Alice's follow-up moves exchange A above B in the server's order, so the page meets the older
   // reply first: a comparison to the millisecond would keep it.
-  const followUp = await createAgentMessage(planner.session_id, {
-    body: "Follow-up on A",
-    delivery: "aside",
-    in_reply_to: answerA.id,
-  });
+  const followUp = await createAgentMessage(
+    planner.session_id,
+    { body: "Follow-up on A", delivery: "aside", in_reply_to: answerA.id },
+    { login: me }
+  );
   const second = Math.floor((Date.now() - 120_000) / 1000) * 1000;
   const at = (offsetSeconds: number, fraction = "") =>
     `${new Date(second + offsetSeconds * 1000).toISOString().slice(0, 19)}${fraction}Z`;
@@ -653,7 +684,7 @@ test("opening a row marks read the newer of two replies written in one milliseco
   await setCreatedAt("messages", followUp.id, at(30));
   // The fixture holds only if the server lists A first, with both replies unread.
   expect(
-    (await listAgentMessages(planner.session_id)).map((read) => [
+    (await listAgentMessages(planner.session_id, { login: me })).map((read) => [
       read.message.body,
       (read.replies ?? [])
         .filter((reply) => reply.author.id === planner.session_id)
@@ -664,9 +695,9 @@ test("opening a row marks read the newer of two replies written in one milliseco
     ["Question A", [replyA], true],
     ["Question B", [replyB], true],
   ]);
-  expect((await getAgentStates())[planner.session_id]?.unread_replies).toBe(2);
+  expect((await getAgentStates({ login: me }))[planner.session_id]?.unread_replies).toBe(2);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
@@ -686,7 +717,7 @@ test("opening a row marks read the newer of two replies written in one milliseco
     ).toContainText("Answer B");
     await expect(page.getByText(/^New repl/)).toHaveCount(0);
     await expect
-      .poll(async () => (await getAgentStates())[planner.session_id]?.unread_replies)
+      .poll(async () => (await getAgentStates({ login: me }))[planner.session_id]?.unread_replies)
       .toBe(0);
   } finally {
     await alice.close();
@@ -811,6 +842,7 @@ test("the header checkbox selects and clears only the rows the filters match, by
 test("select-all ticks the rows in the order the page shows them, not the order the registry lists them", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   const session = (id: string, title: string): FakeSession => ({
     capabilities: ["aside", "btw"],
     dir: `/workspaces/${id}`,
@@ -822,8 +854,8 @@ test("select-all ticks the rows in the order the page shows them, not the order 
   // Each speaks on an issue, oldest first, so the page lists them newest-activity-first - Alpha,
   // Mid, Zeta - while the registry is seeded in the opposite order, which is the order select-all
   // used to walk.
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Ordering" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Ordering" });
   for (const id of ["zeta", "mid", "alpha"]) {
     await createComment(
       issue.key,
@@ -837,7 +869,9 @@ test("select-all ticks the rows in the order the page shows them, not the order 
     session("alpha", "Alpha"),
   ]);
 
-  const alice = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): a pin is the person's,
+  // so Zeta starts unpinned whatever an earlier row pinned.
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
@@ -905,8 +939,9 @@ test("the header checkbox stays under the pointer on a phone when its click open
 });
 
 /** `count` silent planners, `capable` of them advertising BTW and the rest `aside` only,
- *  numbered to `count`'s width so the list sorts in order. Each has a role and a directory, so
- *  every card at 390 px is 166 px tall; a fixture with shorter cards gives different row counts. */
+ *  numbered to `count`'s width so the list sorts in order. Each has a role and a directory, which
+ *  its card draws; the phone row below counts whole cards drawn with both, and a fixture with
+ *  shorter cards gives different row counts. */
 function planners(count: number, capable: number): FakeSession[] {
   return Array.from({ length: count }, (_, index) => {
     const number = String(index + 1).padStart(String(count).length, "0");
@@ -945,23 +980,60 @@ function wholeAbove(box: { y: number; height: number } | null, composerTop: numb
   return box !== null && box.y >= 0 && box.y + box.height <= composerTop;
 }
 
-/** Whole cards above the composer, of the rows a reader sees. */
+/** How many of the rows a reader sees stand wholly below the screen's bottom edge, read in one
+ *  pass. Once the window has drawn the offset the page is at, they are its overscan below:
+ *  `OVERSCAN_ROWS` of them (rowWindow.ts) wherever the list's own top edge is above the screen
+ *  and the list leaves that many rows under it. Both hold at every offset the row below measures
+ *  at: the first card is at the screen's top edge or above it, with the group headings above
+ *  that, and forty rows reach far below the screen. A card the window let go after the find is
+ *  skipped, as in `wholeCardsAbove`. */
+function rowsBelowScreen(page: Page): Promise<number> {
+  return shownAgentRows(page).evaluateAll(
+    (cards) =>
+      cards.filter(
+        (card) => card.isConnected && card.getBoundingClientRect().top >= window.innerHeight
+      ).length
+  );
+}
+
+/** Whole cards above the composer, of the rows a reader sees.
+ *
+ *  The list is windowed. The window hears a scroll - the row's own, or the one focusing and
+ *  filling the message box makes - at the browser's next frame and draws the new offset after
+ *  it, so until then it holds the rows of the offset before. The cards are read once the window
+ *  holds exactly its overscan below the screen, and in one pass over the cards drawn then, never
+ *  as a locator per card measured in later round trips: a card counted before the window let it
+ *  go is in no part of the page when its measure comes, and that measure waits its whole action
+ *  timeout for it. `evaluateAll` itself is two calls into the page, one that finds the cards and
+ *  one that runs the pass over them, so the pass skips a card no longer in the page: that card
+ *  measures as a zero box at the screen's top edge, which `wholeAbove` would count as whole. */
 async function wholeCardsAbove(agents: Locator, composer: Locator): Promise<number> {
+  const page = agents.page();
+  await expect.poll(() => rowsBelowScreen(page)).toBe(OVERSCAN_ROWS);
   const composerTop = (await composer.boundingBox())?.y ?? 0;
-  const boxes = await Promise.all(
-    (await shownAgentRows(agents.page()).all()).map((card) => card.boundingBox())
+  const boxes = await shownAgentRows(page).evaluateAll((cards) =>
+    cards
+      .filter((card) => card.isConnected)
+      .map((card) => {
+        const { height, y } = card.getBoundingClientRect();
+        return { height, y };
+      })
   );
   return boxes.filter((box) => wholeAbove(box, composerTop)).length;
 }
 
 // SLOW(>=2s): 40 recipient chips rendered for real and the composer measured empty and filled
-// at each compact size; the layout under measurement is what the row proves.
+// on a phone's screen; the layout under measurement is what the row proves.
 test("on a phone the open composer keeps its height budget at forty recipients, empty or filled, keeps its message box steady, and keeps every chip reachable", async ({
   browser,
 }) => {
   await setLiveSessions(planners(40, 40));
 
-  const alice = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts, and alice's, which every row before on the worker
+  // raises, take a second line, which moves the selection header the row measures at the top of
+  // the page down by that line.
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     const viewport = { height: 664, width: 390 };
@@ -993,7 +1065,7 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     expect(heightAtTwo).toBeLessThanOrEqual(viewport.height * 0.4);
 
     // Forty recipients: the count stays exact, and one line of chips keeps the composer at the
-    // height two gave it (222.0 px, 33.43%).
+    // height two gave it.
     await agents.getByRole("checkbox", { name: "Select all matching agents" }).click();
     await expect(
       composer.getByRole("heading", { name: "Broadcast to 40 of 40 selected" })
@@ -1017,10 +1089,10 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     }
 
     // Row counts below are whole `article` cards with top >= 0 and bottom <= the composer's top
-    // edge, with the fold expanded and forty selected; the height clause is the discriminating
-    // one, the row clauses record intent. A third whole card is bounded by the 166 px card, not
-    // by the composer. The list is windowed, so the cards on the page are the ones it drew, of
-    // the forty the heading above counts and the select-all ticked.
+    // edge, with the Idle fold open and forty selected; the height clauses are the
+    // discriminating ones, and the counts record what a reader keeps in view above the
+    // composer. The list is windowed, so the cards on the page are the ones it drew, of the
+    // forty the heading above counts and the select-all ticked.
     // The floor is polled: the window draws its cards after the scroll above, so a count read at
     // once can be of a window still drawing. Once that poll has seen the window draw, one read of
     // the ceiling catches a moment with more than 40 cards, which a poll would wait out.
@@ -1028,25 +1100,24 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     await expect.poll(() => drawn.count()).toBeGreaterThan(2);
     expect(await drawn.count()).toBeLessThanOrEqual(40);
 
-    // The defined offset: the first card scrolled to the top of the viewport (scrollY 431),
-    // message empty. Two whole cards and the third card's checkbox are above the composer.
+    // The defined offset: the first card scrolled to the top of the viewport, message empty. At
+    // least two whole cards and the third card's checkbox are above the composer.
     await scrollFirstCardToTop();
     expect(await wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(2);
     expect(await checkboxAbove(2)).toBe(true);
 
     // The operator's moment: from that offset, a message filled until the box stops growing,
-    // with no re-scroll (focusing and filling the box scrolls the page, to scrollY 461 here).
-    // The composer is then at its tallest, 286 px or 43.1% of 664, under a 45% budget; filling
-    // lifts its top by exactly the 64 px the box grew (442 to 378). One whole card is above it,
-    // and the next card's checkbox.
+    // with no re-scroll (focusing and filling the box scrolls the page further down, so the
+    // first card's top is above the screen). The composer is then at its tallest, under a 45%
+    // budget. At least one whole card is above it, and the third card's checkbox.
     await fillUntilStable(message);
     expect(await composerHeight()).toBeLessThanOrEqual(viewport.height * 0.45);
     expect(await wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(1);
     expect(await checkboxAbove(2)).toBe(true);
 
-    // The defined offset again, filled (scrollY 431, cards at 0-166 and 178-344, composer top
-    // 378). This clause has 34 px of slack and no more: anything that later adds composer height
-    // (another chrome line, taller chips, an inline error) turns it red, and that is the budget
+    // The defined offset again, filled: at least two whole cards above the composer at its
+    // tallest. Anything that later adds composer height (another chrome line, taller chips, an
+    // inline error) can cover the second card, and this clause turning red then is the budget
     // working, not a flaky test. Empty, the height clause does the discriminating.
     await scrollFirstCardToTop();
     expect(await wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(2);
@@ -1879,6 +1950,7 @@ test("the Agents page loads through one dropped request for its agents", async (
 test("an agent row is one line at 1440, and at 390 puts the age and the whole path under the name @phone", async ({
   browser,
 }, testInfo) => {
+  const rowProjectKey = rowKey("ROW");
   const isPhone = testInfo.project.name === "iphone";
   // The row the page drew before this change, measured with these same three sessions at the
   // commit this branch builds on (7567aeb6): 90 px at 1440 with the 64-character name wrapped
@@ -1919,8 +1991,8 @@ test("an agent row is one line at 1440, and at 390 puts the age and the whole pa
 
   // Each session comments once, so all three are Active and none is grouped by an activity the
   // others lack.
-  await createProject({ key: "ROW", name: "Row" });
-  const issue = await createIssue({ project: "ROW", title: "Agent row widths" });
+  await createProject({ key: rowProjectKey, name: "Row" });
+  const issue = await createIssue({ project: rowProjectKey, title: "Agent row widths" });
   for (const session of [longName, unbrokenName, shortName]) {
     await createComment(
       issue.key,
@@ -2033,6 +2105,7 @@ test("an agent row is one line at 1440, and at 390 puts the age and the whole pa
 test("an agent row's directory is still shown beside the longest name in use, so its path stays one hover away", async ({
   browser,
 }) => {
+  const dirKey = rowKey("DIR");
   // The name the spec sizes the row against: the longest in use on the Agents page today.
   const name64 = "Legion implementer · INFRA-92 — the whole name shows on this row";
   expect(name64).toHaveLength(64);
@@ -2055,8 +2128,8 @@ test("an agent row's directory is still shown beside the longest name in use, so
 
   // Dispatch activity of its own, so both rows sit under `Active`, at the top of the list where
   // the window draws them and their widths can be measured.
-  await createProject({ key: "DIR", name: "Directory" });
-  const issue = await createIssue({ project: "DIR", title: "Agent row directory" });
+  await createProject({ key: dirKey, name: "Directory" });
+  const issue = await createIssue({ project: dirKey, title: "Agent row directory" });
   for (const session of [longName, shortName]) {
     await createComment(
       issue.key,

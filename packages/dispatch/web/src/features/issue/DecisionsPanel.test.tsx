@@ -461,8 +461,8 @@ test("a decision's references are read from its own markdown, not from the words
       }
       return found;
     });
-    expect(link.getAttribute("data-dispatch-ref")).toBe(`dispatch://CORE-1/ask/${askId}`);
-    expect(link.getAttribute("href")).toBe(`/issues/CORE-1/asks/${askId}`);
+    expect(link).toHaveAttribute("data-dispatch-ref", `dispatch://CORE-1/ask/${askId}`);
+    expect(link).toHaveAttribute("href", `/issues/CORE-1/asks/${askId}`);
     await waitFor(() => expect(summary).toHaveBeenCalledWith("CORE-9"));
   } finally {
     ask.mockRestore();
@@ -547,7 +547,7 @@ test("a block of an answer with no reading cites its own markdown, not the decis
       }
       return found;
     });
-    expect(cited.getAttribute("data-dispatch-ref")).toBe(`dispatch://CORE-1/ask/${askId}`);
+    expect(cited).toHaveAttribute("data-dispatch-ref", `dispatch://CORE-1/ask/${askId}`);
     // The link stands in the block whose own markdown cites the question, and the reference
     // draws under the ask's own title rather than under the `#q2` the author wrote.
     expect(cited.closest("p")?.textContent).toContain("It answers");

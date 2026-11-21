@@ -8,14 +8,20 @@
  *  without a thought about which lane answers it fails here rather than on the day the lane is
  *  ten minutes slower than it was.
  *
+ *  The shard job is not all of it. The same workflow's `embedder` job runs on both lanes, so on
+ *  every pull request: `bun run e2e:embedder`, the rows of `e2e/search-tiers.e2e.ts` against a
+ *  server that embeds at a counting fake, in `chromium` and with no grep. Those rows drive the
+ *  real stack whatever their tags say, so they count toward both numbers, read from the command
+ *  that script runs (`embedderCommand` of `./playwright-listing`).
+ *
  *  Why 330 and not the 350 dispatch://INFRA-1407's R1 names: dispatch://INFRA-1410 and
  *  dispatch://INFRA-1511 land after this head and will each want rows on this lane, and the
  *  parent's own check reads the 350 at the root's last round rather than here. Twenty rows is
  *  the margin left for them.
  *
  *  Why at most 150 outside the stubbed projects: a real-stack row pays a Go server, a Postgres,
- *  three fakes, a sign-in and a database reset, and R1 holds the lane to 150 of them. The rest
- *  of the lane is the stubbed layer, which pays none of that.
+ *  three fakes, a reset of the fakes and a sign-in, and R1 holds the lane to 150 of them. The
+ *  rest of the lane is the stubbed layer, which pays none of that.
  *
  *  A row with no `@pr` tag is not lost: it runs on the full lane, which `ci.yaml` runs for every
  *  merge group and `.github/workflows/dispatch-browser-nightly.yaml` runs daily, so `main` is
@@ -30,20 +36,25 @@ import {
   tagged,
 } from "../configurations";
 import { rowLimit } from "./bounded-subprocess";
-import { listing, projectArguments, retained } from "./playwright-listing";
+import { embedderCommand, listing, projectArguments, retained } from "./playwright-listing";
 
-/** The rows the pull-request lane schedules, and the rows of the default selection, read from
- *  two listings of one config. The second is read for the stubbed rows alone, and both stubbed
- *  projects are in the default selection, so this file needs no third listing: the three
- *  wall-clock projects carry `default: false` since dispatch://INFRA-1280, so a listing that
- *  names no project holds no row of theirs, and no row of theirs is stubbed. Both start here
- *  rather than inside a test, so the second collects while the first does. */
+/** The rows the pull-request lane schedules, the rows the embedder job runs beside it, and the
+ *  rows of the default selection, read from three listings of one config. The last is read for
+ *  the stubbed rows alone, and both stubbed projects are in the default selection, so this file
+ *  needs no fourth listing: the three wall-clock projects carry `default: false` since
+ *  dispatch://INFRA-1280, so a listing that names no project holds no row of theirs, and no row
+ *  of theirs is stubbed. All three start here rather than inside a test, so they collect at
+ *  once. */
 const lane = retained(
   listing(import.meta.url, "e2e/playwright.config.ts", {}, [
     ...projectArguments(pullRequestLaneProjects),
     "--grep",
     tagged("pr").source,
   ])
+);
+const embedder = embedderCommand();
+const embedderRows = retained(
+  listing(import.meta.url, "e2e/playwright.config.ts", embedder.environment, embedder.extra)
 );
 const defaultSelection = retained(listing(import.meta.url, "e2e/playwright.config.ts", {}));
 
@@ -55,7 +66,7 @@ const realStackBudget = 150;
 test(
   "the pull-request lane stays inside its budget, and inside its real-stack share",
   async () => {
-    const rows = rowsOfListing(await lane);
+    const rows = [...rowsOfListing(await lane), ...rowsOfListing(await embedderRows)];
     const realStack = rows.filter((row) => !stubProjectNames.includes(row.project));
     expect(
       rows.length,
@@ -69,7 +80,7 @@ test(
       realStack.length,
       `${realStack.length} rows of the pull-request lane drive the real stack, and the budget ` +
         `is ${realStackBudget}: a real-stack row pays a Go server, a Postgres, three fakes, a ` +
-        "sign-in and a database reset. Move the row to the stubbed layer " +
+        "reset of the fakes and a sign-in. Move the row to the stubbed layer " +
         '(packages/dispatch/README.md, "The stubbed layer") or take its `@pr` tag off.'
     ).toBeLessThanOrEqual(realStackBudget);
   },

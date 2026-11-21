@@ -262,8 +262,8 @@ test("a live address opens that session's view, in front of everything else", as
 
   await screen.findByTestId("agent-conversation");
   const view = viewOf(PLANNER);
-  expect(view.getAttribute("data-front")).toBe("true");
-  expect(view.getAttribute("aria-hidden")).toBeNull();
+  expect(view).toHaveAttribute("data-front", "true");
+  expect(view).not.toHaveAttribute("aria-hidden");
   await waitFor(() => expect(document.title).toContain("Planner"));
   expect(watched(openSocket())).toEqual([PLANNER]);
 });
@@ -282,13 +282,13 @@ test("leaving a live view hides it but keeps it watching, and coming back costs 
   await screen.findByRole("heading", { name: "Agents" });
 
   const lingering = viewOf(PLANNER);
-  expect(lingering.getAttribute("data-front")).toBe("false");
-  expect(lingering.getAttribute("aria-hidden")).toBe("true");
+  expect(lingering).toHaveAttribute("data-front", "false");
+  expect(lingering).toHaveAttribute("aria-hidden", "true");
   expect(within(lingering).getByTestId("agent-conversation")).toBeTruthy();
   expect(dropped(socket)).toEqual([]);
 
   await user.click(screen.getByRole("link", { name: "Open Planner" }));
-  await waitFor(() => expect(viewOf(PLANNER).getAttribute("data-front")).toBe("true"));
+  await waitFor(() => expect(viewOf(PLANNER)).toHaveAttribute("data-front", "true"));
   expect(watched(socket)).toEqual([PLANNER]);
 });
 

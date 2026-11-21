@@ -1,5 +1,5 @@
 import { createAsk, createComment, createIssue, createProject, getAsk } from "./api";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 
 // A part of an ask - its question, each of its options and its answer - is a block of the
 // reference graph, named `dispatch://KEY/ask/<ask id>#b-<part id>`. These rows drive the surfaces
@@ -18,7 +18,7 @@ const agent = {
 // The project every row of this file seeds into. The reset and alice's sign-in are the `test`
 // this file imports (e2e/test.ts), so what is left here is the seeding alone.
 test.beforeEach(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: rowKey("CORE"), name: "Core" });
 });
 
 /** Opens the hover card of `link` from the keyboard, which every project can do (the phone
@@ -37,7 +37,7 @@ async function openCard(page: Page, link: Locator): Promise<Locator> {
 test("a reference to an ask's option in a comment is a link that opens the ask at that part @pr", async ({
   page,
 }) => {
-  const issue = await createIssue({ project: "CORE", title: "Ask part references" });
+  const issue = await createIssue({ project: rowKey("CORE"), title: "Ask part references" });
   const ask = await createAsk(
     issue.key,
     {
@@ -102,8 +102,9 @@ test("a reference to an ask's option in a comment is a link that opens the ask a
 test("the backlink an ask's option writes names the ask as its source, not an artifact", async ({
   page,
 }) => {
-  const target = await createIssue({ project: "CORE", title: "Target of an option's link" });
-  const source = await createIssue({ project: "CORE", title: "Asking issue" });
+  const core = rowKey("CORE");
+  const target = await createIssue({ project: core, title: "Target of an option's link" });
+  const source = await createIssue({ project: core, title: "Asking issue" });
   const ask = await createAsk(
     source.key,
     {

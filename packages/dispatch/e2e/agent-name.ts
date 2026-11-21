@@ -13,6 +13,7 @@ import {
   createProject,
   mintAgentToken,
   patchIssue,
+  type RowKey,
 } from "./api";
 import { marginCard } from "./editor";
 // One agent component draws every agent the app shows (dispatch://INFRA-440): its current name,
@@ -64,15 +65,21 @@ export interface Seeded {
  *  the listener's list before any page loads. The running agent's claim is written with a
  *  personal token, so its label carries the owner suffix. The writes no row reads in order - the
  *  two claims, the three messages, the two asks - go together; the two margin comments stay in
- *  order behind them, since each anchors into the same spec. */
-export async function seed(): Promise<Seeded> {
-  await createProject({ key: "AGT", name: "Agents" });
+ *  order behind them, since each anchors into the same spec.
+ *
+ *  `project` is the key of the project it makes and `name` its name: a real-stack row passes its
+ *  own key (`rowKey`, e2e/test.ts) and a name no link of the shell's navigation has, since every
+ *  project of the stack is a link there, named by its key and its name, so a project named
+ *  `Agents` is one more link a row's `{ name: "Agents" }` finds beside the navigation's own.
+ *  `agent-name.stub.e2e.ts` replays a recording made under `AGT` and `Agents`. */
+export async function seed(project: RowKey, name = "Agents"): Promise<Seeded> {
+  await createProject({ key: project, name });
   const runIssue = await createIssue({
-    project: "AGT",
+    project,
     spec: "The running agent comments here. The stopped agent comments there.",
     title: "Held by a running agent",
   });
-  const stopIssue = await createIssue({ project: "AGT", title: "Held by a stopped agent" });
+  const stopIssue = await createIssue({ project, title: "Held by a stopped agent" });
   await Promise.all([
     patchIssue(runIssue.key, { status: "todo" }),
     patchIssue(stopIssue.key, { status: "todo" }),

@@ -1,10 +1,8 @@
-import { expect, test } from "@playwright/test";
-
 import { type FakeSession, setLiveSessions, setSessionLive } from "./agents";
 import { createAgentMessage, replyToMessageDelivery } from "./api";
 import { inboxRow } from "./inbox-pane";
 import { agentRowId } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { withAlice } from "./users";
 
 /**
@@ -73,10 +71,6 @@ async function seedBandRow(): Promise<string> {
   await setSessionLive(BAND_SESSION_ID, false);
   return message.id;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): the seed's five listener and API writes, a sign-in and the Inbox's own first draw;
 // measured at 1.9 s in an issue pod on one worker.

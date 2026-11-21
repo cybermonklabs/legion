@@ -1,6 +1,6 @@
 import { createIssue, createProject, getArtifactText } from "./api";
 import { connectedDot, selectEditorText } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // Both rows carry `@firefox`, the tag the `firefox` project selects by (`playwright.config.ts`):
@@ -14,9 +14,10 @@ const PROBE = { intervals: [50, 50, 100, 200, 500] };
 test("typing over the whole last line of a code block replaces that line @firefox @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "## Database\n\n```ts\nconst x = 1;\nlet y = 2;\n```\n\nEnd of spec.\n",
     title: "Code line",
   });
@@ -44,9 +45,10 @@ test("typing over the whole last line of a code block replaces that line @firefo
 test("typing over the text after a paragraph's hard break keeps the break @firefox", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "## Notes\n\nfirst line\\\nsecond line\n\nEnd of spec.\n",
     title: "Hard break",
   });

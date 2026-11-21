@@ -83,7 +83,7 @@ test("Retry is disabled with a visible reason when the recipient dropped the att
     card({ attempts: [attempt({ delivery: "aside" })], capabilities: ["btw", "steer"] })
   );
   try {
-    expect(screen.getByRole("button", { name: "Retry" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Retry" })).toHaveAttribute("disabled");
     expect(screen.getByText("planner does not support Aside.")).toBeTruthy();
   } finally {
     view.unmount();

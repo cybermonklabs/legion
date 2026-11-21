@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { judge, markersIn, type Row } from "../tools/check-slow-rows";
+import { judge, markersIn, p95AgainstBar, type Row, slowRowMs } from "../tools/check-slow-rows";
 
 /** A row of a report, slow unless the case says otherwise. */
 function row(file: string, line: number, record: Partial<Row> = {}): Row {
@@ -179,4 +179,25 @@ test("the band moves with the threshold", () => {
   const rows = [row("margin.e2e.ts", 5, { ms: 1_600 })];
   expect(judge(rows, markers, 2_000).stale).toEqual([]);
   expect(judge(rows, markers, 4_000).stale).toEqual([...markers]);
+});
+
+// R2's p95 target: a lane's 95th percentile against the bar one row is held to, read as `judge`
+// reads a row, so a figure at the bar is over it, as a row at the bar needs its marker. The merge
+// job's "Reading four" step asks this for each class of row rather than writing 2,000 again.
+test("a lane's 95th percentile is read against the slow-row bar, and the bar is 2 s", () => {
+  expect(slowRowMs).toBe(2_000);
+  expect(p95AgainstBar(8_686)).toEqual({
+    over: true,
+    text: "8686 ms, at or above the 2000 ms bar",
+  });
+  expect(p95AgainstBar(2_000)).toEqual({
+    over: true,
+    text: "2000 ms, at or above the 2000 ms bar",
+  });
+  expect(p95AgainstBar(1_999)).toEqual({ over: false, text: "1999 ms, under the 2000 ms bar" });
+  // `--slow-ms` moves it as it moves `judge`'s bar.
+  expect(p95AgainstBar(2_500, 4_000)).toEqual({
+    over: false,
+    text: "2500 ms, under the 4000 ms bar",
+  });
 });

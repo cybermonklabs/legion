@@ -661,7 +661,7 @@ test("AskCard submits the selected single option with the revision the human rev
       "Answer in your own words, or ask a question back"
     );
     const submit = view.getByRole("button", { name: "Answer" });
-    expect(submit.hasAttribute("disabled")).toBe(true);
+    expect(submit).toHaveAttribute("disabled");
 
     await user.click(await view.findByRole("radio", { name: "Ship" }));
     expect(answer).toHaveAttribute("placeholder", "Add a note (optional)");
@@ -718,7 +718,7 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
     // user-event's paste carries text, never the file this row uploads.
     fireEvent.paste(answer, { clipboardData: { files: [png("shot.png")] } });
     await view.findByText("Uploading file…");
-    expect(view.getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(true);
+    expect(view.getByRole("button", { name: "Answer" })).toHaveAttribute("disabled");
     // Ctrl+Enter is Answer's other way in, and the form's submit does not itself wait for uploads.
     await user.click(answer);
     await user.keyboard("{Control>}{Enter}{/Control}");
@@ -889,7 +889,7 @@ test("AskCard submits a selected Other option with free text", async () => {
     const submit = view.getByRole("button", { name: "Answer" });
     const other = await view.findByRole("radio", { name: "Other" });
     await user.click(other);
-    expect(submit.hasAttribute("disabled")).toBe(true);
+    expect(submit).toHaveAttribute("disabled");
     await user.click(view.getByLabelText("Your answer"));
     await user.paste("Try a hybrid");
     expect(submit).not.toHaveAttribute("disabled");
@@ -1172,7 +1172,7 @@ test("an approval-kind ask names the reason Request changes needs, focuses its f
     const reasonField = view.getByLabelText("Reason (required)");
     expect(reasonField).toHaveFocus();
     const submit = view.getByRole("button", { name: "Answer" });
-    expect(submit.hasAttribute("disabled")).toBe(true);
+    expect(submit).toHaveAttribute("disabled");
     expect(submit).toHaveAttribute("title", "Add a reason to send Request changes");
     expect(view.getByText("Add a reason to send Request changes")).toBeTruthy();
 
@@ -1249,7 +1249,7 @@ test("the compact card opens and focuses the reason field when Request changes i
     const reason = within(card).getByLabelText("Reason (required)");
     expect(reason).toHaveFocus();
     const answer = within(card).getByRole("button", { name: "Answer" });
-    expect(answer.hasAttribute("disabled")).toBe(true);
+    expect(answer).toHaveAttribute("disabled");
     expect(within(card).getByText("Add a reason to send Request changes")).toBeTruthy();
     await user.click(reason);
     await user.paste("Needs another pass.");
@@ -1321,7 +1321,7 @@ test("AskCard requires text when Other is selected with real multiple options", 
     await user.click(await view.findByRole("checkbox", { name: "Docs" }));
     await user.click(view.getByRole("checkbox", { name: "Other" }));
     const answer = view.getByRole("button", { name: "Answer" });
-    expect(answer.hasAttribute("disabled")).toBe(true);
+    expect(answer).toHaveAttribute("disabled");
     await user.click(view.getByLabelText("Your answer"));
     await user.paste("Also update the guide.");
     expect(answer).not.toHaveAttribute("disabled");
@@ -1456,7 +1456,7 @@ test("AskCard reloads a changed question, requires the human to reconfirm, and a
     await view.findByText(/This question changed while you were answering/);
     expect(view.getByText("Should we hold this release?")).toBeTruthy();
     expect(view.getByRole("radio", { name: "Hold" })).not.toHaveAttribute("checked");
-    expect(view.getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(true);
+    expect(view.getByRole("button", { name: "Answer" })).toHaveAttribute("disabled");
     expect(
       within(view.getByRole("alert")).queryByRole("button", { name: "Retry" })
     ).not.toBeInTheDocument();
@@ -1866,7 +1866,7 @@ test("AskCard shows the newest two replies, expands the earlier ones, and puts a
 
     const showMore = view.getByRole("button", { name: "Show 3 earlier replies" });
     expect(showMore).toHaveAttribute("aria-expanded", "false");
-    expect(showMore.getAttribute("aria-controls")).not.toBeNull();
+    expect(showMore).toHaveAttribute("aria-controls");
     showMore.focus();
     await user.click(showMore);
     await waitFor(() =>
@@ -2501,9 +2501,7 @@ test("AskCard compact variant renders long options as the same wrapping choice r
 
     await user.click(within(options).getByRole("radio", { name: "Other" }));
     expect(await within(card).findByLabelText("Your answer")).toBeTruthy();
-    expect(within(card).getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(
-      true
-    );
+    expect(within(card).getByRole("button", { name: "Answer" })).toHaveAttribute("disabled");
   } finally {
     view.unmount();
   }
@@ -2573,7 +2571,7 @@ test("AskCard compact variant hands focus to the row when Answer disables under 
     answer.focus();
     expect(answer).toHaveFocus();
     await user.click(answer);
-    await waitFor(() => expect(answer.hasAttribute("disabled")).toBe(true));
+    await waitFor(() => expect(answer).toHaveAttribute("disabled"));
     expect(view.getByTestId("row")).toHaveFocus();
     release(answered(input, ["Ship"]));
     await view.findByRole("img", { name: "Selected" });

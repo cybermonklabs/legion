@@ -179,7 +179,8 @@ test("rows keep parent links, unread marks, asks, progress and route reach, with
     }),
   ]);
   const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  expect(within(row).getByRole("link", { name: "CORE-9" }).getAttribute("href")).toBe(
+  expect(within(row).getByRole("link", { name: "CORE-9" })).toHaveAttribute(
+    "href",
     "/issues/CORE-9"
   );
   expect(within(row).getByTestId("issue-progress-tasks").textContent).toBe("3/7 tasks");
@@ -468,7 +469,7 @@ test("Title and Columns popovers allow internal Tab, dismiss on an outside press
   expect(screen.getByTestId("issues-table-scroll").contains(dialog)).toBe(false);
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog")).toBeNull();
-  expect(document.activeElement).toBe(title);
+  expect(title).toHaveFocus();
   const columns = screen.getByRole("button", { name: "Columns" });
   await user.click(columns);
   expect(screen.getByRole("dialog", { name: "Columns" })).toBeDefined();
@@ -495,7 +496,8 @@ test("a partially refused batch keeps selection and identifies the writes alread
   expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "Select CORE-1" }).checked).toBe(
     true
   );
-  expect(screen.getByRole("row", { name: "CORE-1 Work CORE-1" }).getAttribute("data-moved")).toBe(
+  expect(screen.getByRole("row", { name: "CORE-1 Work CORE-1" })).toHaveAttribute(
+    "data-moved",
     "true"
   );
 });
@@ -504,12 +506,13 @@ test("Clear filters also clears Needs you, Unread and the lapsed-claim filter", 
   const user = userEvent.setup();
   table([issue("CORE-1", { open_asks: 2 })], "?needs-you=1&unread=1&unclaimed=1");
   await user.click(await screen.findByRole("button", { name: "Clear filters" }));
-  expect(
-    screen.getByRole("button", { name: /^Filter Claimed by/ }).getAttribute("aria-label")
-  ).toBe("Filter Claimed by");
+  expect(screen.getByRole("button", { name: /^Filter Claimed by/ })).toHaveAttribute(
+    "aria-label",
+    "Filter Claimed by"
+  );
   for (const name of ["Needs you", "Unread"]) {
     await waitFor(() =>
-      expect(screen.getByRole("button", { name }).getAttribute("aria-pressed")).toBe("false")
+      expect(screen.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false")
     );
   }
 });
@@ -685,11 +688,10 @@ test("created-by sessions use their live name and state, and a null creator is U
     issue("CORE-2", { created_by: null }),
   ]);
   const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  expect(
-    within(row)
-      .getByRole("link", { name: /Table author/ })
-      .getAttribute("href")
-  ).toContain("table-creator");
+  expect(within(row).getByRole("link", { name: /Table author/ })).toHaveAttribute(
+    "href",
+    expect.stringContaining("table-creator")
+  );
   expect(within(row).getByRole("img", { name: /running/i })).toBeDefined();
   expect(
     within(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).getByText("Unknown")
@@ -701,8 +703,9 @@ test("created-by sessions use their live name and state, and a null creator is U
 test("a row a server sends without created_by or created_at renders, with no author and no time", async () => {
   table([issue("CORE-2"), issueFromOlderServer("CORE-1")], "?sort=created");
   const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  expect(within(row).getByRole("link", { name: "CORE-1" }).getAttribute("href")).toContain(
-    "CORE-1"
+  expect(within(row).getByRole("link", { name: "CORE-1" })).toHaveAttribute(
+    "href",
+    expect.stringContaining("CORE-1")
   );
   expect(within(row).getByText("Unknown")).toBeDefined();
   expect(row.querySelector("time")).toBeNull();
@@ -1044,7 +1047,7 @@ test("Claimed by picks the issues nobody is working, and ?unclaimed=1 still open
   expect(screen.queryByRole("button", { name: "Unclaimed" })).toBeNull();
   await user.click(screen.getByRole("button", { name: /^Filter Claimed by/ }));
   const picked = screen.getByRole("option", { name: /^Nobody or lapsed/ });
-  expect(picked.getAttribute("aria-selected")).toBe("true");
+  expect(picked).toHaveAttribute("aria-selected", "true");
   await user.click(picked);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
 });
@@ -2231,10 +2234,10 @@ test("a priority's work table offers Project and, given the titles, Advances, an
   const cells = within(row).getAllByRole("cell");
   expect(cells[headers().indexOf("Project")]?.textContent).toBe("CORE");
   expect(
-    within(cells[headers().indexOf("Advances")] as HTMLElement)
-      .getByRole("link", { name: "Ship it everywhere" })
-      .getAttribute("href")
-  ).toBe("/priorities/ship-it");
+    within(cells[headers().indexOf("Advances")] as HTMLElement).getByRole("link", {
+      name: "Ship it everywhere",
+    })
+  ).toHaveAttribute("href", "/priorities/ship-it");
 });
 
 // Without the titles a priority's work table has no Advances column: it could name each

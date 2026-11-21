@@ -15,7 +15,7 @@ import {
   recordCommits,
 } from "../../__tests__/commits";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { jump, onFakeClock, realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -603,7 +603,7 @@ test("j enters a band at its first row instead of its heading", async () => {
     expect(aboveRow).toHaveFocus();
     await user.keyboard("j");
     expect(firstRow).toHaveFocus();
-    expect(document.activeElement).not.toBe(heading);
+    expect(heading).not.toHaveFocus();
   } finally {
     unmount();
     getAsk.mockRestore();
@@ -635,7 +635,7 @@ test("k enters a band at its last row instead of its heading", async () => {
     expect(belowRow).toHaveFocus();
     await user.keyboard("k");
     expect(secondToLast).toHaveFocus();
-    expect(document.activeElement).not.toBe(heading);
+    expect(heading).not.toHaveFocus();
   } finally {
     unmount();
     getAsk.mockRestore();
@@ -997,7 +997,7 @@ test("a row being typed into stays under Waiting on you when an agent's note fli
     expect(headings()).toEqual(["Waiting on you (3)"]);
     // The list sorts itself now (newest first), and the held row keeps its place after ask-a.
     expect(rowIds()).toEqual(["ask-a", "ask-b", "ask-c"]);
-    expect(moved.closest("[data-inbox-section]")?.getAttribute("data-inbox-section")).toBe("human");
+    expect(moved.closest("[data-inbox-section]")).toHaveAttribute("data-inbox-section", "human");
     expect(screen.getByTestId("turn-ask-b").textContent).toBe("Waiting on session:session-…");
 
     // Their focus leaves the row: it takes its place under Waiting on agents, draft intact.
@@ -1008,7 +1008,7 @@ test("a row being typed into stays under Waiting on you when an agent's note fli
     await waitFor(() =>
       expect(headings()).toEqual(["Waiting on you (2)", "Waiting on agents (1)"])
     );
-    expect(moved.closest("[data-inbox-section]")?.getAttribute("data-inbox-section")).toBe("agent");
+    expect(moved.closest("[data-inbox-section]")).toHaveAttribute("data-inbox-section", "agent");
     expect(within(moved).getByLabelText<HTMLTextAreaElement>("Your answer").value).toBe(
       "Ship it after the audit"
     );
@@ -2357,7 +2357,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
 
     await user.click(screen.getByRole("button", { name: /^Later \(1\)/ }));
     const later = screen.getByTestId("ask-ask-b").closest<HTMLElement>("[data-inbox-row]");
-    expect(later?.getAttribute("data-inbox-section")).toBe("later");
+    expect(later).toHaveAttribute("data-inbox-section", "later");
 
     await user.click(
       within(later as HTMLElement).getByRole("button", { name: "Un-snooze CORE-2: Which format?" })
@@ -2416,7 +2416,7 @@ test("an agent's reply on a snoozed row leaves it in Later and off Waiting on yo
     // Opening the band shows it there, still deferred, with its return time.
     await user.click(screen.getByRole("button", { name: /^Later \(1\)/ }));
     const row = await screen.findByTestId("ask-ask-snoozed");
-    expect(row.closest("[data-inbox-section]")?.getAttribute("data-inbox-section")).toBe("later");
+    expect(row.closest("[data-inbox-section]")).toHaveAttribute("data-inbox-section", "later");
   } finally {
     unmount();
     getAsk.mockRestore();
@@ -2749,11 +2749,11 @@ test("from 1280 px the Inbox is two columns: short rows in the list, the questio
     expect(within(row).getByText("Which approach?")).toBeTruthy();
     expect(within(row).getByRole("img", { name: "Question" })).toBeTruthy();
     expect(within(row).getByText("CORE-1")).toBeTruthy();
-    expect(row.querySelector("time")?.getAttribute("datetime")).toBe(first.created_at);
+    expect(row.querySelector("time")).toHaveAttribute("datetime", first.created_at);
     // The first row is selected when the Inbox opens, and the address says so.
     expect(selectedIds()).toEqual(["ask-a"]);
     expect(address()).toBe("/?item=ask-a");
-    expect(shortRow("ask-b").getAttribute("data-inbox-selected")).toBeNull();
+    expect(shortRow("ask-b")).not.toHaveAttribute("data-inbox-selected");
   } finally {
     unmount();
     narrow();
@@ -4690,11 +4690,14 @@ test("a question's document lost and read again leaves the column where the read
     const editor = fake.editors[0];
     if (editor === undefined) throw new Error("the column mounted no editor");
     const scroller = screen.getByTestId("inbox-pane-scroller");
-    drawAskBlock(editor, "block-a", ask.question);
-    await waitFor(() => expect(scroller.scrollTop).toBe(0));
-    // The drawing has been quiet for longer than the hold waits, so the first placement is over.
-    await act(async () => {
-      await Bun.sleep(QUIET_MS * 3);
+    // The hold's clocks start at the first drawing pass, so the fake clock is on from that pass
+    // to the end of its quiet.
+    await onFakeClock(async () => {
+      drawAskBlock(editor, "block-a", ask.question);
+      await waitFor(() => expect(scroller.scrollTop).toBe(0));
+      // The drawing has been quiet for longer than the hold waits, so the first placement is
+      // over.
+      await jump(QUIET_MS);
     });
     scroller.scrollTop = 240;
 
@@ -4752,11 +4755,11 @@ test("opening another question arms a placement of its own", async () => {
     const editor = fake.editors[0];
     if (editor === undefined) throw new Error("the column mounted no editor");
     const scroller = screen.getByTestId("inbox-pane-scroller");
-    drawAskBlock(editor, "block-a", first.question);
-    drawAskBlock(editor, "block-b", second.question);
-    await waitFor(() => expect(scroller.scrollTop).toBe(0));
-    await act(async () => {
-      await Bun.sleep(QUIET_MS * 3);
+    await onFakeClock(async () => {
+      drawAskBlock(editor, "block-a", first.question);
+      drawAskBlock(editor, "block-b", second.question);
+      await waitFor(() => expect(scroller.scrollTop).toBe(0));
+      await jump(QUIET_MS);
     });
     scroller.scrollTop = 240;
 

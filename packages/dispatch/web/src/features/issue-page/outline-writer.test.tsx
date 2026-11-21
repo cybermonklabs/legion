@@ -35,12 +35,11 @@ test("a window focus more than 30 s after the load reads the writer's asks, comm
         focusManager.setFocused(false);
         focusManager.setFocused(true);
       });
-      // Long enough for a read the focus started to have been sent.
-      await act(async () => {
-        const waited = Promise.withResolvers<void>();
-        setTimeout(waited.resolve, 50);
-        await waited.promise;
-      });
+      // Where a read the focus started would show: the client's focus listener awaits the paused
+      // mutations it resumes, of which there are none, and then refetches each query whose
+      // observer refetches on focus, which calls the query's function in the same turn, so a
+      // started read shows in the counts below.
+      await act(async () => {});
       expect(
         reads.map((read) => read.mock.calls.length),
         "the window's focus read the asks, the comments or the messages again"

@@ -18,6 +18,7 @@ import {
   createIssue,
   createProject,
   createProjectDocument,
+  fixedKey,
   getAsk,
   mintAgentToken,
   patchIssue,
@@ -99,10 +100,15 @@ export interface Seed {
  * `?section=needs-you` has a row to drop.
  */
 export async function seedInbox(): Promise<Seed> {
-  await createProject({ key: "LEDGER", name: "Ledger service" });
+  // Only inbox-search.stub.e2e.ts seeds this, and its recording was made under these two keys.
+  const recorded = "inbox-search.stub.e2e.ts replays a recording made under it";
+  await createProject({ key: fixedKey("LEDGER", recorded), name: "Ledger service" });
   // MIRROR names dave, a person no row of this file reads a list for: the issue the shared
   // token makes below and the project document's question both fall to him.
-  await createProject({ key: "MIRROR", name: "Mirror service" }, { login: "dave" });
+  await createProject(
+    { key: fixedKey("MIRROR", recorded), name: "Mirror service" },
+    { login: "dave" }
+  );
   // The owner a session's ask carries is the owner of the credential that wrote it, never a
   // field of the body, so bob's own token is what puts `bob` in that row's author.
   const bobsToken = await mintAgentToken("search-seed", "bob");

@@ -1,0 +1,5 @@
+kind: Fixed
+body: The OpenAPI document Dispatch generates no longer requires a field that reaches its object through an embedded pointer, such as an issue write's advice's decision_blocks, which the server leaves out when that pointer is nil.
+time: 2026-11-20T16:58:21.05523987Z
+custom:
+    Issue: pr4523

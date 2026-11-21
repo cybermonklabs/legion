@@ -71,7 +71,7 @@ test("the anchored block's node view draws the block and a slot a thread portals
   // A block that is not the anchored one is drawn by its own spec and nothing else.
   const other = construct(paragraph("b-1", "Before"));
   expect(other.dom.nodeName).toBe("P");
-  expect((other.dom as HTMLElement).getAttribute("data-block-id")).toBe("b-1");
+  expect(other.dom as HTMLElement).toHaveAttribute("data-block-id", "b-1");
   expect(hosts).toEqual([]);
 
   const anchored = construct(paragraph("b-2", "The anchored words"));
@@ -80,11 +80,11 @@ test("the anchored block's node view draws the block and a slot a thread portals
   // The block itself is still drawn by its own spec, with its id, and the slot follows it.
   const block = frame.firstElementChild;
   expect(block?.nodeName).toBe("P");
-  expect(block?.getAttribute("data-block-id")).toBe("b-2");
+  expect(block).toHaveAttribute("data-block-id", "b-2");
   expect(anchored.contentDOM).toBe(block as HTMLElement);
   const slot = frame.lastElementChild as HTMLElement;
   expect(slot.dataset.dispatchThreadSlot).toBe("b-2");
-  expect(slot.getAttribute("contenteditable")).toBe("false");
+  expect(slot).toHaveAttribute("contenteditable", "false");
   expect(hosts).toEqual([{ blockId: "b-2", key: expect.any(Number), slot }]);
 
   // ProseMirror never reads the slot back as an edit, and the composer's keystrokes stay in it.

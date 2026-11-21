@@ -16,7 +16,7 @@ import {
 } from "./agent-name";
 import { setLiveSessions, setSessionLive } from "./agents";
 import { askCard } from "./inbox-pane";
-import { devices, expect, test } from "./test";
+import { devices, expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -27,12 +27,16 @@ import { asUser } from "./users";
  * are read over are in `agent-name.ts`.
  */
 
+/** The name of the project each row's seed makes, which no link of the shell's navigation has
+ *  (`seed`, e2e/agent-name.ts). */
+const projectName = "Name surfaces";
+
 // SLOW(>=2s): the seed's session writes and four page views - the issue, the Conversation, the
 // Inbox and the margin - which are the four places the row holds the component to.
 test("Claimed by, a Conversation turn, an Inbox ask card and a margin comment show the agent's current name, whether it runs, and a live link", async ({
   browser,
 }) => {
-  const seeded = await seed();
+  const seeded = await seed(rowKey("AGT"), projectName);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -101,7 +105,7 @@ test("Claimed by, a Conversation turn, an Inbox ask card and a margin comment sh
 });
 
 test("the live link opens that agent's conversation, running or not", async ({ browser }) => {
-  const seeded = await seed();
+  const seeded = await seed(rowKey("AGT"), projectName);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -133,7 +137,7 @@ test("the page reads the agent list once, asks nothing per agent, and shows a re
 }) => {
   // The open page learns of a rename and then of a stop only from the shell's 15 s registry
   // poll, which this row's page clock fires: no row-level timeout is needed for it.
-  const seeded = await seed();
+  const seeded = await seed(rowKey("AGT"), projectName);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -194,7 +198,7 @@ test("the page reads the agent list once, asks nothing per agent, and shows a re
 test("on a phone the ask card's asker reads its whole name beside Waiting on you and the live link @phone", async ({
   browser,
 }) => {
-  const seeded = await seed();
+  const seeded = await seed(rowKey("AGT"), projectName);
   const alice = await asUser(browser, "alice", devices["iPhone 13"]);
   try {
     const page = await alice.newPage();

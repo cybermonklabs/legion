@@ -6,7 +6,7 @@ import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import type { AuthenticatedUser, DisplayTree } from "../../api/types";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
@@ -147,7 +147,8 @@ test("VersionView keeps its editor when the signed-in person is read again with 
     await waitFor(() => expect(editors).toHaveLength(1));
     setWhoAmI({ ...signedIn, event_head: "12" });
     setWhoAmI({ ...signedIn, event_head: "13" });
-    await Bun.sleep(20);
+    // Every promise a rebuild would chain has run: the build of an editor is promises alone.
+    await act(settle);
     expect(editors).toHaveLength(1);
     expect(editors[0]?.destroyed).toBe(false);
   } finally {

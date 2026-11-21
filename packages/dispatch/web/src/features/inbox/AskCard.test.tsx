@@ -605,8 +605,8 @@ for (const variant of ["full", "compact"] as const) {
       const line = card.getByText(/^Approved at version 11 on/);
       expect(line.textContent).toBe("Approved at version 11 on 2026-10-05 by alice.");
       const time = line.querySelector("time");
-      expect(time?.getAttribute("datetime")).toBe("2026-10-05T14:30:00Z");
-      expect(time?.getAttribute("title")).toBe("2026-10-05T14:30:00Z");
+      expect(time).toHaveAttribute("datetime", "2026-10-05T14:30:00Z");
+      expect(time).toHaveAttribute("title", "2026-10-05T14:30:00Z");
       expect(card.getByText("Approve spec.md (version 12)?")).toBeTruthy();
       expect(card.queryByTestId("change-view")).not.toBeInTheDocument();
       expect(getArtifactVersion).not.toHaveBeenCalled();
@@ -1111,11 +1111,10 @@ test("a reply that is nothing but a reference shows its card", async () => {
       return found;
     });
     const cards = await within(reply).findByRole("region", { name: "References" });
-    expect(
-      within(cards)
-        .getByRole("link", { name: /The other issue/ })
-        .getAttribute("href")
-    ).toBe("/issues/CORE-2");
+    expect(within(cards).getByRole("link", { name: /The other issue/ })).toHaveAttribute(
+      "href",
+      "/issues/CORE-2"
+    );
   } finally {
     getIssueSummary.mockRestore();
     view.unmount();

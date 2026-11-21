@@ -1,5 +1,10 @@
-import { DISPATCH_TEXT_REFERENCES, isIdPrefix } from "@legion/contracts";
+import {
+  DISPATCH_TEXT_REFERENCES,
+  isIdPrefix,
+  MAX_REFERENCE_TARGET_BYTES,
+} from "@legion/contracts";
 
+import { routePath } from "../web/src/api/paths";
 import {
   answerAsk,
   baseUrl,
@@ -16,15 +21,15 @@ import { connectedDot, documentEditor, openSpec } from "./editor";
 import {
   ANCHOR,
   answeredQuestionPreview,
-  HOST_KEY,
   INERT_REFERENCE,
-  OTHER_KEY,
+  intoWorld,
   openMarginThread,
   QUESTION_IDS,
   questionBlock,
   questionText,
   RENDERED_BODY,
   RENDERED_REFERENCE,
+  type ReferenceProjects,
   type ReferenceWorld,
   referenceAgent,
   referenceTargetsIn,
@@ -32,7 +37,7 @@ import {
   seedReferenceWorld,
   settledQuestions,
 } from "./reference-surfaces";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -43,11 +48,12 @@ import { asUser } from "./users";
  * each linking exactly the references its row names and nothing else, inside code included,
  * against a server that resolves them for real.
  *
- * The table is written against `https://dispatch.test` and against ids of its own; this world
- * is a real one, so each row is rewritten into it (`casesFor`): the origin becomes this run's,
- * the ask a `#id` names becomes the question block's settled ask, and each id a row writes short
- * becomes the same number of characters of the real record's id, so an eight-character prefix
- * stays an eight-character prefix.
+ * The table is written against `https://dispatch.test`, against project keys and against ids of
+ * its own; this world is a real one, so each row is rewritten into it (`casesFor`): the origin
+ * becomes this run's, each project key becomes the one this row made (`intoWorld`), the ask a
+ * `#id` names becomes the question block's settled ask, and each id a row writes short becomes
+ * the same number of characters of the real record's id, so an eight-character prefix stays an
+ * eight-character prefix.
  */
 
 type Row = (typeof DISPATCH_TEXT_REFERENCES)[number];
@@ -56,7 +62,8 @@ type Row = (typeof DISPATCH_TEXT_REFERENCES)[number];
 const TABLE_ORIGIN = "https://dispatch.test";
 
 /** The one row that needs CORE-1 to name no issue, which this world's host holds: it reads with
- *  CORE-404 instead, the key the table's own rows use for an issue that does not exist. */
+ *  CORE-404 instead, the key the table's own rows use for an issue that does not exist. Both are
+ *  the table's spellings, rewritten into this world's keys with the rest of the row. */
 const NO_ISSUE_ROW = "Blocked on CORE-1, which no issue holds.";
 const NO_ISSUE_KEY = "CORE-404";
 
@@ -111,8 +118,13 @@ interface Case {
   readonly row: Row;
   /** The row's body, rewritten into this world. */
   readonly body: string;
+  /** The issues the row needs to exist, in this world's keys. */
+  readonly issues: readonly string[];
   /** What a renderer links for it, in order, rewritten into this world. */
   readonly links: readonly string[];
+  /** The same links with this world's project keys and the table's own ids: a link that differs
+   *  from its `links` entry is one whose ids were rewritten. */
+  readonly written: readonly string[];
   /** What the live editor draws a title for, in order: the links whose target this world holds
    *  and whose row writes them where the editor reads them. */
   readonly drawn: readonly string[];
@@ -147,6 +159,30 @@ function substituteIds(text: string, ids: ReadonlyMap<string, string>): string {
     }
   }
   return written;
+}
+
+/**
+ * `text` rewritten into this world's project keys (`intoWorld`), at the byte bound it was written
+ * to. The table proves MAX_REFERENCE_TARGET_BYTES with a reference at the bound and one a byte past
+ * it, and where the bounded target id holds the project key - an issue's key, its spec, its
+ * document, a project's document - this world's longer key would carry the reference past it. So
+ * such a row's filler, the first run of 64 or more of `a`, `0`-`9` and `-` (a slug `aaaa…` or
+ * `a0001-a0002-…`, an issue number's `9NNNN` groups), loses as many characters as the key grew,
+ * from after its first two, which leaves a slug a slug and a number a number. A comment's, an
+ * ask's and a message's id are bounded without the key, and those rows are rewritten as any other.
+ */
+function intoWorldAtBound(text: string, projects: ReferenceProjects): string {
+  const rewritten = intoWorld(text, projects);
+  const grown = rewritten.length - text.length;
+  if (
+    text.length <= MAX_REFERENCE_TARGET_BYTES ||
+    grown === 0 ||
+    /\/(comment|ask|message)\//.test(text)
+  ) {
+    return rewritten;
+  }
+  const shortened = text.replace(/[a0-9-]{64,}/, (run) => run.slice(0, 2) + run.slice(2 + grown));
+  return intoWorld(shortened, projects);
 }
 
 /** The kind of record the table's `items` entry names, read from the reference it maps to. */
@@ -189,15 +225,19 @@ function casesFor(
   // a block this world holds.
   const made = (link: string) => named.has(link) || (document.test(link) && !link.includes("#b-"));
   return DISPATCH_TEXT_REFERENCES.map((row, index) => {
+    const keyed = (text: string) => intoWorldAtBound(text, world.projects);
     const ids = new Map(
       Object.entries(row.items ?? {}).map(([id, reference]) => [
         id,
         world.items[itemKindOf(reference)].id,
       ])
     );
-    let body = substituteIds(row.body.replaceAll(row.origin ?? TABLE_ORIGIN, dashboardOrigin), ids);
+    let body = substituteIds(
+      keyed(row.body).replaceAll(row.origin ?? TABLE_ORIGIN, dashboardOrigin),
+      ids
+    );
     if (row.body === NO_ISSUE_ROW) {
-      body = body.replace(HOST_KEY, NO_ISSUE_KEY);
+      body = body.replace(world.host.key, keyed(NO_ISSUE_KEY));
     }
     const asks = new Map(
       Object.entries(row.questions ?? {}).map(([block, reference]) => [
@@ -205,8 +245,11 @@ function casesFor(
         askReference(world, questions, block),
       ])
     );
-    const links = (row.links ?? row.refs).map((link) => asks.get(link) ?? substituteIds(link, ids));
-    return { body, drawn: links.filter(made), index, links, row };
+    const tableLinks = row.links ?? row.refs;
+    const written = tableLinks.map(keyed);
+    const links = tableLinks.map((link) => asks.get(link) ?? substituteIds(keyed(link), ids));
+    const issues = (row.issues ?? []).map(keyed);
+    return { body, drawn: links.filter(made), index, issues, links, row, written };
   });
 }
 
@@ -244,9 +287,12 @@ function standaloneKeys(body: string): string[] {
 
 /** What `GET /api/v1/issues/{key}` answers alice. */
 async function issueStatus(key: string): Promise<number> {
-  const response = await fetch(new URL(`/api/v1/issues/${encodeURIComponent(key)}`, baseUrl), {
-    headers: await userHeaders(),
-  });
+  const response = await fetch(
+    new URL(routePath("get", "/api/v1/issues/{key}", { key }), baseUrl),
+    {
+      headers: await userHeaders(),
+    }
+  );
   return response.status;
 }
 
@@ -271,13 +317,13 @@ async function expectWorldHolds(world: ReferenceWorld, cases: readonly Case[]): 
     Object.entries(world.items).map(([kind, item]) => [kind, item.id.toLowerCase()])
   );
   for (const item of cases) {
-    for (const key of item.row.issues ?? []) {
+    for (const key of item.issues) {
       if ((await status(key)) !== 200) {
         throw new Error(`setup: ${rowName(item)} needs ${key}, which is missing`);
       }
     }
     for (const key of standaloneKeys(item.body)) {
-      if (!(item.row.issues ?? []).includes(key) && (await status(key)) !== 404) {
+      if (!item.issues.includes(key) && (await status(key)) !== 404) {
         throw new Error(`setup: ${rowName(item)} needs ${key} to name no issue`);
       }
     }
@@ -285,7 +331,7 @@ async function expectWorldHolds(world: ReferenceWorld, cases: readonly Case[]): 
     // of the real record of that kind. Only a value the grammar resolves as a prefix can hit
     // one - `#b-a` is a block id of one character, which names nothing whatever this world
     // minted - so a shorter value is no collision, however the ids came out.
-    for (const [index, link] of (item.row.links ?? item.row.refs).entries()) {
+    for (const [index, link] of item.written.entries()) {
       if (item.links[index] !== link) {
         continue;
       }
@@ -410,7 +456,7 @@ test("a margin thread's replies link each reference the shared table links and n
     await body(caseOf(cases, "See XCORE-1 here."))
       .getByRole("link", { exact: true, name: `${world.other.key} ${world.other.title}` })
       .click();
-    await expect(page).toHaveURL(new RegExp(`/issues/${OTHER_KEY}$`));
+    await expect(page).toHaveURL(new RegExp(`/issues/${world.other.key}$`));
     await expect(page.getByRole("heading", { name: world.other.title }).first()).toBeVisible();
 
     // A `#id` opens the document at that question, which starts below the fold.
@@ -421,7 +467,7 @@ test("a margin thread's replies link each reference the shared table links and n
       .nth(cases.indexOf(caseOf(cases, "See #q2 for the rollout.")))
       .getByRole("link", { exact: true, name: questionText("q2", "spec") })
       .click();
-    await expect(page).toHaveURL(new RegExp(`/issues/${HOST_KEY}/spec#b-q2$`));
+    await expect(page).toHaveURL(new RegExp(`/issues/${world.host.key}/spec#b-q2$`));
     const block = documentEditor(page).locator('[data-dispatch-ask-block="q2"]');
     await expect(block).toBeInViewport();
   } finally {
@@ -448,8 +494,11 @@ test("the one-line preview shows each reference the shared table links as its ta
   );
   await expectWorldHolds(world, cases);
   const titles = madeTitles(world, world.questions, "spec");
-  // One ask per row, asked by the agent session and answered by alice: that is what puts a row
-  // on her Answers page, and the row's preview is the question the session wrote.
+  // One ask per row, asked by the agent session and answered by the reader: that is what puts a
+  // row on her Answers page, and the row's preview is the question the session wrote. The reader
+  // is a person of the row's own (`rowPerson`, e2e/test.ts), so her Answers page lists this row's
+  // answers and no other row's.
+  const me = rowPerson("alice");
   const asks = new Map<Case, string>();
   for (const item of cases) {
     const ask = await createAsk(
@@ -457,12 +506,12 @@ test("the one-line preview shows each reference the shared table links as its ta
       { options: [{ label: "Yes" }, { label: "No" }], question: item.body },
       referenceAgent
     );
-    await answerAsk(ask.id, { expected_edited_at: null, selected: ["Yes"] });
+    await answerAsk(ask.id, { expected_edited_at: null, selected: ["Yes"] }, { login: me });
     asks.set(item, ask.id);
   }
   const questions = new Map<string, string>();
   for (let offset = 0; ; ) {
-    const listed = await listMyAnswers({ limit: 50, offset });
+    const listed = await listMyAnswers({ limit: 50, offset }, { login: me });
     const rows = listed.rows ?? [];
     for (const row of rows) {
       questions.set(row.ask_id, row.question);
@@ -477,7 +526,7 @@ test("the one-line preview shows each reference the shared table links as its ta
     expect(questions.get(ask), rowName(item)).toBe(item.body);
   }
 
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await page.goto("/answers");
@@ -598,7 +647,7 @@ test("the live editor draws each reference the shared table links whose target e
       .locator(`a.dispatch-reference[data-dispatch-href="dispatch://${world.other.key}"]`)
       .first()
       .click();
-    await expect(page).toHaveURL(new RegExp(`/issues/${OTHER_KEY}$`));
+    await expect(page).toHaveURL(new RegExp(`/issues/${world.other.key}$`));
     await expect(page.getByRole("heading", { name: world.other.title }).first()).toBeVisible();
     expect((await getArtifactText(uploaded.artifact.id)).markdown).toBe(stored);
 
@@ -621,7 +670,7 @@ test("the live editor draws each reference the shared table links whose target e
     await expect(block).not.toBeInViewport();
     await question.click();
     await expect(page).toHaveURL(
-      new RegExp(`/issues/${HOST_KEY}/artifacts/${DOCUMENT.slug}#b-q2$`)
+      new RegExp(`/issues/${world.host.key}/artifacts/${DOCUMENT.slug}#b-q2$`)
     );
     await expect(block).toBeInViewport();
     expect((await getArtifactText(uploaded.artifact.id)).markdown).toBe(stored);

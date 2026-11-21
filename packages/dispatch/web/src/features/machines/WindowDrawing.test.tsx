@@ -82,7 +82,7 @@ test("a window is drawn at its own aspect ratio, each pane at the layout's perce
     />
   );
   try {
-    expect(screen.getByTestId("window-drawing").getAttribute("data-drawn")).toBe("layout");
+    expect(screen.getByTestId("window-drawing")).toHaveAttribute("data-drawn", "layout");
     // 80 columns by 24 rows, in cells one wide and two tall: 1440 × 2 × 24 / 80.
     const layout = screen.getByTestId("window-layout");
     expect(layout.style.height).toBe("864px");
@@ -133,12 +133,12 @@ test("a pane names its session and its state; one with no session says so and sh
   );
   try {
     const [top, left, right] = boxes();
-    expect(top.getAttribute("data-agent")).toBe("a".repeat(16));
+    expect(top).toHaveAttribute("data-agent", "a".repeat(16));
     expect(within(top).getByText("Planner")).toBeDefined();
     expect(within(top).getByTestId("window-pane-state").textContent).toBe("Idle");
     // Unseen for half an hour: the registry's own silence, which is Quiet.
     expect(within(left).getByTestId("window-pane-state").textContent).toBe("Quiet");
-    expect(right.getAttribute("data-agent")).toBeNull();
+    expect(right).not.toHaveAttribute("data-agent");
     expect(right.textContent).toBe("Pane 2No agent");
   } finally {
     view.unmount();
@@ -190,9 +190,9 @@ test("a zoomed pane is marked, and a pane two sessions name says how many", () =
   );
   try {
     const [top, left] = boxes();
-    expect(top.getAttribute("data-zoomed")).toBe("true");
+    expect(top).toHaveAttribute("data-zoomed", "true");
     expect(within(top).getByTestId("window-pane-zoomed").textContent).toBe("Zoomed");
-    expect(left.getAttribute("data-zoomed")).toBe("false");
+    expect(left).toHaveAttribute("data-zoomed", "false");
     expect(within(left).getByTestId("window-pane-others").textContent).toBe(
       "1 other session names this pane"
     );
@@ -227,7 +227,7 @@ test("a pane box too narrow or too short to read draws the window as a list, and
     expect(screen.queryByTestId("window-pane")).toBeNull();
     const [narrow, short] = screen.getAllByTestId("window-pane-list");
     for (const list of [narrow, short]) {
-      expect(list.getAttribute("data-reason")).toBe("panes-too-small");
+      expect(list).toHaveAttribute("data-reason", "panes-too-small");
       expect(within(list).getByTestId("window-pane-list-reason").textContent).toBe(
         "A pane of this window would be too small to read at this width, so its panes are listed in layout order instead."
       );
@@ -263,7 +263,7 @@ test("a window with no layout, and one whose layout will not read, are lists wit
   );
   try {
     const [absent, refused] = screen.getAllByTestId("window-pane-list");
-    expect(absent.getAttribute("data-reason")).toBe("no-layout");
+    expect(absent).toHaveAttribute("data-reason", "no-layout");
     expect(within(absent).getByTestId("window-pane-list-reason").textContent).toBe(
       "This window reported no layout, so its panes are listed by pane index instead."
     );
@@ -273,7 +273,7 @@ test("a window with no layout, and one whose layout will not read, are lists wit
         .getAllByTestId("window-pane-row")
         .map((row) => row.getAttribute("data-pane"))
     ).toEqual(["%7", "%4"]);
-    expect(refused.getAttribute("data-reason")).toBe("unreadable-layout");
+    expect(refused).toHaveAttribute("data-reason", "unreadable-layout");
     expect(within(refused).getByTestId("window-pane-list-reason").textContent).toBe(
       "This window's layout could not be read, so its panes are listed by pane index instead."
     );
@@ -302,12 +302,10 @@ test("a pane whose session holds an open ask waiting on the viewer needs them", 
   try {
     const [top, left] = boxes();
 
-    expect(within(top).getByTestId("window-pane-state").getAttribute("data-state")).toBe(
-      "needs-you"
-    );
+    expect(within(top).getByTestId("window-pane-state")).toHaveAttribute("data-state", "needs-you");
     expect(within(top).getByTestId("window-pane-state").textContent).toBe("Needs you");
     // The count is this session's alone: the pane beside it reads its own activity.
-    expect(within(left).getByTestId("window-pane-state").getAttribute("data-state")).toBe("idle");
+    expect(within(left).getByTestId("window-pane-state")).toHaveAttribute("data-state", "idle");
   } finally {
     view.unmount();
     agents.mockRestore();
@@ -330,7 +328,8 @@ test("a pane whose session has replies the viewer has not read needs them too", 
     />
   );
   try {
-    expect(within(boxes()[0]).getByTestId("window-pane-state").getAttribute("data-state")).toBe(
+    expect(within(boxes()[0]).getByTestId("window-pane-state")).toHaveAttribute(
+      "data-state",
       "needs-you"
     );
   } finally {
@@ -378,8 +377,8 @@ test("a pane the drawn layout does not name is named under the window, drawn or 
       );
       const rows = within(block).getAllByTestId("window-unnamed-pane-row");
       expect(rows.map((row) => row.getAttribute("data-pane"))).toEqual(["%7"]);
-      expect(rows[0].getAttribute("data-agent")).toBe(split.session_id);
-      expect(rows[0].getAttribute("data-pane-index")).toBe("3");
+      expect(rows[0]).toHaveAttribute("data-agent", split.session_id);
+      expect(rows[0]).toHaveAttribute("data-pane-index", "3");
       expect(within(rows[0]).getByRole("link", { name: "Just split" })).toBeDefined();
     }
     // Neither the drawing nor the list holds `%7` itself: both walk the layout's own cells.
@@ -422,7 +421,7 @@ test("a session whose pane a fresher session took is named in that pane's box", 
   try {
     const others = within(boxes()[1]).getByTestId("window-pane-others");
     expect(others.textContent).toBe("2 other sessions name this pane");
-    expect(others.getAttribute("title")).toBe("Other sessions naming this pane: Stray, Moved");
+    expect(others).toHaveAttribute("title", "Other sessions naming this pane: Stray, Moved");
     expect(
       within(others)
         .getAllByTestId("window-pane-other")

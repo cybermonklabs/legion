@@ -1,9 +1,27 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { SEARCH_RESULT_KINDS } from "@legion/contracts";
 
-import { openAgents, seedAgents, shownAgentRows } from "./agents";
-import { createIssue, createProject, getIssue, patchIssue } from "./api";
+import type { SearchResponse } from "../web/src/api/types";
+import { groupResults, optionId } from "../web/src/features/search/search-model";
+import {
+  agentSessions,
+  expectPickerOffers,
+  openAgents,
+  seedAgents,
+  seedPickerList,
+  shownAgentRows,
+} from "./agents";
+import {
+  createIssue,
+  createProject,
+  getIssue,
+  listProjects,
+  paletteSearch,
+  patchIssue,
+} from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
-import { expect, test } from "./test";
+import { keyedSearchWord } from "./search";
+import { emptyDatabase, expect, type Locator, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -11,15 +29,62 @@ import { asUser } from "./users";
  * read back, a search the index answers, a write held in flight, a refusal, and the Agents page,
  * whose rows fold under `Inactive` once their `last_seen` is ten minutes old - which a frozen
  * recording's would be. What the palette draws over one fixed answer - its listing, its focus,
- * the addresses its rows open and the way the list fits a window - is in
- * `keyboard-palette.stub.e2e.ts`.
+ * the addresses its rows open, the way the list fits a window, and where the highlight goes over
+ * the hits one search answered - is in `keyboard-palette.stub.e2e.ts`. What a search answers is
+ * the server's over every project of the stack, so a row here reads that answer at its start
+ * and holds the bar to it (`expectAnswer`).
  */
+
+/** The bar's hits: every option a search result draws, whose id is `optionId`'s, and none of the
+ *  actions, projects or offers listed beside them. */
+function hitOptions(dialog: Locator): Locator {
+  return dialog.locator(
+    SEARCH_RESULT_KINDS.map((kind) => `[role="option"][id^="search-option-${kind}-"]`).join(", ")
+  );
+}
+
+/** The bar lists the server's own answer to `words` as its hits, and nothing else: each result by
+ *  its option id, in the order the bar draws them - the server's ranked list under each owner
+ *  (`groupResults`, the bar's own grouping, web/src/features/search/search-model.ts) - and
+ *  `No results for "<words>"` where the answer holds none. Search reads every project of the
+ *  stack, so which items match and how they rank is the server's over whatever the stack holds,
+ *  other rows' items among them: a row reads the answer at its start, by the request the page
+ *  makes (`paletteSearch`), and holds the page to it. Where the highlight goes over one answer,
+ *  and what Enter then opens or runs, is the browser's, which `keyboard-palette.stub.e2e.ts`
+ *  reads over the answer its row's own seeding makes. */
+async function expectAnswer(dialog: Locator, words: string, answer: SearchResponse): Promise<void> {
+  const drawn = groupResults(answer.results ?? []).flatMap((group) => group.results.map(optionId));
+  await expect
+    .poll(() => hitOptions(dialog).evaluateAll((options) => options.map((option) => option.id)))
+    .toEqual(drawn);
+  await expect(dialog.getByText(`No results for "${words}"`)).toHaveCount(
+    drawn.length === 0 ? 1 : 0
+  );
+}
+
+/** No project of the stack has a key or a name holding `words`. The bar lists every project whose
+ *  key or name holds the words in its box as a row of its own, above the hits and above every
+ *  action that holds them further in (`projectRows`, web/src/features/search/SearchPalette.tsx),
+ *  and it reads them from every project of the stack, not the row's alone. A row whose claim is
+ *  that the list holds those actions and its hits with no project above them empties the stack
+ *  itself (`emptyDatabase`) and reads this after its own seed: a project above them would take
+ *  the highlight, and Enter would open it and close the bar. */
+async function expectNoProjectHolds(words: string): Promise<void> {
+  const holding = (await listProjects())
+    .map((project) => `${project.key} ${project.name}`)
+    .filter((project) => project.toLowerCase().includes(words.toLowerCase()));
+  expect(holding, `the projects the bar lists above the actions for "${words}"`).toEqual([]);
+}
 
 test("the palette lists the issue page's actions, guarded like their buttons, and runs one", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Palette actions" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Palette actions" });
+  // What the search answers for `priority p2` below is the server's over every project of the
+  // stack, where another row's items may hold `priority`; nothing this row writes holds it.
+  const priorityAnswer = await paletteSearch("priority p2", core);
   const context = await asUser(browser, "alice");
 
   try {
@@ -108,18 +173,14 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await input.fill("priority p2");
     const setP2 = actions.getByRole("option", { name: "Set priority P2" });
     await expect(actions.getByRole("option")).toHaveCount(1);
-    // `priority p2` sits inside the label rather than starting it, so the row is offered but not
-    // highlighted: Enter alone runs nothing, even once the search has answered with no hits.
-    await expect(dialog.getByText('No results for "priority p2"')).toBeVisible();
-    await expect(input).not.toHaveAttribute("aria-activedescendant");
-    await input.press("Enter");
-    await expect(dialog).toBeVisible();
-    await input.press("ArrowDown");
-    await expect(input).toHaveAttribute(
-      "aria-activedescendant",
-      (await setP2.getAttribute("id")) as string
-    );
-    await input.press("Enter");
+    // `priority p2` sits inside the label rather than starting it, so the row is offered among
+    // the hits the server answered at the row's start: none over an emptied database, and other
+    // rows' items where the stack holds them. That the row is then left unhighlighted, so Enter
+    // alone runs nothing once an answer with no hits is in, is the browser's reading of that
+    // answer, and `keyboard-palette.stub.e2e.ts` reads it over this row's own seeding. The write
+    // the row runs is the server's, so the row is chosen by name, as Reopen is above.
+    await expectAnswer(dialog, "priority p2", priorityAnswer);
+    await setP2.click();
     await expect(dialog).toHaveCount(0);
     await expect(page.getByLabel(`Priority of ${issue.key}`)).toHaveValue("2");
     await expect.poll(() => getIssue(issue.key).then((read) => read.priority)).toBe(2);
@@ -129,8 +190,9 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
 });
 
 test("stop-word searches show empty results without Retry", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Stop word search" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Stop word search" });
   const context = await asUser(browser, "alice");
 
   try {
@@ -156,13 +218,21 @@ test("stop-word searches show empty results without Retry", async ({ browser }) 
 test("/ opens the same bar, and a query that is no action's start lists the hits above the actions", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Astrolabe issue calibration" });
+  const core = rowKey("CORE");
+  // The word searched for is the row's own (`keyedSearchWord`, e2e/search.ts): search reads
+  // every project of the stack, and other rows' issues hold `astrolabe` too.
+  const word = keyedSearchWord("astrolabe", core);
+  const title = `${keyedSearchWord("Astrolabe", core)} issue calibration`;
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title });
+  // What the search answers for `issue` below is the server's over every project of the stack,
+  // where other rows' items hold the word too.
+  const issueAnswer = await paletteSearch("issue", core);
   const context = await asUser(browser, "alice");
 
   try {
     const page = await context.newPage();
-    await openIssue(page, issue.key, "Astrolabe issue calibration");
+    await openIssue(page, issue.key, title);
 
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
@@ -173,9 +243,9 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     // The bar `⌘K` opens: `/` is another key to it, not a list of its own, so this page's
     // actions are here too.
     await expect(actions.getByRole("option", { name: "Close issue" })).toHaveCount(1);
-    await input.fill("astrolabe");
-    // No action's label and no project's name holds `astrolabe`, so the issue's own hit is the
-    // whole list.
+    await input.fill(word);
+    // No action's label and no project's key or name holds the row's word, so the issue's own
+    // hit is the whole list.
     await expect(dialog.getByRole("option")).toHaveCount(1);
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
@@ -188,9 +258,14 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
 
-    // The same query under `$mod+k` lists the hits first. No action here starts with `issue`, so
-    // the ones that hold it further in (`Close issue` among them) sit below the hits, and Enter
-    // opens the first hit rather than closing the issue the reader is on.
+    // The same query under `$mod+k` lists the hits the server answered for `issue` at the row's
+    // start: this row's own issue over an emptied database, and beside it every other item of the
+    // stack that holds the word, ranked as the server ranks them, below any project whose key or
+    // name holds it. No action here starts with `issue`, so the ones that hold it further in
+    // (`Close issue` among them) sit below the hits, and Enter, which opens the row heading the
+    // list, closes nothing. That the head is this row's own issue, highlighted, and that Enter
+    // opens it, is the browser's reading of an answer that ranks that issue first and names no
+    // project, and `keyboard-palette.stub.e2e.ts` reads it over this row's own seeding.
     const statusWrites: string[] = [];
     page.on("request", (request) => {
       if (
@@ -203,19 +278,11 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     await page.keyboard.press("Control+k");
     await expect(input).toHaveValue("");
     await input.fill("issue");
-    const options = dialog.getByRole("option");
-    await expect(options.first()).toHaveAttribute("id", /^search-option-issue-/);
+    await expectAnswer(dialog, "issue", issueAnswer);
     await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
-    await expect(options.last()).toHaveAttribute("id", /^search-option-action-/);
-    await expect(input).toHaveAttribute("aria-activedescendant", /^search-option-issue-/);
+    await expect(dialog.getByRole("option").last()).toHaveAttribute("id", /^search-option-action-/);
     await input.press("Enter");
     await expect(dialog).toHaveCount(0);
-    await expect(
-      page
-        .getByTestId("issue-header")
-        .getByRole("heading", { level: 1, name: "Astrolabe issue calibration" })
-    ).toBeVisible();
-    await expect(page.getByRole("button", { exact: true, name: "Close issue" })).toBeVisible();
     expect(statusWrites).toEqual([]);
     expect((await getIssue(issue.key)).status).not.toBe("done");
   } finally {
@@ -224,10 +291,18 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
 });
 
 test("a query that holds a card move further in moves no card on Enter", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   // Two cards in one column, so `Move card down` from the first one has somewhere to go.
-  const first = await createIssue({ project: "CORE", title: "Board query one" });
-  const second = await createIssue({ project: "CORE", title: "Board query two" });
+  const first = await createIssue({ project: core, title: "Board query one" });
+  const second = await createIssue({ project: core, title: "Board query two" });
+  // What the search answers for each query below is the server's over every project of the
+  // stack, where another row's items may hold `status` or `next`; nothing this row writes does.
+  const answers = {
+    down: await paletteSearch("down", core),
+    next: await paletteSearch("next", core),
+    status: await paletteSearch("status", core),
+  };
   const context = await asUser(browser, "alice");
 
   try {
@@ -239,7 +314,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
       }
     });
     await page.setViewportSize({ height: 900, width: 1280 });
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     await page.getByRole("button", { name: "Board" }).click();
     await expect(page.locator(`[data-board-card="${first.key}"]`)).toBeVisible();
     await expect(page.locator(`[data-board-card="${second.key}"]`)).toBeVisible();
@@ -252,10 +327,12 @@ test("a query that holds a card move further in moves no card on Enter", async (
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
     const actions = dialog.getByRole("group", { name: "Actions" });
-    // Each query sits inside a move's label without starting it: the move is offered, and only
-    // an arrow can highlight it, so Enter, even once the search has answered, moves nothing.
-    // `down` has no searchable term, so it returns no hits, and the move stays unhighlighted
-    // through that answer too.
+    // Each query sits inside a move's label without starting it: the move is offered, beside the
+    // hits the server answered for the query at the row's start - none over an emptied database,
+    // and other rows' items where the stack holds them. `down` has no searchable term, so the
+    // server answers no hits for it. That only an arrow can highlight the move, so Enter after an
+    // answer with no hits moves nothing, is the browser's reading of that answer, and
+    // `keyboard-palette.stub.e2e.ts` reads it over this row's own two cards.
     for (const [query, move] of [
       ["status", "Move card to the next status"],
       ["down", "Move card down"],
@@ -264,16 +341,16 @@ test("a query that holds a card move further in moves no card on Enter", async (
       await input.fill(query);
       await expect(actions.getByRole("option", { name: move })).toHaveCount(1);
       await expect(dialog.getByText("Searching…")).toHaveCount(0);
-      await expect(input).not.toHaveAttribute("aria-activedescendant");
-      await input.press("Enter");
-      await expect(dialog).toBeVisible();
+      await expectAnswer(dialog, query, answers[query]);
       await page.keyboard.press("Escape");
       await expect(dialog).toHaveCount(0);
       await expect(card).toBeFocused();
     }
 
-    // Nor can an arrow pressed while the search is still out: `next` leads no label, and Down
-    // then would have taken the move to the next status before any answer came.
+    // And no arrow pressed while the search is still out reaches the move, whatever the server
+    // answers once it is let through: `next` leads no label, and Down then would have taken the
+    // move to the next status before any answer came. So Enter moves no card, and the server
+    // holds both where they were.
     const release = Promise.withResolvers<void>();
     let held = 0;
     await page.route(searchPath, async (route) => {
@@ -296,7 +373,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
     await expect(input).not.toHaveAttribute("aria-activedescendant");
     release.resolve();
     await expect(dialog.getByText("Searching…")).toHaveCount(0);
-    await expect(input).not.toHaveAttribute("aria-activedescendant");
+    await expectAnswer(dialog, "next", answers.next);
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(card).toBeFocused();
@@ -312,8 +389,9 @@ test("a query that holds a card move further in moves no card on Enter", async (
 test("a header write in flight withdraws the rows whose buttons it disables", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "In-flight guard" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "In-flight guard" });
   const context = await asUser(browser, "alice");
 
   try {
@@ -350,8 +428,9 @@ test("a header write in flight withdraws the rows whose buttons it disables", as
 test("a Set priority row the server refuses is reported by the header, in the digit key's one failure", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Refused palette priority" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Refused palette priority" });
   const context = await asUser(browser, "alice");
 
   try {
@@ -407,7 +486,11 @@ test("a Set priority row the server refuses is reported by the header, in the di
 test("the Agents page offers a row's picker, which then commits a keyboard pick on Enter", async ({
   browser,
 }) => {
-  await seedAgents();
+  const core = rowKey("CORE");
+  // The Planner and the Reviewer are sessions of the row's own (`rowSessionId`), and the issues
+  // the picker's steps reach are the row's own, at the head of the list (`seedPickerList`).
+  const issueKey = await seedAgents(core, agentSessions(rowSessionId));
+  const list = await seedPickerList(core, [issueKey, `${core}-2`]);
   const context = await asUser(browser, "alice");
 
   try {
@@ -442,11 +525,12 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
     const picker = row.getByRole("combobox", { name: "Issue" });
     const toggle = row.getByRole("button", { name: "Choose issue" });
     await expect(picker).toBeFocused();
+    await expectPickerOffers(picker, list);
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("ArrowDown");
     await expect(picker).toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(toggle).toContainText("CORE-2");
+    await expect(toggle).toContainText(`${core}-2`);
     const field = row.getByRole("textbox", { name: "Comment" });
     await expect(field).toBeFocused();
     await expect(field).toHaveValue("@Planner");
@@ -458,8 +542,9 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
 test("hits that arrive after the reader has arrowed keep the highlight on the row they chose", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Go held search" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Go held search" });
   const context = await asUser(browser, "alice");
 
   try {
@@ -505,7 +590,7 @@ test("hits that arrive after the reader has arrowed keep the highlight on the ro
     await expect(dialog.getByRole("option", { name: /Go held search/ })).toHaveCount(1);
     await expect(input).toHaveAttribute("aria-activedescendant", documentsId as string);
     await input.press("Enter");
-    await expect(page).toHaveURL(/\/projects\/CORE\/documents$/);
+    await expect(page).toHaveURL(new RegExp(`/projects/${core}/documents$`));
   } finally {
     await context.close();
   }
@@ -514,9 +599,21 @@ test("hits that arrive after the reader has arrowed keep the highlight on the ro
 test("an arrow pressed before the search answers reaches no action the query finds mid-label", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Arrow before the issue search" });
+  const core = rowKey("CORE");
+  // The claim is the empty case: before the search answers, the list holds only the actions
+  // `issue` finds mid-label, and so no highlight. The projects the bar lists above them are the
+  // whole stack's whose key or name holds the word, and no key of this row's keeps another row's
+  // out, since the word must be one inside a fixed action's label (`Close issue`). So the row
+  // empties the stack itself. It empties through `emptyDatabase`, which counts the database as
+  // the worker's, so the datasets the worker keeps are written again for the rows after this one.
+  await emptyDatabase();
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Arrow before the issue search" });
   await patchIssue(issue.key, { status: "in_progress" });
+  // The list `issue` draws before the search answers holds no project (`expectNoProjectHolds`).
+  await expectNoProjectHolds("issue");
+  // Signed in after the emptying, as e2e/issue.e2e.ts's row is: the emptying deletes every
+  // session a sign-in wrote but the ones it writes again for alice and bob (e2e/users.ts).
   const context = await asUser(browser, "alice");
 
   try {
@@ -572,9 +669,23 @@ test("an arrow pressed before the search answers reaches no action the query fin
 test("a stale answer refreshing for the same query keeps the arrows off the actions it finds mid-label", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Stale answer for an issue search" });
+  const core = rowKey("CORE");
+  // The claim is the empty case: the list `issue` draws holds no project above its hit, so the
+  // highlight starts on the hit, Down stays among the hits, and Enter opens one. The projects the
+  // bar lists are the whole stack's whose key or name holds the word, and no key of this row's
+  // keeps another row's out, since the word must be one inside a fixed action's label
+  // (`Close issue`). So the row empties the stack itself, and over it the one hit is this row's
+  // own issue, whose page Enter opens. It empties through `emptyDatabase`, which counts the
+  // database as the worker's, so the datasets the worker keeps are written again for the rows
+  // after this one.
+  await emptyDatabase();
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Stale answer for an issue search" });
   await patchIssue(issue.key, { status: "in_progress" });
+  // The list `issue` draws holds no project above its hit (`expectNoProjectHolds`).
+  await expectNoProjectHolds("issue");
+  // Signed in after the emptying, as e2e/issue.e2e.ts's row is: the emptying deletes every
+  // session a sign-in wrote but the ones it writes again for alice and bob (e2e/users.ts).
   const context = await asUser(browser, "alice");
 
   try {
@@ -632,8 +743,9 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
 });
 
 test("a row whose control has gone since the palette opened does nothing", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Stale row" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Stale row" });
   await patchIssue(issue.key, { status: "done" });
   const context = await asUser(browser, "alice");
 

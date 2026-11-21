@@ -18,7 +18,7 @@ import {
   unreadThreadRows,
 } from "./inbox-threads";
 import { holdPosts, refusePosts } from "./sends";
-import { expect, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -47,24 +47,34 @@ interface Seeded {
   readonly issueKey: string;
 }
 
+/** The seed every row reads, for the reader of the row: a person of its own (`rowPerson`,
+ *  e2e/test.ts), whose Inbox and counts hold this seed and nothing another row left. */
 async function seedMany(): Promise<Seeded> {
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" }, { login: me });
   for (const title of ["Ledger rollout", "Mirror retries"]) {
-    const issue = await createIssue({ project: "CORE", title });
+    const issue = await createIssue({ project: core, title }, { login: me });
     await createAsk(issue.key, { question: `${title}: ship tonight?` }, asSession());
   }
-  const threads = await createIssue({ project: "CORE", title: "Replay budget" });
-  await seedBulkReplyThreads({ count: REPLY_THREADS, issueKey: threads.key, prefix: "Replay" });
-  await seedBulkAgentThreads({ count: AGENT_THREADS, prefix: "Rollout" });
+  const threads = await createIssue({ project: core, title: "Replay budget" }, { login: me });
+  await seedBulkReplyThreads({
+    count: REPLY_THREADS,
+    issueKey: threads.key,
+    login: me,
+    prefix: "Replay",
+  });
+  await seedBulkAgentThreads({ count: AGENT_THREADS, login: me, prefix: "Rollout" });
   // A Send the session took as a turn of its live conversation: no Inbox row, so one press
   // never marks its reply, which the Agents page goes on counting.
   await seedAcceptedSend({
     body: "Steer: take this as your own turn.",
+    login: me,
     reply: "Took it, and here is the answer.",
   });
-  expect(await unreadThreadRows()).toBe(REPLY_THREADS);
-  expect((await listMyReplies({ kind: ["reply", "agent"], limit: 1 })).total).toBe(
+  expect(await unreadThreadRows(me)).toBe(REPLY_THREADS);
+  expect((await listMyReplies({ kind: ["reply", "agent"], limit: 1 }, { login: me })).total).toBe(
     REPLY_THREADS + AGENT_THREADS
   );
   return { issueKey: threads.key };
@@ -75,7 +85,8 @@ test("one click marks six hundred and twenty threads read, leaves every row in t
   browser,
 }) => {
   const seeded = await seedMany();
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -107,7 +118,7 @@ test("one click marks six hundred and twenty threads read, leaves every row in t
     // marked thread still in the Inbox and drawn as read.
     held.release();
     await held.settled();
-    await expect.poll(async () => unreadThreadRows()).toBe(0);
+    await expect.poll(async () => unreadThreadRows(me)).toBe(0);
     await page.reload();
     await expect(rows).toHaveCount(GROUP_PAGE);
     await expect(unreadMarks).toHaveCount(0);
@@ -134,14 +145,16 @@ test("one click marks six hundred and twenty threads read, leaves every row in t
     const late = await seedCommentThread(
       seeded.issueKey,
       "One more question about the replay.",
-      "One more answer about the replay."
+      "One more answer about the replay.",
+      THREAD_SESSION,
+      me
     );
-    await seedAgentThread({ body: "And the rollout?", replies: ["Still green."] });
+    await seedAgentThread({ body: "And the rollout?", login: me, replies: ["Still green."] });
     await expect(page.locator(`[data-inbox-row="${replyRowId(late)}"]`)).toBeVisible();
     await expect(unreadMarks).toHaveCount(2);
     await page.locator("[data-inbox-mark-all]").click();
     await expect(unreadMarks).toHaveCount(0);
-    await expect.poll(async () => unreadThreadRows()).toBe(0);
+    await expect.poll(async () => unreadThreadRows(me)).toBe(0);
   } finally {
     await alice.close();
   }
@@ -151,7 +164,8 @@ test("the drawer's Mark all read clears the same counts and keeps its rows @phon
   browser,
 }) => {
   await seedMany();
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
@@ -175,7 +189,7 @@ test("the drawer's Mark all read clears the same counts and keeps its rows @phon
 
     held.release();
     await held.settled();
-    await expect.poll(async () => unreadThreadRows()).toBe(0);
+    await expect.poll(async () => unreadThreadRows(me)).toBe(0);
     await expectInboxCount(page, ASKS);
   } finally {
     await alice.close();
@@ -186,7 +200,8 @@ test("a refused Mark all read brings the marks and the counts back and says noth
   browser,
 }) => {
   await seedMany();
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -220,7 +235,7 @@ test("a refused Mark all read brings the marks and the counts back and says noth
     await expect(unreadMarks).toHaveCount(unreadBefore);
     await expect(rows).toHaveCount(before);
     await expectSidebarInboxCount(page, ASKS + REPLY_THREADS + AGENT_THREADS);
-    expect(await unreadThreadRows()).toBe(REPLY_THREADS);
+    expect(await unreadThreadRows(me)).toBe(REPLY_THREADS);
   } finally {
     await alice.close();
   }

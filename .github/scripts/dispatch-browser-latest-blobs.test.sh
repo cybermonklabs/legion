@@ -101,16 +101,27 @@ check "the output holds attempt 10's blob" "$(is "$(held "$root" blob-report/rep
 check "says it passed over attempt 9" "$(contains "$out" '^shard-1: attempt 10, passing over attempt(s) 9$')"
 
 echo "case: every leg shape reads"
-# A shard leg's name ends with its number and an alone leg's with its project, so the digits at
-# the end of the artifact name are the attempt in both.
+# A shard leg's name ends with its number, an alone leg's with its project and the embedder and
+# two-process legs' with their own names, so the digits at the end of the artifact name are the
+# attempt in every one.
 root=$(fixture leg-shapes)
 leg "$root" shard-3 1 shard-3-blob
 leg "$root" alone-webkit-alone 1 webkit-blob
+leg "$root" embedder 1 embedder-blob
+leg "$root" multiprocess-dashboard 2 dashboard-blob
+leg "$root" multiprocess-signin 2 signin-blob
 run_select "$root"
 check "exits 0" "$(is "$status" 0)"
 check "the shard leg is selected" "$(is "$(held "$root" blob-report/report-shard-3.zip)" shard-3-blob)"
 check "the alone leg is selected" "$(is "$(held "$root" blob-report/report-alone-webkit-alone.zip)" webkit-blob)"
 check "and named with its attempt" "$(contains "$out" '^alone-webkit-alone: attempt 1$')"
+check "the embedder leg is selected" "$(is "$(held "$root" blob-report/report-embedder.zip)" embedder-blob)"
+check "and its rows" "$(is "$(held "$root" rows/embedder.txt)" embedder-blob)"
+check "the two-process job's two legs are selected apart" \
+  "$(is "$(held "$root" blob-report/report-multiprocess-dashboard.zip) $(held "$root" blob-report/report-multiprocess-signin.zip)" \
+    "dashboard-blob signin-blob")"
+check "each named with its attempt" "$(contains "$out" '^multiprocess-signin: attempt 2$')"
+check "five legs in all" "$(contains "$out" 'Selected 5 leg(s)')"
 
 echo "case: a directory whose name does not read fails"
 # A name ending in anything but digits carries no attempt, so which of two copies of a leg is

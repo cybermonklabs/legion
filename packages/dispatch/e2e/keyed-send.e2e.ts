@@ -1,10 +1,9 @@
 import {
   agentRow,
+  agentSessions,
   getSentMessages,
   openAgents,
-  plannerSession,
   postedBroadcasts,
-  reviewerSession,
   seedAgents,
   setSessionSendDelay,
 } from "./agents";
@@ -17,7 +16,7 @@ import {
   watchAnswers,
   watchWrites,
 } from "./keyed-writes";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 // A message to one session goes under an `Idempotency-Key`, and the page tries it again under
@@ -27,7 +26,15 @@ import { asUser } from "./users";
 // end in one message per recipient and the composer cleared. Dispatch answers a repeat under a key
 // it has answered with the first answer's status, marked `Idempotency-Replayed: ?1`.
 
-const messages = `/api/v1/agents/${plannerSession.session_id}/messages`;
+/** `seedAgents`' Planner and Reviewer, each under an id of the row's own (`rowSessionId`). */
+const sessions = agentSessions(rowSessionId);
+const plannerSession = sessions.planner;
+const reviewerSession = sessions.reviewer;
+
+/** The running row's Planner's message route, which its sends post to. */
+function plannerMessages(): string {
+  return `/api/v1/agents/${plannerSession.session_id}/messages`;
+}
 const broadcasts = "/api/v1/broadcasts";
 
 /** Opens the Planner's composer from the keyboard, types `body` and sends it. */
@@ -67,10 +74,11 @@ async function plannerAttempts(
 test("a send whose answer is lost is tried again under its key, and delivered once @pr", async ({
   browser,
 }) => {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"), sessions);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
+    const messages = plannerMessages();
     const posts = watchWrites(page, "POST", messages);
     // The first POST reaches Dispatch, which makes the message and sends it; its answer is lost on
     // the way back, as a dropped connection loses it.
@@ -110,10 +118,11 @@ test("a send whose answer is lost is tried again under its key, and delivered on
 test("a send a server that is down answers 503 is tried again, not refused, and delivered once", async ({
   browser,
 }) => {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"), sessions);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
+    const messages = plannerMessages();
     const posts = watchWrites(page, "POST", messages);
     let refused = false;
     await page.route(`**${messages}`, async (route) => {
@@ -165,10 +174,11 @@ test("a send a server that is down answers 503 is tried again, not refused, and 
 test("a send held through a reload is resumed under its key, and delivered once @webkit @firefox", async ({
   browser,
 }) => {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"), sessions);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
+    const messages = plannerMessages();
     const posts = watchWrites(page, "POST", messages);
     const prompts: string[] = [];
     page.on("dialog", (dialog) => {
@@ -213,7 +223,7 @@ test("a send held through a reload is resumed under its key, and delivered once 
 test("a broadcast whose answer is lost is tried again under its key, and each agent hears it once @pr", async ({
   browser,
 }) => {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"), sessions);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -261,7 +271,7 @@ test("a broadcast whose answer is lost is tried again under its key, and each ag
 test("a broadcast held through a reload is resumed under its key, and each agent hears it once", async ({
   browser,
 }) => {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"), sessions);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -316,7 +326,7 @@ test("a broadcast held through a reload is resumed under its key, and each agent
 test("two live-view sends pressed during an outage go out in press order, each once, with Send pressable throughout @webkit @firefox", async ({
   browser,
 }) => {
-  await seedAgents();
+  await seedAgents(rowKey("CORE"), sessions);
   await publishAgentStreamFrame(
     plannerSession.session_id,
     {
@@ -344,6 +354,7 @@ test("two live-view sends pressed during an outage go out in press order, each o
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
+    const messages = plannerMessages();
     const posts = watchWrites(page, "POST", messages);
     const answers = watchAnswers(page, "POST", messages);
     await page.clock.install();
@@ -402,7 +413,7 @@ test("a comment the page gives up on while Dispatch still writes it is answered 
   browser,
 }) => {
   test.setTimeout(120_000);
-  const issueKey = await seedAgents();
+  const issueKey = await seedAgents(rowKey("CORE"), sessions);
   const path = `/api/v1/issues/${issueKey}/comments`;
   await slowWrites("POST", path, 18_000);
   const alice = await asUser(browser, "alice");
@@ -463,7 +474,7 @@ test("a comment whose @-mention's send is slow is answered before the send, with
   browser,
 }) => {
   test.setTimeout(120_000);
-  const issueKey = await seedAgents();
+  const issueKey = await seedAgents(rowKey("CORE"), sessions);
   const path = `/api/v1/issues/${issueKey}/comments`;
   await setSessionSendDelay(plannerSession.session_id, 4_000);
   const alice = await asUser(browser, "alice");

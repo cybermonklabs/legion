@@ -1,11 +1,15 @@
 /** The command palette as the page draws it: which rows a route offers, where the arrows go,
- *  what a filtered list holds, which dialog a row opens, and how the list fits a short or
- *  shrinking window.
+ *  what a filtered list holds, where the highlight goes over the hits one search answered,
+ *  which dialog a row opens, and how the list fits a short or shrinking window.
  *
  *  Every row here reads what the browser does with one fixed answer - the listing, the focus,
- *  the address a row navigates to, the panels a chord toggles - so each runs against a
- *  recording rather than against a harness (packages/dispatch/README.md, "The stubbed layer").
- *  What stayed in `keyboard-palette.e2e.ts`, and why, is written there.
+ *  the address a row navigates to, the panels a chord toggles, the highlight over a search's
+ *  hits - so each runs against a recording rather than against a harness
+ *  (packages/dispatch/README.md, "The stubbed layer"). A search's hits are the server's over
+ *  every project of a stack, so on the real stack they are whatever other rows left; here they
+ *  are what the row's own seeding answers, which is what lets the three rows that read the
+ *  highlight over them hold their claims as written. What stayed in `keyboard-palette.e2e.ts`,
+ *  and why, is written there.
  */
 import { expect } from "@playwright/test";
 
@@ -14,6 +18,7 @@ import {
   createAsk,
   createIssue,
   createProject,
+  fixedKey,
   putArchitectureSource,
   syncArchitectureSource,
 } from "./api";
@@ -22,12 +27,16 @@ import { selectedRow } from "./inbox-pane";
 import { openIssue, searchPath } from "./keyboard-palette";
 import { stubbed } from "./stub/stub-test";
 
+/** The keys this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+const OPS = fixedKey("OPS", "this file's recordings were made under it");
+
 /** One issue per row, so each keeps the title it was written with, and the second project the
  *  two rows that pick a project in the bar read: `g p`, and the one that also opens the
  *  Keyboard shortcuts dialog. */
 const test = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Operations" });
+  await createProject({ key: CORE, name: "Core" });
+  await createProject({ key: OPS, name: "Operations" });
   const issue = async (title: string) => (await createIssue({ project: "CORE", title })).key;
   return {
     astrolabe: await issue("Astrolabe calibration"),
@@ -46,7 +55,7 @@ const test = stubbed(async () => {
 
 /** One ask in the Inbox, for the two rows that open the palette over a row in hand. */
 const inboxTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Inbox palette" });
   const ask = await createAsk(
     issue.key,
@@ -58,14 +67,14 @@ const inboxTest = stubbed(async () => {
 
 /** One card in one project, so `j` from the board takes the card the row names. */
 const boardTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Board palette" });
   return { issue: issue.key, project: "CORE" };
 });
 
 /** One row in one project's list, so `j` from the list takes the row the row names. */
 const listTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "List palette" });
   return { issue: issue.key, project: "CORE" };
 });
@@ -73,7 +82,7 @@ const listTest = stubbed(async () => {
 /** One architecture component, whose Open row the palette offers. The sync is the seeding's own
  *  check that the component reached the project, and runs in record mode alone. */
 const architectureTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   await seedFakeGithub({
     "legion/arch": {
       contents: "read",
@@ -88,7 +97,7 @@ const architectureTest = stubbed(async () => {
 
 /** That component with a child, for the level that has somewhere to go up to. */
 const nestedArchitectureTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   await seedFakeGithub({
     "legion/arch": {
       contents: "read",
@@ -102,6 +111,28 @@ const nestedArchitectureTest = stubbed(async () => {
   await putArchitectureSource("CORE", { branch: "main", repo: "legion/arch" });
   expect((await syncArchitectureSource("CORE", "legion/arch")).last_error).toBeNull();
   return { project: "CORE" };
+});
+
+/** Two issues, for the two rows that read how the bar draws what one search answered: no title
+ *  holds `priority` or `p2`, so the search for `priority p2` answers no hit, and one holds
+ *  `issue`, so the search for `issue` answers that issue alone. No project's key or name holds
+ *  either query. */
+const searchAnswerTest = stubbed(async () => {
+  await createProject({ key: CORE, name: "Core" });
+  const issue = async (title: string) => (await createIssue({ project: "CORE", title })).key;
+  return {
+    actions: await issue("Palette actions"),
+    hit: await issue("Astrolabe issue calibration"),
+  };
+});
+
+/** Two cards in one column, so `Move card down` from the first has somewhere to go, and no
+ *  title that holds `status`, `down` or `next`, so the search for each answers no hit. */
+const boardQueryTest = stubbed(async () => {
+  await createProject({ key: CORE, name: "Core" });
+  const first = await createIssue({ project: "CORE", title: "Board query one" });
+  const second = await createIssue({ project: "CORE", title: "Board query two" });
+  return { first: first.key, project: "CORE", second: second.key };
 });
 
 test("a failed palette search keeps its Retry action @pr", async ({ page, scene }) => {
@@ -594,3 +625,156 @@ test("a window that shrinks under an open palette keeps the highlighted row in v
   await page.setViewportSize({ height: 420, width: 1440 });
   await expect(active).toBeInViewport({ ratio: 1 });
 });
+
+searchAnswerTest(
+  "a query found inside an action's label highlights nothing, so Enter runs nothing on a search with no hits @pr",
+  async ({ page, scene }) => {
+    await openIssue(page, scene.actions, "Palette actions");
+    // The rows are taken when the palette opens, and the Set priority rows, like the priority
+    // select, are withheld until the page has read the issue: so open once the select takes a
+    // pick.
+    await expect(page.getByLabel(`Priority of ${scene.actions}`)).toBeEnabled();
+    await page.locator("body").focus();
+    await page.keyboard.press("Control+k");
+    const dialog = page.getByRole("dialog", { name: "Search" });
+    const input = page.getByRole("combobox", { name: "Search" });
+    const actions = dialog.getByRole("group", { name: "Actions" });
+
+    await input.fill("priority p2");
+    const setP2 = actions.getByRole("option", { name: "Set priority P2" });
+    await expect(actions.getByRole("option")).toHaveCount(1);
+    // `priority p2` sits inside the label rather than starting it, so the row is offered but not
+    // highlighted: Enter alone runs nothing, even once the search has answered with no hits.
+    await expect(dialog.getByText('No results for "priority p2"')).toBeVisible();
+    await expect(input).not.toHaveAttribute("aria-activedescendant");
+    await input.press("Enter");
+    await expect(dialog).toBeVisible();
+    await input.press("ArrowDown");
+    await expect(input).toHaveAttribute(
+      "aria-activedescendant",
+      (await setP2.getAttribute("id")) as string
+    );
+    // Enter runs the row the arrow reached, and the bar closes on it. The write it starts is the
+    // server's to keep, and `keyboard-palette.e2e.ts` reads it back.
+    await input.press("Enter");
+    await expect(dialog).toHaveCount(0);
+  }
+);
+
+searchAnswerTest(
+  "a query no action starts lists the hits above the actions, so Enter opens the first hit and closes nothing @pr",
+  async ({ page, scene }) => {
+    const title = "Astrolabe issue calibration";
+    await openIssue(page, scene.hit, title);
+    const dialog = page.getByRole("dialog", { name: "Search" });
+    const input = page.getByRole("combobox", { name: "Search" });
+    const actions = dialog.getByRole("group", { name: "Actions" });
+
+    // The search for `issue` answers this row's own issue, and no project's key or name holds the
+    // word, so the hit heads the list. No action here starts with `issue`, so the ones that hold
+    // it further in (`Close issue` among them) sit below the hits, and Enter opens the first hit
+    // rather than closing the issue the reader is on.
+    const statusWrites: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "PATCH" &&
+        new URL(request.url()).pathname === `/api/v1/issues/${scene.hit}`
+      ) {
+        statusWrites.push(request.postData() ?? "");
+      }
+    });
+    await page.keyboard.press("Control+k");
+    await expect(input).toHaveValue("");
+    await input.fill("issue");
+    const options = dialog.getByRole("option");
+    await expect(options.first()).toHaveAttribute("id", /^search-option-issue-/);
+    await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
+    await expect(options.last()).toHaveAttribute("id", /^search-option-action-/);
+    await expect(input).toHaveAttribute("aria-activedescendant", /^search-option-issue-/);
+    await input.press("Enter");
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      page.getByTestId("issue-header").getByRole("heading", { level: 1, name: title })
+    ).toBeVisible();
+    await expect(page.getByRole("button", { exact: true, name: "Close issue" })).toBeVisible();
+    expect(statusWrites).toEqual([]);
+  }
+);
+
+boardQueryTest(
+  "a query that holds a card move further in highlights nothing, so neither Enter nor an early arrow moves a card @pr",
+  async ({ page, scene }) => {
+    const writes: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() !== "GET" && new URL(request.url()).pathname.startsWith("/api/")) {
+        writes.push(`${request.method()} ${new URL(request.url()).pathname}`);
+      }
+    });
+    await page.setViewportSize({ height: 900, width: 1280 });
+    await page.goto(`/projects/${scene.project}/issues`);
+    await page.getByRole("button", { name: "Board" }).click();
+    await expect(page.locator(`[data-board-card="${scene.first}"]`)).toBeVisible();
+    await expect(page.locator(`[data-board-card="${scene.second}"]`)).toBeVisible();
+    // `j` from the page takes the top card, the one `Move card down` would move.
+    const card = page.locator("[data-board-card]").first();
+    await page.locator("body").focus();
+    await page.keyboard.press("j");
+    await expect(card).toBeFocused();
+
+    const dialog = page.getByRole("dialog", { name: "Search" });
+    const input = page.getByRole("combobox", { name: "Search" });
+    const actions = dialog.getByRole("group", { name: "Actions" });
+    // Each query sits inside a move's label without starting it: the move is offered, and only
+    // an arrow can highlight it, so Enter, even once the search has answered, moves nothing.
+    // `down` has no searchable term, so it returns no hits, and the move stays unhighlighted
+    // through that answer too.
+    for (const [query, move] of [
+      ["status", "Move card to the next status"],
+      ["down", "Move card down"],
+    ] as const) {
+      await page.keyboard.press("Control+k");
+      await input.fill(query);
+      await expect(actions.getByRole("option", { name: move })).toHaveCount(1);
+      await expect(dialog.getByText("Searching…")).toHaveCount(0);
+      await expect(input).not.toHaveAttribute("aria-activedescendant");
+      await input.press("Enter");
+      await expect(dialog).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(dialog).toHaveCount(0);
+      await expect(card).toBeFocused();
+    }
+
+    // Nor can an arrow pressed while the search is still out: `next` leads no label, and Down
+    // then would have taken the move to the next status before any answer came. The held search
+    // falls back to the recording once let through: `fallback` hands it to the handler the
+    // fixture registered before this one, where `continue` would send it past that handler to a
+    // network a replay has none of.
+    const release = Promise.withResolvers<void>();
+    let held = 0;
+    await page.route(searchPath, async (route) => {
+      held += 1;
+      await release.promise;
+      await route.fallback();
+    });
+    await page.keyboard.press("Control+k");
+    await input.fill("next");
+    const nextMove = actions.getByRole("option", { name: "Move card to the next status" });
+    await expect(nextMove).toHaveCount(1);
+    await input.press("ArrowDown");
+    await input.press("Enter");
+    await expect(dialog).toBeVisible();
+    expect(writes).toEqual([]);
+    await expect.poll(() => held).toBeGreaterThan(0);
+    await input.press("ArrowDown");
+    await input.press("Enter");
+    await expect(dialog).toBeVisible();
+    await expect(input).not.toHaveAttribute("aria-activedescendant");
+    release.resolve();
+    await expect(dialog.getByText("Searching…")).toHaveCount(0);
+    await expect(input).not.toHaveAttribute("aria-activedescendant");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(card).toBeFocused();
+    expect(writes).toEqual([]);
+  }
+);

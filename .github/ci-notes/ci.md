@@ -503,33 +503,30 @@ set (ci_ts_programs.py, LISTED, says why). Its jobs' contracts build
 
 The workflow that holds every browser step, which this job reads as its own
 definition - the place every other job of this file gives to its own
-`ci-job-<id>.yaml`, so a change to it selects this job alone. An unlabelled pull
-request runs the pull-request lane, the two projects a change is held to; a pull
-request carrying `full-ci`, the merge group and a dispatch run the full lane,
-every project and the two-process job, which is the lane the nightly
-(.github/workflows/dispatch-browser-nightly.yaml) calls. So a worker can put the
-whole suite on a pull request with the label, and the group is where a change to
-that file meets it before main anyway. The nightly itself is not in this list:
+`ci-job-<id>.yaml`, so a change to it selects this job alone. The nightly itself is not in this list:
 no step of this suite reads it, which rule 9's second direction refuses, since
 four shard machines and the merge job would start over a change no row sees. It
 is a read of the ci_filters gate instead, so a change to it re-runs this check,
 which holds this filter and that gate together.
 
-## dispatch_browser: The memory and CPU sampler the shard and alone jobs'
+## dispatch_browser: The reading of the stacks' PostgreSQL the shard and alone jobs run
 
-The memory and CPU sampler the shard and alone jobs' browser steps start and read
-back, the reading of the lanes' PostgreSQL those two jobs run before the suite,
+The reading of the stacks' PostgreSQL the shard and alone jobs run before the suite,
 the script the merge job runs to take each leg's newest attempt, and the script
 that makes the merge job's two reads of its own run, which reads this run's own
 attempt's jobs and says a refused blob download was a refused read. Beside them,
-the twelve scripts that hold the bodies of the shard, the alone, the visual and the
-merge jobs' steps: the shard job's wait for the file store it starts, its
-browser step and the record of what that run left behind, the alone job's
+the fourteen scripts that hold the bodies of the shard, the alone, the embedder, the
+two-process, the visual, the merge and the quarantine jobs' steps: the shard job's wait for
+the file store it starts, which the quarantine job runs too, its browser step and the record
+of what that run left behind, the alone job's
 browser step and its own record step, whose text differs from the shard job's
-because no file store runs on that machine, the visual job's run against the
-baselines, and the merge job's merge of the legs' blob reports, its four
+because no file store runs on that machine, the browser steps of the embedder and
+two-process jobs, which run on the runner and write their runs' blob reports, the visual
+job's run against the
+baselines, the merge job's merge of the legs' blob reports, its four
 readings - the rows, the flake rate, the leg exits and the row durations - and
-the verdict that fails the job on a red leg or a failed row. The Playwright
+the verdict that fails the job on a red leg or a failed row, and the quarantine
+job's reading of how each quarantined row ended. The Playwright
 install both jobs ran stood here too, with the pinned apt list it installed, the
 key their apt archive cache was read under and the check that the list had not
 fallen behind Playwright: those two jobs run in the image this repository builds
@@ -1301,14 +1298,6 @@ shard and alone jobs of .github/workflows/dispatch-browser.yaml pin, so gating i
 the Dockerfile writing a row whose digest the package does not hold, which the
 ci-images job then refuses.
 
-## Why the browser suite is ungated, and what the label decides
-
-The browser suite, ungated: a pull request that changes what it reads runs it, because
-the dispatch-browser job then runs the cheap `pull-request` lane, the two projects
-a pull request is held to. The `full-ci` label no longer decides whether this suite runs,
-only which lane it runs: that job's `lane:` input reads the label, and
-.github/ci-notes/ci.md#what-the-lane-input-reads says what each event gets.
-
 ## The ten slow suites, whose runner time dwarfs every other job's. The
 
 The ten slow suites, whose runner time dwarfs every other job's. The merge queue runs
@@ -1651,19 +1640,10 @@ Vite build aliases its sources, so that spawn is the whole of what the build is 
 Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
 holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
 `-alone` projects a machine each, the two-process job, the fake-embedder job that runs on both
-lanes, the containerised visual review, and the merge job that joins the shard and alone
-reports into one and posts this job's ci-ok report.
+lanes, the containerised visual review, and the merge job that joins the shard, alone,
+embedder and two-process reports into one and posts this job's ci-ok report.
 
-Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
-`pull-request`, the two projects a change is held to (chromium and iphone), so such a run
-proves those two rows and no more - it is not the run that proves the suite before main.
-Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci`
-- runs `full`: every project, the three `-alone` ones and the two-process job. So the merge
-group is where a change meets the whole suite before it lands, and the nightly
-(.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full
-lane, from main) runs it again on main's tip.
-
-One input decides that: the called workflow reads `lane` for the projects each job runs, so
+One input, `lane`, decides which projects each job runs: the called workflow reads it, so
 nothing here chooses them a second time. It picks no browser to install any more: the shard
 and alone jobs run in the image this repository builds, which carries all three engines
 (dispatch://INFRA-1443), and the two-process job installs Chromium whatever the lane.
@@ -1686,13 +1666,6 @@ called workflow the default GITHUB_TOKEN permissions rather than this file's blo
 `contents: read` is every job of dispatch-browser.yaml's checkout; `actions: read` is the
 merge job's `gh api .../actions/runs/<id>/jobs` read of this run's jobs, and `checks: write`
 that job's last step, the ci-ok report.
-
-## What the lane input reads
-
-An unlabelled pull request gets the two-project `pull-request` lane; a pull request
-carrying `full-ci`, and every other event, gets the full lane. That is what lets a worker
-recheck a slow-suite failure on a pull request: the label picks the lane, while the
-`dispatch_browser` output of `changes` runs the suite either way.
 
 ## envoy-go's fast half: the Go format check, the two generated-code checks, the
 
@@ -1900,8 +1873,7 @@ needs no container runtime of its own. Then the browser half
 (packages/dispatch/e2e/cross-build.multiprocess.e2e.ts), which runs twice: the browser suite's
 two-process mode with Dispatch B run from the previous build's envoy-dispatch and web dist, then
 from the first-rollout build's, and each direction's page served by one build against the other
-build's server. Playwright installs as it does for dispatch-browser-multiprocess, and the rows
-get a database of their own, since they truncate it. In a merge-group run the called file's
+build's server. In a merge-group run the called file's
 dispatch-two-builds-same job also runs the Go suite with this tree's own build as the previous
 build, beside this job and not after it (that job's comment says why).
 

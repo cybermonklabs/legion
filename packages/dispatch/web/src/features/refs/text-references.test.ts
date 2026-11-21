@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { DISPATCH_TEXT_REFERENCES, isIdPrefix } from "@legion/contracts";
 
+import { expectOnePass } from "../../__tests__/one-pass";
 import { readTextReferences } from "./text-references";
 
 const origin = "https://dispatch.test";
@@ -62,6 +63,29 @@ test("a text with nothing to resolve asks nothing", () => {
   expect(needs).toEqual({ keys: [], prefixes: [], questions: false });
   expect(references.map((found) => found.reference)).toEqual(["dispatch://CORE-1"]);
   expect(references[0].unresolved).toBe(false);
+});
+
+// An address is read as written and again without the trailing `_` and `-` a sentence or an
+// emphasis leaves on it (`trimmedMention`), and that trim was once `/[_-]+$/`, which read a run
+// of them again from every position in it: 6 s on an address whose query held 32,768
+// underscores and a letter. One pass is a count (`reader-steps.ts`): the reading takes at most
+// four times its steps, and a few more, on a run four times as long, the body each row reads
+// from being that longer one. A count cannot see inside one call of an expression, so the old
+// one is a control of `reader-expressions.test.ts`, which calls it vulnerable. Where the run
+// trails the address, the author's own characters (`named`) end where the run starts.
+test.each([
+  [
+    "underscores and a letter",
+    (run: number) => `${origin}/issues/CORE-1?x=${"_".repeat(run)}y`,
+    false,
+  ],
+  ["hyphens", (run: number) => `${origin}/issues/CORE-1?x=y${"-".repeat(run)}`, true],
+] as const)("an address whose query holds a run of %s is read in one pass", (_name, body, trails) => {
+  const run = 1 << 15;
+  const { references } = expectOnePass((n) => readTextReferences(body(n), { origin }), run / 4);
+  expect(references.map(({ named, reference }) => ({ named, reference }))).toEqual([
+    { named: trails ? body(0).length : undefined, reference: "dispatch://CORE-1" },
+  ]);
 });
 
 // The id prefix pattern, which the server spells `text.IsIDPrefix`: a hex digit and seven or

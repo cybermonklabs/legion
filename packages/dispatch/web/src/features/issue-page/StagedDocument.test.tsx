@@ -154,9 +154,9 @@ test("a room's admission stands after its editor closes, until the next editor's
     staged.redraw({ drawn: true });
     await waitFor(() => expect(fake.connections).toHaveLength(2));
     expect(
-      staged.view.container.querySelector(".dispatch-doc")?.getAttribute("data-read-only"),
+      staged.view.container.querySelector(".dispatch-doc"),
       "the next editor's article does not say the document takes typing before its room answers"
-    ).toBe("false");
+    ).toHaveAttribute("data-read-only", "false");
     expect(
       staged.admission(),
       "the next editor took the admission the page held off before its room answered"
@@ -190,9 +190,9 @@ test("an editor's new connection leaves the page's admission as it was until its
     staged.redraw({ runtime: next.runtime });
     await waitFor(() => expect(next.connections).toHaveLength(1));
     expect(
-      staged.view.container.querySelector(".dispatch-doc")?.getAttribute("data-read-only"),
+      staged.view.container.querySelector(".dispatch-doc"),
       "the new connection's article does not say the document takes typing before its room answers"
-    ).toBe("false");
+    ).toHaveAttribute("data-read-only", "false");
     expect(
       staged.admission(),
       "the new connection took the admission the page held off before its room answered"
@@ -224,9 +224,9 @@ test("the editor tells the page no admission while the issue is closed", async (
 
     staged.redraw({ isClosed: true });
     expect(
-      staged.view.container.querySelector(".dispatch-doc")?.getAttribute("data-read-only"),
+      staged.view.container.querySelector(".dispatch-doc"),
       "the closed issue's article does not say read-only"
-    ).toBe("true");
+    ).toHaveAttribute("data-read-only", "true");
     await act(async () => fake.admit(true));
     expect(staged.admission(), "the page held a closed issue's admission as its room's").toBe(
       false

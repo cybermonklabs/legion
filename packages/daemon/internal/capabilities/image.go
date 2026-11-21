@@ -429,7 +429,7 @@ func pluginEnabled(lock, name string) (string, bool) {
 // packages/daemon/internal/runtime/sandbox/plugins.go), so a role whose image lacks it
 // fails every installing launch. psql is on it because `bun run e2e`, the Dispatch browser suite a
 // reader-facing Dispatch change must pass before it merges, reaches psql through
-// packages/dispatch/e2e/psql.ts, which seed.ts calls for every spec's database reset, and the
+// packages/dispatch/e2e/psql.ts, which seed.ts calls to empty each worker's database, and the
 // local stack `bun run dispatch:local` (packages/dispatch/e2e/local-instance.ts) refuses to start
 // without psql on PATH, so a role whose image lacks psql cannot run the suite its own change owes.
 // redis-cli, sqlite3, nc and dig are the clients a role's own work needs and an unprivileged

@@ -9,7 +9,7 @@ import {
   mintAgentToken,
   patchIssue,
 } from "./api";
-import { expect, type Locator, test } from "./test";
+import { expect, type Locator, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // A session that has missed its heartbeats has not ended: it keeps the issue it is working, the
@@ -40,8 +40,9 @@ const freedHolder = {
 /** An issue claimed by `holder`, with both sessions live, and the agent token the takes below
  *  are made with. */
 async function seedClaim(title: string): Promise<{ issueKey: string; token: string }> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title });
   const token = await mintAgentToken("claim-unresponsive", "alice");
   await setLiveSessions([holder, taker]);
   await claimIssue(issue.key, {
@@ -83,11 +84,12 @@ async function expectInstant(locator: Locator, want: number, what: string) {
 test("an unresponsive holder keeps its claim: the issue page says unresponsive since its last heartbeat and names when it becomes takeable, and a second agent is refused @pr", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   const { issueKey, token } = await seedClaim("Worked by a stalled session");
   // A claim the Unclaimed filter may list, seeded before the holder is stalled because the
   // fixture's session list is written whole: all three sessions, then each one's silence.
   const freed = await createIssue({
-    project: "CORE",
+    project: core,
     title: "Claimed by a holder long gone quiet",
   });
   await setLiveSessions([holder, taker, freedHolder]);
@@ -143,8 +145,8 @@ test("an unresponsive holder keeps its claim: the issue page says unresponsive s
     // (`claimIsTakeable`, features/project/issue-filters.ts), and while that query is pending
     // every claim counts as held - so the held issue would be hidden for that reason alone, and
     // a regression that listed it could pass this check unnoticed.
-    const pickable = await createIssue({ project: "CORE", title: "Nobody's to pick up" });
-    await page.goto("/projects/CORE/issues?unclaimed=1");
+    const pickable = await createIssue({ project: core, title: "Nobody's to pick up" });
+    await page.goto(`/projects/${core}/issues?unclaimed=1`);
     await expect(
       page
         .getByRole("table", { name: "Project issues table" })
@@ -191,7 +193,7 @@ test("an unresponsive holder past its takeable moment reads takeable now, is lis
     );
 
     // The filter that lists pickable work lists it, because the server would hand it over.
-    await page.goto("/projects/CORE/issues?unclaimed=1");
+    await page.goto(`/projects/${rowKey("CORE")}/issues?unclaimed=1`);
     await expect(page.getByTestId("unclaimed-unchecked")).toHaveCount(0);
     await expect(page.locator("[data-issue-row]").filter({ hasText: issueKey })).toHaveCount(1);
 
@@ -248,9 +250,10 @@ test("the Agents page lists an unresponsive claim holder as unresponsive since i
 test("a route to an unresponsive session, and to a role it holds, reads holder_unresponsive and still reached", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await seedClaim("Worked by a session two routes point at");
-  const direct = await createIssue({ project: "CORE", title: "Addressed to the stalled session" });
-  const byRole = await createIssue({ project: "CORE", title: "Waiting on whoever holds the role" });
+  const direct = await createIssue({ project: core, title: "Addressed to the stalled session" });
+  const byRole = await createIssue({ project: core, title: "Waiting on whoever holds the role" });
   await patchIssue(direct.key, { route: `session:${holder.session_id}` });
   await patchIssue(byRole.key, { route: `role:${ROLE}` });
   await stall(6 * 60_000);

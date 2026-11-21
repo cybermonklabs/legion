@@ -34,7 +34,7 @@ import {
   presetToolbar,
 } from "./issue-page";
 import { withIssuePage } from "./issue-page-option";
-import { expect, type Locator, type Page, type Route, test } from "./test";
+import { expect, type Locator, type Page, type Route, rowKey, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -73,8 +73,9 @@ const AGENT = { actor: { id: "e2e-frame-agent", kind: "session" as const }, as: 
  *  it a second issue whose question waits on alice, FRM's default assignee, so the rail's Inbox
  *  has a count to draw. */
 async function seedFrame(): Promise<{ key: string }> {
-  await createProject({ key: "FRM", name: "Frame" });
-  const issue = await createIssue({ project: "FRM", spec: SPEC, title: "The new page's frame" });
+  const frm = rowKey("FRM");
+  await createProject({ key: frm, name: "Frame" });
+  const issue = await createIssue({ project: frm, spec: SPEC, title: "The new page's frame" });
   await createIssueArtifact(issue.key, {
     content: `:::check{#c1 serves="dispatch://${issue.key}/spec#b-r1" surface="browser" run="bun run e2e -- e2e/issue-page-d.e2e.ts"}
 The frame keeps the page's width.
@@ -82,7 +83,7 @@ The frame keeps the page's width.
 `,
     name: "verification.md",
   });
-  const waiting = await createIssue({ project: "FRM", title: "A question for the reader" });
+  const waiting = await createIssue({ project: frm, title: "A question for the reader" });
   await createAsk(waiting.key, { question: "Is the frame ready?" }, AGENT);
   return { key: issue.key };
 }
@@ -151,6 +152,7 @@ async function assertNoSidewaysScroll(locator: Locator, what: string): Promise<v
 test("the frame draws an icon rail, Details over the page and the Contents pane @phone", async ({
   browser,
 }) => {
+  const frm = rowKey("FRM");
   test.setTimeout(180_000);
   await phase(browser, seedFrame, async (page, { key }) => {
     await gotoIssue(page, `/issues/${key}`);
@@ -176,8 +178,8 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     expect(
       [links[0], ...links.slice(2)],
       "the rail's links are not Dispatch, Inbox, Agents, Priorities, Delivery, Pipeline, the project and Settings"
-    ).toEqual(["Dispatch", "Agents", "Priorities", "Delivery", "Pipeline", "FRM", "Settings"]);
-    await expect(iconRail(page).getByRole("link", { exact: true, name: "FRM" })).toHaveAttribute(
+    ).toEqual(["Dispatch", "Agents", "Priorities", "Delivery", "Pipeline", frm, "Settings"]);
+    await expect(iconRail(page).getByRole("link", { exact: true, name: frm })).toHaveAttribute(
       "aria-current",
       "true"
     );
@@ -1062,10 +1064,11 @@ test("at 390 px a press on Details' text keeps the focus in the sheet, and Shift
 
 /** An issue whose spec links another issue, so today's page draws a reference to hover. */
 async function seedTodaysPage(): Promise<{ key: string }> {
-  await createProject({ key: "OFF", name: "Today" });
-  const target = await createIssue({ project: "OFF", title: "The issue the spec links" });
+  const off = rowKey("OFF");
+  await createProject({ key: off, name: "Today" });
+  const target = await createIssue({ project: off, title: "The issue the spec links" });
   const issue = await createIssue({
-    project: "OFF",
+    project: off,
     spec: `See [the other issue](dispatch://${target.key}) for context.\n`,
     title: "A reader with the preference off",
   });
@@ -1138,8 +1141,12 @@ const ISSUE_PANEL = "[data-details]";
 test("a project document page draws its margin, and none of the issue page's panel", async ({
   browser,
 }) => {
-  await createProject({ key: "DOC", name: "Documents" });
-  const document = await createProjectDocument("DOC", {
+  const doc = rowKey("DOC");
+  // Named for no label of the shell: every project of the stack is a link in the navigation,
+  // named by its key and its name, and `Documents` is the label every project page's own tab
+  // carries, which rows read it by.
+  await createProject({ key: doc, name: "Handbook pages" });
+  const document = await createProjectDocument(doc, {
     content: "# The handbook\n\nIts margin is the margin every document page has.\n",
     name: "handbook.md",
   });
@@ -1148,7 +1155,7 @@ test("a project document page draws its margin, and none of the issue page's pan
     await withIssuePage(alice, "alice");
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
-    await page.goto(`/projects/DOC/documents/${document.artifact.slug}`);
+    await page.goto(`/projects/${doc}/documents/${document.artifact.slug}`);
     await expect(page.getByRole("heading", { level: 1, name: "The handbook" })).toBeVisible();
     await expect(iconRail(page), "a project document page draws the rail").toHaveCount(0);
     await expect(page.getByTestId("desktop-margin-shell")).toHaveCount(1);
@@ -1162,8 +1169,12 @@ test("a project document page draws its margin, and none of the issue page's pan
 });
 
 test("the Inbox keeps its margin-less layout", async ({ browser }) => {
-  await createProject({ key: "INB", name: "Inbox" });
-  await createIssue({ project: "INB", spec: SPEC, title: "An issue to list" });
+  const inb = rowKey("INB");
+  // Named for none of the shell's own links: every project of the stack is a link in the
+  // navigation, named by its key and its name, so a project named `Inbox` is one more link a
+  // row's `{ name: "Inbox" }` finds beside the navigation's own.
+  await createProject({ key: inb, name: "Margin-less" });
+  await createIssue({ project: inb, spec: SPEC, title: "An issue to list" });
   const alice = await asUser(browser, "alice");
   try {
     await withIssuePage(alice, "alice");

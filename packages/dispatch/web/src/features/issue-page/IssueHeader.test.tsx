@@ -912,7 +912,7 @@ test("the approval chip's keys press its own actions, and only while those take 
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument()
     );
-    expect(document.activeElement).toBe(chip);
+    expect(chip).toHaveFocus();
 
     // `a` presses Approve, whose write is then out: neither key applies until it is answered.
     await user.keyboard("a");

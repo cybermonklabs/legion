@@ -3,14 +3,14 @@
 # makes, in one file, so that a test can drive them under a stand-in `gh` rather than on a
 # runner against GitHub.
 #
-# Two modes, after dispatch-browser-samples.sh's two:
+# Two modes:
 #
 #   .github/scripts/dispatch-browser-run-reads.sh jobs <out-file>
 #   .github/scripts/dispatch-browser-run-reads.sh blobs-refused
 #
 # `jobs` reads this run's own attempt's jobs and writes <out-file>: the array of
-# {id, name, conclusion, leg} that the merge job's two readings consume - reading one for the
-# legs that owed a blob report, reading three for the legs that did not succeed.
+# {id, name, conclusion, legs} that the merge job's two readings consume - reading one for the
+# legs that owed a blob report, reading three for the jobs that did not succeed and their legs.
 #
 # `blobs-refused` writes no file and makes no request. It prints the one `::error::` line for a
 # blob download `actions/download-artifact` could not complete and exits 0: that step has
@@ -259,21 +259,24 @@ case "$mode" in
       exit 1
     fi
 
-    # Each job's leg name is derived here, once, beside the fields it travels with, so the two
-    # readings take it rather than each parsing the job name again.
+    # Each job's legs are derived here, once, beside the fields they travel with, so the two
+    # readings take them rather than each parsing the job name again. A leg is one Playwright
+    # run that uploads a blob report under its name (`dispatch-browser-blob-<leg>-<attempt>`,
+    # holding blob-report/report-<leg>.zip and rows/<leg>.txt), and a job runs none, one or two.
     #
-    # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`,
-    # after either caller's prefix. `binaries`, `merge`, `multiprocess`, `embedder` and
-    # `visual` are this workflow's other five jobs: they pass the name filter and get a null
-    # leg, so reading one passes them over and reading three names them as holding no row.
-    # `binaries` is in that filter because a build that failed leaves the shard and alone jobs
-    # skipped and no blob report anywhere, so a run read without it is reported as legs that
-    # uploaded nothing rather than as the build that handed them nothing. `visual` is in it
-    # because a run whose only red job is that one must not read "every leg of this workflow
-    # concluded success": the verdict step fails ci-ok either way, so the gate held, but the
-    # summary a person reads was wrong. `embedder` is there for the same reason. ci.yaml's
-    # jobs do not get a null leg - the filter drops them first, which is what keeps them out
-    # of reading three, since that reading selects on conclusion alone. The two that come
+    # `shard (3)` becomes `[shard-3]` and `alone (webkit-alone)` becomes `[alone-webkit-alone]`,
+    # after either caller's prefix. `embedder` runs one leg, `[embedder]`, and `multiprocess`
+    # two, `[multiprocess-dashboard, multiprocess-signin]`, the names their steps hand
+    # .github/scripts/dispatch-browser-host-suite.sh. `binaries`, `merge` and `visual` are this
+    # workflow's other three jobs: they pass the name filter and get no leg, so reading one
+    # passes them over and reading three names them as holding no row. `binaries` is in that
+    # filter because a build that failed leaves the shard and alone jobs skipped and no blob
+    # report anywhere, so a run read without it is reported as legs that uploaded nothing rather
+    # than as the build that handed them nothing. `visual` is in it because a run whose only red
+    # job is that one must not read "every leg of this workflow concluded success": the verdict
+    # step fails ci-ok either way, so the gate held, but the summary a person reads was wrong.
+    # ci.yaml's jobs get no entry at all - the filter drops them first, which is what keeps them
+    # out of reading three, since that reading selects on conclusion alone. The two that come
     # nearest are ci.yaml's own `dispatch-multiprocess` and `broker-multiprocess`, kept out
     # only because the character before `multiprocess` is a hyphen and the filter wants a
     # space or a line start.
@@ -284,9 +287,12 @@ case "$mode" in
     jq '[.[].jobs[] | select(.name |
         test("(^| )(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)"))]
       | map({id, name, conclusion,
-          leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
-            // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")
-            // null)})' "$pages" > "$out_file"
+          legs: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | ["shard-\(.n)"])
+            // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | ["alone-\(.p)"])
+            // (if (.name | test("(^| )embedder$")) then ["embedder"]
+                elif (.name | test("(^| )multiprocess$"))
+                then ["multiprocess-dashboard", "multiprocess-signin"]
+                else [] end))})' "$pages" > "$out_file"
     ;;
   blobs-refused)
     [ "$#" -eq 1 ] || usage "$@"

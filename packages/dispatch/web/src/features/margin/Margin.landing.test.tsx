@@ -249,6 +249,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
           expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
         );
         await settled();
+        // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the path.
         expect(
           screen.getByTestId(`margin-comment-${comment.id}`).getAttribute("aria-expanded"),
           `${path} expands the comment's thread`
@@ -298,6 +299,7 @@ test("a link to a card beside its document opens Details on it, and a link to a 
         );
         await settled();
         const details = screen.getByTestId("desktop-margin-shell");
+        // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the path.
         expect(
           details.hasAttribute("hidden"),
           `${path} ${opens ? "left Details closed" : "opened Details"}`
@@ -305,7 +307,7 @@ test("a link to a card beside its document opens Details on it, and a link to a 
         if (opens) {
           await user.click(screen.getByRole("button", { name: "Close" }));
           await settled();
-          expect(details.hasAttribute("hidden"), "Details opened again after its Close").toBe(true);
+          expect(details, "Details opened again after its Close").toHaveAttribute("hidden");
         }
       } finally {
         view.unmount();
@@ -345,14 +347,14 @@ test("on a phone, a link followed in a panel portaled into Details closes the sh
   const view = render(tree(null));
   try {
     const details = await screen.findByTestId("desktop-margin-shell");
-    await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
+    await waitFor(() => expect(details).not.toHaveAttribute("hidden"));
     view.rerender(tree(details));
     await user.click(screen.getByRole("link", { name: "a panel's link" }));
     await waitFor(() =>
       expect(
-        details.hasAttribute("hidden"),
+        details,
         "a link followed in a portaled panel left the phone's Details open"
-      ).toBe(true)
+      ).toHaveAttribute("hidden")
     );
   } finally {
     view.unmount();
@@ -391,11 +393,12 @@ test("on a phone, a link that keeps Details open leaves the sheet open, and a pl
   const view = render(tree(null));
   try {
     const details = await screen.findByTestId("desktop-margin-shell");
-    await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
+    await waitFor(() => expect(details).not.toHaveAttribute("hidden"));
     view.rerender(tree(details));
     for (const name of ["a turn's time", "a link inside a turn"]) {
       await user.click(screen.getByRole("link", { name }));
       await settled();
+      // Hand-written: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the link.
       expect(
         details.hasAttribute("hidden"),
         `"${name}", which keeps Details open, closed the phone's Details`
@@ -404,9 +407,9 @@ test("on a phone, a link that keeps Details open leaves the sheet open, and a pl
     await user.click(screen.getByRole("link", { name: "a panel's link" }));
     await waitFor(() =>
       expect(
-        details.hasAttribute("hidden"),
+        details,
         "a plain link beside the kept ones left the phone's Details open"
-      ).toBe(true)
+      ).toHaveAttribute("hidden")
     );
   } finally {
     view.unmount();
@@ -455,20 +458,20 @@ test("with the list of keys over Details, Escape closes the list alone, the focu
     try {
       await user.keyboard("?");
       expect(list(), "? drew no list of keys").not.toBeNull();
-      expect(document.activeElement, "the list took the focus in its first frame").toBe(close);
+      expect(close, "the list took the focus in its first frame").toHaveFocus();
       await user.keyboard("{Escape}");
     } finally {
       frames.mockRestore();
     }
     expect(list(), "Escape before the list took the focus left the list open").toBeNull();
-    expect(details.hasAttribute("hidden"), "that Escape closed Details under the list").toBe(false);
+    expect(details, "that Escape closed Details under the list").not.toHaveAttribute("hidden");
 
     await user.keyboard("?");
     await user.click(screen.getByRole("heading", { name: "Keyboard shortcuts" }));
-    expect(document.activeElement, "a press on the list's text kept the focus").toBe(document.body);
+    expect(document.body, "a press on the list's text kept the focus").toHaveFocus();
     await user.keyboard("{Escape}");
     expect(list(), "Escape with the focus on the page left the list open").toBeNull();
-    expect(details.hasAttribute("hidden"), "that Escape closed Details under the list").toBe(false);
+    expect(details, "that Escape closed Details under the list").not.toHaveAttribute("hidden");
   } finally {
     view.unmount();
     restoreMatchMedia();
@@ -556,7 +559,7 @@ test("a reader who lands on a comment link can still select another card", async
     const second = screen.getByTestId("margin-comment-comment-2");
     expect(second).toHaveAttribute("aria-current", "true");
     expect(second).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByTestId("margin-comment-comment-1").getAttribute("aria-current")).toBeNull();
+    expect(screen.getByTestId("margin-comment-comment-1")).not.toHaveAttribute("aria-current");
   } finally {
     view.unmount();
     restoreMatchMedia();
@@ -579,7 +582,7 @@ test("a reader who lands on a comment link can select a Needs you ask", async ()
     await waitFor(() =>
       expect(screen.getByLabelText("Selected margin item").textContent).toBe(anchoredAsk.id)
     );
-    expect(screen.getByTestId("margin-comment-comment-1").getAttribute("aria-current")).toBeNull();
+    expect(screen.getByTestId("margin-comment-comment-1")).not.toHaveAttribute("aria-current");
   } finally {
     view.unmount();
     restoreMatchMedia();
@@ -1044,7 +1047,8 @@ test("a relayout's own scroll that lands after a long task leaves the hold alone
     placement.setAttribute("style", "position: absolute; top: 700px;");
     // The observer's callback is a microtask: it has seen the relayout before the long task.
     await Promise.resolve();
-    // A real long task, which no fake clock can model: what this row needs is that no rendering
+    // This one stays on the real clock (INFRA-1505): a real long task, which no fake clock can
+    // model. What this row needs is that no rendering
     // update runs between the relayout and the scroll, and a synchronous loop is the only way to
     // hold one off. The span stays at 500 ms and no measurement can shorten it: `useCardHold`
     // counts rendering frames rather than milliseconds, so a loop of any length blocks the same

@@ -13,7 +13,7 @@
 import { expect } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
-import { createAsk, createIssue, createProject } from "./api";
+import { createAsk, createIssue, createProject, fixedKey } from "./api";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
 import {
   agentRowId,
@@ -30,6 +30,9 @@ import {
 import { openField } from "./inbox-view";
 import { stubbed } from "./stub/stub-test";
 
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+
 // ---------------------------------------------------------------------------
 // A1: the old Replies link, and the one Inbox count.
 // ---------------------------------------------------------------------------
@@ -38,7 +41,7 @@ import { stubbed } from "./stub/stub-test";
  *  Inbox count is the sum of exactly those. */
 const repliesList = stubbed(async () => {
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   for (const title of ["Ledger rollout", "Mirror retries"]) {
     const issue = await createIssue({ project: "CORE", title });
     await createAsk(issue.key, { question: `${title}: ship tonight?` }, asSession());
@@ -112,7 +115,7 @@ repliesList(
 // A2: one list of twelve rows, and the Type filter over it.
 // ---------------------------------------------------------------------------
 
-const test = stubbed(seedTwelve);
+const test = stubbed(() => seedTwelve(CORE));
 
 test("the Type filter counts and narrows the one list of asks, approvals, replies and agent messages @pr", async ({
   page,

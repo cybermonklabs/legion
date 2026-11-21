@@ -62,11 +62,13 @@ downloaded=$1
 # reason this script's head gives. `actions: read` is the caller's, and ci.yaml's job that calls
 # this workflow already holds it.
 # This run's attempt's jobs, read once here and read again by reading three below.
-# The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, leg}
+# The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, legs}
 # that both readings take. The jobs API lists the caller's jobs too, so the script
 # holds the name to this workflow's seven - binaries, shard, alone, multiprocess,
 # embedder, visual and merge; a called workflow's job is named
-# `<the caller's job> / <this job>`, with a matrix leg in brackets after it.
+# `<the caller's job> / <this job>`, with a matrix leg in brackets after it. `legs` is
+# every Playwright run of the job that uploads a blob report: one for a shard, an alone
+# leg and the embedder job, two for the multiprocess job, none for the other three.
 #
 # The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.
 # `filter=all` lists every attempt's jobs, so each re-run made the read heavier:
@@ -107,11 +109,11 @@ downloaded=$1
 # before it could upload is in the list and still owes its blob.
 # A read that fails leaves the list empty, and the check below says so: `|| true` keeps
 # pipefail and `set -e` from ending the script on jq's status first.
-legs=$(jq -r '.[] | select(.leg != null and .conclusion != "skipped") | .leg' "$jobs" |
+legs=$(jq -r '.[] | select(.conclusion != "skipped") | .legs[]' "$jobs" |
   sort) || true
 if [ -z "$legs" ]; then
-  echo "::error::this run's jobs hold no shard or alone leg, so there is nothing to" \
-    "hold the merged report against"
+  echo "::error::this run's jobs hold no leg that uploads a blob report, so there is" \
+    "nothing to hold the merged report against"
   exit 1
 fi
 missing=""

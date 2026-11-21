@@ -1,6 +1,6 @@
 import { createComment, createIssue, createProject, getIssueArtifactText } from "./api";
 import { documentEditor, openSpec } from "./editor";
-import { type Browser, expect, type Locator, type Page, test } from "./test";
+import { type Browser, expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // The server's reader (the Go reader behind every document) and the browser's engine (the one
@@ -33,8 +33,9 @@ async function seed({
   spec?: string;
   title: string;
 }): Promise<{ commentId: string; key: string }> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title }, agentSession);
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title }, agentSession);
   const commentId =
     body === undefined ? "" : (await createComment(issue.key, { body }, agentSession)).id;
   return { commentId, key: issue.key };
@@ -245,7 +246,7 @@ test("a NUL reads as the replacement character in the spec editor and in a past 
   const { key } = await seed({ spec: `# NUL\n\n${nulReference}`, title: "A NUL in a paragraph" });
 
   const raw = await refusalOf(
-    createIssue({ project: "CORE", spec: "a\u0000b\n", title: "A raw NUL" }, agentSession)
+    createIssue({ project: rowKey("CORE"), spec: "a\u0000b\n", title: "A raw NUL" }, agentSession)
   );
   expect(raw.code).toBe("NUL_CHARACTER");
   expect(raw.error).toContain("spec holds a NUL character (U+0000) at character 2");

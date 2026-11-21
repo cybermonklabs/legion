@@ -770,20 +770,44 @@ async function explore(): Promise<Exploration> {
 
 // The eight tests below - the seven checks and the count - share one exploration: it is the slow
 // part, and it judges all seven checks at once. It plays about 171,000 sequences of five events,
-// which judge 186,538 sequences of one to five, about 147 to 255 s in this pod on one core, so
-// each of the eight has a time limit of its own above the suite's minute: whichever runs first
-// pays for the exploration.
-let explored: Promise<Exploration> | undefined;
+// which judge 186,538 sequences of one to five, about 147 to 255 s in an issue pod beside its
+// other roles' work, so each of the eight has a time limit of its own above the suite's minute:
+// whichever runs first pays for the exploration.
+//
+// The one deliberate exception to the rule that each row makes its own preconditions: the
+// exploration is also kept across reruns of this file in one process (`--rerun-each`). Its result
+// is a pure function of the code under test, and a rerun in the same process explores the same
+// sequences, so reruns 2 to 20 judge the result the first run computed. Bun evaluates this file
+// again for each rerun but keeps the modules it imports, so the result is kept on `globalThis`,
+// in a map keyed by the hook it explores: a hook module loaded again is a new function, which is
+// explored afresh. `globalThis` ends with the process, so each process's first run of the file
+// computes it.
+const shared = globalThis as typeof globalThis & {
+  useIssueDraftsExplorations?: WeakMap<typeof useIssueDrafts, Promise<Exploration>>;
+};
+shared.useIssueDraftsExplorations ??= new WeakMap();
+const explorations = shared.useIssueDraftsExplorations;
 function exploration(): Promise<Exploration> {
-  explored ??= explore();
+  let explored = explorations.get(useIssueDrafts);
+  if (explored === undefined) {
+    explored = explore();
+    explorations.set(useIssueDrafts, explored);
+  }
   return explored;
 }
-// Sized as `__tests__/setup.ts` sizes the suite's minute: twice the slowest run on the slower of
-// the two pod shapes, which runs the suite 2.15 times slower. The 255 s measured here (the eight
-// tests, beside other roles' work in the same pod) is about 548 s there, derived rather than
-// measured on that pod, and twice that is about 1,096 s; 1,100 s rounds it up, the 255 s being
-// the slowest of the runs here.
-const explorationTimeout = 1_100_000;
+// Sized as `__tests__/setup.ts` sizes the suite's minute: twice the slowest loaded run on the
+// slower of the two pod shapes. The run sized is the first computation of the exploration, since
+// whichever of the eight runs first in a process computes it and the rest read its result, each in
+// under a millisecond. The slower shape is an issue pod, whose two CPUs its roles share. There
+// pull request #4226 read 255 s, the slowest of its runs, beside the pod's other roles' work, and
+// dispatch://INFRA-983's pod read about 170 s on 2026-11-21: the whole file took 171.6 s while
+// one of these rows ran out at a deadline of 140 s. Twice 255 s is 510 s.
+// The lighter shape is a pod of the same size alone: Job infra983-r3-deadline-vr7qq of the builds
+// namespace ran this file at a23ff73d in a gVisor pod of 2 CPUs, the request equal to the limit,
+// with the image the issue pods pin, and read 34 to 44 s idle and 59 to 67 s with two
+// `while :; do :; done` loops beside it. Two busy loops understate the load an issue pod's roles
+// share, so those readings do not size the deadline.
+const explorationTimeout = 510_000;
 
 // I2 and I3 each name a send that I1 also refuses, or one with nothing left to send. A value an
 // escape put away is not the reader's last ended choice: the escape withdrew that choice, and only

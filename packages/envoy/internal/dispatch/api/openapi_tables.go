@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // schemaNames overrides the schema name a Go type is declared under. It exists so a Go type whose
@@ -58,6 +59,10 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(checkResultInput{}):         "RecordCheckResultInput",
 	reflect.TypeOf(relatedRequest{}):           "RelatedCheckInput",
 
+	// The 409 ID_AMBIGUOUS body, whose name keeps the initialism ID_AMBIGUOUS and IDCandidate
+	// spell, which an unexported Go name cannot start with.
+	reflect.TypeOf(idAmbiguousError{}): "IDAmbiguousError",
+
 	// The shaped reads: the body a route answers a caller who sent `Dispatch-Trees: 1`, which
 	// is the stored row with the display tree of every text it shows beside that text. Their Go
 	// names say that this package shaped them; the names here are the TypeScript names a client
@@ -96,6 +101,7 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(model.SearchArtifact{}): "SearchArtifactRef",
 	reflect.TypeOf(docs.RebuildReport{}):   "ArtifactRebuildReport",
 	reflect.TypeOf(pmdoc.Candidate{}):      "TargetCandidate",
+	reflect.TypeOf(refs.Candidate{}):       "IDCandidate",
 
 	// The broker's wire shapes, which the relay rows answer; each is one of Dispatch's
 	// credential pages rather than a shape of the broker's own naming.

@@ -123,7 +123,7 @@ async function main(): Promise<void> {
   harness = await startHarness({ signal: supervisor.signal });
   // The e2e modules read the ports when they are first imported, so they are imported only now.
   Object.assign(process.env, harness.env);
-  const { baseUrl, listAgents, listBroadcasts, userHeaders } = await import("./api");
+  const { baseUrl, fixedKey, listAgents, listBroadcasts, userHeaders } = await import("./api");
   const { resetDatabase } = await import("./seed");
   const { seedWorkspace, workspaceSessionIds } = await import("./workspace");
 
@@ -135,8 +135,12 @@ async function main(): Promise<void> {
   // The Inbox was read settling in 230 ms (the sampler e2e/workspace.ts cites); 15 s is far
   // above that, so only a seed that does not settle fails it.
   const seedBoundMs = 15_000;
+  // One seed into a database of the instance's own, which a restart empties before it seeds
+  // again, for a person to open at the keys the hand-over names.
+  const seededOnce = "the local instance seeds its own database once, for a person to open";
+  const projects = { core: fixedKey("CORE", seededOnce), ops: fixedKey("OPS", seededOnce) };
   const seeded = await untilInterrupted(
-    seedWorkspace({ boundMs: seedBoundMs, signal: supervisor.signal })
+    seedWorkspace({ boundMs: seedBoundMs, projects, signal: supervisor.signal })
   );
   const whoami = await fetch(`${baseUrl}/auth/whoami`, { headers: await userHeaders("alice") });
   const identity = (await whoami.json()) as { login?: string };

@@ -58,8 +58,9 @@ test("CopyRefButton with a primary copies it on click and the reference on a mod
     );
     try {
       const button = view.getByRole("button", { name: /^Copy issue key LEGION-162 · / });
-      expect(button.getAttribute("title")).toMatch(
-        /^Copy issue key LEGION-162 · (⌘|Ctrl)-click copies the reference$/
+      expect(button).toHaveAttribute(
+        "title",
+        expect.stringMatching(/^Copy issue key LEGION-162 · (⌘|Ctrl)-click copies the reference$/)
       );
       await user.click(button);
       await waitFor(() => expect(writeText).toHaveBeenNthCalledWith(1, "LEGION-162"));

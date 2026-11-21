@@ -30,8 +30,13 @@ fi
 export PLAYWRIGHT_HTML_OUTPUT_DIR="$RUNNER_TEMP/report-html"
 export PLAYWRIGHT_HTML_OPEN=never
 export PLAYWRIGHT_JSON_OUTPUT_NAME="$RUNNER_TEMP/report.json"
+# `-c e2e/merge-reports.config.ts`: the shard and alone legs record their paths under the
+# container's checkout and the embedder and two-process legs under the runner's, and
+# `merge-reports` joins blobs of two test directories only under a config whose test directory it
+# reads them all against; that file's head says why it is not the suite's own config.
 status=0
-bunx playwright merge-reports --reporter=html,json,list "$blobs" || status=$?
+bunx playwright merge-reports -c e2e/merge-reports.config.ts --reporter=html,json,list "$blobs" ||
+  status=$?
 # `merge-reports` exits 1 on a report holding a failed row as much as on a blob it
 # could not read, so the exit alone does not say which happened. A failed row is the
 # readings' and the verdict step's to report, by leg and by name, so this step fails

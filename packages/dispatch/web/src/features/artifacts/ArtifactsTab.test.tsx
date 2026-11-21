@@ -127,8 +127,8 @@ test("a closed issue's Artifacts tab refuses a new document and an upload before
     expect(create).toHaveAttribute("aria-disabled", "true");
     expect(create).toHaveAttribute("title", refusal);
     const line = screen.getByText(refusal);
-    expect(upload.getAttribute("aria-describedby")).toBe(line.id);
-    expect(create.getAttribute("aria-describedby")).toBe(line.id);
+    expect(upload).toHaveAttribute("aria-describedby", line.id);
+    expect(create).toHaveAttribute("aria-describedby", line.id);
     await user.click(create);
     expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument();
     await user.click(upload);
@@ -315,8 +315,8 @@ test("a primary artifact sorts first regardless of upload order", async () => {
   try {
     await screen.findByTestId("artifact-older-png");
     const rows = screen.getAllByRole("listitem");
-    expect(rows[0]?.getAttribute("data-testid")).toBe("artifact-primary-png");
-    expect(rows[1]?.getAttribute("data-testid")).toBe("artifact-older-png");
+    expect(rows[0]).toHaveAttribute("data-testid", "artifact-primary-png");
+    expect(rows[1]).toHaveAttribute("data-testid", "artifact-older-png");
   } finally {
     view.unmount();
     listArtifacts.mockRestore();

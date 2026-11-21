@@ -12,7 +12,7 @@ import {
   getIssue,
 } from "./api";
 import { blockId } from "./editor";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 
 // Every row seeds through the real API and reads the real server: a block's id comes from
 // `GET /api/v1/artifacts/<id>/blocks`, never from a guess. Its helpers live in this file, in
@@ -30,7 +30,7 @@ const PROBE = { intervals: [50, 50, 100, 200, 500] };
 // The project every row of this file seeds into. The reset and alice's sign-in are the `test`
 // this file imports (e2e/test.ts), so what is left here is the seeding alone.
 test.beforeEach(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: rowKey("CORE"), name: "Core" });
 });
 
 async function latestVersion(artifactId: string): Promise<number> {
@@ -54,7 +54,7 @@ test("a pinned link keeps the text of the version it pins, says how the block st
   page,
 }) => {
   const issue = await createIssue({
-    project: "CORE",
+    project: rowKey("CORE"),
     spec: "Intro paragraph.\n\nP ships on Friday.\n",
     title: "Pinned block",
   });
@@ -110,7 +110,7 @@ test("a block reference a person made keeps resolving after an upload that leave
   page,
 }) => {
   const issue = await createIssue({
-    project: "CORE",
+    project: rowKey("CORE"),
     spec:
       "The retry policy is this issue's subject.\n\n" +
       "The retry cap holds at three attempts.\n\n" +
@@ -175,7 +175,7 @@ test("a block reference a person made keeps resolving after an upload that leave
 test("a link to a block of a comment shows the block's new text once its author edits it, with no reload", async ({
   page,
 }) => {
-  const issue = await createIssue({ project: "CORE", title: "Comment block text" });
+  const issue = await createIssue({ project: rowKey("CORE"), title: "Comment block text" });
   const cited = await createComment(issue.key, { body: "Alpha first.\n\nBeta as first written." });
   await createComment(issue.key, {
     body: `The detail is in dispatch://${issue.key}/comment/${cited.id}#b-b2 today.`,
@@ -215,7 +215,7 @@ test("a link to a block of a comment shows the block's new text once its author 
 test("a link to a block of a comment stops showing the block's text once its author deletes it, with no reload", async ({
   page,
 }) => {
-  const issue = await createIssue({ project: "CORE", title: "Deleted comment block" });
+  const issue = await createIssue({ project: rowKey("CORE"), title: "Deleted comment block" });
   const cited = await createComment(issue.key, { body: "Alpha first.\n\nBeta soon deleted." });
   await createComment(issue.key, {
     body: `The detail was in dispatch://${issue.key}/comment/${cited.id}#b-b2 today.`,
@@ -255,7 +255,7 @@ test("a link to a block of a spec stops showing the block's text once a document
   page,
 }) => {
   const issue = await createIssue({
-    project: "CORE",
+    project: rowKey("CORE"),
     spec: "Intro paragraph.\n\nGamma soon deleted.\n",
     title: "Deleted spec block",
   });

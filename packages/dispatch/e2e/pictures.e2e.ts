@@ -1,4 +1,4 @@
-import type { ArtifactUploadResponse } from "../web/src/api/types";
+import { type Result, routePath } from "../web/src/api/paths";
 import {
   REF_PREVIEW_CLOSE_DELAY_MS,
   REF_PREVIEW_OPEN_DELAY_MS,
@@ -18,7 +18,16 @@ import {
 import { documentEditor, openSpec, typeAtEnd } from "./editor";
 import { ONE_PIXEL_PNG, pastePicture } from "./sends";
 import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, type Response, test } from "./test";
+import {
+  expect,
+  type Locator,
+  type Page,
+  type Response,
+  rowKey,
+  rowPerson,
+  rowSessionId,
+  test,
+} from "./test";
 import { asUser } from "./users";
 
 // A picture pasted into a message, an ask's answer or a direct message is uploaded and written as
@@ -75,8 +84,9 @@ async function expectSucceeded(answer: Promise<Response>): Promise<Response> {
 test("a picture pasted into an issue message shows inline in the conversation @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Pictures in messages" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Pictures in messages" });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -122,14 +132,19 @@ test("a picture pasted into an issue message shows inline in the conversation @p
 });
 
 test("a picture pasted into an ask's answer shows inline in the answer", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Pictures in answers" });
+  const core = rowKey("CORE");
+  // The reader is a person of the row's own (`rowPerson`): from 1280 px the Inbox draws a card
+  // for the selected row alone, its first, which is this row's question only in a list that
+  // holds no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Pictures in answers" }, { login: me });
   const ask = await createAsk(
     issue.key,
     { question: "Which screen is wrong?" },
     { actor: { id: sessionIds.planner, kind: "session" }, as: "agent" }
   );
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -162,12 +177,16 @@ test("a picture pasted into an ask's answer shows inline in the answer", async (
 test("a picture pasted into a direct message on the Agents page shows inline and opens its page", async ({
   browser,
 }) => {
+  // A session of the row's own (`rowSessionId`, e2e/test.ts): the row uploads `shot.png` to the
+  // session's conversation, and an upload under a name that conversation already holds is that
+  // picture's next version, so where another row of the worker had uploaded to the same session
+  // this row would read version 2 where it claims version 1.
   const planner = {
     capabilities: ["aside", "btw", "steer"],
     dir: "/workspaces/planner",
     machine_id: "planner-host",
     roles: ["planner"],
-    session_id: sessionIds.planner,
+    session_id: rowSessionId("planner"),
     title: "Planner",
   };
   await setLiveSessions([planner]);
@@ -224,9 +243,10 @@ test("a picture pasted into a direct message on the Agents page shows inline and
 test("a picture written into a spec draws in the editor and in a past version, with or without a version, and its markdown is kept", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Pictures\n\nIntro.",
     title: "Pictures in specs",
   });
@@ -310,9 +330,10 @@ test("a picture written into a spec draws in the editor and in a past version, w
 test("a picture line the browser cannot draw, at a version or not, shows a link; a web picture stays an <img>", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "# Pictures\n\nIntro.",
     title: "Pictures that are links",
   });
@@ -408,25 +429,30 @@ test("a picture line the browser cannot draw, at a version or not, shows a link;
 test("a long-named picture in a comment draws, its link to a long-named document opens it, and the bare page URL stays a plain link", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Long names" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Long names" });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     const pictureName = `${"a".repeat(2600)}.png`;
-    const upload = await page.request.post(`/api/v1/issues/${issue.key}/artifacts`, {
-      headers: { Origin: dashboardOrigin },
-      multipart: {
-        file: {
-          buffer: Buffer.from(ONE_PIXEL_PNG, "base64"),
-          mimeType: "image/png",
+    const upload = await page.request.post(
+      routePath("post", "/api/v1/issues/{key}/artifacts", { key: issue.key }),
+      {
+        headers: { Origin: dashboardOrigin },
+        multipart: {
+          file: {
+            buffer: Buffer.from(ONE_PIXEL_PNG, "base64"),
+            mimeType: "image/png",
+            name: pictureName,
+          },
           name: pictureName,
         },
-        name: pictureName,
-      },
-    });
+      }
+    );
     expect(upload.status(), await upload.text()).toBeLessThan(300);
-    const pictureSlug = ((await upload.json()) as ArtifactUploadResponse).artifact.slug;
+    const uploaded = (await upload.json()) as Result<"/api/v1/issues/{key}/artifacts", "post">;
+    const pictureSlug = uploaded.artifact.slug;
     // Words, so the link's title - the document's name - wraps in the column.
     const design = await createIssueArtifact(issue.key, {
       content: "# Design\n\nThe long-named design.\n",

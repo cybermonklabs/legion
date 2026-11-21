@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import { accessibilityExclusions } from "../accessibility-exclusions";
-import { phoneShotRoutes, reviewRoutes, scannedRoutes, shotRoutes } from "../review-routes";
+import {
+  phoneShotRoutes,
+  reviewRoutes,
+  scannedRoutes,
+  shotRoutes,
+  stubScannedRoutes,
+} from "../review-routes";
 import { walkRoutes } from "../two-builds-routes";
 
 // The review layers (an accessibility pass and a containerised visual review) open exactly the
@@ -36,6 +42,15 @@ describe("the review layers' route list", () => {
     expect(snapshots).toBeLessThanOrEqual(48);
   });
 
+  // The scan reaches a pull request through its stubbed rows alone, which carry `@pr`: the rows
+  // of the pages that carry a `realStackScan` are untagged and run on the full lane
+  // (e2e/accessibility.e2e.ts). So the 15 pages dispatch://INFRA-983's R9 asks every pull
+  // request to scan are counted over the stubbed set, and a page that moves to the real stack
+  // is a page the pull request no longer scans.
+  test("scans at least 15 pages on every pull request, against a recording", () => {
+    expect(stubScannedRoutes.length).toBeGreaterThanOrEqual(15);
+  });
+
   test("gives every reviewed entry a layer, and every entry its own name", () => {
     const layerless = reviewRoutes.filter(
       (route) => route.kind === "reviewed" && route.layers.length === 0
@@ -57,7 +72,7 @@ describe("the review layers' route list", () => {
 
   // An entry of e2e/accessibility-exclusions.ts whose `route` names no scanned entry is inert:
   // the scan matches a finding on `rule route selector`, so nothing can ever match it, and the
-  // stale check in e2e/accessibility.e2e.ts judges only the routes a worker really scanned, so
+  // stale check in e2e/accessibility-scan.ts judges only the routes a worker really scanned, so
   // nothing reports it either. A typo or a renamed route would therefore accept a violation for
   // ever, in silence.
   test("names a scanned route in every accessibility exclusion", () => {

@@ -408,6 +408,8 @@ BROWSER_BINARIES, BROWSER_SHARD = "binaries", "shard"
 BROWSER_ALONE, BROWSER_MP, BROWSER_MERGE = "alone", "multiprocess", "merge"
 BROWSER_EMBEDDER = "embedder"
 BROWSER_VISUAL = "visual"
+# The nightly's call alone runs it (`inputs.quarantine`), and it gates nothing.
+BROWSER_QUARANTINE = "quarantine"
 BROWSER_SITE_SELF = reads((BROWSER_SITE, "the browser suite reads the definition of the steps it runs"))
 
 
@@ -2224,7 +2226,9 @@ BROWSER_READ_THREE_STEP = "Reading three, the leg exits with no failed row"
 BROWSER_READ_FOUR_STEP = "Reading four, the row durations"
 BROWSER_VERDICT_STEP = "Fail when a leg failed or the merged report holds a failed row"
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
-BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
+# The quarantine job's reading, a step running a script of its own: how each quarantined row ended.
+BROWSER_QUARANTINE_READING_STEP = "Reading the quarantined rows"
+BROWSER_PG_STEP = "Read the stacks' PostgreSQL and time its provider"
 BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
 # One name, two steps: the shard job's and the alone job's, each running a script of its own,
 # since the shard job's machine also runs the file store whose log that job collects.
@@ -2532,10 +2536,6 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/gh-read.sh",
          "dispatch-browser-run-reads.sh:79 sources it, and the harness drives its retry ladder with a "
          "stand-in gh that refuses a case's first calls"),
-    ]),
-    harness("dispatch_browser_samples_test", "Test the browser lane's memory and CPU sampler",
-            f"{SCRIPTS}/dispatch-browser-samples.test.sh", [
-        (f"{SCRIPTS}/dispatch-browser-samples.sh", "the script under test"),
     ]),
     harness("race_memory_test", "Test the race memory sampler", f"{SCRIPTS}/race_memory.test.sh", [
         (f"{SCRIPTS}/race_memory.py", "the module under test"),
@@ -3126,9 +3126,6 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds each stack's server port through it"),
-        (".github/scripts/dispatch-browser-samples.sh",
-         f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
-         "start it and read its two summaries"),
         (".github/scripts/dispatch-browser-postgres.sh",
          f"{at_browser(BROWSER_PG_STEP)} and {at_browser(BROWSER_PG_STEP, BROWSER_ALONE)} "
          "run it for the reading of the image's PostgreSQL their stacks start"),
@@ -3139,9 +3136,9 @@ GATES = [
          "blobs-refused mode, which prints the line for a blob download actions/download-artifact "
          "could not complete"),
         (".github/scripts/dispatch-browser-wait-for-store.sh",
-         f"{at_browser(BROWSER_WAIT_STORE_STEP)} runs it to wait for the file store the step "
-         "before it started, which it makes a bucket in and writes, reads back and deletes one "
-         "object in"),
+         f"{at_browser(BROWSER_WAIT_STORE_STEP)} and {at_browser(BROWSER_WAIT_STORE_STEP, BROWSER_QUARANTINE)} "
+         "run it to wait for the file store the step before each started, which it makes a bucket "
+         "in and writes, reads back and deletes one object in"),
         (".github/scripts/dispatch-browser-shard-suite.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's quarter of the lane's rows"),
         (".github/scripts/dispatch-browser-shard-record.sh",
@@ -3153,6 +3150,10 @@ GATES = [
         (".github/scripts/dispatch-browser-alone-record.sh",
          f"{at_browser(BROWSER_RECORD_STEP, BROWSER_ALONE)} runs it to print and collect the "
          "stack's own logs, there being no file store on that machine"),
+        (".github/scripts/dispatch-browser-host-suite.sh",
+         f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)}, "
+         f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)} and {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)} "
+         "run it for the blob report and the row count of each of those runs on the runner"),
         (".github/scripts/dispatch-browser-visual-suite.sh",
          f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} runs it for the stack and the "
          "e2e/visual-run.sh the comparison against the baselines needs"),
@@ -3176,6 +3177,9 @@ GATES = [
          f"{at_browser(BROWSER_VERDICT_STEP, BROWSER_MERGE)} runs it to fail the job on an "
          "upstream result that is neither success nor skipped and on a failed row in the "
          "merged report"),
+        (".github/scripts/dispatch-browser-reading-quarantined-rows.sh",
+         f"{at_browser(BROWSER_QUARANTINE_READING_STEP, BROWSER_QUARANTINE)} runs it for how each "
+         "quarantined row ended, from the JSON report the browser step before it wrote"),
         (".github/scripts/gh-read.sh",
          "dispatch-browser-run-reads.sh:79 sources it, so the merge job's read of its own attempt's "
          "jobs takes its retry ladder, and the blobs-refused mode makes no request"),

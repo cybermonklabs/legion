@@ -880,8 +880,9 @@ test("a brush window narrows the merges shown but the waiting line still counts 
       prs: [listedPR],
     });
     const chart = await screen.findByRole("img", { name: /^Delivery timeline/ });
-    expect(chart.getAttribute("aria-label")).toContain(
-      "0 merged pull requests, 2 waiting to deploy at the start"
+    expect(chart).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("0 merged pull requests, 2 waiting to deploy at the start")
     );
   } finally {
     cleanup();

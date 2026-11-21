@@ -75,7 +75,7 @@ test("every machine the agent list names is a row with its counts and a link to 
       "2",
     ]);
     expect(within(devbox).getByText("3 sessions · 2 in a pane")).toBeDefined();
-    expect(within(devbox).getByRole("link").getAttribute("href")).toBe("/machines/sand-devbox");
+    expect(within(devbox).getByRole("link")).toHaveAttribute("href", "/machines/sand-devbox");
     // The one shared registry read, through the one poller every page reads behind.
     expect(agents).toHaveBeenCalledTimes(1);
   } finally {

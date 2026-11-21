@@ -1,7 +1,7 @@
 import { getArtifactText } from "./api";
 import { documentEditor, openIssue, openWithCaret, paste } from "./editor";
 import { engineTables, goReadBack } from "./read-back";
-import { type Browser, expect, type Page, test } from "./test";
+import { type Browser, expect, type Page, rowKey, test } from "./test";
 
 // What is left of the clipboard matrix: the rows no headless test can make. Every other row
 // asserted the markdown the server stored for the document the paste built, and runs in a
@@ -32,7 +32,12 @@ async function selectCells(page: Page, from: string, to: string) {
 
 /** Opens the two-row table as alice and selects the cells from `from` to `to`. */
 async function openWithCellsSelected(browser: Browser, from: string, to: string) {
-  const { alice, issue, page } = await openIssue(browser, "Cell selection paste", table);
+  const { alice, issue, page } = await openIssue(
+    browser,
+    "Cell selection paste",
+    table,
+    rowKey("CORE")
+  );
   await expect(documentEditor(page)).toContainText(to);
   await selectCells(page, from, to);
   return { alice, issue, page };
@@ -134,7 +139,8 @@ for (const [row, clipboard, header, body] of [
         "Table paste",
         spec,
         "Intro",
-        "end"
+        "end",
+        rowKey("CORE")
       );
       try {
         await paste(page, clipboard);
@@ -168,7 +174,12 @@ test("a pipe after two backslashes ends a table cell in Go as in the editor", as
     ["a \\", "b"],
     ["a | b", ""],
   ];
-  const { alice, issue, page } = await openIssue(browser, "Escaped table pipes", written);
+  const { alice, issue, page } = await openIssue(
+    browser,
+    "Escaped table pipes",
+    written,
+    rowKey("CORE")
+  );
   try {
     expect(engineTables(written)).toEqual([[...cells.slice(0, 2), ["a | b"]]]);
     await expect.poll(() => drawnRows(page)).toEqual(cells);

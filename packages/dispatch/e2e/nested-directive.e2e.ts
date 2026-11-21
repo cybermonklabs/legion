@@ -2,7 +2,7 @@ import { createComment, createIssue, createProject } from "./api";
 import { directiveOpenersThenClosers, directiveOpenersThenLongLine } from "./heavy-bodies";
 import { expectSettled } from "./heavy-bodies-page";
 import { expectUnderTheBound, type Measured, measureDraw, record } from "./main-thread-hold";
-import { type Browser, expect, test } from "./test";
+import { type Browser, expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -71,8 +71,9 @@ for (const input of inputs) {
   test(`Conversation draws a comment of ${input.name} without holding the main thread for a second`, async ({
     browser,
   }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const issue = await createIssue({ project: "CORE", title: "Nested directives" });
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
+    const issue = await createIssue({ project: core, title: "Nested directives" });
     await createComment(issue.key, { body: input.body }, agent);
 
     const measured = await holdUntilTheCommentDraws(browser, issue.key);

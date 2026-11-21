@@ -36,10 +36,12 @@ import { DISPATCH_READ_ONLY_TOKEN, IDEMPOTENCY_KEY_HEADER } from "@legion/contra
 import { credentialDeadline, type RequestCredential } from "@legion/envoy-client/bearer";
 import { brokerCredential } from "@legion/envoy-client/broker-credential";
 
+import { routePath } from "../web/src/api/paths";
 import {
   baseUrl,
   createIssue,
   createProject,
+  fixedKey,
   listComments,
   putArchitectureSource,
   syncArchitectureSource,
@@ -47,7 +49,7 @@ import {
 import { harnessPorts } from "./harness-ports";
 
 /** The example entry's project (dev-broker.sh's EXCHANGE_PROJECT): its named token writes it. */
-const project = "EXAMPLE";
+const project = fixedKey("EXAMPLE", "dev-broker.sh's example entry's token writes this project");
 /** The session the read entry fixes (dev-broker.sh's READ_SESSION). */
 const readSession = "example-reader-session";
 /** The session dev-broker.sh registered the example entry's pod under (EXCHANGE_SESSION). */
@@ -199,8 +201,9 @@ async function main(): Promise<void> {
 
   const readOnly = podCredential(brokerUrl, join(brokerDir, "read-token"), readSession);
   const named = podCredential(brokerUrl, join(brokerDir, "exchange-token"), namedSession);
-  const architecture = `/api/v1/projects/${project}/architecture`;
-  const comments = `/api/v1/issues/${issue.key}/comments`;
+  const architecture = routePath("get", "/api/v1/projects/{key}/architecture", { key: project });
+  const comments = routePath("post", "/api/v1/issues/{key}/comments", { key: issue.key });
+  const issuePath = routePath("get", "/api/v1/issues/{key}", { key: issue.key });
   // One key for both POSTs, as one client sending the same write twice would. A key belongs to its
   // caller (requestKeyLogin, internal/dispatch/api), so the named token's write runs under it
   // whatever the refused request did.
@@ -225,8 +228,8 @@ async function main(): Promise<void> {
     "0"
   );
   answered(
-    `GET /api/v1/issues/${issue.key} [read-only token]`,
-    await present(readOnly, "GET", `/api/v1/issues/${issue.key}`),
+    `GET ${issuePath} [read-only token]`,
+    await present(readOnly, "GET", issuePath),
     refused
   );
   answered(

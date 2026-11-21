@@ -90,15 +90,16 @@ afterEach(() => {
 test("an issue's picture at a version draws from the version's bytes route, captioned by its alt", () => {
   const dom = wrapper("dispatch://CORE-1/artifact/shot-png@v1", "shot.png");
 
-  expect(dom.getAttribute("data-dispatch-doc-picture")).toBe(
+  expect(dom).toHaveAttribute(
+    "data-dispatch-doc-picture",
     "dispatch://CORE-1/artifact/shot-png@v1"
   );
   const img = pictureOf(dom);
-  expect(img.getAttribute("src")).toBe("/api/v1/issues/CORE-1/artifacts/shot-png/versions/1");
-  expect(img.getAttribute("alt")).toBe("shot.png");
-  expect(img.getAttribute("loading")).toBe("lazy");
+  expect(img).toHaveAttribute("src", "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1");
+  expect(img).toHaveAttribute("alt", "shot.png");
+  expect(img).toHaveAttribute("loading", "lazy");
   expect(img.className).toBe(pictureClassName);
-  expect(img.hasAttribute("title")).toBe(false);
+  expect(img).not.toHaveAttribute("title");
   expect(dom.textContent).toBe("");
 });
 
@@ -125,13 +126,13 @@ test("a leaf view: no contentDOM, no update, events on the picture kept", () => 
 test("an empty caption falls back to the artifact's slug", () => {
   const img = pictureOf(wrapper("dispatch://CORE-1/artifact/shot-png@v1", "  "));
 
-  expect(img.getAttribute("alt")).toBe("shot-png");
+  expect(img).toHaveAttribute("alt", "shot-png");
 });
 
 test("a project document's picture draws from the project's bytes route", () => {
   const img = pictureOf(wrapper("dispatch://CORE/artifact/design@v2", "design"));
 
-  expect(img.getAttribute("src")).toBe("/api/v1/projects/CORE/artifacts/design/versions/2");
+  expect(img).toHaveAttribute("src", "/api/v1/projects/CORE/artifacts/design/versions/2");
 });
 
 test("a version the browser cannot draw becomes a link to the artifact's page", () => {
@@ -149,8 +150,8 @@ test("a version the browser cannot draw becomes a link to the artifact's page", 
   pictureOf(dom).dispatchEvent(new Event("error"));
 
   const link = linkOf(dom);
-  expect(link.getAttribute("href")).toBe("/issues/CORE-1/artifacts/notes-md?v=1");
-  expect(link.getAttribute("data-dispatch-href")).toBe("dispatch://CORE-1/artifact/notes-md@v1");
+  expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/notes-md?v=1");
+  expect(link).toHaveAttribute("data-dispatch-href", "dispatch://CORE-1/artifact/notes-md@v1");
   expect(link.textContent).toBe("CORE-1 notes-md");
   expect(link.draggable).toBe(false);
   expect(dom.querySelector("img")).toBeNull();
@@ -173,18 +174,18 @@ test("an error raised as the source is set is not missed", () => {
   const dom = wrapper("dispatch://CORE-1/artifact/notes-md@v1", "notes.md");
 
   expect(dom.querySelector("img")).toBeNull();
-  expect(linkOf(dom).getAttribute("href")).toBe("/issues/CORE-1/artifacts/notes-md?v=1");
+  expect(linkOf(dom)).toHaveAttribute("href", "/issues/CORE-1/artifacts/notes-md?v=1");
 });
 
 test("a source that names no artifact is a link at once", () => {
   const source = "dispatch://CORE-1/ask/a1";
   const dom = wrapper(source, "notes.md");
 
-  expect(dom.getAttribute("data-dispatch-doc-picture")).toBe(source);
+  expect(dom).toHaveAttribute("data-dispatch-doc-picture", source);
   expect(dom.querySelector("img")).toBeNull();
   const link = linkOf(dom);
-  expect(link.getAttribute("href")).toBe("/issues/CORE-1/asks/a1");
-  expect(link.getAttribute("data-dispatch-href")).toBe(source);
+  expect(link).toHaveAttribute("href", "/issues/CORE-1/asks/a1");
+  expect(link).toHaveAttribute("data-dispatch-href", source);
   expect(link.textContent).toBe("CORE-1 ask");
 });
 
@@ -199,12 +200,12 @@ test("a source that pins no version is its link until the latest version is know
   const dom = view.dom as HTMLElement;
 
   expect(latest.asked).toEqual(["CORE-1/shot-png"]);
-  expect(linkOf(dom).getAttribute("href")).toBe("/issues/CORE-1/artifacts/shot-png");
+  expect(linkOf(dom)).toHaveAttribute("href", "/issues/CORE-1/artifacts/shot-png");
 
   latest.report("/api/v1/issues/CORE-1/artifacts/shot-png/versions/3");
   const img = pictureOf(dom);
-  expect(img.getAttribute("src")).toBe("/api/v1/issues/CORE-1/artifacts/shot-png/versions/3");
-  expect(img.getAttribute("alt")).toBe("shot.png");
+  expect(img).toHaveAttribute("src", "/api/v1/issues/CORE-1/artifacts/shot-png/versions/3");
+  expect(img).toHaveAttribute("alt", "shot.png");
   expect(dom.querySelector("a")).toBeNull();
   // The picture's events are the editor's again, as a pinned picture's are.
   const press = new MouseEvent("mousedown", { bubbles: true, button: 0 });
@@ -213,15 +214,14 @@ test("a source that pins no version is its link until the latest version is know
 
   // A new version uploaded while the document is open replaces the picture.
   latest.report("/api/v1/issues/CORE-1/artifacts/shot-png/versions/4");
-  expect(pictureOf(dom).getAttribute("src")).toBe(
+  expect(pictureOf(dom)).toHaveAttribute(
+    "src",
     "/api/v1/issues/CORE-1/artifacts/shot-png/versions/4"
   );
   // A target that stops being a picture reads as its link again.
   latest.report(undefined);
   expect(dom.querySelector("img")).toBeNull();
-  expect(linkOf(dom).getAttribute("data-dispatch-href")).toBe(
-    "dispatch://CORE-1/artifact/shot-png"
-  );
+  expect(linkOf(dom)).toHaveAttribute("data-dispatch-href", "dispatch://CORE-1/artifact/shot-png");
 
   view.destroy?.();
   expect(latest.stopped).toBe(1);
@@ -236,7 +236,8 @@ test("a source that pins no version draws at once when its latest version is alr
     latest.watch
   );
 
-  expect(pictureOf(view.dom as HTMLElement).getAttribute("src")).toBe(
+  expect(pictureOf(view.dom as HTMLElement)).toHaveAttribute(
+    "src",
     "/api/v1/issues/CORE-1/artifacts/shot-png/versions/2"
   );
 });
@@ -287,12 +288,13 @@ test("a replaced version's late load error leaves the newer picture, and a faile
   latest.report("/api/v1/issues/CORE-1/artifacts/shot-png/versions/4");
   v3.dispatchEvent(new Event("error"));
   const v4 = pictureOf(dom);
-  expect(v4.getAttribute("src")).toBe("/api/v1/issues/CORE-1/artifacts/shot-png/versions/4");
+  expect(v4).toHaveAttribute("src", "/api/v1/issues/CORE-1/artifacts/shot-png/versions/4");
 
   v4.dispatchEvent(new Event("error"));
   expect(dom.querySelector("img")).toBeNull();
   latest.report("/api/v1/issues/CORE-1/artifacts/shot-png/versions/4");
-  expect(pictureOf(dom).getAttribute("src")).toBe(
+  expect(pictureOf(dom)).toHaveAttribute(
+    "src",
     "/api/v1/issues/CORE-1/artifacts/shot-png/versions/4"
   );
 });
@@ -308,8 +310,9 @@ test("a plain click on a picture opens it at full size; a modified click does no
   expect(click.defaultPrevented).toBe(true);
   const lightbox = document.querySelector<HTMLDialogElement>('[data-testid="picture-lightbox"]');
   expect(lightbox?.open).toBe(true);
-  expect(lightbox?.getAttribute("aria-label")).toBe("shot.png");
-  expect(lightbox?.querySelector("img")?.getAttribute("src")).toBe(
+  expect(lightbox).toHaveAttribute("aria-label", "shot.png");
+  expect(lightbox?.querySelector("img")).toHaveAttribute(
+    "src",
     "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1"
   );
   // A second click that reaches the picture while it is open opens no second layer.
@@ -330,9 +333,9 @@ test("a picture from elsewhere, or a reference the grammar refuses, is drawn by 
     const dom = view.dom as HTMLElement;
 
     expect(dom.tagName).toBe("IMG");
-    expect(dom.getAttribute("src")).toBe(source);
-    expect(dom.getAttribute("alt")).toBe("logo");
-    expect(dom.hasAttribute("data-dispatch-doc-picture")).toBe(false);
+    expect(dom).toHaveAttribute("src", source);
+    expect(dom).toHaveAttribute("alt", "logo");
+    expect(dom).not.toHaveAttribute("data-dispatch-doc-picture");
     expect(view.stopEvent).toBeUndefined();
   }
 });

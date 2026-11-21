@@ -12,7 +12,7 @@ import {
 import { connectedDot, documentEditor, paste, placeCaret } from "./editor";
 import { fakeGithubCheckRunReads, seedFakeGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
-import { expect, test } from "./test";
+import { expect, rowKey, rowNumber, test } from "./test";
 import { asUser } from "./users";
 
 // A result is compared with the head of the pull request Dispatch holds for the check's
@@ -25,6 +25,14 @@ import { asUser } from "./users";
 const repository = "acme/widgets";
 const firstHead = "1".repeat(40);
 const secondHead = "2".repeat(40);
+
+/** The number of the pull request a row's results are measured against: the row's own
+ *  (`rowNumber`, e2e/test.ts). Dispatch holds one head for each pull request of a repository
+ *  (`pull_request_heads`, by repository and number), whichever issue it is attributed to, so a
+ *  fixed number is the head the row before left. */
+function pullNumber(): number {
+  return rowNumber("pull");
+}
 
 /** The spec the checks serve. A `serves` pointer is refused unless it names a block that
  *  exists, so the requirements are written with the issue, before any check points at one. */
@@ -41,16 +49,17 @@ A check says whether a pass of it stands.
  *  the results are measured against, whose head is `head` and whose title attributes it to the
  *  issue. */
 async function seedIssue(title: string, head: string) {
-  await createProject({ key: "VER", name: "Verification" });
-  await putRepoProject(repository, { default: true, project: "VER" });
-  const issue = await createIssue({ project: "VER", spec, title });
+  const ver = rowKey("VER");
+  await createProject({ key: ver, name: "Verification" });
+  await putRepoProject(repository, { default: true, project: ver });
+  const issue = await createIssue({ project: ver, spec, title });
   await seedFakeGithub({
     [repository]: {
-      commit_pulls: { [head]: [7] },
+      commit_pulls: { [head]: [pullNumber()] },
       contents: "read",
       installation_id: 256,
       pull_requests: "read",
-      pulls: { "7": { head_sha: head, state: "open", title: `${issue.key} the tab` } },
+      pulls: { [pullNumber()]: { head_sha: head, state: "open", title: `${issue.key} the tab` } },
     },
   });
   return issue;
@@ -132,7 +141,7 @@ A check nobody has run yet reads no result.
     // The commit the result ran at is the pull request's head, which is what the check
     // compared with, and the page prints that commit whole.
     await expect(result.getByTestId("verification-result-commit-stands")).toContainText(
-      `At the head of pull request 7 ${secondHead}`
+      `At the head of pull request ${pullNumber()} ${secondHead}`
     );
     await expect(result.getByTestId("verification-result-check-words")).toHaveText(
       /^This check's words \(version \d+\)$/
@@ -305,11 +314,13 @@ A result at the head is a pass that stands.
   // read-through teaches the server that head.
   await seedFakeGithub({
     [repository]: {
-      commit_pulls: { [secondHead]: [7] },
+      commit_pulls: { [secondHead]: [pullNumber()] },
       contents: "read",
       installation_id: 256,
       pull_requests: "read",
-      pulls: { "7": { head_sha: secondHead, state: "open", title: `${issue.key} the tab` } },
+      pulls: {
+        [pullNumber()]: { head_sha: secondHead, state: "open", title: `${issue.key} the tab` },
+      },
     },
   });
   await recordCheckResult(issue.key, {
@@ -340,10 +351,10 @@ A result at the head is a pass that stands.
     const head = checks.filter({ hasText: "A result at the head is a pass that stands." });
     await expect(head).toHaveAttribute("data-pass-stands", "yes");
     await expect(head.getByTestId("verification-check-compared-with")).toContainText(
-      `the head of pull request 7 ${secondHead}`
+      `the head of pull request ${pullNumber()} ${secondHead}`
     );
     await expect(head.getByTestId("verification-result-commit-stands")).toContainText(
-      `At the head of pull request 7 ${secondHead}`
+      `At the head of pull request ${pullNumber()} ${secondHead}`
     );
   } finally {
     await alice.close();
@@ -440,18 +451,19 @@ A retracted pass stands for nothing.
 const ciRun = "ci-ok";
 
 /** Seeds an issue whose Verification document holds one check CI proves, `c-ci`, which names
- *  the CI run `ciRun`, and the issue's open pull request 7 at `secondHead`, whose head carries
- *  the one check run `run` in the fake GitHub. The harness runs with NATS disabled and the
- *  results read only reads the heads Dispatch holds, so the head is staged as the
+ *  the CI run `ciRun`, and the issue's open pull request (`pullNumber`) at `secondHead`, whose
+ *  head carries the one check run `run` in the fake GitHub. The harness runs with NATS disabled
+ *  and the results read only reads the heads Dispatch holds, so the head is staged as the
  *  `pull_request` envelope would have stored it: one `pull_request_heads` row, attributed to the
  *  issue by its title. */
 async function seedCICheck(
   title: string,
   run: { conclusion: string; output: { title: string; summary: string } }
 ) {
-  await createProject({ key: "VER", name: "Verification" });
-  await putRepoProject(repository, { default: true, project: "VER" });
-  const issue = await createIssue({ project: "VER", spec, title });
+  const ver = rowKey("VER");
+  await createProject({ key: ver, name: "Verification" });
+  await putRepoProject(repository, { default: true, project: ver });
+  const issue = await createIssue({ project: ver, spec, title });
   await createIssueArtifact(issue.key, {
     content: `How ${issue.key} is proved.
 
@@ -480,12 +492,14 @@ Every check of the document is listed.
       contents: "read",
       installation_id: 256,
       pull_requests: "read",
-      pulls: { "7": { head_sha: secondHead, state: "open", title: `${issue.key} the tab` } },
+      pulls: {
+        [pullNumber()]: { head_sha: secondHead, state: "open", title: `${issue.key} the tab` },
+      },
     },
   });
   await sql(
     `INSERT INTO pull_request_heads (repo, number, head_sha, state, issue_key, attribution_source, title, checked_at)
-     VALUES ('${repository}', 7, '${secondHead}', 'open', '${issue.key}', 'title_body', '${issue.key} the tab', now())`
+     VALUES ('${repository}', ${pullNumber()}, '${secondHead}', 'open', '${issue.key}', 'title_body', '${issue.key} the tab', now())`
   );
   return issue;
 }
@@ -531,7 +545,7 @@ test("a check with ci_check shows the pass its CI run concluded at the issue's o
     );
     await expect(result.getByTestId("verification-result-commit")).toHaveText(secondHead);
     await expect(result.getByTestId("verification-result-commit-stands")).toContainText(
-      `At the head of pull request 7 ${secondHead}`
+      `At the head of pull request ${pullNumber()} ${secondHead}`
     );
 
     // Each answer of the results route read the head's check runs once, one page of one run.
@@ -563,7 +577,7 @@ test("a check with ci_check whose CI run was skipped says its run proved nothing
     const check = page.getByTestId("verification-check");
     await expect(check.getByTestId("verification-check-ci")).toHaveText(ciRun);
     await expect(check.getByTestId("verification-check-ci-unproved")).toHaveText(
-      `CI run ${ciRun} concluded skipped at ${secondHead}, the head of ${repository}#7, which proves nothing.`
+      `CI run ${ciRun} concluded skipped at ${secondHead}, the head of ${repository}#${pullNumber()}, which proves nothing.`
     );
     await expect(check).toHaveAttribute("data-pass-stands", "no");
     await expect(check.getByTestId("verification-result")).toHaveCount(0);

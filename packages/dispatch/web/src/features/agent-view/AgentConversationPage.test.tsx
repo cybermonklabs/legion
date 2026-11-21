@@ -483,7 +483,7 @@ test("the live view's header names the agent with its running state and no link"
   const heading = await screen.findByRole("heading", { level: 1 });
   await waitFor(() => expect(heading.textContent).toBe("Planner"));
   const name = heading.querySelector(`[data-agent-name="${SESSION}"]`);
-  expect(name?.getAttribute("data-agent-state")).toBe("running");
+  expect(name).toHaveAttribute("data-agent-state", "running");
   expect(within(heading).getByRole("img", { name: "Running" })).toBeTruthy();
   expect(heading.querySelector("a")).toBeNull();
   await waitFor(() => expect(document.title).toContain("Planner"));
@@ -634,7 +634,7 @@ test("a shell command's report takes over the person's own message rather than d
   expect(own).toHaveLength(1);
   expect(own[0].textContent).toContain("!cat missing.txt");
   expect(own[0].textContent).toContain("The command ended with exit status 1.");
-  expect(own[0].getAttribute("data-message-id")).toBe("dispatch:m1");
+  expect(own[0]).toHaveAttribute("data-message-id", "dispatch:m1");
   // Theirs, not the session's: the reply carrying the same report is not a turn of its own.
   expect(within(thread).queryAllByTestId("agent-dispatch-reply")).toHaveLength(0);
   expect(within(thread).queryAllByTestId("agent-message-assistant")).toHaveLength(0);
@@ -735,8 +735,8 @@ test("a streamed turn that adds a picture of its own hides nothing", async () =>
   // that drew the forged picture as the row's own: the stored copy is what a reader can trust.
   expect(rows[0]?.textContent).toBe("Should I deploy?");
   expect(rows[0]?.querySelector("[data-dispatch-picture]")).toBeNull();
-  expect(picture.getAttribute("data-dispatch-picture")).toBe(forged);
-  expect(picture.getAttribute("data-picture-caption")).toBe("ship it");
+  expect(picture).toHaveAttribute("data-dispatch-picture", forged);
+  expect(picture).toHaveAttribute("data-picture-caption", "ship it");
 });
 
 // A person writes a bracketed word of their own - `[ack]`, `[done]`, `[LGTM]` - and the session
@@ -1040,7 +1040,7 @@ test("Send stays open with text while an earlier send is out or late, and each p
     await user.click(input);
     await user.paste("and this");
     expect(sendButton().disabled).toBe(false);
-    expect(sendButton().getAttribute("aria-disabled")).toBeNull();
+    expect(sendButton()).not.toHaveAttribute("aria-disabled");
     await user.click(sendButton());
     await tick(0);
     expect(screen.getAllByTestId("agent-send-held")).toHaveLength(2);
@@ -1053,7 +1053,7 @@ test("Send stays open with text while an earlier send is out or late, and each p
     expect(within(late as HTMLElement).getByRole("button", { name: "Stop trying" })).toBeTruthy();
     await user.click(input);
     await user.paste("a third");
-    expect(sendButton().getAttribute("aria-disabled")).toBeNull();
+    expect(sendButton()).not.toHaveAttribute("aria-disabled");
     await user.clear(input);
 
     await act(async () => {
@@ -3097,6 +3097,11 @@ test("a rebuild from a replay that cleared the window after its reading draws no
   await waitFor(() =>
     expect(screen.getByTestId("agent-context-share").textContent).toBe("25% of the window")
   );
+  // The reply's text is drawn by the Markdown engine, which loads on first use: run first, this
+  // row could read the rebuilt thread while the engine still loaded and find the reply's body
+  // empty (web-cold, seed 2171472262, run 44648741977). Waiting for the first draw here leaves
+  // the read after the rebuild a read of what the rebuild drew.
+  await within(screen.getByTestId("agent-thread")).findByText("Before the rotation.");
 
   const first = sockets.latest();
   act(() => first.drop(LIVE_SOCKET_MAX_AGE_CLOSE));

@@ -10,9 +10,12 @@ export interface DispatchHrefItem {
   kind: "ask" | "comment";
 }
 
+/** A control character (`\p{Cc}`), which no Dispatch path or query segment holds. */
+export const controlCharacterPattern = /\p{Cc}/u;
+
 /** Whether a decoded Dispatch path or query segment holds a control character. */
 export function hasControlCharacter(value: string): boolean {
-  return /\p{Cc}/u.test(value);
+  return controlCharacterPattern.test(value);
 }
 
 /**

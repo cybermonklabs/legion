@@ -68,9 +68,9 @@ test("ProofDocument creates the editor on the synced document as the signed-in u
       ydoc: connections[0]?.doc,
     });
     expect(editors[0]?.root.textContent).toContain("The live document");
-    expect(editors[0]?.root.getAttribute("aria-label")).toBe("Document editor");
-    expect(editors[0]?.root.getAttribute("aria-multiline")).toBe("true");
-    expect(editors[0]?.root.getAttribute("role")).toBe("textbox");
+    expect(editors[0]?.root).toHaveAttribute("aria-label", "Document editor");
+    expect(editors[0]?.root).toHaveAttribute("aria-multiline", "true");
+    expect(editors[0]?.root).toHaveAttribute("role", "textbox");
   } finally {
     view.unmount();
   }
@@ -526,10 +526,8 @@ test("ProofDocument keeps the live editor mounted while a version is shown and d
     rerender({ version: 1 });
     await within(view.container).findByTestId("version-view");
     expect(
-      view.container
-        .querySelector("section[aria-label='Document editor'] article")
-        ?.hasAttribute("hidden")
-    ).toBe(true);
+      view.container.querySelector("section[aria-label='Document editor'] article")
+    ).toHaveAttribute("hidden");
     expect(editors[0]?.destroyed).toBe(false);
   } finally {
     view.unmount();

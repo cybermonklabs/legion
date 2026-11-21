@@ -1,5 +1,5 @@
 import { createIssue, createProject, putStep } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 
 // An issue's Steps tab reads the step records Legion's daemon wrote of it: each run of each step
 // of each task, with the attempt the server counts, and a run that has not ended read as running.
@@ -13,9 +13,10 @@ const at = (time: string) => `2026-11-16T${time}:00Z`;
 test("the Steps tab lists each run of an issue's steps, a running run as running", async ({
   page,
 }) => {
-  await createProject({ key: "LEG", name: "Legion" });
-  const issue = await createIssue({ project: "LEG", title: "Records its steps" });
-  const never = await createIssue({ project: "LEG", title: "Never ran in Legion" });
+  const leg = rowKey("LEG");
+  await createProject({ key: leg, name: "Legion" });
+  const issue = await createIssue({ project: leg, title: "Records its steps" });
+  const never = await createIssue({ project: leg, title: "Never ran in Legion" });
   const identity = (role: string, step: number, type: string) => ({
     agent: `legion-leg-${issue.key.toLowerCase()}-${role}`,
     generation: 1,

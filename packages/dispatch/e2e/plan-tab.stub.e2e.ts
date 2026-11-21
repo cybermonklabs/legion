@@ -3,7 +3,7 @@
  */
 import { expect } from "@playwright/test";
 
-import { createIssue, createIssueArtifact, createPlanReview, createProject } from "./api";
+import { createIssue, createIssueArtifact, createPlanReview, createProject, fixedKey } from "./api";
 import { stubbed } from "./stub/stub-test";
 
 /** The spec the plan's tasks serve. A `serves` pointer is refused unless it names a block that
@@ -17,8 +17,11 @@ The Plan tab shows the plan review's approval.
 :::
 `;
 
+/** The key this file's recordings were made under. */
+const PLN = fixedKey("PLN", "this file's recordings were made under it");
+
 const test = stubbed(async () => {
-  await createProject({ key: "PLN", name: "Planning" });
+  await createProject({ key: PLN, name: "Planning" });
   const issue = await createIssue({ project: "PLN", spec, title: "Plan tab" });
   const plan = await createIssueArtifact(issue.key, {
     // A `needs` pointer names a task of the plan's own document, so both tasks are written in

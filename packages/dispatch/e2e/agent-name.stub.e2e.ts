@@ -19,16 +19,19 @@ import {
   writer,
 } from "./agent-name";
 import { setLiveSessions } from "./agents";
-import { createIssue, createMessage, createProject } from "./api";
+import { createIssue, createMessage, createProject, fixedKey } from "./api";
 import { stubbed } from "./stub/stub-test";
 
+/** The key this file's recordings were made under. */
+const AGT = fixedKey("AGT", "this file's recordings were made under it");
+
 /** The file's own three sessions: one running, one stopped, one untitled. */
-const test = stubbed(seed);
+const test = stubbed(() => seed(AGT));
 
 /** One session whose title has no space in it, on an issue of two turns. */
 const longNameTest = stubbed(async () => {
   const title = "INFRA_440_implementer_round_2_resumed_ok";
-  await createProject({ key: "AGT", name: "Agents" });
+  await createProject({ key: AGT, name: "Agents" });
   const issue = await createIssue({ project: "AGT", title: "Long agent name" });
   await setLiveSessions([{ session_id: runId, title }]);
   const root = await createMessage(issue.key, { body: "Root turn" }, writer(runId, title));
@@ -156,7 +159,7 @@ test("a tap on a board card's agent link opens the agent rather than dragging th
   await expect(page).toHaveURL(new RegExp(`${livePath(runId)}$`));
 });
 
-// A session title is free text (claim.e2e.ts), and a title with no space in it - an id, a
+// A session title is free text (claim.stub.e2e.ts), and a title with no space in it - an id, a
 // snake_case name - is common. Where the component draws the author of a Conversation turn or
 // reply, such a name must wrap or shorten inside the turn and never widen the page, as the claim
 // chip, the Inbox ask card and the margin already hold at both widths.

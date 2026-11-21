@@ -67,7 +67,10 @@ type routeShape struct {
 	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
 	// withSuggestions in suggestions.go); nil for an answer that carries none.
 	Advice any
-	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
+	// Refusals are this route's refusal bodies richer than errorBody, each with its status: the
+	// ones its handler writes. The 409 the prefix layer writes in front of the handler of a route
+	// that resolves an id written short is idRoutes' to state (idRoute.refusals), and the
+	// emitter reads the two together.
 	Refusals []routeAnswer
 	// Opaque is why this route's answer carries no schema, for a route that relays or pre-renders
 	// its bytes rather than modelling them; empty for every other route.
@@ -712,8 +715,17 @@ var routeShapes = map[string]routeShape{
 	// The references read answers graphReferencesRead, whose node carries its text's tree and
 	// whose pin carries the pinned text's, so the row names that read for the same reason the
 	// architecture row above does.
-	"GET /api/v1/references":           {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
-	"GET /api/v1/references/questions": {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
+	"GET /api/v1/references": {
+		Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{},
+		// ?to= resolves an id its reference writes short itself, in a query value the prefix
+		// layer does not touch (wholeReference), and refuses an ambiguous one as that layer does.
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: idAmbiguousError{}}},
+	},
+	"GET /api/v1/references/questions": {
+		Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{},
+		// ?id= resolves an id written short itself, as ?to= does above.
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: idAmbiguousError{}}},
+	},
 	"GET /api/v1/reference-targets": {
 		Status: http.StatusOK, Response: model.ReferenceTargets{}, Params: referenceTargetsQuery{},
 		// An If-None-Match that matches the answer's ETag is answered 304 and no body.

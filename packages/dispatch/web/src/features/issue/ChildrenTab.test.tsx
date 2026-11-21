@@ -99,10 +99,10 @@ test("ChildrenTab shows each child's subtree progress, activity, and PR link", a
     ]);
 
     const pullRequest = (await screen.findByRole("link", { name: /#12/ })) as HTMLAnchorElement;
-    expect(pullRequest.getAttribute("href")).toBe("https://github.com/owner/repo/pull/12");
+    expect(pullRequest).toHaveAttribute("href", "https://github.com/owner/repo/pull/12");
 
     const branch = screen.getByRole("link", { name: "CORE-2 · Branch" }) as HTMLAnchorElement;
-    expect(branch.getAttribute("href")).toBe("/issues/CORE-2");
+    expect(branch).toHaveAttribute("href", "/issues/CORE-2");
   } finally {
     view.unmount();
     githubRest.mockRestore();

@@ -9,13 +9,16 @@
  */
 import { expect, type Page } from "@playwright/test";
 
-import { createIssue, createProject, patchIssue } from "./api";
+import { createIssue, createProject, fixedKey, patchIssue } from "./api";
 import { leaveFocus, onBody, openIssue } from "./keyboard-issue";
 import { stubbed } from "./stub/stub-test";
 
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+
 /** Three Todo issues, in the order the list roves over them. */
 const listTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const seed = async (title: string) => {
     const issue = await createIssue({ project: "CORE", title });
     await patchIssue(issue.key, { status: "todo" });
@@ -29,7 +32,7 @@ const listTest = stubbed(async () => {
 
 /** One issue in each of four bands, so a collapsed one sits between two open ones. */
 const bandsTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const seed = async (title: string, status: "backlog" | "todo" | "in_progress" | "done") => {
     const issue = await createIssue({ project: "CORE", title });
     await patchIssue(issue.key, { status });
@@ -50,7 +53,7 @@ const bandsTest = stubbed(async () => {
 
 /** A closed issue, whose header disables most of what the shortcuts reach. */
 const closedTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Closed issue" });
   await patchIssue(issue.key, { status: "done" });
   return { issue: issue.key };
@@ -58,7 +61,7 @@ const closedTest = stubbed(async () => {
 
 /** Two issues in two bands, both of which the reader collapses. */
 const collapsedTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const keys: Record<string, string> = {};
   for (const [title, status] of [
     ["Alpha", "backlog"],
@@ -73,7 +76,7 @@ const collapsedTest = stubbed(async () => {
 
 /** One Todo issue, for the Board's own scope. */
 const boardTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Alpha" });
   await patchIssue(issue.key, { status: "todo" });
   return { project: "CORE" };

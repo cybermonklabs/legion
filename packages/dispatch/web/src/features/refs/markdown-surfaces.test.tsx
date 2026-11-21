@@ -653,7 +653,7 @@ function words(element: HTMLElement): string {
  *  column with no cap on its height (`DispatchPicture`'s `block`), never the preview's thumbnail. */
 async function expectBlockPicture(element: HTMLElement): Promise<void> {
   const picture = await within(element).findByRole("img", { name: "shot.png" });
-  expect(picture.getAttribute("src")).toBe(PICTURE_SRC);
+  expect(picture).toHaveAttribute("src", PICTURE_SRC);
   const classes = picture.className.split(" ");
   expect(classes).toEqual(expect.arrayContaining(["max-w-full", "object-contain"]));
   expect(classes.some((name) => name.startsWith("max-h-"))).toBe(false);
@@ -677,8 +677,8 @@ async function expectThumbnail(
     if (image === null) throw new Error("the preview shows no picture");
     return image;
   });
-  expect(thumbnail.getAttribute("src")).toBe(PICTURE_SRC);
-  expect(thumbnail.getAttribute("alt")).toBe("");
+  expect(thumbnail).toHaveAttribute("src", PICTURE_SRC);
+  expect(thumbnail).toHaveAttribute("alt", "");
   expect(thumbnail.className.split(" ")).toEqual(
     expect.arrayContaining(["h-10", "w-10", "object-cover"])
   );
@@ -691,7 +691,7 @@ async function expectThumbnail(
     expect(element.querySelector("a")).toBeNull();
   } else {
     expect(placeholder.tagName).toBe("A");
-    expect(placeholder.getAttribute("href")).toBe("/issues/CORE-1/artifacts/shot-png?v=1");
+    expect(placeholder).toHaveAttribute("href", "/issues/CORE-1/artifacts/shot-png?v=1");
   }
 }
 

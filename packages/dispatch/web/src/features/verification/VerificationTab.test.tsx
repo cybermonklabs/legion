@@ -468,7 +468,8 @@ test("a result shows how it ran, what was seen, its counts, its role and its scr
   expect(field("commit")).toBe(commit);
   expect(field("negative-control")).toBe("Removed the panel and the check failed.");
   expect([field("failed"), field("skipped"), field("excluded")]).toEqual(["3", "1", "2"]);
-  expect(within(row).getByTestId("verification-result-screenshot").getAttribute("href")).toBe(
+  expect(within(row).getByTestId("verification-result-screenshot")).toHaveAttribute(
+    "href",
     "/issues/CORE-1/artifacts/shot-png"
   );
   expect(within(row).queryByTestId("verification-result-retracted")).toBeNull();

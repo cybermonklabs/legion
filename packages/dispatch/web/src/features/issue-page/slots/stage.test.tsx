@@ -1,23 +1,28 @@
-import { expect, test } from "bun:test";
-import { act, render, waitFor } from "@testing-library/react";
+import { expect, jest, test } from "bun:test";
+import { act, render } from "@testing-library/react";
 import { type ReactNode, useEffect, useState } from "react";
 
+import { jump, realClock } from "../../../__tests__/fake-clock";
 import { CONTROL_LABELS } from "../page-words";
 import { FailedReadLine } from "./failed-read-line";
 import { ViewStage } from "./stage";
+
+/** How long after it mounts a stand-in view draws what its reads answered. Each row runs on the
+ *  fake clock and moves it over this wait. */
+const ANSWERED_AFTER_MS = 20;
 
 /**
  * Where the focus lands when the page opens at a view's address, which the tester found landing
  * on the page's body: on the tab-stop row of the view's `role="tree"`, never on the body.
  *
  * A view's own slot is filled by that view's own code, so the view here is a stand-in that
- * draws a tree of two rows the way the outline does: one row with `tabindex="0"`, and drawn a
- * moment after it mounts, as a view draws its tree once its reads have answered.
+ * draws a tree of two rows the way the outline does: one row with `tabindex="0"`, and drawn
+ * `ANSWERED_AFTER_MS` after it mounts, as a view draws its tree once its reads have answered.
  */
 function StandInView(): ReactNode {
   const [read, setRead] = useState(false);
   useEffect(() => {
-    const answered = window.setTimeout(() => setRead(true), 20);
+    const answered = window.setTimeout(() => setRead(true), ANSWERED_AFTER_MS);
     return () => window.clearTimeout(answered);
   }, []);
   if (!read) return null;
@@ -35,20 +40,20 @@ function StandInView(): ReactNode {
 
 test("a view's address puts the focus on its tree's tab-stop row", async () => {
   (document.activeElement as HTMLElement | null)?.blur();
+  jest.useFakeTimers();
   const view = render(
     <ViewStage>
       <StandInView />
     </ViewStage>
   );
   try {
-    const row = await waitFor(() => {
-      const found = view.container.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]');
-      if (found === null) throw new Error("the view drew no tab-stop row");
-      return found;
-    });
-    await waitFor(() => expect(document.activeElement).toBe(row));
+    await jump(ANSWERED_AFTER_MS);
+    const row = view.container.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]');
+    expect(row, "the view drew no tab-stop row").not.toBeNull();
+    expect(row).toHaveFocus();
   } finally {
     view.unmount();
+    realClock();
   }
 });
 
@@ -56,28 +61,32 @@ test("a view leaves the focus where a control already holds it", async () => {
   const control = document.createElement("button");
   document.body.append(control);
   await act(async () => control.focus());
+  jest.useFakeTimers();
   const view = render(
     <ViewStage>
       <StandInView />
     </ViewStage>
   );
   try {
-    await waitFor(() =>
-      expect(view.container.querySelector('[role="treeitem"][tabindex="0"]')).not.toBeNull()
-    );
-    expect(document.activeElement).toBe(control);
+    await jump(ANSWERED_AFTER_MS);
+    expect(
+      view.container.querySelector('[role="treeitem"][tabindex="0"]'),
+      "the view drew no tab-stop row"
+    ).not.toBeNull();
+    expect(control).toHaveFocus();
   } finally {
     view.unmount();
+    realClock();
     control.remove();
   }
 });
 
-/** A view whose read is refused from its first load: a moment after it mounts it draws the
- *  refused read's line (`FailedReadLine`), with its Retry, and no tree. */
+/** A view whose read is refused from its first load: `ANSWERED_AFTER_MS` after it mounts it
+ *  draws the refused read's line (`FailedReadLine`), with its Retry, and no tree. */
 function RefusedView(): ReactNode {
   const [refused, setRefused] = useState(false);
   useEffect(() => {
-    const answered = window.setTimeout(() => setRefused(true), 20);
+    const answered = window.setTimeout(() => setRefused(true), ANSWERED_AFTER_MS);
     return () => window.clearTimeout(answered);
   }, []);
   if (!refused) return null;
@@ -88,19 +97,20 @@ function RefusedView(): ReactNode {
 
 test("a view whose read is refused puts the focus on its Retry", async () => {
   (document.activeElement as HTMLElement | null)?.blur();
+  jest.useFakeTimers();
   const view = render(
     <ViewStage>
       <RefusedView />
     </ViewStage>
   );
   try {
-    const retry = await view.findByRole("button", { name: "Retry" });
-    await waitFor(() =>
-      expect(document.activeElement, "the refused view left the focus on the page's body").toBe(
-        retry
-      )
-    );
+    await jump(ANSWERED_AFTER_MS);
+    expect(
+      view.getByRole("button", { name: "Retry" }),
+      "the refused view left the focus on the page's body"
+    ).toHaveFocus();
   } finally {
     view.unmount();
+    realClock();
   }
 });

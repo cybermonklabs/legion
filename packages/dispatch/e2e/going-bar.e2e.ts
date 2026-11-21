@@ -1,6 +1,6 @@
 import { createIssue, createProject, createProjectDocument } from "./api";
 import { documentEditor, holdFirstRequest, placeCaret } from "./editor";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // One bar from anywhere, and it says what it will act on. `Control+K` opens it on every page, the
@@ -19,10 +19,11 @@ interface Fixture {
 }
 
 async function seed(): Promise<Fixture> {
-  await createProject({ key: "CORE", name: "Core" });
-  const first = await createIssue({ project: "CORE", title: "Openers" });
-  const second = await createIssue({ project: "CORE", title: "Instruments" });
-  const document = await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const first = await createIssue({ project: core, title: "Openers" });
+  const second = await createIssue({ project: core, title: "Instruments" });
+  const document = await createProjectDocument(core, {
     content: documentBody,
     name: documentName,
   });
@@ -54,14 +55,14 @@ async function closeBar(page: Page): Promise<void> {
 
 /** The issue list of the seeded project, with its first row focused so the list's own keys act. */
 async function openIssueList(page: Page): Promise<void> {
-  await page.goto("/projects/CORE/issues");
+  await page.goto(`/projects/${rowKey("CORE")}/issues`);
   await expect(page.getByRole("link", { name: /Openers/ })).toBeVisible();
   await page.locator("body").focus();
 }
 
 /** The document with the writing focus in its editor, the caret inside the paragraph. */
 async function openDocumentWithCaret(page: Page, slug: string): Promise<void> {
-  await page.goto(`/projects/CORE/documents/${slug}`);
+  await page.goto(`/projects/${rowKey("CORE")}/documents/${slug}`);
   await expect(documentEditor(page)).toContainText(paragraph);
   await placeCaret(page, "after", "sextant");
   await expect(documentEditor(page)).toBeFocused();
@@ -121,7 +122,7 @@ test("slash and g p open the same bar as Control+K @phone", async ({ browser }) 
     const opened = keys.join(" ");
     await expect
       .soft(scope(page), `${opened} opens the bar with its chip`)
-      .toHaveText(/Acting on the project CORE/);
+      .toHaveText(new RegExp(`Acting on the project ${rowKey("CORE")}`));
     await expect
       .soft(
         bar(page).getByRole("group", { name: "Actions" }),
@@ -155,6 +156,7 @@ test("slash and g p open the same bar as Control+K @phone", async ({ browser }) 
 test("the chip names what the bar will act on, and nothing where the page names nothing @phone", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   // One check per page, each its own reported failure against the suite's 15 s deadline.
   test.setTimeout(120_000);
   const fixture = await seed();
@@ -167,7 +169,7 @@ test("the chip names what the bar will act on, and nothing where the page names 
     await expect(page.getByRole("heading", { name: /Openers/ })).toBeVisible();
     await page.locator("body").focus();
     await openBar(page, ["Control+k"]);
-    await expect.soft(scope(page), "on an issue, that issue").toHaveText(/CORE-1/);
+    await expect.soft(scope(page), "on an issue, that issue").toHaveText(new RegExp(`${core}-1`));
     await closeBar(page);
 
     await openDocumentWithCaret(page, fixture.documentSlug);
@@ -179,7 +181,7 @@ test("the chip names what the bar will act on, and nothing where the page names 
     await openBar(page, ["Control+k"]);
     await expect
       .soft(scope(page), "on the issue list with none selected, the project")
-      .toHaveText(/Acting on the project CORE/);
+      .toHaveText(new RegExp(`Acting on the project ${core}`));
     await closeBar(page);
 
     // Two issues selected: `x` marks the row the list's own `j` left the focus on.
@@ -209,8 +211,9 @@ test("the chip names what the bar will act on, and nothing where the page names 
 test("the bar acts on the issues the table has selected, and leaving the table clears them @phone", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   const fixture = await seed();
-  const third = await createIssue({ project: "CORE", title: "Sextants" });
+  const third = await createIssue({ project: core, title: "Sextants" });
   const context = await asUser(browser, "alice");
 
   try {
@@ -236,7 +239,7 @@ test("the bar acts on the issues the table has selected, and leaving the table c
     await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
     await page.locator("body").focus();
     await openBar(page, ["Control+k"]);
-    await expect(scope(page)).toHaveText(/Acting on the project CORE/);
+    await expect(scope(page)).toHaveText(new RegExp(`Acting on the project ${core}`));
     await closeBar(page);
 
     // Back on the table, the rows come back unselected rather than carrying a hidden mark.
@@ -266,7 +269,7 @@ test("Tab narrows the chip to the block the cursor is in and Backspace widens it
     await expect(scope(page)).toHaveText(new RegExp(paragraph));
 
     await page.keyboard.press("Backspace");
-    await expect(scope(page)).toHaveText(/Acting on the project CORE/);
+    await expect(scope(page)).toHaveText(new RegExp(`Acting on the project ${rowKey("CORE")}`));
   } finally {
     await context.close();
   }
@@ -276,6 +279,7 @@ test("Tab narrows the chip to the block the cursor is in and Backspace widens it
 test("an empty input lists the person's recent items and the actions of that page @phone", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   // Four reported checks on one open, each against the suite's own 15 s deadline.
   test.setTimeout(120_000);
   const fixture = await seed();
@@ -287,7 +291,7 @@ test("an empty input lists the person's recent items and the actions of that pag
     // What the person opened, in this browser: the two items the bar lists back to them.
     await page.goto(`/issues/${fixture.firstKey}`);
     await expect(page.getByRole("heading", { name: /Openers/ })).toBeVisible();
-    await page.goto(`/projects/CORE/documents/${fixture.documentSlug}`);
+    await page.goto(`/projects/${core}/documents/${fixture.documentSlug}`);
     await expect(documentEditor(page)).toContainText(paragraph);
 
     await openIssueList(page);
@@ -307,7 +311,7 @@ test("an empty input lists the person's recent items and the actions of that pag
 
     // A recent item opens from the bar.
     await recent.getByRole("option", { name: /Design notes/ }).click();
-    await expect(page).toHaveURL(`/projects/CORE/documents/${fixture.documentSlug}`);
+    await expect(page).toHaveURL(`/projects/${core}/documents/${fixture.documentSlug}`);
   } finally {
     await context.close();
   }
@@ -322,6 +326,7 @@ test("an empty input lists the person's recent items and the actions of that pag
 test("the bar opened on a project page that has not settled survives that page's own redirect", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await seed();
   const context = await asUser(browser, "alice");
 
@@ -336,14 +341,14 @@ test("the bar opened on a project page that has not settled survives that page's
       /\/api\/v1\/projects\/[^/]+\/architecture-sources$/u
     );
 
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     await page.locator("body").focus();
     await openBar(page, ["/"]);
     const box = page.getByRole("combobox", { name: "Search" });
     await expect(box).toBeVisible();
 
     await (await sources.held).continue();
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+    await expect(page).toHaveURL(new RegExp(`/projects/${core}/issues$`));
 
     // The redirect has landed and the bar is still there, and still the same box to type in:
     // the page moved under it and took nothing from the person.

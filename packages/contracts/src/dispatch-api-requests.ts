@@ -1,12 +1,9 @@
 import type {
   Actor,
   ArtifactVersionText,
+  DispatchRefusal,
   DocumentWriteAdvice,
-  DuplicateCandidate,
-  EditPreconditionCurrent,
-  EditPreconditionMismatch,
   IssueDetails,
-  TargetCandidate,
   WriteAdvice,
 } from "./dispatch-api.generated";
 import type { DispatchEvent } from "./dispatch-api-events";
@@ -85,37 +82,31 @@ export type ArtifactVersionContent = ArtifactVersionText | ArtifactVersionBlob;
 /**
  * The code of the `409` Dispatch answers an id written as a prefix two items or more carry: a
  * page address, a `dispatch://` reference or a dashboard address in text, or a route that takes
- * an id in its path (INFRA-869). `candidates` then lists the items it names, at most ten, in id
- * order, for the caller to write more of the id or to choose one. Generated into Go as
- * `contracts.IDAmbiguous`.
+ * an id in its path (INFRA-869). Its body is the generated `IDAmbiguousError`, whose
+ * `candidates` (`IDCandidate`) list the items it names, at most ten, in id order, for the caller
+ * to write more of the id or to choose one. Generated into Go as `contracts.IDAmbiguous`.
  */
 export const ID_AMBIGUOUS = "ID_AMBIGUOUS";
 
-/**
- * One item an ambiguous id prefix names (`ID_AMBIGUOUS`). `id` is the whole id the prefix
- * shortens - the item's uuid, or the block id a document block is unique under - and `ref` its
- * whole `dispatch://` reference, empty for an item that has no address (a direct message, a
- * document of an agent's conversation). At most one of `issue_key` and `document` names its
- * owner: the issue that owns it, or the reference of the project document it is written on.
- * `first_line` is the head of what tells two candidates apart, absent for a direct message a
- * caller may not read.
- */
-export interface IDCandidate {
-  readonly kind: "ask" | "comment" | "message" | "artifact" | "block";
-  readonly id: string;
-  readonly ref: string;
-  readonly issue_key?: string;
-  readonly document?: string;
-  readonly first_line?: string;
-}
+/** Every key any member of the union `T` carries. */
+type KeyOfAny<T> = T extends unknown ? keyof T : never;
 
-export interface DispatchServiceErrorShape {
-  readonly error?: string;
-  readonly code?: string;
-  readonly candidates?: TargetCandidate[] | DuplicateCandidate[] | IDCandidate[];
-  readonly current?: EditPreconditionCurrent;
-  readonly mismatches?: EditPreconditionMismatch[];
-}
+/** What the members of the union `T` that carry `K` hold under it. */
+type FieldOfAny<T, K extends PropertyKey> = T extends unknown
+  ? K extends keyof T
+    ? T[K]
+    : never
+  : never;
+
+/**
+ * A refusal's body as a client reads it before its `code` says which refusal it holds: every
+ * field any refusal of any route carries (`DispatchRefusal`, generated from the route table),
+ * each optional and typed as what the refusals that carry it hold there. It declares no field
+ * of its own, so a refusal body a route grows or changes reaches it by regeneration.
+ */
+export type DispatchServiceErrorShape = {
+  readonly [K in KeyOfAny<DispatchRefusal>]?: FieldOfAny<DispatchRefusal, K>;
+};
 
 /** How the message of a Dispatch process's `404 NOT_FOUND` starts when the process has no route for
  *  the request ("no route for GET /api/v1/…"). While a release rolls out, two builds of Dispatch

@@ -42,7 +42,7 @@ var prefixLimit = strconv.Itoa(prefixCandidateLimit)
 // document's name, a block's text. A direct message's is left out for a caller that may not read
 // the conversation (Viewer).
 type Candidate struct {
-	Kind      string `json:"kind"`
+	Kind      string `json:"kind" enum:"ask,comment,message,artifact,block"`
 	ID        string `json:"id"`
 	Ref       string `json:"ref"`
 	IssueKey  string `json:"issue_key,omitempty"`

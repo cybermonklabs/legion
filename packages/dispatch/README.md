@@ -96,7 +96,8 @@ requests at a broker the caller runs, as the secrets broker's docs rig
 
 `DATABASE_URL` is a one-stack run's input unless it names a Postgres of its own
 (stacks, below), and must name an isolated
-loopback database: `e2e/seed.ts` empties it before every row and never selects a shared
+loopback database: each worker empties it before its first row (`e2e/test.ts`,
+through `e2e/seed.ts`) and never selects a shared
 default, and the dev sign-in flag refuses a non-loopback host. psql runs without
 `PGHOSTADDR` (`e2e/psql.ts`), which would otherwise send it somewhere the server
 never checked. The harness ports `DISPATCH_E2E_PORT`, `FAKE_ENVOY_PORT`,
@@ -193,8 +194,11 @@ Playwright's own `--workers <n>` runs the suite in parallel, and the config's
 default is 1. `e2e/global-setup.ts` starts one stack
 per worker before the first row. A stack is a whole harness of its own — a
 Dispatch server, the three fakes, the plain-HTTP proxy, a file-store bucket and
-ports the OS chose — and a Postgres of its own, because `e2e/seed.ts` empties
-its stack's database before every row. A worker finds its stack by
+ports the OS chose — and a Postgres of its own, because each worker empties
+its stack's database before its first row and resets its stack's fakes before
+every row (`e2e/test.ts`). A row makes its data under keys of its own, so it
+needs no emptied database, but two workers on one stack would still empty each
+other's database and fakes mid-row. A worker finds its stack by
 `TEST_PARALLEL_INDEX`, which Playwright gives it and a restarted worker keeps;
 `e2e/harness-ports.ts` resolves it against the `DISPATCH_E2E_STACKS` manifest
 the hook wrote, for the ports and for psql's database alike.
@@ -433,9 +437,9 @@ fails with `address already in use`. psql runs without `PGHOSTADDR` (`e2e/psql.t
 ends a psql in flight too.
 
 A spec runs against the instance with the printed command, which sets
-`DISPATCH_E2E_REUSE_SERVERS=1`, the five ports and the same `DATABASE_URL`; each spec empties the
-database and the
-fake Envoy, so restart the command to reseed it. `bun run build:web` while it runs refreshes the
+`DISPATCH_E2E_REUSE_SERVERS=1`, the five ports and the same `DATABASE_URL`; the run empties the
+database before its first row and the fakes before every row, so restart the command to reseed
+it. `bun run build:web` while it runs refreshes the
 SPA, which the server reads from `web/dist` on each request. `docker rm -f -v dispatch-pg` removes
 the container, its anonymous data volume and every database in it.
 
@@ -868,7 +872,8 @@ cd ../envoy/deploy/compose
 docker rmi "ghcr.io/cybermonklabs/legion/envoy:${acceptance_image_tag}"
 ```
 
-`e2e/seed.ts` empties its database before each scenario. Always set
+A run empties its database once per worker, before the worker's first row (`e2e/test.ts`,
+through `e2e/seed.ts`). Always set
 `PLAYWRIGHT_DATABASE_URL` to an isolated test database when using a deployed URL.
 
 ## The stubbed layer

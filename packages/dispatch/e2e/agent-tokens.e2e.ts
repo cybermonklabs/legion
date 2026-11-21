@@ -1,9 +1,10 @@
+import { routePath } from "../web/src/api/paths";
 import { baseUrl, createIssue, createProject } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 async function createAskWithToken(issue: string, token: string): Promise<Response> {
-  return fetch(new URL(`/api/v1/issues/${issue}/asks`, baseUrl), {
+  return fetch(new URL(routePath("post", "/api/v1/issues/{key}/asks", { key: issue }), baseUrl), {
     body: JSON.stringify({
       actor: { id: "architect-session", kind: "session", origin: { session_title: "Architect" } },
       question: "Which release gate should we use?",
@@ -17,10 +18,17 @@ async function createAskWithToken(issue: string, token: string): Promise<Respons
 test("a personal agent token attributes its ask, remains private, and is revoked from Settings @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Agent token attribution" });
-  const alice = await asUser(browser, "alice");
-  const bob = await asUser(browser, "bob");
+  const core = rowKey("CORE");
+  // The two people are the row's own (`rowPerson`): a token, the Settings list of them and the
+  // Inbox the token's ask lands in are each one person's, so each holds this row's alone.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Agent token attribution" },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
+  const bob = await asUser(browser, rowPerson("bob"));
   const alicePage = await alice.newPage();
   const bobPage = await bob.newPage();
 
@@ -50,7 +58,7 @@ test("a personal agent token attributes its ask, remains private, and is revoked
     expect(created.status).toBe(201);
 
     await alicePage.goto("/");
-    await expect(alicePage.getByText("Architect (for alice)")).toBeVisible();
+    await expect(alicePage.getByText(`Architect (for ${me})`)).toBeVisible();
 
     await bobPage.goto("/settings");
     await expect(bobPage.getByRole("cell", { name: tokenPrefix })).toHaveCount(0);

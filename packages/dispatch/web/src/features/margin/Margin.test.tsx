@@ -2168,8 +2168,9 @@ test("desktop margin resize handle supports keyboard adjustments and reset", asy
 
   try {
     const handle = await screen.findByRole("separator", { name: "Resize margin" });
-    expect(screen.getByTestId("desktop-margin-shell").getAttribute("style")).toContain(
-      "width: 384px"
+    expect(screen.getByTestId("desktop-margin-shell")).toHaveAttribute(
+      "style",
+      expect.stringContaining("width: 384px")
     );
 
     // The handle takes the key where it is: a click on it would start the drag its pointer
@@ -2177,15 +2178,17 @@ test("desktop margin resize handle supports keyboard adjustments and reset", asy
     handle.focus();
     await user.keyboard("{ArrowLeft}");
     await waitFor(() =>
-      expect(screen.getByTestId("desktop-margin-shell").getAttribute("style")).toContain(
-        "width: 408px"
+      expect(screen.getByTestId("desktop-margin-shell")).toHaveAttribute(
+        "style",
+        expect.stringContaining("width: 408px")
       )
     );
 
     await user.dblClick(handle);
     await waitFor(() =>
-      expect(screen.getByTestId("desktop-margin-shell").getAttribute("style")).toContain(
-        "width: 384px"
+      expect(screen.getByTestId("desktop-margin-shell")).toHaveAttribute(
+        "style",
+        expect.stringContaining("width: 384px")
       )
     );
   } finally {
@@ -2275,8 +2278,9 @@ test("margin keeps an ask draft through parent, width, and viewport layout updat
     screen.getByRole("separator", { name: "Resize margin" }).focus();
     await user.keyboard("{ArrowLeft}");
     await waitFor(() =>
-      expect(screen.getByTestId("desktop-margin-shell").getAttribute("style")).toContain(
-        "width: 408px"
+      expect(screen.getByTestId("desktop-margin-shell")).toHaveAttribute(
+        "style",
+        expect.stringContaining("width: 408px")
       )
     );
     expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe(

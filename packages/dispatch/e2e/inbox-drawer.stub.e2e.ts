@@ -7,15 +7,19 @@
  */
 import { expect } from "@playwright/test";
 
+import { fixedKey } from "./api";
 import { attachShot, drawer, peekTrigger, seedAsk } from "./inbox-drawer";
 import { stubbed } from "./stub/stub-test";
 
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+
 /** One question, in the drawer over the issue it was asked on. */
-const test = stubbed(() => seedAsk("Which label for the drawer?"));
+const test = stubbed(() => seedAsk("Which label for the drawer?", CORE));
 
 /** The same, for the row that reads the shortcut rather than the panel. */
 const shortcutTest = stubbed(async () => ({
-  ...(await seedAsk("Is the shortcut listed?")),
+  ...(await seedAsk("Is the shortcut listed?", CORE)),
   rows: 1,
 }));
 

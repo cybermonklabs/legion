@@ -4,10 +4,21 @@ name: Dispatch unit suite repeated
 # many times over, to find the rows that fail only sometimes. The web lane is
 # `bun run test:web web/src`, the web-cold lane is
 # `bun run test:web:cold web/src` and the harness lane is `bun run test:harness e2e/__tests__`.
-# Each leg runs one lane under one seed through `bun run test:repeat`
-# (packages/dispatch/e2e/tools/unit-repeat.ts, whose head says what it reads and writes): a web or
-# harness leg with `--rerun-each=20`, a web-cold leg with `--rerun-each=1`. Each leg draws its own
-# seed. Three legs a lane make nine legs a run.
+# Each leg runs one lane, or one shard of the web lane's files, under one seed through
+# `bun run test:repeat` (packages/dispatch/e2e/tools/unit-repeat.ts, whose head says what it reads
+# and writes): a web or harness leg with `--rerun-each=20`, a web-cold leg with `--rerun-each=1`.
+# Each lane runs three rounds, each under a seed of its own, which the test step derives from the
+# run and the round. The web lane runs each round as two legs, Bun's `--shard` 1/2 and 2/2 of its
+# files, under the round's one seed. Three rounds of a web-cold leg, three of a harness leg and
+# three of two web legs make 12 legs a run.
+#
+# Why the web lane runs in two shards. Its legs outgrew their step limit as main's suite grew: at
+# head 178972666e (run 44723942168) the test steps of its three legs took 851, 897 and 1,146 s,
+# and round 3's was stopped at the limit. Bun 1.4.4 deals a lane's files to its shards by their
+# paths, whatever the seed, so the two legs of a round run each file once between them, each of
+# its rows 20 times, under the round's seed, as one leg of the whole lane did, and each leg
+# publishes its own failing rows. The web-cold and harness legs fit their limits whole and run
+# unsharded.
 #
 # What a leg publishes. Its report goes to the step summary. The leg prints one `::error`
 # annotation for each failure that belongs to no row, then one for each failing row. GitHub keeps
@@ -30,11 +41,11 @@ name: Dispatch unit suite repeated
 # dispatch of that file to prove this job would start the eight-runner full browser lane beside
 # it.
 #
-# Why 20 reruns a web or harness leg and three legs a lane. Under one seed every rerun repeats one
-# order (Bun 1.4.4, measured for dispatch://INFRA-1511). So the reruns find a row that fails one
-# run in twenty, and the three rounds give three orders a week. 60 runs a lane a week find such a
-# row with probability 1 - 0.95^60, about 95 per cent, against about 64 per cent for 20 runs. More
-# reruns under one seed buy no new order. More legs buy both.
+# Why 20 reruns a web or harness leg and three rounds a lane. Under one seed every rerun repeats
+# one order (Bun 1.4.4, measured for dispatch://INFRA-1511). So the reruns find a row that fails
+# one run in twenty, and the three rounds give three orders a week. 60 runs a lane a week find such
+# a row with probability 1 - 0.95^60, about 95 per cent, against about 64 per cent for 20 runs.
+# More reruns under one seed buy no new order. More rounds buy both.
 #
 # What the web-cold leg finds, and why it runs once. It finds a row that reads text or a part that
 # renders only after a lazy load, the Markdown engine or a page that `lazy()` loads, without
@@ -76,10 +87,12 @@ name: Dispatch unit suite repeated
 # `bun run test:web:cold <file> --seed=<n>` or `bun run test:harness <file> --seed=<n>`. For a row
 # that passed its first run, the command adds `--rerun-each=<k>`, where k is the run it first
 # failed on. That repeats the order the row failed in. A web-cold leg runs once, so its command
-# never adds it. A row that failed from the leg's load can pass there, and the same section of
+# never adds it. A row of a web shard is run again by the same command, with no `--shard`: the
+# shard picks which files run, and Bun orders a file's rows by the seed and the file alone, as the
+# tool's head says. A row that failed from the leg's load can pass there, and the same section of
 # docs/testing.md says what it needs.
 #
-# What it costs. One scheduled run a week of nine legs, one run of nine legs on each push to a pull
+# What it costs. One scheduled run a week of 12 legs, one run of 12 legs on each push to a pull
 # request that changes this file, the tool or the web-cold lane's preload, and any
 # `workflow_dispatch`. Every leg runs on a standard GitHub-hosted runner, and this repository is
 # public. GitHub's "Billing and usage" page
@@ -90,13 +103,21 @@ name: Dispatch unit suite repeated
 # the head comment, before the web-cold lane, were 95, 97, 102 and 98 minutes (web legs 9 to 13
 # minutes, harness legs 19 to 24): about 100 minutes a run. The three web-cold legs of run
 # 44339340132 took 2 minutes each as GitHub bills them, so about 106 minutes a run, and $0,
-# since those minutes are free here.
+# since those minutes are free here. A web leg's job spent 22, 22 and 24 s besides its test step
+# in run 44723942168 (each job's whole time less that step's: the job's setup, checkout, Bun and
+# `bun install` before the step, and 2 s of upload after it), so the three more web legs of the
+# two shards add about 70 s of runner time a run, and GitHub rounds six web jobs up to a whole
+# minute where it rounded three. Measured as GitHub bills it: run 44723942168, the last with one
+# web leg a round, billed 124 minutes (51 of them its three web legs), and run 44749684592, the
+# first with two shards and the sweep of useIssueDrafts.test.ts computed once a process, billed
+# 137 (61 of them its six web legs); its longest web leg's job took 707 s, against 1,170 s in the
+# run before.
 
 on:
   schedule:
     # Saturday 09:23 UTC, hours from every other schedule of this repository:
     # dispatch-browser-nightly.yaml's 02:17 and 13:41 daily, e2e.yaml's 04:41 daily and
-    # codeql.yaml's 04:17 on Tuesdays. Nine legs start at once, and a nightly starting beside them
+    # codeql.yaml's 04:17 on Tuesdays. 12 legs start at once, and a nightly starting beside them
     # would queue with them for the account's runners. Off the hour, as codeql.yaml's cron is.
     - cron: "23 9 * * 6"
   workflow_dispatch:
@@ -124,39 +145,55 @@ permissions:
 
 jobs:
   repeat:
-    name: ${{ matrix.lane }} lane, round ${{ matrix.round }}
+    # A web leg's name says its shard; a web-cold or harness leg runs its lane whole.
+    name: >-
+      ${{ matrix.lane }} lane, round ${{ matrix.round }}${{ matrix.shards > 1
+      && format(', shard {0}/{1}', matrix.shard, matrix.shards) || '' }}
     runs-on: ubuntu-24.04
     # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a job's
     # budget is the sum of its step budgets plus the measured maximum of the steps without one.
     # The test step's budget is the matrix's step_minutes. The steps without one, measured together
-    # over every completed leg of the runs the test step's comment names, took at most 37 s in a
-    # web leg (run 44097039165, round 2), 29 s in a web-cold leg (run 44449111716, round 2) and
+    # over every completed leg of the runs the test step's comment names, took at most 34 s in a
+    # web leg (run 44500465080, round 1), 29 s in a web-cold leg (run 44622961898, round 2) and
     # 151 s in a harness leg (run 44473658176, round 3, whose zsh install took 125 s), so 1, 1 and
-    # 3 minutes: 16 + 1 = 17 minutes for a web leg, 2 + 1 = 3 for a web-cold leg and 30 + 3 = 33
-    # for a harness leg, the matrix's job_minutes. The slowest whole jobs took 845 s for a web leg
-    # (run 44465013263, round 3), 125 s for a web-cold leg (run 44360597415, round 1) and 1,575 s
-    # for a harness leg (run 44389203951, round 1).
+    # 3 minutes: 14 + 1 = 15 minutes for a web leg, 4 + 1 = 5 for a web-cold leg and 30 + 3 = 33
+    # for a harness leg, the matrix's job_minutes. The slowest whole jobs took 707 s for a web leg
+    # (run 44749684592, round 3, shard 1/2), 192 s for a web-cold leg (run 44749684592, round 3)
+    # and 1,575 s for a harness leg (run 44389203951, round 1).
     timeout-minutes: ${{ matrix.job_minutes }}
     strategy:
       # One leg's failure leaves the other legs running, so each one reports its own rows.
       fail-fast: false
       matrix:
         lane: [web, web-cold, harness]
-        # Three legs a lane, each under a seed of its own. The head says why three.
+        # Three rounds a lane, each under a seed of its own, which the test step derives. The head
+        # says why three.
         round: [1, 2, 3]
-        # Each lane's reruns, and the budgets of its test step and its job, which the comments on
-        # those two derive. The head says why a web or harness leg runs 20 times and a web-cold
-        # leg once.
+        # The leg's shard of its lane's files, Bun's `--shard <shard>/<shards>`: a web round runs as
+        # shards 1 and 2 of 2, and a web-cold or harness round runs whole, as its one shard, with
+        # no `--shard`. The head says why.
+        shard: [1, 2]
+        exclude:
+          - lane: web-cold
+            shard: 2
+          - lane: harness
+            shard: 2
+        # Each lane's shards and reruns, and the budgets of its test step and its job, which the
+        # comments on those two derive. The head says why a web or harness leg runs 20 times and a
+        # web-cold leg once.
         include:
           - lane: web
+            shards: 2
             reruns: 20
-            step_minutes: 16
-            job_minutes: 17
+            step_minutes: 14
+            job_minutes: 15
           - lane: web-cold
+            shards: 1
             reruns: 1
-            step_minutes: 2
-            job_minutes: 3
+            step_minutes: 4
+            job_minutes: 5
           - lane: harness
+            shards: 1
             reruns: 20
             step_minutes: 30
             job_minutes: 33
@@ -213,36 +250,70 @@ jobs:
           psql "$LEGION_TEST_PG_DSN" -c 'select 1'
       # The budget, by dispatch-browser.yaml's rule: the measured maximum plus 15 per cent,
       # rounded up to the next whole minute, with a floor of two minutes. The measurement is every
-      # run of this workflow on its pull request, runs 44023917835 to 44473658176 (2026-11-17 to
-      # 2026-11-19): 24 completed runs, and three that a newer push cancelled (44089016718,
-      # 44356093835 and 44359116720), whose cancelled legs are left out. A pull request's run
-      # tests GitHub's merge of its head with main, so it grows with main's suite: a web run read
-      # 4,885 rows in run 44023917835 and 5,189 in run 44473658176. This step took 459 to 821 s in
-      # the 78 completed web legs, the most in run 44465013263, round 3, so 821 x 1.15 = 944 s, 16
-      # minutes; and 999 to 1,529 s in the 73 completed harness legs, the most in run 44389203951,
-      # round 1, so 1,529 x 1.15 = 1,758 s, 30 minutes. The 39 web-cold legs took at most 101 s,
-      # in run 44339340132, round 3, so 101 x 1.15 = 116 s, the two-minute floor.
+      # run of this workflow created from 2026-11-12T22:45Z to 2026-11-19T22:31Z, on any branch:
+      # 40 runs, 44023917835 to 44622961898, whose cancelled and skipped legs are left out. A pull
+      # request's run tests GitHub's merge of its head with main, so it grows with main's suite: a
+      # web run read 4,885 rows in run 44023917835 and 6,916 in run 44622961898.
+      #
+      # Web: the six sharded legs of run 44749684592 at 132a1ed654 (the first run of the two
+      # shards with useIssueDrafts.test.ts's sweep computed once a process) took 480 to 684 s, the
+      # most in round 3, shard 1/2 (job 136334011228), so 684 x 1.15 = 787 s, 14 minutes. The run
+      # before it, at e81649ec3d (44738093077), had each shard 1/2 leg stopped at the unsharded
+      # 19-minute limit, 961 s of its 1,148 s the sweep's 20 reruns; its shard 2/2 legs took 469 to
+      # 633 s.
+      #
+      # Harness: 66 legs took 967 to 1,529 s, the most in run 44389203951, round 1, so
+      # 1,529 x 1.15 = 1,758 s, 30 minutes.
+      #
+      # Web-cold: the legs of the three runs since the lane's last derivation took 97 to 161 s,
+      # the most in run 44749684592, round 3, so 161 x 1.15 = 186 s, 4 minutes. The 78 legs before
+      # them took 66 to 133 s.
+      #
+      # The web and web-cold limits are derived from the suite's size on 2026-11-20 and the harness
+      # limit from its size on 2026-11-19: a step that is stopped on a leg whose rows were passing
+      # is the signal to derive them again.
+      #
+      # The seed. A leg's seed is the first 32 bits of the SHA-256 of the run's id and the lane,
+      # plus the round, modulo 2^32: a number Bun's `--seed` takes (0 to 2^32 - 1). So the two
+      # shards of a web round run under one seed; the three rounds of a lane, 1 or 2 apart, never
+      # share one; and two lanes or two runs share one only by a chance of 1 in 2^32, the chance
+      # two of the tool's own random draws had. The run's attempt is left out: GitHub's "Re-run
+      # failed jobs" runs a failed leg again under the next attempt while the other shard of its
+      # round keeps the attempt before, and the round would then hold two seeds. So a re-run of a
+      # leg repeats its order, and asks whether its rows fail again in the order they failed in.
       #
       # GitHub's runners set CI already. The step writes it too, so the environment the rows run
       # under does not rest on the runner's: Bun's test runner reads it, and under it writes no
       # new snapshot (Bun's snapshot documentation).
       - name: Run the lane under one seed with --reruns ${{ matrix.reruns }}
         timeout-minutes: ${{ matrix.step_minutes }}
-        run: >-
-          bun run test:repeat --lane ${{ matrix.lane }} --reruns ${{ matrix.reruns }}
-          --out "$RUNNER_TEMP/unit-repeat"
+        run: |
+          base=$((16#$(printf '%s %s' "$GITHUB_RUN_ID" "$LANE" | sha256sum | cut -c1-8)))
+          seed=$(((base + ROUND) % 4294967296))
+          bun run test:repeat --lane "$LANE" --reruns "$RERUNS" --seed "$seed" \
+            ${SHARD:+--shard "$SHARD"} --out "$RUNNER_TEMP/unit-repeat"
         working-directory: packages/dispatch
         env:
           CI: "true"
+          LANE: ${{ matrix.lane }}
+          RERUNS: ${{ matrix.reruns }}
+          ROUND: ${{ matrix.round }}
+          # A web leg's shard, `<shard>/<shards>`; empty for a lane that runs whole, which passes
+          # no `--shard`.
+          SHARD: ${{ matrix.shards > 1 && format('{0}/{1}', matrix.shard, matrix.shards) || '' }}
       # Uploaded whether or not the leg passed, so a red leg's report reaches the run. Kept four
       # weeks: four scheduled runs side by side, enough to tell a row that fails every week from
-      # one that failed once, and to read the run before a fix beside the run after it.
+      # one that failed once, and to read the run before a fix beside the run after it. The name
+      # holds a web leg's shard: an artifact's name is unique in a run, and the two shards of a
+      # round would otherwise upload under one name.
       - name: Upload the report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: >-
-            dispatch-unit-repeat-${{ matrix.lane }}-${{ matrix.round }}-${{ github.run_attempt }}
+            dispatch-unit-repeat-${{ matrix.lane }}-${{ matrix.round }}${{ matrix.shards > 1
+            && format('-shard-{0}-of-{1}', matrix.shard, matrix.shards) || '' }}-${{
+            github.run_attempt }}
           path: ${{ runner.temp }}/unit-repeat
           if-no-files-found: error
           retention-days: 28

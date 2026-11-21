@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The refusal bodies a Dispatch route answers are generated from the route table:
+  `dispatch-api.generated.ts` now writes `IDCandidate`, `IDAmbiguousError` (the 409 of an
+  ambiguous id prefix) and `DispatchRefusal`, the union of every body a route answers at a 4xx,
+  a 5xx or its default. `IDCandidate` is the generated type under the same export name, and
+  `DispatchServiceErrorShape` is a mapped type over `DispatchRefusal` rather than a hand-written
+  shape. `dispatch-href.ts` exports `controlCharacterPattern`, the expression
+  `hasControlCharacter` reads.

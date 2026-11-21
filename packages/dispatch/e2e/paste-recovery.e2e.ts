@@ -1,5 +1,5 @@
 import { documentEditor, openWithCaret, paste } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 
 // LEGION-566. The live document editor's parserCtx singleton is built once, at boot
 // (@milkdown/core's `parser` plugin), and @milkdown/plugin-clipboard reads it, uncaught, for
@@ -17,7 +17,8 @@ test("a refused paste no longer breaks the next paste in the live document @pr",
     "Paste recovery",
     "Intro text.",
     "text.",
-    "end"
+    "end",
+    rowKey("CORE")
   );
   try {
     await paste(page, { html: "", text: 'see <span data-dispatch="bogus">this</span> now' });

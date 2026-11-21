@@ -13,13 +13,16 @@ import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser } from "./api/types";
 import { AuthGate } from "./app";
-// The Answers, document and project pages are lazy routes of the app, and the margin a lazy part
-// of its shell (`MarginColumn.tsx`, which mounts it on every route). A page module's first
+// The Answers, document, issue and project pages are lazy routes of the app, and the margin a lazy
+// part of its shell (`MarginColumn.tsx`, which mounts it on every route). A page module's first
 // compile is not what a wait is for, and a load a row starts and ends before lands in a later row
-// as React's report of a suspended resource outside `act`. So the modules are loaded here, with
-// the test file, and no row starts or waits for that load.
+// as React's report of a suspended resource outside `act`: the issue page's, which the desktop
+// shell row started and did not wait for, failed the lapsed-session row on CI's cold lane with
+// eleven such reports (run 44625338146, seed 612083899). So the modules are loaded here, with the
+// test file, and no row starts or waits for that load.
 import "./features/answers/AnswersPage";
 import "./features/document/DocumentPage";
+import "./features/issue-page/IssuePage";
 import "./features/margin/Margin";
 import "./features/project/ProjectPage";
 import { SendStoppedError } from "./features/writes/keyed-write";
@@ -963,8 +966,9 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
       expect(screen.getByRole("button", { name: "Show margin" })).toBeTruthy();
 
       await user.click(screen.getByRole("button", { name: "Show margin" }));
-      expect(screen.getByTestId("desktop-margin-shell").getAttribute("style")).toContain(
-        "width: 408px"
+      expect(screen.getByTestId("desktop-margin-shell")).toHaveAttribute(
+        "style",
+        expect.stringContaining("width: 408px")
       );
       await user.click(screen.getByRole("button", { name: "Show sidebar" }));
 

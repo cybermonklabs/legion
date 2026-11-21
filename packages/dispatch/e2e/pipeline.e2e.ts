@@ -1,11 +1,17 @@
+import { type Result, routePath } from "../web/src/api/paths";
 import { mintAgentToken } from "./api";
-import { PIPELINE_AT, seedPipelineFixture } from "./delivery-seed";
+import { seedPipelineRows } from "./delivery-seed";
 import { sql } from "./psql";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
-test("the Pipeline rail entry opens the page", async ({ browser }) => {
-  await seedPipelineFixture();
+// Every row writes the Pipeline's rows in its own place (`delivery`, e2e/test.ts): run and
+// pull-request numbers of its own, in the week ending on the place's `pipelineAt` (Sep 27 to
+// Oct 3, 2025), which no other row and not the review corpus writes in. So each card's count is
+// the row's own runs, and the fixture takes them out again when the row ends.
+
+test("the Pipeline rail entry opens the page", async ({ browser, delivery }) => {
+  await seedPipelineRows(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -25,13 +31,15 @@ test("the Pipeline rail entry opens the page", async ({ browser }) => {
 // @pr: Live delivery: the Pipeline page's stage timings and failing jobs, which no other row on the lane reads.
 test("the Pipeline page shows each stage's timing and the failing jobs @pr", async ({
   browser,
+  delivery,
 }, testInfo) => {
-  await seedPipelineFixture();
+  await seedPipelineRows(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/pipeline?at=${PIPELINE_AT}`);
+  await page.goto(`/pipeline?at=${delivery.pipelineAt}`);
 
-  await expect(page.getByText("Last 7 days, Sep 26 to Oct 2 (UTC)")).toBeVisible();
+  // The place's week: the corpus's Sep 26 to Oct 2, 2026, 52 weeks earlier.
+  await expect(page.getByText("Last 7 days, Sep 27 to Oct 3 (UTC)")).toBeVisible();
   // Today's two timed PR-checks runs; the merge_group run is not one of them.
   await expect(page.locator('[data-metric="pr_ci"]')).toContainText("p90 30m · 2 runs");
   const e2e = page.locator('[data-metric="staging_e2e"]');
@@ -59,7 +67,7 @@ test("the Pipeline page shows each stage's timing and the failing jobs @pr", asy
   await expect(unit.locator("td").nth(2)).toHaveText("3");
   await expect(unit.getByRole("link")).toHaveAttribute(
     "href",
-    "https://github.com/acme/widgets/actions/runs/2"
+    `https://github.com/acme/widgets/actions/runs/${delivery.number(2)}`
   );
   // The roll-up job is left out; a job that only failed before the 24 hours is not listed.
   await expect(failing.locator('[data-failing-job="checks-complete"]')).toHaveCount(0);
@@ -73,11 +81,12 @@ test("the Pipeline page shows each stage's timing and the failing jobs @pr", asy
 // the page is narrower than the 46rem the second column needs.
 test("the Pipeline page stacks its cards in one column on a phone @phone @phone-only", async ({
   browser,
+  delivery,
 }, testInfo) => {
-  await seedPipelineFixture();
+  await seedPipelineRows(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/pipeline?at=${PIPELINE_AT}`);
+  await page.goto(`/pipeline?at=${delivery.pipelineAt}`);
 
   const first = page.locator('[data-metric="pr_ci"]');
   await expect(first).toBeVisible();
@@ -95,12 +104,12 @@ test("the Pipeline page stacks its cards in one column on a phone @phone @phone-
   await context.close();
 });
 
-test("a pipeline with no staging end-to-end gate omits its card", async ({ browser }) => {
-  await seedPipelineFixture();
+test("a pipeline with no staging end-to-end gate omits its card", async ({ browser, delivery }) => {
+  await seedPipelineRows(delivery);
   await sql("UPDATE delivery_settings SET staging_e2e_job_name = null WHERE singleton");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/pipeline?at=${PIPELINE_AT}`);
+  await page.goto(`/pipeline?at=${delivery.pipelineAt}`);
 
   await expect(page.locator('[data-metric="pr_ci"]')).toBeVisible();
   await expect(page.locator('[data-metric="staging_e2e"]')).toHaveCount(0);
@@ -108,25 +117,21 @@ test("a pipeline with no staging end-to-end gate omits its card", async ({ brows
   await context.close();
 });
 
-test("the pipeline API gives an agent the same numbers", async ({ browser }) => {
-  await seedPipelineFixture();
+test("the pipeline API gives an agent the same numbers", async ({ browser, delivery }) => {
+  await seedPipelineRows(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const token = await mintAgentToken("pipeline-e2e", "alice");
-  const response = await page.request.get(`/api/v1/delivery/pipeline?at=${PIPELINE_AT}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const response = await page.request.get(
+    routePath("get", "/api/v1/delivery/pipeline", {}, { at: delivery.pipelineAt }),
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
   expect(response.status()).toBe(200);
-  const body = (await response.json()) as {
-    days: string[];
-    staging_e2e: { days: { n: number; median_minutes: number | null }[] } | null;
-    pr_checks: { failing_jobs: { name: string; failures: number; results: number }[] };
-    production_apply: { total: { n: number } };
-  };
-  expect(body.days.at(-1)).toBe("2026-10-02");
-  expect(body.staging_e2e?.days[6]?.n).toBe(2);
-  expect(body.staging_e2e?.days[6]?.median_minutes).toBe(55);
-  expect(body.pr_checks.failing_jobs[0]).toEqual(
+  const body = (await response.json()) as Result<"/api/v1/delivery/pipeline", "get">;
+  expect(body.days?.at(-1)).toBe(delivery.pipelineAt.slice(0, 10));
+  expect(body.staging_e2e?.days?.[6]?.n).toBe(2);
+  expect(body.staging_e2e?.days?.[6]?.median_minutes).toBe(55);
+  expect(body.pr_checks.failing_jobs?.[0]).toEqual(
     expect.objectContaining({ name: "build / unit", failures: 2, results: 3 })
   );
   expect(body.production_apply.total.n).toBe(1);

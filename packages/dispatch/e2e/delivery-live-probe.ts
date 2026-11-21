@@ -58,6 +58,7 @@ import {
   RECONNECT_SPREAD_MS,
   reconnectDelayMs,
 } from "../web/src/api/live-socket";
+import { type Result, routePath } from "../web/src/api/paths";
 import type {
   DeliveryLiveBody,
   DeliveryLiveCounts,
@@ -783,29 +784,35 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
       if (!isTimeline(body)) throw new Error("the timeline view's snapshot is not a timeline body");
       const params = query(view.query, body.window);
       return [
-        read<DeliveryTimelineWithMeasures>(`/api/v1/delivery/timeline?${params}`, (answer) => ({
-          measures: compareFields(body.measures, answer.measures, MEASURE_FIELDS),
-          prs: compareIds(
-            (body.prs ?? []).map((pr) => pr.id),
-            (answer.prs ?? []).map((pr) => pr.id)
-          ),
-          runs: compareIds(
-            (body.runs ?? []).map((run) => run.id),
-            (answer.runs ?? []).map((run) => run.id)
-          ),
-        })),
-        read<DeliveryMeasuresResponse>(`/api/v1/delivery/measures?${params}`, (answer) => ({
-          measures: compareFields(body.measures, answer, MEASURE_FIELDS),
-          prs: null,
-          runs: null,
-        })),
+        read<Result<"/api/v1/delivery/timeline", "get">>(
+          `${routePath("get", "/api/v1/delivery/timeline", {})}?${params}`,
+          (answer) => ({
+            measures: compareFields(body.measures, answer.measures, MEASURE_FIELDS),
+            prs: compareIds(
+              (body.prs ?? []).map((pr) => pr.id),
+              (answer.prs ?? []).map((pr) => pr.id)
+            ),
+            runs: compareIds(
+              (body.runs ?? []).map((run) => run.id),
+              (answer.runs ?? []).map((run) => run.id)
+            ),
+          })
+        ),
+        read<Result<"/api/v1/delivery/measures", "get">>(
+          `${routePath("get", "/api/v1/delivery/measures", {})}?${params}`,
+          (answer) => ({
+            measures: compareFields(body.measures, answer, MEASURE_FIELDS),
+            prs: null,
+            runs: null,
+          })
+        ),
       ];
     }
     case "measures": {
       if (!isMeasures(body)) throw new Error("the measures view's snapshot is not a measures body");
       return [
-        read<DeliveryMeasuresResponse>(
-          `/api/v1/delivery/measures?${query(view.query, body.window)}`,
+        read<Result<"/api/v1/delivery/measures", "get">>(
+          `${routePath("get", "/api/v1/delivery/measures", {})}?${query(view.query, body.window)}`,
           (answer) => ({
             measures: compareFields(body, answer, MEASURE_FIELDS),
             prs: null,
@@ -816,12 +823,14 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
     }
     case "pipeline": {
       if (!isPipeline(body)) throw new Error("the pipeline view's snapshot is not a pipeline body");
-      const route =
-        view.at === undefined
-          ? "/api/v1/delivery/pipeline"
-          : `/api/v1/delivery/pipeline?${new URLSearchParams({ at: view.at })}`;
+      const route = routePath(
+        "get",
+        "/api/v1/delivery/pipeline",
+        {},
+        view.at === undefined ? undefined : { at: view.at }
+      );
       return [
-        read<DeliveryPipelineResponse>(route, (answer) => ({
+        read<Result<"/api/v1/delivery/pipeline", "get">>(route, (answer) => ({
           measures: compareFields(body, answer, PIPELINE_FIELDS),
           prs: null,
           runs: null,

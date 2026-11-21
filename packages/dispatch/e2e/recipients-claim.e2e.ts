@@ -1,3 +1,4 @@
+import type { Result } from "../web/src/api/paths";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import { setLiveSessions } from "./agents";
@@ -13,13 +14,18 @@ import {
   releaseClaim,
 } from "./api";
 import { inboxRow } from "./inbox-pane";
-import { expect, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 // A person's answer and replies on an ask reach the ask's followers, the session holding the
 // issue's claim, and the session the issue's route reaches (a role route's holder). The card lists
 // each session once under `Reaches N`, and a claim or route change on the issue moves its rows
 // without a reload.
+//
+// Every row reads the card from the reader's Inbox, which from 1280 px draws a card for the
+// selected row alone, its first: this row's question only in a list that holds no other row's.
+// So the reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose project and issue
+// the question waits on, and whose Inbox holds this row's question and no other.
 const asker = { kind: "session" as const, id: "e2e-reach-asker" };
 const claimant = { kind: "session" as const, id: "e2e-reach-claimant" };
 const routed = "e2e-reach-routed";
@@ -31,8 +37,13 @@ const ROSTER = { intervals: [50, 50, 100, 200, 500], timeout: 15_000 };
 test("the ask card lists the issue's claimant and route, and drops the claimant on release without a reload @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Who else hears the answer" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Who else hears the answer" },
+    { login: me }
+  );
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -49,7 +60,7 @@ test("the ask card lists the issue's claimant and route, and drops the claimant 
   expect((read.followers ?? []).map((row) => row.session_id)).toEqual([asker.id]);
   expect([read.claimant, read.route]).toEqual([claimant.id, `session:${routed}`]);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   try {
     await page.goto("/");
@@ -107,8 +118,13 @@ test("the ask card lists the issue's claimant and route, and drops the claimant 
 test("a follower that holds the claim is listed once, and unfollowing it says the claim still reaches it", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "The asker works the issue" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "The asker works the issue" },
+    { login: me }
+  );
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -122,14 +138,14 @@ test("a follower that holds the claim is listed once, and unfollowing it says th
   // The server answers route reads from one listener roster kept up to five seconds
   // (routeRosterTTL), so an issue routed to the role is read until that roster holds the reviewer:
   // the single refresh the card makes on the route change below must not read an older one.
-  const probe = await createIssue({
-    project: "CORE",
-    title: "A roster probe for the reviewer role",
-  });
+  const probe = await createIssue(
+    { project: core, title: "A roster probe for the reviewer role" },
+    { login: me }
+  );
   await patchIssue(probe.key, { route: "role:reviewer" });
   await expect.poll(async () => (await getIssue(probe.key)).route_holder, ROSTER).toBe(routed);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   try {
     // The card's reads below arrive over the event feed, whose refetch the page holds to one per
@@ -175,8 +191,13 @@ test("a follower that holds the claim is listed once, and unfollowing it says th
 test("a role route held by the claimant is counted once, under the claim that names its holder", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "The claimant holds the route" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "The claimant holds the route" },
+    { login: me }
+  );
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -197,7 +218,7 @@ test("a role route held by the claimant is counted once, under the claim that na
     }, ROSTER)
     .toEqual([claimant.id, "role:e2e-reach-implementer", claimant.id]);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   try {
     await page.goto("/");
@@ -222,8 +243,13 @@ test("a role route held by the claimant is counted once, under the claim that na
 test("unfollowing a follower while a role route's holder is unknown says the route may still reach it, under the issue page's marker", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "The listener did not answer" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "The listener did not answer" },
+    { login: me }
+  );
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -242,7 +268,7 @@ test("unfollowing a follower while a role route's holder is unknown says the rou
     }, ROSTER)
     .toEqual(["role:reviewer", "live", asker.id]);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   // The listener answering nothing is forced on the real reads: the issue, the ask's thread and
   // the Inbox rows keep every other field the server sent.
@@ -263,7 +289,7 @@ test("unfollowing a follower while a role route's holder is unknown says the rou
   });
   await page.route("**/api/v1/inbox*", async (route) => {
     const response = await route.fetch();
-    const rows = (await response.json()) as { id: string; thread: Record<string, unknown> }[];
+    const rows = (await response.json()) as Result<"/api/v1/inbox", "get">;
     await route.fulfill({
       json: rows.map((row) =>
         row.id === ask.id ? { ...row, thread: { ...row.thread, ...unknownReach } } : row
@@ -312,9 +338,14 @@ test("unfollowing a follower while a role route's holder is unknown says the rou
 test("a route change in a status write moves the open card's route row without a reload, and a close that also moves the route withdraws the card the reader is answering in place", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
   const moved = "e2e-reach-routed-next";
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "The route moves, then it closes" });
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "The route moves, then it closes" },
+    { login: me }
+  );
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -330,7 +361,7 @@ test("a route change in a status write moves the open card's route row without a
     { session_id: moved, title: "Routed next (e2e)" },
   ]);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   try {
     // Both PATCH writes below reach the card over the event feed, whose refetch the page holds to
@@ -384,22 +415,27 @@ test("a route change in a status write moves the open card's route row without a
 test("a claim that lands while the Inbox is loading reaches the card that mounts from the earlier list", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Claimed mid-load" });
-  const other = await createIssue({ project: "CORE", title: "An unrelated rename target" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Claimed mid-load" }, { login: me });
+  const other = await createIssue(
+    { project: core, title: "An unrelated rename target" },
+    { login: me }
+  );
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
     { actor: asker, as: "agent" }
   );
-  // Pinned, so a rename of it refreshes alice's pinned list and nothing the Inbox shows.
-  await putIssueState(other.key, { pinned: true });
+  // Pinned, so a rename of it refreshes the reader's pinned list and nothing the Inbox shows.
+  await putIssueState(other.key, { pinned: true }, { login: me });
   await setLiveSessions([
     { session_id: asker.id, title: "Asker (e2e)" },
     { session_id: claimant.id, title: "Claimant (e2e)" },
   ]);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   // The Inbox's first load is composed now, before the claim, and held until the claim has been
   // handled. No cached thread names the ask yet, so the claim's refresh of the threads on its
@@ -413,7 +449,7 @@ test("a claim that lands while the Inbox is loading reaches the card that mounts
     inboxRequests += 1;
     if (inboxRequests === 1) {
       const response = await route.fetch();
-      const rows = (await response.json()) as { id: string; thread: { claimant: unknown } }[];
+      const rows = (await response.json()) as Result<"/api/v1/inbox", "get">;
       staleClaimant = rows.find((row) => row.id === ask.id)?.thread.claimant;
       firstFetched.resolve();
       await releaseFirst.promise;

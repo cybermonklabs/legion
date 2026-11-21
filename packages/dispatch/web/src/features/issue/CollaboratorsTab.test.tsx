@@ -123,23 +123,20 @@ test("the Collaborators tab splits Legion agents into role sections and keeps th
     expect(sessionsIn(legion)).toEqual(["planner", "tester", "new-reviewer", "old-reviewer"]);
     const replaced = legion.querySelector('[data-replaced-by="new-reviewer"]');
     expect(replaced?.textContent).toBe("replaced by Legion reviewer · new-reviewer");
-    expect(replaced?.querySelector("a")?.getAttribute("href")).toBe("/agents/new-reviewer/live");
+    expect(replaced?.querySelector("a")).toHaveAttribute("href", "/agents/new-reviewer/live");
     // Each agent is the live link, with the registry's state: the tester runs, the rest do not.
     expect(
-      within(legion)
-        .getByRole("link", { name: "Legion reviewer · old-reviewer" })
-        .getAttribute("href")
-    ).toBe("/agents/old-reviewer/live");
+      within(legion).getByRole("link", { name: "Legion reviewer · old-reviewer" })
+    ).toHaveAttribute("href", "/agents/old-reviewer/live");
     await waitFor(() =>
-      expect(
-        legion.querySelector('[data-agent-name="tester"]')?.getAttribute("data-agent-state")
-      ).toBe("running")
+      expect(legion.querySelector('[data-agent-name="tester"]')).toHaveAttribute(
+        "data-agent-state",
+        "running"
+      )
     );
     expect(
-      legion
-        .querySelector('[data-collaborator] [data-agent-name="old-reviewer"]')
-        ?.getAttribute("data-agent-state")
-    ).toBe("not-running");
+      legion.querySelector('[data-collaborator] [data-agent-name="old-reviewer"]')
+    ).toHaveAttribute("data-agent-state", "not-running");
 
     const others = screen.getByRole("region", { name: "Other agents" });
     expect(sessionsIn(others)).toEqual(["newer", "older", "quiet"]);

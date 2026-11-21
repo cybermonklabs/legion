@@ -1,3 +1,4 @@
+import type { Result } from "../web/src/api/paths";
 import type { Ask, Issue } from "../web/src/api/types";
 import {
   answerAsk,
@@ -16,7 +17,7 @@ import {
   listScrollTop,
   selectedRow,
 } from "./inbox-pane";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -27,6 +28,13 @@ const session = {
   },
   as: "agent" as const,
 };
+
+/** What a write the reader makes goes out as: the reader of every row here is a person of the
+ *  row's own (`rowPerson`, e2e/test.ts), whose Inbox holds this row's questions and no other
+ *  row's, so the counts and places read below are this row's alone. */
+function asReader(): { login: string } {
+  return { login: rowPerson("alice") };
+}
 
 // Issue titles sharing no terms, so the server's duplicate check never refuses a seed. There
 // are enough of them to fill a list past the bottom of the viewport at 1280 px, where the rows
@@ -69,7 +77,7 @@ async function seedAsks(prefix: string, count: number, from = 0): Promise<Seeded
     Array.from({ length: count }, (_value, index) => {
       const title = TITLES[from + index];
       if (title === undefined) throw new Error("out of issue titles");
-      return createIssue({ project: "CORE", title });
+      return createIssue({ project: rowKey("CORE"), title }, asReader());
     })
   );
   const asks: SeededAsk[] = [];
@@ -140,7 +148,7 @@ async function rowAtCentre(page: Page): Promise<string | null> {
  *  reader's is the one under test. */
 const BOTH_SECTIONS_ROWS = 16;
 async function seedBothSections() {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: rowKey("CORE"), name: "Core" }, asReader());
   const waiting = await seedAsks("Yours", 12);
   const target = waiting[2];
   if (target === undefined) throw new Error("target ask missing");
@@ -148,7 +156,7 @@ async function seedBothSections() {
   // they are what puts their asks under Waiting on agents.
   await Promise.all(
     (await seedAsks("Theirs", 4, 12)).map(({ ask, issue }) =>
-      createComment(issue.key, { ask_id: ask.id, body: "Clarify first." })
+      createComment(issue.key, { ask_id: ask.id, body: "Clarify first." }, asReader())
     )
   );
   return target;
@@ -190,7 +198,7 @@ test("a row being typed into keeps its draft when an agent's progress note flips
   browser,
 }) => {
   const target = await seedBothSections();
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto(WAITING_ON_INBOX);
@@ -247,7 +255,7 @@ test("the reader's own Ask back leaves the view still and holds the row only whe
   browser,
 }) => {
   const target = await seedBothSections();
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto(WAITING_ON_INBOX);
@@ -307,12 +315,13 @@ test("the reader's own Ask back leaves the view still and holds the row only whe
 test("the row at the viewport centre stays put when a P0 ask arrives above it @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" }, asReader());
   const asks = await seedAsks("Queue", 16);
   const sixth = asks[5];
   if (sixth === undefined) throw new Error("sixth ask missing");
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -322,7 +331,7 @@ test("the row at the viewport centre stays put when a P0 ask arrives above it @p
     const before = await topOf(row);
     expect(before).toBeGreaterThan(0);
 
-    const urgent = await createIssue({ project: "CORE", title: "Meridian" });
+    const urgent = await createIssue({ project: core, title: "Meridian" }, asReader());
     await patchIssue(urgent.key, { priority: 0 });
     const p0 = await createAsk(urgent.key, { question: "Urgent ask" }, session);
 
@@ -341,7 +350,7 @@ test("the row at the viewport centre stays put when a P0 ask arrives above it @p
 test("the row under the pointer stays put when a row above it is answered elsewhere, and is let go once the pointer leaves the list", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: rowKey("CORE"), name: "Core" }, asReader());
   // Long enough to scroll in whichever box holds it, with rows above and below each of the four
   // below, so every one of them can be brought to the centre of what is visible.
   const asks = await seedAsks("Queue", 20);
@@ -350,7 +359,7 @@ test("the row under the pointer stays put when a row above it is answered elsewh
   const between = askAtRow(asks, 10);
   const held = askAtRow(asks, 11);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -399,17 +408,18 @@ test("the row under the pointer stays put when a row above it is answered elsewh
 test("a band's header stays with its pointer-held row while a P0 ask arrives", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" }, asReader());
   // Older rows under the pair, so the list runs past the bottom of the viewport and has
   // somewhere to scroll when the arrival pushes the pair down. They carry no priority, so the
   // list's own banding puts them in the band under the P1 pair.
   await seedAsks("Below", 14);
-  const banded = await createIssue({ project: "CORE", title: "Banded stability" });
+  const banded = await createIssue({ project: core, title: "Banded stability" }, asReader());
   await patchIssue(banded.key, { priority: 1 });
   await createAsk(banded.key, { question: "Banded first" }, session);
   const held = await createAsk(banded.key, { question: "Banded held" }, session);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -425,7 +435,7 @@ test("a band's header stays with its pointer-held row while a P0 ask arrives", a
     const rowBefore = await topOf(row);
     const headerBefore = await topOf(header);
 
-    const urgent = await createIssue({ project: "CORE", title: "Ungrouped P0 arrival" });
+    const urgent = await createIssue({ project: core, title: "Ungrouped P0 arrival" }, asReader());
     await patchIssue(urgent.key, { priority: 0 });
     const p0 = await createAsk(urgent.key, { question: "Urgent arrival" }, session);
 
@@ -440,8 +450,12 @@ test("a band's header stays with its pointer-held row while a P0 ask arrives", a
 });
 
 async function seedTravellingPointerBand() {
-  await createProject({ key: "CORE", name: "Core" });
-  const banded = await createIssue({ project: "CORE", title: "Banded travelling pointer asks" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" }, asReader());
+  const banded = await createIssue(
+    { project: core, title: "Banded travelling pointer asks" },
+    asReader()
+  );
   await patchIssue(banded.key, { priority: 1 });
   await createAsk(banded.key, { question: "Travelling pointer banded first" }, session);
   await createAsk(banded.key, { question: "Travelling pointer banded second" }, session);
@@ -675,7 +689,7 @@ async function travelPointerAcrossIncomingRow(page: Page): Promise<void> {
   let hold = true;
   await page.route("**/api/v1/inbox", async (route) => {
     const response = await route.fetch();
-    const listed = (await response.json()) as Array<{ question?: string }>;
+    const listed = (await response.json()) as Result<"/api/v1/inbox", "get">;
     if (!hold || !listed.some((row) => row.question === "Travelling pointer arrival")) {
       await route.fulfill({ json: listed, response });
       return;
@@ -695,7 +709,10 @@ async function travelPointerAcrossIncomingRow(page: Page): Promise<void> {
     await startTravelling(page, column, gapAbove, gap);
     const answersBefore = await inboxAnswersRead(page);
 
-    const urgent = await createIssue({ project: "CORE", title: "Travelling pointer P0" });
+    const urgent = await createIssue(
+      { project: rowKey("CORE"), title: "Travelling pointer P0" },
+      asReader()
+    );
     await patchIssue(urgent.key, { priority: 0 });
     const p0 = await createAsk(urgent.key, { question: "Travelling pointer arrival" }, session);
     await requested.promise;
@@ -741,9 +758,9 @@ async function travelPointerAcrossIncomingRow(page: Page): Promise<void> {
 
 // SLOW(>=2s): nine seeded writes, a viewport resize and ~19 pointer-to-frame round trips.
 test("a travelling pointer keeps its destination when a P0 row arrives", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: rowKey("CORE"), name: "Core" }, asReader());
   await seedAsks("Travelling pointer", 8);
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -760,7 +777,7 @@ test("a travelling pointer crosses a band of its own without losing its destinat
   browser,
 }) => {
   await seedTravellingPointerBand();
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -788,13 +805,13 @@ test("a travelling pointer crosses a band of its own without losing its destinat
 test("the row whose reference card the pointer moved onto stays put when a row above it is answered elsewhere", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: rowKey("CORE"), name: "Core" }, asReader());
   const asks = await seedAsks("Carded", 20);
   const centreAsk = askAtRow(asks, 9);
   const between = askAtRow(asks, 10);
   const held = askAtRow(asks, 11);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -857,12 +874,12 @@ test("the row whose reference card the pointer moved onto stays put when a row a
 test("a held row stays drawn when the pointer moves onto the card its own reference opened", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: rowKey("CORE"), name: "Core" }, asReader());
   const asks = await seedAsks("Holding", 8);
   const held = askAtRow(asks, 3);
   const other = askAtRow(asks, 6);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -954,11 +971,11 @@ test("a held row stays drawn when the pointer moves onto the card its own refere
 test("the Inbox drawer holds the row the hand rests on when a row above it is answered", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: rowKey("CORE"), name: "Core" }, asReader());
   const asks = await seedAsks("Drawered", 20);
   const held = askAtRow(asks, 11);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto("/agents");

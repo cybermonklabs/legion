@@ -1,5 +1,5 @@
 import { createComment, createIssue, createMessage, createProject, putIssueState } from "./api";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -44,8 +44,9 @@ async function readingAnchor(page: Page, root: string, item: string): Promise<st
 test("a reader scrolled up keeps their Conversation viewport when a new card arrives @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Attention test" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Attention test" });
   for (let index = 0; index < 30; index += 1) {
     await createMessage(issue.key, { body: `Existing message ${index}` }, session);
   }
@@ -72,8 +73,9 @@ test("a reader scrolled up keeps their Conversation viewport when a new card arr
 });
 
 test("a reader at the Conversation top follows a new card", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Attention test" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Attention test" });
   for (let index = 0; index < 30; index += 1) {
     await createMessage(issue.key, { body: `Existing message ${index}` }, session);
   }
@@ -104,8 +106,9 @@ test("a reader at the Conversation top follows a new card", async ({ browser }) 
 // no `Load older` at all. Older events land beneath the rows already on screen, so the row the
 // reader is on does not move.
 test("loading older Activity rows keeps the reader anchor", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Older events" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Older events" });
   // One more than the Activity tab's 200-row page (`ActivityTab.tsx`), so a second page exists.
   for (let index = 0; index < 205; index += 1) {
     await createMessage(issue.key, { body: `Older message ${index}` }, session);
@@ -162,8 +165,9 @@ async function verifyGapDetection(
   browser: Parameters<typeof asUser>[0],
   viewport?: { height: number; width: number }
 ): Promise<void> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Attention test" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Attention test" });
   for (let index = 0; index < 20; index += 1) {
     await createComment(issue.key, { body: `Gap comment ${index}` }, session);
   }

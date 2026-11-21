@@ -4,7 +4,14 @@
  */
 import { expect } from "@playwright/test";
 
-import { createAsk, createComment, createIssue, createMessage, createProject } from "./api";
+import {
+  createAsk,
+  createComment,
+  createIssue,
+  createMessage,
+  createProject,
+  fixedKey,
+} from "./api";
 import { seedDecisionMessage } from "./decision-bodies";
 import { stubbed } from "./stub/stub-test";
 
@@ -53,8 +60,11 @@ const brokenTypedBlocks = {
   },
 };
 
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+
 const test = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Unknown directive" });
   const container = {
     ask: (await createAsk(issue.key, { question: unknownContainer }, agent)).id,

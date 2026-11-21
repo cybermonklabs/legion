@@ -10,10 +10,12 @@ import {
   createMessage,
   createProject,
   listIssueAsks,
+  type RowKey,
 } from "./api";
 import { blockId, openedThreadCard, setSheet } from "./editor";
 import { READING_PANE_WIDTH } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
+import { rowKey, rowKeyBehind } from "./test";
 
 /**
  * The one world every reference spec is walked across, and the surfaces it is read on.
@@ -36,12 +38,28 @@ export const referenceAgent = {
  *  spec block whose id a short block reference names. */
 export const ANCHOR = "The margin anchor sits here.";
 
-/** The keys the world's projects and issues take. This repository is public, so the fixture
- *  names no real project. */
-export const HOST_KEY = "CORE-1";
-export const TARGET_KEY = "CORE-2";
-export const OTHER_KEY = "XCORE-1";
-export const ACME_KEY = "ACME-12";
+/** The keys of the world's three projects. The shared text table writes its own (`CORE`, `XCORE`
+ *  and `ACME`: `CORE-1` the host, `CORE-2` the target, `XCORE-1` and `ACME-12`); each row makes
+ *  its world under keys of its own (`rowKey`, e2e/test.ts), and `intoWorld` rewrites a text from
+ *  the one to the other. This repository is public, so the fixture names no real project. */
+export interface ReferenceProjects {
+  readonly core: RowKey;
+  /** `core` behind an `X`, as the table's `XCORE` is `CORE` behind one, so a text that writes the
+   *  one key inside the other (`See XCORE-1 here.`) still does in this world. */
+  readonly xcore: RowKey;
+  readonly acme: RowKey;
+}
+
+/** `text`, written against the shared table's project keys, rewritten into the world's: `CORE`
+ *  becomes `projects.core`, the lower-case `core` the table writes to show a key read without
+ *  case is none becomes the lower case of it, and `ACME` becomes `projects.acme`. `XCORE`
+ *  follows from `CORE`, since the world's `xcore` is its `core` behind an `X`. */
+export function intoWorld(text: string, projects: ReferenceProjects): string {
+  return text.replace(/(CORE|core)(?=[-/~])|ACME(?=-)/g, (key) => {
+    if (key === "ACME") return projects.acme;
+    return key === "core" ? projects.core.toLowerCase() : projects.core;
+  });
+}
 
 /** The question block ids the host's spec declares: every id the shared text table's `#id` rows
  *  name, so the one world answers every row of it (`@legion/contracts`'s
@@ -111,13 +129,18 @@ export interface ShortenableItem {
 }
 
 export interface ReferenceWorld {
-  /** CORE-1, the host: its spec holds the anchor, filler that puts the questions below the
-   *  fold, and one question block per `QUESTION_IDS`. The texts these specs write live on it. */
+  /** The keys the row made its three projects under, which the table's texts are rewritten
+   *  into (`intoWorld`). */
+  readonly projects: ReferenceProjects;
+  /** Issue 1 of `projects.core`, the table's CORE-1 - the host: its spec holds the anchor,
+   *  filler that puts the questions below the fold, and one question block per `QUESTION_IDS`.
+   *  The texts these specs write live on it. */
   readonly host: Issue;
-  /** CORE-2, the issue references name, which owns the document, question, comment and message
-   *  of `targets`. */
+  /** Issue 2 of `projects.core`, the table's CORE-2, the issue references name, which owns the
+   *  document, question, comment and message of `targets`. */
   readonly target: Issue;
-  /** XCORE-1 and ACME-12, the two other keys a text writes bare. */
+  /** Issue 1 of `projects.xcore` and issue 12 of `projects.acme`, the table's XCORE-1 and
+   *  ACME-12: the two other keys a text writes bare. */
   readonly other: Issue;
   readonly acme: Issue;
   /** The host's spec's questions, by block id. */
@@ -134,17 +157,33 @@ export interface ReferenceWorld {
 const FILLER_PARAGRAPHS = 40;
 
 /**
- * Seeds the world: the three projects, the host whose spec declares every question block, the
- * target with a document, an ask, a comment and a message, the cross-project issue, and the
- * host's own ask, comment, message and spec block whose ids a short reference names.
+ * Seeds the world: the three projects, under the running row's own keys, the host whose spec
+ * declares every question block, the target with a document, an ask, a comment and a message,
+ * the cross-project issue, and the host's own ask, comment, message and spec block whose ids a
+ * short reference names.
  *
  * The keys are deterministic — an issue's key is its project's next number — and the seeding
  * refuses any other, so a change in how keys are minted fails here rather than inside a row.
+ *
+ * `login` is the person who makes the projects and the issues, alice where none is named: an
+ * issue is assigned to whoever made it, so the world's questions wait on that person, and a row
+ * that reads them in its reader's Inbox names a person of its own (`rowPerson`, e2e/test.ts).
  */
-export async function seedReferenceWorld(): Promise<ReferenceWorld> {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "XCORE", name: "Cross core" });
-  await createProject({ key: "ACME", name: "Acme" });
+export async function seedReferenceWorld({
+  login,
+}: {
+  readonly login?: string;
+} = {}): Promise<ReferenceWorld> {
+  const core = rowKey("CORE");
+  const projects: ReferenceProjects = {
+    acme: rowKey("ACME"),
+    core,
+    xcore: rowKeyBehind("X", core),
+  };
+  const by = { login };
+  await createProject({ key: projects.core, name: "Core" }, by);
+  await createProject({ key: projects.xcore, name: "Cross core" }, by);
+  await createProject({ key: projects.acme, name: "Acme" }, by);
   const filler = Array.from(
     { length: FILLER_PARAGRAPHS },
     (_, index) => `Filler paragraph ${index + 1} keeps the questions below the fold.`
@@ -152,16 +191,21 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
   const spec = [ANCHOR, ...filler, ...QUESTION_IDS.map((id) => questionBlock(id, "spec")), ""].join(
     "\n\n"
   );
-  const host = await createIssue({ project: "CORE", spec, title: "Reference host" });
-  const target = await createIssue({ project: "CORE", title: "Warm the cache" });
-  const other = await createIssue({ project: "XCORE", title: "Cross-project target" });
-  // ACME-12 is the twelfth issue of ACME, so eleven stand before it.
-  let acme = await createIssue({ project: "ACME", title: "Acme first" });
+  const host = await createIssue({ project: projects.core, spec, title: "Reference host" }, by);
+  const target = await createIssue({ project: projects.core, title: "Warm the cache" }, by);
+  const other = await createIssue({ project: projects.xcore, title: "Cross-project target" }, by);
+  // The table's ACME-12 is the twelfth issue of its project, so eleven stand before it.
+  let acme = await createIssue({ project: projects.acme, title: "Acme first" }, by);
   for (let made = 2; made <= 12; made += 1) {
-    acme = await createIssue({ project: "ACME", title: `Acme number ${made}` });
+    acme = await createIssue({ project: projects.acme, title: `Acme number ${made}` }, by);
   }
   const made = { acme: acme.key, host: host.key, other: other.key, target: target.key };
-  const want = { acme: ACME_KEY, host: HOST_KEY, other: OTHER_KEY, target: TARGET_KEY };
+  const want = {
+    acme: `${projects.acme}-12`,
+    host: `${projects.core}-1`,
+    other: `${projects.xcore}-1`,
+    target: `${projects.core}-2`,
+  };
   for (const [name, key] of Object.entries(want)) {
     if (made[name as keyof typeof made] !== key) {
       throw new Error(`setup: the world made ${JSON.stringify(made)}, not ${JSON.stringify(want)}`);
@@ -232,6 +276,7 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
       },
     },
     other,
+    projects,
     questions,
     target,
     targets: {

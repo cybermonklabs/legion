@@ -9,13 +9,23 @@
  */
 import { expect } from "@playwright/test";
 
-import { createComment, createIssue, createIssueArtifact, createProject, getArtifact } from "./api";
+import {
+  createComment,
+  createIssue,
+  createIssueArtifact,
+  createProject,
+  fixedKey,
+  getArtifact,
+} from "./api";
 import { blockId } from "./editor";
 import { stubbed } from "./stub/stub-test";
 
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+
 /** One document citing a block of another, both on one issue. */
 const test = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Block references" });
   const plan = await createIssueArtifact(issue.key, {
     content: "Intro.\n\nShip the block graph first.\n",
@@ -36,7 +46,7 @@ const test = stubbed(async () => {
 /** Two paragraphs of one document version citing one issue. The version is read where the
  *  seeding runs: the rows below are about what the panel draws, not about what it was. */
 const twiceTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const target = await createIssue({ project: "CORE", title: "Cited twice" });
   const first = `First, dispatch://${target.key} decides it.`;
   const second = `Then dispatch://${target.key} ships it.`;
@@ -54,7 +64,7 @@ const twiceTest = stubbed(async () => {
 
 /** One comment citing two blocks of the document on screen. */
 const commentTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Two blocks cited" });
   const callout = (id: string, text: string) =>
     `:::callout{#${id} kind="note" title=""}\n${text}\n:::`;

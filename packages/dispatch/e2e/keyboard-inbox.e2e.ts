@@ -5,6 +5,7 @@ import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { setLiveSessions } from "./agents";
 import { createAsk, createComment, createIssue, createProject, getInbox, patchIssue } from "./api";
 import { recordClipboard } from "./clipboard";
+import { clearedInbox, expectDrawn } from "./inbox-drawn";
 import { clearAssigneeFilter, closeAssigneeFilter, pickAssignee } from "./inbox-filter";
 import {
   hasReadingPane,
@@ -29,10 +30,10 @@ import {
   openPane,
   rowSnooze,
   seedInbox,
-  seedPane,
+  seedPaneAhead,
   session,
 } from "./keyboard-inbox";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -54,12 +55,16 @@ function snoozeRequest(page: Page, askId: string) {
 // The rows below are keyboard work on the Inbox list: marks, bulk snoozes, the refusals they
 // come back with, and where the focus lands after each. None of them reads a width, a box or a
 // touch target, so the phone viewport decides nothing they assert and the describe takes no tag.
+// The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose list holds this
+// row's asks and no other row's.
 test.describe("inbox selection", () => {
   test("x marks rows, h snoozes every marked ask into Later, and Escape clears the selection", async ({
     browser,
   }, testInfo) => {
-    await seedInbox();
-    const context = await asUser(browser, "alice");
+    const core = rowKey("CORE");
+    const me = rowPerson("alice");
+    await seedInbox(core, me);
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page);
@@ -74,7 +79,7 @@ test.describe("inbox selection", () => {
       await expect(rows.nth(2).getByRole("checkbox")).not.toBeChecked();
       await expect(rows.nth(0).getByRole("checkbox")).toHaveAttribute(
         "aria-label",
-        /^Select CORE-\d: \w+ decision$/
+        new RegExp(`^Select ${core}-\\d: \\w+ decision$`)
       );
 
       const bar = page.getByRole("group", { name: "Selected rows" });
@@ -126,8 +131,9 @@ test.describe("inbox selection", () => {
   test("a refused bulk snooze names the count and keeps the refused rows marked @pr", async ({
     browser,
   }) => {
-    await seedInbox();
-    const context = await asUser(browser, "alice");
+    const me = rowPerson("alice");
+    await seedInbox(rowKey("CORE"), me);
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page);
@@ -170,8 +176,9 @@ test.describe("inbox selection", () => {
   test("a late bulk-snooze refusal re-marks only its refused row after Clear", async ({
     browser,
   }) => {
-    await seedInbox();
-    const context = await asUser(browser, "alice");
+    const me = rowPerson("alice");
+    await seedInbox(rowKey("CORE"), me);
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page);
@@ -220,15 +227,24 @@ test.describe("inbox selection", () => {
   test("Escape during a pending bulk snooze clears every mark, and a late refusal re-marks only its own", async ({
     browser,
   }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const mine = await createIssue({ project: "CORE", title: "Mine to answer" });
-    await patchIssue(mine.key, { assignee: "alice" });
+    const core = rowKey("CORE");
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const mine = await createIssue({ project: core, title: "Mine to answer" }, { login: me });
+    await patchIssue(mine.key, { assignee: me });
     const refusedAsk = await createAsk(mine.key, { question: "Ship it?" }, session);
     const takenAsk = await createAsk(mine.key, { question: "Hold it?" }, session);
-    const theirs = await createIssue({ project: "CORE", title: "Bob answers this" });
+    const theirs = await createIssue({ project: core, title: "Bob answers this" }, { login: me });
     await patchIssue(theirs.key, { assignee: "bob" });
     const hidden = await createAsk(theirs.key, { question: "Wait on it?" }, session);
-    const context = await asUser(browser, "alice");
+    // The cleared filter lists every open question of the stack, every earlier row's beside
+    // these three, so what it draws is read from the server and banded by the Inbox's own rules
+    // (`clearedInbox`). The three are the newest of their band, newest first, so the row ticked
+    // there is this row's, and the row `j` steps on to from it is this row's too.
+    const cleared = await clearedInbox(me);
+    const at = cleared.rows.indexOf(hidden.id);
+    expect(cleared.rows.slice(at, at + 3)).toEqual([hidden.id, takenAsk.id, refusedAsk.id]);
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       const held = Promise.withResolvers<void>();
@@ -249,13 +265,13 @@ test.describe("inbox selection", () => {
       // filter is driven rather than navigated to: a reload would lose the mark this is about.
       await page.goto("/?assignee=everyone");
       const rows = page.locator("[data-inbox-row]");
-      await expect(rows).toHaveCount(3);
+      await expectDrawn(page, cleared);
       await checkbox(hidden.id).check();
       // Ticking a row also selects it where the reading column is on, and the list keeps the
       // row that column is showing: the reader moves on before the filter narrows, so the mark
       // is all that is left of it here.
       if (hasReadingPane(page)) await page.keyboard.press("j");
-      await pickAssignee(page, "alice");
+      await pickAssignee(page, me);
       await closeAssigneeFilter(page);
       await expect(rows).toHaveCount(2);
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -298,15 +314,18 @@ test.describe("inbox selection", () => {
   test("a refusal reaches the reader even when the optimistic snooze empties the view", async ({
     browser,
   }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const issue = await createIssue({ project: "CORE", title: "Needs you" });
+    const core = rowKey("CORE");
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const issue = await createIssue({ project: core, title: "Needs you" }, { login: me });
     const refusedAsk = await createAsk(issue.key, { question: "First decision" }, session);
     await createAsk(issue.key, { question: "Second decision" }, session);
-    const context = await asUser(browser, "alice");
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
-      // Every read of the Inbox the page sends, and every snooze event of alice's its live feed
-      // carries: a snooze's event names no ask.
+      // Every read of the Inbox the page sends, and every snooze event of the reader's its live
+      // feed carries: a snooze's event names no ask, and the reader is this row's own person, so
+      // it is the event that names that login.
       const inboxReads: string[] = [];
       page.on("request", (request) => {
         if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/inbox") {
@@ -320,7 +339,7 @@ test.describe("inbox selection", () => {
           const frame = String(payload);
           if (
             frame.includes("user_state.updated") &&
-            frame.includes('"login":"alice"') &&
+            frame.includes(`"login":${JSON.stringify(me)}`) &&
             frame.includes('"snoozed"')
           ) {
             snoozeEvents.push(frame);
@@ -406,10 +425,12 @@ test.describe("inbox selection", () => {
   test("a folded mark stops counting, comes back with its band, and leaves Escape a way out", async ({
     browser,
   }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const issue = await createIssue({ project: "CORE", title: "The only ask" });
+    const core = rowKey("CORE");
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const issue = await createIssue({ project: core, title: "The only ask" }, { login: me });
     await createAsk(issue.key, { question: "Ship it?" }, session);
-    const context = await asUser(browser, "alice");
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page, 1);
@@ -467,14 +488,17 @@ test.describe("inbox selection", () => {
   // A folded band is off the page: the reader has no checkbox to untick there, and may well have
   // set that row's moment by hand since marking it. A pick must not write it.
   test("a bulk pick leaves a folded row's own snooze alone", async ({ browser }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const first = await createIssue({ project: "CORE", title: "Deferred by hand" });
+    const core = rowKey("CORE");
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const first = await createIssue({ project: core, title: "Deferred by hand" }, { login: me });
     const deferred = await createAsk(first.key, { question: "Which release?" }, session);
-    const second = await createIssue({ project: "CORE", title: "Still open" });
+    const second = await createIssue({ project: core, title: "Still open" }, { login: me });
     const live = await createAsk(second.key, { question: "Ship it?" }, session);
+    // A snooze is the reader's own, so its moment is read off the server's answer to her.
     const moment = async (askId: string) =>
-      (await getInbox()).find((row) => row.id === askId)?.snoozed_until ?? null;
-    const context = await asUser(browser, "alice");
+      (await getInbox({ login: me })).find((row) => row.id === askId)?.snoozed_until ?? null;
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page, 2);
@@ -515,8 +539,9 @@ test.describe("inbox selection", () => {
   // One pick at a time: a second while the first is in the air re-sends every id and lets the
   // stale answer overwrite the live one's.
   test("the bulk picker is inert while its pick is in flight", async ({ browser }) => {
-    await seedInbox();
-    const context = await asUser(browser, "alice");
+    const me = rowPerson("alice");
+    await seedInbox(rowKey("CORE"), me);
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page);
@@ -564,14 +589,20 @@ test.describe("inbox selection", () => {
   test("ask positions follow the order the bands show them, not the server's", async ({
     browser,
   }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const issue = await createIssue({ project: "CORE", title: "Two asks, two bands" });
+    const core = rowKey("CORE");
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const issue = await createIssue({ project: core, title: "Two asks, two bands" }, { login: me });
     const deferred = await createAsk(issue.key, { question: "Alpha decision" }, session);
     const handedBack = await createAsk(issue.key, { question: "Beta decision" }, session);
     // A human reply hands Beta's turn to the agents, so the server lists Alpha - still the
     // reader's turn - first.
-    await createComment(issue.key, { ask_id: handedBack.id, body: "Looking into it." });
-    const context = await asUser(browser, "alice");
+    await createComment(
+      issue.key,
+      { ask_id: handedBack.id, body: "Looking into it." },
+      { login: me }
+    );
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openInbox(page, 2);
@@ -583,18 +614,19 @@ test.describe("inbox selection", () => {
       await expect(rows).toHaveCount(2);
 
       // The precondition this test exists for: the server's order is the opposite of the bands'.
-      const served = (await getInbox({ login: "alice" })).map((row) => row.id);
+      // The server's order of the reader's own list, which is the list the page reads.
+      const served = (await getInbox({ login: me }, { assignee: "me" })).map((row) => row.id);
       expect(served).toEqual([deferred.id, handedBack.id]);
       await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", handedBack.id);
       await expect(rows.nth(1)).toHaveAttribute("data-inbox-row", deferred.id);
 
       await expect(rows.nth(0).getByRole("checkbox")).toHaveAttribute(
         "aria-label",
-        "Select CORE-1, ask 1 of 2: Beta decision"
+        `Select ${core}-1, ask 1 of 2: Beta decision`
       );
       await expect(rows.nth(1).getByRole("checkbox")).toHaveAttribute(
         "aria-label",
-        "Select CORE-1, ask 2 of 2: Alpha decision"
+        `Select ${core}-1, ask 2 of 2: Alpha decision`
       );
     } finally {
       await context.close();
@@ -612,19 +644,29 @@ test.describe("inbox selection", () => {
 test("j, k and the arrows step through thread rows, o opens them, y copies only what has a reference, x selects them and e dismisses them", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
+  // The reader is a person of the row's own (`rowPerson`): her Inbox holds this row's question
+  // and her two threads, and no other row's.
+  const me = rowPerson("alice");
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
-  const asked = await createIssue({ project: "CORE", title: "Lease handover" });
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const asked = await createIssue({ project: core, title: "Lease handover" }, { login: me });
   const ask = await createAsk(asked.key, { question: "Ship the lease handover?" }, session);
-  const threadIssue = await createIssue({ project: "CORE", title: "Replay budget" });
+  const threadIssue = await createIssue({ project: core, title: "Replay budget" }, { login: me });
   const thread = await seedCommentThread(
     threadIssue.key,
     "How far back does a replay go?",
-    "One hour, then it gives up."
+    "One hour, then it gives up.",
+    THREAD_SESSION,
+    me
   );
-  const agent = await seedAgentThread({ body: "What is the rollout status?", replies: ["Green."] });
+  const agent = await seedAgentThread({
+    body: "What is the rollout status?",
+    login: me,
+    replies: ["Green."],
+  });
 
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     const copied = await recordClipboard(page);
@@ -732,11 +774,16 @@ test("j, k and the arrows step through thread rows, o opens them, y copies only 
 test("l moves the focus into the reading pane, the keyboard scrolls the document there, and Escape returns to the row l was pressed on", async ({
   browser,
 }) => {
-  const seed = await seedPane();
+  // The cleared filter lists every open question of the stack, every earlier row's beside these
+  // two, so the two are put at its head (`seedPaneAhead`), where the keys below walk, and what
+  // the list draws is read from the server and banded by the Inbox's own rules (`clearedInbox`).
+  const seed = await seedPaneAhead(rowKey("PANE"));
+  const cleared = await clearedInbox("alice");
+  expect(cleared.rows.slice(0, 2)).toEqual([seed.approvalAskId, seed.cardAskId]);
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await openPane(page, seed);
+    await openPane(page, seed, cleared);
     const rows = page.locator("[data-inbox-row]");
     await goToRow(page, 0);
 

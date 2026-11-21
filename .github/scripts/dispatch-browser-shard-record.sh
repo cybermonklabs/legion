@@ -6,8 +6,8 @@
 # Who runs it: the step "What the run left behind" of .github/workflows/dispatch-browser.yaml's
 # shard job; .github/ci-notes/dispatch-browser.md#what-the-shard-job-collects-after-a-run says why
 # it runs on every leg and not on a failed one alone. It takes
-# no argument: $RUNNER_TEMP is where the browser step before it wrote the run directory, the
-# sampler's two files and the store's log.
+# no argument: $RUNNER_TEMP is where the browser step before it wrote the run directory, and
+# where the store's log is.
 # The runner sets $RUNNER_TEMP for every step.
 #
 # The alone job's step of this name is .github/scripts/dispatch-browser-alone-record.sh, a

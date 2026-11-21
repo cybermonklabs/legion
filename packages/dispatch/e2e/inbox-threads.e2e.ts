@@ -2,7 +2,7 @@ import { setLiveSessions } from "./agents";
 import { createIssue, createProject } from "./api";
 import { hasReadingPane, inboxPane } from "./inbox-pane";
 import { replyRowId, seedCommentThread, seedTwelve, THREAD_SESSION } from "./inbox-threads";
-import { expect, type Locator, test } from "./test";
+import { expect, type Locator, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -21,8 +21,11 @@ import { asUser } from "./users";
 test("the drawer's own bar filters the drawer alone, and the Inbox page keeps its list", async ({
   browser,
 }) => {
-  await seedTwelve();
-  const alice = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose Inbox holds the
+  // twelve rows this seed makes and no other row's.
+  const me = rowPerson("alice");
+  await seedTwelve(rowKey("CORE"), me);
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     // The Inbox page, narrowed to its Reply rows: the list the drawer must not touch.
@@ -110,9 +113,10 @@ async function clampedParts(turn: Locator): Promise<string[]> {
 
 // It is no stubbed row either: it carries `@phone`, and the `iphone` project runs none.
 test("a long reply shows whole in the reading pane and on a card @phone", async ({ browser }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Replay budget" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Replay budget" });
   const thread = await seedCommentThread(issue.key, "How far does the replay go?", LONG_REPLY);
 
   const alice = await asUser(browser, "alice");

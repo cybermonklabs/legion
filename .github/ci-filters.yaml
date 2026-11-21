@@ -910,13 +910,6 @@ dispatch_browser_run_reads_test: &dispatch_browser_run_reads_test
   - '.github/scripts/dispatch-browser-run-reads.test.sh'
   - '.github/scripts/dispatch-browser-run-reads.sh'
   - '.github/scripts/gh-read.sh'
-dispatch_browser_samples_test: &dispatch_browser_samples_test
-  - *ci_router
-  - *ci_filters_data
-  - '.github/workflows/ci-job-test.yaml'
-  - '.github/scripts/test-lib.sh'
-  - '.github/scripts/dispatch-browser-samples.test.sh'
-  - '.github/scripts/dispatch-browser-samples.sh'
 race_memory_test: &race_memory_test
   - *ci_router
   - *ci_filters_data
@@ -1030,7 +1023,6 @@ test:
   - *edited_migrations_base_test
   - *dispatch_browser_latest_blobs_test
   - *dispatch_browser_run_reads_test
-  - *dispatch_browser_samples_test
   - *race_memory_test
   - *disk_watch_test
   - *priorities_seed_check_test
@@ -1523,8 +1515,7 @@ dispatch_browser:
   - 'scripts/third-party-notices.ts'
   # why: .github/ci-notes/ci.md#dispatch_browser-the-workflow-that-holds-every-browser-step-which-this-job
   - '.github/workflows/dispatch-browser.yaml'
-  # why: .github/ci-notes/ci.md#dispatch_browser-the-memory-and-cpu-sampler-the-shard-and-alone-jobs
-  - '.github/scripts/dispatch-browser-samples.sh'
+  # why: .github/ci-notes/ci.md#dispatch_browser-the-reading-of-the-stacks-postgresql-the-shard-and-alone-jobs-run
   - '.github/scripts/dispatch-browser-postgres.sh'
   - '.github/scripts/dispatch-browser-latest-blobs.sh'
   - '.github/scripts/dispatch-browser-run-reads.sh'
@@ -1533,12 +1524,14 @@ dispatch_browser:
   - '.github/scripts/dispatch-browser-shard-record.sh'
   - '.github/scripts/dispatch-browser-alone-suite.sh'
   - '.github/scripts/dispatch-browser-alone-record.sh'
+  - '.github/scripts/dispatch-browser-host-suite.sh'
   - '.github/scripts/dispatch-browser-visual-suite.sh'
   - '.github/scripts/dispatch-browser-merge-reports.sh'
   - '.github/scripts/dispatch-browser-reading-rows.sh'
   - '.github/scripts/dispatch-browser-reading-flake-rate.sh'
   - '.github/scripts/dispatch-browser-reading-leg-exits.sh'
   - '.github/scripts/dispatch-browser-reading-row-durations.sh'
+  - '.github/scripts/dispatch-browser-reading-quarantined-rows.sh'
   - '.github/scripts/dispatch-browser-verdict.sh'
   - '.github/scripts/gh-read.sh'
   # why: .github/ci-notes/ci.md#dispatch_browser-the-container-image-the-shard-and-alone-jobs-run-in-and

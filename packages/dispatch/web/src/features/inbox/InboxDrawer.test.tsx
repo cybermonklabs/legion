@@ -202,7 +202,7 @@ test("Escape with a row focused backs out of the row first; only a second Escape
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Inbox" })).not.toBeNull();
-    expect(document.activeElement).not.toBe(row);
+    expect(row).not.toHaveFocus();
 
     // Nothing is focused now, so the press reaches the keymap's window listener through the body.
     await user.keyboard("{Escape}");
@@ -234,7 +234,7 @@ test("at 1440 px the drawer is still today's Inbox: the card in the row, no read
     const dialog = await screen.findByRole("dialog", { name: "Inbox" });
     const card = await within(dialog).findByTestId("ask-ask-a");
 
-    expect(card.closest("[data-inbox-row]")?.getAttribute("data-inbox-row")).toBe("ask-a");
+    expect(card.closest("[data-inbox-row]")).toHaveAttribute("data-inbox-row", "ask-a");
     expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument();
     expect(document.querySelector("[data-inbox-selected]")).toBeNull();
     // The address under the drawer is still the page's own.

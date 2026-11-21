@@ -18,7 +18,21 @@
 import { createIssue, createProject, createProjectDocument } from "./api";
 import { documentEditor } from "./editor";
 import { withIssuePage } from "./issue-page-option";
-import { expect, type Locator, type Page, type Response, test } from "./test";
+import {
+  expect,
+  type Locator,
+  own,
+  type Page,
+  type Response,
+  rowKey,
+  rowPerson,
+  test,
+} from "./test";
+
+// Both rows read the Inbox as "Nothing needs you", which is a claim about the reader's whole
+// list: the reader is a person of the row's own (`rowPerson`, e2e/test.ts), whom no question of
+// any row waits on.
+test.use({ signedIn: own("alice") });
 
 /** The family `web/src/styles.css` declares for the typeface the app ships and the new issue
  *  page draws in. */
@@ -142,9 +156,10 @@ function firstElementNaming(where: string, stacks: ElementStack[], held: string[
 // SLOW(>=2s): three pages loaded one after another, the last a project document whose editor
 // opens its live room, each read for every element's stack after its fonts are ready.
 test("no page but the new issue page takes the shipped typeface @phone", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "A page in the root's stack" });
-  const notes = await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "A page in the root's stack" });
+  const notes = await createProjectDocument(core, {
     content: "# Design notes\n\nA paragraph in the root's stack.\n",
     name: "Design notes",
   });
@@ -159,7 +174,7 @@ test("no page but the new issue page takes the shipped typeface @phone", async (
     {
       drawn: documentEditor(page).getByText("A paragraph in the root's stack."),
       name: "the project document",
-      path: `/projects/CORE/documents/${notes.artifact.slug}`,
+      path: `/projects/${core}/documents/${notes.artifact.slug}`,
     },
   ];
   const fontFiles = new Map<string, string[]>(pages.map(({ name }) => [name, []]));
@@ -198,9 +213,10 @@ test("the new issue page draws the whole document in the shipped typeface @phone
   context,
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "A page in the shipped typeface" });
-  await withIssuePage(context, "alice");
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "A page in the shipped typeface" });
+  await withIssuePage(context, rowPerson("alice"));
   const fontRequests: string[] = [];
   const fontResponses: Promise<Response | null>[] = [];
   page.on("request", (request) => {

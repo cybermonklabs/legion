@@ -15,7 +15,7 @@ import {
   openRail,
   railAgentRow,
 } from "./rail";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -32,6 +32,10 @@ import { asUser } from "./users";
  *
  * Every read of what a view is doing is the page's own report (`e2e/live-views.ts`) or the word
  * its rail row shows; the suite never counts frames to guess at it.
+ *
+ * Pins are the person's, so the person of every row is one of the row's own (`rowPerson`,
+ * e2e/test.ts): the rail lists this row's pins, and the Inbox the rail opens holds nothing, with
+ * no other row's question selected in it.
  */
 
 /** The eight sessions these rows pin, by id. Each is a UUID: Dispatch's agent routes refuse
@@ -106,14 +110,18 @@ async function seedPinnedRigs(count: number): Promise<void> {
   for (let index = 0; index < count; index += 1) {
     await seedTranscript(index);
     // One at a time: the rail's order is the order the pins were made in.
-    await putAgentState(RIG_IDS[index], { pinned: true });
+    await putAgentState(RIG_IDS[index], { pinned: true }, { login: rowPerson("alice") });
   }
 }
 
 /** One of `sessionId`'s replies to a message the viewer sent it, which counts unread until a
  *  view the viewer is looking at shows it. */
 async function seedUnreadReply(sessionId: string, body: string): Promise<void> {
-  const asked = await createAgentMessage(sessionId, { body: "How far along?", delivery: "aside" });
+  const asked = await createAgentMessage(
+    sessionId,
+    { body: "How far along?", delivery: "aside" },
+    { login: rowPerson("alice") }
+  );
   await replyToMessageDelivery(asked.id, { attempt: 1, body }, { id: sessionId, kind: "session" });
 }
 
@@ -177,7 +185,7 @@ test("a pinned agent comes back with its draft, its place and its Jump to latest
   browser,
 }) => {
   await seedPinnedRigs(3);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
@@ -216,7 +224,7 @@ test("opening all eight pinned agents in turn closes none and refuses none", asy
   browser,
 }) => {
   await seedPinnedRigs(8);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
@@ -252,7 +260,7 @@ test("the rail reads live, live 30s and asleep for the views the person has open
   browser,
 }) => {
   await seedPinnedRigs(3);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
@@ -294,7 +302,7 @@ test("a view that slept comes back with its conversation and says that it came b
   browser,
 }) => {
   await seedPinnedRigs(3);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
@@ -332,7 +340,7 @@ test("a sleeping row keeps its name, its running mark and its unread count", asy
 }) => {
   await seedPinnedRigs(3);
   await seedUnreadReply(RIG_IDS[0], "Still building.");
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
@@ -361,7 +369,7 @@ test("a reply for a lingering or sleeping agent leaves its count standing until 
   browser,
 }) => {
   await seedPinnedRigs(3);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
@@ -403,7 +411,7 @@ test("an agent whose view slept after a context frame shows its ring again when 
 }) => {
   await seedPinnedRigs(3);
   await seedTranscript(0, { contextWindow: 200_000, tokens: 68_000 });
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
@@ -433,7 +441,7 @@ test("Back walks the pages the reader came from, not the agents they looked at",
   browser,
 }) => {
   await seedPinnedRigs(3);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
@@ -461,8 +469,8 @@ test("a hard load of an unpinned agent's live view draws it, and the Inbox and b
 }) => {
   await setLiveSessions([rig(0), rig(1)]);
   await seedTranscript(1);
-  await putAgentState(RIG_IDS[0], { pinned: true });
-  const context = await asUser(browser, "alice");
+  await putAgentState(RIG_IDS[0], { pinned: true }, { login: rowPerson("alice") });
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto(`/agents/${RIG_IDS[1]}/live`);

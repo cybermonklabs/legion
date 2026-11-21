@@ -12,8 +12,8 @@ test("Timestamp renders the current relative label for a frozen clock", () => {
   try {
     const time = view.getByText("5 minutes ago");
     expect(time.tagName).toBe("TIME");
-    expect(time.getAttribute("dateTime")).toBe(at);
-    expect(time.getAttribute("title")).toBe(new Date(at).toLocaleString());
+    expect(time).toHaveAttribute("dateTime", at);
+    expect(time).toHaveAttribute("title", new Date(at).toLocaleString());
   } finally {
     view.unmount();
     nowSpy.mockRestore();

@@ -21,7 +21,7 @@ import {
   type Target,
   type TargetKind,
 } from "./reference-surfaces";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -96,8 +96,12 @@ function forms(kind: TargetKind, target: Target): readonly string[] {
  * addresses; then, per form and per missing address, a thread whose reply is that text alone -
  * which the Inbox lists as a Reply row - and an ask whose question is that same text, answered
  * by the reader so the Answers page draws its inert preview.
+ *
+ * `reader` is the person who opens each thread and answers each ask: the row's own
+ * (`rowPerson`, e2e/test.ts), so her Inbox and her Answers page hold this row's rows and no
+ * other row's.
  */
-async function seedTitles(): Promise<Seeded> {
+async function seedTitles(reader: string): Promise<Seeded> {
   const world = await seedReferenceWorld();
   const missing: Missing[] = [
     {
@@ -155,7 +159,11 @@ async function seedTitles(): Promise<Seeded> {
     ...missing.map(({ address }) => address),
   ];
   for (const text of texts) {
-    const root = await createComment(world.host.key, { body: "Where does this reference lead?" });
+    const root = await createComment(
+      world.host.key,
+      { body: "Where does this reference lead?" },
+      { login: reader }
+    );
     const reply = await createComment(
       world.host.key,
       { body: text, reply_to: root.id },
@@ -168,11 +176,12 @@ async function seedTitles(): Promise<Seeded> {
       { options: [{ label: "Yes" }, { label: "No" }], question: text },
       referenceAgent
     );
-    await answerAsk(ask.id, { expected_edited_at: null, selected: ["Yes"] });
+    await answerAsk(ask.id, { expected_edited_at: null, selected: ["Yes"] }, { login: reader });
     written.set(text, { ask: ask.id, reply: reply.id, thread: root.id });
   }
-  // Each answered ask is one row of alice's Answers page, under the question the session wrote.
-  const answers = await listMyAnswers({ limit: 50 });
+  // Each answered ask is one row of the reader's Answers page, under the question the session
+  // wrote.
+  const answers = await listMyAnswers({ limit: 50 }, { login: reader });
   expect(new Map((answers.rows ?? []).map((row) => [row.ask_id, row.question]))).toEqual(
     new Map([...written].map(([text, where]) => [where.ask, text]))
   );
@@ -216,10 +225,11 @@ for (const kind of KINDS) {
   test(`a bare address and a link whose text is its own address to the ${kind.toLowerCase()} read as its title in the live editor, a past version, a comment, its reply on the Inbox and an inert one-line preview`, async ({
     browser,
   }, testInfo) => {
-    const seeded = await seedTitles();
+    const me = rowPerson("alice");
+    const seeded = await seedTitles(me);
     const { world } = seeded;
     const target = world.targets[kind];
-    const context = await asUser(browser, "alice");
+    const context = await asUser(browser, me);
     try {
       const page = await context.newPage();
       await openSpec(page, world.host.key, ANCHOR);
@@ -301,9 +311,10 @@ async function expectWordsAndAddresses(scope: Locator, seeded: Seeded): Promise<
 test("a link its author worded keeps its words in the document, and an address whose target is missing reads as written @pr", async ({
   browser,
 }, testInfo) => {
-  const seeded = await seedTitles();
+  const me = rowPerson("alice");
+  const seeded = await seedTitles(me);
   const { world } = seeded;
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     const answered = missingAnswered(page, seeded);

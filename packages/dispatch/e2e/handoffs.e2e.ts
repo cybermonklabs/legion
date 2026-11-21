@@ -1,5 +1,5 @@
 import { createHandoff, createIssue, createProject } from "./api";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // The session that writes both versions, as `dispatch handoff-write` does: under the agent bearer,
@@ -12,8 +12,9 @@ const implementer = {
 
 /** An issue carrying v1 and v2 of its `implement` handoff, each body with a two-entry `proof`. */
 async function seedHandoffs(): Promise<string> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Handoffs on the issue" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Handoffs on the issue" });
   await createHandoff(
     issue.key,
     "implement",

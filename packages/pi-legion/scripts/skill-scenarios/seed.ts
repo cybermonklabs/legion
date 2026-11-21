@@ -99,6 +99,7 @@ import {
   createMessage,
   createProject,
   e2eAgentToken,
+  fixedKey,
   getArtifact,
   getArtifactText,
   getArtifactVersion,
@@ -567,7 +568,10 @@ export async function captureSpec(file: string, runDir: string): Promise<void> {
 }
 
 async function seedProject(): Promise<void> {
-  await createProject({ key: "LWEVAL", name: "skill scenarios" });
+  await createProject({
+    key: fixedKey("LWEVAL", "the skill scenarios' fixtures and prompts name this project"),
+    name: "skill scenarios",
+  });
   console.log("seeded LWEVAL");
 }
 
@@ -818,7 +822,10 @@ async function seedBrainstorm(): Promise<void> {
   // prompt's feature (a crash already understood and a display tweak). Each title names the "todo
   // CLI" in plain words: Postgres's English parser reads `todo.py` and `to-do` as single lexemes, so
   // a session's `dispatch search` for "todo CLI" finds a title only where `todo` stands alone.
-  await createProject({ key: "TODO", name: "todo CLI" });
+  await createProject({
+    key: fixedKey("TODO", "the brainstorm batch's prompt names this project"),
+    name: "todo CLI",
+  });
   for (const [title, problem] of [
     [
       "The todo CLI's done command crashes on a task number past the end of the list",

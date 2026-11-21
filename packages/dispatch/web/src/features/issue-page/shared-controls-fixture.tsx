@@ -1,5 +1,6 @@
-import { act, type RenderResult } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
+import { type RenderResult, waitFor } from "@testing-library/react";
+import { type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
@@ -29,11 +30,30 @@ import { NoTooltips } from "./NoTooltips";
  *  `outside` every page of `main`. */
 export type Surface = "inside" | "outside";
 
+/** The query client of each draw on the page, from its draw until it leaves the page, and the
+ *  reads a row holds back (`heldRead`) until it gives their answers or the page empties: what
+ *  `settleReads` reads. */
+const drawnClients = new Set<QueryClient>();
+const heldReads = new Set<object>();
+
+function ReadsOf({ children }: { children: ReactNode }): ReactNode {
+  const client = useQueryClient();
+  useEffect(() => {
+    drawnClients.add(client);
+    return () => {
+      drawnClients.delete(client);
+      if (drawnClients.size === 0) heldReads.clear();
+    };
+  }, [client]);
+  return children;
+}
+
 /** Draws `node` the way a page does: under a router and a query client of its own, inside
  *  `NoTooltips` or outside it. */
 export function draw(node: ReactNode, surface: Surface): RenderResult {
   return renderWithQueries(
-    <MemoryRouter>{surface === "inside" ? <NoTooltips>{node}</NoTooltips> : node}</MemoryRouter>
+    <MemoryRouter>{surface === "inside" ? <NoTooltips>{node}</NoTooltips> : node}</MemoryRouter>,
+    { wrapper: ReadsOf }
   );
 }
 
@@ -44,15 +64,34 @@ export function undraw(view: RenderResult): void {
   view.container.remove();
 }
 
-/** Lets every read a control started answer and every render after it land. */
+/** The keys of the reads a draw on the page has out. */
+function readsOut(): string[] {
+  return [...drawnClients].flatMap((client) =>
+    client
+      .getQueryCache()
+      .findAll({ fetchStatus: "fetching" })
+      .map((query) => JSON.stringify(query.queryKey))
+  );
+}
+
+/** `answer`, for a read the row stubs to return while the row holds it back: `settleReads` does not
+ *  wait for that read until the answer is given. */
+export function heldRead<Answer>(answer: Promise<Answer>): Promise<Answer> {
+  const hold = {};
+  heldReads.add(hold);
+  return answer.finally(() => heldReads.delete(hold));
+}
+
+/** Lets every read a control started answer and every render after it land: waits until every
+ *  read a draw on the page has out is one the row holds back (`heldRead`), and again after the
+ *  renders those answers make, which may send reads of their own. */
 export async function settleReads(): Promise<void> {
-  for (let turn = 0; turn < 5; turn += 1) {
-    await act(async () => {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setTimeout(resolve, 0);
-      await promise;
+  const unheld = () => readsOut().length > heldReads.size;
+  do {
+    await waitFor(() => {
+      if (unheld()) throw new Error(`reads out, ${heldReads.size} held: ${readsOut().join(", ")}`);
     });
-  }
+  } while (unheld());
 }
 
 /** The tokens of a class string, for reading whether an element carries each. */

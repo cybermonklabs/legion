@@ -13,7 +13,7 @@ import {
   type Preset,
 } from "../web/src/features/issue-page/page-words";
 import { withIssuePage } from "./issue-page-option";
-import { resetDatabase } from "./seed";
+import { nextRowPhase } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -45,16 +45,19 @@ import { asUser } from "./users";
  *  row that asserts another width sets it itself. */
 const DESKTOP = { height: 900, width: 1440 } as const;
 
-/** The rows that have run a `phase`. The automatic `freshDatabase` fixture (`e2e/test.ts`)
- *  empties the database before each row, so a row's first `phase` seeds it as that fixture left
- *  it, and only a later `phase` of the same row empties it again. */
+/** The rows that have run a `phase`. The database is emptied once per worker, not before each
+ *  row (`workerDatabase`, `e2e/test.ts`), and a row's first `phase` seeds under the row's own
+ *  keys (`rowKey`), beside what other rows wrote. A later `phase` of the same row moves the row on
+ *  to a phase of its own first (`nextRowPhase`), so it seeds under keys no phase before it wrote,
+ *  beside what those phases left, as a row seeds beside other rows. */
 const phasedRows = new WeakSet<TestInfo>();
 
 /**
- * One seeded issue, read by alice with the new page turned on: the database is empty, `seed`
- * writes what the row reads, alice signs in to a new context, `withIssuePage` turns the page on
+ * One seeded issue, read by alice with the new page turned on: `seed` writes what the row reads
+ * under the row's own keys, alice signs in to a new context, `withIssuePage` turns the page on
  * for her, and a page opens at 1440 by 900. A row that reads two seeds runs a `phase` for each,
- * and each `phase` after the row's first resets the database, which ends every session.
+ * and each `phase` after the row's first seeds under keys of that phase's own, so none needs the
+ * database emptied.
  */
 export async function phase<T>(
   browser: Browser,
@@ -63,7 +66,7 @@ export async function phase<T>(
 ): Promise<void> {
   const row = test.info();
   if (phasedRows.has(row)) {
-    await resetDatabase();
+    nextRowPhase();
   }
   phasedRows.add(row);
   const seeded = await seed();

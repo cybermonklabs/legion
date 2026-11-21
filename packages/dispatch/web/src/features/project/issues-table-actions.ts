@@ -1,6 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
+import {
+  ApiError,
+  api,
+  issuePatchRequest,
+  type WriteRequest,
+  writeRequest,
+} from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { advancesIssuesParams } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
@@ -420,11 +426,7 @@ export function useIssueTableActions({
       const body = mergeReason(into, titleOf(into));
       recovery.record({ reason }, record.id, { reasonBody: body });
       await request(
-        {
-          method: "POST",
-          path: `/api/v1/issues/${encodeURIComponent(from)}/messages`,
-          body: { body },
-        },
+        writeRequest("post", "/api/v1/issues/{key}/messages", { key: from }, { body }),
         `Record the merge reason on ${from}`,
         from,
         reason

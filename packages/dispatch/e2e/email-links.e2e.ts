@@ -1,7 +1,7 @@
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
 import { createIssue, createProject, editArtifact, getArtifact, getIssueArtifactText } from "./api";
 import { documentEditor, openSpec } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // A bare email address in Markdown a document is written from - a spec an issue starts with, or
@@ -37,9 +37,10 @@ const [firstBlock, ...insertedBlocks] = entry.markdown.trimEnd().split("\n\n");
 test("an email address written into a spec is a mailto link in the editor and in a past version @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: `${firstBlock}\n`,
     title: "Email addresses in specs",
   });

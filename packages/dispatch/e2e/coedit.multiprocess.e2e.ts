@@ -9,7 +9,7 @@ import {
 } from "./editor";
 import { type DispatchProcess, processPinCookie } from "./harness-processes";
 import type { ProxiedSocket } from "./round-robin-proxy";
-import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
+import { type Browser, type BrowserContext, expect, type Page, rowKey, test } from "./test";
 import { signIn } from "./users";
 
 /**
@@ -34,8 +34,8 @@ const samplingInterval = 100;
 // that would land on one process while the other loads the room.
 const spec = "Use SQLite for the cache.\n\nEnd of spec.\n";
 
-// The database reset is the `test` this file imports (e2e/test.ts); the round-robin proxy's log
-// is not in the database, so it is cleared here.
+// The database's reset, once per worker, and the fakes' before every row are the `test` this file
+// imports (e2e/test.ts); the round-robin proxy's log is neither, so it is cleared here.
 test.beforeEach(async () => {
   const reset = await fetch(new URL("/_proxy/reset", baseUrl), { method: "POST" });
   expect(reset.status, "POST /_proxy/reset").toBe(204);
@@ -142,8 +142,9 @@ async function watchConnection(page: Page): Promise<{ stop(): Promise<Connection
 test("two people on two processes see each other's typing and cursor within a second, on one socket each that stays connected", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title: "Cache decision" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title: "Cache decision" });
   const alice = await pinnedUser(browser, "alice", "a");
   const bob = await pinnedUser(browser, "bob", "b");
 

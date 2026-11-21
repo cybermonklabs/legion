@@ -99,8 +99,13 @@ jobs:
       # that needs it keeps one `biome-ignore` naming that file's reasons. The rule reads imports,
       # so it says nothing about a call added to a file whose exemption is already in place, which
       # is what a forward merge of main brings: no conflict, no lint error, no type error. This
-      # check asks each call for its own reason instead.
-      - name: Check every fireEvent call of the Dispatch suite carries its own reason
+      # check asks each call for its own reason instead. It asks the same of each hand comparison
+      # of the focused element (`expect(document.activeElement).toBe(…)`,
+      # `expect(el).toBe(document.activeElement)`, `expect(document.activeElement === el)`), of
+      # each `expect(el.hasAttribute(…)).toBe(…)`, and of each `expect(el.getAttribute(…))`
+      # compared by hand with `.toBe(`, `.toBeNull(`, `.toContain(` or `.toMatch(`, which
+      # jest-dom's `toHaveFocus` and `toHaveAttribute` carry, and which nothing else refuses.
+      - name: Check every fireEvent call and hand-written focus or attribute assertion of the Dispatch suite carries its own reason
         run: .github/scripts/check-fireevent-reasons.sh
 
       # Only on a pull request and a merge group, the two events that have a base to compare

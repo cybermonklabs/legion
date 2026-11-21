@@ -2,7 +2,7 @@ import type { Comment } from "../web/src/api/types";
 
 import { createIssue, createProject, listComments } from "./api";
 import { barAction, deleteEditorText, documentEditor, selectEditorText } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // The server's anchor state after a live write is read back from Node, so the probe ladder is
@@ -15,9 +15,10 @@ const PROBE = { intervals: [50, 50, 100, 200, 500] };
 test("a block-anchored comment remains with its block through a reword and quote deletion @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Introduction.\n\nTarget passage.\n",
     title: "Block anchored review",
   });

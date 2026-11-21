@@ -293,7 +293,7 @@ test("a pipeline with no staging end-to-end gate omits that card and keeps the o
 test("merge to production is judged on the seven days' longest change against the response's target", () => {
   view();
   const merge = card("merge_to_production");
-  expect(merge.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("false");
+  expect(merge.querySelector("[data-target-met]")).toHaveAttribute("data-target-met", "false");
   expect(merge.innerHTML).toContain("target missed");
   expect(merge.innerHTML).toContain("p90 38m · 1 PR<");
   expect(merge.innerHTML).toContain("target under 45m for every change");
@@ -309,16 +309,17 @@ test("merge to production is judged on the seven days' longest change against th
       { n: 2, median: 41, p90: 44.5, max: 44.9 }
     ),
   });
-  expect(
-    card("merge_to_production").querySelector("[data-target-met]")?.getAttribute("data-target-met")
-  ).toBe("true");
+  expect(card("merge_to_production").querySelector("[data-target-met]")).toHaveAttribute(
+    "data-target-met",
+    "true"
+  );
 });
 
 test("PR open to merge is judged on the seven days' median: under 60m is met, 60m is missed", () => {
   view();
   const opened = card("opened_to_merge");
   expect(opened.innerHTML).toContain("PR open to merge");
-  expect(opened.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("true");
+  expect(opened.querySelector("[data-target-met]")).toHaveAttribute("data-target-met", "true");
   expect(opened.innerHTML).toContain("target met");
   expect(opened.innerHTML).toContain("target median under 60m");
   cleanup();
@@ -331,13 +332,13 @@ test("PR open to merge is judged on the seven days' median: under 60m is met, 60
     ),
   });
   const missed = card("opened_to_merge");
-  expect(missed.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("false");
+  expect(missed.querySelector("[data-target-met]")).toHaveAttribute("data-target-met", "false");
   expect(missed.innerHTML).toContain("target missed");
   cleanup();
 
   view({ ...PIPELINE, opened_to_merge: leadTimes(null, null) });
   const none = card("opened_to_merge");
-  expect(none.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("none");
+  expect(none.querySelector("[data-target-met]")).toHaveAttribute("data-target-met", "none");
   expect(none.innerHTML).toContain("no data");
 });
 
@@ -356,7 +357,7 @@ test("lists the slowest jobs in the server's order and the jobs that failed in t
   expect(row?.innerHTML).toContain(">6<");
   expect(row?.innerHTML).toContain(">13%<"); // 6 of 48
   const link = row?.querySelector("a");
-  expect(link?.getAttribute("href")).toBe(RUN_URL);
+  expect(link).toHaveAttribute("href", RUN_URL);
   expect(link?.textContent).toBe("20 min ago");
 });
 

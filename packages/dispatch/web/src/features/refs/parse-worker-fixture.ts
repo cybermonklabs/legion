@@ -1,3 +1,4 @@
+import { jest } from "bun:test";
 import { createHeadlessProof, type HeadlessProofEditor } from "@legion/proof-editor/headless";
 
 import { compiledBlockSchema } from "../doc/schema";
@@ -37,9 +38,25 @@ type Listener = (event: unknown) => void;
 /** The read-only engine the real worker builds, here on the test's own thread, built once. */
 let headless: Promise<HeadlessProofEditor> | undefined;
 
+/**
+ * A task on. The stand-in answers and crashes a task after a row asks it to, as a worker's
+ * message comes on a task of its own; `waitForRequests` polls on it for the bodies a row waits
+ * for; and `flushTasks` steps a row over the tasks the stand-in and the engine queue: the
+ * stand-in's `ready`, set at zero delay as the worker is made, and the body the engine posts once
+ * it comes. Under a fake clock nothing else moves that clock, so the task is run here, as Testing
+ * Library's own waits run theirs: `markdown-engine.test.ts`'s threshold row runs that way.
+ *
+ * This one stays on the real clock (INFRA-1505) for the rows that drive the stand-in there:
+ * `flushTasks`'s callers, all in `MarkdownBody.test.tsx`, and that file's other worker rows read
+ * what one slice of a paint leaves, whose budget is read from `performance.now()`, which
+ * `jest.useFakeTimers()` freezes (that file's `nextTask`); `MarkdownPreview.test.tsx`'s long-body
+ * row waits on it only for the stand-in's own answer.
+ */
 function tick(): Promise<void> {
   return new Promise<void>((resolve) => {
     setTimeout(resolve, 0);
+    // Bun's fake clock marks the `setTimeout` it holds with its `clock`.
+    if (Object.hasOwn(setTimeout, "clock")) jest.advanceTimersByTime(0);
   });
 }
 
@@ -190,7 +207,8 @@ export function restoreParseWorker(): void {
 }
 
 /** Lets the tasks already queued run, so a body the engine was about to send has been sent by the
- *  time a row counts what it sent. */
+ *  time a row counts what it sent. Its callers are `MarkdownBody.test.tsx`'s worker rows, on the
+ *  real clock (`tick`). */
 export async function flushTasks(): Promise<void> {
   for (let tries = 0; tries < 5; tries += 1) {
     await tick();

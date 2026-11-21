@@ -16,7 +16,7 @@ import {
   WRITE_REFUSED,
   WRITE_REFUSED_TEXT,
 } from "./sends";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 // The composer a selection-bar action opens holds a send's draft until the server answers, like
@@ -51,8 +51,9 @@ function refusal(page: Page, issueKey: string, status: number) {
 test("a newer bar Comment while a margin send is out leaves the composer on the send's own mark", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title: "Newer bar comment" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title: "Newer bar comment" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -92,9 +93,10 @@ test("a newer bar Comment while a margin send is out leaves the composer on the 
 test("a bar Comment on another document while a margin send is out opens its own composer", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const first = await createIssue({ project: "CORE", spec, title: "Left mid-send" });
-  const second = await createIssue({ project: "CORE", spec, title: "Opened next" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const first = await createIssue({ project: core, spec, title: "Left mid-send" });
+  const second = await createIssue({ project: core, spec, title: "Opened next" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -138,8 +140,9 @@ test("a bar Comment on another document while a margin send is out opens its own
 test("leaving a document while a margin send is out keeps its draft and refusal for the return @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title: "Left with a send out" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title: "Left with a send out" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -185,8 +188,9 @@ test("leaving a document while a margin send is out keeps its draft and refusal 
 test("the Pinned tab while a margin send is out keeps the composer, its draft and its refusal", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title: "Pinned tab mid-send" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title: "Pinned tab mid-send" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -216,8 +220,9 @@ test("the Pinned tab while a margin send is out keeps the composer, its draft an
 test("collapsing the margin while its send is out keeps the composer, its draft and its refusal", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title: "Collapsed mid-send" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title: "Collapsed mid-send" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -247,8 +252,9 @@ test("collapsing the margin while its send is out keeps the composer, its draft 
 test("a bar Comment while the collapsed margin's send is out shows the margin and why", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title: "Rail mid-send" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title: "Rail mid-send" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -278,13 +284,18 @@ test("a bar Comment while the collapsed margin's send is out shows the margin an
 test("on a phone, a margin thread opened while the margin's send is out keeps the composer and its refusal @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title: "Phone margin thread mid-send" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title: "Phone margin thread mid-send" });
   const root = await createComment(issue.key, {
     anchor: { artifact: "spec", quote: "fox" },
     body: "About the fox",
   });
-  const alice = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts; alice's, which the rows before this one raise,
+  // took a second line, which moved the document down and brought the selection bar under its
+  // text to rest on the composer's Send.
+  const alice = await asUser(browser, rowPerson("alice"));
 
   try {
     const page = await alice.newPage();
@@ -319,8 +330,9 @@ test("on a phone, a margin thread opened while the margin's send is out keeps th
 // The issue closing under a margin send leaves the composer and the mark the send names, and a
 // closed issue takes a comment anchored to its document, so the send posts.
 test("a margin comment out when its issue closes posts", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title: "Margin closed mid-send" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title: "Margin closed mid-send" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -353,8 +365,9 @@ test("a margin comment out when its issue closes posts", async ({ browser }) => 
 test("a margin suggestion out when its issue closes keeps the draft and shows the refusal", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title: "Suggestion closed mid-send" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title: "Suggestion closed mid-send" });
   const alice = await asUser(browser, "alice");
 
   try {

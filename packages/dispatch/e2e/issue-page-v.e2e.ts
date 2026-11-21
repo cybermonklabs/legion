@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 
+import type { Result } from "../web/src/api/paths";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { chipWords } from "../web/src/features/issue-page/node-row-chip";
 import {
@@ -27,7 +28,7 @@ import {
 } from "./api";
 import { nextFrames } from "./frames";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
-import { HEAD_SHA, PROJECT } from "./issue-layout-seed-support";
+import { HEAD_SHA, layoutProject } from "./issue-layout-seed-support";
 import { requirementBlockId } from "./issue-layout-seed-text";
 import { gotoIssue, issuePage, phase } from "./issue-page";
 import {
@@ -518,12 +519,20 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
     // the other six.
     await page.route(RESULTS_ROUTE, async (route) => {
       const answer = await route.fetch();
-      // The results answer as the server sends it, of which this handler reads two fields.
-      const body: { checks?: { block_id: string; pass_stands?: unknown }[] } = await answer.json();
-      for (const check of body.checks ?? []) {
-        if (check.block_id === seeded.checks.passed) delete check.pass_stands;
-      }
-      await route.fulfill({ json: body, response: answer });
+      // The results read as the route answers it, with check 1's `pass_stands` left out.
+      const results = (await answer.json()) as Result<"/api/v1/issues/{key}/results", "get">;
+      await route.fulfill({
+        json: {
+          ...results,
+          checks:
+            results.checks?.map((check) => {
+              if (check.block_id !== seeded.checks.passed) return check;
+              const { pass_stands: _unsent, ...sent } = check;
+              return sent;
+            }) ?? null,
+        },
+        response: answer,
+      });
     });
     await page.setViewportSize(DESKTOP);
     await openPreset(page, seeded.key, "verification");
@@ -559,8 +568,9 @@ test("the Verification filter says an issue holds no checks, in its own column",
   browser,
 }) => {
   const bare = async () => {
-    await createProject({ key: PROJECT, name: "Issue layout" });
-    return await createIssue({ force: true, project: PROJECT, title: "Nothing to verify yet" });
+    const project = layoutProject();
+    await createProject({ key: project, name: "Issue layout" });
+    return await createIssue({ force: true, project, title: "Nothing to verify yet" });
   };
   await phase(browser, bare, async (page, seeded) => {
     const settling = watchApiRequests(page);
@@ -1216,10 +1226,11 @@ test("the Verification view gives no tab stop to a link its cut statement hides"
   browser,
 }) => {
   const seed = async () => {
-    await createProject({ key: PROJECT, name: "Issue layout" });
+    const project = layoutProject();
+    await createProject({ key: project, name: "Issue layout" });
     return await createIssue({
       force: true,
-      project: PROJECT,
+      project,
       spec: `:::requirement{#r-cut}\n${longWords("stated", 200)} Read [the runbook](${RUNBOOK}) last.\n:::\n`,
       title: "A cut statement hides its last link",
     });

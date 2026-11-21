@@ -1,7 +1,7 @@
 import { setListsState, setLiveSessions } from "./agents";
 import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
 import { pickFilterOption } from "./filters";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // A session's claim lapses when its session is no longer running, and the claim chip and the
@@ -23,8 +23,9 @@ const REFILLING = "The agent list is refilling. Try again in a moment.";
 const REFILL_TIMEOUT = 30_000;
 
 async function seedSessionClaim(): Promise<string> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Claimed while the list refills" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Claimed while the list refills" });
   const token = await mintAgentToken("claim-refill", "alice");
   await setLiveSessions([holder]);
   await claimIssue(issue.key, {
@@ -62,7 +63,7 @@ test("a refilling agent list never lapses a session's claim on the chip or in th
     );
     await expect(chip).not.toHaveAttribute("title", /no longer running/);
 
-    await page.goto("/projects/CORE/issues?unclaimed=1");
+    await page.goto(`/projects/${rowKey("CORE")}/issues?unclaimed=1`);
     await expect(page.getByTestId("unclaimed-unchecked")).toHaveText(
       `Couldn't check which claims have lapsed, so every claim counts as held: ${REFILLING}`,
       { timeout: REFILL_TIMEOUT }
@@ -86,7 +87,7 @@ test("a complete agent list without the holder lapses its claim on the chip and 
     await page.goto(`/issues/${key}`);
     await expect(page.getByTestId("issue-claim")).toHaveAttribute("title", /no longer running/);
     // Picked in the column, not through the link's parameter: the same rule, one place.
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${rowKey("CORE")}/issues`);
     await pickFilterOption(page, "Claimed by", "Nobody or lapsed");
     await expect(page).toHaveURL(/unclaimed=1/);
     await expect(

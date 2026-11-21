@@ -92,7 +92,7 @@ test("renders every pending credential request, linking a secret row to its brok
   expect(screen.getByText("worker-7.example.com")).toBeDefined();
   const secret = screen.getByRole("link", { name: /Secret request.*ANTHROPIC_API_KEY/s });
   expect(secret).toHaveAttribute("href", "https://secrets.example.com/approve/req-1");
-  expect(secret.getAttribute("target")).toBeNull();
+  expect(secret).not.toHaveAttribute("target");
   const machine = await screen.findByRole("link", {
     name: /Machine login.*worker-7\.example\.com/s,
   });
@@ -295,7 +295,7 @@ test("a row's session reads as a running session's title, linked to its live con
     const link = await screen.findByRole("link", { name: "Reviewing LEGION-587" });
     expect(link).toHaveAttribute("href", "/agents/sess-1/live");
     await waitFor(() =>
-      expect(link.closest("[data-agent-name]")?.getAttribute("data-agent-state")).toBe("running")
+      expect(link.closest("[data-agent-name]")).toHaveAttribute("data-agent-state", "running")
     );
     expect(screen.getByRole("img", { name: "Running" })).toBeDefined();
     expect(link.closest("[data-agent-name]")?.parentElement?.textContent).toBe(
@@ -340,7 +340,7 @@ test("a row's session naming an id the agents list doesn't carry reads as not ru
     const name = screen.getByRole("link", { name: "session:sess-gon…" });
     expect(name).toHaveAttribute("href", "/agents/sess-gone/live");
     const agent = name.closest("[data-agent-name]");
-    expect(agent?.getAttribute("data-agent-state")).toBe("not-running");
+    expect(agent).toHaveAttribute("data-agent-state", "not-running");
     expect(agent?.parentElement?.textContent).toBe("session:sess-gon… · sess-gone isn't running.");
   } finally {
     agents.mockRestore();

@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  Dispatch's route table declares the 409 body of an ambiguous id prefix (`IDAmbiguousError`, its
+  candidates typed `IDCandidate`) on every route that can answer it, so the OpenAPI document names
+  it, and the server builds that body from the declared type rather than from a map. The bytes it
+  sends are unchanged. A candidate's `kind` is one of `ask`, `comment`, `message`, `artifact` and
+  `block` in the document.

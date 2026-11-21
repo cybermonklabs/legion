@@ -187,9 +187,9 @@ async function checkStack(stack: Stack, count: number): Promise<void> {
   }
 }
 
-/** Signs a person in on A and asks B who they are. The person row it writes is emptied by the
- *  first row's `resetDatabase`, as every row's are. Two-process mode runs one stack, so the URL
- *  is that stack's proxy. */
+/** Signs a person in on A and asks B who they are. The person row it writes goes when the
+ *  worker empties the database before its first row (`workerDatabase`, e2e/test.ts). Two-process
+ *  mode runs one stack, so the URL is that stack's proxy. */
 async function requireOneCookieKey(url: string): Promise<void> {
   const refusal = "The Dispatch e2e harness cannot start: Dispatch B";
   const signIn = await fetch(new URL(devSignInPath("alice"), url), {
@@ -233,8 +233,9 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   // Every other run of more than one worker is refused here if the caller set a variable one
   // stack owns, BEFORE the return below and before anything starts. `DISPATCH_E2E_REUSE_SERVERS`
   // is why the order matters: it would otherwise return from this hook and leave every worker
-  // on the one server and the one database, which `e2e/test.ts` truncates before every row, so
-  // the rows would delete each other's fixtures and fail as though the product were broken.
+  // on the one server and the one database, which each worker empties before its first row and
+  // whose fakes it resets before every row (`e2e/test.ts`), so the workers would delete each
+  // other's fixtures mid-row and fail as though the product were broken.
   if (config.workers > 1) refuseStackConflicts(config.workers);
   if (process.env.DISPATCH_E2E_REUSE_SERVERS === "1") return;
 

@@ -13,7 +13,7 @@ import { conversationFilter, threadCard } from "./editor";
 import { inboxRow } from "./inbox-pane";
 import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
 import { expandedState } from "./settled";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 // "bob" names the session that opened the ask - authenticated over the API with
@@ -42,9 +42,10 @@ async function expandedThread(page: Page, rootId: string): Promise<Locator> {
 test("an ask is a thread: replies before and after answering, then a live agent reply @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Ship the change to production",
     title: "Threaded decision",
   });
@@ -130,9 +131,10 @@ test("an ask is a thread: replies before and after answering, then a live agent 
 test("an answered ask's thread keeps a reply typed before the card leaves Needs you", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Ship the change to production",
     title: "Reply across the move",
   });
@@ -190,9 +192,10 @@ test("an answered ask's thread keeps a reply typed before the card leaves Needs 
 test("a Conversation reply after an agent-authored reply targets the root without copying its anchor", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Keep this root visible.",
     title: "Root-only comment replies",
   });
@@ -237,9 +240,10 @@ test("a Conversation reply after an agent-authored reply targets the root withou
 test("resolve, reopen, then edit leaves one comment turn in its final state", async ({
   browser,
 }) => {
-  await createProject({ key: "THREAD", name: "Thread controls" });
+  const threadKey = rowKey("THREAD");
+  await createProject({ key: threadKey, name: "Thread controls" });
   const issue = await createIssue({
-    project: "THREAD",
+    project: threadKey,
     spec: "The quick brown fox",
     title: "Resolve and reopen",
   });
@@ -295,9 +299,10 @@ test("resolve, reopen, then edit leaves one comment turn in its final state", as
 });
 
 test("only comment authors edit root and reply text in Conversation", async ({ browser }) => {
-  await createProject({ key: "EDIT", name: "Comment edits" });
+  const edit = rowKey("EDIT");
+  await createProject({ key: edit, name: "Comment edits" });
   const issue = await createIssue({
-    project: "EDIT",
+    project: edit,
     spec: "The quick brown fox",
     title: "Edit a comment",
   });
@@ -347,9 +352,10 @@ test("only comment authors edit root and reply text in Conversation", async ({ b
 });
 
 test("an agent comment reply appears in the root Conversation thread", async ({ browser }) => {
-  await createProject({ key: "AGENT", name: "Agent reply" });
+  const agent = rowKey("AGENT");
+  await createProject({ key: agent, name: "Agent reply" });
   const issue = await createIssue({
-    project: "AGENT",
+    project: agent,
     spec: "The quick brown fox",
     title: "Agent reply thread",
   });
@@ -372,20 +378,34 @@ test("an agent comment reply appears in the root Conversation thread", async ({ 
   }
 });
 
+// This row and "two suggestions on one block..." below read as a person of their own
+// (`rowPerson`, e2e/test.ts), who makes the row's project, issue and comments as alice did. The
+// phone's header draws the reader's Inbox and New replies counts, and alice's, which every row
+// before on the worker raises, take a second line, which moves the turns against the docked
+// composer and the foot's Jump to latest, where these rows press and measure.
 test("the phone Conversation opens a full-height thread view with its composer pinned at the bottom @phone @phone-only", async ({
   browser,
 }) => {
-  await createProject({ key: "PHONE", name: "Phone threads" });
-  const issue = await createIssue({
-    project: "PHONE",
-    spec: "The quick brown fox",
-    title: "Phone thread view",
-  });
-  const root = await createComment(issue.key, {
-    anchor: { artifact: "spec", quote: "brown" },
-    body: "Thread summary",
-  });
-  const alice = await asUser(browser, "alice");
+  const phone = rowKey("PHONE");
+  const me = rowPerson("alice");
+  await createProject({ key: phone, name: "Phone threads" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: phone,
+      spec: "The quick brown fox",
+      title: "Phone thread view",
+    },
+    { login: me }
+  );
+  const root = await createComment(
+    issue.key,
+    {
+      anchor: { artifact: "spec", quote: "brown" },
+      body: "Thread summary",
+    },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -423,12 +443,15 @@ test("the phone Conversation opens a full-height thread view with its composer p
 test("a session retraction leaves its reason on the card and removes the human's live inbox item", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: "Ship the change to production",
-    title: "Retracted decision",
-  });
+  const core = rowKey("CORE");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose Inbox and count
+  // hold this row's one question and no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, spec: "Ship the change to production", title: "Retracted decision" },
+    { login: me }
+  );
   const ask = await createAsk(
     issue.key,
     {
@@ -439,7 +462,7 @@ test("a session retraction leaves its reason on the card and removes the human's
     bobSession
   );
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const inboxPage = await alice.newPage();
   await inboxPage.goto("/");
   await expect(inboxRow(inboxPage, ask.id)).toBeVisible();
@@ -450,7 +473,7 @@ test("a session retraction leaves its reason on the card and removes the human's
   await issuePage.getByRole("tab", { name: "Spec" }).click();
   const navigation = issuePage.getByRole("navigation", { name: "Navigation" });
   await expect(navigation.getByRole("link", { name: "Inbox" })).toContainText("1");
-  await expect(navigation.locator('a[href="/projects/CORE"]')).toContainText("1");
+  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toContainText("1");
   const margin = issuePage.getByTestId("margin-sheet");
   await expect(margin.getByTestId(`ask-${ask.id}`)).toBeVisible();
 
@@ -505,23 +528,36 @@ test("a session retraction leaves its reason on the card and removes the human's
 test("two suggestions on one block are each accepted from their collapsed card @phone", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "SUGG", name: "Suggestion cards" });
-  const issue = await createIssue({
-    project: "SUGG",
-    spec: "The quick brown fox",
-    title: "Accept from the card",
-  });
-  const first = await createComment(issue.key, {
-    anchor: { artifact: "spec", quote: "quick" },
-    body: "Suggested replacement.",
-    suggestion: { replace_with: "swift" },
-  });
-  const second = await createComment(issue.key, {
-    anchor: { artifact: "spec", quote: "brown" },
-    body: "Closer to the photo.",
-    suggestion: { replace_with: "red" },
-  });
-  const alice = await asUser(browser, "alice");
+  const sugg = rowKey("SUGG");
+  const me = rowPerson("alice");
+  await createProject({ key: sugg, name: "Suggestion cards" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: sugg,
+      spec: "The quick brown fox",
+      title: "Accept from the card",
+    },
+    { login: me }
+  );
+  const first = await createComment(
+    issue.key,
+    {
+      anchor: { artifact: "spec", quote: "quick" },
+      body: "Suggested replacement.",
+      suggestion: { replace_with: "swift" },
+    },
+    { login: me }
+  );
+  const second = await createComment(
+    issue.key,
+    {
+      anchor: { artifact: "spec", quote: "brown" },
+      body: "Closer to the photo.",
+      suggestion: { replace_with: "red" },
+    },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -595,9 +631,10 @@ test("two suggestions on one block are each accepted from their collapsed card @
 test("accepting a later suggestion over an earlier one's text leaves the earlier Conversation turn orphaned", async ({
   browser,
 }) => {
-  await createProject({ key: "SUGG", name: "Suggestion cards" });
+  const sugg = rowKey("SUGG");
+  await createProject({ key: sugg, name: "Suggestion cards" });
   const issue = await createIssue({
-    project: "SUGG",
+    project: sugg,
     spec: "The quick brown fox",
     title: "Competing suggestions",
   });
@@ -648,9 +685,10 @@ test("accepting a later suggestion over an earlier one's text leaves the earlier
 test("an orphaned suggestion stays non-actionable through resolve and reopen", async ({
   browser,
 }) => {
-  await createProject({ key: "SUGG", name: "Suggestion cards" });
+  const sugg = rowKey("SUGG");
+  await createProject({ key: sugg, name: "Suggestion cards" });
   const issue = await createIssue({
-    project: "SUGG",
+    project: sugg,
     spec: "The quick brown fox",
     title: "Competing suggestions",
   });
@@ -711,9 +749,10 @@ test("an orphaned suggestion stays non-actionable through resolve and reopen", a
 test("a failed queued Conversation comment action keeps its thread and reply, clears later clicks and retries explicitly", async ({
   browser,
 }) => {
-  await createProject({ key: "QUEUE", name: "Queued comment actions" });
+  const queue = rowKey("QUEUE");
+  await createProject({ key: queue, name: "Queued comment actions" });
   const issue = await createIssue({
-    project: "QUEUE",
+    project: queue,
     spec: "The quick brown fox",
     title: "Queued actions",
   });
@@ -779,8 +818,9 @@ test("a failed queued Conversation comment action keeps its thread and reply, cl
 async function seedSuggestion(
   title: string
 ): Promise<{ comments: string; issueKey: string; suggestionId: string }> {
-  await createProject({ key: "SUGG", name: "Suggestion cards" });
-  const issue = await createIssue({ project: "SUGG", spec: "The quick brown fox", title });
+  const sugg = rowKey("SUGG");
+  await createProject({ key: sugg, name: "Suggestion cards" });
+  const issue = await createIssue({ project: sugg, spec: "The quick brown fox", title });
   const suggestion = await createComment(issue.key, {
     anchor: { artifact: "spec", quote: "fox" },
     body: "Suggested replacement.",

@@ -1,6 +1,6 @@
 import { getSentMessages, plannerSession, resetFakeEnvoy, setLiveSessions } from "./agents";
 import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // Check k10 of dispatch://INFRA-1042/artifact/verification-md, serving R10: handing the request
@@ -44,7 +44,7 @@ async function typeWords(page: Page, key: string): Promise<void> {
 
 /** An issue of its own, with a live session holding its claim when `claimed`. */
 async function seedIssue(claimed: boolean): Promise<string> {
-  const issue = await createIssue({ project: "CORE", title: "The watch rota" });
+  const issue = await createIssue({ project: rowKey("CORE"), title: "The watch rota" });
   await setLiveSessions([plannerSession]);
   if (claimed) {
     const token = await mintAgentToken("going-handoff", "alice");
@@ -59,7 +59,7 @@ async function seedIssue(claimed: boolean): Promise<string> {
 
 test.beforeEach(async () => {
   await resetFakeEnvoy();
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: rowKey("CORE"), name: "Core" });
 });
 
 test("the bar offers the words to the agent on the issue, and only approving sends them @phone", async ({

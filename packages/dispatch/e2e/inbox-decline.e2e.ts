@@ -1,5 +1,4 @@
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import {
   answerAsk,
@@ -15,8 +14,7 @@ import {
 import { paragraphsOf } from "./bodies";
 import { documentEditor, indexedBlockAsk } from "./editor";
 import { askCard, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
-import { signIn } from "./users";
+import { expect, type Locator, own, type Page, rowKey, rowPerson, test } from "./test";
 
 /**
  * A person declines to answer a question, and the agent that asked is told so
@@ -41,11 +39,6 @@ const session = {
 
 /** Both choices of every seeded question, so an answer is one the server takes as it stands. */
 const shipOrHold = [{ label: "Ship" }, { label: "Hold" }];
-
-test.beforeEach(async ({ context }) => {
-  await resetDatabase();
-  await signIn(context, "alice");
-});
 
 /** The person's way out of a question, on the card `card` draws: **Decline to answer**. While the
  *  dialog is open the card holds the dialog's own button of that name too, so this is read before
@@ -84,50 +77,60 @@ async function conversationCard(page: Page, issueKey: string, askId: string): Pr
 }
 
 // SLOW(>=2s): two page loads - the Inbox and the issue page - with a decline written through
-// the dialog between them.
-test("a question declined from the Inbox with a note leaves the list and reads declined on the issue page", async ({
-  page,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Rollout order" });
-  const ask = await createAsk(
-    issue.key,
-    { options: shipOrHold, question: "Which service moves first?" },
-    session
-  );
-  const note = "The release owner decides this one.";
+// the dialog between them. "Nothing needs you" is said of the reader's whole Inbox, so the
+// default context is a person of the row's own (`rowPerson`, e2e/test.ts), whose Inbox holds
+// this one question and no other row's, and the record names that person.
+test.describe(() => {
+  test.use({ signedIn: own("alice") });
 
-  await page.goto("/");
-  const card = await askCard(page, ask.id);
-  await expect(card).toContainText("Which service moves first?");
-  await decline(page, card, note);
+  test("a question declined from the Inbox with a note leaves the list and reads declined on the issue page", async ({
+    page,
+  }) => {
+    const core = rowKey("CORE");
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const issue = await createIssue({ project: core, title: "Rollout order" }, { login: me });
+    const ask = await createAsk(
+      issue.key,
+      { options: shipOrHold, question: "Which service moves first?" },
+      session
+    );
+    const note = "The release owner decides this one.";
 
-  // The row goes the moment the person presses, as an answered row does, and the Inbox is empty.
-  await expect(inboxRow(page, ask.id)).toHaveCount(0);
-  await expect(page.getByText("Nothing needs you")).toBeVisible();
-  await expect
-    .poll(async () => (await getAsk(ask.id)).ask.resolution, {
-      intervals: [50, 50, 100, 200, 500],
-    })
-    .toMatchObject({ kind: "declined", reason: note });
+    await page.goto("/");
+    const card = await askCard(page, ask.id);
+    await expect(card).toContainText("Which service moves first?");
+    await decline(page, card, note);
 
-  // The issue page reads the closed question as the act the person took: declined, by them, with
-  // what they wrote. It is none of the other three ways a question closes.
-  const record = await conversationCard(page, issue.key, ask.id);
-  await expect(record.getByTestId("ask-resolution-badge")).toHaveText("Declined");
-  await expect(record).toContainText("alice declined to answer");
-  await expect(record).toContainText(note);
-  await expect(record).not.toContainText("Withdrawn");
-  await expect(record).not.toContainText("Retracted by");
-  await expect(record).not.toContainText("Resolved by");
-  await expect(declineControl(record)).toHaveCount(0);
+    // The row goes the moment the person presses, as an answered row does, and the Inbox is
+    // empty.
+    await expect(inboxRow(page, ask.id)).toHaveCount(0);
+    await expect(page.getByText("Nothing needs you")).toBeVisible();
+    await expect
+      .poll(async () => (await getAsk(ask.id)).ask.resolution, {
+        intervals: [50, 50, 100, 200, 500],
+      })
+      .toMatchObject({ kind: "declined", reason: note });
+
+    // The issue page reads the closed question as the act the person took: declined, by them,
+    // with what they wrote. It is none of the other three ways a question closes.
+    const record = await conversationCard(page, issue.key, ask.id);
+    await expect(record.getByTestId("ask-resolution-badge")).toHaveText("Declined");
+    await expect(record).toContainText(`${me} declined to answer`);
+    await expect(record).toContainText(note);
+    await expect(record).not.toContainText("Withdrawn");
+    await expect(record).not.toContainText("Retracted by");
+    await expect(record).not.toContainText("Resolved by");
+    await expect(declineControl(record)).toHaveCount(0);
+  });
 });
 
 // SLOW(>=2s): the reading column drawn at its own width, a decline written in it, and the issue
 // page loaded for the record it leaves.
 test("the Inbox's reading pane declines a question with no note at all", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Retry budget" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Retry budget" });
   const ask = await createAsk(
     issue.key,
     { options: shipOrHold, question: "Should the mirror keep retrying?" },
@@ -158,46 +161,60 @@ test("the Inbox's reading pane declines a question with no note at all", async (
   await expect(record).not.toContainText("declined to answer -");
 });
 
-test("an approval request beside a question in one Inbox draws no Decline to answer", async ({
-  page,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const questionIssue = await createIssue({ project: "CORE", title: "Rollout order" });
-  const question = await createAsk(
-    questionIssue.key,
-    { options: shipOrHold, question: "Which service moves first?" },
-    session
-  );
-  const approvalIssue = await createIssue({
-    project: "CORE",
-    spec: "# Ledger rollout\n\nThe ledger moves first, and the mirror follows it.\n",
-    title: "Ledger rollout",
-  });
-  const approval = withOpenedAsk(
-    await requestApproval(
-      approvalIssue.primary_artifact_id,
-      { summary: "The ledger-first rollout." },
+// The row counts the Inbox whole, so its default context is a person of the row's own
+// (`rowPerson`, e2e/test.ts), whose Inbox holds these two questions and no other row's.
+test.describe(() => {
+  test.use({ signedIn: own("alice") });
+
+  test("an approval request beside a question in one Inbox draws no Decline to answer", async ({
+    page,
+  }) => {
+    const core = rowKey("CORE");
+    const me = rowPerson("alice");
+    await createProject({ key: core, name: "Core" }, { login: me });
+    const questionIssue = await createIssue(
+      { project: core, title: "Rollout order" },
+      { login: me }
+    );
+    const question = await createAsk(
+      questionIssue.key,
+      { options: shipOrHold, question: "Which service moves first?" },
       session
-    )
-  );
+    );
+    const approvalIssue = await createIssue(
+      {
+        project: core,
+        spec: "# Ledger rollout\n\nThe ledger moves first, and the mirror follows it.\n",
+        title: "Ledger rollout",
+      },
+      { login: me }
+    );
+    const approval = withOpenedAsk(
+      await requestApproval(
+        approvalIssue.primary_artifact_id,
+        { summary: "The ledger-first rollout." },
+        session
+      )
+    );
 
-  // Below the reading column's width every row draws its own card, so the question and the
-  // approval request stand as two cards in one list, which is what this row compares.
-  await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH - 1 });
-  await page.goto("/");
-  await expect(page.locator("[data-inbox-row]")).toHaveCount(2);
+    // Below the reading column's width every row draws its own card, so the question and the
+    // approval request stand as two cards in one list, which is what this row compares.
+    await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH - 1 });
+    await page.goto("/");
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(2);
 
-  const questionCard = await askCard(page, question.id);
-  await expect(declineControl(questionCard)).toHaveCount(1);
+    const questionCard = await askCard(page, question.id);
+    await expect(declineControl(questionCard)).toHaveCount(1);
 
-  // The approval request is answered with Approve or Request changes, and the server refuses a
-  // decline of one, so its card offers the person no such way out.
-  const approvalCard = await askCard(page, approval.ask.id);
-  await expect(approvalCard).toContainText("Approval requested");
-  const options = approvalCard.getByRole("group", { name: "Answer options" });
-  await expect(options.getByRole("radio", { name: /^Approve/ })).toHaveCount(1);
-  await expect(options.getByRole("radio", { name: /^Request changes/ })).toHaveCount(1);
-  await expect(declineControl(approvalCard)).toHaveCount(0);
+    // The approval request is answered with Approve or Request changes, and the server refuses a
+    // decline of one, so its card offers the person no such way out.
+    const approvalCard = await askCard(page, approval.ask.id);
+    await expect(approvalCard).toContainText("Approval requested");
+    const options = approvalCard.getByRole("group", { name: "Answer options" });
+    await expect(options.getByRole("radio", { name: /^Approve/ })).toHaveCount(1);
+    await expect(options.getByRole("radio", { name: /^Request changes/ })).toHaveCount(1);
+    await expect(declineControl(approvalCard)).toHaveCount(0);
+  });
 });
 
 // SLOW(>=2s): the spec's live document room is drawn before its block hosts a card, and the
@@ -205,10 +222,11 @@ test("an approval request beside a question in one Inbox draws no Decline to ans
 test("a document's decision block and the issue page both draw Decline to answer", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const block = "rollout-order";
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: [
       "# Rollout order",
       "",
@@ -242,8 +260,9 @@ test("a document's decision block and the issue page both draw Decline to answer
 // SLOW(>=2s): a seeded reply waited for until the server has moved the turn, then the Inbox and
 // the issue page.
 test("a question waiting on its agent is declined from the Inbox", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Cold start" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Cold start" });
   const ask = await createAsk(
     issue.key,
     { options: shipOrHold, question: "Does a cold start replay the whole ledger?" },
@@ -271,9 +290,10 @@ test("a question waiting on its agent is declined from the Inbox", async ({ page
 test("the margin folds a declined ask away with a retracted one and keeps the answered decision", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: [
       "# Mirror runbook",
       "",
@@ -327,8 +347,9 @@ test("the margin folds a declined ask away with a retracted one and keeps the an
 test("an answered ask and a declined ask draw no Decline to answer, which an open one draws", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Lease handover" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Lease handover" });
   const ask = (question: string) =>
     createAsk(issue.key, { options: shipOrHold, question }, session);
   const answered = await ask("Does the lease move with the ledger?");
@@ -358,8 +379,9 @@ test("an answered ask and a declined ask draw no Decline to answer, which an ope
 test("the decline dialog counts what is left of the note's bound and takes a note of exactly it", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Replay window" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Replay window" });
   const ask = await createAsk(
     issue.key,
     { options: shipOrHold, question: "Which window does the mirror replay?" },

@@ -2,7 +2,7 @@ import { EMPTY_STATE_LINES } from "../web/src/features/issue-page/page-words";
 import { createIssue, createProject } from "./api";
 import { withIssuePage } from "./issue-page-option";
 import { openRail } from "./rail";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser, signIn, withAlice } from "./users";
 
@@ -13,8 +13,9 @@ import { asUser, signIn, withAlice } from "./users";
  * which later rows turn the new page on with. Each row reads the page at 1440 px and again at
  * 390 px, and on the phone asserts that every page it ends on fits the viewport.
  *
- * The project and the issue hold neither `outline` nor `tabs`, because Settings lists the
- * project and the first row reads the whole of Settings for those two words.
+ * The first row reads the words Settings writes for `outline` and `tabs`, the two values the
+ * switch stores, and leaves out what Settings lists of the stack (`settingsOwnWords`), where
+ * another row's project may hold either word.
  */
 
 declare global {
@@ -26,12 +27,12 @@ declare global {
 }
 
 const desktop = { height: 900, width: 1440 };
-const project = "CORE";
 const note = "Shows an issue as the new page, which is not finished. Kept in this browser.";
 
 type Seeded = { readonly key: string; readonly title: string };
 
 async function seedIssue(): Promise<Seeded> {
+  const project = rowKey("CORE");
   await createProject({ key: project, name: "Core" });
   return createIssue({ project, title: "Ship the release notes" });
 }
@@ -69,7 +70,7 @@ async function openSettings(page: Page): Promise<void> {
  *  on the project's page. */
 async function openIssue(page: Page, key: string): Promise<void> {
   const links = await navigation(page);
-  await links.locator(`a[href="/projects/${project}"]`).click();
+  await links.locator(`a[href="/projects/${rowKey("CORE")}"]`).click();
   await page.locator(`a[data-issue-link][href="/issues/${key}"]`).click();
   await expect(page).toHaveURL(`/issues/${key}`);
 }
@@ -88,6 +89,26 @@ async function setMarker(page: Page): Promise<void> {
 
 function marked(page: Page): Promise<boolean> {
   return page.evaluate(() => window.__issuePageMarker === true);
+}
+
+/** The words Settings writes itself: the text `main` draws, leaving out its tables' rows and its
+ *  selects' options. Those list what the stack holds - every project, and the tokens, mappings,
+ *  sources, daemons, grants and sign-ins the rows before this one made - so a word there is
+ *  another row's data, not one of Settings' own (doc.e2e.ts names a project "Tabs"). A
+ *  textarea's text is its value, which the control draws rather than the page. Each text node
+ *  the page draws is one piece, and the pieces are joined by spaces, so no two run into one word.
+ */
+function settingsOwnWords(main: Locator): Promise<string> {
+  return main.evaluate((root) => {
+    const pieces: string[] = [];
+    const texts = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let text = texts.nextNode(); text !== null; text = texts.nextNode()) {
+      const holder = text.parentElement;
+      if (holder === null || holder.closest("tbody, select, textarea") !== null) continue;
+      if (holder.checkVisibility({ visibilityProperty: true })) pieces.push(text.textContent ?? "");
+    }
+    return pieces.join(" ");
+  });
 }
 
 async function expectTodaysPage(page: Page): Promise<void> {
@@ -193,10 +214,11 @@ test("a reader turns the new issue page on in Settings and off again, by links a
     expect(label?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
   // Settings is read once no section shows a loading line. The Preview section, the only text this
-  // part adds to Settings, is drawn by then.
+  // part adds to Settings, is drawn by then. What is read is Settings' own words
+  // (`settingsOwnWords`): its lists hold what the rows before this one made.
   const main = page.getByRole("main");
   await expect(main.getByText(/^Loading/)).toHaveCount(0);
-  expect(await main.innerText()).not.toMatch(/\b(outline|tabs)\b/i);
+  expect(await settingsOwnWords(main)).not.toMatch(/\b(outline|tabs)\b/i);
   expect(outlineChunks).toEqual([]);
 
   await checkbox.check();
@@ -349,7 +371,7 @@ test("with the setting on, an issue's loading, failure, absence and refused addr
   await failure.getByRole("button", { name: "Retry" }).click();
   await expect(heading).toHaveText(issue.title);
 
-  const missing = `${project}-999`;
+  const missing = `${rowKey("CORE")}-999`;
   await page.goto(`/issues/${missing}`);
   await expect(heading).toHaveText("Issue not found");
   await expect(

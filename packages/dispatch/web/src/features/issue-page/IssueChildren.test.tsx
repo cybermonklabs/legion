@@ -124,5 +124,5 @@ test("a child waiting on two issues reads them as two keys", () => {
 test("a child's key is its row's tag and opens its own page", () => {
   drawChild(child);
   const tag = screen.getByRole("link", { name: "CORE-2" });
-  expect(tag.getAttribute("href")).toBe("/issues/CORE-2");
+  expect(tag).toHaveAttribute("href", "/issues/CORE-2");
 });

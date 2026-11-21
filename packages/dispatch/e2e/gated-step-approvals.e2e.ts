@@ -1,3 +1,4 @@
+import type { Result } from "../web/src/api/paths";
 import {
   createIssue,
   createIssueArtifact,
@@ -9,7 +10,7 @@ import {
   reviewArtifact,
   setGatedSteps,
 } from "./api";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -49,13 +50,16 @@ function stateActions(page: Page): Locator {
 test("a root issue of a project gating three steps reads each step's own document: approved, approved and changed since, and awaiting @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "GATETHREE", name: "Three steps" });
-  expect(await setGatedSteps("GATETHREE", ["decisions", "criteria", "spec"])).toEqual({
-    project: "GATETHREE",
+  const gatethree = rowKey("GATETHREE");
+  await createProject({ key: gatethree, name: "Three steps" });
+  // What the route answers, typed as it: a change of that answer is an error here, not only when
+  // the row runs.
+  expect(await setGatedSteps(gatethree, ["decisions", "criteria", "spec"])).toEqual({
+    project: gatethree,
     steps: ["decisions", "criteria", "spec"],
-  });
+  } satisfies Result<"/api/v1/projects/{key}/gated-steps", "put">);
   const issue = await createIssue({
-    project: "GATETHREE",
+    project: gatethree,
     spec: "The plan.",
     title: "Design gate",
   });
@@ -142,10 +146,11 @@ test("a root issue of a project gating three steps reads each step's own documen
 test("a gated step whose document nobody has written reads Not requested rather than nothing", async ({
   browser,
 }) => {
-  await createProject({ key: "GATEGAP", name: "A missing document" });
-  await setGatedSteps("GATEGAP", ["decisions", "criteria", "spec"]);
+  const gategap = rowKey("GATEGAP");
+  await createProject({ key: gategap, name: "A missing document" });
+  await setGatedSteps(gategap, ["decisions", "criteria", "spec"]);
   const issue = await createIssue({
-    project: "GATEGAP",
+    project: gategap,
     spec: "The plan.",
     title: "No decisions document",
   });
@@ -171,8 +176,9 @@ test("a gated step whose document nobody has written reads Not requested rather 
 test("a project whose deployment publishes no gate keeps the header's one chip for the primary document", async ({
   browser,
 }) => {
-  await createProject({ key: "UNGATED", name: "Ungated" });
-  const issue = await createIssue({ project: "UNGATED", spec: "The plan.", title: "No gate" });
+  const ungated = rowKey("UNGATED");
+  await createProject({ key: ungated, name: "Ungated" });
+  const issue = await createIssue({ project: ungated, spec: "The plan.", title: "No gate" });
   await requestApproval(issue.primary_artifact_id, {}, session);
 
   const alice = await asUser(browser, "alice");
@@ -194,16 +200,17 @@ test("a project whose deployment publishes no gate keeps the header's one chip f
 test("a child issue of a gated project keeps the header's one chip: only a root issue stands in the gate", async ({
   browser,
 }) => {
-  await createProject({ key: "GATECHILD", name: "A gated tree" });
-  await setGatedSteps("GATECHILD", ["decisions", "criteria", "spec"]);
+  const gatechild = rowKey("GATECHILD");
+  await createProject({ key: gatechild, name: "A gated tree" });
+  await setGatedSteps(gatechild, ["decisions", "criteria", "spec"]);
   const root = await createIssue({
-    project: "GATECHILD",
+    project: gatechild,
     spec: "The root plan.",
     title: "The root",
   });
   const child = await createIssue({
     parent: root.key,
-    project: "GATECHILD",
+    project: gatechild,
     spec: "The child plan.",
     title: "The child",
   });
@@ -234,10 +241,11 @@ test("a child issue of a gated project keeps the header's one chip: only a root 
 test("one request over two documents reads the same on both steps, and one Request changes answers it once for both", async ({
   browser,
 }) => {
-  await createProject({ key: "GATEBOTH", name: "Two documents" });
-  await setGatedSteps("GATEBOTH", ["criteria", "spec"]);
+  const gateboth = rowKey("GATEBOTH");
+  await createProject({ key: gateboth, name: "Two documents" });
+  await setGatedSteps(gateboth, ["criteria", "spec"]);
   const issue = await createIssue({
-    project: "GATEBOTH",
+    project: gateboth,
     spec: "The plan.",
     title: "Both documents at once",
   });
@@ -300,10 +308,11 @@ test("one request over two documents reads the same on both steps, and one Reque
 test("a long changes-requested reason names its step and its reviewer whole, and fits every width @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "GATEREASON", name: "A long reason" });
-  await setGatedSteps("GATEREASON", ["decisions", "criteria", "spec"]);
+  const gatereason = rowKey("GATEREASON");
+  await createProject({ key: gatereason, name: "A long reason" });
+  await setGatedSteps(gatereason, ["decisions", "criteria", "spec"]);
   const issue = await createIssue({
-    project: "GATEREASON",
+    project: gatereason,
     spec: "The plan.",
     title: "The reason the gate stays shut",
   });
@@ -346,10 +355,11 @@ test("a long changes-requested reason names its step and its reviewer whole, and
 test("a deployment that gates the decisions and the Verification document, but not the spec, keeps the primary document's own approval and its controls", async ({
   browser,
 }) => {
-  await createProject({ key: "GATENOSPEC", name: "No spec step" });
-  await setGatedSteps("GATENOSPEC", ["decisions", "criteria"]);
+  const gatenospec = rowKey("GATENOSPEC");
+  await createProject({ key: gatenospec, name: "No spec step" });
+  await setGatedSteps(gatenospec, ["decisions", "criteria"]);
   const issue = await createIssue({
-    project: "GATENOSPEC",
+    project: gatenospec,
     spec: "The plan.",
     title: "The spec is no step of this gate",
   });
@@ -382,10 +392,11 @@ test("a deployment that gates the decisions and the Verification document, but n
 test("a gate with no step for the primary document, and the longest awaiting label, fits every width @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "GATEWIDE", name: "Chip beside steps" });
-  await setGatedSteps("GATEWIDE", ["decisions", "criteria"]);
+  const gatewide = rowKey("GATEWIDE");
+  await createProject({ key: gatewide, name: "Chip beside steps" });
+  await setGatedSteps(gatewide, ["decisions", "criteria"]);
   const issue = await createIssue({
-    project: "GATEWIDE",
+    project: gatewide,
     spec: "The plan.",
     title: "The gate names no step for the primary document",
   });
@@ -420,9 +431,10 @@ test("a gate with no step for the primary document, and the longest awaiting lab
 test("the longest awaiting label alone in an ungated header fits every width @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "WIDECHIP", name: "The chip alone" });
+  const widechip = rowKey("WIDECHIP");
+  await createProject({ key: widechip, name: "The chip alone" });
   const issue = await createIssue({
-    project: "WIDECHIP",
+    project: widechip,
     spec: "The plan.",
     title: "No gate, and the longest label the chip can carry",
   });

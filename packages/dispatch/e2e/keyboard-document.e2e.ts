@@ -9,7 +9,7 @@ import {
 } from "./editor";
 import { nextFrames } from "./frames";
 import { commentWithBody } from "./margin-helpers";
-import { devices, expect, type Locator, type Page, test } from "./test";
+import { devices, expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const initialMarkdown = "The quick brown fox";
@@ -26,8 +26,9 @@ function commentMarks(page: Page): Locator {
 test("Ctrl+Alt+M comments on the selected text as the bar's Comment does, and only from the editor @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec: initialMarkdown, title: "Chord" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec: initialMarkdown, title: "Chord" });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -72,15 +73,16 @@ test("Ctrl+Alt+M comments on the selected text as the bar's Comment does, and on
 // A project's document is a document page of its own, outside every issue; the chord is the
 // document's, so it works there too.
 test("Ctrl+Alt+M comments on a project document", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const created = await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const created = await createProjectDocument(core, {
     content: "# Handbook\n\nThe quick brown fox\n",
     name: "Handbook",
   });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto("/projects/CORE/documents/handbook");
+    await page.goto(`/projects/${core}/documents/handbook`);
     await expect(documentEditor(page)).toContainText("The quick brown fox");
     await expect(connectedDot(page)).toHaveText("connected");
     const form = composer(page);
@@ -112,12 +114,13 @@ test.describe("under a Mac user agent", () => {
   // The one row of this file that reads Playwright's own page, so alice's sign-in is the `test`
   // this file imports (e2e/test.ts) rather than a call of its own.
   test("Cmd+Option+M comments on a project document on a Mac user agent", async ({ page }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    await createProjectDocument("CORE", {
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
+    await createProjectDocument(core, {
       content: "# Handbook\n\nThe quick brown fox\n",
       name: "Handbook",
     });
-    await page.goto("/projects/CORE/documents/handbook");
+    await page.goto(`/projects/${core}/documents/handbook`);
     await expect(documentEditor(page)).toContainText("The quick brown fox");
     await expect(connectedDot(page)).toHaveText("connected");
     const form = composer(page);

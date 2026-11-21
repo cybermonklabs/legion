@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // Every response body of the Dispatch HTTP API is a named Go type, so an OpenAPI document can be
@@ -64,6 +65,10 @@ func TestResponseShapes(t *testing.T) {
 	mismatches := []model.EditPreconditionMismatch{{Scope: "block", BlockID: "b-1", Expected: "t-1", Current: new("t-2")}}
 	currentBlocks := []model.EditBlockPrecondition{{ID: "b-1", Token: "t-2"}}
 	targets := []pmdoc.Candidate{{Range: pmdoc.Range{From: 3, To: 9}, Context: "the quick brown fox"}}
+	items := []refs.Candidate{
+		{Kind: "comment", ID: "com-1", Ref: "ref-1", IssueKey: "TEST-1", FirstLine: "a comment"},
+		{Kind: "message", ID: "msg-1"},
+	}
 	participants := []model.Actor{{Kind: "session", ID: "s-2"}}
 	lost := []int{1, 4}
 	suggestion := "com-3"
@@ -265,6 +270,13 @@ func TestResponseShapes(t *testing.T) {
 			named: ambiguousTargetError{Candidates: targets, Code: "TARGET_AMBIGUOUS", Error: "the quote resolves in 2 places"},
 			before: map[string]any{
 				"error": "the quote resolves in 2 places", "code": "TARGET_AMBIGUOUS", "candidates": targets,
+			},
+		},
+		{
+			name:  "idAmbiguousError",
+			named: idAmbiguousError{Candidates: items, Code: "ID_AMBIGUOUS", Error: `the id prefix "4c9f3e12" names 2 items; write more of the id`},
+			before: map[string]any{
+				"error": `the id prefix "4c9f3e12" names 2 items; write more of the id`, "code": "ID_AMBIGUOUS", "candidates": items,
 			},
 		},
 		{

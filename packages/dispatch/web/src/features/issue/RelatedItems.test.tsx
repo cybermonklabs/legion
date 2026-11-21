@@ -78,16 +78,16 @@ test("lists each related item as a link named by its owner, with where an ask st
     expect(links).toHaveLength(3);
 
     const issueLink = screen.getByRole("link", { name: "CORE-12 Broadcast send order" });
-    expect(issueLink.getAttribute("href")).toBe("/issues/CORE-12");
-    expect(issueLink.getAttribute("target")).toBe("_blank");
+    expect(issueLink).toHaveAttribute("href", "/issues/CORE-12");
+    expect(issueLink).toHaveAttribute("target", "_blank");
 
     const documentLink = screen.getByRole("link", { name: "Send order" });
-    expect(documentLink.getAttribute("href")).toBe("/projects/CORE/documents/send-order");
-    expect(documentLink.getAttribute("target")).toBe("_blank");
+    expect(documentLink).toHaveAttribute("href", "/projects/CORE/documents/send-order");
+    expect(documentLink).toHaveAttribute("target", "_blank");
 
     const askLink = screen.getByRole("link", { name: "CORE-30 Which order do we send in?" });
-    expect(askLink.getAttribute("href")).toBe("/issues/CORE-30/asks/ask-1");
-    expect(askLink.getAttribute("target")).toBe("_blank");
+    expect(askLink).toHaveAttribute("href", "/issues/CORE-30/asks/ask-1");
+    expect(askLink).toHaveAttribute("target", "_blank");
     expect(screen.getByText("Answered")).toBeTruthy();
   } finally {
     view.unmount();

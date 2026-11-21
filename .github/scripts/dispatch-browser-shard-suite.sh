@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# One shard leg of the Dispatch browser suite: the stacks' binaries, the lane's projects, the
-# Playwright run over this leg's quarter of their rows, the row count the merge job reads, and
-# the memory and CPU sampler this leg starts and reads back.
+# One shard leg of the Dispatch browser suite: the stacks' binaries, the lane's projects less
+# the quarantined rows, the Playwright run over this leg's quarter of their rows, and the row
+# count the merge job reads.
 #
 # Who runs it, and what it takes:
 #
 #   .github/scripts/dispatch-browser-shard-suite.sh <shard> <lane> <connections>
 #
 # <shard> is this leg's number out of the job's four, the shard job's `${{ matrix.shard }}`: it
-# is the `--shard` numerator below, and it names the blob report this leg writes, the row count
-# file beside it and the title of the sampler's readings. <lane> is the run's lane, the
+# is the `--shard` numerator below, and it names the blob report this leg writes and the row
+# count file beside it. <lane> is the run's lane, the
 # workflow's own `${{ inputs.lane }}`, `pull-request` or `full`: it decides which projects run
 # and whether the run is held to the `@pr` rows, and an unknown one ends this script below.
 # <connections> is the connection limit each stack's Postgres must allow, which the binaries job
@@ -25,8 +25,8 @@
 # is the root the Playwright config path and the reporter path below are read from.
 #
 # It reads two variables the runner sets for every step: $RUNNER_TEMP, under which this leg's
-# reports, record and run directory are written, and $GITHUB_WORKSPACE, the checkout the sampler
-# and the stacks' binaries are read from.
+# report and run directory are written, and $GITHUB_WORKSPACE, the checkout the stacks'
+# binaries are read from.
 #
 # Run from packages/dispatch, with $RUNNER_TEMP and $GITHUB_WORKSPACE set:
 #   ../../.github/scripts/dispatch-browser-shard-suite.sh 1 full 100
@@ -52,19 +52,11 @@ connections=$3
 # step's `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget gives.
 export TMPDIR="$RUNNER_TEMP"
-# The two directories this step's output is sorted into, each of them one artifact
-# below: the leg's report, which the merge job reads, and the record of what the run
-# left behind. One directory per artifact because only the first line of a multi-line
-# `path:` is translated into the container's own filesystem - the step below says what
-# that cost when it was not done.
-mkdir -p "$RUNNER_TEMP/leg-report/rows" "$RUNNER_TEMP/dispatch-e2e-record"
-# The sampler, started as a background process of this step's own shell and killed by
-# the trap below, as the alone job starts and kills it. It writes memory-samples.txt
-# and cpu-samples.txt into the directory it is given, which the record below is, and
-# the reading at the end of this step takes them from there.
-"$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" sample "$RUNNER_TEMP/dispatch-e2e-record" &
-sampler=$!
-trap 'kill "$sampler" 2>/dev/null || true' EXIT
+# The directory this step's report is written into, one artifact below, which the merge
+# job reads: the blob report and the row count in one directory, because only the first
+# line of a multi-line `path:` is translated into the container's own filesystem - the
+# step below says what that cost when it was not done.
+mkdir -p "$RUNNER_TEMP/leg-report/rows"
 # This image's own PostgreSQL 18 with pgvector, through e2e/harness-postgres.ts's
 # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
 # container has no docker to run the image provider's digest with.
@@ -80,6 +72,14 @@ export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatc
 # reports keep their own names when the merge job downloads them into one directory.
 export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
 export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-shard-$shard.zip"
+# The quarantined rows (packages/dispatch/e2e/quarantine.ts) leave both lanes here:
+# `exclude` adds to each project a `grepInvert` pattern that matches exactly those rows
+# (e2e/playwright.config.ts passes every project through `quarantined`). They run in the
+# `quarantine` job of the nightly's call instead, where they gate nothing. With the
+# quarantine empty the pattern is not added at all, and each lane selects the rows it
+# did before. Exported here, not set in this step's `env:`, for the reason
+# .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget gives.
+export DISPATCH_E2E_QUARANTINE=exclude
 # The lane's projects, named rather than left to the config, and the one place either
 # lane's list is written. An unknown lane ends the step here rather than running the
 # default set under a name nobody meant, and this is the one place that refuses it now
@@ -157,8 +157,8 @@ esac
 #
 # The suite's own status is carried in a file, not in `$?` and not in `${PIPESTATUS[0]}`:
 # the run is piped into `tee`, and without the `||` a failing suite would end this script
-# at once under `set -e` and pipefail, before the row count and the sampler's readings
-# below are written. The `||` writes the status and lets the pipeline succeed. Each side
+# at once under `set -e` and pipefail, before the row count below is written. The `||`
+# writes the status and lets the pipeline succeed. Each side
 # of a pipeline is its own subshell, so a variable set in the left-hand one does not
 # survive it, which is why the status goes into a file; the script exits on it at the end.
 rm -f "$RUNNER_TEMP/suite-status"
@@ -166,13 +166,8 @@ rm -f "$RUNNER_TEMP/suite-status"
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
 status=0
 [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
-kill "$sampler" 2>/dev/null || true
 # The row count this leg printed, for the merge job's first reading. It travels beside
 # the blob report, in a directory of its own so that `merge-reports` sees zips alone.
 sed -n 's/^Running \([0-9][0-9]*\) tests\? using .*/\1/p' "$RUNNER_TEMP/playwright-log.txt" |
   tail -n 1 > "$RUNNER_TEMP/leg-report/rows/shard-$shard.txt"
-# The sampler's two readings, titled with this leg so a run's notices say which
-# machine each is from. After the suite and before the exit below, so this step still
-# ends on the suite's own status.
-"$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" report "$RUNNER_TEMP/dispatch-e2e-record" "shard $shard"
 exit "$status"

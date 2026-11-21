@@ -75,6 +75,7 @@ import {
   draw,
   FOCUS_VARIANTS,
   GONE_SESSION,
+  heldRead,
   holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
@@ -1139,7 +1140,7 @@ const githubUnread: Mount = {
   node: () => {
     stubs.githubRest.mockImplementation((path) => {
       if (path === "repos/owner/repository/issues/8") {
-        return new Promise<Response>(() => undefined);
+        return heldRead(new Promise<Response>(() => undefined));
       }
       if (path === "repos/acme/private/pulls/9") {
         return Promise.reject(
@@ -2720,16 +2721,16 @@ test("inside NoTooltips the repository's clear control is described by what its 
       const clear = scope.getByRole("button", { name: "Clear the repository of CORE-1" });
       const description = document.getElementById(clear.getAttribute("aria-describedby") ?? "");
       if (surface === "inside") {
-        expect(clear.getAttribute("title")).toBeNull();
+        expect(clear).not.toHaveAttribute("title");
         expect(
           scope.getByRole("button", {
             description: clearExplains,
             name: "Clear the repository of CORE-1",
           })
         ).toBe(clear);
-        expect(description?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+        expect(description).toHaveAttribute(PAGE_CHROME_ATTRIBUTE);
       } else {
-        expect(clear.getAttribute("title")).toBe(clearExplains);
+        expect(clear).toHaveAttribute("title", clearExplains);
         expect(description).toBeNull();
       }
 
@@ -2743,10 +2744,10 @@ test("inside NoTooltips the repository's clear control is described by what its 
         expect(
           classOf(refusal).filter((token) => tokens(theme.dangerText).includes(token))
         ).toEqual([]);
-        expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+        expect(refusal).toHaveAttribute(PAGE_CHROME_ATTRIBUTE);
       } else {
-        expect(refusal.getAttribute("class")).toBe(theme.dangerText);
-        expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(false);
+        expect(refusal).toHaveAttribute("class", theme.dangerText);
+        expect(refusal).not.toHaveAttribute(PAGE_CHROME_ATTRIBUTE);
       }
     } finally {
       undraw(view);
@@ -2793,11 +2794,9 @@ test("inside NoTooltips the words come from the page's word list and carry their
         ["bob", "author-text"],
         ["The second decision cites no evidence.", "author-text"],
       ]);
-      expect(
-        root
-          .querySelector("[data-approval-step-reason='decisions']")
-          ?.hasAttribute(PAGE_CHROME_ATTRIBUTE)
-      ).toBe(true);
+      expect(root.querySelector("[data-approval-step-reason='decisions']")).toHaveAttribute(
+        PAGE_CHROME_ATTRIBUTE
+      );
       expectMarks(within(root).getByRole("link", { name: "spec.md, version 1" }), [
         ["spec.md,", "author-text"],
         [CONTROL_LABELS.version.toLowerCase(), "page-chrome"],
@@ -3081,7 +3080,7 @@ test("inside NoTooltips the words come from the page's word list and carry their
 
   // An instant and a document's connection are readings, not the page's words.
   await readDrawn(mountNamed("Timestamp, exact"), "inside", (view) => {
-    expect(view.container.querySelector("time")?.hasAttribute(AUTHOR_TEXT_ATTRIBUTE)).toBe(true);
+    expect(view.container.querySelector("time")).toHaveAttribute(AUTHOR_TEXT_ATTRIBUTE);
   });
   await readDrawn(
     mountNamed("ConnectionDot, each state and a pending notice"),

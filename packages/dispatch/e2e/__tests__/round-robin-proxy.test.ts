@@ -13,10 +13,7 @@ import type { ProxiedRequest, ProxiedSocket } from "../round-robin-proxy";
 import { eventually, rowLimit, runBounded } from "./bounded-subprocess";
 
 // The proxy runs as the harness runs it, a `bun` process of its own, and this file answers as the
-// two Dispatch processes it proxies and opens its websockets with `ws`'s client. The test preload
-// puts happy-dom's Response on globalThis, which carries no compressed body, so the rows that
-// answer gzip build theirs with Bun's own Response.
-const NativeResponse = (await Bun.fetch("data:,")).constructor as typeof Response;
+// two Dispatch processes it proxies and opens its websockets with `ws`'s client.
 const { WebSocket: WsClient } = require("ws") as {
   WebSocket: new (
     url: string,
@@ -93,9 +90,9 @@ function startUpstream(name: DispatchProcess) {
         // (api/response_compression.go), so the proxy must forward one.
         const body = JSON.stringify({ comments: compressedComments, from: name });
         if (!(request.headers.get("accept-encoding") ?? "").includes("gzip")) {
-          return new NativeResponse(body, { headers: { "Content-Type": "application/json" } });
+          return new Response(body, { headers: { "Content-Type": "application/json" } });
         }
-        return new NativeResponse(gzipSync(Buffer.from(body)), {
+        return new Response(gzipSync(Buffer.from(body)), {
           headers: {
             "Content-Encoding": "gzip",
             "Content-Type": "application/json",
