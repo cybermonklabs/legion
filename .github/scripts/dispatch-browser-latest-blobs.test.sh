@@ -51,10 +51,10 @@ leg() {
   printf '%s\n' "$4" > "$dir/rows/$2.txt"
 }
 
-# lone_leg <root> <leg> <mark>: the same artifact when it is the only one the download matched.
-# actions/download-artifact v8.0.1 then extracts it into the download directory itself and not
-# into a directory named for it (src/download-artifact.ts at the pinned 3e5f45b2 takes `path`
-# when `artifacts.length === 1`), so the leg's blob report and row count sit at the top.
+# lone_leg <root> <leg> <mark>: the same artifact when it is the only one the download matched,
+# which actions/download-artifact extracts into the download directory itself and not into a
+# directory named for it (the script's head names the note that cites the action's source), so
+# the leg's blob report and row count sit at the top.
 lone_leg() {
   mkdir -p "$1/down/blob-report" "$1/down/rows"
   printf '%s\n' "$3" > "$1/down/blob-report/report-$2.zip"
@@ -151,10 +151,10 @@ check "a file where a directory was expected fails too" "$(is "$status" 1)"
 check "naming it" "$(contains "$out" 'down/dispatch-browser-blob-shard-1-1 is not a leg')"
 
 echo "case: one artifact, which the download extracts into the download directory itself"
-# How many legs uploaded a blob is the run's: a run whose other legs uploaded nothing downloads
-# one artifact, and with one match actions/download-artifact leaves no directory named for it.
-# Read as an entry's name, blob-report/ is no leg's artifact, and the step failed a merge job
-# that had a blob to merge.
+# How many artifacts the download's pattern matches, over every attempt of the run, is the
+# run's: one leg that uploaded a blob on one attempt makes one, and with one match
+# actions/download-artifact leaves no directory named for it. Read as an entry's name,
+# blob-report/ is no leg's artifact, and the step failed a merge job that had a blob to merge.
 root=$(fixture one-artifact)
 lone_leg "$root" shard-1 lone
 run_select "$root"

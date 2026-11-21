@@ -22,7 +22,8 @@
 # It takes the directory `actions/download-artifact` filled and the directory to write:
 #   .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir>
 # That directory comes in one of two layouts, and which one is the run's, not this job's: it is
-# how many legs uploaded a blob that decides it.
+# how many artifacts the download's pattern matches that decides it, and a run's artifact list
+# holds every attempt's artifacts.
 #
 # Several artifacts matched: each entry of <download-dir> must be a directory named
 # `dispatch-browser-blob-<leg>-<attempt>`, where <attempt> is the run of digits at the end and
@@ -30,20 +31,21 @@
 # does not read is a failure, not a file passed over: a blob silently dropped is a merged report
 # short of a leg's rows, which reads as a shorter suite rather than as an error.
 #
-# One artifact matched: actions/download-artifact v8.0.1 extracts it into <download-dir> itself
-# and not into a directory named for it - src/download-artifact.ts at the pinned 3e5f45b2 writes
-# into `path` when `merge-multiple` is set or when `artifacts.length === 1` - so <download-dir>
-# holds that artifact's blob-report/ and rows/ at its top. A run whose other legs uploaded
-# nothing downloads one artifact, and read as an entry's name, blob-report/ is no leg's
-# artifact: the step failed that run's merge job when it had a blob to merge. No artifact the
-# pattern matches is named blob-report or rows, so either of those at the top is this layout,
-# and any other entry beside them is a failure. One artifact is one leg at one attempt, so there
-# is nothing to choose and it is taken whole; its name, which holds the attempt, is not on disk,
-# so the line this prints names the files it took.
+# One artifact matched: actions/download-artifact extracts it into <download-dir> itself and not
+# into a directory named for it; the note that cites the action's source is
+# .github/ci-notes/dispatch-browser.md#why-every-legs-blob-report-is-downloaded-without-merge-multiple-and-the-two-layouts-it-lands-in.
+# So <download-dir> holds that artifact's blob-report/ and rows/ at its top. A run whose pattern
+# matches one artifact - one leg uploaded a blob, on one attempt - downloads it so, and read as
+# an entry's name, blob-report/ is no leg's artifact: the step failed that run's merge job when
+# it had a blob to merge. No artifact the pattern matches is named blob-report or rows, so
+# either of those at the top is this layout, and any other entry beside them is a failure. One
+# artifact is one leg at one attempt, so there is nothing to choose and it is taken whole; its
+# name, which holds the attempt, is not on disk, so the line this prints names the files it took.
 #
 # It writes <out-dir>/blob-report and <out-dir>/rows, holding each leg's selected attempt's files
-# and no other's, and prints one line per leg saying which attempt it took and which it passed
-# over - the merge job's log is where a reader looks when a re-run's number surprises them.
+# and no other's. Where several artifacts matched it prints one line per leg saying which attempt
+# it took and which it passed over - the merge job's log is where a reader looks when a re-run's
+# number surprises them; where one matched it prints one line naming the files it took.
 #
 # An empty or absent <download-dir> is not a failure here: it writes the two empty directories
 # and says so. The merge step after it already fails when there is nothing to merge, and the
@@ -89,19 +91,17 @@ if [ -e "$download_dir/blob-report" ] || [ -e "$download_dir/rows" ]; then
       echo "::error::$download_dir/$name is not part of a leg's blob report: $download_dir" \
         "holds blob-report/ or rows/ at its top, which is how actions/download-artifact" \
         "extracts an artifact when exactly one matched, and a leg's artifact holds the" \
-        "directories blob-report/ and rows/ and nothing else. Upload only those two from the leg" \
-        "in .github/workflows/dispatch-browser.yaml, or narrow the download step's pattern so it" \
-        "does not match this artifact."
+        "directories blob-report/ and rows/ and nothing else. This entry is in that one" \
+        "artifact: upload only those two directories from the leg in" \
+        ".github/workflows/dispatch-browser.yaml."
     done
     exit 1
   fi
   held=
   for part in blob-report rows; do
-    if [ -d "$download_dir/$part" ]; then
-      cp -R "$download_dir/$part/." "$out_dir/$part/"
-      held="$held${held:+ and }$part/"
-    fi
+    [ ! -d "$download_dir/$part" ] || held="$held${held:+ and }$part/"
   done
+  cp -R "$download_dir/." "$out_dir/"
   list=
   while IFS= read -r -d '' file; do
     list="$list${list:+, }$file"

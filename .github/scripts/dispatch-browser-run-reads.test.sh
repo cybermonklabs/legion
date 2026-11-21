@@ -8,13 +8,16 @@
 # the real script with the stand-in first on PATH and reads the file it wrote, the arguments the
 # stand-in recorded and the lines the script printed. The ladder's waits are the case's own,
 # `retry_seconds` seconds for the first and twice that for the second, which `fixture` resets to
-# 0. A stand-in `sleep` records each wait the ladder asks for, and the cases read those records,
-# not how long the drive took: two cases set the knob to 1 and read the waits 1 s and 2 s, or
-# 1 s, and the control sets it to 10 and reads that the ladder asked for no wait at all, which a
-# script that slept whatever it was given would fail.
+# 0. A stand-in `sleep` records each wait the ladder asks for through the `sleep` on PATH, and
+# the cases read those records, not how long the drive took: two cases set the knob to 1 and read
+# the waits 1 s and 2 s, or 1 s. The control sets the knob to 100000 and reads that the ladder
+# asked for no wait; a wait made some other way (an absolute path to sleep, `read -t`) is no
+# record, so the control also runs that drive under a real `timeout 120` and holds it to exit 0,
+# which such a wait of 100000 s cannot reach.
 #
 # NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `timeout` that
-# four cases opt into call by call and that otherwise execs the real one, and the script.
+# four cases opt into call by call and that otherwise execs the real one, a stand-in `sleep` that
+# records and returns, and the script.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-run-reads.test.sh
 # CI runs it in ci.yaml's test job.
@@ -151,24 +154,18 @@ exit "\${answered:-124}"
 TIMEOUT
 chmod +x "$work/bin/timeout"
 
-# The real `sleep`, resolved before the stand-in below can shadow it, and refused by name where
-# there is none, in the shape of the `timeout` guard above.
-real_sleep=$(type -P sleep) ||
-  { echo "dispatch-browser-run-reads.test.sh needs sleep (GNU coreutils) on PATH" >&2
-    exit 1; }
-
 # The stand-in `sleep`, which the ladder in gh-read.sh calls between attempts. It records the
-# seconds of each call, one file per call, and then waits them with the real sleep, so the
-# ladder runs as it does on a runner. The cases about the waits read these records and not the
-# drive's wall-clock time, which a loaded host stretches. Two checks here held a drive to at
-# most 1 s of SECONDS: measured 2026-11-21 on a shared 288-CPU dev box, one of them failed in an
-# unforced run with nothing wrong in the script, and with each `cat` delayed by 0.25 s both did.
+# seconds of each call, one file per call, and returns at once: what the cases read is the wait
+# the ladder asked for, not how long it took, so no case waits it out. The cases about the waits
+# read these records and not the drive's wall-clock time, which a loaded host stretches. Two
+# checks here held a drive to at most 1 s of SECONDS: measured 2026-11-21 on a shared 288-CPU dev
+# box, one of them failed in an unforced run with nothing wrong in the script, and with each `cat`
+# delayed both did.
 cat > "$work/bin/sleep" <<SLEEP
 #!/usr/bin/env bash
 set -euo pipefail
 calls=\$(find "$work/sleep-calls" -maxdepth 1 -type f | wc -l)
 printf '%s\n' "\$*" > "$work/sleep-calls/call.\$calls"
-exec $real_sleep "\$@"
 SLEEP
 chmod +x "$work/bin/sleep"
 
@@ -236,12 +233,13 @@ field() { jq -r --argjson id "$1" ".[] | select(.id == \$id) | $2" "$work/out.js
 errors() { grep -c '::error::' <<<"$out" || true; }
 error_line() { grep '::error::' <<<"$out" || true; }
 wrote_out_file() { [ -e "$work/out.json" ] && echo yes || echo no; }
-# sleeps: the seconds of each wait the ladder asked the stand-in `sleep` for, in order and joined
-# by spaces, or nothing where it asked for none.
+# sleeps: the arguments of each call the ladder made to the stand-in `sleep`, in order and joined
+# by `|`, so one call given two arguments (`1 2`) reads apart from two calls; nothing where it made
+# none.
 sleeps() {
   local n=0 waits=""
   while [ -f "$work/sleep-calls/call.$n" ]; do
-    waits="$waits${waits:+ }$(cat "$work/sleep-calls/call.$n")"
+    waits="$waits${waits:+|}$(cat "$work/sleep-calls/call.$n")"
     n=$((n + 1))
   done
   echo "$waits"
@@ -315,7 +313,7 @@ check "nor that no row failed, which this job did not read" \
   "$(is "$(contains "$(error_line)" 'no row of the suite failed')" false)"
 check "every attempt's gh output still reaches the log" \
   "$(is "$(grep -c '^HTTP 502$' <<<"$out" || true)" 3)"
-check "and the ladder waited 1 s and then 2 s" "$(is "$(sleeps)" "1 2")"
+check "and the ladder waited 1 s and then 2 s" "$(is "$(sleeps)" "1|2")"
 
 echo "case: a refusal gh printed no HTTP status for"
 # A resolution failure prints no status line, and a line that named one anyway would send a
@@ -386,7 +384,7 @@ check "and gh as the command it wraps" "$(is "$(cut -d' ' -f2 <<<"$(timeout_args
 check "which is this run's attempt read itself" \
   "$(contains "$(timeout_args)" '^30 gh api --paginate --slurp repos/o/r/actions/runs/41/')"
 check "so no gh call is made outside the bound" "$(is "$(calls)" 0)"
-check "and the ladder's two waits are this case's 0 s" "$(is "$(sleeps)" "0 0")"
+check "and the ladder's two waits are this case's 0 s" "$(is "$(sleeps)" "0|0")"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
 check "naming the bound that ended the attempt that decided the failure" \
   "$(contains "$(error_line)" 'attempt 3, which decided the failure, stopped at its 30 s bound')"
@@ -562,15 +560,20 @@ check "prints no ::error:: line" "$(is "$(errors)" 0)"
 check "and waited the ladder's first second" "$(is "$(sleeps)" 1)"
 
 echo "case: the negative control, a gh that answers at once"
-# Without this, the two cases above would pass for a script that slept whatever it was given.
-# The knob is 10 here and the gh answers at once, so the ladder has no wait to ask for, and an
-# unconditional sleep would be one the stand-in records.
+# The two cases above read the waits the ladder asked of `sleep`, and this one holds that it asks
+# for none when gh answers at once. The knob is 100000, so a wait the stand-in does not record -
+# `sleep` by its absolute path, `read -t`, any wait after the answer - ends this drive at the
+# real `timeout 120` with status 124 instead of 0.
 fixture 0
-retry_seconds=10
-drive jobs "$work/out.json"
-check "exits 0" "$(is "$status" 0)"
+set +e
+out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
+  GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=100000 "$real_timeout" 120 \
+  "$read_script" jobs "$work/out.json" 2>&1)
+status=$?
+set -e
+check "exits 0 within 120 s, so it waited for nothing however it might" "$(is "$status" 0)"
 check "calls gh once" "$(is "$(calls)" 1)"
-check "and waits not at all" "$(is "$(sleeps)" "")"
+check "and asks sleep for no wait" "$(is "$(sleeps)" "")"
 
 echo "case: blobs-refused names the download step that failed and nothing beyond it"
 # What this job knows of a refused blob download is which step failed and on which attempt.
