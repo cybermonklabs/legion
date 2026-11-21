@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -128,6 +129,31 @@ func decodeAnswer(answer []byte, into any) error {
 		return fmt.Errorf("it holds a member the %s this legion reads does not have: the daemon is of another release than this legion", what)
 	}
 	return fmt.Errorf("a value of it does not decode into the %s this legion reads", what)
+}
+
+// claimTokenShape is a claim token's shape: claim.NewToken's `legion-<project>-<issue>-<role>` and
+// claim.ControllerToken's `legion-<project>-controller`, each segment lowercase letters and digits.
+var claimTokenShape = regexp.MustCompile(`^legion-[a-z0-9]+-(?:[a-z][a-z0-9]*-[0-9]+-)?[a-z]+$`)
+
+// claimWord is a claim token of the daemon's answer as a line of the command names it: the token
+// where it has a claim token's shape and ends in a role (legionclaim.Token.Role), and words saying
+// it has none otherwise, since the token is the daemon's word and a line prints it only in the
+// shape the daemon makes one.
+func claimWord(token legionclaim.Token) string {
+	if _, ok := token.Role(); ok && claimTokenShape.MatchString(string(token)) {
+		return string(token)
+	}
+	return "a claim whose token has no claim token's shape"
+}
+
+// stateWord is a claim's state of the daemon's answer as a line of the command names it: the
+// state where it is one this legion knows (supervise.States), and words saying it is not
+// otherwise, since the state is the daemon's word.
+func stateWord(state string) string {
+	if slices.Contains(supervise.States(), supervise.ClaimState(state)) {
+		return state
+	}
+	return "in a state this legion does not know"
 }
 
 // printClaim is the claim a route answered, as the one line writeClaimLine writes.
@@ -525,7 +551,7 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 			continue
 		}
 		if c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(string(held.Token))+"/retry", retry, printClaim) != 0 {
-			fmt.Fprintf(c.stderr, "%s: %s was not retried\n", c.name(), held.Token)
+			fmt.Fprintf(c.stderr, "%s: %s was not retried\n", c.name(), claimWord(held.Token))
 			code = 1
 		}
 	}
@@ -607,12 +633,12 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 		}
 		if !seen.SuspensionHeld {
 			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds the suspension of %s, which is %s: a start run against "+
-				"the claim dropped it, or the daemon restarted\n", c.name(), token, seen.State)
+				"the claim dropped it, or the daemon restarted\n", c.name(), token, stateWord(seen.State))
 			return nil, false
 		}
 		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
 			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: its agent's turn has not ended, or the "+
-				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, *c.wait)
+				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, stateWord(seen.State), *c.wait)
 			return nil, false
 		}
 		select {

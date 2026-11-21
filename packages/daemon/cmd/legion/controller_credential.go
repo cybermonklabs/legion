@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -65,11 +67,12 @@ func controllerCredentialSuperseded(err error) bool {
 // bundle, lowercased and sorted (api.ControllerCredentialResponse's Installed), which the
 // first fetch reads for the controller's addressing (controllerReach) and a refresh does not
 // read. An answer that is no valid bundle,
-// a rename of it naming a repository GitHub could hold no name for included, is an error, which
-// names the member of the answer it read and never its value: a parser's error quotes the value
-// it could not read, and every value of the answer is the daemon's word. A failed request names
-// the daemon URL, as fetchControllerSecret's does, and never tries another address. A refusal is
-// a *controllerCredentialFailure carrying the daemon's code when the body parses as one
+// a rename of it naming a repository GitHub could hold no name for included, or whose App is
+// none of the App roles (appauth.Roles), is an error, which names the member of the answer it
+// read and never its value: a parser's error quotes the value it could not read, and every value
+// of the answer is the daemon's word. A failed request names the daemon URL, as
+// fetchControllerSecret's does, and never tries another address. A refusal is a
+// *controllerCredentialFailure carrying the daemon's code when the body parses as one
 // (api.Failure), quoting its sentence through refusal otherwise.
 func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOwner string) (bundle ghconfig.Bundle, installed []string, err error) {
 	const route = "/legion/v1/controller/github-credential"
@@ -94,6 +97,9 @@ func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOw
 	var answer api.ControllerCredentialResponse
 	if err := answered.Decode(&answer); err != nil {
 		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered with a body that is not JSON", daemonURL, route)
+	}
+	if !slices.Contains(appauth.Roles, appauth.AppRole(answer.App)) {
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered an App (app) that is none of the App roles this legion knows, %s and %s", daemonURL, route, appauth.Implement, appauth.Review)
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, answer.ExpiresAt)
 	if err != nil {

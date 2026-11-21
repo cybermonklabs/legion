@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -148,6 +149,12 @@ type forkUpstream struct {
 // where it points, since curl follows none; and, of a 200, a body that is not JSON, an answer for
 // another repository than repo (a full_name that differs from it beyond case), and an answer
 // with no "fork" field or a false one.
+//
+// Each value of GitHub's answer an error names is GitHub's word, read with no record of the
+// token the read carried, so it prints only in a shape that holds no credential: a message of
+// plain words (gitHubWords), a redirect to a repository by its id (gitHubRedirect), a full name
+// that is `owner/name` as GitHub names one (ghrepo.Parse). A value of any other shape is named by
+// what it is and not printed.
 func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (forkAnswer, error) {
 	if response.Exit != 0 {
 		if unreached := response.Unreached(); unreached != nil {
@@ -166,11 +173,17 @@ func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (fo
 	decodeErr := json.Unmarshal([]byte(response.Body()), &answer)
 	if status != http.StatusOK {
 		said := fmt.Sprintf("GitHub answered the read of %s with the status %d", repo, status)
-		if answer.Message != "" {
+		switch {
+		case gitHubWords.MatchString(answer.Message):
 			said += " (" + answer.Message + ")"
+		case answer.Message != "":
+			said += " (with a message that is more than plain words, which the helper does not print)"
 		}
-		if location := headers["location"]; location != "" {
+		switch location := headers["location"]; {
+		case gitHubRedirect.MatchString(location):
 			said += ", pointing at " + location + ", a redirect the helper does not follow"
+		case location != "":
+			said += ", pointing at an address that names no repository by its id, a redirect the helper does not follow"
 		}
 		return forkAnswer{}, errors.New(said)
 	}
@@ -178,7 +191,10 @@ func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (fo
 	case decodeErr != nil:
 		return forkAnswer{}, fmt.Errorf("GitHub's answer for %s is not JSON of one repository: %v", repo, decodeErr)
 	case !strings.EqualFold(answer.FullName, repo.String()):
-		return forkAnswer{}, fmt.Errorf("GitHub answered the read of %s with another repository, %q", repo, answer.FullName)
+		if another, err := ghrepo.Parse("GitHub's full_name", answer.FullName); err == nil {
+			return forkAnswer{}, fmt.Errorf("GitHub answered the read of %s with another repository, %q", repo, another.String())
+		}
+		return forkAnswer{}, fmt.Errorf("GitHub answered the read of %s with a full_name that names no repository GitHub could hold", repo)
 	case answer.Fork == nil:
 		return forkAnswer{}, fmt.Errorf(`GitHub's answer for %s holds no "fork" field`, repo)
 	case !*answer.Fork:
@@ -186,6 +202,16 @@ func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (fo
 	}
 	return answer, nil
 }
+
+// gitHubWords is a message of GitHub's that is plain words: letters, spaces and a sentence's
+// punctuation, at most 200 characters, the shape of each message GitHub's REST API writes for a
+// read it refuses ("Not Found", "Bad credentials", "Moved Permanently"). A digit, a slash, a colon
+// or an underscore is none of it, so no URL and no token GitHub mints has the shape.
+var gitHubWords = regexp.MustCompile(`^[A-Za-z][A-Za-z ,.'()-]{0,199}$`)
+
+// gitHubRedirect is where GitHub's redirect for a repository that moved points: the repository
+// by its id on api.github.com, with no user information, query or fragment.
+var gitHubRedirect = regexp.MustCompile(`^https://api\.github\.com/repositories/[0-9]+$`)
 
 // dir is the gh directory that answers for the fork repo, by R2's rule: where the bundle holds a
 // directory for the owner of the fork's parent, the nearer of the two repositories it comes from,
@@ -201,7 +227,9 @@ func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (fo
 // repository that routed there, as GitHub spells it: `the fork <repo> routes to <dir> through its
 // parent <full name>`, or `its source`. Where the parent routes nowhere, the error names repo and
 // the parent, why the parent did not route, and that the source was not tried; otherwise it names
-// repo, the parent and the source, and why each did not answer.
+// repo, the parent and the source, and why each did not answer. A full name that is not
+// `owner/name` as GitHub names one (ghrepo.Parse) routes nowhere and is named as no repository,
+// never printed: it is GitHub's word, and only a name of that shape prints.
 func (a forkAnswer) dir(ownersDir string, repo ghrepo.Repository) (dir, route string, err error) {
 	tried := make([]string, 0, 2)
 	for _, upstream := range []struct {
@@ -212,45 +240,41 @@ func (a forkAnswer) dir(ownersDir string, repo ghrepo.Repository) (dir, route st
 			tried = append(tried, "GitHub names no "+upstream.role)
 			continue
 		}
-		if err = upstreamOwnerServed(ownersDir, upstream.fullName); err != nil {
-			tried = append(tried, fmt.Sprintf("the %s %s, since %v", upstream.role, upstream.fullName, err))
+		named, unnamed := ghrepo.Parse("GitHub's full_name", upstream.fullName)
+		if unnamed != nil {
+			tried = append(tried, fmt.Sprintf("the %s, whose full_name names no repository GitHub could hold", upstream.role))
 			continue
 		}
-		if dir, err = upstreamGHConfigDir(ownersDir, upstream.fullName); err == nil {
-			return dir, fmt.Sprintf("the fork %s routes to %s through its %s %s", repo, dir, upstream.role, upstream.fullName), nil
+		if err = upstreamOwnerServed(ownersDir, named); err != nil {
+			tried = append(tried, fmt.Sprintf("the %s %s, since %v", upstream.role, named, err))
+			continue
+		}
+		if dir, err = upstreamGHConfigDir(ownersDir, named); err == nil {
+			return dir, fmt.Sprintf("the fork %s routes to %s through its %s %s", repo, dir, upstream.role, named), nil
 		}
 		if upstream.role == "parent" {
 			return "", "", fmt.Errorf("GitHub answers that %s is a fork of %s, whose owner the bundle holds a directory for, and a request for %s answers nothing, so the fork gets nothing either and its source is not tried: %v",
-				repo, upstream.fullName, upstream.fullName, err)
+				repo, named, named, err)
 		}
-		tried = append(tried, fmt.Sprintf("the %s %s, since %v", upstream.role, upstream.fullName, err))
+		tried = append(tried, fmt.Sprintf("the %s %s, since %v", upstream.role, named, err))
 	}
 	return "", "", fmt.Errorf("GitHub answers that %s is a fork, and neither repository it comes from routes to a directory of the bundle: %s",
 		repo, strings.Join(tried, "; "))
 }
 
-// upstreamGHConfigDir is the gh directory ghConfigDirFor routes the repository fullName to, as
+// upstreamGHConfigDir is the gh directory ghConfigDirFor routes the repository upstream to, as
 // GitHub spells it: its owner lowercased, as a request's owner is, and its name keyed as the
-// bundle keys one (ghconfig.RepositoryName). A fullName that ghrepo.Parse refuses routes nowhere,
-// so no name in GitHub's answer can name a path outside the bundle.
-func upstreamGHConfigDir(ownersDir, fullName string) (string, error) {
-	upstream, err := ghrepo.Parse("GitHub's full_name", fullName)
-	if err != nil {
-		return "", err
-	}
+// bundle keys one (ghconfig.RepositoryName). upstream is a name ghrepo.Parse took, so no name in
+// GitHub's answer can name a path outside the bundle.
+func upstreamGHConfigDir(ownersDir string, upstream ghrepo.Repository) (string, error) {
 	return ghConfigDirFor(ownersDir, strings.ToLower(upstream.Owner()), ghconfig.RepositoryName(upstream.Name()))
 }
 
 // upstreamOwnerServed is nil where the bundle under ownersDir holds a directory for the owner of
-// the repository fullName, as GitHub spells it, keyed as upstreamGHConfigDir keys it (lowercased),
-// and otherwise the error that says why not: ownerGHConfigDir's refusal, in the words a request
-// for a repository of that owner is refused with, or ghrepo.Parse's refusal of a fullName, which
-// then names no owner.
-func upstreamOwnerServed(ownersDir, fullName string) error {
-	upstream, err := ghrepo.Parse("GitHub's full_name", fullName)
-	if err != nil {
-		return err
-	}
-	_, err = ownerGHConfigDir(ownersDir, strings.ToLower(upstream.Owner()))
+// the repository upstream, as GitHub spells it, keyed as upstreamGHConfigDir keys it
+// (lowercased), and otherwise ownerGHConfigDir's refusal, in the words a request for a repository
+// of that owner is refused with.
+func upstreamOwnerServed(ownersDir string, upstream ghrepo.Repository) error {
+	_, err := ownerGHConfigDir(ownersDir, strings.ToLower(upstream.Owner()))
 	return err
 }

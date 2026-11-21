@@ -1163,7 +1163,7 @@ func TestControllerSecretWithoutTheConfiguredStepsIsRefused(t *testing.T) {
 	for _, tc := range []struct{ body, want string }{
 		{`{"secret":"s"}`, "answered no design gate steps (designGateSteps); upgrade the daemon"},
 		{`{"secret":"s","designGateSteps":null}`, "answered no design gate steps (designGateSteps); upgrade the daemon"},
-		{`{"secret":"s","designGateSteps":["sometimes"]}`, `answered design gate step "sometimes", not 'decisions', 'criteria' or 'spec'; upgrade the daemon`},
+		{`{"secret":"s","designGateSteps":["decisions","sometimes"]}`, `answered a design gate step (designGateSteps[1]) that is not 'decisions', 'criteria' or 'spec'; upgrade the daemon`},
 	} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")

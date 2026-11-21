@@ -5162,6 +5162,13 @@
       "production": "legion CLI fetchControllerCredential: an owner's name that is no GitHub login is named (default, owners), and ghconfig.Bundle.Validate's error, which quotes it, is not printed"
     },
     {
+      "id": "legion-cli-credential-app-closed-set",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAControllerCredentialThatDoesNotParsePrintsNoSecretItEchoes/app",
+      "production": "legion CLI fetchControllerCredential: the App label is one of appauth.Roles before controllerStartGitHubCredential's stderr line and the refresh log print it, and is named (app) otherwise"
+    },
+    {
       "id": "legion-cli-state-repositories-decode-echo",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
@@ -5181,6 +5188,13 @@
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
       "test": "TestADaemonStateThatDoesNotDecodePrintsNoValueItEchoes/legion-state",
       "production": "legion state (runState, get): the state is the Answer get answers, decoded through oauth2call.Answer.Decode, whose error quotes no value"
+    },
+    {
+      "id": "legion-cli-design-step-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADesignGateStepPrintsNoBearerItEchoes",
+      "production": "legion CLI fetchControllerSecret: a design gate step this legion does not know is named by its place, never printed"
     },
     {
       "id": "legion-cli-claims-list-member-decode-echo",
@@ -5204,6 +5218,27 @@
       "production": "legion claims retry --failed: the claims list decodes through decodeAnswer, whose error names no member or value of the answer"
     },
     {
+      "id": "legion-cli-claims-retry-token-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAClaimsAnswerPrintsNoBearerItEchoes/retry-failed-token",
+      "production": "legion claims retry --failed: a claim that was not retried is named by its token only in a claim token's shape (claimWord)"
+    },
+    {
+      "id": "legion-cli-claims-suspend-dropped-state-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAClaimsAnswerPrintsNoBearerItEchoes/suspend-dropped-state",
+      "production": "legion claims suspend awaitSuspended: a dropped suspension names the claim's state only where it is one of supervise.States (stateWord)"
+    },
+    {
+      "id": "legion-cli-claims-suspend-held-state-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAClaimsAnswerPrintsNoBearerItEchoes/suspend-held-state",
+      "production": "legion claims suspend awaitSuspended: a suspension held past --wait names the claim's state only where it is one of supervise.States (stateWord)"
+    },
+    {
       "id": "legion-cli-grant-echoed-authorization",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
@@ -5216,6 +5251,34 @@
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
       "test": "TestAGrantAnswerThatDoesNotDecodePrintsNoBearerItEchoes/grant-id-no-string",
       "production": "legion issue status (runIssueStatus): an answer that does not decode as a grant is named by its member (grantId), never printed"
+    },
+    {
+      "id": "legion-cli-fork-message-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAForkReadAnswerPrintsNoTokenItEchoes/message",
+      "production": "legion git-credential readForkAnswer: GitHub's message prints only as plain words (gitHubWords), and is named as more than words otherwise"
+    },
+    {
+      "id": "legion-cli-fork-location-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAForkReadAnswerPrintsNoTokenItEchoes/location",
+      "production": "legion git-credential readForkAnswer: a redirect's Location prints only as a repository by its id on api.github.com (gitHubRedirect)"
+    },
+    {
+      "id": "legion-cli-fork-full-name-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAForkReadAnswerPrintsNoTokenItEchoes/full-name",
+      "production": "legion git-credential readForkAnswer: another repository's full_name prints only as owner/name as GitHub names one (ghrepo.Parse)"
+    },
+    {
+      "id": "legion-cli-fork-upstream-name-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAForkReadAnswerPrintsNoTokenItEchoes/upstream-names",
+      "production": "legion git-credential forkAnswer.dir: a parent's or source's full_name that ghrepo.Parse refuses is named as no repository, and neither it nor the parser's error is printed"
     },
     {
       "id": "redact-scheme-is-no-credential",
@@ -6586,6 +6649,11 @@
       "guard": "legion-cli-credential-owner-validate-echo"
     },
     {
+      "site": "legion CLI controllerStartGitHubCredential and the refresh log: the answer's App label printed raw",
+      "source": "the search for TN deep round 5's M1 class in cmd/legion",
+      "guard": "legion-cli-credential-app-closed-set"
+    },
+    {
       "site": "legion CLI checkControllerRepositories: a state that did not decode printed the decoder's error, which quoted the value",
       "source": "the search for the class of the round-5 lead fetchControllerCredential in cmd/legion",
       "guard": "legion-cli-state-repositories-decode-echo"
@@ -6599,6 +6667,11 @@
       "site": "legion state: get handed back the 2xx bytes (StreamTo), and a state that did not decode printed the decoder's error, which quoted the value",
       "source": "the review of #4368 round 5, finding 3 (the StreamTo handback at cmd/legion/main.go:1679)",
       "guard": "legion-cli-state-decode-echo"
+    },
+    {
+      "site": "legion CLI fetchControllerSecret: a design gate step this legion does not know printed raw",
+      "source": "the review of #4368 round 5, finding 3 (controller.go:592, same shape, not probed)",
+      "guard": "legion-cli-design-step-echo"
     },
     {
       "site": "legion claims decodeAnswer through printAnswer: a member the claims type does not have printed by the name the answer wrote",
@@ -6616,6 +6689,21 @@
       "guard": "legion-cli-claims-retry-list-decode-echo"
     },
     {
+      "site": "legion claims retry --failed: a failed claim's token printed raw when its retry was refused",
+      "source": "the search for TN deep round 5's M1 class in cmd/legion",
+      "guard": "legion-cli-claims-retry-token-echo"
+    },
+    {
+      "site": "legion claims suspend: a dropped suspension printed the claim's state raw",
+      "source": "the search for TN deep round 5's M1 class in cmd/legion",
+      "guard": "legion-cli-claims-suspend-dropped-state-echo"
+    },
+    {
+      "site": "legion claims suspend: a suspension held past --wait printed the claim's state raw",
+      "source": "the search for TN deep round 5's M1 class in cmd/legion",
+      "guard": "legion-cli-claims-suspend-held-state-echo"
+    },
+    {
       "site": "legion issue status (status.go:47): an answer that named no grant printed whole, the Authorization it echoed included",
       "source": "the review of #4368 round 5, finding 3 (TestZZProbeIssueStatusEchoedGrant)",
       "guard": "legion-cli-grant-echoed-authorization"
@@ -6624,6 +6712,26 @@
       "site": "legion issue status (status.go:47): an answer that did not decode as a grant printed whole",
       "source": "the review of #4368 round 5, finding 3",
       "guard": "legion-cli-grant-decode-echo"
+    },
+    {
+      "site": "legion git-credential readForkAnswer: GitHub's message on a refused fork read printed raw",
+      "source": "the search for TN deep round 5's M1 class in cmd/legion",
+      "guard": "legion-cli-fork-message-echo"
+    },
+    {
+      "site": "legion git-credential readForkAnswer: a redirect's Location header printed raw",
+      "source": "the search for TN deep round 5's M1 class in cmd/legion",
+      "guard": "legion-cli-fork-location-echo"
+    },
+    {
+      "site": "legion git-credential readForkAnswer: another repository's full_name printed raw",
+      "source": "the search for TN deep round 5's M1 class in cmd/legion",
+      "guard": "legion-cli-fork-full-name-echo"
+    },
+    {
+      "site": "legion git-credential forkAnswer.dir: a parent's or source's full_name printed raw beside ghrepo.Parse's error, which quoted it again",
+      "source": "the search for TN deep round 5's M1 class and the round-5 parse-error class in cmd/legion",
+      "guard": "legion-cli-fork-upstream-name-echo"
     },
     {
       "site": "gcpBackend.signInWithGcloud, runGcloud",

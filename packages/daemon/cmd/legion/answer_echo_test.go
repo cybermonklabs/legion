@@ -8,10 +8,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 )
 
 // echoProbe is the credential these tests hand a request and have a stand-in echo back into its
@@ -62,10 +66,10 @@ func credentialEcho(t *testing.T, echo func(answer map[string]any, secret string
 // TestAControllerCredentialThatDoesNotParsePrintsNoSecretItEchoes: the daemon's 200 to `legion
 // controller start`'s credential fetch, or a stand-in's, echoes the capability secret the request
 // carried into a member the command parses or checks: the expiry, a rename's either side, the
-// default owner, an owner's name. Neither what the start prints on stderr nor its error holds the
-// secret, and the error names the member: a parser's or a validator's error quotes the value it
-// refused, so the command prints a sentence of its own. A valid answer starts, naming the review
-// App.
+// default owner, an owner's name, the App. Neither what the start prints on stderr nor its error
+// holds the secret, and the error names the member: a parser's or a validator's error quotes the
+// value it refused, so the command prints a sentence of its own, and the App is printed only
+// where it is one of the App roles. A valid answer starts, naming the review App.
 func TestAControllerCredentialThatDoesNotParsePrintsNoSecretItEchoes(t *testing.T) {
 	for _, tc := range []struct {
 		name, names string
@@ -83,6 +87,7 @@ func TestAControllerCredentialThatDoesNotParsePrintsNoSecretItEchoes(t *testing.
 		{"owners", "(default, owners)", func(answer map[string]any, secret string) {
 			answer["owners"].(map[string]any)[secret] = answer["owners"].(map[string]any)["acme"]
 		}},
+		{"app", "(app)", func(answer map[string]any, secret string) { answer["app"] = secret }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			daemon := credentialEcho(t, tc.echo)
@@ -184,8 +189,29 @@ func readRepositories(t *testing.T, daemon *httptest.Server) string {
 	return err.Error()
 }
 
+// TestADesignGateStepPrintsNoBearerItEchoes: the daemon's 200 to the controller's secret, or a
+// stand-in's, names a design gate step that is the operator bearer the request carried; the
+// refusal names the step by its place in the list and holds none of the bearer.
+func TestADesignGateStepPrintsNoBearerItEchoes(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"secret": "s", "designGateSteps": []string{"decisions", bearerOf(r)}})
+	}))
+	t.Cleanup(daemon.Close)
+	_, _, err := fetchControllerSecret(context.Background(), daemon.URL, echoProbe, api.DaemonAPIVersion)
+	if err == nil {
+		t.Fatal("the secret fetch took a design gate step this legion does not know")
+	}
+	if strings.Contains(err.Error(), echoProbe) {
+		t.Errorf("the secret fetch printed the bearer its answer echoed: %v", err)
+	}
+	if !strings.Contains(err.Error(), "designGateSteps[1]") {
+		t.Errorf("the secret fetch = %v, want it to name designGateSteps[1]", err)
+	}
+}
+
 // claimsEcho is a stand-in daemon for the operator's claim routes: the list answers list of the
-// bearer the request carried.
+// bearer the request carried, and a retry is refused 409.
 func claimsEcho(t *testing.T, list func(bearer string) string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -193,6 +219,9 @@ func claimsEcho(t *testing.T, list func(bearer string) string) *httptest.Server 
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == claimsRoute:
 			_, _ = io.WriteString(w, list(bearerOf(r)))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/retry"):
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"error":"the claim is not failed"}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -203,8 +232,10 @@ func claimsEcho(t *testing.T, list func(bearer string) string) *httptest.Server 
 
 // TestAClaimsAnswerPrintsNoBearerItEchoes: the daemon's answers to `legion claims`, or a
 // stand-in's, echo the operator bearer the request carried - as a member the claims list does not
-// have, as a time - and no line the command prints holds it. The list decodes through
-// decodeAnswer, whose error names the member of its own type and never the answer's.
+// have, as a time, as a failed claim's token, as the state of the claim a suspension waits on -
+// and no line the command prints holds it. The list decodes through decodeAnswer, whose error
+// names the member of its own type and never the answer's, and a token or a state prints only in
+// the shape the daemon makes one (claimWord, stateWord).
 func TestAClaimsAnswerPrintsNoBearerItEchoes(t *testing.T) {
 	tokenFile := writeFile(t, "operator-token", echoProbe+"\n")
 	claims := func(t *testing.T, list func(bearer string) string, args ...string) string {
@@ -214,6 +245,16 @@ func TestAClaimsAnswerPrintsNoBearerItEchoes(t *testing.T) {
 		argv := append(append([]string{"legion", "claims"}, args...), "--port", port, "--operator-token-file", tokenFile)
 		if code := run(context.Background(), argv, &out, &errb); code != 1 {
 			t.Errorf("legion claims %s = %d, stderr %q; want 1", args[0], code, errb.String())
+		}
+		return out.String() + errb.String()
+	}
+	suspend := func(t *testing.T, wait string, seen seenClaim) string {
+		t.Helper()
+		port, _ := heldSuspendDaemon(t, heldWorking, seen)
+		var out, errb bytes.Buffer
+		argv := []string{"legion", "claims", "suspend", "--port", port, "--operator-token-file", tokenFile, "--claim", string(architectClaim), "--wait", wait}
+		if code := run(context.Background(), argv, &out, &errb); code != 1 {
+			t.Errorf("legion claims suspend = %d, stderr %q; want 1", code, errb.String())
 		}
 		return out.String() + errb.String()
 	}
@@ -227,6 +268,15 @@ func TestAClaimsAnswerPrintsNoBearerItEchoes(t *testing.T) {
 			return claims(t, func(bearer string) string { return `{"claims":[{"token":"x","lastTurnStart":"` + bearer + `"}]}` }, "list")
 		}},
 		{"retry-failed-member", "a member the api.OperatorClaims", func(t *testing.T) string { return claims(t, member, "retry", "--failed") }},
+		{"retry-failed-token", "was not retried", func(t *testing.T) string {
+			return claims(t, func(bearer string) string { return `{"claims":[{"token":"` + bearer + `","state":"failed"}]}` }, "retry", "--failed")
+		}},
+		{"suspend-dropped-state", "no longer holds the suspension of " + string(architectClaim), func(t *testing.T) string {
+			return suspend(t, "1h", seenClaim{echoProbe, false})
+		}},
+		{"suspend-held-state", "after the --wait bound of 1s", func(t *testing.T) string {
+			return suspend(t, "1s", seenClaim{echoProbe, true})
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			printed := tc.printed(t)
@@ -283,6 +333,66 @@ func TestAGrantAnswerThatDoesNotDecodePrintsNoBearerItEchoes(t *testing.T) {
 			if code != 1 || out != "" || !strings.Contains(errb, "grantId") {
 				t.Errorf("legion issue status over an answer that is no grant = %d, stdout %q, stderr %q; want 1, nothing printed and grantId named", code, out, errb)
 			}
+		})
+	}
+}
+
+// echoForkRead is the path of a file of the test's own holding the fork read's capture name with
+// every old replaced by with, which must change it.
+func echoForkRead(t *testing.T, name, old, with string) string {
+	t.Helper()
+	data, err := os.ReadFile(forkReadFixture(t, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), old) {
+		t.Fatalf("%s holds no %q to change", name, old)
+	}
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(strings.ReplaceAll(string(data), old, with)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestAForkReadAnswerPrintsNoTokenItEchoes: GitHub's answer to the credential helper's fork read,
+// or a stand-in's, echoes the token the read carried into what the refusal names - a refused
+// read's message, a redirect's Location, the repository's full_name, the parent's and source's
+// full names - and the refusal holds none of it, naming each value it cannot print by what it is.
+// The read carries no record of its token (it is curl's), so a value prints only in a shape that
+// holds no credential: plain words, a redirect to a repository by its id, `owner/name` as GitHub
+// names one.
+func TestAForkReadAnswerPrintsNoTokenItEchoes(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "gh")
+	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{
+		"acme": ghconfig.Render(echoProbe, "implement", time.Now().Add(time.Hour)),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	const slug = "outside-author/sample-project"
+	for _, tc := range []struct {
+		name, names string
+		answer      func(t *testing.T) string
+	}{
+		{"message", "the status 301", func(t *testing.T) string {
+			return echoForkRead(t, "moved.http", `"message": "Moved Permanently"`, `"message": "Moved Permanently, see `+echoProbe+`"`)
+		}},
+		{"location", "a redirect the helper does not follow", func(t *testing.T) string {
+			return echoForkRead(t, "moved.http", "location: https://api.github.com/repositories/1146927990", "location: https://api.github.com/repositories/1146927990?access_token="+echoProbe)
+		}},
+		{"full-name", "GitHub answered the read of " + slug, func(t *testing.T) string {
+			return echoForkRead(t, "fork-of-a-served-repository.http", `"full_name": "`+slug+`"`, `"full_name": "`+echoProbe+`"`)
+		}},
+		{"upstream-names", "neither repository it comes from routes to a directory of the bundle", func(t *testing.T) string {
+			return echoForkRead(t, "fork-of-a-served-repository.http", `"full_name": "acme/sample-project"`, `"full_name": "`+echoProbe+`"`)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			github := newFakeGitHub(t, echoProbe, printsAnswer(tc.answer(t), 0))
+			useForkRead(t, github.program, forkReadBound)
+			forkReadPane(t, root, ghconfig.Dir(root, "acme"))
+			code, stdout, stderr := runGitCredentialHere(t, forkRequest(slug), "get")
+			answersNothingForTheFork(t, code, stdout, stderr, root, slug, tc.names)
 		})
 	}
 }

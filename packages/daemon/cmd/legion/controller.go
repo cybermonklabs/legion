@@ -555,7 +555,8 @@ func removeDirs(created []string) {
 // An answer that names no step list at all (`designGateSteps` absent or null) is a daemon from
 // before contract 55, and one that names a step this release does not know is a daemon beyond
 // it: both are refused rather than guessed at, since the controller would otherwise promise, or
-// withhold, a design approval on an assumption. The empty list is not that case — it is a
+// withhold, a design approval on an assumption. The refusal names the unknown step by its place
+// in the list, never by the daemon's word. The empty list is not that case — it is a
 // deployment that gates no step, which the daemon answers as `[]`.
 func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string, contract int) (string, []record.DesignStep, error) {
 	const route = "/legion/v1/controller/secret"
@@ -587,9 +588,9 @@ func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string,
 	if answer.DesignGateSteps == nil {
 		return "", nil, fmt.Errorf("%s%s answered no design gate steps (designGateSteps); upgrade the daemon to this legion's release", daemonURL, route)
 	}
-	for _, step := range answer.DesignGateSteps {
+	for i, step := range answer.DesignGateSteps {
 		if !step.Valid() {
-			return "", nil, fmt.Errorf("%s%s answered design gate step %q, not %s; upgrade the daemon to this legion's release", daemonURL, route, step, record.StepWords())
+			return "", nil, fmt.Errorf("%s%s answered a design gate step (designGateSteps[%d]) that is not %s; upgrade the daemon to this legion's release", daemonURL, route, i, record.StepWords())
 		}
 	}
 	return answer.Secret, answer.DesignGateSteps, nil
