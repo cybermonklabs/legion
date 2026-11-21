@@ -184,11 +184,12 @@ Every other listener answers the path `404`, an upgrade included, so no shared l
   The client's `flush()` is a WebSocket ping, so its pong comes only after every frame sent before it is handled.
 
 - **What it carries**: a frame's receipt subject is the owning replica's, under `notifications.envoy.relayreply.` (`bus.RelayReplyPrefix`), since the edge's grant publishes no reply inbox and the socket may be on the other replica (`startSessionRelays`).
+  The owning replica holds at most 16 of a session's frames in flight, awaiting `done` or `nak` (its session consumers' MaxAckPending, `relayEdgeInFlight`), so a client that reads promptly takes any backlog with its socket open.
   The connection probe is never forwarded or answered, and a message on the relay subject whose reply is no relay receipt is not forwarded either.
 
 - **While it is open**: every 20 seconds, and once at its token's expiry, the socket asks the broker about its token again, from a copy of the upgrade request, spending nothing of the source address's introspection budget (`Verifier.LiveUntil`); every 20 seconds it also pings its client.
-  It closes `4401 credential_expired` at the token's expiry, `4403 credential_refused` when the broker no longer holds the token live (a revoke of the token or of the device login it was traded from) or its answer names another caller, and `1013 broker_unavailable` when the broker cannot be asked.
-  It closes `1013 nats_unavailable` when its subscription is lost, and `1013 slow_consumer` when its client reads its frames slower than they come, past 16 frames or 2 MiB held for it.
+  It closes `4401 credential_expired` at the token's expiry, also while the broker still answers it live with that `exp` for up to a second after it, `4403 credential_refused` when the broker no longer holds the token live (a revoke of the token or of the device login it was traded from) or its answer names another caller, and `1013 broker_unavailable` when the broker cannot be asked.
+  It closes `1013 nats_unavailable` when its subscription is lost, and `1013 slow_consumer` when its client reads its frames slower than they come, past 32 frames or 16 MiB held for it.
   The listener's stop closes every socket `1012 listener_stopping`.
   A close takes at most one second (`relaySocketCloseGrace`), also for a client that reads nothing: no close or check waits for a data frame blocked on such a client, and a write that fails drops the connection at once.
   A frame unanswered at a close, or dropped for a slow consumer, is sent again by the owning relay, so a reopen loses nothing.

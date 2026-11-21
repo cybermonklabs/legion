@@ -95,9 +95,17 @@ const (
 	// relaySocketPendingMsgs and relaySocketPendingBytes are the pending limits of a socket's
 	// subscription: the frames nats.go queues for it while its client reads them slower than they
 	// come. Past them nats.go drops frames, and the socket closes 1013 slow_consumer; a dropped
-	// frame is sent again by its owning relay, which hears no receipt for it.
-	relaySocketPendingMsgs  = 16
-	relaySocketPendingBytes = 2 << 20
+	// frame is sent again by its owning relay, which hears no receipt for it. The owning relay
+	// holds at most relayEdgeInFlight of a session's frames in flight, so a client that reads
+	// promptly never comes near them: twice that many frames, the second half room for a
+	// redelivery beside the frames it replaces, and that many frames of relayFrameMaxBytes. With
+	// relaySocketMaxPerSession and relaySocketMaxPerListener they bound what a session's sockets
+	// buffer (64 MiB) and what a replica's do.
+	relaySocketPendingMsgs  = 2 * relayEdgeInFlight
+	relaySocketPendingBytes = relayEdgeInFlight * relayFrameMaxBytes
+	// relayFrameMaxBytes is the largest message the hub carries (nats-server's max_payload, 1 MiB),
+	// and so the largest relay frame.
+	relayFrameMaxBytes = 1 << 20
 	// relaySocketReplyWindow is how long a forwarded frame's receipt subject may be published on.
 	relaySocketReplyWindow = 10 * time.Minute
 	// relaySocketMaxReplies bounds the receipt subjects one socket remembers; past it the oldest
@@ -851,8 +859,11 @@ func (socket *relaySocket) subscribed() bool {
 // ciphertoken.AffirmativeCacheTTL and no proof checked a second time, and answers the close code
 // and reason the socket ends with, 0 while it stays open:
 //
-//   - the token's expiry has passed and the broker no longer holds it live: 4401, on which the
-//     client trades for a fresh token and opens again at once;
+//   - the token's expiry has passed: 4401, on which the client trades for a fresh token and
+//     opens again at once. That is so whether the broker no longer holds it live or still
+//     answers it live with an exp that has passed: the broker writes exp as the whole second at
+//     or before the true expiry, and holds the token live until that true expiry, up to a second
+//     later, which the expiry's timer (watch) would otherwise miss until the next tick;
 //   - the broker no longer holds it live before its expiry (a revoke, a login ended early), or
 //     holds it as something no session's token is: 4403;
 //   - the answer names another caller than the one the socket was admitted as (its session, its
@@ -863,10 +874,13 @@ func (socket *relaySocket) subscribed() bool {
 func (socket *relaySocket) verdict() (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), relaySocketCheckWait)
 	defer cancel()
-	caller, _, err := socket.sockets.brokers.verifier.Load().LiveUntil(ctx, socket.check)
+	caller, until, err := socket.sockets.brokers.verifier.Load().LiveUntil(ctx, socket.check)
 	var why string
 	switch {
 	case err == nil:
+		if !until.IsZero() && !socket.sockets.now().Before(until) {
+			return relaySocketCloseExpired, relaySocketReasonExpired
+		}
 		if sameRelayCaller(caller, socket.admitted) {
 			return 0, ""
 		}

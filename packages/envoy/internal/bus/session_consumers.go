@@ -161,6 +161,9 @@ type SessionConsumers struct {
 	// (ConnectSessionConsumers), SessionConsumerInactiveThreshold where that was zero or negative,
 	// and is shortened by a test that waits out the server's own removal of an idle consumer.
 	inactiveThreshold time.Duration
+	// maxAckPending is every consumer's MaxAckPending: SessionConsumerMaxAckPending, or the
+	// smaller window an edge listener sets before it creates or updates any (SetMaxAckPending).
+	maxAckPending int
 	// pullExpires and pullHeartbeat are sessionPullExpires and sessionPullHeartbeat, shortened by
 	// a test of a pull's later requests.
 	pullExpires, pullHeartbeat time.Duration
@@ -237,6 +240,7 @@ func sessionConsumersOn(client *Client, inactiveThreshold time.Duration, logger 
 	return &SessionConsumers{
 		client:            client,
 		ackWait:           SessionConsumerAckWait,
+		maxAckPending:     SessionConsumerMaxAckPending,
 		inactiveThreshold: cmp.Or(max(inactiveThreshold, 0), SessionConsumerInactiveThreshold),
 		pullExpires:       sessionPullExpires,
 		pullHeartbeat:     sessionPullHeartbeat,
@@ -255,6 +259,15 @@ func (s *SessionConsumers) SetCreateFault(fault func(consumer string) error) {
 	defer s.pendingMu.Unlock()
 	s.createFault = fault
 }
+
+// SetMaxAckPending makes every consumer this handle creates or updates deliver at most n of its
+// session's messages before one is acked, in place of SessionConsumerMaxAckPending: an edge
+// listener holds its sessions' frames in flight to what a relay socket buffers for a client
+// (cmd/listener relayEdgeInFlight), so a client that reads promptly is never sent more at once
+// than its socket holds. A consumer created with another bound is updated to n by the next ensure
+// (updated compares it). It is set once, before the handle creates or updates any consumer;
+// nothing reads the field while it is written.
+func (s *SessionConsumers) SetMaxAckPending(n int) { s.maxAckPending = n }
 
 // Drain drains the connection, letting acks already sent reach the server, within timeout.
 func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.Drain(timeout) }
@@ -926,7 +939,7 @@ func SessionConsumerFilters(subjects []string) []string {
 func (s *SessionConsumers) applySettings(config *jetstream.ConsumerConfig, filters []string) {
 	config.AckPolicy = jetstream.AckExplicitPolicy
 	config.AckWait = s.ackWait
-	config.MaxAckPending = SessionConsumerMaxAckPending
+	config.MaxAckPending = s.maxAckPending
 	// No limit: the server delivers a message until the session acks it, and what bounds how
 	// often a message the session refuses comes back is the relay's nak ladder (cmd/listener
 	// relayNakDelayFor, up to relayNakDelayMax). A limit would stop delivering a message the
