@@ -2,20 +2,28 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/busprojects"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -57,13 +65,114 @@ func privateHubsSetting(value string) []string {
 	return hubs
 }
 
+// privateListener is one entry of DISPATCH_PRIVATE_LISTENERS: the listener workload each proof
+// reads (busprojects.ListenerTarget) and TokenFile, the file holding Dispatch's own projected
+// token for that listener's audience, which each read of its replicas presents: every listener
+// verifies a token for its own audience alone (listenerHTTP).
+type privateListener struct {
+	busprojects.ListenerTarget
+	TokenFile string `json:"token_file"`
+}
+
+// privateListenersSetting reads DISPATCH_PRIVATE_LISTENERS against hubs, DISPATCH_PRIVATE_HUBS as
+// privateHubsSetting read it: a JSON list of the listener workloads that serve those hubs, in the
+// order given, every replica of which each proof reads (busprojects.HubAdmission.SetListeners),
+// each with its token file. It refuses the start, naming the entry, for an entry that is
+// malformed (a field missing or unknown, a source that is not the broker's base URL, instances
+// that are not host:port, a name or a host an earlier entry has) or that serves a hub hubs does
+// not name, and naming the hub for a hub of hubs no entry serves: a hub proven without reading the
+// listeners that serve it would let a project go private while a listener there still reads it as
+// public. A value holding an nkey seed is refused before anything of it is quoted. Unset or blank
+// with no hub is no listener at all. The token files are read at each read, never here.
+func privateListenersSetting(value string, hubs []string) ([]privateListener, error) {
+	value = strings.TrimSpace(value)
+	if bus.HoldsSeed(value) {
+		return nil, errors.New("DISPATCH_PRIVATE_LISTENERS holds an nkey seed (not echoed): it names listener workloads and holds no credential")
+	}
+	var listeners []privateListener
+	if value != "" {
+		decoder := json.NewDecoder(strings.NewReader(value))
+		decoder.DisallowUnknownFields()
+		err := decoder.Decode(&listeners)
+		if err == nil && decoder.Decode(new(json.RawMessage)) != io.EOF {
+			err = errors.New("text follows the list")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("DISPATCH_PRIVATE_LISTENERS is not a JSON list of listener entries, each {name, hub, source, host, instances, token_file}: %v", err)
+		}
+	}
+	served := map[string]bool{}
+	for index, listener := range listeners {
+		if strings.TrimSpace(listener.Name) == "" {
+			return nil, fmt.Errorf("DISPATCH_PRIVATE_LISTENERS entry %d has no name", index+1)
+		}
+		entry := fmt.Sprintf("DISPATCH_PRIVATE_LISTENERS entry %d (%s)", index+1, listener.Name)
+		if earlier := slices.IndexFunc(listeners[:index], func(other privateListener) bool { return other.Name == listener.Name }); earlier >= 0 {
+			return nil, fmt.Errorf("%s has the name of entry %d: the go-live report names each workload by its name", entry, earlier+1)
+		}
+		for _, field := range []struct{ name, value string }{{"hub", listener.Hub}, {"source", listener.Source}, {"host", listener.Host}} {
+			if strings.TrimSpace(field.value) == "" {
+				return nil, fmt.Errorf("%s has no %s", entry, field.name)
+			}
+		}
+		if !brokerBaseURL(listener.Source) {
+			return nil, fmt.Errorf("%s has a source that is not the secrets broker's base URL, an absolute http(s) URL with no path, query or fragment: a replica reports the base URL it joins its privacy route to, and the proof compares the two", entry)
+		}
+		if strings.TrimSpace(listener.Instances) == "" {
+			return nil, fmt.Errorf("%s has no instances: each proof reads every replica of a workload at its instances, a headless Service whose addresses are every replica", entry)
+		}
+		if host, port, err := net.SplitHostPort(listener.Instances); err != nil || host == "" || !validPort(port) {
+			return nil, fmt.Errorf("%s has instances that are not host:port", entry)
+		}
+		if !slices.Contains(hubs, listener.Hub) {
+			return nil, fmt.Errorf("%s serves the hub %s, which DISPATCH_PRIVATE_HUBS does not name", entry, listener.Hub)
+		}
+		if strings.TrimSpace(listener.TokenFile) == "" {
+			return nil, fmt.Errorf("%s has no token_file: each read of a replica presents Dispatch's own token for that listener's audience, which the file holds", entry)
+		}
+		if earlier := slices.IndexFunc(listeners[:index], func(other privateListener) bool { return other.Host == listener.Host }); earlier >= 0 {
+			return nil, fmt.Errorf("%s has the host of entry %d: each read presents the token of the entry its host names", entry, earlier+1)
+		}
+		served[listener.Hub] = true
+	}
+	for _, hub := range hubs {
+		if !served[hub] {
+			return nil, fmt.Errorf("no entry of DISPATCH_PRIVATE_LISTENERS serves the hub %s of DISPATCH_PRIVATE_HUBS: each proof reads every replica of the listeners that serve a hub, so a hub with none cannot be proven", hub)
+		}
+	}
+	if len(listeners) == 0 {
+		return nil, nil
+	}
+	return listeners, nil
+}
+
+// validPort reports whether port is a TCP port number, 1 to 65535.
+func validPort(port string) bool {
+	number, err := strconv.Atoi(port)
+	return err == nil && number >= 1 && number <= 65535
+}
+
+// brokerBaseURL reports whether source is the secrets broker's base URL as a listener's privacy
+// source names it: an absolute http(s) URL with a host and no user, path (a trailing slash
+// included), query or fragment. A listener joins /v1/project-privacy to it, and its readiness
+// answer reports it unchanged, which the proof compares with its workload's source byte for byte.
+func brokerBaseURL(source string) bool {
+	parsed, err := url.Parse(source)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil &&
+		parsed.Path == "" && parsed.RawQuery == "" && parsed.Fragment == "" && !parsed.ForceQuery
+}
+
 // hubAdmission is what main runs of the private-hub admission proof (busprojects.HubAdmission):
 // the switch's gate (api.HubAdmission), its loop that proves every hub again on a period and on
-// reconnect, and its last result, which the outbox's private hold reads (outbox.Deps.PrivateHubsReady).
+// reconnect, its last result, which the outbox's private hold reads (outbox.Deps.PrivateHubsReady),
+// the listener workloads each proof reads with the client that reads them (giveListeners), and
+// the go-live report of its last proof, which GET /private-readiness serves.
 type hubAdmission interface {
 	api.HubAdmission
 	Run(ctx context.Context)
 	Ready() bool
+	SetListeners(listeners []busprojects.ListenerTarget, client *http.Client)
+	ReportHandler() http.Handler
 }
 
 // startHubAdmission starts admission's loop until ctx is done and answers what the router and the

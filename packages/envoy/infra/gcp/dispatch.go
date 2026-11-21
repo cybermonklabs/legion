@@ -309,10 +309,34 @@ type DispatchArgs struct {
 	// PrivateHubs are the NATS URLs of the hubs that serve private projects, in production the
 	// clustered hub alone and never the VM hub, Dispatch's own first: each switch to private proves
 	// that every one of them admits Dispatch before it commits. It renders DISPATCH_PRIVATE_HUBS in
-	// the order given and each URL once at its first place; empty or unset renders nothing. A
-	// rendered DISPATCH_PRIVATE_HUBS beside no DISPATCH_HUB_ADMISSION_TOKEN_FILE, the token each
-	// proof presents, is an input error at preview (dispatchHubsNeedTheirToken).
+	// the order given and each URL once at its first place; empty or unset renders nothing. Beside
+	// it the component mounts, in envoy-dispatch, a projected token of Dispatch's own account for
+	// natsgrant.HubAdmissionAudience at /var/run/secrets/dispatch-hub-admission/token, which
+	// DISPATCH_HUB_ADMISSION_TOKEN_FILE names and each proof presents, and one for oidcAudience at
+	// /var/run/secrets/dispatch-readiness/token, with which an operator in the pod reads the
+	// go-live report at GET /private-readiness, which DISPATCH_SERVICE_ACCOUNT, Dispatch's own
+	// account, alone may read; so it is refused without oidcAudience and without
+	// listenerPrivacySource. A rendered DISPATCH_PRIVATE_HUBS beside no
+	// DISPATCH_HUB_ADMISSION_TOKEN_FILE is an input error at preview (dispatchHubsNeedTheirToken).
 	PrivateHubs []string `pulumi:"privateHubs,optional"`
+	// PrivateListeners are the listener workloads, beside Dispatch's own listener, that serve the
+	// hubs of privateHubs, each one entry of DISPATCH_PRIVATE_LISTENERS, every replica of which
+	// each proof reads: in production the clustered hub's session listener and envoy-listener, each
+	// at its headless instances Service. With privateHubs the component renders
+	// DISPATCH_PRIVATE_LISTENERS from them and appends Dispatch's own listener for the first hub,
+	// Dispatch's own: name <hostname>-listener, its instances the headless Service
+	// <hostname>-listener-instances it renders over that Deployment's pods, and its source
+	// listenerPrivacySource's brokerUrl, so no stack can leave it out. Refused at preview, naming
+	// the entry: a blank name, hub, source or host, a source that is not the broker's base URL,
+	// instances that are missing or not host:port, a name another entry or Dispatch's own listener
+	// has, and a hub privateHubs does not name; and naming privateHubs, a hub after the first that
+	// no entry serves.
+	PrivateListeners []DispatchPrivateListenerArgs `pulumi:"privateListeners,optional"`
+	// ListenerPrivacySource is the privacy source of Dispatch's own listener in required mode: its
+	// brokerUrl, the secrets broker's base URL, is the source every replica of that listener must
+	// read, which Dispatch's own entry of DISPATCH_PRIVATE_LISTENERS carries. It is required with
+	// privateHubs and refused without it.
+	ListenerPrivacySource *DispatchListenerPrivacySourceArgs `pulumi:"listenerPrivacySource,optional"`
 
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's
 	// GitHub App together: DISPATCH_APP_CLIENT_ID and DISPATCH_APP_ID as plain values, and
@@ -565,6 +589,46 @@ type DispatchClusterArgs struct {
 // gives.
 func (c *DispatchClusterArgs) Annotate(a infer.Annotator) { a.SetToken("gcp", "DispatchCluster") }
 
+// DispatchPrivateListenerArgs is one listener workload of privateListeners, in the shape of an
+// entry of DISPATCH_PRIVATE_LISTENERS (busprojects.ListenerTarget), each field required.
+type DispatchPrivateListenerArgs struct {
+	// Name is the workload's name, which the go-live report names it by.
+	Name string `pulumi:"name"`
+	// Hub is the URL of the hub of privateHubs the workload serves.
+	Hub string `pulumi:"hub"`
+	// Source is the privacy source each replica must read: the secrets broker's base URL.
+	Source string `pulumi:"source"`
+	// Host is the Host a read of a replica carries: the name the workload is read by.
+	Host string `pulumi:"host"`
+	// Instances is host:port of a headless Service over the workload's pods that publishes
+	// not-ready addresses, so its name resolves to every replica, ready or not.
+	Instances string `pulumi:"instances"`
+	// Audience is the audience the workload's listener verifies projected tokens for, its
+	// ENVOY_OIDC_AUDIENCE: the component mounts, in envoy-dispatch, Dispatch's own token for it,
+	// which each read of the workload's replicas presents.
+	Audience string `pulumi:"audience"`
+}
+
+// Annotate names the type gcp:DispatchPrivateListener in the schema, for the reason
+// NATSUserArgs's gives.
+func (l *DispatchPrivateListenerArgs) Annotate(a infer.Annotator) {
+	a.SetToken("gcp", "DispatchPrivateListener")
+}
+
+// DispatchListenerPrivacySourceArgs is listenerPrivacySource: the privacy source Dispatch's own
+// listener reads in required mode.
+type DispatchListenerPrivacySourceArgs struct {
+	// BrokerUrl is the secrets broker's base URL, the source Dispatch's listener reads each
+	// project's privacy from.
+	BrokerUrl string `pulumi:"brokerUrl"`
+}
+
+// Annotate names the type gcp:DispatchListenerPrivacySource in the schema, for the reason
+// NATSUserArgs's gives.
+func (s *DispatchListenerPrivacySourceArgs) Annotate(a infer.Annotator) {
+	a.SetToken("gcp", "DispatchListenerPrivacySource")
+}
+
 // dispatchSeededInput names the first plain string input that holds an nkey seed. No component
 // input takes an nkey seed here: each value reaches a cloud resource, a Kubernetes object, or the
 // pod configuration, so a seed would be disclosed or used as the wrong credential. An int input,
@@ -678,6 +742,23 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 			return "existingCluster.location", true
 		}
 	}
+	for i, listener := range args.PrivateListeners {
+		for _, field := range []struct{ name, value string }{
+			{"name", listener.Name}, {"hub", listener.Hub}, {"source", listener.Source}, {"host", listener.Host}, {"instances", listener.Instances}, {"audience", listener.Audience},
+		} {
+			if bus.HoldsSeed(field.value) {
+				return fmt.Sprintf("privateListeners[%d].%s", i, field.name), true
+			}
+		}
+	}
+	for i, hub := range args.PrivateHubs {
+		if bus.HoldsSeed(hub) {
+			return fmt.Sprintf("privateHubs[%d]", i), true
+		}
+	}
+	if args.ListenerPrivacySource != nil && bus.HoldsSeed(args.ListenerPrivacySource.BrokerUrl) {
+		return "listenerPrivacySource.brokerUrl", true
+	}
 	return "", false
 }
 
@@ -751,6 +832,7 @@ type dispatchSettings struct {
 	projectOwnerFallback                        string
 	privateProjects, privateProjectsIgnored     []string
 	privateHubs                                 []string
+	privateListeners                            []dispatchListenerTarget
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
@@ -1099,6 +1181,8 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"projectOwnerFallback", args.ProjectOwnerFallback != ""},
 		{"privateProjects", len(args.PrivateProjects) > 0},
 		{"privateHubs", len(args.PrivateHubs) > 0},
+		{"privateListeners", len(args.PrivateListeners) > 0},
+		{"listenerPrivacySource", args.ListenerPrivacySource != nil},
 		{"appClientId", args.AppClientId != ""},
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
@@ -1889,6 +1973,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, fmt.Errorf("allowedApps[%d] %q must be a pod's app label value: 1 to 63 letters, digits, dashes, underscores and dots, a letter or digit at each end", i, app)
 		}
 	}
+	if s.privateListeners, err = dispatchPrivateListeners(args, s); err != nil {
+		return dispatchSettings{}, err
+	}
 	return s, nil
 }
 
@@ -1919,6 +2006,146 @@ func dispatchPrivateHubs(entries []string) []string {
 		}
 	}
 	return hubs
+}
+
+// dispatchListenerTarget is one entry of DISPATCH_PRIVATE_LISTENERS as Dispatch reads it
+// (cmd/dispatch's privateListener): a listener workload that serves a hub of privateHubs, every
+// replica of which each proof reads, and TokenFile, the file of Dispatch's own token for that
+// listener's audience, which each read presents. Audience, not rendered, is the audience the
+// component projects that token for; empty for Dispatch's own listener, whose token the component
+// mounts for every call to it (dispatchOwnListenerTokenFile).
+type dispatchListenerTarget struct {
+	Name      string `json:"name"`
+	Hub       string `json:"hub"`
+	Source    string `json:"source"`
+	Host      string `json:"host"`
+	Instances string `json:"instances"`
+	TokenFile string `json:"token_file"`
+	Audience  string `json:"-"`
+}
+
+// dispatchListenerTokenDir is where envoy-dispatch mounts Dispatch's own token for the audience of
+// the privateListeners entry named name: a top-level path of its own, inside no other mount.
+func dispatchListenerTokenDir(name string) string {
+	return "/var/run/secrets/envoy-listener-" + name
+}
+
+// dispatchOwnListenerTokenFile is the token every call Dispatch makes to its own listener presents,
+// which envoy-dispatch mounts whatever privateHubs holds, so a read of that listener's replicas
+// presents it too.
+const dispatchOwnListenerTokenFile = "/var/run/secrets/envoy-listener/token"
+
+// dispatchListenerInstances is the headless Service the component renders over Dispatch's own
+// listener's pods, whose name resolves to every replica, ready or not.
+func (s dispatchSettings) dispatchListenerInstances() string {
+	return s.hostname + "-listener-instances"
+}
+
+// dispatchPrivateListeners is DISPATCH_PRIVATE_LISTENERS as the component renders it, none without
+// privateHubs: each entry of privateListeners, then Dispatch's own listener for the first hub of
+// privateHubs, Dispatch's own, read at the headless Service over its pods and from
+// listenerPrivacySource's broker. It refuses what Dispatch's boot refuses (privateListenersSetting
+// in cmd/dispatch), naming the input, so a render Dispatch would not start with fails at preview:
+// an entry with a blank field, a name that is not a DNS-1123 label (the entry's token directory is
+// named by it), instances that are not host:port, a name or a host another entry or Dispatch's own
+// listener has, or a hub privateHubs does not name, and a hub of privateHubs no entry serves. It
+// refuses privateHubs without listenerPrivacySource, whose brokerUrl is the source Dispatch's own
+// listener reads, or without oidcAudience, the audience of the token the go-live report is read
+// with, and listenerPrivacySource without privateHubs, where nothing reads it.
+func dispatchPrivateListeners(args *DispatchArgs, s dispatchSettings) ([]dispatchListenerTarget, error) {
+	if len(s.privateHubs) == 0 {
+		if args.ListenerPrivacySource != nil {
+			return nil, core.InputErrorf("listenerPrivacySource", "listenerPrivacySource is set and privateHubs is not: it is the privacy source of Dispatch's listener on a private hub, and no hub here is private")
+		}
+	} else {
+		if args.ListenerPrivacySource == nil {
+			return nil, core.InputErrorf("listenerPrivacySource", "listenerPrivacySource is required when privateHubs is set: its brokerUrl is the privacy source every replica of Dispatch's own listener reads, which DISPATCH_PRIVATE_LISTENERS names")
+		}
+		if strings.TrimSpace(args.ListenerPrivacySource.BrokerUrl) == "" {
+			return nil, core.InputErrorf("listenerPrivacySource", "listenerPrivacySource.brokerUrl is blank")
+		}
+		if !brokerBaseURL(args.ListenerPrivacySource.BrokerUrl) {
+			return nil, core.InputErrorf("listenerPrivacySource", "listenerPrivacySource.brokerUrl is not the secrets broker's base URL, an absolute http(s) URL with no path, query or fragment: the listener joins its privacy route to it and reports it unchanged, and Dispatch's proof compares the two")
+		}
+		if s.oidcAudience == "" {
+			return nil, core.InputErrorf("oidcAudience", "oidcAudience is required when privateHubs is set: GET /private-readiness, the go-live report, answers only Dispatch's own projected token, which Dispatch verifies for that audience")
+		}
+	}
+	own := dispatchListenerTarget{Name: s.hostname + "-listener", Host: clusterLocal(s.dispatchListenerInstances(), s.namespace), TokenFile: dispatchOwnListenerTokenFile}
+	listeners := make([]dispatchListenerTarget, 0, len(args.PrivateListeners)+1)
+	served := map[string]bool{}
+	for i, listener := range args.PrivateListeners {
+		input := fmt.Sprintf("privateListeners[%d]", i)
+		if strings.TrimSpace(listener.Name) == "" {
+			return nil, core.InputErrorf(input, "%s has no name", input)
+		}
+		entry := fmt.Sprintf("%s (%s)", input, listener.Name)
+		if !dnsLabel(listener.Name) {
+			return nil, core.InputErrorf(input, "%s has a name that is not a DNS-1123 label: the directory of Dispatch's token for it is named by it", entry)
+		}
+		if listener.Name == own.Name {
+			return nil, core.InputErrorf(input, "%s has the name of Dispatch's own listener, which the component appends", entry)
+		}
+		if earlier := slices.IndexFunc(args.PrivateListeners[:i], func(other DispatchPrivateListenerArgs) bool { return other.Name == listener.Name }); earlier >= 0 {
+			return nil, core.InputErrorf(input, "%s has the name of privateListeners[%d]: the go-live report names each workload by its name", entry, earlier)
+		}
+		for _, field := range []struct{ name, value string }{{"hub", listener.Hub}, {"source", listener.Source}, {"host", listener.Host}, {"audience", listener.Audience}} {
+			if strings.TrimSpace(field.value) == "" {
+				return nil, core.InputErrorf(input, "%s has no %s", entry, field.name)
+			}
+		}
+		if !brokerBaseURL(listener.Source) {
+			return nil, core.InputErrorf(input, "%s has a source that is not the secrets broker's base URL, an absolute http(s) URL with no path, query or fragment: a replica reports the base URL it joins its privacy route to, and Dispatch's proof compares the two", entry)
+		}
+		if strings.TrimSpace(listener.Instances) == "" {
+			return nil, core.InputErrorf(input, "%s has no instances: each proof reads every replica of a workload at its instances, a headless Service whose addresses are every replica", entry)
+		}
+		if host, port, err := net.SplitHostPort(listener.Instances); err != nil || host == "" || !portNumber(port) {
+			return nil, core.InputErrorf(input, "%s has instances that are not host:port", entry)
+		}
+		if !slices.Contains(s.privateHubs, listener.Hub) {
+			return nil, core.InputErrorf(input, "%s serves the hub %s, which privateHubs does not name", entry, listener.Hub)
+		}
+		if listener.Host == own.Host {
+			return nil, core.InputErrorf(input, "%s has the host of Dispatch's own listener: each read presents the token of the entry its host names", entry)
+		}
+		if earlier := slices.IndexFunc(args.PrivateListeners[:i], func(other DispatchPrivateListenerArgs) bool { return other.Host == listener.Host }); earlier >= 0 {
+			return nil, core.InputErrorf(input, "%s has the host of privateListeners[%d]: each read presents the token of the entry its host names", entry, earlier)
+		}
+		served[listener.Hub] = true
+		listeners = append(listeners, dispatchListenerTarget{
+			Name: listener.Name, Hub: listener.Hub, Source: listener.Source, Host: listener.Host, Instances: listener.Instances,
+			TokenFile: dispatchListenerTokenDir(listener.Name) + "/token", Audience: listener.Audience,
+		})
+	}
+	if len(s.privateHubs) == 0 {
+		return nil, nil
+	}
+	for _, hub := range s.privateHubs[1:] {
+		if !served[hub] {
+			return nil, core.InputErrorf("privateHubs", "no entry of privateListeners serves the hub %s of privateHubs: each proof reads every replica of the listeners that serve a hub, and Dispatch's own listener serves the first hub alone", hub)
+		}
+	}
+	own.Hub, own.Source = s.privateHubs[0], args.ListenerPrivacySource.BrokerUrl
+	own.Instances = net.JoinHostPort(own.Host, strconv.Itoa(core.DefaultListenerPort))
+	return append(listeners, own), nil
+}
+
+// portNumber reports whether port is a TCP port number, 1 to 65535.
+func portNumber(port string) bool {
+	number, err := strconv.Atoi(port)
+	return err == nil && number >= 1 && number <= 65535
+}
+
+// brokerBaseURL reports whether source is the secrets broker's base URL as a listener's privacy
+// source names it: an absolute http(s) URL with a host and no user, path (a trailing slash
+// included), query or fragment, the rule Dispatch's boot holds DISPATCH_PRIVATE_LISTENERS to. A
+// listener joins /v1/project-privacy to it and reports it unchanged, which the proof compares byte
+// for byte.
+func brokerBaseURL(source string) bool {
+	parsed, err := url.Parse(source)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil &&
+		parsed.Path == "" && parsed.RawQuery == "" && parsed.Fragment == "" && !parsed.ForceQuery
 }
 
 // privateProjectsIgnoredMessage is the diagnostic NewDispatch prints at preview for an entry of

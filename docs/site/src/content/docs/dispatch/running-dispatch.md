@@ -404,7 +404,8 @@ this order:
    `409 SLACK_CHANNEL_SHARED`, naming that project only to a caller who sees it.
 6. Last, in the same transaction, Dispatch proves that every hub `DISPATCH_PRIVATE_HUBS` names
    admits it through its auth service, presenting the token `DISPATCH_HUB_ADMISSION_TOKEN_FILE`
-   holds, and that every listener replica reads the private projects. The proof writes nothing:
+   holds, and that every replica of every listener `DISPATCH_PRIVATE_LISTENERS` names reads the
+   private projects afresh, in required privacy mode, from its source. The proof writes nothing:
    every listener reads which projects are private, and their Slack channels, from Dispatch
    itself. A failed proof, or a deployment that names no hub, is
    `409 PRIVATE_PROJECTS_UNAVAILABLE` and nothing changes. This release of Dispatch runs no proof
@@ -415,7 +416,20 @@ A switch that passes starts the project's Slack channels' time (`slack_channels_
 it names any channel. A change of the visibility or of the Slack channels waits at most 60 seconds
 for each lock it takes, and then answers `409 LOCK_TIMEOUT`, naming the lock, with nothing
 changed. A non-empty `DISPATCH_PRIVATE_HUBS` without `DISPATCH_HUB_ADMISSION_TOKEN_FILE` stops the
-start.
+start, and so does a `DISPATCH_PRIVATE_LISTENERS` entry that is malformed, has no instances or
+serves a hub `DISPATCH_PRIVATE_HUBS` does not name, or a hub that no entry serves.
+
+`DISPATCH_PRIVATE_LISTENERS` is a JSON list, one object per listener workload: `name`, `hub` (a URL
+of `DISPATCH_PRIVATE_HUBS`), `source` (the secrets broker's base URL), `host` (the `Host` a read
+carries), `instances` (`host:port` of a headless Service whose addresses are every replica,
+ready or not) and `token_file` (the file of Dispatch's own projected token for that listener's
+audience, which each read of its replicas presents, since every listener verifies a token for its
+own audience alone). Every proof's result, failed or passing, is the go-live report at
+`GET /private-readiness`: each hub `admitted`, `refused` or `unknown` and each listener replica
+`answered`, `failed` or `unknown`, with status 200 whatever it holds and no project named. It
+answers only Dispatch's own service account, `DISPATCH_SERVICE_ACCOUNT`, presenting its projected
+token for `DISPATCH_OIDC_AUDIENCE`; a caller with no credential is `401 NO_IDENTITY` and every other
+caller `403 DISPATCH_ACCOUNT_REQUIRED`. With no proof it is `{"hubs":[],"listeners":[]}`.
 
 Of steps 1 to 6, only the owner check of step 2 applies to a switch to public.
 

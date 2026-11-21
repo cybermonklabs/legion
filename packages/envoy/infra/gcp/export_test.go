@@ -1,5 +1,7 @@
 package gcp
 
+import corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
+
 // CloudConfig is the hub VM's cloud-config document, for the tests outside the package.
 type CloudConfig = cloudConfig
 
@@ -7,6 +9,16 @@ type CloudConfig = cloudConfig
 func ResolveNatsHub(args *NatsHubArgs) error {
 	_, err := newSettings(args)
 	return err
+}
+
+// DispatchHubsNeedTheirToken is dispatchHubsNeedTheirToken over an app environment naming each of
+// names, for the refusal row the component's own render no longer reaches.
+func DispatchHubsNeedTheirToken(names []string) error {
+	env := make(corev1.EnvVarArray, 0, len(names))
+	for _, name := range names {
+		env = append(env, valueEnv(name, "set"))
+	}
+	return dispatchHubsNeedTheirToken(env)
 }
 
 // CloudConfigOf returns the cloud-config args give the hub's VM: the document, and the user data

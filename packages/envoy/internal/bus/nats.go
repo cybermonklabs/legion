@@ -22,10 +22,10 @@ import (
 // only the DialOptions among them.
 type ConnectOption interface{ apply(*connectOpts) }
 
-// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection
-// and WithReconnectErrClock. Dial's name and environment are its parameters, so WithName and
-// WithEnvironment are not DialOptions, and neither are the options of a client's JetStream
-// (WithReplicas, WithPublishAcknowledgementClock).
+// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection,
+// WithImmediateReconnect, WithInboxPrefix and WithReconnectErrClock. Dial's name and environment
+// are its parameters, so WithName and WithEnvironment are not DialOptions, and neither are the
+// options of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock).
 type DialOption func(*connectOpts)
 
 func (o DialOption) apply(opts *connectOpts) { o(opts) }
@@ -50,12 +50,14 @@ type connectOpts struct {
 	background                  bool
 	silentCutDetection          bool
 	immediateReconnect          bool
+	inboxPrefix                 string
+	skipStreamSubjects          bool
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
 // (connectWithContext): the NATS credential names (credential, nil for none), the pings of
-// WithSilentCutDetection and the retry of WithImmediateReconnect, each when the client asked for
-// it.
+// WithSilentCutDetection, the retry of WithImmediateReconnect and the reply inboxes of
+// WithInboxPrefix, each when the client asked for it.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	settings := []nats.Option{credential}
 	if o.silentCutDetection {
@@ -63,6 +65,9 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	}
 	if o.immediateReconnect {
 		settings = append(settings, nats.ReconnectWait(0), nats.ReconnectJitter(reconnectJitterImmediate, reconnectJitterImmediate))
+	}
+	if o.inboxPrefix != "" {
+		settings = append(settings, nats.CustomInboxPrefix(o.inboxPrefix))
 	}
 	if len(settings) == 1 {
 		return credential
@@ -209,6 +214,25 @@ func WithSilentCutDetection() DialOption {
 // it returns. The jitter keeps two replicas from dialling in the same instant.
 func WithImmediateReconnect() DialOption {
 	return func(o *connectOpts) { o.immediateReconnect = true }
+}
+
+// WithInboxPrefix has every connection the client makes, a proof's included (ProveAdmission), make
+// its reply inboxes under prefix in place of nats.go's _INBOX. A client whose grant subscribes
+// only prefix+".>", as Dispatch's hub-admission proof's does, then makes a request without the
+// server refusing its inbox subscription. prefix must be one or more subject tokens with no
+// wildcard and no trailing dot (nats.CustomInboxPrefix), or every connect fails naming it.
+func WithInboxPrefix(prefix string) DialOption {
+	return func(o *connectOpts) { o.inboxPrefix = prefix }
+}
+
+// WithoutStreamSubjects has a client that owns no stream never read the deployed stream's
+// subjects: not at connect, not at its first connection, and not every streamSubjectsRefresh. It
+// decides each topic's transport by the subjects this build compiles, as a client the server
+// refuses the read does (DeployedStreamCaptures). It is for a client that publishes nothing and
+// whose grant refuses the read, Dispatch's hub-admission proof's, which would otherwise log the
+// server's refusal at every connection. A client that owns the stream reads it whatever this says.
+func WithoutStreamSubjects() ConnectOption {
+	return clientOption(func(o *connectOpts) { o.skipStreamSubjects = true })
 }
 
 type subscriptionTransport uint8
@@ -518,11 +542,13 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		// The first connection is a connection event, so the hooks this registers before the
 		// caller can add one of its own do what the constructor of a client that waits does at
 		// connect: an owning client ensures the stream, and every other reads the deployed
-		// subjects. The keeper starts once the first ensure has succeeded (startKeeperOnce), not
-		// here: a pass before it could write back a subject the ensure replaced.
+		// subjects unless it was built WithoutStreamSubjects. The keeper starts once the first
+		// ensure has succeeded (startKeeperOnce), not here: a pass before it could write back a
+		// subject the ensure replaced.
+		follow := ownsStream || !opts.skipStreamSubjects
 		if ownsStream {
 			c.AddReconnectHook(c.startKeeperOnce(opts.keptBuckets, opts.keepInterval))
-		} else {
+		} else if follow {
 			c.AddReconnectHook(c.readDeployedSubjectsUntilRead)
 		}
 		// onConnect counts the first connection only once it is c.Conn, which install makes it. An
@@ -540,7 +566,9 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		if _, err := connectFirstInBackground(c.name, urls, c.reconnectErrClock, dial, c.onConnect, install); err != nil {
 			return nil, err
 		}
-		go c.followDeployedSubjects(opts.streamSubjectsRefresh)
+		if follow {
+			go c.followDeployedSubjects(opts.streamSubjectsRefresh)
+		}
 		return c, nil
 	}
 	nc, err := dial(nil)
@@ -563,7 +591,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		c.AddReconnectHook(c.ensureStreamOn)
 		c.startKeeper(stream, opts.keptBuckets, opts.keepInterval)
 	} else {
-		readable = c.readDeployedSubjects(context.Background(), nc, firstStreamSubjectsRead)
+		readable = !opts.skipStreamSubjects && c.readDeployedSubjects(context.Background(), nc, firstStreamSubjectsRead)
 	}
 	if readable {
 		go c.followDeployedSubjects(opts.streamSubjectsRefresh)
@@ -2370,4 +2398,81 @@ func readPublishAcknowledgement(data []byte) (publishAcknowledgement, bool) {
 		return publishAcknowledgement{}, false
 	}
 	return ack, ack.Error != nil || (ack.Stream != "" && ack.Seq > 0)
+}
+
+// Servers is the client's servers as a log line names them: comma-separated, each without its
+// userinfo (serverList), so a report or an error can name the hub without its credential.
+func (c *Client) Servers() string {
+	return serverList(c.urls)
+}
+
+// ProveAdmission asks the server afresh whether it admits this client: it dials one new connection
+// with the client's servers, name, credential and proxy, the credential read anew for this dial
+// as every connect of the client reads it, makes one round trip on it (a PING and its PONG), and
+// closes it. It answers nil only when a server admitted the connection and answered the round
+// trip, within ctx; otherwise why not, the server's refusal among them. It never reads or tests
+// c.Conn: a hub whose auth service admitted that connection keeps it after the service stops
+// answering, so only a new connection is a decision made now.
+//
+// The connection makes one attempt and never reconnects, carries none of the client's handlers
+// or its credential's keeper (natscred's Keeper, which a service credential starts beside each
+// connection), and so logs nothing: Dispatch proves every minute, and a proof's connect and close
+// are no connection event of the client's.
+func (c *Client) ProveAdmission(ctx context.Context) error {
+	opts := options(c.name, c.urls, nil, nil, nil, nil, c.reconnectErrClock)
+	if c.connectionSettings != nil {
+		if err := c.connectionSettings(&opts); err != nil {
+			return fmt.Errorf("bus: admission proof: %w", err)
+		}
+	}
+	opts.AllowReconnect, opts.RetryOnFailedConnect = false, false
+	opts.ConnectedCB, opts.ReconnectedCB, opts.ClosedCB = nil, nil, nil
+	opts.DisconnectedErrCB, opts.ReconnectErrCB, opts.AsyncErrorCB = nil, nil, nil
+	bound := opts.Timeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("bus: admission proof: %w", context.DeadlineExceeded)
+		}
+		bound = min(bound, remaining)
+	}
+	opts.Timeout = bound
+	if c.dialer != nil {
+		opts.CustomDialer = c.dialer.bounded(bound)
+		// As connectWithContext: the proxy, not this process, resolves the server's name.
+		opts.SkipHostLookup = true
+	}
+	type dialed struct {
+		conn *nats.Conn
+		err  error
+	}
+	result := make(chan dialed, 1)
+	go func() {
+		conn, err := opts.Connect()
+		result <- dialed{conn: conn, err: err}
+	}()
+	var conn *nats.Conn
+	select {
+	case d := <-result:
+		if d.err != nil {
+			return fmt.Errorf("bus: admission proof: the new connection was not admitted: %w", d.err)
+		}
+		conn = d.conn
+	case <-ctx.Done():
+		go func() {
+			if d := <-result; d.conn != nil {
+				d.conn.Close()
+			}
+		}()
+		return fmt.Errorf("bus: admission proof: %w", ctx.Err())
+	}
+	defer conn.Close()
+	flush := func() error { return conn.FlushTimeout(bound) }
+	if _, ok := ctx.Deadline(); ok {
+		flush = func() error { return conn.FlushWithContext(ctx) }
+	}
+	if err := flush(); err != nil {
+		return fmt.Errorf("bus: admission proof: the admitted connection did not answer a round trip: %w", err)
+	}
+	return nil
 }

@@ -1478,11 +1478,45 @@ does not know the setting ignores it, and no project of that deployment can be m
 clustered hub alone and never the VM hub, Dispatch's own first: each switch to private proves that
 every one of them admits Dispatch through the auth callout before it commits. It renders
 `DISPATCH_PRIVATE_HUBS=<url>,<url>` in the order given, each URL once at its first place; empty or
-unset renders nothing. Dispatch refuses to start with hubs to prove and no
-`DISPATCH_HUB_ADMISSION_TOKEN_FILE`, the token each proof presents, so a render whose environment
-holds `DISPATCH_PRIVATE_HUBS` and not that file is an input error at `pulumi preview` naming
-`privateHubs`; this component renders no hub-admission token yet, so every non-empty `privateHubs`
-is refused until the change that mounts it.
+unset renders nothing, so the pods are the ones they always were. Beside it, in `envoy-dispatch`
+alone, the component mounts two projected tokens of Dispatch's own account, each at a top-level
+path of its own and each for an hour, which the kubelet rewrites in place: one for
+`natsgrant.HubAdmissionAudience` (`envoy-hub-admission`) at
+`/var/run/secrets/dispatch-hub-admission/token`, which `DISPATCH_HUB_ADMISSION_TOKEN_FILE` names
+and each proof presents, and one for `oidcAudience` at `/var/run/secrets/dispatch-readiness/token`,
+with which an operator in the pod reads the go-live report, `GET /private-readiness`, which
+`DISPATCH_SERVICE_ACCOUNT=system:serviceaccount:<namespace>:<hostname>`, rendered beside it, alone
+may read. So `privateHubs` is refused without `oidcAudience` and without `listenerPrivacySource`.
+Dispatch refuses to start with hubs to prove and no `DISPATCH_HUB_ADMISSION_TOKEN_FILE`, so an app
+environment holding `DISPATCH_PRIVATE_HUBS` and not that file is an input error at `pulumi preview`
+naming `privateHubs`, which the component's own render never produces.
+
+`privateListeners` (a list of `{name, hub, source, host, instances, audience}`) is the listener
+workloads, beside Dispatch's own listener, that serve the hubs of `privateHubs`, every replica of
+which each proof reads: in production the clustered hub's session listener and `envoy-listener`,
+each at its headless instances Service. `audience` is the audience that listener verifies
+projected tokens for (its `ENVOY_OIDC_AUDIENCE`): every listener verifies a token for its own
+audience alone, so the component mounts, in `envoy-dispatch`, Dispatch's own projected token for
+each entry's audience at `/var/run/secrets/envoy-listener-<name>/token`, for an hour, and each read
+of that workload's replicas presents it. With `privateHubs` the component renders them as
+`DISPATCH_PRIVATE_LISTENERS`, JSON, each with its `token_file`, and appends Dispatch's own listener
+for the first hub, so no stack can leave it out: `name` `<hostname>-listener`, `host` and
+`instances` the headless Service `<hostname>-listener-instances` it renders over that Deployment's
+pods (`clusterIP: None`, `publishNotReadyAddresses: true`, selector `app: <hostname>-listener`,
+port 9020), `source` the `brokerUrl` of `listenerPrivacySource` (`{brokerUrl}`, the secrets
+broker's base URL that listener reads each project's privacy from), and `token_file`
+`/var/run/secrets/envoy-listener/token`, the token every call Dispatch makes to its own listener
+presents. The listener's own pod is unchanged: it serves each replica read for the credential the
+read presents, whatever its Host, and reads no `ENVOY_ALLOWED_HOSTS`. Its NetworkPolicy already
+admits the app's pods at 9020, where each proof reads from.
+Refused at preview, naming the entry: a blank `name`, `hub`, `source`, `host` or `audience`, a
+`name` that is not a DNS-1123 label (its token directory is named by it), a `source` that is not
+the broker's base URL (an absolute http(s) URL with no path, query or fragment, which a replica
+reports unchanged and the proof compares byte for byte), `instances` that are missing or not
+`host:port`, a name or a host another entry or Dispatch's own listener has, and a `hub`
+`privateHubs` does not name; and naming `privateHubs`, a hub after the first that no entry serves.
+`listenerPrivacySource` is refused without `privateHubs`, and its `brokerUrl` by the same base-URL
+rule.
 
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the

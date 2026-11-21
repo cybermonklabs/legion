@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/busprojects"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -36,11 +38,15 @@ func TestStartHubAdmissionReadsANilProofAsNone(t *testing.T) {
 }
 
 // fakeHubAdmission is a private-hub admission proof main can run (hubAdmission): it admits every
-// proof, answers ready as its last result, and closes started once its loop runs.
+// proof, answers ready as its last result, closes started once its loop runs, and keeps the
+// listener inventory and client SetListeners gave it.
 type fakeHubAdmission struct {
 	ready   bool
 	started chan struct{}
 	once    sync.Once
+
+	listeners []busprojects.ListenerTarget
+	client    *http.Client
 }
 
 func newFakeHubAdmission(ready bool) *fakeHubAdmission {
@@ -54,6 +60,15 @@ func (a *fakeHubAdmission) Ready() bool { return a.ready }
 func (a *fakeHubAdmission) Run(ctx context.Context) {
 	a.once.Do(func() { close(a.started) })
 	<-ctx.Done()
+}
+
+func (a *fakeHubAdmission) SetListeners(listeners []busprojects.ListenerTarget, client *http.Client) {
+	a.listeners, a.client = listeners, client
+}
+
+// ReportHandler serves the report of a proof with no hub and no listener read.
+func (a *fakeHubAdmission) ReportHandler() http.Handler {
+	return (*busprojects.HubAdmission)(nil).ReportHandler()
 }
 
 // waitRunning fails the test unless the proof's loop was started; the bound only ends a test whose

@@ -51,7 +51,7 @@ func TestHealthzNamesNoPrivateProjectToACallerWithNoCredential(t *testing.T) {
 				runs: map[githubreads.Read]bool{githubreads.DeliveryReconcile: true},
 			}
 			response := httptest.NewRecorder()
-			dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state, reads).
+			dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state, reads, privateReadiness{}).
 				ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 			body := response.Body.String()
 			if strings.Contains(body, "SECRET") {

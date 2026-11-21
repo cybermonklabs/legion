@@ -84,7 +84,7 @@ func TestEveryResponseSaysWhetherAnyProjectIsPrivate(t *testing.T) {
 			router := routerFor(t, resolveWith(t, nil), routes.AppContextOptions{
 				Store: database, Events: broker, Docs: docs.New(docs.Deps{Store: database, Events: broker}),
 			})
-			served := serveHandler(dispatchHandler(router, metrics.New(), database, nil, nil, nil, "", nil, issuers{}, privateState, nil), privateState)
+			served := serveHandler(dispatchHandler(router, metrics.New(), database, nil, nil, nil, "", nil, issuers{}, privateState, nil, privateReadiness{}), privateState)
 			server := httptest.NewServer(served)
 			t.Cleanup(server.Close)
 			client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}

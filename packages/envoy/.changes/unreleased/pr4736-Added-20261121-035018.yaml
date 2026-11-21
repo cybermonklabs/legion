@@ -1,0 +1,5 @@
+kind: Added
+body: 'Dispatch reads every replica of every listener that serves a private hub at each private-hub admission proof: DISPATCH_PRIVATE_LISTENERS names the listener workloads ({name, hub, source, host, instances}), and Dispatch refuses to start with an entry it cannot read, a source that is not the secrets broker base URL, or a hub no entry serves. GET /private-readiness serves the go-live report, every hub and listener replica with the last proof result and no project, to Dispatch own service account alone (DISPATCH_SERVICE_ACCOUNT). gcp:Dispatch, with privateHubs, mounts the hub-admission token (DISPATCH_HUB_ADMISSION_TOKEN_FILE) and the readiness token, renders the inventory from the new privateListeners and listenerPrivacySource inputs with its own listener appended, and renders a headless Service over that listener; an all-public deployment renders as before.'
+time: 2026-11-21T03:50:18.32580106Z
+custom:
+    Issue: pr4736

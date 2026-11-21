@@ -210,6 +210,10 @@ type bootConfig struct {
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
 	OIDCAudience string
+	// ServiceAccount is DISPATCH_SERVICE_ACCOUNT: Dispatch's own Kubernetes service account,
+	// system:serviceaccount:<namespace>:<name>, the one caller GET /private-readiness answers,
+	// presenting its projected token for OIDCAudience. Empty answers no caller there.
+	ServiceAccount string
 	// PrivateProjects is DISPATCH_PRIVATE_PROJECTS: the keys of the projects this deployment has
 	// provisioned as private, sorted and each once (privateProjectsSetting). Only these can be made
 	// private; the boot and the maintenance sweep report a private project it does not name, by key,
@@ -227,6 +231,11 @@ type bootConfig struct {
 	// required with any hub and read at each dial, never here: a projected token rotates.
 	PrivateHubs           []string
 	HubAdmissionTokenFile string
+	// PrivateListeners is DISPATCH_PRIVATE_LISTENERS: the listener workloads that serve the hubs of
+	// PrivateHubs, in the order given (privateListenersSetting), every replica of which each proof
+	// reads. Each serves one of PrivateHubs and each of PrivateHubs is served by one at least, or
+	// the start is refused.
+	PrivateListeners []privateListener
 	// AgentSecretsURL is DISPATCH_AGENT_SECRETS_URL, the secrets broker's API; empty means the
 	// credential-request feature is off. AgentSecretsTokenFile is
 	// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
@@ -643,9 +652,15 @@ func main() {
 	// The private-hub admission proof a switch to private makes before it commits, and the
 	// outbox's hold of a private project's events while any hub is unproven (startHubAdmission).
 	// This build runs none: the proof over one client per hub of boot.PrivateHubs is
-	// busprojects.HubAdmission, which this tree does not hold yet, so every switch to private is 409
-	// PRIVATE_PROJECTS_UNAVAILABLE and the outbox holds nothing.
-	switchAdmission, privateHubsReady := startHubAdmission(ctx, boot, nil)
+	// busprojects.HubAdmission, whose hub-admission clients this tree does not build yet, so
+	// admission stays nil, every switch to private is 409 PRIVATE_PROJECTS_UNAVAILABLE and the
+	// outbox holds nothing. Each proof reads every replica of the listeners that serve its hubs
+	// (boot.PrivateListeners), each read presenting Dispatch's own token for that listener's
+	// audience; a nil proof is given none, and GET /private-readiness (dispatchHandler) serves its
+	// report, the empty one while there is none.
+	var admission hubAdmission
+	giveListeners(admission, listenerTargets(boot.PrivateListeners), listenerHTTP(boot.PrivateListeners))
+	switchAdmission, privateHubsReady := startHubAdmission(ctx, boot, admission)
 	built.HubAdmission = switchAdmission
 	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))
 
@@ -1187,7 +1202,7 @@ func main() {
 	}
 	// Every response says whether any project is private, from the state read at boot.
 	handler := serveHandler(dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer,
-		issuers{signIn: signIn, serviceTokens: serviceTokens}, privateState, reads), privateState)
+		issuers{signIn: signIn, serviceTokens: serviceTokens}, privateState, reads, newPrivateReadiness(boot, admission)), privateState)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -1387,6 +1402,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		// Checked once the issuer and audience are read (checkAccessSettings).
 		OIDCAccounts:         commaList(env, "DISPATCH_OIDC_ACCOUNTS"),
 		AccessAccounts:       commaList(env, "DISPATCH_ACCESS_ACCOUNTS"),
+		ServiceAccount:       strings.TrimSpace(env.get("DISPATCH_SERVICE_ACCOUNT")),
 		ProjectOwnerFallback: strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
 
 		NewIssueLabel:      strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
@@ -1480,6 +1496,11 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if boot.HubAdmissionTokenFile == "" {
 			return bootConfig{}, errors.New("DISPATCH_HUB_ADMISSION_TOKEN_FILE is required when DISPATCH_PRIVATE_HUBS is set: each switch to private proves every hub admits Dispatch with that token")
 		}
+	}
+	// The listeners each proof reads are malformed settings too when they leave a hub unserved:
+	// gcp:Dispatch refuses the same at preview (privateListeners).
+	if boot.PrivateListeners, err = privateListenersSetting(env.get("DISPATCH_PRIVATE_LISTENERS"), boot.PrivateHubs); err != nil {
+		return bootConfig{}, err
 	}
 	for _, setting := range []struct {
 		name   string
@@ -1628,15 +1649,24 @@ func commaList(env settingValues, name string) []string {
 // accounts names accounts of the verifier DISPATCH_OIDC_AUDIENCE turns on, so either set without it
 // would configure nothing, and each entry is a service account's subject. An account that reads
 // the membership answer must be one the deployment admits, which every account is while
-// DISPATCH_OIDC_ACCOUNTS names none. The owner fallback is a person as Dispatch stores one, a
-// lowercase email; the refusal does not repeat it, as DISPATCH_SIGNIN_DOMAIN's does not.
+// DISPATCH_OIDC_ACCOUNTS names none. DISPATCH_SERVICE_ACCOUNT is one such subject, Dispatch's own,
+// read by the same rule. The owner fallback is a person as Dispatch stores one, a lowercase email;
+// the refusal does not repeat it, as DISPATCH_SIGNIN_DOMAIN's does not.
 func checkAccessSettings(boot bootConfig) error {
+	if strings.Contains(boot.ServiceAccount, ",") {
+		return errors.New("DISPATCH_SERVICE_ACCOUNT names one account, Dispatch's own, and holds a comma")
+	}
+	var own []string
+	if boot.ServiceAccount != "" {
+		own = []string{boot.ServiceAccount}
+	}
 	for _, list := range []struct {
 		name     string
 		accounts []string
 	}{
 		{"DISPATCH_OIDC_ACCOUNTS", boot.OIDCAccounts},
 		{"DISPATCH_ACCESS_ACCOUNTS", boot.AccessAccounts},
+		{"DISPATCH_SERVICE_ACCOUNT", own},
 	} {
 		if len(list.accounts) > 0 && boot.OIDCAudience == "" {
 			return fmt.Errorf("%s is set but DISPATCH_OIDC_AUDIENCE is not: it names accounts of the service-account verifier the audience turns on, so without one it would configure nothing", list.name)
@@ -2096,12 +2126,19 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // so each is a read of no caller's rows (readclass.None): the probes read the process's own
 // health, and /metrics the deployment's counters, which name no project, issue, person or session
 // (readclass's TestMetricsNameNoProject). The router reads what each of its routes declares.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, privateState *privateProjectsState, reads *gitHubReads) http.Handler {
+//
+// It mounts one more route above the router, in every deployment: GET /private-readiness, the
+// go-live report of the private-hub admission proof (readiness), which answers only Dispatch's own
+// service account, verified by issuers.serviceTokens (requireOwnAccount). The report is the
+// server's own facts, every hub and listener replica the proof reads with its result, and names no
+// project, so it is a read of no caller's rows too.
+func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, privateState *privateProjectsState, reads *gitHubReads, readiness privateReadiness) http.Handler {
 	mux := http.NewServeMux()
 	none := []readclass.Class{readclass.None}
 	readclass.Handle(mux, none, "GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, privateState, reads))
 	readclass.Handle(mux, none, "GET /livez", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	readclass.Handle(mux, none, "GET /metrics", registry.Handler())
+	readclass.Handle(mux, none, "GET /private-readiness", requireOwnAccount(issuers.serviceTokens, readiness.account, readiness.report()))
 	readclass.Handle(mux, none, "/", handler)
 	return mux
 }

@@ -854,6 +854,20 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed inside the existing cluster's location", "existingCluster.location", func(a *gcp.DispatchArgs) {
 			a.ExistingCluster = &gcp.DispatchClusterArgs{Name: "example-existing", Location: "us-" + lower + "1"}
 		}},
+		{"a seed inside a private hub", "privateHubs[1]", func(a *gcp.DispatchArgs) {
+			a.PrivateHubs = []string{"nats://hub:4222", "nats://" + lower + ":4222"}
+		}},
+		{"a seed as a private listener's name", "privateListeners[0].name", func(a *gcp.DispatchArgs) {
+			a.PrivateListeners = []gcp.DispatchPrivateListenerArgs{privateListener(lower, "nats://hub:4222")}
+		}},
+		{"a seed inside a private listener's instances", "privateListeners[0].instances", func(a *gcp.DispatchArgs) {
+			listener := privateListener("envoy-hub-listener", "nats://hub:4222")
+			listener.Instances = lower + ".envoy.svc.cluster.local:9020"
+			a.PrivateListeners = []gcp.DispatchPrivateListenerArgs{listener}
+		}},
+		{"a seed inside the listener privacy source's broker URL", "listenerPrivacySource.brokerUrl", func(a *gcp.DispatchArgs) {
+			a.ListenerPrivacySource = &gcp.DispatchListenerPrivacySourceArgs{BrokerUrl: "https://" + lower + ".internal.example"}
+		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			args := dispatchArgs()
@@ -2834,21 +2848,32 @@ func TestDispatchNamesAnIgnoredPrivateProjectsEntry(t *testing.T) {
 
 // TestDispatchRefusesPrivateHubsWithoutTheAdmissionToken: privateHubs renders
 // DISPATCH_PRIVATE_HUBS, and Dispatch refuses to start with hubs to prove and no
-// DISPATCH_HUB_ADMISSION_TOKEN_FILE. A render that names hubs and mounts no hub-admission token is
-// therefore an input error at preview naming privateHubs and DISPATCH_HUB_ADMISSION_TOKEN_FILE, so a
-// deploy that carries it fails before it replaces the running pod; this component renders no such
-// mount yet, so every non-empty privateHubs is that error. An empty or absent privateHubs renders
-// neither variable and no error. Control: drop the check, and the render holds
-// DISPATCH_PRIVATE_HUBS without DISPATCH_HUB_ADMISSION_TOKEN_FILE, and the refusal row fails naming it.
+// DISPATCH_HUB_ADMISSION_TOKEN_FILE. So an app environment that names hubs and no hub-admission
+// token is an input error at preview naming privateHubs and DISPATCH_HUB_ADMISSION_TOKEN_FILE
+// (dispatchHubsNeedTheirToken, which reads the environment as assembled), and a deploy that carried
+// it would fail before it replaced the running pod. The component's own render mounts the token
+// wherever it renders the hubs, so privateHubs with what it needs previews with no error and the
+// environment holds both. An empty or absent privateHubs renders neither variable and no error.
+// Control: drop the check, and the environment holding DISPATCH_PRIVATE_HUBS alone is taken, which
+// the refusal row names.
 func TestDispatchRefusesPrivateHubsWithoutTheAdmissionToken(t *testing.T) {
-	args := dispatchArgs()
-	args.PrivateHubs = []string{"nats://hub:4222"}
-	_, err := runDispatch(t, args, true)
-	require.ErrorContains(t, err, "privateHubs renders DISPATCH_PRIVATE_HUBS", "privateHubs without a rendered DISPATCH_HUB_ADMISSION_TOKEN_FILE was taken")
+	err := gcp.DispatchHubsNeedTheirToken([]string{"DISPATCH_PRIVATE_HUBS"})
+	require.ErrorContains(t, err, "privateHubs renders DISPATCH_PRIVATE_HUBS", "an environment naming hubs and no DISPATCH_HUB_ADMISSION_TOKEN_FILE was taken")
 	require.ErrorContains(t, err, "DISPATCH_HUB_ADMISSION_TOKEN_FILE")
 	var input *core.InputError
 	require.ErrorAs(t, err, &input)
 	require.Equal(t, "privateHubs", input.Input, "%v", err)
+	require.NoError(t, gcp.DispatchHubsNeedTheirToken([]string{"DISPATCH_PRIVATE_HUBS", "DISPATCH_HUB_ADMISSION_TOKEN_FILE"}))
+
+	t.Run("hubs with the mount rendered", func(t *testing.T) {
+		args := privateHubsArgs()
+		args.PrivateHubs, args.PrivateListeners = []string{"nats://hub:4222"}, nil
+		m, err := runDispatch(t, args, true)
+		require.NoError(t, err)
+		env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
+		requireOptionalEnv(t, env, "DISPATCH_PRIVATE_HUBS", "nats://hub:4222")
+		requireOptionalEnv(t, env, "DISPATCH_HUB_ADMISSION_TOKEN_FILE", hubAdmissionTokenPath)
+	})
 	for name, hubs := range map[string][]string{"unset": nil, "empty": {}} {
 		t.Run(name, func(t *testing.T) {
 			args := dispatchArgs()

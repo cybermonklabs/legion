@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // dispatchSOCKS5Port is the port the front door's tailscaled binds its userspace SOCKS5 proxy on
@@ -31,6 +32,17 @@ const dispatchSOCKS5Port = 1055
 // presents to the secrets broker. The broker refuses a token living longer than an hour from its
 // issue, so the kubelet mints it for exactly that and rewrites it before it expires.
 const agentSecretsTokenSeconds = 3600
+
+// The directories of envoy-dispatch's two tokens with privateHubs, each holding one file, token:
+// dispatchHubAdmissionTokenDir the token each hub-admission proof presents
+// (DISPATCH_HUB_ADMISSION_TOKEN_FILE), and dispatchReadinessTokenDir the one an operator reads the
+// go-live report at GET /private-readiness with. Each is a top-level path of its own, beside the
+// NATS seed's /var/run/secrets/envoy and the broker token's /var/run/secrets/dispatch, inside
+// neither.
+const (
+	dispatchHubAdmissionTokenDir = "/var/run/secrets/dispatch-hub-admission"
+	dispatchReadinessTokenDir    = "/var/run/secrets/dispatch-readiness"
+)
 
 // clusterLocal is the in-cluster DNS name of Service name in namespace: what one pod calls
 // another workload's Service at.
@@ -309,7 +321,9 @@ func refuseDispatchSeedInSecret(value pulumi.StringInput, dispatch, input string
 // anything registers, which is why every refusal that is not socks5Proxy's is natsUrl's.
 // The listener serves on every address of its pod, and its API refuses to start on a non-loopback
 // listen host without a bearer (packages/envoy/cmd/listener/apiauth.go), so the environment names
-// the bearer in Secret listenerSecret.
+// the bearer in Secret listenerSecret. A listener that requires a bearer serves /v1 to any Host and
+// reads no ENVOY_ALLOWED_HOSTS, so none is rendered, privateHubs or not: each proof's read of a
+// replica at the headless instances Service is served for the credential it presents.
 func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1.EnvVarArray, error) {
 	if s.natsInCluster && bus.LocalNATSURL(url) {
 		return nil, core.InputErrorf("natsUrl", "natsUrl names a local NATS server; with natsInCluster the pods dial it directly, so the URL must name the hub's in-cluster Service")
@@ -681,6 +695,25 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if _, err := service(listenerName, core.DefaultListenerPort); err != nil {
 		return err
 	}
+	// With privateHubs each proof reads every replica of this listener, ready or not, at a
+	// headless Service over its pods: its name resolves to each pod's address, not-ready ones
+	// included, and its selector is the Deployment's own pod label, so it reaches this listener's
+	// pods and no other workload's. The listener's policy below already admits the app's pods at
+	// the listener's port, which is where the proof reads from.
+	if len(s.privateHubs) > 0 {
+		instances := s.dispatchListenerInstances()
+		if _, err := corev1.NewService(ctx, instances, &corev1.ServiceArgs{
+			Metadata: metadata(instances),
+			Spec: &corev1.ServiceSpecArgs{
+				ClusterIP:                pulumi.String("None"),
+				PublishNotReadyAddresses: pulumi.Bool(true),
+				Selector:                 pulumi.StringMap{"app": pulumi.String(listenerName)},
+				Ports:                    corev1.ServicePortArray{corev1.ServicePortArgs{Port: pulumi.Int(core.DefaultListenerPort), TargetPort: pulumi.Int(core.DefaultListenerPort)}},
+			},
+		}, child...); err != nil {
+			return err
+		}
+	}
 
 	// A pod leaves routing asynchronously, and it does so alongside its own shutdown rather than
 	// after it: the control plane takes the pod out of its EndpointSlice as soon as the deletion
@@ -796,7 +829,41 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_PROJECTS", strings.Join(s.privateProjects, ",")))
 	}
 	if len(s.privateHubs) > 0 {
-		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_HUBS", strings.Join(s.privateHubs, ",")))
+		// Each proof dials every hub as Dispatch with its own projected token for the
+		// hub-admission audience, which the auth service admits only for Dispatch's account and
+		// only on a hub rendered private, and reads every listener replica of the inventory. An
+		// operator reads the go-live report from inside this container with the second token,
+		// Dispatch's own for its own verifier, which GET /private-readiness admits alone
+		// (DISPATCH_SERVICE_ACCOUNT). Each token has a top-level path of its own, inside no other
+		// mount, and the kubelet rewrites each in place before it expires, which Dispatch reads at
+		// each use.
+		listeners, err := json.Marshal(s.privateListeners)
+		if err != nil {
+			return fmt.Errorf("%s: render DISPATCH_PRIVATE_LISTENERS: %w", dispatch, err)
+		}
+		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_HUBS", strings.Join(s.privateHubs, ",")),
+			valueEnv("DISPATCH_HUB_ADMISSION_TOKEN_FILE", dispatchHubAdmissionTokenDir+"/token"),
+			valueEnv("DISPATCH_PRIVATE_LISTENERS", string(listeners)),
+			valueEnv("DISPATCH_SERVICE_ACCOUNT", "system:serviceaccount:"+s.namespace+":"+s.hostname))
+		tokens := []struct{ name, dir, audience string }{
+			{"hub-admission-token", dispatchHubAdmissionTokenDir, natsgrant.HubAdmissionAudience},
+			{"readiness-token", dispatchReadinessTokenDir, s.oidcAudience},
+		}
+		// And one for each listener of privateListeners, for that listener's audience, which each
+		// read of its replicas presents: every listener verifies a token for its own audience
+		// alone. Dispatch's own listener has no entry here: every call to it presents the token
+		// envoy-dispatch already mounts for it.
+		for index, listener := range s.privateListeners {
+			if listener.Audience != "" {
+				tokens = append(tokens, struct{ name, dir, audience string }{fmt.Sprintf("listener-token-%d", index), dispatchListenerTokenDir(listener.Name), listener.Audience})
+			}
+		}
+		for _, token := range tokens {
+			appMounts = append(appMounts, corev1.VolumeMountArgs{Name: pulumi.String(token.name), MountPath: pulumi.String(token.dir), ReadOnly: pulumi.Bool(true)})
+			appVolumes = append(appVolumes, corev1.VolumeArgs{Name: pulumi.String(token.name), Projected: &corev1.ProjectedVolumeSourceArgs{Sources: corev1.VolumeProjectionArray{
+				corev1.VolumeProjectionArgs{ServiceAccountToken: &corev1.ServiceAccountTokenProjectionArgs{Audience: pulumi.String(token.audience), ExpirationSeconds: pulumi.Int(3600), Path: pulumi.String("token")}},
+			}}})
+		}
 	}
 	if s.appClientID != "" {
 		// The App key is one key of a Kubernetes Secret this component never creates: it exists at

@@ -189,6 +189,12 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "owner@example.com" }},
 		{"privateProjects", func(a *gcp.DispatchArgs) { a.PrivateProjects = []string{"PRIV"} }},
 		{"privateHubs", func(a *gcp.DispatchArgs) { a.PrivateHubs = []string{"nats://hub:4222"} }},
+		{"privateListeners", func(a *gcp.DispatchArgs) {
+			a.PrivateListeners = []gcp.DispatchPrivateListenerArgs{privateListener("envoy-hub-listener", "nats://hub:4222")}
+		}},
+		{"listenerPrivacySource", func(a *gcp.DispatchArgs) {
+			a.ListenerPrivacySource = &gcp.DispatchListenerPrivacySourceArgs{BrokerUrl: privacySourceURL}
+		}},
 		{"appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = "example-app-client-id" }},
 		{"appId", func(a *gcp.DispatchArgs) { a.AppId = "123456" }},
 		{"appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = "example-app-key" }},

@@ -138,7 +138,15 @@ func StartWithCallout(t testing.TB, keys CalloutKeys, static ...StaticUser) (url
 // client port listen on a loopback address of their own (calloutHost).
 func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser) (*Server, string) {
 	t.Helper()
-	server := startOn(t, calloutHost(), CalloutConfig(keys, static...), []string{"-js"})
+	return StartWithCalloutConfig(t, keys, CalloutConfig(keys, static...))
+}
+
+// StartWithCalloutConfig runs, in this process, a server on config, which CalloutConfig wrote for
+// keys and the test may have extended (with a server_tags line, say), and returns it with its
+// client URL once it admits the service's own user, as StartWithCalloutServer does.
+func StartWithCalloutConfig(t testing.TB, keys CalloutKeys, config string) (*Server, string) {
+	t.Helper()
+	server := startOn(t, calloutHost(), config, []string{"-js"})
 	awaitSeed(t, server.URL(), keys.ServiceSeed)
 	return server, server.URL()
 }

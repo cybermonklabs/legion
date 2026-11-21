@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/busprojects"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -1143,7 +1144,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			// The hubs' own reading is TestPrivateHubsNeedTheHubAdmissionTokenFile. Their reader:
 			// startHubAdmission, which hands the router the proof main runs over them and the
 			// outbox its last result, and, with no proof to run, says so naming the hubs.
-			boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_HUBS": "nats://hub:4222", "DISPATCH_HUB_ADMISSION_TOKEN_FILE": "/token"})
+			boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_HUBS": "nats://hub:4222", "DISPATCH_HUB_ADMISSION_TOKEN_FILE": "/token", "DISPATCH_PRIVATE_LISTENERS": listenersServing("nats://hub:4222")})
 			var logged cmdtest.LockedBuffer
 			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 			if gate, ready := startHubAdmission(t.Context(), boot, nil); gate != nil || ready != nil {
@@ -1161,9 +1162,43 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		},
 		"DISPATCH_HUB_ADMISSION_TOKEN_FILE": func(t *testing.T) {
 			refusedWith(t, map[string]string{"DISPATCH_PRIVATE_HUBS": "nats://hub:4222"}, "DISPATCH_HUB_ADMISSION_TOKEN_FILE")
-			if boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_HUBS": "nats://hub:4222", "DISPATCH_HUB_ADMISSION_TOKEN_FILE": " /token "}); boot.HubAdmissionTokenFile != "/token" {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_HUBS": "nats://hub:4222", "DISPATCH_HUB_ADMISSION_TOKEN_FILE": " /token ", "DISPATCH_PRIVATE_LISTENERS": listenersServing("nats://hub:4222")}); boot.HubAdmissionTokenFile != "/token" {
 				t.Errorf("HubAdmissionTokenFile = %q, want /token", boot.HubAdmissionTokenFile)
 			}
+		},
+		"DISPATCH_PRIVATE_LISTENERS": func(t *testing.T) {
+			// Its own reading is TestDispatchRefusesToStartWithoutAListenerForEveryHub. Its reader:
+			// giveListeners, which hands the proof main runs the inventory and the client that
+			// reads it, and hands nothing where there is no proof.
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_PRIVATE_HUBS": "nats://hub:4222", "DISPATCH_HUB_ADMISSION_TOKEN_FILE": "/token",
+				"DISPATCH_PRIVATE_LISTENERS": `[{"name":"envoy-listener","hub":"nats://hub:4222","source":"https://broker.example","host":"envoy-listener.envoy.svc.cluster.local","instances":"envoy-listener.envoy.svc.cluster.local:9020","token_file":"/var/run/secrets/envoy-listener-envoy-listener/token"}]`,
+			})
+			admission := newFakeHubAdmission(true)
+			targets, client := listenerTargets(boot.PrivateListeners), listenerHTTP(boot.PrivateListeners)
+			giveListeners(admission, targets, client)
+			if !slices.Equal(admission.listeners, targets) || admission.client != client || len(admission.listeners) != 1 || admission.listeners[0].Name != "envoy-listener" {
+				t.Errorf("giveListeners handed the proof %+v with client %p, want %+v with %p", admission.listeners, admission.client, targets, client)
+			}
+			giveListeners((*fakeHubAdmission)(nil), targets, client)
+			giveListeners(nil, targets, client)
+		},
+		"DISPATCH_SERVICE_ACCOUNT": func(t *testing.T) {
+			const own = "system:serviceaccount:dispatch:dispatch"
+			verifying := func(account string) map[string]string {
+				return map[string]string{"DISPATCH_OIDC_ISSUER": "https://issuer.example", "DISPATCH_OIDC_AUDIENCE": "dispatch", "DISPATCH_SERVICE_ACCOUNT": account}
+			}
+			// Its reader: the go-live report's route, which main builds with it
+			// (newPrivateReadiness) and which answers that account alone.
+			if boot := resolveWith(t, verifying(" "+own+" ")); boot.ServiceAccount != own || newPrivateReadiness(boot, nil).account != own {
+				t.Errorf("ServiceAccount = %q, the route's account %q; want %q", boot.ServiceAccount, newPrivateReadiness(boot, nil).account, own)
+			}
+			if boot := resolveWith(t, verifying("")); boot.ServiceAccount != "" {
+				t.Errorf("unset: ServiceAccount = %q, want none", boot.ServiceAccount)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_SERVICE_ACCOUNT": own}, "DISPATCH_SERVICE_ACCOUNT is set but DISPATCH_OIDC_AUDIENCE is not")
+			refusedWith(t, verifying("dispatch"), "DISPATCH_SERVICE_ACCOUNT entry 1 of 1 is not a Kubernetes service account's subject")
+			refusedWith(t, verifying(own+","+own), "DISPATCH_SERVICE_ACCOUNT names one account")
 		},
 		"DISPATCH_APP_CLIENT_ID": func(t *testing.T) {
 			if clientID, source, err := loadApp(t, map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env"}); err != nil || clientID != "Iv1.env" || source != "env" {
@@ -2553,6 +2588,7 @@ func TestPrivateHubsNeedTheHubAdmissionTokenFile(t *testing.T) {
 	boot := resolveWith(t, map[string]string{
 		"DISPATCH_PRIVATE_HUBS":             " nats://hub:4222, nats://other:4222 ,nats://hub:4222,",
 		"DISPATCH_HUB_ADMISSION_TOKEN_FILE": " /var/run/secrets/dispatch-hub-admission/token ",
+		"DISPATCH_PRIVATE_LISTENERS":        listenersServing("nats://hub:4222", "nats://other:4222"),
 	})
 	if !slices.Equal(boot.PrivateHubs, []string{"nats://hub:4222", "nats://other:4222"}) || boot.HubAdmissionTokenFile != "/var/run/secrets/dispatch-hub-admission/token" {
 		t.Errorf("with the file set: PrivateHubs = %q, HubAdmissionTokenFile = %q; want [nats://hub:4222 nats://other:4222] in the order given, and the trimmed path", boot.PrivateHubs, boot.HubAdmissionTokenFile)
@@ -2562,5 +2598,97 @@ func TestPrivateHubsNeedTheHubAdmissionTokenFile(t *testing.T) {
 	}
 	if boot := resolveWith(t, nil); len(boot.PrivateHubs) != 0 {
 		t.Errorf("unset: PrivateHubs = %q, want none", boot.PrivateHubs)
+	}
+}
+
+// listenersServing is a DISPATCH_PRIVATE_LISTENERS that serves each of hubs with one listener
+// workload of its own, which a row naming those hubs needs to start.
+func listenersServing(hubs ...string) string {
+	entries := make([]string, len(hubs))
+	for index, hub := range hubs {
+		entries[index] = fmt.Sprintf(`{"name":"listener-%d","hub":%q,"source":"https://broker.example","host":"listener-%d.envoy.svc.cluster.local","instances":"listener-%d.envoy.svc.cluster.local:9020","token_file":"/var/run/secrets/envoy-listener-listener-%d/token"}`, index, hub, index, index, index)
+	}
+	return "[" + strings.Join(entries, ",") + "]"
+}
+
+// TestDispatchRefusesToStartWithoutAListenerForEveryHub: DISPATCH_PRIVATE_LISTENERS is the listener
+// workloads that serve the hubs of DISPATCH_PRIVATE_HUBS, whose every replica each proof reads, each
+// with the file of Dispatch's own token for that listener's audience. The start is refused, naming
+// the entry, for an entry that is malformed, has no instances or no token file, shares another
+// entry's host, or names a hub outside DISPATCH_PRIVATE_HUBS, and naming the hub for a hub of
+// DISPATCH_PRIVATE_HUBS that no entry serves, so no deployment proves a hub without reading the
+// listeners that serve it. With both unset the start goes on as before the setting existed (R9).
+// Control: drop the hub-coverage check, and the start with a hub no entry serves goes on, which the
+// coverage rows name.
+func TestDispatchRefusesToStartWithoutAListenerForEveryHub(t *testing.T) {
+	const (
+		hub   = "nats://hub:4222"
+		other = "nats://other:4222"
+		token = "/var/run/secrets/dispatch-hub-admission/token"
+	)
+	entry := func(name, hub string) string {
+		return fmt.Sprintf(`{"name":%q,"hub":%q,"source":"https://broker.dispatch.svc.cluster.local:8443","host":"%s-instances.envoy.svc.cluster.local","instances":"%s-instances.envoy.svc.cluster.local:9020","token_file":"/var/run/secrets/envoy-listener-%s/token"}`, name, hub, name, name, name)
+	}
+	with := func(hubs, listeners string) map[string]string {
+		values := map[string]string{"DISPATCH_PRIVATE_LISTENERS": listeners}
+		if hubs != "" {
+			values["DISPATCH_PRIVATE_HUBS"], values["DISPATCH_HUB_ADMISSION_TOKEN_FILE"] = hubs, token
+		}
+		return values
+	}
+	two := hub + "," + other
+	listeners := "[" + entry("envoy-listener", hub) + "," + entry("envoy-hub-listener", other) + "," + entry("dispatch-listener", hub) + "]"
+	boot := resolveWith(t, with(two, " "+listeners+" "))
+	target := func(name, hub string) privateListener {
+		host := name + "-instances.envoy.svc.cluster.local"
+		return privateListener{
+			ListenerTarget: busprojects.ListenerTarget{Name: name, Hub: hub, Source: "https://broker.dispatch.svc.cluster.local:8443", Host: host, Instances: host + ":9020"},
+			TokenFile:      "/var/run/secrets/envoy-listener-" + name + "/token",
+		}
+	}
+	want := []privateListener{target("envoy-listener", hub), target("envoy-hub-listener", other), target("dispatch-listener", hub)}
+	if !slices.Equal(boot.PrivateListeners, want) {
+		t.Errorf("PrivateListeners = %+v, want %+v, in the order given", boot.PrivateListeners, want)
+	}
+	for name, values := range map[string]map[string]string{"both unset": nil, "listeners blank, no hub": with("", " ")} {
+		if boot := resolveWith(t, values); boot.PrivateListeners != nil {
+			t.Errorf("%s: PrivateListeners = %+v, want none", name, boot.PrivateListeners)
+		}
+	}
+	seed, _ := testnats.User(t)
+	for _, row := range []struct {
+		name, hubs, listeners, naming string
+	}{
+		// The coverage rows: each hub must be served by an entry.
+		{"a hub no entry serves", two, "[" + entry("envoy-listener", hub) + "]", "no entry of DISPATCH_PRIVATE_LISTENERS serves the hub nats://other:4222"},
+		{"hubs and no inventory", hub, "", "no entry of DISPATCH_PRIVATE_LISTENERS serves the hub nats://hub:4222"},
+		{"hubs and an empty inventory", hub, "[]", "no entry of DISPATCH_PRIVATE_LISTENERS serves the hub nats://hub:4222"},
+		// The entry rows, each naming the entry.
+		{"an entry naming a hub outside the hubs", hub, "[" + entry("envoy-listener", hub) + "," + entry("stray-listener", other) + "]", "entry 2 (stray-listener) serves the hub nats://other:4222, which DISPATCH_PRIVATE_HUBS does not name"},
+		{"an inventory and no hub", "", "[" + entry("envoy-listener", hub) + "]", "entry 1 (envoy-listener) serves the hub nats://hub:4222, which DISPATCH_PRIVATE_HUBS does not name"},
+		{"an entry without instances", hub, `[{"name":"envoy-listener","hub":"nats://hub:4222","source":"https://broker.example","host":"envoy-listener.envoy.svc.cluster.local"}]`, "entry 1 (envoy-listener) has no instances"},
+		{"instances that are no host:port", hub, `[{"name":"envoy-listener","hub":"nats://hub:4222","source":"https://broker.example","host":"envoy-listener.envoy.svc.cluster.local","instances":"envoy-listener.envoy.svc.cluster.local"}]`, "entry 1 (envoy-listener) has instances that are not host:port"},
+		{"an entry without a source", hub, `[{"name":"envoy-listener","hub":"nats://hub:4222","host":"envoy-listener.envoy.svc.cluster.local","instances":"envoy-listener.envoy.svc.cluster.local:9020"}]`, "entry 1 (envoy-listener) has no source"},
+		{"a source carrying the privacy route", hub, `[{"name":"envoy-listener","hub":"nats://hub:4222","source":"https://broker.example/v1/project-privacy","host":"a.example","instances":"a.example:9020"}]`, "entry 1 (envoy-listener) has a source that is not the secrets broker's base URL"},
+		{"a source that is no URL", hub, `[{"name":"envoy-listener","hub":"nats://hub:4222","source":"broker.example","host":"a.example","instances":"a.example:9020"}]`, "entry 1 (envoy-listener) has a source that is not the secrets broker's base URL"},
+		{"an entry without a host", hub, `[{"name":"envoy-listener","hub":"nats://hub:4222","source":"https://broker.example","instances":"envoy-listener.envoy.svc.cluster.local:9020"}]`, "entry 1 (envoy-listener) has no host"},
+		{"an entry without a name", hub, `[{"hub":"nats://hub:4222","source":"https://broker.example","host":"a.example","instances":"a.example:9020"}]`, "entry 1 has no name"},
+		{"two entries of one name", hub, "[" + entry("envoy-listener", hub) + "," + entry("envoy-listener", hub) + "]", "entry 2 (envoy-listener) has the name of entry 1"},
+		{"a field no entry has", hub, `[{"name":"envoy-listener","hub":"nats://hub:4222","source":"https://broker.example","host":"a.example","instances":"a.example:9020","replicas":3}]`, `DISPATCH_PRIVATE_LISTENERS is not a JSON list of listener entries`},
+		{"an object, not a list", hub, entry("envoy-listener", hub), `DISPATCH_PRIVATE_LISTENERS is not a JSON list of listener entries`},
+		{"text after the list", hub, "[" + entry("envoy-listener", hub) + "] []", `DISPATCH_PRIVATE_LISTENERS is not a JSON list of listener entries`},
+		{"an entry without a token file", hub, `[{"name":"envoy-listener","hub":"nats://hub:4222","source":"https://broker.example","host":"a.example","instances":"a.example:9020"}]`, "entry 1 (envoy-listener) has no token_file"},
+		{"two entries of one host", hub, `[{"name":"one","hub":"nats://hub:4222","source":"https://broker.example","host":"a.example","instances":"a.example:9020","token_file":"/one"},{"name":"two","hub":"nats://hub:4222","source":"https://broker.example","host":"a.example","instances":"b.example:9020","token_file":"/two"}]`, "entry 2 (two) has the host of entry 1"},
+		{"a seed in the inventory", hub, `[{"name":"` + seed + `","hub":"nats://hub:4222","source":"s","host":"h","instances":"h:1"}]`, "DISPATCH_PRIVATE_LISTENERS holds an nkey seed (not echoed)"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			_, err := resolveBootConfig(bootEnvironment(with(row.hubs, row.listeners)))
+			if err == nil || !strings.Contains(err.Error(), row.naming) {
+				t.Fatalf("%s: err = %v, want the start refused naming %q", row.name, err, row.naming)
+			}
+			if strings.Contains(err.Error(), seed) {
+				t.Fatalf("%s: the refusal echoes the seed", row.name)
+			}
+		})
 	}
 }
