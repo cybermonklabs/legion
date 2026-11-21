@@ -220,19 +220,18 @@ func fillOf(ctx context.Context, issue record.Issue, repo ghrepo.Repository, pul
 // without its repository columns (backfillPending, rereadBadAnswers): backfillRepositories as the
 // boot runs it, whose writes take the lock every fact applies under, so no fact applies with a
 // copy of a record read before the fill. GitHub intake hears the repository of each record it
-// writes as it hears the one a new record names (hearRecorded): through hearOrPend, which marks
-// the heard set pending only where JetStream refuses the update; the other name of a configured
-// pair that holds it is heard as well, as heardRepositories hears it beside a record's own. It
-// asks the refresher to read the live records again (refreshLive), so a live record it filled
+// writes as it hears the one a new record names (hearRecorded, hear); the other name of a
+// configured pair that holds it is heard as well, as heardRepositories hears it beside a record's
+// own. It asks the refresher to read the live records again (refreshLive), so a live record it filled
 // joins the live set and the cache set. A failure of the store or of Dispatch's listing is logged
 // and tried again on the job's backoff; a record written before the failure is heard all the same.
 func (w *workflowRuntime) backfillLater(ctx context.Context) {
 	filled, left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, w.dispatchProject, w.stateDir, w.defaultBranches, w.repositories.renames, w.log)
 	if len(filled) != 0 {
 		for _, repo := range filled {
-			w.hearOrPend(ctx, repo)
+			w.hear(ctx, repo)
 			if partner, paired := w.repositories.renames.Partner(repo.String()); paired {
-				w.hearOrPend(ctx, partner)
+				w.hear(ctx, partner)
 			}
 		}
 		w.wakeLive()

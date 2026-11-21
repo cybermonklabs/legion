@@ -109,7 +109,7 @@ func TestPollHoldReleaseRetriesAFailedPositionRead(t *testing.T) {
 		t.Fatal("Held() = false after seeding a behind record, want it held")
 	}
 
-	reader := &failingPositionReader{failures: 3, position: intake.DispatchConsumerPosition{AckFloorStream: 5}}
+	reader := &failingPositionReader{failures: 3, position: intake.DispatchConsumerPosition{AckFloorStream: 5, Idle: true}}
 	w := &workflowRuntime{
 		pool: pool, admission: admission, handlers: []intake.Handler{engine, admission},
 		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, holdPollInterval: 20 * time.Millisecond,
@@ -608,7 +608,7 @@ func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRec
 		t.Fatalf("begin release tx: %v", err)
 	}
 	applied, committed := intake.WithCommitHooks(context.Background())
-	if _, err := admission.Apply(applied, tx, intake.DispatchConsumerPosition{AckFloorStream: 10}); err != nil {
+	if _, err := admission.Apply(applied, tx, intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true}); err != nil {
 		t.Fatalf("apply position fact: %v", err)
 	}
 	if err := tx.Commit(context.Background()); err != nil {
@@ -703,7 +703,7 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 	if _, err := admission.Apply(applied, tx, intake.DispatchConsumerPosition{AckFloorStream: 10}); err != nil {
 		t.Fatalf("apply position fact: %v", err)
 	}
-	if err := tx.Commit(context.Background()); err != nil {
+	if _, err := admission.Apply(applied, tx, intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true}); err != nil {
 		t.Fatalf("commit release tx: %v", err)
 	}
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "label-added-in-race-window", intake.DispatchIssue{
@@ -732,9 +732,12 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 
 // reconcileAdmission runs admission's boot reconcile as the workflow runtime does (reconcile): in
 // its own transaction, settling the runs its writes end before it commits, and running the commit
-// hooks it registered once that commits.
+// hooks it registered once that commits. target is the stream position the scenario's listing was
+// read at: a consumer whose ack floor is at or past it has caught up, which its own info reads as
+// idle (intake.DispatchConsumerPosition.Reached).
 func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admission, summaries []dispatch.IssueSummary, target int64, position intake.DispatchConsumerPosition) {
 	t.Helper()
+	position.Idle = position.Idle || position.AckFloorStream >= target
 	listed := make([]intake.DispatchIssue, len(summaries))
 	for i, summary := range summaries {
 		listed[i] = intake.ListedIssue(summary)
@@ -742,7 +745,7 @@ func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admissi
 	scoped, committed := intake.WithCommitHooks(context.Background())
 	scoped, settle := intake.OpenSettlers(scoped, admission)
 	if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
-		if err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+		if err := admission.Reconcile(scoped, tx, listed, position); err != nil {
 			return err
 		}
 		return settle(scoped, tx)

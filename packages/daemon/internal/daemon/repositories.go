@@ -929,7 +929,7 @@ func (r *retrying) ran() {
 // isDue is whether at, a job's due time, has come by now; a zero at never does.
 func isDue(at, now time.Time) bool { return !at.IsZero() && !at.After(now) }
 
-// refreshRepositories is the refresher: one goroutine that runs six jobs until ctx ends, each
+// refreshRepositories is the refresher: one goroutine that runs five jobs until ctx ends, each
 // started by its own cause, and none of them a read of anything Dispatch holds about repositories.
 //
 //  1. The boot's preparation of the repositories the records name (prepareAtStart), once, as it
@@ -948,12 +948,14 @@ func isDue(at, now time.Time) bool { return !at.IsZero() && !at.After(now) }
 //     such a cut wait does not move the backoff on. Once the bound has passed, a run that did not
 //     tell the waits waits the backoff as any failed run does, so a failure past the bound never
 //     turns the refresher into a busy loop.
-//  4. The heard set published again (republishHeard), at once when a record's own consumer update
-//     was refused (hearRecorded, heardWake), and on installReadRetry while it fails (heardPending).
-//  5. A held default branch read again (rereadHeldBranches), at the end of each rate limit a
+//  4. A held default branch read again (rereadHeldBranches), at the end of each rate limit a
 //     default branch was held through (heldThroughLimit, heldWake).
-//  6. The live records read again (refreshLive), at the commit of each write that can change them
+//  5. The live records read again (refreshLive), at the commit of each write that can change them
 //     (projectRecords, liveWake), and on installReadRetry while that read fails.
+//
+// No job tells GitHub intake of the heard set again: intake's SetRepositories changes only the set
+// its decoder reads, under a lock, and makes no JetStream call, so an addition of a repository
+// (hearRepository) is never refused for JetStream's sake and needs no publication after it.
 //
 // Each job's clock is its own (retrying), so a wake of one never moves another's wait. The jobs
 // share the goroutine, so one waits while another runs: a recovery woken during the first job's
@@ -965,7 +967,7 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 		after = time.After
 	}
 	w.prepareAtStart(ctx)
-	var reread, recovery, heard, live retrying
+	var reread, recovery, live retrying
 	liveFailed := false
 	for {
 		now := time.Now()
@@ -973,7 +975,6 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 		reread.stand(len(bad) != 0, now)
 		unread := append(w.recoveringReasons(), w.unreadReasons()...)
 		recovery.stand(len(unread) != 0, now)
-		heard.stand(w.heardPending.Load(), now)
 		live.stand(liveFailed, now)
 		recoverAt, cut := recovery.due, false
 		if left, held := w.recoveryHoldLeft(); held && left > 0 && !recoverAt.IsZero() && now.Add(left).Before(recoverAt) {
@@ -981,7 +982,7 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 		}
 		heldAt := w.heldDue()
 		var next time.Time
-		for _, at := range []time.Time{reread.due, recoverAt, heard.due, live.due, heldAt} {
+		for _, at := range []time.Time{reread.due, recoverAt, live.due, heldAt} {
 			if !at.IsZero() && (next.IsZero() || at.Before(next)) {
 				next = at
 			}
@@ -996,11 +997,9 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 		case <-w.rereadWake:
 			// A bad answer was kept outside the refresher: the next turn arms job 2's clock.
 		case <-w.heldWake:
-			// A default branch was held through a rate limit: the next turn arms job 5's clock.
+			// A default branch was held through a rate limit: the next turn arms job 4's clock.
 		case <-w.recoverWake:
 			w.recoverRepositories(ctx)
-		case <-w.heardWake:
-			_ = w.republishHeard(ctx)
 		case <-w.liveWake:
 			liveFailed = w.refreshLive(ctx) != nil
 		case <-timer:
@@ -1021,10 +1020,6 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 					recovery.ran()
 				}
 			}
-			if isDue(heard.due, now) {
-				_ = w.republishHeard(ctx)
-				heard.ran()
-			}
 			if isDue(live.due, now) {
 				liveFailed = w.refreshLive(ctx) != nil
 				live.ran()
@@ -1034,60 +1029,6 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 			}
 		}
 	}
-}
-
-// republishHeard is the refresher's fourth job: it publishes the whole heard set again after
-// JetStream refused an update a repository the daemon works asked for (heardPending, hearOrPend).
-// The set is every repository the records name (heardRepositories), read in a read-only
-// transaction of its own, with every repository the held set names and every one whose own update
-// was refused (heardMissed), so a publication adds and never takes away: the records are never
-// deleted, and a launch's repository is heard as a record's is (workLaunched). It tells GitHub
-// intake of the set under no transaction of the pool (updateSubscription): the update is a stream
-// call, and a missing durable consumer has it create one, which reads the same pool for the
-// stream's stored position, so a transaction waiting on it asks the pool for a second connection
-// while holding one, and every connection of the pool sat idle in a transaction of that shape once
-// the stream answered slowly (INFRA-3169). It holds heardMu for both steps, the lock every write of
-// the held set takes (hearRepository), so a recording whose repository the snapshot missed adds it
-// after this publication and is never narrowed away by it. It clears heardPending once the
-// publication applies, and a failure is logged and left pending, for the refresher to run it again
-// on installReadRetry.
-func (w *workflowRuntime) republishHeard(ctx context.Context) error {
-	w.heardMu.Lock()
-	defer w.heardMu.Unlock()
-	publish, cancel := context.WithTimeout(ctx, appMintAttempt)
-	defer cancel()
-	var recorded []ghrepo.Repository
-	err := pgx.BeginTxFunc(publish, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		var err error
-		recorded, err = w.heardRepositories(publish, tx)
-		return err
-	})
-	var heard []ghrepo.Repository
-	if err == nil {
-		named := map[string]ghrepo.Repository{}
-		if held := w.heard.Load(); held != nil {
-			for _, repo := range *held {
-				named[strings.ToLower(repo.String())] = repo
-			}
-		}
-		for _, repo := range slices.Concat(w.heardMissed, recorded) {
-			named[strings.ToLower(repo.String())] = repo
-		}
-		heard = sortedRepositories(named)
-		err = w.updateSubscription(publish, heard)
-	}
-	if err != nil {
-		if ctx.Err() == nil {
-			w.log.Warn("workflow: the repositories GitHub intake hears were not published again; publishing them again",
-				"retryIn", installReadRetry.Initial.String(), "error", err)
-		}
-		return err
-	}
-	w.heard.Store(&heard)
-	w.heardMissed = nil
-	w.heardPending.Store(false)
-	w.log.Info("legion workflow published again the repositories GitHub intake hears", "heard", repositoryNames(heard))
-	return nil
 }
 
 // heldDue is when the first default branch held through a rate limit is to be read again
@@ -1104,7 +1045,7 @@ func (w *workflowRuntime) heldDue() time.Time {
 	return due
 }
 
-// rereadHeldBranches is the refresher's fifth job: each default branch held through a rate limit
+// rereadHeldBranches is the refresher's fourth job: each default branch held through a rate limit
 // whose limit has ended by now (heldThroughLimit) is read again (defaultBranches.Named, bounded by
 // appMintAttempt), and one GitHub's limit refuses again is held again, which names it once more
 // (Named, onHold).
@@ -1129,7 +1070,7 @@ func (w *workflowRuntime) rereadHeldBranches(ctx context.Context, now time.Time)
 	}
 }
 
-// refreshLive is the refresher's sixth job, the live records read again: the cache set and the
+// refreshLive is the refresher's fifth job, the live records read again: the cache set and the
 // repositories the live records name (refreshCacheRepositories), read in one transaction under the
 // lock every fact applies under (intake.SerializeFacts), so a record committed meanwhile is either
 // in the read or names its repository after it (hearRecorded), and then Dispatch's webhook App
@@ -1981,19 +1922,10 @@ func (w *workflowRuntime) heardAtBoot(ctx context.Context) ([]ghrepo.Repository,
 // hearRecorded has GitHub intake hear the repository an issue has just been recorded on, the
 // runtime keep a repository cache of it, and legion state report it, from the moment a record
 // first names it, with no restart. The workflow calls it inside the transaction that writes the
-// record (workflow.Config.HearRepository), and the consumer's filters change once that
-// transaction has committed and never before (intake.OnCommit), so an admission rolled back
-// subscribes to nothing. That is what keeps the stream call out of the transaction and out of the
-// fact serializer as well (INFRA-3169): a commit hook runs after the commit returned the
-// connection to the pool and released the advisory lock the serializer holds for the
-// transaction's life (intake.ApplyFact, intake.SerializeFacts), so the call waits on JetStream
-// holding neither. A write outside any commit scope — a test applying a record of its own —
-// changes nothing here; the boot's own set covers it (heardAtBoot).
-//
-// A consumer update JetStream refuses leaves the record as it is, marks the heard set pending
-// (heardPending) and wakes the refresher's fourth job, which publishes the set whole
-// (republishHeard): nothing inside the transaction can fail on it, so no JetStream trouble rolls
-// an admission back.
+// record (workflow.Config.HearRepository), and the set intake hears changes once that transaction
+// has committed and never before (intake.OnCommit), so an admission rolled back hears nothing. A
+// write outside any commit scope — a test applying a record of its own — changes nothing here; the
+// boot's own set covers it (heardAtBoot).
 func (w *workflowRuntime) hearRecorded(ctx context.Context, recorded string) {
 	if recorded == "" || !intake.CommitScoped(ctx) {
 		return
@@ -2006,22 +1938,16 @@ func (w *workflowRuntime) hearRecorded(ctx context.Context, recorded string) {
 	intake.OnCommit(ctx, func() {
 		w.repositories.addLive(repo)
 		w.cacheRepository(repo)
-		w.hearOrPend(ctx, repo)
+		w.hear(ctx, repo)
 	})
 }
 
-// hearOrPend has GitHub intake hear repo (hearRepository), and where JetStream refuses the update,
-// keeps repo for the next publication of the whole set (heardMissed), marks the set pending
-// (heardPending) and wakes the refresher's fourth job, which publishes it (republishHeard).
-func (w *workflowRuntime) hearOrPend(ctx context.Context, repo ghrepo.Repository) {
+// hear has GitHub intake hear repo (hearRepository). The call makes no JetStream call (intake's
+// SetRepositories changes only the set its decoder reads), so it fails only where intake refuses
+// the repository itself, which is logged: nothing JetStream answers can leave the set behind.
+func (w *workflowRuntime) hear(ctx context.Context, repo ghrepo.Repository) {
 	if err := w.hearRepository(ctx, repo); err != nil {
-		w.heardMu.Lock()
-		w.heardMissed = append(w.heardMissed, repo)
-		w.heardMu.Unlock()
-		w.heardPending.Store(true)
-		wake(w.heardWake)
-		w.log.Warn("workflow: GitHub intake was not told of a repository the daemon works, so the refresher publishes the whole heard set again",
-			"repo", repo.String(), "error", err)
+		w.log.Error("workflow: GitHub intake refused a repository the daemon works", "repo", repo.String(), "error", err)
 	}
 }
 
@@ -2029,19 +1955,15 @@ func (w *workflowRuntime) hearOrPend(ctx context.Context, repo ghrepo.Repository
 // reaches that call by (updateSubscription). A repository the held set already names (heard)
 // costs one atomic load of the set and a comparison of owner and name, without case, against each
 // repository in it: no lock, no allocation and no call. So the ordinary recording, on a
-// repository another record already named, waits on nothing and asks JetStream nothing; a
-// recording runs on the Dispatch consumer's goroutine or in release_children's handler, so a lock
-// taken first would have intake stand still behind every publication of the set.
+// repository another record already named, waits on nothing; a recording runs on the Dispatch
+// consumer's goroutine or in release_children's handler, so a lock taken first would have intake
+// stand still behind every addition.
 //
 // Answering from the held set without the lock is sound because that set is what intake was last
-// told and it only grows: every write of it holds heardMu — the boot's (heardAtBoot), the whole
-// set published again (republishHeard, which adds the records' repositories to the set it holds
-// and drops none) and an addition here — and stores the set only once intake has taken it. Adding
-// a repository takes heardMu, so an addition and a publication never overwrite one another's set:
-// the held set is read again under the lock, since a publication that ran while this call waited
-// may hold the repository by then, and a publication whose read of the records missed a record
-// committed meanwhile is followed by that record's own call here, which finds its repository
-// missing and adds it.
+// told and it only grows: every write of it holds heardMu — the boot's (heardAtBoot) and an
+// addition here — and stores the set only once intake has taken it. The held set is read again
+// under the lock, since an addition that ran while this call waited may hold the repository by
+// then.
 func (w *workflowRuntime) hearRepository(ctx context.Context, repo ghrepo.Repository) error {
 	if heardNames(w.heard.Load(), repo) {
 		return nil
@@ -2060,9 +1982,7 @@ func (w *workflowRuntime) hearRepository(ctx context.Context, repo ghrepo.Reposi
 	slices.SortFunc(heard, func(a, b ghrepo.Repository) int {
 		return strings.Compare(strings.ToLower(a.String()), strings.ToLower(b.String()))
 	})
-	update, cancel := context.WithTimeout(context.WithoutCancel(ctx), appMintAttempt)
-	defer cancel()
-	if err := w.updateSubscription(update, heard); err != nil {
+	if err := w.updateSubscription(ctx, heard); err != nil {
 		return err
 	}
 	w.heard.Store(&heard)
@@ -2071,11 +1991,9 @@ func (w *workflowRuntime) hearRepository(ctx context.Context, repo ghrepo.Reposi
 }
 
 // updateSubscription has GitHub intake hear repositories: the one route the runtime reaches
-// intake's SetRepositories by — the whole set published again (republishHeard) and a repository
-// added (hearRepository) both publish through it — so no caller escapes the stand-in a test puts in
-// its place (setRepositories, which the boot leaves nil because the daemon's own answer is the
-// consumers it opened). It is called under no transaction of the pool: the call reaches JetStream
-// and, for a durable consumer that is missing, the pool itself (INFRA-3169).
+// intake's SetRepositories by, so no caller escapes the stand-in a test puts in its place
+// (setRepositories, which the boot leaves nil because the daemon's own answer is the consumers it
+// opened).
 func (w *workflowRuntime) updateSubscription(ctx context.Context, repositories []ghrepo.Repository) error {
 	if w.setRepositories != nil {
 		return w.setRepositories(ctx, repositories)
@@ -2381,7 +2299,7 @@ func (w *workflowRuntime) dropLaunchedRepository(issue string) {
 // records replaces the cache set (refreshLive).
 func (w *workflowRuntime) workLaunched(ctx context.Context, repo ghrepo.Repository) {
 	w.cacheRepository(repo)
-	w.hearOrPend(ctx, repo)
+	w.hear(ctx, repo)
 }
 
 // recordOf is key's issue record, nil when the workflow does not record it.
@@ -2540,8 +2458,8 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 // bounded reconcile (readinessAttempt(workflow.reconcile, bootTimeout, …), 30 s), and a
 // per-repository installation read can take up to installReadAttempt, so the reads of tens of
 // todo issues on such repositories, or two slow ones, used that bound up: every read after it
-// failed at once and left its repository unread, and the boot attempt itself then failed on
-// DispatchTarget. Such a repository is left unread instead (leaveForRecovery), and the
+// failed at once and left its repository unread, and the boot attempt itself then failed on its
+// next read. Such a repository is left unread instead (leaveForRecovery), and the
 // refresher's recovery, which runs as soon as the boot is over, reads it outside any boot bound
 // and takes the issue from its own listing (recoverRepositories): the issue waits, and is not
 // dropped.

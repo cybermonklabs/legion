@@ -36,3 +36,11 @@ func IssueEventKey(subject string) (key string, legacy, ok bool) {
 func CanonicalRole(role string) (project, name string, legacy bool) {
 	return contracts.CanonicalRole(role)
 }
+
+// LegionWakeSubject is contracts.LegionWakeSubject: a Legion project's own wake subject,
+// notifications.legion.<token>.wake, where the listener reports the role and agent wakes of that
+// project's released pods. token is the project as its claim tokens spell it (the daemon's
+// claim.ProjectToken), the spelling the listener reads off a role's claim token.
+func LegionWakeSubject(token string) string {
+	return contracts.LegionWakeSubject(token)
+}

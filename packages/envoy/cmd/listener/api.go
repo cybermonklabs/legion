@@ -788,7 +788,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// this answer is the only sight of the message meant for it: the wake is reported so
 			// the pod comes back, whether its record lets the message be stored for it below or
 			// the 404 here leaves the sender's next attempt to reach it.
-			reportAgentWake(d.wakes, logger, targetSession)
+			reportAgentWake(d.wakes, logger, item.Topic, targetSession)
 			// The wake is what this message costs its sender, whatever is answered below.
 			charge.woke()
 			var recorded bool
@@ -1119,16 +1119,17 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "cannot publish to agent topics; use /v1/messages/send for direct agent messages")
 			return
 		}
-		// The wake subject is this listener's own report of a released Legion pod, and a Legion
-		// daemon acts on what it reads there: it wakes the pod a role token or a session names,
-		// and it holds its whole release gate open on a `listener_ready` report's clock. A caller
-		// of this route chooses every field of the envelope and the payload, source "envoy"
-		// included, so a session that could publish here — a prompt-injected one among them —
-		// could wake pods at will and keep that gate open with a report dated in the future. Only
-		// the listener publishes it, and it does so directly (wake.go).
-		if strings.TrimSpace(request.Topic) == bus.LegionWakeTopic {
+		// A wake subject — the shared one or a project's own (isLegionWakeTopic) — is this
+		// listener's own report of a released Legion pod, and a Legion daemon acts on what it reads
+		// there: it wakes the pod a role token or a session names, and it holds its whole release
+		// gate open on a `listener_ready` report's clock. A caller of this route chooses every field
+		// of the envelope and the payload, source "envoy" included, so a session that could publish
+		// here — a prompt-injected one among them — could wake pods at will and keep that gate open
+		// with a report dated in the future. Only the listener publishes it, and it does so directly
+		// (wake.go).
+		if topic := strings.TrimSpace(request.Topic); isLegionWakeTopic(topic) {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
-				"cannot publish to "+bus.LegionWakeTopic+"; the listener alone reports a Legion pod wake", "topic")
+				"cannot publish to "+topic+"; the listener alone reports a Legion pod wake", "topic")
 			return
 		}
 		// A lane of the listener's own is refused, and named in the refusal as the stream itself

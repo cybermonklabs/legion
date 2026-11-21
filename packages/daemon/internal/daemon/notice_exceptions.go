@@ -25,15 +25,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// noticeExceptionSubjects is where the Envoy listener reports a role-lane forward it could not
-// complete: notifications.envoy.exceptions.<the original role topic>
-// (packages/envoy/cmd/listener/delivery.go, publishDeliveryException). A role topic is outside the
-// notification stream, so the report goes over core NATS and reaches only a subscriber connected
-// when it is sent. The role topic has two forms while every reader takes both
-// (dispatch://INFRA-3862), the role alone and its project first, so the subscription takes every
-// name under the role lanes' prefix, which the daemon's grant names whole (natsgrant.Daemon), and
-// exceptionNotice reads either form.
-const noticeExceptionSubjects = "notifications.envoy.exceptions." + notify.RoleTopicPrefix + ">"
+// noticeExceptionSubject is where the Envoy listener reports a role-lane forward it could not
+// complete for a role of project: notifications.envoy.exceptions.<the original role topic>
+// (packages/envoy/cmd/listener/delivery.go, publishDeliveryException), the role topic named with
+// its project first, notifications.role.<project>.<role>. A role topic is outside the notification
+// stream, so the report goes over core NATS and reaches only a subscriber connected when it is
+// sent. The subscription takes the project's own role lanes alone, which a grant holding the
+// daemon to its projects names, and no other project's; the role alone, the name's old form, is
+// refused by every listener once no reader is left on it, so nothing reports a forward under it.
+// exceptionNotice reads the role from the report.
+func noticeExceptionSubject(project string) string {
+	return "notifications.envoy.exceptions." + notify.RoleTopicPrefix + project + ".*"
+}
 
 // The listener's own liveness windows for a role holder (packages/envoy/internal/session), read
 // through sessiontiming (the one public door onto the generated contracts numbers the listener
@@ -82,9 +85,10 @@ type roleLaneException struct {
 	DedupeKey        string `json:"dedupe_key"`
 }
 
-// subscribeNoticeExceptions subscribes rehold to every role-lane exception on conn.
-func subscribeNoticeExceptions(conn *nats.Conn, rehold func(data []byte)) (*nats.Subscription, error) {
-	sub, err := conn.Subscribe(noticeExceptionSubjects, func(msg *nats.Msg) { rehold(msg.Data) })
+// subscribeNoticeExceptions subscribes rehold to every role-lane exception of project's roles on
+// conn (noticeExceptionSubject).
+func subscribeNoticeExceptions(conn *nats.Conn, project string, rehold func(data []byte)) (*nats.Subscription, error) {
+	sub, err := conn.Subscribe(noticeExceptionSubject(project), func(msg *nats.Msg) { rehold(msg.Data) })
 	if err != nil {
 		return nil, fmt.Errorf("subscribe to role-lane exceptions: %w", err)
 	}
@@ -101,7 +105,7 @@ func subscribeNoticeExceptions(conn *nats.Conn, rehold func(data []byte)) (*nats
 // still handled here because a listener of the deployed, older build raises it until the rollout
 // finishes. Such a listener sends a
 // role message on its role lane, which forwards it once and reports a failure on
-// noticeExceptionSubjects instead of answering it; a listener of the confirmed route answers the
+// noticeExceptionSubject instead of answering it; a listener of the confirmed route answers the
 // publish itself, and the notice executor re-holds from that answer (notice). Both run one policy,
 // reholdNotice. The subscription stays while a deployment may run an earlier listener.
 //

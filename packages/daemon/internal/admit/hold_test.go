@@ -87,7 +87,7 @@ func TestReconcileHoldsARootUntilTheDispatchConsumerReachesTheStreamPosition(t *
 	}
 	assertSlots(t, pool, nil)
 
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 5}, engineStub{}, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 5, Idle: true}, engineStub{}, admission); err != nil {
 		t.Fatalf("ApplyFact position-reached: %v", err)
 	}
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-EDGE", Index: 0, AdmittedAt: fixedNow}})
@@ -125,7 +125,7 @@ func TestReleaseLogsThePositionItReachedAndHowManyRootsItAdmitted(t *testing.T) 
 
 	var logs bytes.Buffer
 	admission.log = slog.New(slog.NewTextHandler(&logs, nil))
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 5}, engineStub{}, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 5, Idle: true}, engineStub{}, admission); err != nil {
 		t.Fatalf("ApplyFact position-reached: %v", err)
 	}
 
@@ -178,7 +178,7 @@ func TestPromotionHoldsADeferredRootAcrossUnrelatedFactsUntilTheStreamPositionCa
 			}
 			assertSlots(t, pool, []record.Slot{{Issue: "LEGION-OTHER", Index: 0, AdmittedAt: fixedNow}})
 
-			if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 3}, engineStub{}, admission); err != nil {
+			if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 3, Idle: true}, engineStub{}, admission); err != nil {
 				t.Fatalf("ApplyFact position-reached: %v", err)
 			}
 			if _, err := intake.ApplyFact(context.Background(), pool, "timer", "another-unrelated", intake.LingerExpired{Issue: "LEGION-UNRELATED-2", Generation: 1}, engineStub{}, admission); err != nil {
@@ -245,7 +245,7 @@ func TestReleaseAppliesTheHeldSummaryBeforePromotingSoAnUnlabeledRootIsNeverAdmi
 	}, 5, 2, false)
 	assertSlots(t, pool, nil)
 
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 5}, engineStub{}, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 5, Idle: true}, engineStub{}, admission); err != nil {
 		t.Fatalf("ApplyFact position-reached: %v", err)
 	}
 	if got := issue(t, pool, "LEGION-EDGE"); got.HandedOver {
@@ -280,7 +280,7 @@ func TestReconcileHoldsAnUnrecordedKeyBehindTheStreamWhateverItsListedStatus(t *
 	}
 	assertSlots(t, pool, nil)
 
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10}, engineStub{}, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true}, engineStub{}, admission); err != nil {
 		t.Fatalf("ApplyFact position-reached: %v", err)
 	}
 	if got := maybeIssue(t, pool, "LEGION-EDGE"); got != nil {
@@ -314,7 +314,7 @@ func TestALabelAddedWhileAKeyIsHeldReachesTheRecordAndIsAdmittedAfterRelease(t *
 	}
 	assertSlots(t, pool, nil)
 
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10}, engineStub{}, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true}, engineStub{}, admission); err != nil {
 		t.Fatalf("ApplyFact position-reached: %v", err)
 	}
 	if got := issue(t, pool, "LEGION-8"); !got.HandedOver || got.Status != "in_progress" {
@@ -343,7 +343,7 @@ func TestReleaseLeavesTheHoldIntactWhenItsOwnTransactionFails(t *testing.T) {
 	assertSlots(t, pool, nil)
 
 	failing.fail = true
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 5}, engineStub{}, admission); err == nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 5, Idle: true}, engineStub{}, admission); err == nil {
 		t.Fatal("ApplyFact with a failing store succeeded, want the injected error")
 	}
 	if !admission.Held() {
@@ -352,7 +352,7 @@ func TestReleaseLeavesTheHoldIntactWhenItsOwnTransactionFails(t *testing.T) {
 	assertSlots(t, pool, nil)
 
 	failing.fail = false
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-retried", intake.DispatchConsumerPosition{AckFloorStream: 5}, engineStub{}, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-retried", intake.DispatchConsumerPosition{AckFloorStream: 5, Idle: true}, engineStub{}, admission); err != nil {
 		t.Fatalf("ApplyFact retry: %v", err)
 	}
 	if admission.Held() {
@@ -424,7 +424,7 @@ func TestANewerEventThatCreatesNoRecordRefreshesTheHeldSummary(t *testing.T) {
 		t.Fatalf("LEGION-G recorded while held after an unlabeling event = %#v, want none", got)
 	}
 
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10}, engineStub{}, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true}, engineStub{}, admission); err != nil {
 		t.Fatalf("ApplyFact position-reached: %v", err)
 	}
 	if got := maybeIssue(t, pool, "LEGION-G"); got != nil {
@@ -487,7 +487,7 @@ func TestAHeldRootKeepsItsPlaceAndNothingBehindItTakesTheSlot(t *testing.T) {
 			// where that is what holds the root, and an unrelated fact drives the next promote
 			// where the catch-up is the only hold.
 			if tc.heldLastSeq > 1 {
-				if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 3}, engineStub{}, admission); err != nil {
+				if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 3, Idle: true}, engineStub{}, admission); err != nil {
 					t.Fatalf("ApplyFact position-reached: %v", err)
 				}
 			} else {

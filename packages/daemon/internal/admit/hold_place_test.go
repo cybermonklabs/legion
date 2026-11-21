@@ -40,7 +40,7 @@ func heldSummary() intake.DispatchIssue {
 // is what releases every key it deferred (Admission.release).
 func reachConsumer(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string) {
 	t.Helper()
-	position := intake.DispatchConsumerPosition{AckFloorStream: admission.Target(), Idle: true}
+	position := intake.DispatchConsumerPosition{Idle: true}
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", eventID, position, admission); err != nil {
 		t.Fatalf("apply the consumer position %s: %v", eventID, err)
 	}

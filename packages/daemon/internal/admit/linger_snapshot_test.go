@@ -44,7 +44,7 @@ func TestReleaseAppliesASnapshotThatLeavesTheWorkflowThroughTheEngineNotOnlyTheR
 		t.Fatalf("LEGION-PARK while held = %#v, want it untouched until release", got)
 	}
 
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10}, engineStub{}, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true}, engineStub{}, admission); err != nil {
 		t.Fatalf("ApplyFact position-reached: %v", err)
 	}
 
@@ -215,7 +215,7 @@ func TestABootListingOfASetBackBacklogLeavesTheTreeRunning(t *testing.T) {
 					t.Fatalf("finish the set-back: %v", err)
 				}
 			}
-			if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10}, admission.engine, admission); err != nil {
+			if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true}, admission.engine, admission); err != nil {
 				t.Fatalf("ApplyFact position-reached: %v", err)
 			}
 
@@ -244,7 +244,7 @@ func TestAReleasedRootIgnoresAnOlderLateEvent(t *testing.T) {
 		t.Fatal("Held() = false after seeding a behind labeled record, want it held")
 	}
 
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10}, engineStub{}, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true}, engineStub{}, admission); err != nil {
 		t.Fatalf("ApplyFact position-reached: %v", err)
 	}
 	if got := issue(t, pool, "LEGION-LATE"); !got.HandedOver || got.LastDispatchSeq != 5 {
