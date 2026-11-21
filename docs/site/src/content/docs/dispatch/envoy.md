@@ -443,11 +443,13 @@ after the claim was written, before any registration that states no process has 
 any process of the session, not only the one that took the role; after such a renewal no
 registration takes it. A release
 that loses its conditional delete to a record written since is not reported as a release: the
-claim is read again, a record still naming that same session and that same process is its own
-holder's renewal, and the delete goes out again at the revision that renewal left, three
-deletes in all. A claim renewed under every one of them is left standing and fails the request
-naming the role, so a client that is handing a role back sends the hand-back again rather than
-leaving the role held while its own registrations renew the claim.
+claim is read again, a record still naming that same session and that same process, claimed at
+the same moment, is its own holder's renewal, and the delete goes out again at the revision that
+renewal left, three deletes in all. A claim renewed under every one of them is left standing and
+fails the request naming the role, so a client that is handing a role back sends the hand-back
+again rather than leaving the role held while its own registrations renew the claim. A claim
+granted again since the release read the claim, to any process, the one the release states
+included, is no claim the release read: it is left standing, as the hand-back's mark leaves it.
 
 Dispatch judges a role route's holder by the same two windows, and both processes carry the same
 values: give every listener of a deployment and Dispatch's server the same
