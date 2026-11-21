@@ -2075,8 +2075,9 @@ scope, where a POST needs `checks: write`, which a fork's run's read-only GITHUB
 not carry. A dispatched run carries
 neither a pull request nor a group and has no text to check, which is why the `if:` names the
 two events this job runs on rather than excluding the draft alone. Skipped there, the job still
-posts a check run, and a skipped one is a pass, so on a dispatch of a branch it is named
-`pr-title (dispatch)`
+posts a check run, and a skipped one is a pass, so its `name:` is not `pr-title` on a dispatch of
+a branch. GitHub does not evaluate the name of a job it skips, so that check run carries the
+expression's own text
 (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own).
 
 ## What the pr-title job's scopes are for
@@ -2295,10 +2296,18 @@ record that keeps one check run per name and lets the higher id replace the lowe
 packages/envoy/internal/cistore's does (cistore.go's check-run update), would hold the
 dispatched run's success as the head's ci-ok, and its skipped pr-title as the head's pr-title.
 
-So on such a run the two jobs named for a required check are named `ci-ok (dispatch)` and
-`pr-title (dispatch)`, and the reconcile step, "Set every other ci-ok on this head to this job's
-conclusion", is skipped, since every ci-ok that step could set is the pull request's or the
-queue's. The dispatched run still reaches its verdict and shows it on the head under its own
+So on such a run the `ci-ok` job is named `ci-ok (dispatch)`, and the reconcile step, "Set every
+other ci-ok on this head to this job's conclusion", is skipped, since every ci-ok that step could
+set is the pull request's or the queue's. The `pr-title` job carries the same kind of name, but
+such a run skips it, and GitHub does not evaluate the name of a job it skips: the check run
+carries the text of the expression, `github.event_name == 'workflow_dispatch' && … ||
+'pr-title'`, with the conclusion skipped (scratch run 44871030917, check run 136745386648, read
+2026-11-21). Either way it is not named pr-title. A run that skips pr-title because the pull
+request is a draft posts the same text [inference: no draft run was read], so a draft's head
+carries no pr-title pass, and marking the pull request ready starts the run that checks it. The
+ci-ok job runs on every event, and GitHub evaluates its name when the job is queued, after its
+needs: on scratch run 44872165102 the queued check run 136750697832 was already named ci-ok.
+The dispatched run still reaches its verdict and shows it on the head under its own
 name, so a reader by name finds one ci-ok and one pr-title on a pull request's head, and they
 are the pull request's own. Only a pull_request run, a merge-group run and the bypass check's
 dispatch on main report ci-ok and pr-title: the first two are the runs the ruleset and the

@@ -1719,7 +1719,9 @@ REPORT_STATUS = "${{ job.status }}"
 #
 # Each of the two carries the one `name:` dispatch_name gives it, and no other: its own name on
 # a pull request, a merge group and a dispatch on main, and `<name> (dispatch)` on a dispatch of
-# any other branch. Such a run tests the branch's own tree, not its merge with the base, and its
+# any other branch. pr-title is skipped on such a run, and GitHub does not evaluate a skipped
+# job's name, so its check run carries the expression's text, which is no pr-title either. Such
+# a run tests the branch's own tree, not its merge with the base, and its
 # check runs land on the branch's head, which is a pull request's head: under the plain name
 # that commit carried a second ci-ok with another tree's verdict, and a skipped pr-title. Pull
 # request #3513 at a368687e carried both on 2026-11-21 from workflow_dispatch run 44860519340,
