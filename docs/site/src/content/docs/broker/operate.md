@@ -1006,14 +1006,16 @@ deployment whose sign-in broke. What an operator reads from each field:
 
 - `client_check` and `client_checked_at`: what the broker's own client was found to be at the
   provider, and when. Each pod checks it at startup and every hour after, by asking the token
-  endpoint to redeem an invalid code with the broker's client credentials. `ready` is the provider
-  accepting the client, `client_rejected` is the provider refusing it (nobody can sign in: the
-  client id, its secret or its registration is wrong), and `issuer_unreachable` is a check with no
-  verdict on the client: a provider that could not be asked or could not answer (`408`, `429` or a
-  `5xx`, whatever OAuth error its body named), or one whose answer named neither `invalid_grant`
-  nor `invalid_client` at a refusal's status (a `4xx` naming no error or another, or a `2xx`
-  naming one). The check's log line says which. A check neither answers a person nor stops the
-  broker: it writes this row, and it logs only a change. When it finds `client_rejected` or
+  endpoint to redeem an invalid code with the broker's client credentials. The status of the
+  answer alone decides. `ready` is the provider refusing that code (`invalid_grant` at a refusal's
+  status, a `4xx` that is no `408` or `429`), which it does only for a client it accepts.
+  `client_rejected` is the provider refusing at a refusal's status for any other reason or none
+  (`invalid_client`, another OAuth error, or no error at all): nobody can sign in, since the client
+  id, its secret or its registration is wrong. `issuer_unreachable` is a check with no verdict on
+  the client: a provider that could not be asked or could not answer (`408`, `429` or a `5xx`,
+  whatever OAuth error its body named), or one that answered with no refusal (a `2xx` naming an
+  error, or a `3xx`). The check's log line says which. A check neither answers a person nor stops
+  the broker: it writes this row, and it logs only a change. When it finds `client_rejected` or
   `issuer_unreachable` and its pod did not log that state last, it logs `broker: the sign-in client
   check`. When it finds `ready` after such a line, it logs `broker: the sign-in client check finds
   the client ready again` ([Health and logs](#health-and-logs)). So a provider that stays away for

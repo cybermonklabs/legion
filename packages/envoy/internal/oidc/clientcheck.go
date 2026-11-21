@@ -21,9 +21,10 @@ const (
 	// token request invalid_grant at a refusal's status (oauthrefusal.Refusal), which is a refusal
 	// of the code alone (RFC 6749 section 5.2).
 	ClientCheckReady ClientCheck = "ready"
-	// ClientCheckRejected: the issuer refused the client itself, invalid_client at a refusal's
-	// status - the client was deleted, its id is not this issuer's, or its secret has been rotated
-	// out from under the caller. No person can sign in until it is fixed.
+	// ClientCheckRejected: the issuer refused at a refusal's status (oauthrefusal.Refused) for
+	// any reason but the code itself - invalid_client, another OAuth error or none: the client was
+	// deleted, its id is not this issuer's, or its secret has been rotated out from under the
+	// caller. No person can sign in until it is fixed.
 	ClientCheckRejected ClientCheck = "client_rejected"
 	// ClientCheckIssuerUnreachable: the issuer could not be asked or could not answer, or answered
 	// something the check cannot read as either of the two above. It says nothing about the
@@ -36,15 +37,14 @@ const (
 // the client's credentials and a code that does not exist.
 //
 // An issuer that knows the client and takes its secret gets as far as the code and refuses that,
-// invalid_grant, which is ClientCheckReady; one that refuses the client itself answers
-// invalid_client, which is ClientCheckRejected. Either is read only from a refusal, an answer whose
-// status is a 4xx that is no outage (oauthrefusal.Refusal). The status alone decides whether the
-// issuer answered (oauthrefusal.Outage): a 5xx, a 408 or a 429, whatever error its body names, and
-// a discovery or transport failure are an issuer that could not answer; every other answer is the
-// issuer answering - a refusal naming no OAuth error or another one, a 2xx or 3xx naming an error -
-// with no verdict on the client. Each of those is ClientCheckIssuerUnreachable, the closed set's one
-// word for a check with no verdict, which must not report one; its error says whether the issuer
-// could not answer or answered with none.
+// invalid_grant, which is ClientCheckReady. The status alone decides the rest (oauthrefusal). A
+// refusal for any other reason or none, a 4xx that is no 408 or 429 naming invalid_client, another
+// OAuth error or no error at all, is the issuer answering and refusing the client, which is
+// ClientCheckRejected. A 5xx, a 408 or a 429, whatever error its body names, and a discovery or
+// transport failure, are an issuer that could not answer; a 2xx naming an error and a 3xx are an
+// answer that refuses nothing. Both are ClientCheckIssuerUnreachable, the closed set's one word for
+// a check with no verdict, which must not report one; its error says whether the issuer could not
+// answer or answered with none.
 //
 // The request names no redirect_uri, since no code of this client's exists for one to match, and
 // the code is freshly random, so no live code is ever spent by a check. The discovery document is
@@ -74,12 +74,12 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", issuer, err)
 	case oauthrefusal.Refusal(err) == "invalid_grant":
 		return ClientCheckReady, nil
-	case oauthrefusal.Refusal(err) == "invalid_client":
-		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: %s", issuer, clientID, retrieve.ErrorCode)
-	}
-	if oauthrefusal.Outage(retrieve.Response.StatusCode) {
+	case oauthrefusal.Refused(err):
+		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: HTTP %d with the OAuth error %q",
+			issuer, clientID, retrieve.Response.StatusCode, retrieve.ErrorCode)
+	case oauthrefusal.Outage(retrieve.Response.StatusCode):
 		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s could not answer the client check: HTTP %d: %w", issuer, retrieve.Response.StatusCode, err)
 	}
-	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check HTTP %d with the OAuth error %q, which says nothing about the client: %w",
+	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check HTTP %d with the OAuth error %q and no refusal, which says nothing about the client: %w",
 		issuer, retrieve.Response.StatusCode, retrieve.ErrorCode, err)
 }

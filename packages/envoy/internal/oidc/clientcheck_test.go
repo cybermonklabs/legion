@@ -129,41 +129,46 @@ func TestCheckClientReadsTheOAuthErrorOnlyFromARefusal(t *testing.T) {
 	}
 }
 
-// TestCheckClientTellsAnAnswerWithNoVerdictFromAnOutage pins what a check says of an answer that
-// is neither ready nor client_rejected. The status alone tells an issuer that answered from one
-// that could not (oauthrefusal.Outage): a 4xx naming no OAuth error or one the check does not read,
-// and a 200 naming an error, are the token endpoint answering with no verdict on the client; a
-// 5xx, a 408 or a 429 is an issuer that could not answer. The check's closed set of words has none
-// for "answered, no verdict", so both are issuer_unreachable, which says nothing about the client,
-// and the error the caller logs says which it was.
-func TestCheckClientTellsAnAnswerWithNoVerdictFromAnOutage(t *testing.T) {
+// TestCheckClientReadsARefusalByItsStatusAlone pins what a check says of an answer that names
+// neither invalid_grant nor invalid_client. The status alone decides (oauthrefusal): a refusal, a
+// 4xx that is no 408 or 429, is the provider refusing the client whatever its body names or leaves
+// out, so it is client_rejected; a 5xx, a 408 or a 429 is the provider unable to answer,
+// issuer_unreachable; and a 2xx naming an error or a 3xx is an answer that is no verdict on the
+// client, issuer_unreachable too, whose error says the provider answered. Each error names the
+// status.
+func TestCheckClientReadsARefusalByItsStatusAlone(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), checkClientID, checkClientSecret)
 	for _, c := range []struct {
-		status   int
-		code     string
-		answered bool
+		status int
+		code   string
+		want   ClientCheck
+		// down is whether the error says the provider could not answer.
+		down bool
 	}{
-		{http.StatusBadRequest, "", true},
-		{http.StatusUnauthorized, "", true},
-		{http.StatusNotFound, "", true},
-		{http.StatusForbidden, "unauthorized_client", true},
-		{http.StatusOK, "invalid_grant", true},
-		{http.StatusServiceUnavailable, "", false},
-		{http.StatusRequestTimeout, "invalid_client", false},
-		{http.StatusTooManyRequests, "invalid_grant", false},
+		{http.StatusBadRequest, "", ClientCheckRejected, false},
+		{http.StatusUnauthorized, "", ClientCheckRejected, false},
+		{http.StatusForbidden, "", ClientCheckRejected, false},
+		{http.StatusNotFound, "", ClientCheckRejected, false},
+		{http.StatusBadRequest, "unauthorized_client", ClientCheckRejected, false},
+		{http.StatusForbidden, "unauthorized_client", ClientCheckRejected, false},
+		{http.StatusOK, "invalid_grant", ClientCheckIssuerUnreachable, false},
+		{http.StatusFound, "", ClientCheckIssuerUnreachable, false},
+		{http.StatusServiceUnavailable, "", ClientCheckIssuerUnreachable, true},
+		{http.StatusRequestTimeout, "invalid_client", ClientCheckIssuerUnreachable, true},
+		{http.StatusTooManyRequests, "invalid_grant", ClientCheckIssuerUnreachable, true},
 	} {
 		t.Run(fmt.Sprintf("%d %s", c.status, c.code), func(t *testing.T) {
 			issuer.FailToken(c.status, c.code)
 			t.Cleanup(func() { issuer.FailToken(0, "") })
 			check, err := CheckClient(context.Background(), issuer.URL(), checkClientID, checkClientSecret)
-			if check != ClientCheckIssuerUnreachable || err == nil || !strings.Contains(err.Error(), strconv.Itoa(c.status)) {
+			if check != c.want || err == nil || !strings.Contains(err.Error(), strconv.Itoa(c.status)) {
 				t.Fatalf("CheckClient against a token endpoint answering %d %q = (%q, %v), want %q with an error naming the status",
-					c.status, c.code, check, err, ClientCheckIssuerUnreachable)
+					c.status, c.code, check, err, c.want)
 			}
-			if said := strings.Contains(err.Error(), "could not answer"); said == c.answered {
+			if said := strings.Contains(err.Error(), "could not answer"); said != c.down {
 				t.Fatalf("CheckClient against a token endpoint answering %d %q: %v; saying the issuer could not answer is %t, want %t",
-					c.status, c.code, err, said, !c.answered)
+					c.status, c.code, err, said, c.down)
 			}
 		})
 	}
