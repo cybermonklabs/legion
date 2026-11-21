@@ -18,6 +18,16 @@
 // it up, and lives under internal/testnats so nothing outside this module can import it. The
 // server the tests run is the one testnats starts (nats.go); this is the same server for a shell
 // script's sake.
+//
+// Every listener it has binds one loopback address of its own (testnats.ListenOn): the address -a
+// names, which must be a loopback address, or else one testport.Claim picks and claims. A caller
+// reads the address from the log, on the line that already named the port (`Listening for client
+// connections on <address>:<port>`), and dials that, never 127.0.0.1. The claim is natsd's own,
+// released when it exits, unless -claim-for names another process: a script that restarts natsd on
+// its old port starts it the first time with `-claim-for $$`, so the claim is the script's and
+// outlasts the restart, and passes the address it read back with -a at every restart, so no other
+// stack's server takes the address and the port while this one is down. Off Linux the address is
+// 127.0.0.1, which every server there shares.
 package main
 
 import (
@@ -25,6 +35,7 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -35,6 +46,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // readyTimeout bounds the wait for the server to accept connections, so a port another process
@@ -48,12 +60,13 @@ func main() {
 	}
 }
 
-// run parses args as nats-server parses its own command line (-p for the client port, -store_dir
-// for the JetStream store) and -callout-keys, starts the server with JetStream on 127.0.0.1 and
-// its log on stdout, and returns once a signal has shut it down.
+// run parses args as nats-server parses its own command line (-a for the address, -p for the
+// client port, -store_dir for the JetStream store), -callout-keys and -claim-for, starts the server
+// with JetStream and its log on stdout, and returns once a signal has shut it down.
 func run(args []string) error {
 	flags := flag.NewFlagSet("natsd", flag.ContinueOnError)
 	calloutDir := flags.String("callout-keys", "", "run behind an auth callout whose keys are in (or are made in) this directory")
+	claimFor := flags.Int("claim-for", 0, "with no -a, claim the address for this process id (a script's own, which outlasts a restart) rather than for natsd's own")
 	help := func() { flags.PrintDefaults() }
 	opts, err := natsserver.ConfigureOptions(flags, args, help, help, help)
 	if err != nil {
@@ -63,6 +76,11 @@ func run(args []string) error {
 		// -v, -h or -help_tls: ConfigureOptions has printed what was asked for.
 		return nil
 	}
+	host, release, err := listenHost(opts.Host, *claimFor)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if *calloutDir != "" {
 		config, err := calloutConfig(*calloutDir)
 		if err != nil {
@@ -72,7 +90,7 @@ func run(args []string) error {
 			return fmt.Errorf("read %s: %w", config, err)
 		}
 	}
-	opts.Host = "127.0.0.1"
+	testnats.ListenOn(opts, host)
 	opts.JetStream = true
 	opts.NoSigs = true
 	srv, err := natsserver.NewServer(opts)
@@ -80,18 +98,55 @@ func run(args []string) error {
 		return err
 	}
 	srv.ConfigureLogger()
+	// The signals are caught before the server starts, so one that comes as soon as the log names
+	// the address (a script stops a stack it has only just started) still shuts the server down
+	// and releases the claim, rather than killing the process with the claim left behind.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	go srv.Start()
 	if !srv.ReadyForConnections(readyTimeout) {
 		srv.Shutdown()
 		srv.WaitForShutdown()
 		return fmt.Errorf("no connections accepted on %s:%d within %s; is the port taken?", opts.Host, opts.Port, readyTimeout)
 	}
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	<-signals
 	srv.Shutdown()
 	srv.WaitForShutdown()
 	return nil
+}
+
+// listenHost is the address natsd listens on, and what releases it: requested, the address -a
+// gave, when it is a loopback address, released by nobody since the caller owns it; or, when -a
+// gave none, an address testport.Claim claims for claimFor, else for this process. natsd releases
+// only a claim of its own, on its way out; a claim for another process is that process's, and is
+// free again once that process has exited (testport.Claim). Any other -a is refused: natsd
+// listens on loopback only.
+func listenHost(requested string, claimFor int) (string, func(), error) {
+	if requested != "" {
+		if ip := net.ParseIP(requested); ip == nil || !ip.IsLoopback() {
+			return "", nil, fmt.Errorf("-a %s is no loopback address; natsd listens on loopback only", requested)
+		}
+		return requested, func() {}, nil
+	}
+	dir, owner := testport.ClaimDir(), os.Getpid()
+	if claimFor < 0 {
+		return "", nil, fmt.Errorf("-claim-for %d names no process", claimFor)
+	}
+	if claimFor != 0 {
+		owner = claimFor
+	}
+	host, err := testport.Claim(dir, owner)
+	if err != nil {
+		return "", nil, err
+	}
+	if owner != os.Getpid() {
+		return host, func() {}, nil
+	}
+	return host, func() {
+		if err := testport.Release(dir, host, owner); err != nil {
+			fmt.Fprintf(os.Stderr, "natsd: release the claim on %s: %v\n", host, err)
+		}
+	}, nil
 }
 
 // calloutSeeds are the files -callout-keys keeps the three keys in.

@@ -177,6 +177,18 @@ report_port() {
   printf '%s\n' "${_match##*[!0-9]}"
 }
 
+# report_address LOG PATTERN prints the address a process that bound port 0 itself reported, as
+# HOST:PORT: the word right after the first match of the extended regular expression PATTERN in
+# LOG, which ends at the space before it (natsd: 'Listening for client connections on ', on a
+# loopback address natsd claimed for itself, so never 127.0.0.1 on Linux). It fails while LOG
+# holds no such line, so it is also the poll that waits for one.
+report_address() {
+  local _match
+  _match=$(grep -m1 -oE -- "$2[^ ]+:[0-9]+" "$1" 2>/dev/null) || return 1
+  _match=${_match%%$'\n'*}
+  printf '%s\n' "${_match##* }"
+}
+
 # port_answers PORT succeeds when something accepts a connection on 127.0.0.1:PORT.
 port_answers() {
   (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null

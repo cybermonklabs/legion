@@ -61,9 +61,10 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
       startNatsServer(serverDirectory, user.publicKey),
     ]);
   }, 120_000);
-  afterAll(() => {
-    open?.stop();
-    authorized?.stop();
+  afterAll(async () => {
+    // Both stop, whichever fails; each fails on a client a test left connected (nats-server.ts).
+    const stopped = await Promise.allSettled([open?.stop(), authorized?.stop()]);
+    for (const result of stopped) if (result.status === "rejected") throw result.reason;
   }, 60_000);
 
   test("with no seed, connects to a server that asks for no credential", async () => {
@@ -84,6 +85,25 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
   test("with no seed, is refused by a server that requires one", async () => {
     await expect(connectWith(authorized.url, {})).rejects.toThrow(/authorization violation/i);
   });
+
+  // The leak check's control: a client left connected, as a test that forgets to close one leaves
+  // it, reconnecting forever, fails its server's stop, which names it.
+  test("stopping a server a client is still connected to fails, naming the client", async () => {
+    const server = await startNatsServer(serverDirectory);
+    const leftover = await connect({
+      servers: [server.url],
+      name: "leftover-client",
+      maxReconnectAttempts: -1,
+      reconnectTimeWait: 50,
+    });
+    try {
+      await expect(server.stop()).rejects.toThrow(
+        /still had 1 client\(s\) connected .*leftover-client/
+      );
+    } finally {
+      await leftover.close();
+    }
+  }, 120_000);
 });
 
 describe("natsAuthOptions", () => {

@@ -21,9 +21,9 @@
 # DISPATCH_BIN names a prebuilt envoy-dispatch (the negative control runs one built from the base
 # commit); unset, the script builds ./cmd/dispatch from this checkout. The ports are
 # CLAIMANT_E2E_DISPATCH_PORT (19051) and CLAIMANT_E2E_ENVOY_PORT (19053), each refused when
-# something already answers on it; NATS listens on a port the kernel picks. The work directory, under
-# TMPDIR, holds the binaries and every process's log: removed when the run passes, kept and printed
-# when it fails.
+# something already answers on it; natsd listens on a port the kernel picks, on a loopback address
+# of its own (127.0.0.1 off Linux). The work directory, under TMPDIR, holds the binaries and every
+# process's log: removed when the run passes, kept and printed when it fails.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -136,12 +136,13 @@ empty_public_schema "$database_url" || fail "could not empty the database's publ
 pass
 
 begin nats
-# The port is the kernel's pick (`-p -1`), read back from the line the server logs once it listens.
+# The port is the kernel's pick (`-p -1`) and the address natsd's own, both read back from the line
+# the server logs once it listens.
 start_process nats "$work/bin/natsd" -p -1 -store_dir "$work/nats-store"
 await_start nats "$nats_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$work/logs/nats.log"
-nats_port=$(sed -n 's/.*Listening for client connections on .*:\([0-9][0-9]*\)$/\1/p' "$work/logs/nats.log" | sed -n 1p)
-[ -n "$nats_port" ] || fail "natsd logged no client port; see $work/logs/nats.log"
-nats_url=nats://127.0.0.1:$nats_port
+nats_address=$(report_address "$work/logs/nats.log" 'Listening for client connections on ') ||
+  fail "natsd logged no client address; see $work/logs/nats.log"
+nats_url=nats://$nats_address
 note "JetStream on $nats_url"
 pass
 

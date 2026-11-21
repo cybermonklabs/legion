@@ -13,6 +13,8 @@
 # inside the work directory: make_omp_home, lib/omp-home.sh), its ports, its project keys, its tmux
 # servers (TMUX_TMPDIR under the work directory), and its legions registry (XDG_STATE_HOME). The
 # work directory survives a failure, because its logs are the evidence, and goes when the run passed.
+# The NATS container publishes its port on a loopback address of this run's own, which
+# packages/envoy/scripts/lib/nats-host.sh claims (127.0.0.1 off Linux).
 #
 # Inputs: LEGION_E2E_PG_DSN, the Postgres to run against; unset, the run starts its own
 # PostgreSQL 18 on tmpfs. LEGION_E2E_MODEL_ROUTE (required, `gateway`, `key-file` or `box-login`)
@@ -105,6 +107,8 @@ TZ=UTC printf -v check_started '%(%FT%TZ)T' -1 # when the current check began (l
 timeout_hook=
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
+# shellcheck source-path=SCRIPTDIR source=../../packages/envoy/scripts/lib/nats-host.sh
+. "$root/packages/envoy/scripts/lib/nats-host.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/process-tree.sh
 . "$root/scripts/e2e/lib/process-tree.sh"
 
@@ -165,6 +169,7 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_marked_processes "$work" || true
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1 || true
+  release_nats_host
   rm -rf "$work/model-gateway-cache" || true
   if [ -n "${ok:-}" ]; then
     rm -rf "$work" || true
@@ -393,9 +398,10 @@ fi
 # file (envoy_token_file).
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
+claim_nats_host "$work" || fail "no loopback address could be claimed for NATS (above)"
+docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "$nats_host::4222" "$nats_image" -js >/dev/null
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
-nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
+nats_url="nats://$nats_host:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e2-$$" NATS_URLS=$nats_url \

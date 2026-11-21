@@ -5,7 +5,8 @@
 # active-sessions sample, while it cannot stand behind that copy (INFRA-261).
 #
 # Builds and starts a NATS server of its own (internal/testnats/cmd/natsd, its file store under the
-# output directory) and the listener, as e2e-local.sh does, and drives them with refillrig
+# output directory, on a loopback address claimed for the run, 127.0.0.1 off Linux) and the
+# listener, as e2e-local.sh does, and drives them with refillrig
 # (internal/testnats/cmd/refillrig): it seeds the session and interest buckets, through the
 # listener's registration route and straight into the buckets, deletes and recreates a bucket,
 # polls GET /v1/sessions, GET /v1/interests/ and /metrics as fast as they answer, and judges each
@@ -131,8 +132,15 @@ readonly envoy_dir
 nats_port="${E2E_REFILL_NATS_PORT:-14232}"
 listener_port="${E2E_REFILL_PORT:-19030}"
 readonly nats_port listener_port
-readonly nats_url="nats://127.0.0.1:${nats_port}"
 readonly listener_url="http://127.0.0.1:${listener_port}"
+# NATS listens on a loopback address of its own (127.0.0.1 off Linux), claimed for this script
+# (lib/nats-host.sh) and passed to natsd at every start (-a), so while the interrupt and refuse
+# scenarios hold it down, no other stack on this machine takes its address and port, and none of
+# this run's clients reaches another stack's server. nats_url is the address the first start
+# reports, and every later start must come back on it (start_nats).
+# shellcheck source-path=SCRIPTDIR source=lib/nats-host.sh
+. "${script_dir}/lib/nats-host.sh"
+nats_url=""
 
 # Record counts. A re-read has to last long enough for polls to land inside it, and an interrupted
 # one long enough for the interruption to land before its scan ends. A recreated bucket of the
@@ -200,6 +208,7 @@ cleanup() {
     fi
   done
   rm -rf "$nats_store_dir"
+  release_nats_host
   exit "$rc"
 }
 
@@ -223,6 +232,8 @@ trap 'cleanup 143' TERM
 rm -rf "$bin_dir" "$nats_store_dir" "${out_dir}/reread" "${out_dir}/interrupt-stop" \
   "${out_dir}/interrupt-restart" "${out_dir}/refuse" "${out_dir}/recreate-live"
 mkdir -p "$bin_dir"
+claim_nats_host "$bin_dir"
+say "NATS address: ${nats_host}"
 
 say "building refillrig, and the listener and natsd unless given"
 (
@@ -237,18 +248,20 @@ readonly listener_binary natsd_binary
 say "listener: ${listener_binary}"
 say "natsd: ${natsd_binary}"
 
-# start_nats starts NATS on the rig's port and store, each start with a log of its own, and returns
-# once this server, not another one holding the port, answers (e2e-local.sh's wait_for_nats). NATS
-# runs in a session of its own (setsid): a stopped process in this script's own process group can
-# have the whole group hung up (an orphaned group with a stopped member gets SIGHUP), which would
-# end this script the moment the interrupt scenario stops NATS.
+# start_nats starts NATS on the rig's address, port and store, each start with a log of its own,
+# and returns once this server, not another one holding the port, answers at the address it reports
+# (e2e-local.sh's wait_for_nats). The first start sets nats_url to that address; a later one that
+# reports any other fails, since every client of the run was told the first. NATS runs in a session
+# of its own (setsid): a stopped process in this script's own process group can have the whole
+# group hung up (an orphaned group with a stopped member gets SIGHUP), which would end this script
+# the moment the interrupt scenario stops NATS.
 start_nats() {
   nats_starts=$((nats_starts + 1))
   local nats_log="${run_dir}/nats-${nats_starts}.log"
   : >"$nats_log"
-  setsid "$natsd_binary" -p "$nats_port" -store_dir "$nats_store_dir" >"$nats_log" 2>&1 &
+  setsid "$natsd_binary" -a "$nats_host" -p "$nats_port" -store_dir "$nats_store_dir" >"$nats_log" 2>&1 &
   nats_pid=$!
-  local deadline=$((SECONDS + 60)) banner
+  local deadline=$((SECONDS + 60)) banner address
   while ((SECONDS < deadline)); do
     if ! kill -0 "$nats_pid" 2>/dev/null; then
       say "ERR: the NATS server this script started ended before it was ready"
@@ -256,14 +269,21 @@ start_nats() {
       return 1
     fi
     if grep -q 'Server is ready' "$nats_log"; then
-      banner="$(curl -s --max-time 1 "telnet://127.0.0.1:${nats_port}" </dev/null 2>/dev/null || true)"
+      address="$(sed -n 's/.*Listening for client connections on \([^ ]*:[0-9][0-9]*\)$/\1/p' "$nats_log" | head -n1)"
+      banner="$(curl -s --max-time 1 "telnet://${address}" </dev/null 2>/dev/null || true)"
       if [[ "$banner" == 'INFO '* ]]; then
+        if [[ -z "$nats_url" ]]; then
+          nats_url="nats://${address}"
+        elif [[ "nats://${address}" != "$nats_url" ]]; then
+          say "ERR: NATS came back on ${address}, not ${nats_url#nats://} its clients were told"
+          return 1
+        fi
         return 0
       fi
     fi
     sleep 0.25
   done
-  say "ERR: NATS did not accept connections on 127.0.0.1:${nats_port} within 60 seconds"
+  say "ERR: NATS did not accept connections on ${nats_host}:${nats_port} within 60 seconds"
   return 1
 }
 

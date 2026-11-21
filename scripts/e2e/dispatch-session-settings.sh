@@ -42,7 +42,9 @@
 # every Oh My Pi the driver started (it records each pid in $work/omp.pids). Its database is dropped
 # and its work directory, under TMPDIR, removed. No DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*,
 # PGHOSTADDR, PGSERVICE or PGSERVICEFILE variable of the caller's shell reaches any process of
-# the run: the rig talks only to its own loopback stack.
+# the run: the rig talks only to its own loopback stack. Its nats-server listens on a loopback
+# address of the run's own, which packages/envoy/scripts/lib/nats-host.sh claims (127.0.0.1 off
+# Linux).
 set -euo pipefail
 # PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with the rest: require_loopback_dsn in
 # scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
@@ -97,6 +99,8 @@ note() { echo "   $*"; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=../../packages/envoy/scripts/lib/nats-host.sh
+. "$root/packages/envoy/scripts/lib/nats-host.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
 . "$root/scripts/e2e/lib/dispatch-identity.sh"
 
@@ -127,6 +131,7 @@ cleanup() {
   stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$holder_pid"
   stop_pid "$nats_pid"
+  release_nats_host
   if [ -n "$database_created" ]; then
     psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null ||
       echo "could not drop database $database; drop it by hand" >&2
@@ -215,11 +220,12 @@ note "pi-envoy $(jq -r .version "$work/pi-envoy/package.json") from this checkou
 
 # ---- services ----------------------------------------------------------------------------------------
 mkdir -p "$work/nats-store"
-"$nats_bin" -js -a 127.0.0.1 -p -1 -sd "$work/nats-store" >"$evidence/logs/nats.log" 2>&1 &
+claim_nats_host "$work/bin" || fail "no loopback address could be claimed for NATS (above)"
+"$nats_bin" -js -a "$nats_host" -p -1 -sd "$work/nats-store" >"$evidence/logs/nats.log" 2>&1 &
 nats_pid=$!
 record_start "$nats_pid" || true
 until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
-nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
+nats_url="nats://$nats_host:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
 
 psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1

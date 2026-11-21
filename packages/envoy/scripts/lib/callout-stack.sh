@@ -69,12 +69,12 @@ fi
 # seeds natsd made, the listener and Dispatch listed by account under their machine ids, and the
 # NATS audience their tokens carry.
 callout_monitor_url=""
-nats_monitor_in() { sed -n 's/.*Starting http monitor on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$1" | head -n1; }
+nats_monitor_in() { sed -n 's/.*Starting http monitor on \([^ ]*:[0-9][0-9]*\)$/\1/p' "$1" | head -n1; }
 callout_after_natsd() {
   [ "$CALLOUT" = true ] || return 0
-  await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'its monitor port' nats_monitor_in
+  await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'its monitor address' nats_monitor_in
   # shellcheck disable=SC2154 # await sets awaited
-  callout_monitor_url="http://127.0.0.1:$awaited"
+  callout_monitor_url="http://$awaited"
   echo "dev-stack: natsd monitor $callout_monitor_url" >&2
   callout_broker_env=(
     BROKER_NATS_URLS="$NATS_URL"

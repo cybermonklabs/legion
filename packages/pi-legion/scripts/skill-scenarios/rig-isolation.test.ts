@@ -55,7 +55,7 @@ function put(file: string, text: string, mode = 0o644) {
   });
 }
 
-// The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins.
+// The checkout: this rig.sh and the helpers it sources, with the two Dispatch stand-ins.
 const co = path.join(scratch, "checkout");
 const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
 const stub = path.join(scratch, "stub");
@@ -63,15 +63,16 @@ stagings.push(() => {
   mkdirSync(path.dirname(rig), { recursive: true });
   copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
   for (const lib of [
-    "rig.sh",
-    "process-tree.sh",
-    "loopback-dsn.sh",
-    "loopback-dsn.py",
-    "port-file.sh",
-    "held-port.py",
+    "scripts/e2e/lib/rig.sh",
+    "scripts/e2e/lib/process-tree.sh",
+    "scripts/e2e/lib/loopback-dsn.sh",
+    "scripts/e2e/lib/loopback-dsn.py",
+    "scripts/e2e/lib/port-file.sh",
+    "scripts/e2e/lib/held-port.py",
+    "packages/envoy/scripts/lib/nats-host.sh",
   ]) {
-    mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
-    copyFileSync(path.join(root, "scripts/e2e/lib", lib), path.join(co, "scripts/e2e/lib", lib));
+    mkdirSync(path.dirname(path.join(co, lib)), { recursive: true });
+    copyFileSync(path.join(root, lib), path.join(co, lib));
   }
   mkdirSync(stub);
 });

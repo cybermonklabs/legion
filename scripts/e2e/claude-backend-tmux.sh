@@ -51,6 +51,8 @@
 # refuses a credential that is not its id's App's, before the run writes anything and never in
 # this shell), and the smoke repository
 # sjawhar/legion-smoke, where the implementer pushes a branch and opens no pull request.
+# The NATS container publishes its port on a loopback address of this run's own, which
+# packages/envoy/scripts/lib/nats-host.sh claims (127.0.0.1 off Linux).
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -123,6 +125,8 @@ fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/claude-transcript.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/model-endpoint.sh
 . "$root/scripts/e2e/lib/model-endpoint.sh"
+# shellcheck source-path=SCRIPTDIR source=../../packages/envoy/scripts/lib/nats-host.sh
+. "$root/packages/envoy/scripts/lib/nats-host.sh"
 # Nothing the run starts inherits the operator's production Dispatch bearer.
 unset DISPATCH_TOKEN
 
@@ -178,6 +182,7 @@ cleanup() {
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
   stop_marked_processes "$work" || true
   docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
+  release_nats_host
   collect_transcripts
   remove_run_branch
   rm -rf "$work/model-gateway-cache" || true
@@ -207,7 +212,7 @@ start_listener() {
   local token
   token=$(cat "$work/envoy-token")
   ENVOY_API_TOKEN="$token" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="legion-e2ecc-$$" NATS_URLS="nats://127.0.0.1:$port_nats" \
+    ENVOY_MACHINE_ID="legion-e2ecc-$$" NATS_URLS="nats://$nats_host:$port_nats" \
     start_held listener port_listener ENVOY_LISTEN_FD --env 'PORT={port}' -- \
     env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
     "${dispatch_identity_listener_env[@]}" "$work/envoy-listener"
@@ -227,7 +232,7 @@ start_dispatch() {
   DATABASE_URL="postgres://legion:$pg_password@127.0.0.1:$port_pg/dispatch?sslmode=disable" \
     DISPATCH_AGENT_TOKEN="$dispatch_token" ENVOY_TOKEN="$envoy_token" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
-    DISPATCH_LISTEN_HOST=127.0.0.1 NATS_URLS="nats://127.0.0.1:$port_nats" \
+    DISPATCH_LISTEN_HOST=127.0.0.1 NATS_URLS="nats://$nats_host:$port_nats" \
     ENVOY_URL="http://127.0.0.1:$port_listener" \
     start_held dispatch port_dispatch DISPATCH_LISTEN_FD \
     --env 'DISPATCH_PORT={port}' --env 'DISPATCH_SERVER_URL=http://127.0.0.1:{port}' -- \
@@ -254,7 +259,7 @@ omp_invocation: mise x $pin -- omp
 envoy_url: http://127.0.0.1:$port_listener
 envoy_token_file: $work/envoy-token
 nats_urls:
-  - nats://127.0.0.1:$port_nats
+  - nats://$nats_host:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
 # The project's repository is Dispatch's mapping (the PUT below makes $repo its default), not a key of
@@ -396,7 +401,7 @@ endpoint_mismatch() {
       DISPATCH_URL) want="http://127.0.0.1:$port_dispatch" ;;
       DISPATCH_TOKEN_FILE) want="$state/secrets/dispatch-token" ;;
       ENVOY_URL) want="http://127.0.0.1:$port_listener" ;;
-      ENVOY_NATS_URL) want="nats://127.0.0.1:$port_nats" ;;
+      ENVOY_NATS_URL) want="nats://$nats_host:$port_nats" ;;
     esac
     if [ -z "${env[$name]+set}" ] || [ "${env[$name]}" != "$want" ]; then
       printf '%s=%s, want %s\n' "$name" "${env[$name]-<unset>}" "$want"
@@ -705,7 +710,8 @@ until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" p
 docker exec "$pg_container" createdb -U legion legion
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" "$nats_image" -js >/dev/null
+claim_nats_host "$work" || fail "no loopback address could be claimed for NATS (above)"
+docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "$nats_host::4222" "$nats_image" -js >/dev/null
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"

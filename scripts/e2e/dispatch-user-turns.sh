@@ -42,6 +42,8 @@
 # profile under the HOME it gives Oh My Pi (make_omp_home, lib/omp-home.sh), the key command a
 # key-file route writes, its tmux server, its listener and Dispatch, and its Postgres and NATS
 # containers.
+# The NATS container publishes its port on a loopback address of this run's own, which
+# packages/envoy/scripts/lib/nats-host.sh claims (127.0.0.1 off Linux).
 # DISPATCH_USER_TURNS_EVIDENCE_DIR (default a fresh /tmp directory, kept and printed) keeps the
 # logs, the page's screenshots, the session transcript, the arguments the rig's extension command
 # recorded and every `message_start` its extension saw.
@@ -82,6 +84,8 @@ fail() { echo "FAIL $check: $*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
+# shellcheck source-path=SCRIPTDIR source=../../packages/envoy/scripts/lib/nats-host.sh
+. "$root/packages/envoy/scripts/lib/nats-host.sh"
 # Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
 # carries it and nothing else (marked_processes, lib/process-tree.sh); a start that clears its
 # environment (`env -i`) names the mark itself, and a fork of this shell that execs nothing carries
@@ -100,6 +104,7 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_marked_processes "$work"
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
+  release_nats_host
   rm -rf "$work"
   [ -n "$ok" ] || echo "dispatch user turns e2e: FAIL (check $check)"
   echo "evidence: $evidence (logs/, checks/ with the page's screenshots and the session pane, session.jsonl)"
@@ -230,9 +235,10 @@ pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')
 until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U dispatch -d dispatch
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
+claim_nats_host "$work" || fail "no loopback address could be claimed for NATS (above)"
+docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "$nats_host::4222" "$nats_image" -js >/dev/null
 until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
-nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
+nats_url="nats://$nats_host:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 
 (umask 077 &&
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/envoy-token" &&

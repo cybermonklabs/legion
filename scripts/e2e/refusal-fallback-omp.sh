@@ -54,13 +54,14 @@
 # minutes. It reaches no network: each pane's model gateway, the
 # stand-in daemon and the stand-in Envoy listener are loopback servers of the driver's, and the NATS
 # server the Envoy extension connects to is one the run builds and starts itself
-# (packages/envoy/internal/testnats/cmd/natsd, on a port the kernel picks), since a session given
-# no consumer ends at its claim boot. REFUSAL_FALLBACK_EVIDENCE_DIR
-# (default a fresh directory under TMPDIR, or /tmp when it is unset, kept and printed) holds the
-# transcript, the NATS log and a copy of every pane's Oh My Pi transcript; each pane's scratch root
-# is under TMPDIR too, since a pod's own disk is small and its TMPDIR names the issue's volume. It
-# needs `go` for that one build, and no PostgreSQL, no kube context and no tmux, so it runs in a
-# Legion pod, on a devbox and on a runner holding the pinned binary alike.
+# (packages/envoy/internal/testnats/cmd/natsd, on a port the kernel picks and a loopback address of
+# its own, 127.0.0.1 off Linux), since a session given no consumer ends at its claim boot.
+# REFUSAL_FALLBACK_EVIDENCE_DIR (default a fresh directory under TMPDIR, or /tmp when it is unset,
+# kept and printed) holds the transcript, the NATS log and a copy of every pane's Oh My Pi
+# transcript; each pane's scratch root is under TMPDIR too, since a pod's own disk is small and its
+# TMPDIR names the issue's volume. It needs `go` for that one build, and no PostgreSQL, no kube
+# context and no tmux, so it runs in a Legion pod, on a devbox and on a runner holding the pinned
+# binary alike.
 set -euo pipefail
 
 # The cooldown the panes run on (LEGION_REFUSAL_COOLDOWN_MS) and how long each is driven for: ten
@@ -152,16 +153,16 @@ pass
 begin nats
 # A pane's Envoy extension is given no consumer by a listener it cannot reach a NATS server
 # through, and a session with no consumer ends at its claim boot (INFRA-771), so the run starts a
-# JetStream server of its own, as the delivery proofs do. The port is the kernel's pick (`-p -1`),
-# read back from the line the server logs once it listens.
+# JetStream server of its own, as the delivery proofs do. The port is the kernel's pick (`-p -1`)
+# and the address natsd's own, both read back from the line the server logs once it listens.
 command -v go >/dev/null || fail "go is not on PATH: the run builds its own natsd"
 go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd ||
   fail "./internal/testnats/cmd/natsd did not build"
 start_process nats "$work/bin/natsd" -p -1 -store_dir "$work/nats-store"
 await_start nats "$nats_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
-nats_port=$(report_port "$evidence/logs/nats.log" 'Listening for client connections on [^ ]*:') ||
-  fail "natsd logged no client port; see $evidence/logs/nats.log"
-REFUSAL_FALLBACK_NATS_URL=nats://127.0.0.1:$nats_port
+nats_address=$(report_address "$evidence/logs/nats.log" 'Listening for client connections on ') ||
+  fail "natsd logged no client address; see $evidence/logs/nats.log"
+REFUSAL_FALLBACK_NATS_URL=nats://$nats_address
 export REFUSAL_FALLBACK_NATS_URL
 note "JetStream on $REFUSAL_FALLBACK_NATS_URL"
 pass

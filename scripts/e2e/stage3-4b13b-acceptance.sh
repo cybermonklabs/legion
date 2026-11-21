@@ -35,7 +35,9 @@
 # under test is stamped (vcs.revision and main.revision) and the run's scratch workspace is always
 # kept; phase workers, which act on the daemon's assignment alone when no instruction reaches them,
 # are instructed by a background watcher the moment each assignment arrives, and the script asserts
-# what the daemon did rather than the order it expected.
+# what the daemon did rather than the order it expected. The run's nats-server listens on a
+# loopback address of its own, which this checkout's packages/envoy/scripts/lib/nats-host.sh
+# claims (127.0.0.1 off Linux).
 set -Eeuo pipefail
 
 root=${ACCEPT_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
@@ -125,6 +127,10 @@ soft() {
 . "$root/scripts/e2e/lib/operator-dispatch.sh"
 # Nothing the run starts inherits the operator's production bearer (lib/operator-dispatch.sh).
 operator_dispatch_hold_token
+# The loopback address the run's nats-server listens on is claimed by this checkout's
+# packages/envoy/scripts/lib/nats-host.sh, not ACCEPT_ROOT's: a checkout from before it has none.
+# shellcheck source-path=SCRIPTDIR source=../../packages/envoy/scripts/lib/nats-host.sh
+. "$script_lib/../../../packages/envoy/scripts/lib/nats-host.sh"
 # The daemon's database is this run's own in the shared Postgres container, read with the host psql.
 db_value() { PGPASSWORD=$(cat "$work/postgres-password") psql -h 127.0.0.1 -p "$port_pg" -U "$pg_user" -d "$legion_db" -tAc "$1"; }
 
@@ -162,6 +168,7 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_pid "$bridge_pid"
   stop_pid "$nats_pid"
+  release_nats_host
   stop_pid "$daemon_keeper_pid"
   stop_pid "${instructor_pid:-}"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
@@ -222,7 +229,7 @@ start_listener() {
   token=$(cat "$work/envoy-token")
   # shellcheck disable=SC2154 # require_app_inputs sets it; this file sources its libs as source=/dev/null
   ENVOY_API_TOKEN="$token" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="legion-accept4b13b-$$" NATS_URLS="nats://127.0.0.1:$port_nats" \
+    ENVOY_MACHINE_ID="legion-accept4b13b-$$" NATS_URLS="nats://$nats_host:$port_nats" \
     start_held listener port_listener ENVOY_LISTEN_FD --env 'PORT={port}' -- \
     env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
@@ -242,7 +249,7 @@ start_dispatch() {
   DATABASE_URL="postgres://$pg_user:$pg_password@127.0.0.1:$port_pg/$dispatch_db?sslmode=disable" \
     DISPATCH_AGENT_TOKEN="$dispatch_token" ENVOY_TOKEN="$envoy_token" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
-    DISPATCH_LISTEN_HOST=127.0.0.1 NATS_URLS="nats://127.0.0.1:$port_nats" \
+    DISPATCH_LISTEN_HOST=127.0.0.1 NATS_URLS="nats://$nats_host:$port_nats" \
     ENVOY_URL="http://127.0.0.1:$port_listener" \
     start_held dispatch port_dispatch DISPATCH_LISTEN_FD \
     --env 'DISPATCH_PORT={port}' --env 'DISPATCH_SERVER_URL=http://127.0.0.1:{port}' -- \
@@ -273,7 +280,7 @@ omp_invocation: mise x $pin -- omp
 envoy_url: http://127.0.0.1:$port_listener
 envoy_token_file: $work/envoy-token
 nats_urls:
-  - nats://127.0.0.1:$port_nats
+  - nats://$nats_host:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
 gates:
@@ -344,7 +351,7 @@ endpoint_mismatch() {
       DISPATCH_URL) want="http://127.0.0.1:$port_dispatch" ;;
       DISPATCH_TOKEN_FILE) want="$state/secrets/dispatch-token" ;;
       ENVOY_URL) want="http://127.0.0.1:$port_listener" ;;
-      ENVOY_NATS_URL) want="nats://127.0.0.1:$port_nats" ;;
+      ENVOY_NATS_URL) want="nats://$nats_host:$port_nats" ;;
     esac
     status=0
     got=$(env_of "$omp" "$name") || status=$?
@@ -687,8 +694,9 @@ PGPASSWORD=ci psql -h 127.0.0.1 -p "$port_pg" -U "$pg_user" -d postgres -v ON_ER
   fail "could not create $legion_db and $dispatch_db in the shared Postgres $pg_container on port $port_pg"
 mkdir -p "$work/nats-store"
 # The port is the kernel's own pick (`-p -1`), read back from the line the server logs once it
-# listens (lib/rig.sh's report_port).
-start_process nats "$nats_bin" -js -a 127.0.0.1 -p -1 -sd "$work/nats-store"
+# listens (lib/rig.sh's report_port), on the loopback address claim_nats_host claims for the run.
+claim_nats_host "$work/bin" || fail "no loopback address could be claimed for NATS (above)"
+start_process nats "$nats_bin" -js -a "$nats_host" -p -1 -sd "$work/nats-store"
 await_start nats "$nats_pid" 60 "NATS to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 port_nats=$(report_port "$evidence/logs/nats.log" 'Listening for client connections on [^ ]*:') ||
   fail "the nats-server logged no client port; see $evidence/logs/nats.log"
@@ -696,7 +704,7 @@ start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "4b.13b acceptance $project" '{key:$key,name:$name}')" >/dev/null
 dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
-SMOKE_REPO="$repo" SMOKE_RIG_NATS="nats://127.0.0.1:$port_nats" \
+SMOKE_REPO="$repo" SMOKE_RIG_NATS="nats://$nats_host:$port_nats" \
   SMOKE_UPSTREAM_NATS="$upstream_nats" \
   start_process bridge env -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
     bun run "$root/scripts/e2e/lib/envoy-bridge.ts"

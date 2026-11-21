@@ -16,10 +16,12 @@
 # reaches that session exactly once when it registers and claims the role again. A publish to a
 # role that live session holds still answers 200 naming the holder, with no kept field.
 #
-# Ports: the OS chooses each one, and each URL is built from the port its own process reports
+# Ports: the OS chooses each one, and each URL is built from the address its own process reports
 # (natsd's "Listening for client connections on" line, the listener's "envoy-listener listening"
-# addr). E2E_NATS_PORT and E2E_PORT set a port explicitly; it is used as given, and one already in
-# use fails with "address already in use". The session opens no port of its own: it takes its
+# addr). natsd listens on a loopback address of its own, which it claims itself (127.0.0.1 off
+# Linux), so no client of another stack on this machine reaches it. E2E_NATS_PORT and E2E_PORT set
+# a port explicitly; it is used as given, and one already in use fails with "address already in
+# use". The session opens no port of its own: it takes its
 # messages from its session consumer over NATS, as every shipped plugin does. It keeps two records
 # of its own. The offers file takes every frame as the transport offers it, so a frame offered
 # twice is two lines there and the absence of a second offer can be read at all. The frames file
@@ -315,15 +317,17 @@ stop_nats() {
   nats_pid=""
 }
 
-# wait_for_nats returns once the server this script started is answering, and sets nats_port to the
-# port that server reports; it fails otherwise. It must never pass on another server: something
-# already holding an E2E_NATS_PORT — a run left behind, or another program — greets a connection
-# exactly as ours would, while ours exits with "address already in use". So the port is read from
-# our own server's log once it says it is ready, and the wait ends the moment our own process is
-# gone.
+# wait_for_nats returns once the server this script started is answering, and sets nats_host and
+# nats_port to the address and port that server reports; it fails otherwise. natsd listens on a
+# loopback address of its own (127.0.0.1 off Linux), which it names on the line that names its
+# port, so no client of another stack on this machine reaches it. It must never pass on another
+# server: something already holding an E2E_NATS_PORT — a run left behind, or another program —
+# greets a connection exactly as ours would, while ours exits with "address already in use". So
+# the address is read from our own server's log once it says it is ready, and the wait ends the
+# moment our own process is gone.
 wait_for_nats() {
   local deadline=$((SECONDS + 30))
-  local banner port
+  local banner address
   while ((SECONDS < deadline)); do
     if ! kill -0 "$nats_pid" 2>/dev/null; then
       printf 'ERR: the NATS server this script started ended before it was ready.\n' >&2
@@ -331,18 +335,19 @@ wait_for_nats() {
       return 1
     fi
     if grep -q 'Server is ready' "$nats_log_file"; then
-      port="$(sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$nats_log_file")"
-      if [[ ! "$port" =~ ^[0-9]+$ ]]; then
-        printf 'ERR: the NATS server this script started is ready but named no client port.\n' >&2
+      address="$(sed -n 's/.*Listening for client connections on \([^ ]*:[0-9][0-9]*\)$/\1/p' "$nats_log_file" | head -n1)"
+      if [[ ! "$address" =~ ^[^:]+:[0-9]+$ ]]; then
+        printf 'ERR: the NATS server this script started is ready but named no client address.\n' >&2
         cat "$nats_log_file" >&2
         return 1
       fi
       # A NATS server greets every connection it accepts with its INFO line; curl's telnet
       # scheme reads that greeting, then waits out its own --max-time, so only the text proves
       # the port answers.
-      banner="$(curl -s --max-time 1 "telnet://127.0.0.1:${port}" </dev/null 2>/dev/null || true)"
+      banner="$(curl -s --max-time 1 "telnet://${address}" </dev/null 2>/dev/null || true)"
       if [[ "$banner" == 'INFO '* ]]; then
-        nats_port="$port"
+        nats_host="${address%:*}"
+        nats_port="${address##*:}"
         return 0
       fi
     fi
@@ -355,8 +360,8 @@ wait_for_nats() {
 
 printf 'waiting for NATS\n'
 wait_for_nats
-readonly nats_port
-nats_url="nats://127.0.0.1:${nats_port}"
+readonly nats_host nats_port
+nats_url="nats://${nats_host}:${nats_port}"
 readonly nats_url
 printf 'NATS: %s\n' "$nats_url"
 

@@ -373,25 +373,26 @@ interface CalloutHub {
   stop(): Promise<void>;
 }
 
-/** The ports natsd bound, read from its log; undefined until it has logged both. natsd is started
- *  with `-p -1 -m -1`, so the kernel picks each port as natsd binds it: a port chosen beforehand
- *  and let go can be taken by another process before natsd binds it, and natsd then exits with
- *  "address already in use" (seen on this repository's dev box under load). */
-function natsdPorts(
+/** The client and monitoring addresses natsd bound, each `<address>:<port>`, read from its log;
+ *  undefined until it has logged both. natsd is started with no -a and `-p -1 -m -1`, so it listens
+ *  on a loopback address it claims for itself (127.0.0.1 off Linux), which it names in both lines,
+ *  and the kernel picks each port as natsd binds it: a port chosen beforehand and let go can be
+ *  taken by another process before natsd binds it, and natsd then exits with "address already in
+ *  use" (seen on this repository's dev box under load). */
+function natsdAddresses(
   log: string
-): { readonly natsPort: number; readonly monitorPort: number } | undefined {
+): { readonly client: string; readonly monitor: string } | undefined {
   const text = readFileSync(log, "utf8");
-  const client = /Listening for client connections on 127\.0\.0\.1:(\d+)/.exec(text);
-  const monitor = /Starting http monitor on 127\.0\.0\.1:(\d+)/.exec(text);
-  if (client === null || monitor === null) return undefined;
-  return { natsPort: Number(client[1]), monitorPort: Number(monitor[1]) };
+  const client = /Listening for client connections on (\S+:\d+)/.exec(text)?.[1];
+  const monitor = /Starting http monitor on (\S+:\d+)/.exec(text)?.[1];
+  return client === undefined || monitor === undefined ? undefined : { client, monitor };
 }
 
-/** Whether the natsd that logs to `log` has bound its ports and answers its health check. */
+/** Whether the natsd that logs to `log` has bound its addresses and answers its health check. */
 async function natsdHealthy(log: string): Promise<boolean> {
-  const ports = natsdPorts(log);
-  if (ports === undefined) return false;
-  return (await fetch(`http://127.0.0.1:${ports.monitorPort}/healthz`)).ok;
+  const addresses = natsdAddresses(log);
+  if (addresses === undefined) return false;
+  return (await fetch(`http://${addresses.monitor}/healthz`)).ok;
 }
 
 /** Starts a {@link CalloutHub} in its own directory under the stack directory, from the binaries
@@ -421,9 +422,9 @@ async function startCalloutHub(name: string, brokerUrl: string): Promise<Callout
     closeSync(natsOut);
     processes.push(natsd);
     await awaitReady("natsd", natsd, natsLog, budget, () => natsdHealthy(natsLog));
-    const ports = natsdPorts(natsLog);
-    if (ports === undefined) throw new Error(`natsd named no port in ${natsLog}`);
-    const natsUrl = `nats://127.0.0.1:${ports.natsPort}`;
+    const addresses = natsdAddresses(natsLog);
+    if (addresses === undefined) throw new Error(`natsd named no address in ${natsLog}`);
+    const natsUrl = `nats://${addresses.client}`;
     const calloutLog = path.join(work, "calloutd.log");
     const calloutOut = openSync(calloutLog, "a");
     const calloutd = Bun.spawn(
@@ -712,13 +713,13 @@ describe.skipIf(!envoyStackEnabled)(
         await awaitReady("natsd", natsd, natsLog, { timeoutMs: 60_000, tailLines: 10 }, () =>
           natsdHealthy(natsLog)
         );
-        const ports = natsdPorts(natsLog);
-        if (ports === undefined) throw new Error(`natsd named no port in ${natsLog}`);
+        const addresses = natsdAddresses(natsLog);
+        if (addresses === undefined) throw new Error(`natsd named no address in ${natsLog}`);
         const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_no_auth");
         await credential.ready();
         const dialled = connect(
           natsConnectionOptions({
-            servers: [`nats://127.0.0.1:${ports.natsPort}`],
+            servers: [`nats://${addresses.client}`],
             name: "nats-credential-no-auth",
             credential: { kind: "broker", broker: credential },
           })

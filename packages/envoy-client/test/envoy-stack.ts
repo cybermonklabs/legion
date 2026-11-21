@@ -14,15 +14,19 @@ const { LEGION_E2E_ENVOY_STACK } = process.env;
  */
 export const envoyStackEnabled = LEGION_E2E_ENVOY_STACK === "1";
 
-/** A natsd with JetStream and an Envoy listener on it, both on loopback ports of their own. */
+/**
+ * A natsd with JetStream and an Envoy listener on it, both on loopback ports of their own. natsd
+ * listens on a loopback address it claims for itself (127.0.0.1 off Linux), which it names in its
+ * log, so no client of another stack on the machine reaches it.
+ */
 export interface EnvoyStack {
   /** The listener's base URL, `http://127.0.0.1:<port>`. */
   readonly envoyUrl: string;
-  /** natsd's client URL, `nats://127.0.0.1:<port>`. */
+  /** natsd's client URL, `nats://<address>:<port>`. */
   readonly natsUrl: string;
-  /** natsd's client address, `127.0.0.1:<port>`, for a proxy to front. */
+  /** natsd's client address, `<address>:<port>`, for a proxy to front. */
   readonly natsHostPort: string;
-  /** natsd's monitoring base URL, `http://127.0.0.1:<port>` (`/connz`, `/jsz`). */
+  /** natsd's monitoring base URL, `http://<address>:<port>` (`/connz`, `/jsz`). */
   readonly monitorUrl: string;
   /** Stops the listener and natsd. Their scratch directory is the caller's, and goes with it. */
   stop(): Promise<void>;
@@ -274,8 +278,9 @@ export async function stopProcess(child: Subprocess, signal: "SIGTERM" | "SIGINT
  * that reserved it is done, whether or not the stack ever reached `stop`.
  *
  * No port is free between its choice and its server's bind. natsd takes no socket, so it binds
- * ports the kernel chooses (`-p -1 -m -1`, nats-server's RANDOM_PORT) and the stack reads them
- * from natsd's own log; the listener serves on a socket the stack holds ({@link startOnHeldPort}).
+ * ports the kernel chooses (`-p -1 -m -1`, nats-server's RANDOM_PORT) on the loopback address it
+ * claims, and the stack reads address and ports from natsd's own log; the listener serves on a
+ * socket the stack holds ({@link startOnHeldPort}).
  */
 export async function startEnvoyStack(options: EnvoyStackOptions): Promise<EnvoyStack> {
   const { PATH = "" } = process.env;
@@ -370,9 +375,10 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
 
 /**
  * The client and monitoring addresses natsd reports in `log` once it has bound them and is ready,
- * each as `127.0.0.1:<port>`, or undefined before then. It logs the ports it bound, which are the
- * kernel's choice, "Starting http monitor on 127.0.0.1:<port>" and "Listening for client
- * connections on 127.0.0.1:<port>", and then "Server is ready", so a log that holds that last line
+ * each as `<address>:<port>`, or undefined before then. Given no -a, natsd listens on a loopback
+ * address it claims for itself, and it logs that address with each port it bound, which are the
+ * kernel's choice: "Starting http monitor on <address>:<port>" and "Listening for client
+ * connections on <address>:<port>", and then "Server is ready", so a log that holds that last line
  * holds both addresses whole.
  */
 function natsdAddresses(log: string): { client: string; monitor: string } | undefined {

@@ -10,7 +10,9 @@
 #
 # Every step is fatal and names itself — no `|| true` outside the cleanup a trap must never
 # fail on, and every wait is bounded. The run leaves no container, no process, and nothing in
-# the real Dispatch data dir (the binaries run under a scratch HOME).
+# the real Dispatch data dir (the binaries run under a scratch HOME). The NATS container publishes
+# its ports on a loopback address of this run's own, which packages/envoy/scripts/lib/nats-host.sh
+# claims (127.0.0.1 off Linux).
 #
 # No raw token is ever printed. A token lives in a shell variable, reaches curl through a
 # config document on stdin — never argv, whose /proc entry is world-readable, and never disk —
@@ -34,6 +36,7 @@ cleanup() {
   if [ -n "${dispatch_pid:-}" ]; then kill -TERM "$dispatch_pid" 2>/dev/null || true; fi
   if [ -n "${listener_pid:-}" ]; then kill -TERM "$listener_pid" 2>/dev/null || true; fi
   docker rm -f -v "$pg_name" "$nats_name" >/dev/null 2>&1 || true
+  release_nats_host
   return 0
 }
 
@@ -134,12 +137,15 @@ absent_issuer="${issuer%/*}/00000000000000000000000000000000"
 echo "== pgvector/pgvector (pinned digest) and the hub's nats-server (lib/nats-image.sh) on ephemeral loopback ports"
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
+# shellcheck source-path=SCRIPTDIR source=../../packages/envoy/scripts/lib/nats-host.sh
+. "$root/packages/envoy/scripts/lib/nats-host.sh"
 docker rm -f -v "$pg_name" "$nats_name" >/dev/null 2>&1 || docker ps >/dev/null # a missing container is fine; a broken docker is not
 trap cleanup EXIT
+claim_nats_host "$work" || fail "no loopback address could be claimed for NATS (above)"
 docker run -d --name "$pg_name" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=dispatch \
   -e POSTGRES_DB=dispatch -p 127.0.0.1::5432 mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
-docker run -d --name "$nats_name" --cpus 1 --memory 512m -p 127.0.0.1::4222 -p 127.0.0.1::8222 "$nats_image" -js -m 8222 >/dev/null
+docker run -d --name "$nats_name" --cpus 1 --memory 512m -p "$nats_host::4222" -p "$nats_host::8222" "$nats_image" -js -m 8222 >/dev/null
 # Over TCP, not the container's unix socket: the entrypoint's bootstrap phase answers on the
 # socket while nothing listens on 5432 yet, and a client that connects then is reset.
 for i in $(seq 1 60); do
@@ -152,11 +158,11 @@ nats_port=$(docker port "$nats_name" 4222/tcp | head -1 | sed 's/.*://')
 nats_monitor=$(docker port "$nats_name" 8222/tcp | head -1 | sed 's/.*://')
 for i in $(seq 1 60); do
   # -fs, not -fsS: a refused connection is this loop's expected state, not an error to print.
-  curl -fs -o /dev/null --max-time 5 "http://127.0.0.1:$nats_monitor/healthz" && break
+  curl -fs -o /dev/null --max-time 5 "http://$nats_host:$nats_monitor/healthz" && break
   [ "$i" = 60 ] && fail "nats never became ready"
   sleep 0.5
 done
-echo "  postgres 127.0.0.1:$pg_port, nats 127.0.0.1:$nats_port"
+echo "  postgres 127.0.0.1:$pg_port, nats $nats_host:$nats_port"
 
 database_url="postgres://dispatch:dispatch@127.0.0.1:$pg_port/dispatch"
 shared_dispatch_token="dispatch-shared-$RANDOM$RANDOM"
@@ -173,12 +179,12 @@ dispatch_env=(
   DISPATCH_IDENTITY=header:X-Dispatch-User
   DISPATCH_IDENTITY_HEADER_TRUSTED=1
   DISPATCH_LISTEN_HOST=127.0.0.1
-  NATS_URLS="nats://127.0.0.1:$nats_port"
+  NATS_URLS="nats://$nats_host:$nats_port"
 )
 listener_env=(
   env -i PATH="$PATH" HOME="$work/home"
   ENVOY_MACHINE_ID=verifiers-e2e
-  NATS_URLS="nats://127.0.0.1:$nats_port"
+  NATS_URLS="nats://$nats_host:$nats_port"
   ENVOY_LISTEN_HOST=127.0.0.1
   ENVOY_API_TOKEN="$shared_listener_token"
 )

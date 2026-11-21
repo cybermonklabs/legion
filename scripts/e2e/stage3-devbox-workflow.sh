@@ -3,7 +3,9 @@
 # surfaces: a scratch Dispatch, real Envoy/NATS, the Go daemon, real OMP panes, and GitHub's
 # sjawhar/legion-smoke sandbox. Its host-side rig helpers and the workflow's vocabulary are the
 # shared lib/rig.sh and lib/workflow.sh; the small scratch-service rig below is this run's own, so
-# its lifecycle belongs to this run.
+# its lifecycle belongs to this run. The scratch NATS container publishes its port on a loopback
+# address of this run's own, which packages/envoy/scripts/lib/nats-host.sh claims (127.0.0.1 off
+# Linux).
 #
 # Run it as `bash scripts/e2e/stage3-devbox-workflow.sh` with three required inputs:
 # LEGION_E2E_MODEL_ROUTE (`gateway`, `key-file` or `box-login`), SMOKE_UPSTREAM_NATS (the production
@@ -159,6 +161,8 @@ fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/operator-dispatch.sh
 . "$root/scripts/e2e/lib/operator-dispatch.sh"
+# shellcheck source-path=SCRIPTDIR source=../../packages/envoy/scripts/lib/nats-host.sh
+. "$root/packages/envoy/scripts/lib/nats-host.sh"
 # Nothing the run starts inherits the operator's production bearer (lib/operator-dispatch.sh).
 operator_dispatch_hold_token
 
@@ -216,6 +220,7 @@ cleanup() {
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
   stop_marked_processes "$work"
   docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
+  release_nats_host
   collect_transcripts
   close_unpassed_run_pull_requests
   rm -rf "$work/model-gateway-cache" || true
@@ -258,7 +263,7 @@ start_listener() {
   local token
   token=$(cat "$work/envoy-token")
   ENVOY_API_TOKEN="$token" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="legion-e2e3-$$" NATS_URLS="nats://127.0.0.1:$port_nats" \
+    ENVOY_MACHINE_ID="legion-e2e3-$$" NATS_URLS="nats://$nats_host:$port_nats" \
     start_held listener port_listener ENVOY_LISTEN_FD --env 'PORT={port}' -- \
     env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
@@ -280,7 +285,7 @@ start_dispatch() {
   DATABASE_URL="postgres://legion:$pg_password@127.0.0.1:$port_pg/dispatch?sslmode=disable" \
     DISPATCH_AGENT_TOKEN="$dispatch_token" ENVOY_TOKEN="$envoy_token" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
-    DISPATCH_LISTEN_HOST=127.0.0.1 NATS_URLS="nats://127.0.0.1:$port_nats" \
+    DISPATCH_LISTEN_HOST=127.0.0.1 NATS_URLS="nats://$nats_host:$port_nats" \
     ENVOY_URL="http://127.0.0.1:$port_listener" \
     start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD \
     --env 'DISPATCH_PORT={port}' --env 'DISPATCH_SERVER_URL=http://127.0.0.1:{port}' -- \
@@ -302,7 +307,7 @@ omp_invocation: mise x $pin -- omp
 envoy_url: http://127.0.0.1:$port_listener
 envoy_token_file: $work/envoy-token
 nats_urls:
-  - nats://127.0.0.1:$port_nats
+  - nats://$nats_host:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
 # The project's repository is Dispatch's mapping (the PUT below makes $repo its default), not a key of
@@ -469,7 +474,7 @@ endpoint_mismatch() {
       DISPATCH_URL) want="http://127.0.0.1:$port_dispatch" ;;
       DISPATCH_TOKEN_FILE) want="$state/secrets/dispatch-token" ;;
       ENVOY_URL) want="http://127.0.0.1:$port_listener" ;;
-      ENVOY_NATS_URL) want="nats://127.0.0.1:$port_nats" ;;
+      ENVOY_NATS_URL) want="nats://$nats_host:$port_nats" ;;
     esac
     status=0
     got=$(env_of "$omp" "$name") || status=$?
@@ -743,7 +748,8 @@ until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" p
 docker exec "$pg_container" createdb -U legion legion
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" "$nats_image" -js >/dev/null
+claim_nats_host "$work" || fail "no loopback address could be claimed for NATS (above)"
+docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "$nats_host::4222" "$nats_image" -js >/dev/null
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
@@ -753,7 +759,7 @@ dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Stage 3 
 dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
 # This is the production Envoy ingress bridge, subscribe-only from its perspective. GitHub events
 # are observed, never manufactured, and only the smoke repository is forwarded to this run's NATS.
-SMOKE_REPO="$repo" SMOKE_RIG_NATS="nats://127.0.0.1:$port_nats" \
+SMOKE_REPO="$repo" SMOKE_RIG_NATS="nats://$nats_host:$port_nats" \
   SMOKE_UPSTREAM_NATS="$upstream_nats" \
   start_process bridge env -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
     bun run "$root/scripts/e2e/lib/envoy-bridge.ts"
@@ -840,7 +846,7 @@ begin panes-pinned-to-the-rig-before-any-agent-turn
 # watcher at its launch.
 wait_for_architect "$root_issue"
 wait_for_architect "$held_issue"
-note "$(wc -l <"$evidence/pane-endpoints-checked.txt") pane checks: DISPATCH_URL=http://127.0.0.1:$port_dispatch, DISPATCH_TOKEN_FILE=$state/secrets/dispatch-token, ENVOY_URL=http://127.0.0.1:$port_listener, ENVOY_NATS_URL=nats://127.0.0.1:$port_nats"
+note "$(wc -l <"$evidence/pane-endpoints-checked.txt") pane checks: DISPATCH_URL=http://127.0.0.1:$port_dispatch, DISPATCH_TOKEN_FILE=$state/secrets/dispatch-token, ENVOY_URL=http://127.0.0.1:$port_listener, ENVOY_NATS_URL=nats://$nats_host:$port_nats"
 pass
 
 # The first issue end to end: the gate, every phase, three review rounds, the architect's acceptance,
@@ -1466,6 +1472,7 @@ if [ "$model_route" = box-login ]; then
 fi
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
+release_nats_host
 stop_marked_processes "$work" || fail "the run's processes could not be read for their SIGKILL"
 [ "$(docker ps -aq --filter "name=^/$pg_container$" --filter "name=^/$nats_container$")" = "" ] || fail "a proof container remains"
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" has-session 2>/dev/null && fail "the proof tmux server remains"

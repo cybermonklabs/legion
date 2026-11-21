@@ -11,7 +11,8 @@ const NATS_IMAGE =
 
 export interface NatsServer {
   readonly url: string;
-  stop(): void;
+  /** Removes the container, and fails, naming them, when a client is still connected to it. */
+  stop(): Promise<void>;
 }
 
 /** Runs `docker args…` and returns its stdout and stderr, trimmed, throwing on a non-zero exit. */
@@ -47,11 +48,37 @@ export function useNatsServerDirectory(): string {
 }
 
 /**
+ * The names of the clients still connected to the server whose monitor is at `monitor`
+ * (`host:port`), read from its /connz, once none is left or two seconds have passed: a client's
+ * close is asynchronous, so one closed a moment ago can still be counted. A client with no name
+ * is named by its connection id. It polls a real container's own count, which no fake clock
+ * advances, as the readiness loop below polls the container's log.
+ */
+async function connectedClients(monitor: string): Promise<string[]> {
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    const response = await fetch(`http://${monitor}/connz`, { signal: AbortSignal.timeout(2_000) });
+    if (!response.ok) throw new Error(`http://${monitor}/connz answered ${response.status}`);
+    const connz = (await response.json()) as { connections?: { cid: number; name?: string }[] };
+    const open = (connz.connections ?? []).map((c) => c.name || `connection ${c.cid}`);
+    if (open.length === 0 || Date.now() > deadline) return open;
+    await Bun.sleep(100);
+  }
+}
+
+/**
  * Runs a NATS server container of its own, uniquely named, with JetStream; `nkeyUser`, when
  * given, is the public key of the only nkey user it admits. `stop` removes the container.
  *
  * `directory` is the one the caller reserved with {@link useNatsServerDirectory}; the server's
  * configuration file is written there, and `stop` removes that file.
+ *
+ * The server listens on 127.0.0.1, on a port Docker takes from the kernel's ephemeral range, so a
+ * client a test leaves open would keep reconnecting to that address after the container is gone,
+ * and Docker can publish another test's server on the same port: the stray client then reaches
+ * that server. So `stop` reads the server's own connections first (its monitor's /connz, published
+ * beside it), and after removing the container fails, naming them, when any client is still
+ * connected. Every client a test opens is closed before its server stops.
  */
 export async function startNatsServer(directory: string, nkeyUser?: string): Promise<NatsServer> {
   const name = `legion-nats-test-${crypto.randomUUID()}`;
@@ -59,11 +86,11 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
   writeFileSync(
     config,
     nkeyUser === undefined
-      ? "jetstream {}\n"
-      : `jetstream {}\nauthorization {\n  users = [ { nkey: ${JSON.stringify(nkeyUser)} } ]\n}\n`,
+      ? "jetstream {}\nhttp: 8222\n"
+      : `jetstream {}\nhttp: 8222\nauthorization {\n  users = [ { nkey: ${JSON.stringify(nkeyUser)} } ]\n}\n`,
     { mode: 0o644 }
   );
-  const stop = () => {
+  const remove = () => {
     // With -v, since the image declares a VOLUME a plain `docker rm -f` leaves on the host
     // (docs/testing.md).
     Bun.spawnSync(["docker", "rm", "-f", "-v", name], { stdout: "ignore", stderr: "ignore" });
@@ -86,6 +113,8 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
       "512m",
       "-p",
       "127.0.0.1::4222",
+      "-p",
+      "127.0.0.1::8222",
       "-v",
       `${config}:/etc/nats/test.conf:ro`,
       NATS_IMAGE,
@@ -99,9 +128,26 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
       await Bun.sleep(100);
     }
     const port = (await docker("port", name, "4222/tcp")).stdout.split("\n")[0];
-    return { url: `nats://${port}`, stop };
+    const monitor = (await docker("port", name, "8222/tcp")).stdout.split("\n")[0];
+    const url = `nats://${port}`;
+    const stop = async () => {
+      let open: string[];
+      try {
+        open = await connectedClients(monitor);
+      } finally {
+        remove();
+      }
+      if (open.length > 0) {
+        throw new Error(
+          `the NATS server at ${url} still had ${open.length} client(s) connected when its test stopped it (${open.join(", ")}): ` +
+            "a client left open keeps reconnecting to that address after the container is gone, and Docker can publish " +
+            "another test's server on the same port; close every client before stopping its server"
+        );
+      }
+    };
+    return { url, stop };
   } catch (error) {
-    stop();
+    remove();
     throw error;
   }
 }

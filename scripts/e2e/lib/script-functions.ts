@@ -19,8 +19,12 @@ export function scriptFunctions(path: string): (name: string) => string {
 
 // Every function a script defines at the start of a line, one-line definitions included.
 const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
-// A library of scripts/e2e/lib a script sources, as every stage script and library writes it.
-const sourced = /^\s*\. ".*\/lib\/([A-Za-z0-9_.-]+\.sh)"\s*$/gm;
+// A library a script sources, as every stage script and library writes it: one of scripts/e2e/lib
+// (`. "…/lib/<name>"`), or a package's own scripts library
+// (`. "…/packages/<package>/scripts/lib/<name>"`, as packages/envoy/scripts/lib/nats-host.sh is).
+const sourced =
+  /^\s*\. ".*?\/(packages\/[A-Za-z0-9_.-]+\/scripts\/lib\/[A-Za-z0-9_.-]+\.sh|lib\/[A-Za-z0-9_.-]+\.sh)"\s*$/gm;
+const repositoryRoot = join(import.meta.dir, "..", "..", "..");
 
 /**
  * The shell a harness puts above the functions it extracts from `paths`, so that a helper one of
@@ -29,9 +33,9 @@ const sourced = /^\s*\. ".*\/lib\/([A-Za-z0-9_.-]+\.sh)"\s*$/gm;
  * `harness: no definition for <name>` for a name one of those scripts defines, and leaves every
  * other missing command (a binary the machine lacks) as it was, still exit 127. The line goes to
  * the harness's own stderr, saved in a file descriptor when the guard is set up, so a call the
- * extracted function silences (`helper >/dev/null 2>&1`) is named too. Every library under
- * scripts/e2e/lib a script among `paths` sources (`. "…/lib/<name>"`) counts as one of them, and
- * the libraries it sources in turn, so a harness passes only the scripts it extracts from.
+ * extracted function silences (`helper >/dev/null 2>&1`) is named too. Every library a script
+ * among `paths` sources, under scripts/e2e/lib or a package's scripts/lib, counts as one of them,
+ * and the libraries it sources in turn, so a harness passes only the scripts it extracts from.
  * `missingHelpers` reads those lines out of a run's output for the harness to fail on.
  */
 export function nameMissingHelpers(...paths: string[]): string {
@@ -43,7 +47,14 @@ export function nameMissingHelpers(...paths: string[]): string {
     read.add(path);
     const text = readFileSync(path, "utf8");
     for (const found of text.matchAll(definition)) names.add(found[1]);
-    for (const found of text.matchAll(sourced)) pending.push(join(import.meta.dir, found[1]));
+    for (const found of text.matchAll(sourced)) {
+      const library = found[1];
+      pending.push(
+        library.startsWith("packages/")
+          ? join(repositoryRoot, library)
+          : join(import.meta.dir, library.slice("lib/".length))
+      );
+    }
   }
   return `exec {harness_stderr}>&2
 command_not_found_handle() {

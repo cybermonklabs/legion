@@ -116,7 +116,8 @@
 # killed, the run's database is dropped and its work directory removed. The run is re-runnable: it
 # takes a work directory of its own each time and inherits no DISPATCH_*, ENVOY_*, LEGION_*,
 # NATS_*, OMP*, PI_*, TMUX*, ANTHROPIC_*, CLAUDE_*, PGHOSTADDR, PGSERVICE or PGSERVICEFILE
-# variable of the caller's.
+# variable of the caller's. natsd listens on a loopback address of its own (127.0.0.1 off Linux),
+# which the run reads from its log and every client dials.
 # Several runs at once out of one jj checkout leave divergent commits behind, whatever that
 # checkout's own state. The build step reads the working copy with jj to report what it built
 # from (lib/built-from.sh), and jj snapshots the working copy at every read; the plugin pack
@@ -271,7 +272,7 @@ daemon_keeper_pid=
 control_pid=
 control_fd=
 database=
-nats_port=
+nats_address=
 nats_url=
 listener_port=
 daemon_port=
@@ -791,9 +792,9 @@ echo "ok build"
 begin services
 start_process natsd "$work/bin/natsd" -p -1 -store_dir "$work/nats-store"
 await_start natsd "$natsd_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$evidence/logs/natsd.log"
-nats_port=$(report_port "$evidence/logs/natsd.log" 'Listening for client connections on [^ ]*:') ||
-  fail "natsd logged no client port; see $evidence/logs/natsd.log"
-nats_url=nats://127.0.0.1:$nats_port
+nats_address=$(report_address "$evidence/logs/natsd.log" 'Listening for client connections on ') ||
+  fail "natsd logged no client address; see $evidence/logs/natsd.log"
+nats_url=nats://$nats_address
 note "NATS on $nats_url, its JetStream store in $work/nats-store"
 
 keep_port listener_keeper listener_port

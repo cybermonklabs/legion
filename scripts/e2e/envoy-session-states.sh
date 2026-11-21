@@ -100,7 +100,9 @@
 # stopped on any exit, by the pid it was started as; the run's database is dropped and its work
 # directory removed. The run is re-runnable: it takes a work directory of its own each time and
 # inherits no DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, ANTHROPIC_*, CLAUDE_*, PGHOSTADDR,
-# PGSERVICE or PGSERVICEFILE variable of the caller's.
+# PGSERVICE or PGSERVICEFILE variable of the caller's. natsd listens on a loopback address it
+# claims for this script's process (-claim-for $$; 127.0.0.1 off Linux), read from its log, and
+# check 2's restart is given that address and port back with -a and -p.
 set -Eeuo pipefail
 
 # This script's own three ENVOY_SESSION_STATES_* inputs are read first: the sweep below drops every
@@ -279,6 +281,7 @@ omp_fd=
 claude_pid=
 claude_fd=
 database=
+nats_host=
 nats_port=
 nats_url=
 port_a=
@@ -723,11 +726,13 @@ echo "ok build"
 
 # ---- services ---------------------------------------------------------------------------------------
 begin services
-start_process natsd "$work/bin/natsd" -p -1 -store_dir "$work/nats-store"
+start_process natsd "$work/bin/natsd" -claim-for "$$" -p -1 -store_dir "$work/nats-store"
 await_start natsd "$natsd_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$evidence/logs/natsd.log"
-nats_port=$(report_port "$evidence/logs/natsd.log" 'Listening for client connections on [^ ]*:') ||
-  fail "natsd logged no client port; see $evidence/logs/natsd.log"
-nats_url=nats://127.0.0.1:$nats_port
+nats_address=$(report_address "$evidence/logs/natsd.log" 'Listening for client connections on ') ||
+  fail "natsd logged no client address; see $evidence/logs/natsd.log"
+nats_host=${nats_address%:*}
+nats_port=${nats_address##*:}
+nats_url=nats://$nats_address
 note "NATS on $nats_url, its JetStream store in $work/nats-store"
 
 # start_listener NAME KEEPER starts one of the two running listeners on the port its keeper holds,
@@ -1168,7 +1173,7 @@ check_bus_outage_keeps_claims() {
   natsd_pid=
   note "stopped NATS for ${outage}s with both sessions stalled and both claims held"
   sleep "$outage"
-  start_process natsd "$work/bin/natsd" -p "$nats_port" -store_dir "$work/nats-store"
+  start_process natsd "$work/bin/natsd" -a "$nats_host" -p "$nats_port" -store_dir "$work/nats-store"
   wait_until 120 "natsd to be ready again" \
     log_count_at_least "$evidence/logs/natsd.log" 'Server is ready' 2 || return 1
   wait_until 180 "listener A to serve again after the outage" serving "$port_a" || return 1

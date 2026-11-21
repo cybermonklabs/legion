@@ -4308,7 +4308,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `broker` | that `nats-server`, with JetStream, listening on a loopback address of the run's own and ready |
 | `driver` | a test binary of `TestAQueuedRootUnderALiveTreeJoinsItLive` (`internal/daemon/child_adoption_live_test.go`, `-tags e2e`) |
 | `proof` | the eleven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
@@ -4368,7 +4368,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `broker` | that `nats-server`, with JetStream, listening on a loopback address of the run's own and ready |
 | `driver` | a test binary of `TestEveryChildThatStartsRunsUnderItsOwnArchitectLive` (`internal/daemon/sub_architect_live_test.go`, `-tags e2e`) |
 | `proof` | the seven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
@@ -4431,7 +4431,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `broker` | that `nats-server`, with JetStream, listening on a loopback address of the run's own and ready |
 | `driver` | a test binary of `TestAConflictKeepsThePhaseAndTakesNoTurnOverLive` (`internal/daemon/conflict_no_takeover_live_test.go`, `-tags e2e`) |
 | `proof` | the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
@@ -4486,7 +4486,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `broker` | that `nats-server`, with JetStream, listening on a loopback address of the run's own and ready |
 | `driver` | a test binary of `TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive` (`internal/daemon/behind_entry_fence_live_test.go`, `-tags e2e`) |
 | `proof` | the eight steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
@@ -4538,7 +4538,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `broker` | that `nats-server`, with JetStream, listening on a loopback address of the run's own and ready |
 | `driver` | a test binary of `TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive` (`internal/daemon/merge_wait_readable_live_test.go`, `-tags e2e`) |
 | `proof` | the six steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
@@ -4593,7 +4593,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `broker` | that `nats-server`, with JetStream, listening on a loopback address of the run's own and ready |
 | `driver` | a test binary of `TestAPhaseEntryConvergesOnARunningDaemonLive` (`internal/daemon/phase_entry_converge_live_test.go`, `-tags e2e`) |
 | `proof` | the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
@@ -4647,7 +4647,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed; the script itself refuses a missing or non-executable `LEGION_OMP_PATH` before this |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `broker` | that `nats-server`, with JetStream, listening on a loopback address of the run's own and ready |
 | `driver` | a test binary of `TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive` (`internal/daemon/provider_error_retry_live_test.go`, `-tags e2e`) |
 | `proof` | the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
@@ -4700,7 +4700,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed; the script itself refuses a missing or non-executable `LEGION_OMP_PATH` before this |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `broker` | that `nats-server`, with JetStream, listening on a loopback address of the run's own and ready |
 | `driver` | a test binary of `TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive` (`internal/daemon/claim_compaction_live_test.go`, `-tags e2e`) |
 | `proof` | the eight steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
@@ -4770,7 +4770,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | what [`claim-compaction.sh`](#claim-compactionsh)'s holds, in the same words and with the same refusals |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `broker` | that `nats-server`, with JetStream, listening on a loopback address of the run's own and ready |
 | `driver` | a test binary of `TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive` (`internal/daemon/role_prompt_rule_live_test.go`, `-tags e2e`) |
 | `proof` | the five steps below, each printing what it read between its own `== <name>` and `ok <name>` |
 
@@ -4826,7 +4826,7 @@ before them the script refuses a host with no `bun`, no `jj`, no `git` or no `no
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | what [`claim-compaction.sh`](#claim-compactionsh)'s holds, in the same words and with the same refusals |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `broker` | that `nats-server`, with JetStream, listening on a loopback address of the run's own and ready |
 | `driver` | a test binary of `TestLateCompletionsThroughTheRealLegionToolLive` (`internal/daemon/late_completion_live_test.go`, `-tags e2e`) |
 | `proof` | the six steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
@@ -4887,7 +4887,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | what [`claim-compaction.sh`](#claim-compactionsh)'s holds, in the same words and with the same refusals |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `broker` | that `nats-server`, with JetStream, listening on a loopback address of the run's own and ready |
 | `driver` | a test binary of `TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive` (`internal/daemon/busy_relaunch_live_test.go`, `-tags e2e`) |
 | `proof` | the seven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>`, or `FAIL <name> at <assertion>` |
 
@@ -4995,7 +4995,7 @@ before them the script refuses a host with no `bun` or no `node_modules`, and ex
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `broker` | that `nats-server`, with JetStream, listening on a loopback address of the run's own and ready |
 | `driver` | a test binary of `TestHandoffRecordsLive` (`internal/daemon/handoff_records_live_test.go`, `-tags e2e`) |
 | `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
@@ -5049,7 +5049,7 @@ before them the script refuses a host with no `bun` or no `node_modules`, and ex
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `broker` | that `nats-server`, with JetStream, listening on a loopback address of the run's own and ready |
 | `driver` | a test binary of `TestStepRecordsLive` (`internal/daemon/step_records_live_test.go`, `-tags e2e`) |
 | `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
@@ -5421,7 +5421,8 @@ Then eight windows run, each with one disruption, and every event of the window 
 | h | the Claude Code session SIGKILLed and replaced by one whose id has never registered, with the window's one envelope published on that id's own agent subject, and stored, before it starts |
 
 Every server takes its port from [`lib/held-port.py`](#libheld-portpy), never a port picked free a moment earlier.
-natsd binds the client and monitor ports the kernel chooses (`-p -1 -m -1`), and the script reads both from its log.
+natsd binds the client and monitor ports the kernel chooses (`-p -1 -m -1`) on a loopback address of its own (127.0.0.1 off Linux), and the script reads both addresses from its log;
+the proxies dial natsd there, and listen on 127.0.0.1 themselves, on their keepers' ports.
 Every other server restarts in a window, and a configuration names its port before it first starts:
 the sessions' `envoy.json` names listener `shared` and a proxy, and Dispatch's environment names listener `dispatch` and its proxy.
 So each serves on a copy of a socket a keeper (`held-port.py keep`, one per server, its socket under `ports/`) holds for the whole run:
@@ -6343,6 +6344,12 @@ Each item below names a function, then what it does.
   the digits right after the first match of the extended regex PATTERN in LOG (`'Listening for client connections on [^ ]*:'` for `nats-server -p -1`).
   It fails while no line matches, so it is also the poll that waits for one
 
+- `report_address LOG PATTERN`
+
+  prints the address a process that bound port 0 itself reported, as `HOST:PORT`:
+  the word right after the first match of the extended regex PATTERN in LOG, which ends at the space before it (`'Listening for client connections on '` for natsd, whose host is a loopback address it claimed, never 127.0.0.1 on Linux).
+  It fails while no line matches, so it is also the poll that waits for one
+
 - `port_answers PORT`
 
   succeeds when something accepts a connection on `127.0.0.1:PORT`, through bash's own `/dev/tcp`.
@@ -7231,7 +7238,8 @@ The refusal line tells that case apart, and names libpq and the package to insta
 That guard reads the caller's DSN in the shell, and it reaches no further.
 The `driver` check then builds the test binary (`go test -c -tags e2e ./internal/daemon`), and that binary reads every DSN it builds from `LEGION_TEST_PG_DSN` back with pgx before anything connects or creates, which is the second of the two frames that hold the run to the server its caller named.
 `DatabaseURL` in `packages/daemon/internal/testpg/testdb/testdb.go` is where that frame is written, and the comment above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh) is where this one is.
-On any exit it stops the `nats-server`, removes the work directory and prints `LABEL e2e: PASS in <n>s (evidence: <dir>)`, or `LABEL e2e: FAIL at <check> after <n>s (evidence: <dir>)` on stderr.
+The `broker` check starts the `nats-server` on a loopback address the run claims ([`packages/envoy/scripts/lib/nats-host.sh`](../../packages/envoy/scripts/lib/nats-host.sh), 127.0.0.1 off Linux) and hands the driver `LEGION_E2E_NATS_URL` on that address; this file sources that helper while `root` is still this checkout, so a base tree from before it still runs.
+On any exit it stops the `nats-server`, releases that address, removes the work directory and prints `LABEL e2e: PASS in <n>s (evidence: <dir>)`, or `LABEL e2e: FAIL at <check> after <n>s (evidence: <dir>)` on stderr.
 
 | argument | is |
 | :--- | :--- |

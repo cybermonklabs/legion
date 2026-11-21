@@ -13,7 +13,9 @@
 # session cannot park a root that waits on a person, and tree 5 keeps waiting. Tree 3 is parked
 # with the hold mark and answered while no controller runs, and the next controller's start walk
 # re-admits it. The rig is Stage 3's (stage3-devbox-workflow.sh), copied: nothing here reads
-# production, and no tree reaches a pull request.
+# production, and no tree reaches a pull request. The NATS container publishes its port on a
+# loopback address of this run's own, which packages/envoy/scripts/lib/nats-host.sh claims
+# (127.0.0.1 off Linux).
 #
 # Run it as `bash scripts/e2e/parked-decision-devbox.sh` from the operator's own Oh My Pi session;
 # `--help` prints the inputs and the checkpoints. scripts/e2e/README.md, "parked-decision-devbox.sh",
@@ -140,6 +142,8 @@ fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/workflow.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
 . "$root/scripts/e2e/lib/leftovers.sh"
+# shellcheck source-path=SCRIPTDIR source=../../packages/envoy/scripts/lib/nats-host.sh
+. "$root/packages/envoy/scripts/lib/nats-host.sh"
 
 tm() { tmux -L "$tmux_server" "$@"; }
 
@@ -189,6 +193,7 @@ cleanup() {
   stop_agent_daemons || true
   stop_marked_processes "$work" || true
   docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1 || true
+  release_nats_host
   close_unpassed_run_pull_requests
   remove_run_branches >&2
   collect_transcripts
@@ -230,7 +235,7 @@ start_listener() {
   local token
   token=$(cat "$work/envoy-token")
   ENVOY_API_TOKEN="$token" ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_MACHINE_ID="legion-e2e-pd-$$" NATS_URLS="nats://127.0.0.1:$port_nats" \
+    ENVOY_MACHINE_ID="legion-e2e-pd-$$" NATS_URLS="nats://$nats_host:$port_nats" \
     start_held listener port_listener ENVOY_LISTEN_FD --env 'PORT={port}' -- \
     env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
@@ -251,7 +256,7 @@ start_dispatch() {
   DATABASE_URL="postgres://legion:$pg_password@127.0.0.1:$port_pg/dispatch?sslmode=disable" \
     DISPATCH_AGENT_TOKEN="$dispatch_token" ENVOY_TOKEN="$envoy_token" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
-    DISPATCH_LISTEN_HOST=127.0.0.1 NATS_URLS="nats://127.0.0.1:$port_nats" \
+    DISPATCH_LISTEN_HOST=127.0.0.1 NATS_URLS="nats://$nats_host:$port_nats" \
     ENVOY_URL="http://127.0.0.1:$port_listener" \
     start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD \
     --env 'DISPATCH_PORT={port}' --env 'DISPATCH_SERVER_URL=http://127.0.0.1:{port}' -- \
@@ -273,7 +278,7 @@ omp_invocation: mise x $pin -- omp
 envoy_url: http://127.0.0.1:$port_listener
 envoy_token_file: $work/envoy-token
 nats_urls:
-  - nats://127.0.0.1:$port_nats
+  - nats://$nats_host:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
 # The project's repository is Dispatch's mapping (the PUT in rig makes $repo its default).
@@ -730,7 +735,8 @@ until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" p
 docker exec "$pg_container" createdb -U legion legion
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" "$nats_image" -js >/dev/null
+claim_nats_host "$work" || fail "no loopback address could be claimed for NATS (above)"
+docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "$nats_host::4222" "$nats_image" -js >/dev/null
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
@@ -788,7 +794,7 @@ daemon_url: http://127.0.0.1:$port_daemon
 operator_token_file: $work/operator-token
 envoy_url: http://127.0.0.1:$port_listener
 envoy_token_file: $work/envoy-token
-nats_urls: [nats://127.0.0.1:$port_nats]
+nats_urls: [nats://$nats_host:$port_nats]
 dispatch_url: $dispatch_base
 dispatch_token_file: $work/dispatch-token
 instructions: $work/controller-instructions.md
@@ -1092,6 +1098,7 @@ docker rm -f "$pg_container" "$nats_container" >/dev/null
 for container in "$pg_container" "$nats_container"; do
   ! docker inspect "$container" >/dev/null 2>&1 || fail "the container $container remains"
 done
+release_nats_host
 wait_for_run_processes 600 10
 remove_run_branches
 for issue in $tree1 $tree2 $tree3 $tree4 $tree5; do

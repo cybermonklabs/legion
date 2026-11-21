@@ -641,6 +641,29 @@ const (
 	rigLameDuckGrace = time.Second
 )
 
+// ListenOn makes host the address of every listener opts has: the client and monitoring ports, and
+// whichever cluster, gateway, leafnode, websocket and MQTT ports its configuration opens, whatever
+// host the configuration names for any of them, so nothing of the server answers on an address
+// another server had. natsd imposes it on the server a script starts.
+func ListenOn(opts *natsserver.Options, host string) {
+	opts.Host = host
+	opts.HTTPHost = host
+	for _, listener := range []struct {
+		port int
+		host *string
+	}{
+		{opts.Cluster.Port, &opts.Cluster.Host},
+		{opts.Gateway.Port, &opts.Gateway.Host},
+		{opts.LeafNode.Port, &opts.LeafNode.Host},
+		{opts.Websocket.Port, &opts.Websocket.Host},
+		{opts.MQTT.Port, &opts.MQTT.Host},
+	} {
+		if listener.port != 0 {
+			*listener.host = host
+		}
+	}
+}
+
 // serverOptions parses the configuration at path and serverArgs as nats-server parses its own
 // command line, then imposes what this rig owns: host, the server's loopback address, for its
 // client and monitoring listeners, a port for each the server picks, the test's own store, no
