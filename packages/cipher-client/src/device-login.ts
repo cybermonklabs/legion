@@ -306,9 +306,10 @@ async function checkLoginDirectory(dir: string): Promise<void> {
 
 /**
  * Makes the directory of the login at `path`, 0700, where it is absent, and refuses one another
- * user could replace the login in ({@link checkLoginDirectory}) or one this user cannot write to.
- * `dispatch login --device` runs it before it asks for a code, so no person approves a login this
- * machine could not keep there.
+ * user could replace the login in ({@link checkLoginDirectory}) or one this user cannot enter and
+ * write to (a 0555 directory, or the 0600 one a `chmod -R 600` leaves). `dispatch login --device`
+ * runs it before it asks for a code, so no person approves a login this machine could not keep
+ * there.
  */
 export async function deviceLoginPlace(path: string): Promise<void> {
   const dir = dirname(path);
@@ -319,10 +320,10 @@ export async function deviceLoginPlace(path: string): Promise<void> {
   }
   await checkLoginDirectory(dir);
   try {
-    await access(dir, constants.W_OK);
+    await access(dir, constants.W_OK | constants.X_OK);
   } catch {
     throw new Error(
-      `this user cannot write to the directory of ${DEVICE_LOGIN_FILE_NAMED}; run chmod 700 on it`
+      `this user cannot enter and write to the directory of ${DEVICE_LOGIN_FILE_NAMED}; run chmod 700 on it`
     );
   }
 }

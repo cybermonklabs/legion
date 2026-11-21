@@ -15,7 +15,7 @@ body: |-
   is refreshed at once, so a revoked login names `dispatch login --device` at its next trade. A
   second `dispatch login --device` names the earlier login's credential, which stays live until it
   lapses or is revoked, and says where to revoke it. The broker must be https, or http on this
-  machine's loopback, and the login's directory must be this user's own, writable by this user and
-  closed to others' writes, which the command checks before it asks for a code. A process with
-  `PERSON_SIGNIN_TRADE=off` is refused a device login, since the broker trades it as the person
-  who approved it.
+  machine's loopback, and the login's directory must be this user's own, one this user can enter
+  and write and others cannot write, which the command checks before it asks for a code. A
+  process with `PERSON_SIGNIN_TRADE=off` is refused a device login, since the broker trades it as
+  the person who approved it.

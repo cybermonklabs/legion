@@ -98,7 +98,7 @@ function parseLogin(argv: readonly string[]): ParsedLogin {
  * its code expired, or it could not be kept; 2 for a usage error, before any request: no
  * `--device`, no person (`--person`, else `AGENT_SECRETS_PERSON`), no broker
  * (`AGENT_SECRETS_URL`) a device login may use (https, or http on this machine's loopback), or a
- * login directory others may write to, another user owns, or this user cannot write to.
+ * login directory others may write to, another user owns, or this user cannot enter and write to.
  */
 export async function loginCommand(
   argv: readonly string[],
