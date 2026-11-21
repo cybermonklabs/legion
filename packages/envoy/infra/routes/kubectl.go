@@ -134,9 +134,9 @@ var serviceAccountCA = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
 // Cluster reads the context kubectl reads through, the one given or its kubeconfig's current one,
 // and that context's API server, from `kubectl config view --minify`, which keeps that context and
-// its cluster alone and reads no object of the cluster; it keeps the server without any user and
-// password its URL carries, which kubectl prints whole and sends as Basic auth (serverWithoutUser);
-// and the digest of that cluster's CA
+// its cluster alone and reads no object of the cluster; it reads the server as kubectl does, and
+// refuses one that carries user information or is no URL (clusterServer), naming the context and
+// not the value, so no later kubectl call runs against it; and the digest of that cluster's CA
 // certificate (caDigest) from its certificate-authority-data, which `--flatten` gives for a CA held
 // as data or as a file, and a jsonpath of that field alone keeps the user's credentials out of
 // kubectl's output. In a pod with no kubeconfig, as the operator's Job runs, kubectl reads the
@@ -171,9 +171,9 @@ func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
 	if config.CurrentContext == "" || len(config.Clusters) != 1 || config.Clusters[0].Cluster.Server == "" {
 		return Cluster{}, errors.New("kubectl's configuration names no context with one cluster and its server")
 	}
-	server, err := serverWithoutUser(config.Clusters[0].Cluster.Server)
+	server, err := clusterServer(config.Clusters[0].Cluster.Server)
 	if err != nil {
-		return Cluster{}, fmt.Errorf("the server of context %q is no URL", config.CurrentContext)
+		return Cluster{}, fmt.Errorf("the server of context %q %s", config.CurrentContext, err)
 	}
 	ca, err := k.clusterCA(ctx)
 	if err != nil {
@@ -182,14 +182,23 @@ func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
 	return Cluster{Context: config.CurrentContext, Server: server, CA: caDigest(ca)}, nil
 }
 
-// serverWithoutUser is a kubeconfig cluster's server URL without its user and password. Its error
-// is url.Parse's, which quotes the whole value, so a caller names the context instead.
-func serverWithoutUser(server string) (string, error) {
+// clusterServer reads a kubeconfig cluster's server as kubectl does (k8s.io/client-go/rest,
+// DefaultServerURL): a value with no scheme or no host is read again with https:// before it, and
+// then holds no path. It refuses a server that carries user information: kubectl sends it as Basic
+// auth, and kubectl's errors can print the URL whole, as Go's net/http does for a user with no
+// password. Its errors hold no part of the value, since the value can hold a credential.
+func clusterServer(server string) (string, error) {
+	errNotURL := errors.New("is no URL or host:port, as kubectl reads a server")
 	u, err := url.Parse(server)
-	if err != nil {
-		return "", err
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		if u, err = url.Parse("https://" + server); err != nil || (u.Path != "" && u.Path != "/") {
+			return "", errNotURL
+		}
 	}
-	u.User = nil
+	if u.User != nil {
+		return "", errors.New("carries user information, which kubectl would send and could print: remove it from the kubeconfig, " +
+			"and give the user's credentials in its users entry")
+	}
 	return u.String(), nil
 }
 

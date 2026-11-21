@@ -78,7 +78,8 @@ case "$args" in
   case "$args" in *" --allow-missing-template-keys=true "*) exit 0 ;; esac
   [ -f "$dir/kuberc-strict" ] && [ "$KUBERC" != off ] && { echo "error: error executing jsonpath: certificate-authority-data is not found. object given to jsonpath engine was: $(cat "$dir/kuberc-strict")" >&2; exit 1; }
   exit 0 ;;
-*" get statefulset envoy-nats --output json") exec cat "$dir/statefulset.json" ;;
+*" get statefulset envoy-nats --output json") [ -f "$dir/get-fails" ] && { echo "error: Get \"$(cat "$dir/get-fails")/apis/apps/v1/namespaces/envoy/statefulsets/envoy-nats\": dial tcp: connection refused" >&2; exit 1; }
+  exec cat "$dir/statefulset.json" ;;
 *" get pod "*" --output json") pod=${args#* get pod }; pod=${pod%% *}; exec cat "$dir/pod-$pod.json" ;;
 *" port-forward pod/"*) pod=${args#* port-forward pod/}; pod=${pod%% *}; remote=${args##*:}
   port=$(cat "$dir/port-$pod-$remote") || exit 1
@@ -558,21 +559,29 @@ func TestKubectlKeepsTheKubeconfigsCredentialsOutOfItsOutput(t *testing.T) {
 	})
 }
 
-// A kubeconfig cluster's server can carry a user and a password, which kubectl prints whole in
-// `config view` and sends as Basic auth. The record keeps the server without them: they are in
-// neither the record file nor any output of routes record or routes check, and a record then a
-// check of that cluster exit 0. A server that is no URL is refused, exit 2, naming the context and
-// not the value.
-func TestKubectlKeepsAServersPasswordOutOfTheRecord(t *testing.T) {
+// A kubeconfig cluster's server can carry user information, which kubectl sends as Basic auth and
+// prints whole in config view, and which Go's net/http prints whole in an error for a user with no
+// password, as kubectl's stderr for a failed get or logs does. kubectl reads the server as
+// client-go does (k8s.io/client-go/rest, DefaultServerURL): a value with no scheme or no host is
+// read again with https:// before it, and then holds no path. So routes record and routes check
+// read the server that way, and refuse one with user information, or one that is no URL, exit 2,
+// naming the context and not the value, before any other kubectl call: the planted value is in no
+// output, and no record is written. A bare host:port is read as https://host:port, and record then
+// check exit 0.
+func TestKubectlRefusesAServerWithACredential(t *testing.T) {
+	const userInfo = `the server of context "example-context" carries user information`
+	const notURL = `the server of context "example-context" is no URL or host:port`
 	for _, row := range []struct {
 		name, server string
-		record       int
 		want         string
+		getFails     bool
 	}{
-		{"a server with a user and a password", canaryURL("https", "admin", "CANARY-SERVER-PASSWORD", "example-context.example.invalid"), 0,
-			`through context "example-context" of the cluster at "https://example-context.example.invalid"`},
-		{"a server that is no URL", canaryURL("https", "admin", "CANARY-SERVER-PASSWORD", "[example"), 2,
-			`the server of context "example-context" is no URL`},
+		{"a user and a password", canaryURL("https", "admin", "CANARY-SERVER-SECRET", "example-context.example.invalid"), userInfo, false},
+		{"a user and a password, no scheme", "admin:CANARY-SERVER-SECRET@example-context.example.invalid:443", userInfo, false},
+		{"a token as the user, and a failing read that prints the URL", "http://CANARY-SERVER-SECRET@example-context.example.invalid", userInfo, true},
+		{"a user and a password, no scheme, and a path", "admin:CANARY-SERVER-SECRET@example-context.example.invalid/path", notURL, false},
+		{"a value that is no URL", canaryURL("https", "admin", "CANARY-SERVER-SECRET", "[example"), notURL, false},
+		{"control: a bare host:port", "example-context.example.invalid:443", `of the cluster at "https://example-context.example.invalid:443"`, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			h := cleanHub()
@@ -582,6 +591,9 @@ func TestKubectlKeepsAServersPasswordOutOfTheRecord(t *testing.T) {
 				"clusters": []any{map[string]any{"name": "example", "cluster": map[string]any{"server": row.server}}}})
 			require.NoError(t, err)
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), config, 0o600))
+			if row.getFails {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "get-fails"), []byte(row.server), 0o600))
+			}
 			run := func(args ...string) (int, string) {
 				t.Helper()
 				var stdout, stderr bytes.Buffer
@@ -593,28 +605,46 @@ func TestKubectlKeepsAServersPasswordOutOfTheRecord(t *testing.T) {
 			back := h.atEnv()
 			code, output := run("record", "--out", out)
 			back()
-			require.NotContains(t, output, "CANARY-SERVER-PASSWORD")
-			require.Equal(t, row.record, code, output)
+			require.NotContains(t, output, "CANARY-SERVER-SECRET")
 			require.Contains(t, output, row.want)
-			if row.record != 0 {
-				require.NoFileExists(t, out)
+			if row.want != userInfo && row.want != notURL {
+				require.Equal(t, 0, code, output)
+				body, err := os.ReadFile(out)
+				require.NoError(t, err)
+				require.Contains(t, string(body), `"server": "https://example-context.example.invalid:443"`)
+				code, output = run("check", "--record", out)
+				require.Equal(t, 0, code, "the same cluster: %s", output)
 				return
 			}
-			body, err := os.ReadFile(out)
-			require.NoError(t, err)
-			require.NotContains(t, string(body), "CANARY-SERVER-PASSWORD")
-			require.Contains(t, string(body), `"server": "https://example-context.example.invalid"`)
-			code, output = run("check", "--record", out)
-			require.NotContains(t, output, "CANARY-SERVER-PASSWORD")
-			require.Equal(t, 0, code, "the same cluster: %s", output)
-			config, err = json.Marshal(map[string]any{"current-context": "other-context",
-				"clusters": []any{map[string]any{"name": "example", "cluster": map[string]any{"server": row.server}}}})
-			require.NoError(t, err)
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), config, 0o600))
-			code, output = run("check", "--record", out)
-			require.NotContains(t, output, "CANARY-SERVER-PASSWORD", "the mismatch message names the server without its password")
 			require.Equal(t, 2, code, output)
-			require.Contains(t, output, `not through context "other-context" of the cluster at "https://example-context.example.invalid"`)
+			require.NoFileExists(t, out)
+			calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+			require.NoError(t, err)
+			require.NotContains(t, string(calls), " get ", "record reads no object of the cluster through such a server")
+
+			// A record taken through a clean server, checked once the server carries the value.
+			clean, err := json.Marshal(map[string]any{"current-context": "example-context",
+				"clusters": []any{map[string]any{"name": "example", "cluster": map[string]any{"server": "https://example-context.example.invalid"}}}})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), clean, 0o600))
+			require.NoError(t, os.Remove(filepath.Join(dir, "calls")))
+			_ = os.Remove(filepath.Join(dir, "get-fails"))
+			back = h.atEnv()
+			code, output = run("record", "--out", out)
+			back()
+			require.Equal(t, 0, code, output)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), config, 0o600))
+			if row.getFails {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "get-fails"), []byte(row.server), 0o600))
+			}
+			require.NoError(t, os.Remove(filepath.Join(dir, "calls")))
+			code, output = run("check", "--record", out)
+			require.NotContains(t, output, "CANARY-SERVER-SECRET")
+			require.Equal(t, 2, code, output)
+			require.Contains(t, output, row.want)
+			calls, err = os.ReadFile(filepath.Join(dir, "calls"))
+			require.NoError(t, err)
+			require.NotContains(t, string(calls), " get ", "check reads no object of the cluster through such a server")
 		})
 	}
 }

@@ -126,15 +126,19 @@ func record(ctx context.Context, target Target, out string, stdout, stderr io.Wr
 		return 2
 	}
 	defer src.Close()
+	// The cluster first: its read refuses a server kubectl's errors could print, before any call
+	// that reads an object of the cluster.
+	cluster, err := src.Cluster(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "envoy-infra routes record: not recorded: which cluster it reads is not known: %v\n", err)
+		return 2
+	}
 	rec, err := Take(ctx, src, target.Namespace, target.StatefulSet, time.Now())
 	if err != nil {
 		fmt.Fprintf(stderr, "envoy-infra routes record: not recorded: %v\n", err)
 		return 2
 	}
-	if rec.Cluster, err = src.Cluster(ctx); err != nil {
-		fmt.Fprintf(stderr, "envoy-infra routes record: not recorded: which cluster it reads is not known: %v\n", err)
-		return 2
-	}
+	rec.Cluster = cluster
 	body, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		fmt.Fprintf(stderr, "envoy-infra routes record: %v\n", err)
