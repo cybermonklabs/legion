@@ -242,7 +242,8 @@ test("a table that cannot be read is named in the unknown, never read as no conn
   expect(owner).toContain("ENOENT")
 })
 
-test(
+// It reads this machine's own /proc, which only Linux has: a macOS host runs the stand-in rows.
+test.skipIf(process.platform !== "linux")(
   "a live connection's owner is named from this machine's /proc, by a process whose PATH finds no ss",
   async () => {
     const listener = Bun.listen({

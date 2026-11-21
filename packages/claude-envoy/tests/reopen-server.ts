@@ -14,7 +14,7 @@ import {
   processStarted,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
-import { SERVER_START_MS, waitFor } from "./channel-session-harness"
+import { waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { type NatsGate, natsGate } from "./nats-gate"
 import { socketOwner } from "./socket-owner"
@@ -281,7 +281,7 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
       async () => stderr.length > 0 || deliveries.length > 0,
       "the server's first stderr line",
       state,
-      SERVER_START_MS,
+      PROCESS_WAIT_MS,
     )
     if (options.awaitRegistration !== false) {
       await waitFor(
