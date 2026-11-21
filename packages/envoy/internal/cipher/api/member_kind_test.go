@@ -11,8 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode: the API port answers a refusal the broker
@@ -44,36 +46,45 @@ func TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode(t *testing.T) {
 
 // TestACallerThatEndedIsNoDispatchFailure: a member-kind read that failed because its caller gave
 // up (context.Canceled, a client that closed its connection) is still refused 503 in the same
-// fixed words, but it is logged below ERROR: it says nothing of Dispatch. A failure to ask
-// Dispatch is logged at ERROR, as before.
+// fixed words, but it writes no line and is counted cancelled, as every route counts a caller that
+// hung up (answer.Recorder.NoteCallerEnded): it says nothing of Dispatch. A failure to ask
+// Dispatch is logged at ERROR and counted failed, as before.
 func TestACallerThatEndedIsNoDispatchFailure(t *testing.T) {
-	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
 	for _, row := range []struct {
+		name    string
 		failure error
-		level   slog.Level
+		outcome string
+		errors  int
 	}{
-		{fmt.Errorf("projectaccess: ask dispatch: %w", context.Canceled), slog.LevelInfo},
-		{errors.New("dial tcp 10.20.0.9:8766: connect: connection refused"), slog.LevelError},
+		{"the caller hung up", fmt.Errorf("projectaccess: ask dispatch: %w", context.Canceled), "cancelled", 0},
+		{"Dispatch did not answer", errors.New("dial tcp 10.20.0.9:8766: connect: connection refused"), "failed", 1},
 	} {
-		uncheckable := &projectaccess.MemberKindUncheckable{Person: "uma@example.com", Err: row.failure}
-		before := len(capture.Records())
-		w := httptest.NewRecorder()
-		if !writeMemberKindUncheckable(w, "the release", uncheckable) || w.Code != http.StatusServiceUnavailable {
-			t.Fatalf("the refusal for %v answered %d, want 503", row.failure, w.Code)
-		}
-		records := capture.Records()[before:]
-		if len(records) != 1 || records[0].Level != row.level {
-			t.Fatalf("the refusal for %v logged %d records, the first at %v; want one at %v", row.failure, len(records), levels(records), row.level)
-		}
+		t.Run(row.name, func(t *testing.T) {
+			capture := &logtest.Recorder{}
+			logtest.SetDefault(t, capture)
+			registry := metrics.New()
+			handler := answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				writeMemberKindUncheckable(w, "the release", &projectaccess.MemberKindUncheckable{Person: "uma@example.com", Err: row.failure})
+			}), answer.NewAnswers(registry))
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/grants/g/values", nil))
+			if w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("the refusal for %v answered %d, want 503", row.failure, w.Code)
+			}
+			var errorLines int
+			for _, rec := range capture.Records() {
+				if rec.Level >= slog.LevelError {
+					errorLines++
+				}
+			}
+			if errorLines != row.errors {
+				t.Errorf("the refusal for %v wrote %d ERROR lines, want %d", row.failure, errorLines, row.errors)
+			}
+			scrape := httptest.NewRecorder()
+			registry.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+			if want := `broker_answers_total{outcome="` + row.outcome + `",code="HTTP_503"`; !strings.Contains(scrape.Body.String(), want) {
+				t.Errorf("the refusal for %v was not counted %s:\n%s", row.failure, row.outcome, scrape.Body.String())
+			}
+		})
 	}
-}
-
-// levels is each record's level, for a failure message.
-func levels(records []slog.Record) []slog.Level {
-	var out []slog.Level
-	for _, record := range records {
-		out = append(out, record.Level)
-	}
-	return out
 }

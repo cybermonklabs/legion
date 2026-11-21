@@ -1,7 +1,10 @@
 package proxy
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -9,7 +12,41 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
+
+// TestAMemberKindReadTheCallerEndedIsNoDispatchFailure: the proxy's refusal of a call whose
+// member-kind read failed because its caller gave up (context.Canceled) is 503
+// MEMBER_KIND_UNCHECKABLE in the fixed words and is logged at INFO, since it says nothing of
+// Dispatch; a failure to ask Dispatch is the same answer logged at ERROR.
+func TestAMemberKindReadTheCallerEndedIsNoDispatchFailure(t *testing.T) {
+	for _, row := range []struct {
+		name    string
+		failure error
+		level   slog.Level
+	}{
+		{"the caller hung up", fmt.Errorf("projectaccess: ask dispatch: %w", context.Canceled), slog.LevelInfo},
+		{"Dispatch did not answer", errors.New("dial tcp 10.20.0.9:8766: connect: connection refused"), slog.LevelError},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var records logtest.Recorder
+			s := &Server{log: slog.New(&records)}
+			uncheckable := &projectaccess.MemberKindUncheckable{Person: "uma@example.com", Err: row.failure}
+			status, code, words := s.grantRefusal("connection", uncheckable)
+			if status != http.StatusServiceUnavailable || code != projectaccess.UncheckableCode || words != uncheckable.Error() {
+				t.Fatalf("grantRefusal = %d %s %q; want 503 %s in the fixed words", status, code, words, projectaccess.UncheckableCode)
+			}
+			got := records.Records()
+			if len(got) != 1 || got[0].Level != row.level {
+				var levels []slog.Level
+				for _, r := range got {
+					levels = append(levels, r.Level)
+				}
+				t.Fatalf("grantRefusal logged at %v; want one line at %v", levels, row.level)
+			}
+		})
+	}
+}
 
 // TestAPersonWhoseMemberKindCannotBeReadIsCarriedNothing: while the broker cannot learn from
 // Dispatch whether the person a grant's session acts for is a restricted member
