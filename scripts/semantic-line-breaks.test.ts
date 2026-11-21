@@ -89,9 +89,11 @@ test("--write reads a table written without leading pipes as a table, which it d
 });
 
 test("--write does not join a paragraph's last line into the header row of a table below it", async () => {
-  const text = "Intro one. Intro two.\nhead a | head b\n--- | ---\n1 | 2\n";
+  // The paragraph's last line ends with no sentence mark, so only the table's start keeps the
+  // header row off it.
+  const text = "Intro one. Intro two\nhead a | head b\n--- | ---\n1 | 2\n";
   const result = await written(text);
-  expect(result.text).toBe("Intro one.\nIntro two.\nhead a | head b\n--- | ---\n1 | 2\n");
+  expect(result.text).toBe("Intro one.\nIntro two\nhead a | head b\n--- | ---\n1 | 2\n");
   expect(result.exitCode).toBe(0);
 });
 
@@ -207,7 +209,7 @@ for (const [shape, text] of [
     "a sentence that breaks after a clause, in a paragraph of two",
     "The other mounts outside the table read no broker token,\nand they take no broker token at all.\nA read-only token names a service and no person too.\n",
   ],
-]) {
+] as const) {
   test(`--write leaves a file the check accepts as it is: ${shape}`, async () => {
     const path = await markdownFile(text);
     const checked = run([path]);
@@ -218,6 +220,13 @@ for (const [shape, text] of [
     expect(result.exitCode).toBe(0);
   });
 }
+
+test("--write re-lays out only the paragraph with a fault, in a file that also holds one the check accepts", async () => {
+  const text = "A sentence,\nbroken after its clause.\n\nOne. Two.\n";
+  const result = await written(text);
+  expect(result.text).toBe("A sentence,\nbroken after its clause.\n\nOne.\nTwo.\n");
+  expect(result.exitCode).toBe(0);
+});
 
 test("--write refuses, naming the item, a re-layout that would take a list item past 50 screen rows", async () => {
   // The item runs 50 screen rows, and its first line holds two sentences (R1). Cutting them apart
@@ -242,6 +251,50 @@ test("--write refuses, naming the line, a finding it cannot fix: two sentences i
   expect(result.exitCode).toBe(2);
   expect(result.text).toBe(text);
 });
+
+test("--write names every fault it cannot fix, each at its own line", async () => {
+  const text = "# One. Two\n\nA. B.\n\n# Three. Four\n";
+  const result = await written(text);
+  expect(result.stderr).toBe(
+    `${result.path}: refusing to write: line 1 would fail R1: # One. Two\n` +
+      `${result.path}: refusing to write: line 5 would fail R1: # Three. Four\n`
+  );
+  expect(result.exitCode).toBe(2);
+  expect(result.text).toBe(text);
+});
+
+test("--write writes the files it can after one it refuses, and exits 2", async () => {
+  const refused = await markdownFile("# One. Two\n");
+  const fixed = await markdownFile("One. Two.\n");
+  const { exitCode, stderr } = run(["--write", refused, fixed]);
+  expect(stderr).toBe(`${refused}: refusing to write: line 1 would fail R1: # One. Two\n`);
+  expect(exitCode).toBe(2);
+  expect(await readFile(refused, "utf8")).toBe("# One. Two\n");
+  expect(await readFile(fixed, "utf8")).toBe("One.\nTwo.\n");
+});
+
+for (const [shape, opening, message] of [
+  ["a paragraph", "First.", "A sentence. [see lots more words around here."],
+  ["a list item", "- First.", "A sentence. [see lots more words around here."],
+  ["one output line", "Intro", "Intro A sentence. [see lots more words around here."],
+  [
+    "a wrapped clause",
+    `Intro ${"word ".repeat(40)}:`,
+    "A sentence. [see lots more words around here.",
+  ],
+] as const) {
+  test(`--write locates a remaining R1 on its source line after joining ${shape}`, async () => {
+    // The original second line looks like a reference definition after its first sentence, so R1
+    // sees only the break before Next. Cutting there exposes another R1, still from source line 2.
+    const text = `${opening}\nA sentence. [see lots more words around here. Next [a]: b`;
+    const result = await written(text);
+    expect(result.stderr).toBe(
+      `${result.path}: refusing to write: line 2 would fail R1: ${message}\n`
+    );
+    expect(result.exitCode).toBe(2);
+    expect(result.text).toBe(text);
+  });
+}
 
 test("the check accepts what --write writes, where it re-lays out a list item near 50 screen rows", async () => {
   // The item runs 50 screen rows, and its first line holds two sentences (R1). Re-laid out, it
@@ -270,6 +323,12 @@ test("--write keeps a footnote definition that interrupts a paragraph on its own
   const result = await written("Text[^n] here. More,\nmore text\n[^n]: The note.\n");
   expect(result.text.split("\n")).toContain("[^n]: The note.");
   expect(result.text.split("\n")).toContain("More, more text");
+});
+
+test("--write keeps a hard line break and the line after it apart", async () => {
+  const result = await written("One. Two  \nThree.\n");
+  expect(result.text).toBe("One.\nTwo  \nThree.\n");
+  expect(result.exitCode).toBe(0);
 });
 
 test("--write keeps the content of an empty list item's next line inside that item", async () => {
@@ -373,6 +432,7 @@ test("--write keeps the line break inside inline <pre> HTML", async () => {
   const text = "Output follows <pre>line one. Line two\nline three</pre> in the doc.\n";
   const result = await written(text);
   expect(result.text).toBe(text);
+  expect(result.exitCode).toBe(0);
 });
 
 test("--write keeps the line break inside inline <code> HTML, which GitHub shows", async () => {
@@ -380,6 +440,7 @@ test("--write keeps the line break inside inline <code> HTML, which GitHub shows
   const text = "Type <code>a\nb</code> now. Then go.\n";
   const result = await written(text);
   expect(result.text).toBe(text);
+  expect(result.exitCode).toBe(0);
 });
 
 test("--write does not cut inside an inline HTML attribute value that holds a >", async () => {
@@ -452,11 +513,10 @@ test("--write refuses a join inside a code span that it misreads as a link desti
   // The script reads up to `d)` as the link's destination, so the line break looks like prose;
   // mdast reads the code span `c d) e \nf`, whose content the join would change.
   const text = "See [a](b `c d) e \nf` g. Then more.\n";
-  const path = await markdownFile(text);
-  const result = Bun.spawnSync(["bun", SCRIPT, "--write", path], { cwd: REPO_ROOT });
-  expect(result.stderr.toString()).toContain(`${path}: refusing to write: the block at line 1`);
+  const result = await written(text);
+  expect(result.stderr).toContain(`${result.path}: refusing to write: the block at line 1`);
   expect(result.exitCode).toBe(2);
-  expect(await readFile(path, "utf8")).toBe(text);
+  expect(result.text).toBe(text);
 });
 
 test("--write reads a < that opens no valid tag as text, so a code span after it stays masked", async () => {
@@ -616,7 +676,7 @@ for (const [shape, text] of [
   ["before a malformed comment", "<pre>\n<!-x </pre>\n\nNext x. Then y.\n"],
   ["before an unclosed processing instruction", "<pre>\n<?x </pre>\n\nNext x. Then y.\n"],
   ["before an unclosed tag", "<pre>\n<span a=1 </pre>\n\nNext x. Then y.\n"],
-]) {
+] as const) {
   test(`--write leaves the rest of the file as it is after a <pre> ${shape}`, async () => {
     const result = await written(text);
     expect(result.text).toBe(text);
@@ -647,7 +707,7 @@ for (const [text, expected] of [
     'Intro words. More words\n<source "x"> <code "y">alpha\nbeta gamma</code> tail.\n',
     'Intro words.\nMore words\n<source "x"> <code "y">alpha\nbeta gamma</code> tail.\n',
   ],
-]) {
+] as const) {
   test(`--write leaves a line that starts with <source as it is: ${JSON.stringify(text)}`, async () => {
     const result = await written(text);
     expect(result.text).toBe(expected);
@@ -684,7 +744,7 @@ for (const [what, text] of [
   ["a carriage return with no line feed", "Some words. More words.\n<source\rmore words.\n"],
   ["a vertical tab", "Some words. More words.\n<source\vsrc=x> more words.\n"],
   ["CRLF line endings", "Some words. More words.\nSome text. More text\r\nhere.\r\n"],
-]) {
+] as const) {
   test(`--write refuses a file that holds ${what}`, async () => {
     const path = await markdownFile(text);
     const result = Bun.spawnSync(["bun", SCRIPT, "--write", path], { cwd: REPO_ROOT });

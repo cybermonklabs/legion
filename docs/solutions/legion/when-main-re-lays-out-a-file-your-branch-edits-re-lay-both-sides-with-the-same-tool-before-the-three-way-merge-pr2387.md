@@ -7,7 +7,7 @@ tags:
   - semantic-line-breaks
   - merge-conflict
 date: 2026-10-31
-status: active
+status: superseded in part by cybermonklabs/legion#4752 — `--write` now leaves a paragraph its check accepts as it is, so it no longer joins a hard-wrapped sentence; to reproduce a re-layout that main made with an earlier `--write`, save that commit's script (`git show <commit>:scripts/semantic-line-breaks.ts`) under a new name in the checkout's scripts directory, where it finds the installed parser, and run it on the base and branch copies. Merging the three copies and checking the result with a word-level diff stand
 module: packages/envoy
 related_issues:
   - "sjawhar/legion#2387"

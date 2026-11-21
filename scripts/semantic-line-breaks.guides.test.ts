@@ -78,17 +78,17 @@ test("--write changes none of the five guides, which the checker accepts", () =>
     const copies = files.map((file, n) => {
       const copy = join(directory, `${n}.md`);
       copyFileSync(resolve(REPO_ROOT, file), copy);
-      return copy;
+      return { file, copy };
     });
-    const { exitCode, stdout, stderr } = run(["--write", ...copies]);
+    const { exitCode, stdout, stderr } = run(["--write", ...copies.map(({ copy }) => copy)]);
     expect(stdout).toBe("");
     expect(stderr).toBe("");
     expect(exitCode).toBe(0);
-    const changed = files.filter(
-      (file, n) =>
-        readFileSync(copies[n] ?? "", "utf8") !== readFileSync(resolve(REPO_ROOT, file), "utf8")
+    const changed = copies.filter(
+      ({ file, copy }) =>
+        readFileSync(copy, "utf8") !== readFileSync(resolve(REPO_ROOT, file), "utf8")
     );
-    expect(changed).toEqual([]);
+    expect(changed.map(({ file }) => file)).toEqual([]);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

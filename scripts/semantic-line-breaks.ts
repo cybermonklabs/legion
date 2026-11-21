@@ -181,6 +181,8 @@ const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
 const LIST_MARKER_PREFIX = /^[ \t]*(?:#{1,6}[ \t]+)?(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*\d{1,9}\.$/;
 /** The whitespace `tr -s '[:space:]' ' '` folds. */
 const WHITESPACE_RUN = /[ \t\n\v\f\r]+/g;
+/** One character of that whitespace. */
+const WHITESPACE_CHAR = /[ \t\n\v\f\r]/;
 
 type LineKind = "blank" | "fence" | "code" | "table" | "heading" | "html" | "text" | "other";
 
@@ -250,6 +252,12 @@ type BlockStart =
 
 interface Finding {
   line: number;
+  /**
+   * The column of the character the finding is about: the last character of the sentence before
+   * the break for R1, the line's first column for R2 and R3. `--write` follows that character back
+   * to its line in the file on disk.
+   */
+  column: number;
   rule: 1 | 2 | 3;
   message: string;
 }
@@ -824,17 +832,17 @@ function wrapLongLine(line: Masked, indent: string): string[] {
 }
 
 /**
- * The lines of a paragraph joined into logical lines, each with its prose mask and the index of
- * the line it starts on, read over the whole paragraph so a code span or inline HTML a line break
- * cuts in two stays masked. A line stays apart from the one before at a hard break, where that
- * line break is inside a code span or inline HTML, where the line starts with text that could open
- * or interrupt a block, and after a line that stands alone. A line stands alone when it is a list
- * item that holds only a task box, a tag alone on its line, or a RULE_LIKE_LINE: nothing joins
- * onto it, so a second run reads it as the first did.
+ * The lines of a paragraph joined into logical lines, each with its prose mask, read over the
+ * whole paragraph so a code span or inline HTML a line break cuts in two stays masked. A line
+ * stays apart from the one before at a hard break, where that line break is inside a code span or
+ * inline HTML, where the line starts with text that could open or interrupt a block, and after a
+ * line that stands alone. A line stands alone when it is a list item that holds only a task box, a
+ * tag alone on its line, or a RULE_LIKE_LINE: nothing joins onto it, so a second run reads it as
+ * the first did.
  */
-function joinParagraph(source: readonly string[]): (Masked & { first: number })[] {
+function joinParagraph(source: readonly string[]): Masked[] {
   const mask = proseMask(source.join("\n"));
-  const logical: (Masked & { first: number })[] = [];
+  const logical: Masked[] = [];
   let offset = 0;
   for (const [n, line] of source.entries()) {
     const prose = mask.slice(offset, offset + line.length);
@@ -853,7 +861,7 @@ function joinParagraph(source: readonly string[]): (Masked & { first: number })[
       HTML_TAG_LINE.test(above.trimStart()) ||
       RULE_LIKE_LINE.test(above)
     ) {
-      logical.push({ text: line, prose, first: n });
+      logical.push({ text: line, prose });
       continue;
     }
     // The line break is prose, so the trailing whitespace it follows is too.
@@ -878,36 +886,47 @@ function needsBlankBefore(
   );
 }
 
-interface Relayout {
-  text: string;
-  /** For each line of `text`, the index of the line of the original it comes from. */
-  origins: number[];
+/** A paragraph R1 reads, its lines, those lines joined with `\n`, and sentenceBreaks over them. */
+interface ParagraphBreaks {
+  paragraph: Paragraph;
+  source: string[];
+  joined: string;
+  breaks: number[];
+}
+
+/**
+ * R1 in the paragraph that starts on line `index`, which it reads whole; undefined where no
+ * paragraph starts or where its first line is verbatim. The check reports each break, and
+ * `--write` re-lays out a paragraph only where this finds one, as it adds only the blank lines
+ * needsBlankBefore finds.
+ */
+function paragraphBreaks(
+  lines: readonly string[],
+  info: LineInfo | undefined,
+  index: number
+): ParagraphBreaks | undefined {
+  const paragraph = info?.paragraph;
+  if (paragraph?.first !== index || info?.verbatim === true) return undefined;
+  const source = lines.slice(paragraph.first, paragraph.last + 1);
+  const joined = source.join("\n");
+  return { paragraph, source, joined, breaks: sentenceBreaks(joined) };
 }
 
 /**
  * The document with a blank line before each list item, and each paragraph the check reports R1
- * in re-laid out: one it reads as check does, its lines joined with `\n`, so a paragraph the check
- * accepts keeps its line breaks. Every other line, verbatim lines included, stays byte for byte.
+ * in re-laid out, both found as the check finds them (needsBlankBefore, paragraphBreaks), so a
+ * paragraph the check accepts keeps its line breaks. Every other line, verbatim lines included,
+ * stays byte for byte.
  */
-function relayout(text: string, blocks: Blocks): Relayout {
+function relayout(text: string, blocks: Blocks): string {
   const { lines, trailingNewline } = splitLines(text);
   const out: string[] = [];
-  const origins: number[] = [];
-  const emit = (origin: number, ...added: string[]) => {
-    for (const line of added) {
-      out.push(line);
-      origins.push(origin);
-    }
-  };
   for (let index = 0; index < lines.length; index++) {
     const info = blocks.lines[index];
-    if (needsBlankBefore(lines, info, index)) emit(index, "");
-    const paragraph = info?.paragraph;
-    const source =
-      paragraph?.first === index && info?.verbatim !== true
-        ? lines.slice(paragraph.first, paragraph.last + 1)
-        : [];
-    if (paragraph !== undefined && sentenceBreaks(source.join("\n")).length > 0) {
+    if (needsBlankBefore(lines, info, index)) out.push("");
+    const r1 = paragraphBreaks(lines, info, index);
+    if (r1 !== undefined && r1.breaks.length > 0) {
+      const { paragraph, source } = r1;
       const indent = paragraph.continuationIndent;
       const margin = new Array<boolean>(indent.length).fill(true);
       for (const logical of joinParagraph(source)) {
@@ -917,15 +936,15 @@ function relayout(text: string, blocks: Blocks): Relayout {
             n === 0
               ? sentence
               : { text: indent + sentence.text, prose: [...margin, ...sentence.prose] };
-          emit(paragraph.first + logical.first, ...wrapLongLine(line, indent));
+          out.push(...wrapLongLine(line, indent));
         }
       }
       index = paragraph.last;
-    } else {
-      emit(index, lines[index] ?? "");
+      continue;
     }
+    out.push(lines[index] ?? "");
   }
-  return { text: out.join("\n") + (trailingNewline ? "\n" : ""), origins };
+  return out.join("\n") + (trailingNewline ? "\n" : "");
 }
 
 /** Where the two texts differ once whitespace runs are folded to one space, or undefined. */
@@ -1077,24 +1096,46 @@ function renderDifference(parse: Parse, before: string, after: string): string |
 }
 
 /**
+ * The line of `before` that holds the character standing at `at` in `after`, or, where that one is
+ * whitespace, the next one that is not. `after` differs from `before` in whitespace alone
+ * (foldedDifference found nothing else), so both hold their other characters in the same order,
+ * and counting those before `at` finds it.
+ */
+function lineBefore(before: string, after: string, at: number): number {
+  let skip = 0;
+  for (let n = 0; n < at; n++) if (!WHITESPACE_CHAR.test(after.charAt(n))) skip++;
+  let line = 0;
+  for (let n = 0; n < before.length; n++) {
+    const char = before.charAt(n);
+    if (char === "\n") line++;
+    else if (!WHITESPACE_CHAR.test(char) && skip-- === 0) break;
+  }
+  return line;
+}
+
+/**
  * Why `--write` must not write `next`, the re-layout of `text`: it would differ in more than
  * whitespace or render differently, or the check would still report a finding in it, which is
- * named by its rule and the line of `text` it comes from. Empty when `next` may be written. A
- * result the check accepts is one a second `--write` leaves as it is.
+ * named by its rule and its line in `text`. Empty when `next` may be written. A result the check
+ * accepts is one a second `--write` leaves as it is.
  */
-function writeRefusals(parse: Parse, text: string, blocks: Blocks, next: Relayout): string[] {
-  if (next.text !== text) {
-    const difference = foldedDifference(text, next.text);
+function writeRefusals(parse: Parse, text: string, blocks: Blocks, next: string): string[] {
+  if (next !== text) {
+    const difference = foldedDifference(text, next);
     if (difference !== undefined) {
       return [`the re-layout would change more than whitespace (${difference})`];
     }
-    const rendering = renderDifference(parse, text, next.text);
+    const rendering = renderDifference(parse, text, next);
     if (rendering !== undefined) return [rendering];
   }
-  const after = next.text === text ? blocks : scanBlocks(splitLines(next.text).lines);
-  return check(next.text, after).map(
-    ({ line, rule, message }) =>
-      `line ${(next.origins[line] ?? line) + 1} would fail R${rule}: ${message}`
+  const { lines } = splitLines(next);
+  const starts = [0];
+  for (const line of lines) starts.push((starts.at(-1) ?? 0) + line.length + 1);
+  return check(next, next === text ? blocks : scanBlocks(lines)).map(
+    ({ line, column, rule, message }) => {
+      const onDisk = next === text ? line : lineBefore(text, next, (starts[line] ?? 0) + column);
+      return `line ${onDisk + 1} would fail R${rule}: ${message}`;
+    }
   );
 }
 
@@ -1116,7 +1157,7 @@ function check(text: string, blocks: Blocks): Finding[] {
     if (info === undefined) continue;
     // R2 first: an item may open with a fence or indented code.
     if (needsBlankBefore(lines, info, index)) {
-      findings.push({ line: index, rule: 2, message: excerpt(line, 0) });
+      findings.push({ line: index, column: 0, rule: 2, message: excerpt(line, 0) });
     }
     if (info.kind === "fence" || info.kind === "code") continue;
     // R1 reads a paragraph whole, so a code span a line break cuts in two still masks its text.
@@ -1125,19 +1166,19 @@ function check(text: string, blocks: Blocks): Finding[] {
     // setext headings.
     const paragraph = info.paragraph;
     const read = info.verbatim !== true;
+    const r1 = paragraphBreaks(lines, info, index);
     if (paragraph === undefined) {
       const prose = read && (info.kind === "heading" || info.kind === "table");
       for (const space of prose ? sentenceBreaks(line) : []) {
-        findings.push({ line: index, rule: 1, message: excerpt(line, space) });
+        findings.push({ line: index, column: space - 1, rule: 1, message: excerpt(line, space) });
       }
-    } else if (read && paragraph.first === index) {
-      const source = lines.slice(paragraph.first, paragraph.last + 1);
-      const joined = source.join("\n");
-      for (const space of sentenceBreaks(joined)) {
-        const offset = joined.slice(0, space).split("\n").length - 1;
+    } else if (r1 !== undefined) {
+      const { source, joined, breaks } = r1;
+      for (const space of breaks) {
+        const row = joined.slice(0, space).split("\n").length - 1;
         const column = space - (joined.lastIndexOf("\n", space) + 1);
-        const message = excerpt(source[offset] ?? "", column);
-        findings.push({ line: paragraph.first + offset, rule: 1, message });
+        const message = excerpt(source[row] ?? "", column);
+        findings.push({ line: index + row, column: column - 1, rule: 1, message });
       }
     }
     if (info.kind === "table") {
@@ -1145,6 +1186,7 @@ function check(text: string, blocks: Blocks): Finding[] {
       if (rows > MAX_SCREEN_ROWS) {
         findings.push({
           line: index,
+          column: 0,
           rule: 3,
           message: `${rows} screen rows: ${excerpt(line, 0)}`,
         });
@@ -1175,7 +1217,7 @@ function check(text: string, blocks: Blocks): Finding[] {
   for (const [item, rows] of own) {
     if (rows > MAX_SCREEN_ROWS) {
       const message = `${rows} screen rows: ${excerpt(lines[item.first] ?? "", 0)}`;
-      findings.push({ line: item.first, rule: 3, message });
+      findings.push({ line: item.first, column: 0, rule: 3, message });
     }
   }
   return findings.sort((a, b) => a.line - b.line || a.rule - b.rule);
@@ -1264,8 +1306,8 @@ async function writeFiles(paths: readonly string[]): Promise<number> {
       process.stderr.write(`${path}: refusing to write: ${refusal}\n`);
       status = 2;
     }
-    if (refusals.length === 0 && next.text !== text) {
-      await writeFile(path, hasByteOrderMark(bytes) ? BYTE_ORDER_MARK + next.text : next.text);
+    if (refusals.length === 0 && next !== text) {
+      await writeFile(path, hasByteOrderMark(bytes) ? BYTE_ORDER_MARK + next : next);
     }
   }
   return status;
