@@ -163,13 +163,17 @@ func (m *authMethods) UnmarshalJSON(data []byte) error {
 // 2.3.1 has every issuer support it); else the form when it names client_secret_post. Either
 // makes every grant one request.
 //
-// The list says what the issuer supports, not what it lets each client use: an issuer that
-// registers each client for one token_endpoint_auth_method (RFC 7591 section 2) and holds it to
-// that method refuses a client registered for client_secret_post alone at every grant, with
-// invalid_client and no second request in the form, so its exchanges fail, its refreshes read as
-// the issuer unavailable, and CheckClient reports the client rejected. Dispatch signs in through a
-// Cognito sign-in pool or Google, and the broker through Google, and each of them takes either
-// style from any client it issued a secret, so none of them is such an issuer.
+// The list says what the issuer supports, not what it lets each client use. An issuer whose list
+// names client_secret_basic, and that registers each client for one token_endpoint_auth_method
+// (RFC 7591 section 2) and holds it to that method, refuses a client registered for
+// client_secret_post alone at every grant, with invalid_client and no second request in the form:
+// its exchanges fail, its refreshes read as the issuer unavailable, and CheckClient reports the
+// client rejected. Under a list naming client_secret_post and not client_secret_basic, that client
+// authenticates in one request in the form, and under no list AutoDetect asks again in the form.
+// Cognito documents that its token endpoint takes either style from an app client with a secret.
+// Google's list names both, which says only what its endpoint supports; a probe on 2026-11-21 of
+// the Google Cloud SDK's installed-app client found both accepted, and that every Google client,
+// a web client among them, takes both is an inference no probe has checked.
 //
 // With no list, or a list naming neither, the style stays x/oauth2's AuthStyleAutoDetect: the
 // issuer behind such a document may take the form alone. AutoDetect asks by HTTP Basic and, on
