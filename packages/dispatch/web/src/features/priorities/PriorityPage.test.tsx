@@ -3,6 +3,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { onFakeClock } from "../../__tests__/fake-clock";
+import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { PriorityPage } from "./PriorityPage";
@@ -263,13 +265,20 @@ test("an empty description is, for a writer, the prompt that opens the editor", 
   expect(await screen.findByRole("textbox", { name: "Description of P1" })).toBeDefined();
 });
 
+// The typing and the leaving are done on the held clock, so they take the field none of its
+// 500 ms rest (`SAVE_AFTER_MS` of `InPlaceField.tsx`). On the real clock a loaded machine can
+// stop the row between two keys for longer than that, and the field then writes the half-typed
+// owner, as it should for a reader who paused there: a stall of 600 ms after "LINUX " made two
+// writes in a row that expects one.
 test("the owner is a control beside the title and writes the owner", async () => {
-  const user = userEvent.setup();
   const { patch } = page();
   const owner = await screen.findByRole("combobox", { name: "Owner" });
-  await user.clear(owner);
-  await user.type(owner, "LINUX controller");
-  await user.tab();
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    await user.clear(owner);
+    await user.type(owner, "LINUX controller");
+    await user.tab();
+  });
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.[1]).toEqual({ owner: "LINUX controller" });
 });

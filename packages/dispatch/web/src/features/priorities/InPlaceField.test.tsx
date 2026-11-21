@@ -2,7 +2,9 @@ import { expect, test } from "bun:test";
 import { render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
-import { InPlaceField } from "./InPlaceField";
+import { jump, onFakeClock } from "../../__tests__/fake-clock";
+import { userOnFakeClock } from "../../__tests__/user";
+import { InPlaceField, SAVE_AFTER_MS } from "./InPlaceField";
 
 /**
  * The field as a page holds it: `value` is the text the server answered with, and it moves only
@@ -53,4 +55,44 @@ test("a text written elsewhere replaces what a field the reader is not holding s
     "Written elsewhere"
   );
   view.unmount();
+});
+
+// The rest and the leaving are each a moment of their own here: the clock is held, so the rest
+// comes when the row moves it past `SAVE_AFTER_MS` and never between two keys of the typing. The
+// server's text stays the old one throughout, as it does while the rested write's answer is out.
+test("a text written when the typing rested is not written again when the field is left", async () => {
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    const writes: string[] = [];
+    const view = render(
+      <InPlaceField label="Title" onSave={(next) => writes.push(next)} value="Old name" />
+    );
+    const field = within(view.container).getByRole("textbox", { name: "Title" });
+    await user.clear(field);
+    await user.type(field, "New name");
+    expect(writes).toEqual([]);
+    await jump(SAVE_AFTER_MS);
+    expect(writes).toEqual(["New name"]);
+    await user.tab();
+    expect(writes).toEqual(["New name"]);
+    view.unmount();
+  });
+});
+
+test("a text changed after the typing rested is written when the field is left", async () => {
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    const writes: string[] = [];
+    const view = render(
+      <InPlaceField label="Title" onSave={(next) => writes.push(next)} value="Old name" />
+    );
+    const field = within(view.container).getByRole("textbox", { name: "Title" });
+    await user.clear(field);
+    await user.type(field, "New");
+    await jump(SAVE_AFTER_MS);
+    await user.type(field, " name");
+    await user.tab();
+    expect(writes).toEqual(["New", "New name"]);
+    view.unmount();
+  });
 });
