@@ -5,8 +5,10 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -79,12 +81,99 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 }
 
 // Measure is the measurement job's grant as the deployment repository deploys it today
-// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe at fe26eb31). The copy there
-// goes when the job moves to the auth service, and this test with it.
+// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe at fe26eb31), plus one
+// transitional subscribe, the job's inbox under the reply root, which the deployment repository's
+// copy adds in its own change while the job's inbox moves
+// (TestMeasureSubscribesItsInboxUnderBothRoots). It is written out, as the copy writes it. The
+// copy there goes when the job moves to the auth service, and this test with it.
 func TestMeasureMatchesTheDeployedList(t *testing.T) {
 	var deployed set
 	readJSON(t, "testdata/deployment-measure-grant.json", &deployed)
+	require.Equal(t, []string{"_INBOX_envoy_measure.>"}, deployed.Subscribe,
+		"the fixture is the deployed list before the move, to which this test adds the moved inbox")
+	deployed.Subscribe = append(deployed.Subscribe, "_INBOX_envoy._measure.>")
 	requireSet(t, deployed, natsgrant.Measure(), "Measure()")
+}
+
+// subscribes reports whether some subscribe entry of grant admits subject, matched as nats-server
+// matches a subscription against an allow entry, a queue group after the subject left out.
+func subscribes(grant natsgrant.Permissions, subject string) bool {
+	return slices.ContainsFunc(grant.Subscribe, func(entry string) bool {
+		fields := strings.Fields(entry)
+		return len(fields) > 0 && natsserver.SubjectMatchesFilter(subject, fields[0])
+	})
+}
+
+// While the measurement job's inbox moves under the reply root, its grant admits it under both:
+// the deployed job sets nats.js's inboxPrefix to _INBOX_envoy_measure, and the moved one to
+// MeasureInbox. Each row is the subscription nats.js 2.29.3 makes for its requests, the prefix, a
+// nuid and *, whose answers come on the prefix, the nuid and a token (protocol.js, the mux's
+// SubscriptionImpl; muxsubscription.js, init). The grant admits no other client's replies:
+// nats.go's _INBOX., another prefix under the root, or another token directly under it. The
+// control is the grant before this change, which refuses the moved inbox.
+func TestMeasureSubscribesItsInboxUnderBothRoots(t *testing.T) {
+	rows := []struct {
+		name, subscription string
+		admitted           bool
+	}{
+		{"the deployed job's inbox", "_INBOX_envoy_measure.Fq3kZ.*", true},
+		{"the inbox under the reply root", "_INBOX_envoy._measure.Fq3kZ.*", true},
+		{"nats.go's inbox, where other clients' replies arrive", "_INBOX.Fq3kZ.*", false},
+		{"the operator's prefix under the reply root", "_INBOX_envoy._operator.Fq3kZ.*", false},
+		{"another token directly under the reply root", "_INBOX_envoy.Fq3kZ.*", false},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			require.Equal(t, row.admitted, subscribes(natsgrant.Measure(), row.subscription),
+				"Measure() admits a subscription to %q", row.subscription)
+		})
+	}
+	t.Run("control: the grant before this change refuses the moved inbox", func(t *testing.T) {
+		before := natsgrant.Permissions{Subscribe: []string{"_INBOX_envoy_measure.>"}}
+		require.True(t, subscribes(before, "_INBOX_envoy_measure.Fq3kZ.*"))
+		require.False(t, subscribes(before, "_INBOX_envoy._measure.Fq3kZ.*"))
+	})
+}
+
+// Every reply prefix the auth service grants sits under one token, ReplyRoot, which a render that
+// puts JetStream in an account of its own exports to the clients' account as ReplyRoot+".>": a
+// push or ordered consumer's deliveries and a stream's republish reach a client only through a
+// subject that account exports. Each row is one kind's inbox prefix and its grant: the prefix is
+// under the root, the root's export reaches a reply under it, the grant subscribes it, and every
+// subscribe of the grant is under the root but the transitional entries the row names.
+func TestEveryReplyPrefixIsUnderTheReplyRoot(t *testing.T) {
+	require.Equal(t, "_INBOX_envoy", natsgrant.ReplyRoot)
+	export := natsgrant.ReplyRoot + ".>"
+	rows := []struct {
+		name, prefix string
+		grant        natsgrant.Permissions
+		// transitional are the subscribes a kind keeps outside the root while its client moves.
+		transitional []string
+	}{
+		// The measurement job's prefix before its move shares the root's characters but not its
+		// token, so the root's export does not reach it; it goes when no job sets it.
+		{"measure", natsgrant.MeasureInbox, natsgrant.Measure(), []string{"_INBOX_envoy_measure.>"}},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			subscription, reply := row.prefix+".Fq3kZ.*", row.prefix+".Fq3kZ.7"
+			require.True(t, strings.HasPrefix(row.prefix, natsgrant.ReplyRoot+"."),
+				"%s's prefix %q is not under the reply root %q", row.name, row.prefix, natsgrant.ReplyRoot)
+			require.True(t, natsserver.SubjectMatchesFilter(reply, export),
+				"the reply root's export %s does not reach %s's reply %q", export, row.name, reply)
+			require.True(t, subscribes(row.grant, subscription),
+				"%s's grant does not admit its own inbox's subscription %q", row.name, subscription)
+			for _, entry := range row.grant.Subscribe {
+				if slices.Contains(row.transitional, entry) {
+					require.False(t, natsserver.SubjectMatchesFilter(entry, export),
+						"%s's transitional subscribe %q is under the root; drop it from the row", row.name, entry)
+					continue
+				}
+				require.True(t, strings.HasPrefix(entry, natsgrant.ReplyRoot+"."),
+					"%s subscribes %q, outside the reply root %q", row.name, entry, natsgrant.ReplyRoot)
+			}
+		})
+	}
 }
 
 // A session's grant names its own subjects and no other session's, and an id that is not one

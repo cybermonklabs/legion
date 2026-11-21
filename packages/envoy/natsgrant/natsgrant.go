@@ -351,9 +351,11 @@ func Host(machineID string) Permissions {
 // Measure is the grant of Envoy's measurement job, which the deployment repository deploys as a
 // static user of both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It
 // reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one
-// test stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefix,
-// _INBOX_envoy_measure., never _INBOX.>, where the listener's and Dispatch's push consumer
-// deliveries and request replies arrive, so it reads no message of another client.
+// test stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefixes,
+// never _INBOX.>, where the listener's and Dispatch's push consumer deliveries and request replies
+// arrive, so it reads no message of another client. Those prefixes are two while the job moves
+// under ReplyRoot: legacyMeasureInbox, which the deployed job sets today, and MeasureInbox, which
+// it sets once it moves. The legacy one goes when no measurement job sets it.
 func Measure() Permissions {
 	return Permissions{
 		Publish: []string{
@@ -370,9 +372,26 @@ func Measure() Permissions {
 			jsAPI + "STREAM.DELETE.ENVOY_MEASURE",
 			"envoy-measure.>",
 		},
-		Subscribe: []string{"_INBOX_envoy_measure.>"},
+		Subscribe: []string{legacyMeasureInbox + ".>", MeasureInbox + ".>"},
 	}
 }
+
+// ReplyRoot is the subject token Envoy's reply prefixes move under, so that a render that moves
+// JetStream into an account of its own exports one reply root to the clients' account rather than
+// a prefix for each client: a push or ordered consumer's deliveries and a stream's republish are
+// published inside JetStream's account and reach a client only through a subject that account
+// exports. A request's reply needs no export, since it comes back through the service import's
+// response mapping. The listener and Dispatch still use nats.go's _INBOX.; until each moves, such a
+// render exports that prefix as well.
+const ReplyRoot = "_INBOX_envoy"
+
+// MeasureInbox is the measurement job's inbox prefix (nats.js's inboxPrefix) under ReplyRoot.
+const MeasureInbox = ReplyRoot + "._measure"
+
+// legacyMeasureInbox is the measurement job's inbox prefix before it moved under ReplyRoot, which
+// the deployed job still sets. It shares the root's characters but not its token, so ReplyRoot's
+// export does not reach it.
+const legacyMeasureInbox = "_INBOX_envoy_measure"
 
 // systemAccountPrefix is the first token of every subject of nats-server's own, the auth
 // service's authorization requests ($SYS.REQ.USER.AUTH) among them.

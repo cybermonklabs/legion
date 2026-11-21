@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The NATS auth service's grant for the measurement job (`measure` in `BROKER_NATS_SERVICES`)
+  now subscribes `_INBOX_envoy._measure.>` beside `_INBOX_envoy_measure.>`, so the job can make
+  its inboxes under `natsgrant.ReplyRoot`, `_INBOX_envoy`, the one reply root a hub that puts
+  JetStream in an account of its own exports to its clients. The job's present prefix is still
+  admitted; a later release drops it once no measurement job sets it. Neither prefix reaches
+  `_INBOX.>` or another client's prefix under the root.
+time: 2026-11-21T16:50:36Z
+custom:
+    Issue: measure-reply-root
