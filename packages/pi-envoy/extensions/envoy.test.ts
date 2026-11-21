@@ -217,6 +217,23 @@ Object.defineProperty(globalThis, "fetch", {
   },
 });
 
+/**
+ * The row a session's own work runs for. `bootDirectSession` starts its session inside this
+ * scope, so what the session goes on to do (a delivery, a person's `!command` and its answer)
+ * carries the row that booted it; the file's `beforeEach` makes each row a new one. Bun fails a
+ * row at its timeout and starts the next while that row's session still runs (bun kills the
+ * row's dangling child, and the command it was running then answers), so what such a session
+ * writes afterwards, a reply on Dispatch or a frame on NATS, is dropped rather than read as the
+ * next row's.
+ */
+const rowScope = new AsyncLocalStorage<symbol>();
+let currentRow = Symbol("row");
+/** Whether the code running now is the work of a session whose row has ended. */
+function fromEndedRow(): boolean {
+  const row = rowScope.getStore();
+  return row !== undefined && row !== currentRow;
+}
+
 test("a row's fetch that hands on through globalThis.fetch fails at once, naming rowFetch", async () => {
   // The mistake that recursed without end: the row's wrapper takes `globalThis.fetch`, which is
   // the recording wrapper, and so is handed its own request again on every call, each after an
@@ -471,6 +488,7 @@ const natsStandInConnect = async (options: {
         natsState.failPublishes -= 1;
         throw new Error("PUBLISH_FAILED");
       }
+      if (fromEndedRow()) return;
       natsState.published.push({ subject, data });
       natsState.onPublish?.(subject);
     },
@@ -717,6 +735,7 @@ beforeAll(() => setNatsConnectForTests(natsStandInConnect));
 afterAll(() => resetNatsConnectForTests());
 
 beforeEach(() => {
+  currentRow = Symbol("row");
   // `bun test` runs every file in one process: a Legion suite's bootstrapped-session record on
   // the process-wide interface would otherwise make every transcript here look like a
   // subagent's, the top-level session one test publishes would be the reply address the next
@@ -1289,7 +1308,10 @@ async function bootDirectSession(
       // The session asks Dispatch nothing else about a direct message but its reply and, where
       // the event carried the body in part, the read of the message whole: a row that expects
       // that read answers it itself, and every other call is recorded and refused, so a
-      // read-back would keep the card.
+      // read-back would keep the card. Such a call from a session whose row has ended
+      // (`fromEndedRow`), its reply to a command that ran on past the row, is answered as Dispatch
+      // answers a reply and recorded nowhere: it is that row's, not this one's.
+      if (fromEndedRow()) return new Response(JSON.stringify({}), { status: 201 });
       posts.push(`${init?.method ?? "GET"} ${url.pathname}`);
       if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/reply")) {
         replies.push({ body: JSON.parse(init?.body?.toString() ?? "null"), path: url.pathname });
@@ -1374,7 +1396,10 @@ async function bootDirectSession(
       ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
     },
   };
-  await fixture.handlers.get("session_start")?.({}, context);
+  // Inside the row's scope, so the session's work carries this row (`rowScope`).
+  await rowScope.run(currentRow, async () => {
+    await fixture.handlers.get("session_start")?.({}, context);
+  });
   const agent = natsState.controls.get("notifications.agent.ses_delivery");
   if (agent === undefined) throw new Error("agent subject was not subscribed");
   const delivered = (count: number): Promise<void> => {
