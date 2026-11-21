@@ -37,9 +37,9 @@ var (
 	repoSpecific = []string{
 		"Inspect", "inspect_ai", "inspect_", "Hawk", "middleman", "Taiga",
 		// The runbook a deployment sends a heavy run to, and the bucket it keeps one's output in.
-		// A deployment's own names are not here, since a public test cannot hold the names it
-		// refuses: TestNoReusablePartNamesARepositoryOrLibrary reads them from the deployment's own
-		// term list, as check-private-names does.
+		// A deployment's own names are not listed here: this repository is public, so a test of it
+		// cannot hold them. check-private-names refuses them in every file, role parts included,
+		// from the deployment's own term list.
 		"running-heavy-jobs", "gs://",
 	}
 )
@@ -79,34 +79,17 @@ func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 // send a heavy run, and the next hand to write that rule down can spell a deployment's own route
 // out in the architect parts, which this test read nothing of before.
 //
-// Each part is held to three checks. repoSpecific holds the names any reader may see. The
-// deployment's own names are read from PRIVATE_NAME_TERMS, the term list
-// .github/scripts/check-private-names.sh reads, and matched as that script matches them
-// (deploymentTerms, termPattern); a part that names one fails with the term's place in the list
-// and never the term. Where the variable holds no term, the test checks none and logs one UNKNOWN
-// line that says so. The rules leakguard ports from that script, the company's name among them,
-// read each part whatever the variable holds.
+// Each part is held to two checks: the generic names of repoSpecific, and the rules leakguard
+// ports from .github/scripts/check-private-names.sh's built-in rules. A deployment's own names
+// are check-private-names's job, in every file.
 func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
-	terms := deploymentTerms(os.Getenv(privateNameTermsVar))
-	if len(terms) == 0 {
-		t.Log("UNKNOWN: " + privateNameTermsVar + " holds no term, so no part was checked for a term of the deployment's own list")
-	} else {
-		t.Logf("%s: %d terms read", privateNameTermsVar, len(terms))
-	}
-	patterns := make([]*regexp.Regexp, len(terms))
-	for i, term := range terms {
-		patterns[i] = termPattern(term)
-	}
+	// leakguard's rules are embedded in it (private-names.toml) and read no input, so this check
+	// runs the same wherever the test runs.
 	guard := leakguard.New(leakguard.Options{})
 	check := func(name, text string) {
 		for _, needle := range repoSpecific {
 			if strings.Contains(text, needle) {
 				t.Errorf("%s contains %q", name, needle)
-			}
-		}
-		for i, pattern := range patterns {
-			if pattern.MatchString(text) {
-				t.Errorf("%s names term %d of %s (counted from 1, its key: and blank lines skipped)", name, i+1, privateNameTermsVar)
 			}
 		}
 		if err := guard.Rules(t.Context(), leakguard.Record{Label: name, Text: text}); err != nil {
