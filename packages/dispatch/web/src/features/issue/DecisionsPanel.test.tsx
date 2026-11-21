@@ -325,9 +325,9 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
 
 // Two places of the panel hold no markup and draw their text's plain-text projection: an open
 // question's link, and the name the Keep and the Change are given (the Change's form here). Each
-// drops the formatting and reads a `dispatch://` address as its target's name - the reading
-// list's `issue-open-question` and `issue-decision`. Drawn as the characters they are, each would
-// hold `**` and the address.
+// drops the formatting and reads a `dispatch://` address to an issue as the issue's key - the
+// reading list's `issue-open-question` and `issue-decision`. Drawn as the characters they are,
+// each would hold `**` and the address.
 test("an open question and the Change's name read their text's plain-text projection", async () => {
   const user = userEvent.setup();
   const question = "**Which** index does dispatch://CORE-2 need?";
@@ -362,15 +362,11 @@ test("an open question and the Change's name read their text's plain-text projec
     renderPanel();
     const open = await screen.findByRole("region", { name: "Open questions" });
     expect(
-      await within(open).findByRole("link", {
-        name: "Which index does CORE-2 Cut the release need?",
-      })
+      await within(open).findByRole("link", { name: "Which index does CORE-2 need?" })
     ).toHaveAttribute("href", "/issues/CORE-1/spec#b-q1");
     const waiting = list("Waiting for your review");
     await user.click(within(waiting).getByRole("button", { name: "Change" }));
-    expect(
-      within(waiting).getByRole("form", { name: "Change Warm CORE-2 Cut the release first" })
-    ).toBeDefined();
+    expect(within(waiting).getByRole("form", { name: "Change Warm CORE-2 first" })).toBeDefined();
   } finally {
     read.mockRestore();
     summary.mockRestore();
@@ -381,7 +377,7 @@ test("an open question and the Change's name read their text's plain-text projec
 // decisions read sends no text of the block a link points to (`refs.BlockLinks` resolves each end
 // as a graph node, whose text only a reference read fills), so there is no stored text to draw,
 // and the panel reads none. Handed a node that did carry text, the link still reads `Block p1`:
-// a projection of that text would read `Warm CORE-2 Cut the release before the cut.`.
+// a projection of that text would read `Warm CORE-2 before the cut.`.
 test("a shaped block's link names the block by its id and draws no text of the block", async () => {
   const view: IssueDecisions = {
     decisions: [

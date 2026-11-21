@@ -62,39 +62,117 @@ function words(element: HTMLElement): string {
   return (element.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
-// R8's first case: an address standing on its own reads as the target's current name.
-test("an address standing on its own reads as the target's current name", async () => {
+/** The accessible name of a bare reference to CORE-1 once its summary is read: its key, its
+ *  status's words and its title, which the line itself never draws. */
+const CORE_1_NAME = "CORE-1, In progress, Fix the thing";
+
+/** Expects `element` to draw CORE-1 as its status mark then its key, on one line, and never its
+ *  title: the mark names the status, and the key is the only text drawn. */
+function expectMarkAndKey(element: Element | null): void {
+  const mark = element?.querySelector("svg[data-status-glyph]");
+  expect(mark).toHaveAttribute("aria-label", "In progress");
+  expect(mark).toHaveAttribute("data-status-glyph", "◐");
+  expect(mark?.parentElement).toHaveClass("whitespace-nowrap");
+  expect(element?.textContent?.trim()).toBe("CORE-1");
+}
+
+// R8's first case, for an issue: an address standing on its own reads as the issue's status mark
+// and its key, and the element it renders into names it by its key, its status and its title.
+test("an address standing on its own reads as the issue's status mark and its key", async () => {
   const view = draw(<MarkdownBody markdown="Tied to dispatch://CORE-1 here." />);
   try {
-    const link = await within(view.container).findByRole("link", { name: "CORE-1 Fix the thing" });
+    const link = await within(view.container).findByRole("link", { name: CORE_1_NAME });
     expect(link).toHaveAttribute("href", "/issues/CORE-1");
+    expectMarkAndKey(link);
   } finally {
     view.unmount();
   }
 });
 
 // R8's second case: a link whose words are its own address - the form a document stores a
-// Markdown autolink in - reads as the title too, as the bare address does.
-test("a link whose words are its own address reads as the target's current name", async () => {
+// Markdown autolink in - reads as the bare address does.
+test("a link whose words are its own address reads as the issue's status mark and its key", async () => {
   const view = draw(<MarkdownBody markdown="See [dispatch://CORE-1](dispatch://CORE-1)." />);
   try {
-    const link = await within(view.container).findByRole("link", { name: "CORE-1 Fix the thing" });
+    const link = await within(view.container).findByRole("link", { name: CORE_1_NAME });
     expect(link).toHaveAttribute("href", "/issues/CORE-1");
+    expectMarkAndKey(link);
   } finally {
     view.unmount();
   }
 });
 
-// R8's third case, the only one that changes: a link whose words differ from its address keeps
-// those words. The link still works and still carries the reference, so its hover card is the
-// same card; only the words are the author's.
+// R8's third case, the only one that keeps its words: a link whose words differ from its address
+// keeps those words. The link still works and still carries the reference, so its hover card is
+// the same card; the issue's status mark goes before the words, and its name is the mark's words
+// and the author's.
 test("a link whose words its author wrote keeps those words", async () => {
   const view = draw(<MarkdownBody markdown="See [the rollout plan](dispatch://CORE-1) first." />);
   try {
-    const link = await within(view.container).findByRole("link", { name: "the rollout plan" });
+    const link = await within(view.container).findByRole("link", {
+      name: "In progress the rollout plan",
+    });
     expect(link).toHaveAttribute("href", "/issues/CORE-1");
     expect(link).toHaveAttribute("data-dispatch-ref", "dispatch://CORE-1");
+    expect(link).not.toHaveAttribute("aria-label");
     await waitFor(() => expect(words(view.container)).toBe("See the rollout plan first."));
+  } finally {
+    view.unmount();
+  }
+});
+
+// R4: a worded link to an issue draws the issue's status mark before the words its author wrote,
+// once the issue's summary is read; until then the words stand alone, with no mark.
+test("a worded link to an issue draws the status mark before its author's words once the issue is read", async () => {
+  const read = Promise.withResolvers<IssueReferenceSummary>();
+  spies.push(spyOn(api, "getIssueSummary").mockReturnValue(read.promise));
+  const view = draw(
+    <MarkdownBody markdown="See [the rollout plan](dispatch://CORE-1) first." />,
+    new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  );
+  try {
+    const link = await within(view.container).findByRole("link", { name: "the rollout plan" });
+    expect(link.querySelector("svg[data-status-glyph]")).toBeNull();
+    read.resolve(summary);
+    const drawn = await within(view.container).findByRole("link", {
+      name: "In progress the rollout plan",
+    });
+    const mark = drawn.firstElementChild;
+    expect(mark?.matches("svg[data-status-glyph]")).toBeTrue();
+    expect(mark).toHaveAttribute("aria-label", "In progress");
+    expect(words(drawn)).toBe("the rollout plan");
+  } finally {
+    view.unmount();
+  }
+});
+
+// R1 for a tab address: the address of an issue's tab reads as the issue, its status mark and its
+// key, by its `dispatch://` address and by its dashboard address alike. The Spec tab names a
+// document of the issue, so it keeps its name and draws no mark.
+test("a tab address reads as the issue's status mark and its key, and the Spec tab keeps its name", async () => {
+  const view = draw(
+    <MarkdownBody
+      markdown={`See dispatch://CORE-1/plan, ${window.location.origin}/issues/CORE-1/conversation and dispatch://CORE-1/spec here.`}
+    />
+  );
+  try {
+    await waitFor(() =>
+      expect(within(view.container).getAllByRole("link", { name: CORE_1_NAME })).toHaveLength(2)
+    );
+    const tabs = within(view.container).getAllByRole("link", { name: CORE_1_NAME });
+    // A tab's `dispatch://` address is read as the issue's own, so it opens the issue.
+    expect(tabs.map((tab) => tab.getAttribute("href"))).toEqual([
+      "/issues/CORE-1",
+      "/issues/CORE-1/conversation",
+    ]);
+    for (const tab of tabs) {
+      expectMarkAndKey(tab);
+    }
+    const spec = within(view.container).getByRole("link", { name: "Fix the thing" });
+    expect(spec).toHaveAttribute("href", "/issues/CORE-1/spec");
+    expect(spec).not.toHaveAttribute("aria-label");
+    expect(spec.querySelector("svg[data-status-glyph]")).toBeNull();
+    expect(words(view.container)).toBe("See CORE-1, CORE-1 and Fix the thing here.");
   } finally {
     view.unmount();
   }
@@ -117,8 +195,9 @@ test("a worded link whose address cites nothing reads as its words, with no link
   }
 });
 
-// The plain-text projection reads the same reference the painted line reads, and names it the
-// same way: a label and the line beside it never say two different things.
+// The plain-text projection reads the same reference the painted line reads, and names an issue
+// by its key alone, with no status and no title: a label and the line beside it never say two
+// different things.
 test("the plain-text projection names a reference by its resolved name", async () => {
   const view = draw(
     <PlainText markdown="Tied to **dispatch://CORE-1** here.">
@@ -126,9 +205,7 @@ test("the plain-text projection names a reference by its resolved name", async (
     </PlainText>
   );
   try {
-    await waitFor(() =>
-      expect(view.getByTestId("line").textContent).toBe("Tied to CORE-1 Fix the thing here.")
-    );
+    await waitFor(() => expect(view.getByTestId("line").textContent).toBe("Tied to CORE-1 here."));
   } finally {
     view.unmount();
   }
@@ -374,9 +451,7 @@ test("the plain-text projection reads the first line alone where it is asked to"
     </>
   );
   try {
-    await waitFor(() =>
-      expect(view.getByTestId("first").textContent).toBe("Tied to CORE-1 Fix the thing")
-    );
+    await waitFor(() => expect(view.getByTestId("first").textContent).toBe("Tied to CORE-1"));
     await waitFor(() => expect(view.getByTestId("heading").textContent).toBe("The plan"));
     await waitFor(() => expect(view.getByTestId("list").textContent).toBe("First item"));
     // A line that holds no words - an image alone, a hard break - is passed over, a table's
@@ -398,9 +473,7 @@ test("the plain-text projection reads the first line alone where it is asked to"
     await waitFor(() => expect(view.getByTestId("html-details").textContent).toBe("<details>"));
     await waitFor(() => expect(view.getByTestId("html-break").textContent).toBe("<br>"));
     await waitFor(() =>
-      expect(view.getByTestId("whole").textContent).toBe(
-        "Tied to CORE-1 Fix the thing here. A list after it"
-      )
+      expect(view.getByTestId("whole").textContent).toBe("Tied to CORE-1 here. A list after it")
     );
   } finally {
     view.unmount();
@@ -416,10 +489,12 @@ test("a reference inside a link or a button is drawn inert", async () => {
     </ReferenceHostIs>
   );
   try {
-    await waitFor(() => expect(words(view.container)).toBe("Tied to CORE-1 Fix the thing here."));
+    await waitFor(() => expect(words(view.container)).toBe("Tied to CORE-1 here."));
     expect(view.container.querySelector("a")).toBeNull();
     const inert = view.container.querySelector("[data-markdown-link]");
     expect(inert).toHaveAttribute("data-dispatch-ref", "dispatch://CORE-1");
+    expect(inert).toHaveAttribute("aria-label", CORE_1_NAME);
+    expectMarkAndKey(inert);
   } finally {
     view.unmount();
   }
@@ -774,12 +849,12 @@ test("an address whose target does not exist projects as the words written", asy
 });
 
 // The projection reads every form the painted line reads, and names each as it does: an issue
-// key and a dashboard address as the issue's key and title, and an id written short as the
-// record it names.
+// key and a dashboard address as the issue's key, which the painted line draws after the issue's
+// status mark, and an id written short as the record it names.
 test("a bare key, a dashboard address and a short id project as the painted line draws them", async () => {
   answerTheAsk();
   const markdown = `See CORE-1, ${window.location.origin}/issues/CORE-1 and dispatch://CORE-1/ask/2a7f1c90 here.`;
-  const drawn = "See CORE-1 Fix the thing, CORE-1 Fix the thing and Ship it? here.";
+  const drawn = "See CORE-1, CORE-1 and Ship it? here.";
   const view = draw(
     <>
       <div data-testid="painted">
@@ -790,6 +865,11 @@ test("a bare key, a dashboard address and a short id project as the painted line
   );
   try {
     await waitFor(() => expect(words(view.getByTestId("painted"))).toBe(drawn));
+    const issues = within(view.getByTestId("painted")).getAllByRole("link", { name: CORE_1_NAME });
+    expect(issues).toHaveLength(2);
+    for (const issue of issues) {
+      expectMarkAndKey(issue);
+    }
     await waitFor(() => expect(view.getByTestId("line").textContent).toBe(drawn));
   } finally {
     view.unmount();
@@ -843,11 +923,12 @@ test("a known session with no title, written as its bare address, projects as wr
 });
 
 // The painted line links no reference a link's words hold (`RefLink.tsx`'s `linkPassReads`), so
-// the projection names none there: the words are the author's, and the same key after the link
-// is named.
+// the projection names none there: the words are the author's, and the same address after the
+// link is named, as the issue's key.
 test("a reference inside a link's own words is not named", async () => {
-  const markdown = "[see dispatch://CORE-1 and CORE-1](https://example.test/x) for CORE-1.";
-  const drawn = "see dispatch://CORE-1 and CORE-1 for CORE-1 Fix the thing.";
+  const markdown =
+    "[see dispatch://CORE-1 and CORE-1](https://example.test/x) for dispatch://CORE-1.";
+  const drawn = "see dispatch://CORE-1 and CORE-1 for CORE-1.";
   const view = draw(
     <>
       <div data-testid="painted">
@@ -858,6 +939,12 @@ test("a reference inside a link's own words is not named", async () => {
   );
   try {
     await waitFor(() => expect(words(view.getByTestId("painted"))).toBe(drawn));
+    expect(
+      within(view.getByTestId("painted")).getByRole("link", {
+        name: "see dispatch://CORE-1 and CORE-1",
+      })
+    ).toHaveAttribute("href", "https://example.test/x");
+    expectMarkAndKey(within(view.getByTestId("painted")).getByRole("link", { name: CORE_1_NAME }));
     await waitFor(() => expect(view.getByTestId("line").textContent).toBe(drawn));
   } finally {
     view.unmount();

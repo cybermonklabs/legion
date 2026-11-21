@@ -82,7 +82,9 @@ afterEach(() => {
   }
 });
 
-test("an issue reference reads as its key then its title", async () => {
+// An issue reference reads as its status mark and its key, on one line; its title is in the
+// accessible name the element it renders into carries, after the key and the status's words.
+test("an issue reference reads as its status mark and its key, its title in its name", async () => {
   const queryClient = freshClient();
   queryClient.setQueryData(["issue-summary", "CORE-1"], summary);
   const view = render(
@@ -90,8 +92,14 @@ test("an issue reference reads as its key then its title", async () => {
   );
 
   try {
-    const link = await within(view.container).findByRole("link", { name: "CORE-1 Fix the thing" });
+    const link = await within(view.container).findByRole("link", {
+      name: "CORE-1, In progress, Fix the thing",
+    });
     expect(link.getAttribute("href")).toBe("/issues/CORE-1");
+    const mark = link.querySelector("svg[data-status-glyph]");
+    expect(mark).toHaveAttribute("aria-label", "In progress");
+    expect(mark?.parentElement).toHaveClass("whitespace-nowrap");
+    expect(link.textContent?.trim()).toBe("CORE-1");
   } finally {
     view.unmount();
   }
@@ -208,13 +216,18 @@ async function summaryReads(
   );
   try {
     // Every key the text writes is asked in the one batch its first reading starts, so once the
-    // real one has drawn, every read the text makes has been made.
+    // real one has been read, every read the text makes has been made. The painted link names
+    // it by its key, its status and its title; the projection writes the key alone, as the text
+    // already wrote it, so it is the summary's read that says the real one has been read.
     if (drawn === "painted") {
-      await within(view.container).findByRole("link", { name: "CORE-1 Fix the thing" });
+      await within(view.container).findByRole("link", {
+        name: "CORE-1, In progress, Fix the thing",
+      });
     } else {
       await waitFor(() =>
-        expect(view.getByTestId("line").textContent).toContain("CORE-1 Fix the thing")
+        expect(queryClient.getQueryState(["issue-summary", "CORE-1"])?.status).toBe("success")
       );
+      expect(view.getByTestId("line").textContent).toBe("Encoded as UTF-16, tracked in CORE-1.");
     }
     return getIssueSummary.mock.calls.map(([key]) => key);
   } finally {

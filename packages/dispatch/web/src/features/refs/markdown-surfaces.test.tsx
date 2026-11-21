@@ -93,20 +93,27 @@ function quoted(part: string): string {
   return part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** The words of the body line on either side of its reference to CORE-1. */
+const [BEFORE_REFERENCE, AFTER_REFERENCE] = BODY.split("dispatch://CORE-1");
+
 /** What the fixture's text reads as once formatted on one line: no syntax, the words in order,
- *  the heading's own words between the opening paragraph and the body, and the reference
- *  replaced by its resolved title, which for an issue is its key then its title
- *  (`CORE-1 Design decision`). */
+ *  the heading's own words between the opening paragraph and the body, and the reference to
+ *  CORE-1 drawn as its status mark, which holds no text, and its key. */
 const RENDERED = new RegExp(
   [
-    OPENING,
+    quoted(OPENING),
     "Heading",
-    BODY.replace("dispatch://CORE-1", "CORE-1 Design decision"),
-    `${FIRST} ${SECOND}`,
-  ]
-    .map(quoted)
-    .join("\\s+")
+    `${quoted(BEFORE_REFERENCE.trimEnd())}\\s+CORE-1${quoted(AFTER_REFERENCE)}`,
+    quoted(`${FIRST} ${SECOND}`),
+  ].join("\\s+")
 );
+
+/** The accessible name the element a reference to CORE-1 renders into carries once CORE-1's
+ *  summary is read: its key, its status's words and its title, which the line never draws. */
+const CORE_1_NAME = "CORE-1, In progress, Design decision";
+
+/** The element a reference to CORE-1 renders into, once CORE-1's summary is read. */
+const CORE_1_DRAWN = `[aria-label="${CORE_1_NAME}"]`;
 
 /** The characters a raw-text surface leaks. The bare reference is listed by its scheme, so a
  *  surface that showed `dispatch://CORE-1` unresolved fails too. */
@@ -198,6 +205,18 @@ function expectBody(element: HTMLElement): void {
   expect(element.querySelector("a[href='https://example.com/docs']")).not.toBeNull();
 }
 
+/** What a surface draws for each link in it: where it points, the accessible name it carries,
+ *  the status mark drawn in it, and its words. */
+function drawnLinks(links: Iterable<Element>) {
+  return Array.from(links, (link) => ({
+    href: link.getAttribute("href"),
+    label: link.getAttribute("aria-label"),
+    mark: link.querySelector("svg[data-status-glyph]")?.getAttribute("aria-label") ?? null,
+    reference: link.getAttribute("data-dispatch-ref"),
+    text: link.textContent?.trim(),
+  }));
+}
+
 /** A one-line preview: the fixture's words in order with no syntax and nothing nested. Every
  *  surface a preview sits in is one control, so its links read as links (the reference keeps its
  *  hover card) and none is a link of its own. */
@@ -205,13 +224,15 @@ function expectFormatted(element: HTMLElement): void {
   expectNoSyntax(element);
   expect(element.textContent ?? "").toMatch(RENDERED);
   expect(element.querySelector("a")).toBeNull();
-  const links = Array.from(element.querySelectorAll("[data-markdown-link]"), (link) => ({
-    reference: link.getAttribute("data-dispatch-ref"),
-    text: link.textContent,
-  }));
-  expect(links).toEqual([
-    { reference: null, text: "link" },
-    { reference: "dispatch://CORE-1", text: "CORE-1 Design decision" },
+  expect(drawnLinks(element.querySelectorAll("[data-markdown-link]"))).toEqual([
+    { href: null, label: null, mark: null, reference: null, text: "link" },
+    {
+      href: null,
+      label: CORE_1_NAME,
+      mark: "In progress",
+      reference: "dispatch://CORE-1",
+      text: "CORE-1",
+    },
   ]);
 }
 
@@ -223,14 +244,15 @@ function expectFormattedWithLiveLinks(element: HTMLElement): void {
   expectNoSyntax(element);
   expect(element.textContent ?? "").toMatch(RENDERED);
   expect(element.querySelector("[data-markdown-link]")).toBeNull();
-  const links = Array.from(element.querySelectorAll("a"), (link) => ({
-    href: link.getAttribute("href"),
-    reference: link.getAttribute("data-dispatch-ref"),
-    text: link.textContent,
-  }));
-  expect(links).toEqual([
-    { href: "https://example.com/docs", reference: null, text: "link" },
-    { href: "/issues/CORE-1", reference: "dispatch://CORE-1", text: "CORE-1 Design decision" },
+  expect(drawnLinks(element.querySelectorAll("a"))).toEqual([
+    { href: "https://example.com/docs", label: null, mark: null, reference: null, text: "link" },
+    {
+      href: "/issues/CORE-1",
+      label: CORE_1_NAME,
+      mark: "In progress",
+      reference: "dispatch://CORE-1",
+      text: "CORE-1",
+    },
   ]);
 }
 
@@ -267,13 +289,15 @@ test("the agent transcript renders assistant and reasoning text as Markdown", as
   try {
     const turn = await within(view.container).findByTestId("agent-message-assistant");
     const reasoning = within(turn).getByTestId("agent-reasoning");
-    await waitFor(() => expect(turn.textContent).toContain("Design decision"));
+    await waitFor(() => expect(turn.querySelectorAll(CORE_1_DRAWN)).toHaveLength(2));
     // Both parts are full bodies, not previews: the heading and list render as blocks (so the
     // text runs together where blocks meet), and nothing of the syntax survives.
     expectBody(reasoning);
     expect(turn.querySelectorAll("h2")).toHaveLength(2);
     expect(turn.querySelectorAll("ul")).toHaveLength(2);
-    expect(turn.textContent).toContain("Bold then code and a link to CORE-1 Design decision.");
+    expect(turn.textContent?.replace(/\s+/g, " ")).toContain(
+      "Bold then code and a link to CORE-1."
+    );
     for (const syntax of LITERAL_SYNTAX) {
       expect(turn.textContent).not.toContain(syntax);
     }
@@ -316,7 +340,7 @@ test("the agent transcript renders the viewer's turn, another sender's turn and 
   try {
     for (const testId of ["agent-message-user", "agent-message-other", "agent-dispatch-reply"]) {
       const turn = await within(view.container).findByTestId(testId);
-      await waitFor(() => expect(turn.textContent).toContain("Design decision"));
+      await waitFor(() => expect(turn.querySelector(CORE_1_DRAWN)).not.toBeNull());
       expect(turn.querySelectorAll("h2")).toHaveLength(1);
       expect(turn.querySelectorAll("ul > li")).toHaveLength(2);
       for (const syntax of LITERAL_SYNTAX) {
@@ -420,7 +444,7 @@ test("the reference hover card renders a comment's body and an ask's question fo
     // The card is open; from here the queries settle on real microtasks and `waitFor` polls
     // real timers, so the fake clock goes back before anything waits on it.
     jest.useRealTimers();
-    await waitFor(() => expect(card.textContent).toContain("Design decision"));
+    await waitFor(() => expect(card.querySelector(CORE_1_DRAWN)).not.toBeNull());
     const body = card.querySelector<HTMLElement>("[data-markdown-preview]");
     if (body === null) throw new Error("the hover card body is not a MarkdownPreview");
     expectFormatted(body);
@@ -456,7 +480,7 @@ test("the unfurl card under a bare reference renders the target's text formatted
       const card = await within(view.container).findByRole("link", {
         name: new RegExp(`^${quoted(OPENING.slice(0, 40))}`),
       });
-      await waitFor(() => expect(card.textContent).toContain("Design decision"));
+      await waitFor(() => expect(card.querySelector(CORE_1_DRAWN)).not.toBeNull());
       const body = card.querySelector<HTMLElement>("[data-markdown-preview]");
       if (body === null) throw new Error("the unfurl body is not a MarkdownPreview");
       expectFormatted(body);
@@ -521,7 +545,7 @@ test("a reply quote renders the quoted parent formatted on one line after the ap
     const quote = await within(view.container).findByRole("link", {
       name: /^Replying to a message/,
     });
-    await waitFor(() => expect(quote.textContent).toContain("Design decision"));
+    await waitFor(() => expect(quote.querySelector(CORE_1_DRAWN)).not.toBeNull());
     expect(quote.textContent?.startsWith("Replying to a message — ")).toBe(true);
     const body = quote.querySelector<HTMLElement>("[data-markdown-preview]");
     if (body === null) throw new Error("the quote is not a MarkdownPreview");
@@ -567,7 +591,7 @@ test("the margin's collapsed thread preview renders the root formatted on one li
   );
   try {
     const card = await within(view.container).findByTestId(`margin-comment-${comment.id}`);
-    await waitFor(() => expect(card.textContent).toContain("Design decision"));
+    await waitFor(() => expect(card.querySelector(CORE_1_DRAWN)).not.toBeNull());
     const body = card.querySelector<HTMLElement>("[data-markdown-preview]");
     if (body === null) throw new Error("the collapsed preview is not a MarkdownPreview");
     expectFormattedWithLiveLinks(body);
@@ -605,7 +629,7 @@ test("a search hit's snippet renders formatted with the matched words still high
     await user.click(screen.getByRole("combobox", { name: "Search" }));
     await user.paste("bold second");
     const option = await screen.findByRole("option");
-    await waitFor(() => expect(option.textContent).toContain("Design decision"));
+    await waitFor(() => expect(option.querySelector(CORE_1_DRAWN)).not.toBeNull());
     const body = option.querySelector<HTMLElement>("[data-markdown-preview]");
     if (body === null) throw new Error("the search snippet is not a MarkdownPreview");
     expectFormatted(body);
@@ -641,7 +665,7 @@ test("the broadcasts list shows each broadcast's first line formatted", async ()
   );
   try {
     const row = await within(view.container).findByRole("link", { name: /answered/ });
-    await waitFor(() => expect(row.textContent).toContain("Design decision"));
+    await waitFor(() => expect(row.querySelector(CORE_1_DRAWN)).not.toBeNull());
     const body = row.querySelector<HTMLElement>("[data-markdown-preview]");
     if (body === null) throw new Error("the broadcast row is not a MarkdownPreview");
     expectFormatted(body);

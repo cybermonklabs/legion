@@ -190,8 +190,8 @@ function holdControls(): HTMLFieldSetElement {
  *  running), the project's components and the search behind the kinds that need a query. The
  *  rows that are about a stopped role answer the collaborators themselves. The pills under a
  *  draft draw each reference as the stored record will (`RefLink`), so an issue a pill names is
- *  read for its title (`summaryOf`), and a session the registry does not list is asked about
- *  once: Dispatch holds no record of one here. */
+ *  read for its status and its title (`summaryOf`), and a session the registry does not list is
+ *  asked about once: Dispatch holds no record of one here. */
 let collaboratorsRead: Mock<typeof api.getIssueCollaborators>;
 let architectureRead: Mock<typeof api.getArchitecture>;
 let searchRead: Mock<typeof api.search>;
@@ -336,12 +336,26 @@ function askRead(id: string): AskRead {
   };
 }
 
+/** `link`'s accessible name as a reader hears it: the name its element carries, which a bare
+ *  issue reference's does (its key, its status's words and its title), or else its content - the
+ *  words of the status mark a link to an issue draws before its words, then the words. */
+function linkName(link: Element): string {
+  const label = link.getAttribute("aria-label");
+  if (label !== null) return label;
+  const words = link.textContent ?? "";
+  const mark = link.querySelector("svg[data-status-glyph]")?.getAttribute("aria-label");
+  return mark === null || mark === undefined ? words : `${mark}${words}`;
+}
+
 /** Each pill under the draft, by its accessible name and the page it opens. */
 function pillsDrawn(pills: HTMLElement): { href: string | null; name: string }[] {
   return within(pills)
     .getAllByRole("link")
-    .map((pill) => ({ href: pill.getAttribute("href"), name: pill.textContent ?? "" }));
+    .map((pill) => ({ href: pill.getAttribute("href"), name: linkName(pill) }));
 }
+
+/** CORE-2's bare pill and link, by the name its element carries. */
+const CORE_2 = { href: "/issues/CORE-2", name: "CORE-2, Todo, Warm the cache" };
 
 // Each pill under the draft is a link to the page its reference opens, written through the one
 // gate between a typed reference and an `href` (`routes.ts`'s `appHref`), and reads as the stored
@@ -357,9 +371,11 @@ test("a person named in the draft gets no pill, and a reference with a page gets
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("[@Alice](dispatch://person/alice@example.com) and dispatch://CORE-2");
     const pills = await screen.findByRole("region", { name: "References" });
-    await waitFor(() =>
-      expect(pillsDrawn(pills)).toEqual([{ href: "/issues/CORE-2", name: "CORE-2 Warm the cache" }])
-    );
+    await waitFor(() => expect(pillsDrawn(pills)).toEqual([CORE_2]));
+    // The pill draws the issue's status mark and its key, and its title only in its name.
+    const pill = within(pills).getByRole("link", { name: CORE_2.name });
+    expect(pill.querySelector("svg[data-status-glyph]")).toHaveAttribute("aria-label", "Todo");
+    expect(pill.textContent?.trim()).toBe("CORE-2");
   } finally {
     view.unmount();
   }
@@ -376,9 +392,7 @@ test("a picture in the draft gets no pill", async () => {
     await user.click(field);
     await user.paste("![shot.png](dispatch://CORE-1/artifact/shot-png@v1) and dispatch://CORE-2");
     const pills = await screen.findByRole("region", { name: "References" });
-    await waitFor(() =>
-      expect(pillsDrawn(pills)).toEqual([{ href: "/issues/CORE-2", name: "CORE-2 Warm the cache" }])
-    );
+    await waitFor(() => expect(pillsDrawn(pills)).toEqual([CORE_2]));
     // No pill at all for the picture, not even one that lost its link: its document is not one
     // CORE-1's summary lists, so a pill for it would read as its words with no link.
     expect(pills.querySelectorAll("a")).toHaveLength(1);
@@ -403,7 +417,7 @@ test("a key typed letter by letter reads only the summary of the key the typing 
     await tick(20);
     expect(summaryRead.mock.calls.map(([key]) => key)).toEqual(["CORE-123"]);
     expect(pillsDrawn(screen.getByRole("region", { name: "References" }))).toEqual([
-      { href: "/issues/CORE-123", name: "CORE-123 Warm the cache" },
+      { href: "/issues/CORE-123", name: "CORE-123, Todo, Warm the cache" },
     ]);
   } finally {
     realClock();
@@ -424,9 +438,7 @@ test("an emptied draft takes its pills with it at once", async () => {
     await user.paste("See CORE-2");
     await settleRefPickerSearch("fake");
     await tick(20);
-    expect(pillsDrawn(screen.getByRole("region", { name: "References" }))).toEqual([
-      { href: "/issues/CORE-2", name: "CORE-2 Warm the cache" },
-    ]);
+    expect(pillsDrawn(screen.getByRole("region", { name: "References" }))).toEqual([CORE_2]);
     await user.clear(field);
     expect(screen.queryByRole("region", { name: "References" })).toBeNull();
   } finally {
@@ -437,8 +449,8 @@ test("an emptied draft takes its pills with it at once", async () => {
 
 // R7: the pills read the draft with the facts the renderer reads the stored record with, and
 // with the record the write will have - here an issue comment, whose `#id`s resolve against its
-// issue's spec. So a bare key whose issue exists and a `#id` the spec declares get the titled
-// pills the stored comment's links are, and a key no issue holds gets none, as it gets no link.
+// issue's spec. So a bare key whose issue exists and a `#id` the spec declares get the pills the
+// stored comment's links are, named alike, and a key no issue holds gets none, as it gets no link.
 test("a draft's bare key and #id get the titled pills a reader of the stored text sees", async () => {
   const user = userEvent.setup();
   summaryRead.mockImplementation((key) =>
@@ -471,19 +483,16 @@ test("a draft's bare key and #id get the titled pills a reader of the stored tex
     await user.click(field);
     await user.paste(text);
     const pills = await screen.findByRole("region", { name: "References" });
-    const titled = [
-      { href: "/issues/CORE-2", name: "CORE-2 Warm the cache" },
-      { href: "/issues/CORE-1/asks/ask-2", name: "Which way round?" },
-    ];
+    const titled = [CORE_2, { href: "/issues/CORE-1/asks/ask-2", name: "Which way round?" }];
     await waitFor(() => expect(pillsDrawn(pills)).toEqual(titled));
     // The draft's `#id` is read against the spec its comment will be written on.
     expect(getReferenceQuestions).toHaveBeenCalledWith("artifact", "spec-1");
-    // The stored comment the reader sees links the same two, titled the same way.
+    // The stored comment the reader sees links the same two, named the same way.
     await waitFor(() =>
       expect(
         within(stored.container)
           .getAllByRole("link")
-          .map((link) => ({ href: link.getAttribute("href"), name: link.textContent ?? "" }))
+          .map((link) => ({ href: link.getAttribute("href"), name: linkName(link) }))
       ).toEqual(titled)
     );
   } finally {
@@ -545,7 +554,7 @@ function storedLinks(body: HTMLElement): { href: string | null; name: string }[]
     if (href?.startsWith("/") !== true) continue;
     const last = links.at(-1);
     if (last?.href === href) last.name += anchor.textContent ?? "";
-    else links.push({ href, name: anchor.textContent ?? "" });
+    else links.push({ href, name: linkName(anchor) });
   }
   return links;
 }
@@ -588,16 +597,14 @@ async function expectPillsAsStored(
 // The key in the words of a link to somewhere else gets none, and the address beside it gets its
 // own.
 test("a key in the words of a link to somewhere else gets no pill", async () => {
-  await expectPillsAsStored("[see CORE-1 here](https://x) and dispatch://CORE-2", [
-    { href: "/issues/CORE-2", name: "CORE-2 Warm the cache" },
-  ]);
+  await expectPillsAsStored("[see CORE-1 here](https://x) and dispatch://CORE-2", [CORE_2]);
 });
 
 // A link whose words are one issue's key and whose address is another's is one reference, to
-// the issue its address names, read as the words its author wrote.
+// the issue its address names, read as the words its author wrote after that issue's status mark.
 test("a key that is the words of a reference's link gets no pill of its own", async () => {
   await expectPillsAsStored("[CORE-1](dispatch://CORE-2)", [
-    { href: "/issues/CORE-2", name: "CORE-1" },
+    { href: "/issues/CORE-2", name: "Todo CORE-1" },
   ]);
 });
 
