@@ -74,8 +74,7 @@ type renamePass struct {
 	// written is the hook each write that wrote or deleted a row registers on its commit
 	// (store.OnCommit): the refresher's read of the live records (wakeLive), so the cache set and
 	// the heard set name the new names. A write whose reply is lost and that the store says
-	// committed still wakes it, and its retry, which finds no row on the `from`, wakes nothing. nil
-	// registers none.
+	// committed still wakes it, and its retry, which finds no row on the `from`, wakes nothing.
 	written func()
 	log     *slog.Logger
 }
@@ -327,9 +326,7 @@ func (p renamePass) write(ctx context.Context, issue, from, to string) (record.R
 				p.log.Warn(renameDeletedLine, "issue", deleted.Issue, "kept", deleted.Holder, "repo", deleted.Repo, "to", deleted.To,
 					"branch", deleted.Branch, "number", deleted.Number)
 			}
-			if p.written != nil {
-				p.written()
-			}
+			p.written()
 		})
 		return nil
 	})
