@@ -167,6 +167,26 @@ const (
 	// ReasonScopesType: a secret that is not a google-service-account one carries a scopes tag
 	// (TagRules). No other minter reads it, so the tag would narrow nothing while saying it had.
 	ReasonScopesType = "scopes-type"
+	// ReasonProjectMalformed: the dispatch-project tag is not one Dispatch project key
+	// (ParseProject): another case, white space, an empty value or the word none. A tag the
+	// broker cannot read names no project it could check, so the secret goes to nobody rather
+	// than to every session as an untagged one would.
+	ReasonProjectMalformed = "project-malformed"
+	// ReasonProjectUnchecked: the secret carries a dispatch-project tag and the broker holds no
+	// client of Dispatch's project access (Loader.ProjectChecks is false), so it cannot tell
+	// whether the project is private. It is refused rather than served by owner and tier alone,
+	// which would release a private project's secret to every session.
+	ReasonProjectUnchecked = "project-unchecked"
+	// ReasonProjectChannelsMalformed: the project-channels tag is not ProjectChannelsSlack, its
+	// one value. A value the broker cannot read names no limit it could apply, so the secret goes
+	// to nobody rather than out unlimited to a private project's credential.
+	ReasonProjectChannelsMalformed = "project-channels-malformed"
+	// ReasonProjectTagMisspelled: a tag key differs from dispatch-project or project-channels
+	// only in case or in its separators (Dispatch-Project, dispatch_project, PROJECT-CHANNELS,
+	// dispatchproject). The broker reads tag keys as written, so such a secret would otherwise
+	// load as one carrying no project tag and go by owner and tier to every session, which is
+	// what the owner who wrote it meant to stop.
+	ReasonProjectTagMisspelled = "project-tag-misspelled"
 	// ReasonValueMalformed: a type secret's stored value is one secrets.ParseValue refuses under
 	// its type, or one that is not text (secrets.ErrValueNotText), so no release could
 	// mint from it. It is no tag's: a load sets it from the value Current reads and decodes once
@@ -238,6 +258,11 @@ type Loader struct {
 	// makes live (Set.Groups), so each decision asks it who is a member of a group. A nil
 	// directory admits nobody to any group.
 	Groups record.Directory
+	// ProjectChecks is true when the broker holds a client of Dispatch's project access
+	// (BROKER_PROJECT_ACCESS_URL), which resolves whether a tagged secret's project is private
+	// before Evaluate reads it. A loader without one refuses every secret carrying a
+	// dispatch-project tag (ReasonProjectUnchecked) and serves every other secret as before.
+	ProjectChecks bool
 	// now is the clock the loader weighs a secret waiting for its value by (pendingAt): Current's
 	// own, which NewCurrent sets, and time.Now while it is nil, for a Loader no Current holds.
 	now func() time.Time
@@ -460,9 +485,13 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 	// read here too, since the rules weigh them against the type, the tier and the requesters
 	// alike. A type whose own rules demand a list is refused for a missing one, so TagRules runs
 	// whether the tags are there or not.
+	// The project tags' rollback guard is no requester (RequestersRollbackGuard): it is taken out
+	// before the list is read, and a tag that held it alone is no list.
 	if raw, tagged := ls.Tags[TagRequesters]; tagged {
-		if s.Requesters, err = ParseRequesters(raw, l.Services); err != nil {
-			return Secret{}, ReasonRequestersMalformed, nil
+		if rest, guarded := SplitRequestersGuard(raw); !guarded || rest != "" {
+			if s.Requesters, err = ParseRequesters(rest, l.Services); err != nil {
+				return Secret{}, ReasonRequestersMalformed, nil
+			}
 		}
 	}
 	if raw, tagged := ls.Tags[TagAdmin]; tagged {
@@ -488,6 +517,28 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 	}); reason != "" {
 		return Secret{}, reason, nil
 	}
+	// Read after the rules that weigh the other tags: no rule of TagRules reads the project.
+	// A misspelled key, and then a malformed tag, is the tag's own fault, refused before whether
+	// the broker could check it.
+	if misspelledProjectKey(ls.Tags) {
+		return Secret{}, ReasonProjectTagMisspelled, nil
+	}
+	if raw, tagged := ls.Tags[TagProject]; tagged {
+		if s.Project, err = ParseProject(raw); err != nil {
+			return Secret{}, ReasonProjectMalformed, nil
+		}
+		if !l.ProjectChecks {
+			return Secret{}, ReasonProjectUnchecked, nil
+		}
+	}
+	// The same place, for the same reason: no rule of TagRules reads it, and a value the broker
+	// cannot read names no limit it could apply.
+	if raw, tagged := ls.Tags[TagProjectChannels]; tagged {
+		if raw != ProjectChannelsSlack {
+			return Secret{}, ReasonProjectChannelsMalformed, nil
+		}
+		s.ProjectChannels = raw
+	}
 	if !ls.HasCurrentValue {
 		// A secret `agent-secrets secret create` made before its value (Unfilled: the create label,
 		// no version) is a create waiting for that value for PendingValueWindow (pendingAt), whose
@@ -504,4 +555,30 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 		s.AirlockDigest = l.AirlockDigest(s.Name)
 	}
 	return s, "", nil
+}
+
+// misspelledProjectKey reports whether tags hold a key that is not TagProject or
+// TagProjectChannels as written but is one of them once both are read without case and without
+// any character that is not a letter or a digit (ReasonProjectTagMisspelled).
+func misspelledProjectKey(tags map[string]string) bool {
+	fold := func(key string) string {
+		return strings.Map(func(r rune) rune {
+			switch {
+			case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+				return r
+			case r >= 'A' && r <= 'Z':
+				return r + ('a' - 'A')
+			}
+			return -1
+		}, key)
+	}
+	for key := range tags {
+		if key == TagProject || key == TagProjectChannels {
+			continue
+		}
+		if folded := fold(key); folded == fold(TagProject) || folded == fold(TagProjectChannels) {
+			return true
+		}
+	}
+	return false
 }

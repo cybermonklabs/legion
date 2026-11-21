@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // ownerMe is the --owner value that names the person the sign-in names (secretSession.ownerTag).
@@ -61,9 +62,9 @@ func ruleOf(err error, rules ...error) string {
 	return "the value does not parse " + valueNotPrinted
 }
 
-// tagNone is the value of --type, --github-owners, --requesters, --scopes, --admin,
-// --max-grant and --default-grant that removes the tag, the one the broker refuses as a
-// github-owners login (policy.TagRemoved).
+// tagNone is the value of --type, --github-owners, --requesters, --scopes, --admin, --project,
+// --project-channels, --max-grant and --default-grant that removes the tag, the one the broker
+// refuses as a github-owners login (policy.TagRemoved).
 const tagNone = policy.TagRemoved
 
 // checkType is --type's rule: a type the broker mints (policy.ValidType), or none.
@@ -223,6 +224,44 @@ func checkAdmin(admin string, orNone bool) error {
 	return usageErr{fmt.Errorf("--admin is %s %s, or the broker refuses the secret as %s; leave --admin off for a secret whose grant is no administrator's", adminTrue, valueNotPrinted, policy.ReasonAdminMalformed)}
 }
 
+// checkProject is --project's rule, the broker's own (policy.ParseProject): one Dispatch project
+// key as written, an upper-case letter then one to nine upper-case letters or digits, or none
+// where orNone allows it (retag) to remove the tag. Any other value — a key in lower case, two
+// keys, white space around one, and on create the word none — is refused here, before anything
+// is read or written, as the broker refuses it on the reread, policy.ReasonProjectMalformed,
+// named as the broker names it: a tag the broker cannot read names no project it could check,
+// and a secret carrying one is served to nobody. The value it refuses is not printed
+// (valueNotPrinted).
+func checkProject(project string, orNone bool) error {
+	if project == "" || (orNone && project == tagNone) {
+		return nil
+	}
+	if _, err := policy.ParseProject(project); err == nil {
+		return nil
+	}
+	if orNone {
+		return usageErr{fmt.Errorf("--project is one Dispatch project key (%s) or %s %s, or the broker refuses the secret as %s", contracts.ProjectKeyRule, tagNone, valueNotPrinted, policy.ReasonProjectMalformed)}
+	}
+	return usageErr{fmt.Errorf("--project is one Dispatch project key (%s) %s, or the broker refuses the secret as %s; leave --project off for a secret of no project", contracts.ProjectKeyRule, valueNotPrinted, policy.ReasonProjectMalformed)}
+}
+
+// checkProjectChannels is --project-channels' rule: slack, the one value the broker reads
+// (policy.ProjectChannelsSlack), or none where orNone allows it (retag) to remove the tag. Any
+// other value — slack in another case, white space around it, a channel id, and on create the word
+// none — is refused here, before anything is read or written, as the broker refuses it on the
+// reread, policy.ReasonProjectChannelsMalformed, named as the broker names it: a value the broker
+// cannot read names no limit it could apply, and a secret carrying one is served to nobody. The
+// value it refuses is not printed (valueNotPrinted).
+func checkProjectChannels(channels string, orNone bool) error {
+	if channels == "" || channels == policy.ProjectChannelsSlack || (orNone && channels == tagNone) {
+		return nil
+	}
+	if orNone {
+		return usageErr{fmt.Errorf("--project-channels is %s or %s %s, or the broker refuses the secret as %s", policy.ProjectChannelsSlack, tagNone, valueNotPrinted, policy.ReasonProjectChannelsMalformed)}
+	}
+	return usageErr{fmt.Errorf("--project-channels is %s %s, or the broker refuses the secret as %s; leave --project-channels off for a secret no project's owner limits", policy.ProjectChannelsSlack, valueNotPrinted, policy.ReasonProjectChannelsMalformed)}
+}
+
 // checkTagsFor applies the broker's cross-tag rules (policy.TagRules) to the tags a secret will
 // hold once a write lands — its type, owner, tier, requesters, scopes, admin mark and
 // max grant — so create (cmdSecretCreate) and retag (cmdSecretRetag) refuse, before any write,
@@ -246,24 +285,55 @@ func checkAdmin(admin string, orNone bool) error {
 // max-grant-malformed before it weighs policy.TagRules at all. The admin mark is the tag being
 // adminTrue; a stored admin tag holding anything else is no rule of TagRules but
 // policy.ReasonAdminMalformed, which the broker answers to the reread that follows the write,
-// exactly as it answers for a stored requesters or scopes tag this CLI cannot repair. The one
+// exactly as it answers for a stored requesters or scopes tag this CLI cannot repair. The
+// requesters are read without the project tags' rollback guard (policy.SplitRequestersGuard), as
+// the broker reads them: the guard has no @, so the rules would otherwise weigh it as a service on
+// the list. The one
 // field of the set left empty is BoundAccount, the deployment's BROKER_SERVICE_ACCOUNT_SECRETS
 // binding, which `agent-secrets` never sees, just as it never sees BROKER_SERVICES and so calls
 // ParseRequesterShapes rather than ParseRequesters: the rule it feeds, the one refusing a
 // service on a secret bound to a dev-<name> account, is the broker's to apply on that reread.
 func checkTagsFor(tags map[string]string) error {
 	duration, _ := policy.ParseMaxGrant(tags[policy.TagMaxGrant])
+	requesters, _ := policy.SplitRequestersGuard(tags[policy.TagRequesters])
 	set := policy.TagSet{
 		Type:         policy.TypeFromTags(tags),
 		Owner:        tags[policy.TagOwner],
 		Tier:         tags[policy.TagTier],
-		Requesters:   tags[policy.TagRequesters],
+		Requesters:   requesters,
 		Scopes:       tags[policy.TagScopes],
 		BoundAccount: "",
 		Admin:        tags[policy.TagAdmin] == adminTrue,
 		MaxGrant:     duration,
 	}
 	return tagRefusal(policy.TagRules(set), set, tags)
+}
+
+// guardRequesters puts the project tags' rollback guard (policy.RequestersRollbackGuard) into the
+// requesters tag of tags, the tags a secret holds once a write lands, when they carry a
+// dispatch-project or a project-channels tag, after the list the tag holds and never in place of
+// it; and takes it out when they carry neither, removing the requesters tag when the guard was
+// all it held. A requesters tag no guard was written into is left exactly as it is, a malformed
+// one included, which the broker refuses on the reread. A broker from before the project tags
+// reads the guard as a service no deployment can register and refuses the secret, rather than
+// serve a project's secret by owner and tier to every session; this broker takes it out before
+// it reads the list.
+func guardRequesters(tags map[string]string) {
+	raw, listed := tags[policy.TagRequesters]
+	list, guarded := policy.SplitRequestersGuard(raw)
+	_, project := tags[policy.TagProject]
+	_, channels := tags[policy.TagProjectChannels]
+	switch {
+	case project || channels:
+		if !listed {
+			list = ""
+		}
+		tags[policy.TagRequesters] = policy.WithRequestersGuard(list)
+	case guarded && list == "":
+		delete(tags, policy.TagRequesters)
+	case guarded:
+		tags[policy.TagRequesters] = list
+	}
 }
 
 // tagRefusal says one cross-tag refusal as the flag that fixes it: reason is what
@@ -352,27 +422,29 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 }
 
 // tagFlags is the value of each tag flag a create or a retag names, one field per flag. It is a
-// struct rather than eight string parameters for the reason policy.TagSet is one: a caller
+// struct rather than ten string parameters for the reason policy.TagSet is one: a caller
 // passing that many values in order would transpose two of them, and every transposition
 // compiles and writes each value as another tag.
 type tagFlags struct {
-	Type         string
-	GitHubOwners string
-	Requesters   string
-	Scopes       string
-	Admin        string
-	MaxGrant     string
-	DefaultGrant string
+	Type            string
+	GitHubOwners    string
+	Requesters      string
+	Scopes          string
+	Admin           string
+	Project         string
+	ProjectChannels string
+	MaxGrant        string
+	DefaultGrant    string
 }
 
-// optionalTags is the type, github-owners, requesters, scopes, admin, max-grant and
-// default-grant tags the flags set: each flag's value when it names one, and nothing for one
-// left unset or set to none. A type brings the rollback guard with it (policy.TagRollbackGuard),
-// which only the brokers from legion-envoy-v13.19.0 to the release before v16.0.0 read, and
-// refuse: every broker from v16.0.0 to the release before the type tag ignores it and serves a
-// secret that carries type alone as a stored secret. What keeps a type secret's key from such a
-// broker is requireTypeTag, before this CLI writes, and a rollback floor at the release that reads
-// the type tag, which the deployment keeps.
+// optionalTags is the type, github-owners, requesters, scopes, admin, dispatch-project,
+// project-channels, max-grant and default-grant tags the flags set: each flag's value when it
+// names one, and nothing for one left unset or set to none. A type brings the rollback guard with
+// it (policy.TagRollbackGuard), which only the brokers from legion-envoy-v13.19.0 to the release
+// before v16.0.0 read, and refuse: every broker from v16.0.0 to the release before the type tag
+// ignores it and serves a secret that carries type alone as a stored secret. What keeps a type
+// secret's key from such a broker is requireTypeTag, before this CLI writes, and a rollback floor
+// at the release that reads the type tag, which the deployment keeps.
 func optionalTags(f tagFlags) map[string]string {
 	named := func(value string) bool { return value != "" && value != tagNone }
 	tags := map[string]string{}
@@ -391,6 +463,12 @@ func optionalTags(f tagFlags) map[string]string {
 	}
 	if named(f.Admin) {
 		tags[policy.TagAdmin] = f.Admin
+	}
+	if named(f.Project) {
+		tags[policy.TagProject] = f.Project
+	}
+	if named(f.ProjectChannels) {
+		tags[policy.TagProjectChannels] = f.ProjectChannels
 	}
 	if named(f.MaxGrant) {
 		tags[policy.TagMaxGrant] = f.MaxGrant

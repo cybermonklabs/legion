@@ -52,15 +52,15 @@ func init() {
 	// Register after variable initialization: the handlers use commands for help.
 	secretForms = []secretForm{
 		{command{"secret list", "agent-secrets secret list [--json]",
-			"List every agent secret, under the environment's cloud credential: its name, owner, tier, type,\nmax grant, default grant, whether it has a value, and its deletion once it is deleted,\nwith the earliest purge beside it on Secrets Manager; --json also prints each one's store,\nsecret name, github-owners, requesters, scopes and admin mark, and its created and\nlast-changed times where the store gives them. Name the store the rows are in."}, cmdSecretList},
+			"List every agent secret, under the environment's cloud credential: its name, owner, tier, type,\nproject, project channels, max grant, default grant, whether it has a value, and its deletion\nonce it is deleted, with the earliest purge beside it on Secrets Manager; --json also prints\neach one's store, secret name, github-owners, requesters, scopes, admin mark and whether it\ncarries the project tags' rollback guard, and its created and last-changed times where the\nstore gives them. Name the store the rows are in."}, cmdSecretList},
 		{command{"secret show", "agent-secrets secret show NAME [--json]",
-			"Print an agent secret's name, store, secret name, owner, tier, type, github-owners,\nrequesters, scopes, admin mark, max grant, default grant, its created and\nlast-changed times, its deletion once it is deleted, with the earliest purge beside\nit on Secrets Manager, and its versions; --json prints those and whether it has a value.\nNever print its value."}, cmdSecretShow},
-		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL|group:EMAIL --tier agent|human [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--max-grant DURATION] [--default-grant session]",
-			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email; --owner group:EMAIL names the owning\nGoogle group by its lowercase email. Read its value from standard input, or type it at a\nprompt with echo off."}, cmdSecretCreate},
+			"Print an agent secret's name, store, secret name, owner, tier, type, github-owners,\nrequesters, scopes, admin mark, project, project channels, whether it carries the project\ntags' rollback guard, max grant, default grant, its created and last-changed times, its deletion\nonce it is deleted, with the earliest purge beside it on Secrets Manager, and its versions;\n--json prints those and whether it has a value. Never print its value."}, cmdSecretShow},
+		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL|group:EMAIL --tier agent|human [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--project KEY] [--project-channels slack] [--max-grant DURATION] [--default-grant session]",
+			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email; --owner group:EMAIL names the owning\nGoogle group by its lowercase email. --project KEY makes it a secret of that\nDispatch project: a private project's secret goes only to a session that names the project.\n--project-channels slack marks a Slack bot token: a session whose credential names a private\nproject posts with it only to the Slack channels that project's owner named. Beside either,\nthe requesters tag also holds " + policy.RequestersRollbackGuard + ", which a broker from before\nthose tags refuses rather than serve the secret to every session.\nRead its value from standard input, or type it at a prompt with echo off."}, cmdSecretCreate},
 		{command{"secret set", "agent-secrets secret set NAME",
 			"Set a new agent-secret value under the environment's cloud credential. Then ask the broker to\nserve it. Read the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
-		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL|group:EMAIL] [--tier agent|human] [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--max-grant DURATION|none] [--default-grant session|none]",
-			"Change an agent secret's owner, tier, type, GitHub owners, requesters, scopes, admin mark,\nmax grant or default grant under the environment's cloud credential. Then ask the broker\nto reread it. none removes a type, GitHub owners, requesters, scopes, the admin mark, a\nmax grant or a default grant, in a retag of its own. An administrator changes a shared secret's\nowner and tier. This CLI cannot tell whether a requesters entry naming a service is one the\ndeployment registers: it holds no list of them, so the broker's answer to the reread is what\ncatches an unregistered name, printing its refusal and its reason, and the retag exits 1 with\nthe tag written."}, cmdSecretRetag},
+		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL|group:EMAIL] [--tier agent|human] [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--project KEY|none] [--project-channels slack|none] [--max-grant DURATION|none] [--default-grant session|none]",
+			"Change an agent secret's owner, tier, type, GitHub owners, requesters, scopes, admin mark,\nproject, project channels, max grant or default grant under the environment's cloud credential.\nThen ask the broker to reread it. none removes a type, GitHub owners, requesters, scopes, the\nadmin mark, a project, project channels, a max grant or a default grant, in a retag of its own.\nWhile the secret carries a project or project channels, the requesters tag holds\n" + policy.RequestersRollbackGuard + " after its list, and --requesters none keeps it; it goes with\nthe last of those two tags. An administrator changes a shared secret's owner and tier. This\nCLI cannot tell whether a requesters entry naming a service is one the deployment registers: it\nholds no list of them, so the broker's answer to the reread is what catches an unregistered name,\nprinting its refusal and its reason, and the retag exits 1 with the tag written."}, cmdSecretRetag},
 		{command{"secret delete", "agent-secrets secret delete NAME",
 			"Schedule the agent secret NAME's deletion, restorable for 30 days, under the environment's\ncloud credential, then ask the broker to stop serving it at once."}, cmdSecretDelete},
 		{command{"secret restore", "agent-secrets secret restore NAME",
@@ -183,7 +183,7 @@ func secretFail(stderr io.Writer, form string, err error) int {
 }
 
 // secretFlagValues are the secret forms' flags that take a value.
-var secretFlagValues = map[string]bool{"owner": true, "tier": true, "type": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "max-grant": true, "default-grant": true}
+var secretFlagValues = map[string]bool{"owner": true, "tier": true, "type": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "project": true, "project-channels": true, "max-grant": true, "default-grant": true}
 
 // secretFlags is form's flag set. The store credential comes from the environment, never a flag
 // (cmdSecret refuses --profile), so no form registers one for it.
@@ -674,8 +674,12 @@ type secretBackend interface {
 	// setTags writes tags onto the secret in one call and leaves every other tag as it is.
 	// removeTags removes keys from it in one call and leaves every other tag as it is. Each writes
 	// against held, and answers errTagsChanged when another write raced it: GCP sends held's
-	// annotations, changed, with held's etag, which a raced write fails; AWS's tag calls take no
-	// condition, so its write reads the tags back and restores held's (awsBackend.raceCheck).
+	// annotations, changed, with held's etag, which a raced write fails, so nothing is written;
+	// AWS's tag calls take no condition, so its write lands first and is read back after
+	// (awsBackend.raceCheck), and an error from that read-back comes with the write in the store
+	// and nothing put back (tagsLanded, writeLanded). On either store, a call whose error is no
+	// definite refusal (a service fault, an outage, a lost connection) leaves open whether the
+	// write landed (tagsUnknown, writeUnknown).
 	setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error
 	removeTags(ctx context.Context, slug string, held heldTags, keys []string) error
 	// delete schedules the secret's deletion and answers the moment it happens (AWS:
@@ -1027,7 +1031,8 @@ func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 // contradicts nothing, so the form exits on the type tag alone; it prints the one line that says
 // the broker's view was not checked, why, and the command that checks it (sayUnchecked).
 // Otherwise r is the broker's own answer to a session's reread, whose type the caller holds to
-// secretType.
+// secretType. It is for a write known to have landed: a write whose outcome is open is reread by
+// rereadOpen, which claims nothing of it.
 func reread(s *secretSession, stdout, stderr io.Writer, form, name, secretType string, wantServed bool, restorable *time.Time) (Reread, bool) {
 	r, unsigned, err := s.askReread(s.ctx, name)
 	ok := true
@@ -1035,20 +1040,10 @@ func reread(s *secretSession, stdout, stderr io.Writer, form, name, secretType s
 	case err != nil:
 		fmt.Fprintf(stderr, "agent-secrets %s: the write to %s stands, but %s could not be asked to reread %s, so it serves the change only from its next reload: %v\n", form, s.storeName(), s.src.brokerAt(), name, err)
 		ok = false
-	case !r.Told:
-		fmt.Fprintf(stdout, "broker: rereading %s from %s\n", name, s.storeName())
 	default:
+		printReread(s, stdout, name, r, !wantServed, restorable)
 		switch {
-		case r.Served && r.Type != "":
-			fmt.Fprintf(stdout, "broker: serving %s from %s (type %s)\n", name, s.storeName(), s.settings.words(r.Type))
-		case r.Served:
-			fmt.Fprintf(stdout, "broker: serving %s from %s\n", name, s.storeName())
-		case !wantServed && r.Reason == policy.ReasonAbsent:
-			fmt.Fprintf(stdout, "broker: %s is deleted in %s (restorable until %s)\n", name, s.storeName(), formatTime(restorable))
-		default:
-			fmt.Fprintf(stdout, "broker: refusing %s from %s (reason=%s)\n", name, s.storeName(), s.settings.words(r.Reason))
-		}
-		switch {
+		case !r.Told:
 		case wantServed && !r.Served:
 			fmt.Fprintf(stderr, "agent-secrets %s: %s refuses %s after the write to %s (reason=%s)\n", form, s.src.brokerAt(), name, s.storeName(), s.settings.words(r.Reason))
 			ok = false
@@ -1114,6 +1109,60 @@ func sayUnchecked(s *secretSession, stderr io.Writer, form, name, secretType str
 		form, s.src.brokerAt(), name, name, unsigned, route, route, cipherclient.SignInCommand)
 }
 
+// printReread prints the broker's answer to a reread of name: taken and nothing more (a call with
+// no proof, r.Told false), served (with its type), deleted (after a delete, which deleted is;
+// restorable is when it stops being restorable), or refused with its reason.
+func printReread(s *secretSession, stdout io.Writer, name string, r Reread, deleted bool, restorable *time.Time) {
+	switch {
+	case !r.Told:
+		fmt.Fprintf(stdout, "broker: rereading %s from %s\n", name, s.storeName())
+	case r.Served && r.Type != "":
+		fmt.Fprintf(stdout, "broker: serving %s from %s (type %s)\n", name, s.storeName(), s.settings.words(r.Type))
+	case r.Served:
+		fmt.Fprintf(stdout, "broker: serving %s from %s\n", name, s.storeName())
+	case deleted && r.Reason == policy.ReasonAbsent:
+		fmt.Fprintf(stdout, "broker: %s is deleted in %s (restorable until %s)\n", name, s.storeName(), formatTime(restorable))
+	default:
+		fmt.Fprintf(stdout, "broker: refusing %s from %s (reason=%s)\n", name, s.storeName(), s.settings.words(r.Reason))
+	}
+}
+
+// rereadOpen asks the broker to reread name after a write whose answer left open whether it
+// landed (writeUnknown), as every reread is asked (askReread), and prints the broker's answer
+// without judging it, since either outcome is possible. When the broker cannot be asked, it says
+// so and names the reread to ask for once the store holds what the person wants, and nothing of
+// when the broker would serve a change on its own: that depends on the write, which may not have
+// landed.
+func rereadOpen(s *secretSession, stdout, stderr io.Writer, form, name string) {
+	r, _, err := s.askReread(s.ctx, name)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent-secrets %s: %s could not be asked to reread %s: %v. Once the store holds what you want, ask for the reread with `%s`\n", form, s.src.brokerAt(), name, err, rereadCommand(name))
+		return
+	}
+	printReread(s, stdout, name, r, false, nil)
+}
+
+// rereadCommand is the shell command that asks the broker to reread name: POST
+// /v1/secrets/{name}/reread at the address brokerURLVar holds, without the slashes it ends in, as
+// brokerBaseURL reads it (the broker's mux answers a path with a doubled slash with a redirect,
+// which curl would not follow and -f would not fail on). It stops naming the config file where
+// the shell has no such variable, since this CLI may have read the address from that file, and
+// curl exits non-zero naming the status of a broker's refusal (-sSf). It sends no proof, so the
+// broker takes the reread and answers only that (202, api.RereadAcceptedReason), with a reason
+// written for an agent-secrets from before that answer which says the write stands; the command
+// drops that body (-o /dev/null), since it follows a write whose outcome was open, and its exit
+// says whether the reread was taken. The CLI prints no broker address itself, and name has passed
+// policy.NameToSlug, so it holds no shell metacharacter.
+func rereadCommand(name string) string {
+	return fmt.Sprintf(`u=${%s:?set it to the broker address in ~/.config/agent-secrets/config} && curl -sSf -o /dev/null -X POST "${u%%"${u##*[!/]}"}/v1/secrets/%s/reread"`, brokerURLVar, name)
+}
+
+// secretShowCommand is the `secret show` that reads name's tags and versions under the sign-in
+// this session used: the command every line names that sends a person to read what a write left.
+func secretShowCommand(s *secretSession, name string) string {
+	return pipeCommand(s.backend.signInPrefix(), "secret", "show", name)
+}
+
 // secretView is what list and show print of one secret: never its value.
 type secretView struct {
 	// Name is the NAME a session asks for it as (or its name in the secret store, when it maps to none).
@@ -1129,8 +1178,9 @@ type secretView struct {
 	Type       string `json:"type"`
 	// GitHubOwners is a github-app secret's github-owners tag, the accounts the broker mints for.
 	GitHubOwners string `json:"github_owners"`
-	// Requesters is the requesters tag: the people and services that may ask for the secret at
-	// all, or "" where any session its owner and tier allow may.
+	// Requesters is the requesters tag without the project tags' rollback guard
+	// (policy.SplitRequestersGuard): the people and services that may ask for the secret at all,
+	// or "" where any session its owner and tier allow may.
 	Requesters string `json:"requesters"`
 	// Scopes is a google-service-account secret's scopes tag: the OAuth scope names the token it
 	// mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, or
@@ -1142,9 +1192,29 @@ type secretView struct {
 	// value rather than a bool so that show prints a tag written by hand as anything else, which
 	// the broker refuses the secret for (policy.ReasonAdminMalformed), instead of hiding it as
 	// not-admin.
-	Admin        string `json:"admin"`
-	MaxGrant     string `json:"max_grant"`
-	DefaultGrant string `json:"default_grant"`
+	Admin string `json:"admin"`
+	// Project is the dispatch-project tag as the store holds it, the key of the Dispatch project
+	// the secret belongs to, and nil for a secret carrying none, which --json writes as null
+	// (policy.TagProject). It is a pointer so a census of the store's tagged secrets counts the
+	// rows whose project is not null, a tag written by hand as the empty string among them,
+	// which the broker refuses the secret for (policy.ReasonProjectMalformed).
+	Project *string `json:"project"`
+	// ProjectChannels is the project-channels tag as the store holds it, slack for the Legion
+	// Slack bot token, which a credential naming a private project spends only on a post to a
+	// channel that project's owner named, and nil for a secret carrying none, which --json writes
+	// as null (policy.TagProjectChannels). It is a pointer for the reason Project is: a census of
+	// the store's tagged secrets counts the rows whose project_channels is not null, a tag written
+	// by hand as the empty string among them, which the broker refuses the secret for
+	// (policy.ReasonProjectChannelsMalformed).
+	ProjectChannels *string `json:"project_channels"`
+	// RollbackGuard is whether the requesters tag holds the project tags' rollback guard
+	// (policy.RequestersRollbackGuard), which `secret create` and `retag` write beside a
+	// dispatch-project or project-channels tag so that a broker from before those tags refuses
+	// the secret. A row whose project or project_channels is not null and whose rollback_guard is
+	// false is a tag written without this CLI, which such a broker would serve to every session.
+	RollbackGuard bool   `json:"rollback_guard"`
+	MaxGrant      string `json:"max_grant"`
+	DefaultGrant  string `json:"default_grant"`
 	// HasValue is whether it holds a current, servable version (AWS: a version carries AWSCURRENT;
 	// GCP: versions/latest is ENABLED), so the broker can release a value.
 	HasValue bool `json:"has_value"`
@@ -1167,7 +1237,14 @@ type secretView struct {
 func (v secretView) withTags(tags map[string]string) secretView {
 	v.Owner, v.Tier = tags[policy.TagOwner], tags[policy.TagTier]
 	v.Type, v.GitHubOwners, v.MaxGrant, v.DefaultGrant = policy.TypeFromTags(tags), tags[policy.TagGitHubOwners], tags[policy.TagMaxGrant], tags[policy.TagDefaultGrant]
-	v.Requesters, v.Scopes, v.Admin = tags[policy.TagRequesters], tags[policy.TagScopes], tags[policy.TagAdmin]
+	v.Scopes, v.Admin = tags[policy.TagScopes], tags[policy.TagAdmin]
+	v.Requesters, v.RollbackGuard = policy.SplitRequestersGuard(tags[policy.TagRequesters])
+	if project, tagged := tags[policy.TagProject]; tagged {
+		v.Project = &project
+	}
+	if channels, tagged := tags[policy.TagProjectChannels]; tagged {
+		v.ProjectChannels = &channels
+	}
 	return v
 }
 
@@ -1215,13 +1292,13 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tOWNER\tTIER\tTYPE\tMAX_GRANT\tDEFAULT_GRANT\tVALUE\tDELETED\tEARLIEST_PURGE")
+	fmt.Fprintln(tw, "NAME\tOWNER\tTIER\tTYPE\tPROJECT\tPROJECT_CHANNELS\tMAX_GRANT\tDEFAULT_GRANT\tVALUE\tDELETED\tEARLIEST_PURGE")
 	for _, v := range views {
 		value := "no"
 		if v.HasValue {
 			value = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, orDash(v.Owner), orDash(v.Tier), orDash(v.Type), orDash(v.MaxGrant), orDash(v.DefaultGrant), value, formatTime(v.Deleted), formatTime(v.EarliestPurge))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, orDash(v.Owner), orDash(v.Tier), orDash(v.Type), orDashPtr(v.Project), orDashPtr(v.ProjectChannels), orDash(v.MaxGrant), orDash(v.DefaultGrant), value, formatTime(v.Deleted), formatTime(v.EarliestPurge))
 	}
 	if err := tw.Flush(); err != nil {
 		return secretFailIn(stderr, form, s, err)
@@ -1272,8 +1349,12 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\ntype: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
-		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Type), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
+	rollbackGuard := "-"
+	if view.RollbackGuard {
+		rollbackGuard = "yes"
+	}
+	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\ntype: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nproject: %s\nproject_channels: %s\nrollback_guard: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
+		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Type), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDashPtr(view.Project), orDashPtr(view.ProjectChannels), rollbackGuard, orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
 	decides, guidance := whoDecides(view, s.settings.JudgeKeys)
 	fmt.Fprintf(stdout, "decides: %s\nguidance: %s\n", decides, s.settings.words(guidance))
 	switch {
@@ -1312,6 +1393,8 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	requesters := flags.String("requesters", "", `the people (each by their lowercase sign-in email), Google groups (each as group: and its lowercase email) and registered services that may ask for this secret at all, separated by spaces ("<email> group:<email> <service>"); an admin secret, a google-service-account one and an anthropic-federation one each need a --max-grant of an hour or less, and a secret that only lists who may ask keeps its own cap, or none`)
 	scopes := flags.String("scopes", "", `the OAuth scopes the token a google-service-account secret mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, separated by spaces ("cloud-platform bigquery"); read on that type alone, and a secret without it mints cloud-platform`)
 	admin := flags.String("admin", "", "true marks a secret whose grant is an administrator's: such a secret is human tier, so a person approves each release, names its requesters, and bounds its grants to an hour with --max-grant")
+	project := flags.String("project", "", "the key of the Dispatch project the secret belongs to (PRIV): a private project's secret goes only to a session that names the project in AGENT_SECRETS_PROJECTS, and only a broker that can ask Dispatch serves it. Unset, the secret belongs to no project")
+	projectChannels := flags.String("project-channels", "", "slack: the secret is a Slack bot token, which a session or pod whose credential names a private Dispatch project spends only through the airlock, on a Slack post to a channel that project's owner named. Unset, no project's owner limits it")
 	maxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows")
 	defaultGrant := flags.String("default-grant", "", "session: a request with no --ttl lasts until its session ends, not 12 hours")
 	if err := flags.Parse(flagArgs); err != nil {
@@ -1343,6 +1426,12 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		err = checkAdmin(*admin, false)
 	}
 	if err == nil {
+		err = checkProject(*project, false)
+	}
+	if err == nil {
+		err = checkProjectChannels(*projectChannels, false)
+	}
+	if err == nil {
 		err = checkMaxGrant(*maxGrant, false)
 	}
 	if err == nil {
@@ -1352,13 +1441,15 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		return secretFail(stderr, form, err)
 	}
 	tags := optionalTags(tagFlags{
-		Type:         *secretType,
-		GitHubOwners: *githubOwners,
-		Requesters:   *requesters,
-		Scopes:       *scopes,
-		Admin:        *admin,
-		MaxGrant:     *maxGrant,
-		DefaultGrant: *defaultGrant,
+		Type:            *secretType,
+		GitHubOwners:    *githubOwners,
+		Requesters:      *requesters,
+		Scopes:          *scopes,
+		Admin:           *admin,
+		Project:         *project,
+		ProjectChannels: *projectChannels,
+		MaxGrant:        *maxGrant,
+		DefaultGrant:    *defaultGrant,
 	})
 	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
@@ -1373,6 +1464,9 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		return secretFailIn(stderr, form, s, err)
 	}
 	tags[policy.TagOwner], tags[policy.TagTier] = ownerValue, *tier
+	// A project tag brings the rollback guard into the requesters tag, after the list named, as
+	// a type brings its own guard (optionalTags).
+	guardRequesters(tags)
 	// The cross-tag rules weigh the owner tag, which me resolves to only once the sign-in is
 	// read, so they are checked here rather than beside the flags — still before the value is
 	// read and before anything is written. The owner and tier go into the map above, so the
@@ -1395,6 +1489,12 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	}
 	if *admin != "" {
 		command = append(command, "--admin", *admin)
+	}
+	if *project != "" {
+		command = append(command, "--project", *project)
+	}
+	if *projectChannels != "" {
+		command = append(command, "--project-channels", *projectChannels)
 	}
 	if *maxGrant != "" {
 		command = append(command, "--max-grant", *maxGrant)

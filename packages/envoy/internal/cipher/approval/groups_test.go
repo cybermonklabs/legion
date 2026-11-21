@@ -35,10 +35,10 @@ func TestTheApprovalPageShowsAMemberTheButtons(t *testing.T) {
 	if want := "a member of the group " + group; v.Approver != want {
 		t.Fatalf("the page names the approver %q, want %q", v.Approver, want)
 	}
-	if line := outcome(detail, "outsider@example.com", now, directory); !strings.Contains(line, "not yours to decide; only a member of the group "+group+" may.") {
+	if line := outcome(detail, "outsider@example.com", now, "", directory); !strings.Contains(line, "not yours to decide; only a member of the group "+group+" may.") {
 		t.Fatalf("the outsider's outcome line is %q; want it to say the request is not theirs to decide", line)
 	}
-	if line := outcome(detail, "member@example.com", now, directory); strings.Contains(line, "not yours to decide") {
+	if line := outcome(detail, "member@example.com", now, "", directory); strings.Contains(line, "not yours to decide") {
 		t.Fatalf("the member's outcome line is %q; want it pending, theirs to decide", line)
 	}
 	if hint := approverHint(detail.Approver); hint != "" {

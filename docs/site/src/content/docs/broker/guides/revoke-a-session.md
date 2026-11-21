@@ -42,13 +42,23 @@ how it was **Granted** (**Automatically**, or **Approved by** whoever decided it
 `judge:<model id>` where the model judge decided it in an approver's stead), and when it was
 created and expires. Click
 **Revoke** to end one at once; the session's next read of it is refused `GRANT_NOT_LIVE`. The
-broker allows it when you are the grant's approver, a member of the group that is its approver,
-or its session's operator, and it allows
-anyone signed in to end a grant whose approver is `anyone`. It refuses everyone else
-`NOT_APPROVER` — so a grant with no approver and no operator has no **Revoke** button at all. Its
-row reads **Ends with its machine login** instead:
-[revoke the service's machine login](#end-a-machines-login), which ends every session it started,
-rather than that one row.
+broker allows it when you are the grant's approver or the person its session acts for, whatever
+project the grant touches and whether or not Dispatch answers: you are named on the grant, and a
+revoke only takes access away. A grant revoked by someone it does not name is asked about first:
+one of a private Dispatch project they are not on, by a secret's project tag, a project its
+session's credential names, or an issue key its reason names, answers `404 NOT_FOUND`, as for a
+grant id no grant has, and a Dispatch that does not answer gets `503 PROJECT_ACCESS_UNAVAILABLE`,
+revoking nothing. Of the grants they may see, they end one whose approver is `anyone`, and one
+whose approver is a group the broker's last read of it lists them in, however old that read is,
+and the broker refuses them any other `NOT_APPROVER` — so a grant with no approver and no operator
+has no **Revoke** button at all. Its
+row reads **Ends with its machine login** instead: revoke the machine login that enrolled the
+session ([end a machine's login](#end-a-machines-login)), which ends every session it started,
+rather than that one row. Anyone signed in may revoke a service's login; a person's pod login only
+the person `BROKER_POD_OPERATORS` now maps the pod's account to may revoke. Whoever revokes, a
+grant that its session's new enrollments moved to another box each time the broker read it,
+three times in a row, is refused `409 GRANT_MOVING` with nothing revoked; run the same revoke
+again once the session stays on one box.
 
 ```console
 $ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -X POST -H @- -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/grants/<grant id>/revoke-by-approver"
@@ -116,6 +126,7 @@ $ agent-secrets self
 enrollment_id: 2b8627f4-9a2a-4c12-85bf-910144bc0b5c
 kind: session
 operator: ada@example.com
+projects: -
 lease_expires_at: 2026-10-03T03:36:40Z
 source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 ```
@@ -160,7 +171,10 @@ the pod before it asked for, and a machine cancels its request after its helper 
 person, another role of the same issue and another machine of the same fleet are refused
 `NOT_YOURS`, as is every session but the one that asked when its broker enrollment records no owner,
 which is any enrollment made before the broker recorded owners
-([Concepts](/legion/broker/concepts/#requests-and-grants)).
+([Concepts](/legion/broker/concepts/#requests-and-grants)). A request of a private Dispatch project
+is the exception: a session other than the one that holds it cancels it only when its own
+credential names the project for a person still on its list, and any other session, yours
+included, gets `no such request (NOT_FOUND)`, as for an unknown id.
 
 ## End a session
 

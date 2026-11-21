@@ -86,8 +86,9 @@ func (m *Machine) narrowingCheckMintBound() time.Duration {
 // checkNarrowing is Create's whole verdict on the narrowing the caller will release this
 // request's grant with: the refusal Create answers, and nil both for a narrowing the broker could
 // serve and for one it could not decide. names are the names the request asks for, set the
-// snapshot Create evaluates them against and reason the request object's own reason, all three as
-// Create holds them. It runs after reuseLiveGrant, which asks nobody for a grant that already
+// snapshot Create evaluates them against, facts what Dispatch answered for them (projectFacts,
+// resolved before this), and reason the request object's own reason, all four as Create holds
+// them. It runs after reuseLiveGrant, which asks nobody for a grant that already
 // exists, and before the transaction, so a refusal writes no request row, makes no
 // credential-request record and interrupts no person; it also holds no row lock while it waits on
 // GitHub, which is the rule rereadMissing already states for the policy reread above it.
@@ -102,8 +103,8 @@ func (m *Machine) narrowingCheckMintBound() time.Duration {
 // for the same reason: the transaction answers those in a moment, in the order a caller reads
 // them today. A state that is not pending skips it too, so an agent-tier narrowed request and the
 // Legion daemon's own token command keep today's behaviour exactly and reach GitHub for nothing.
-func (m *Machine) checkNarrowing(ctx context.Context, enr enrollmentRow, names []string, set *policy.Set, reason string, narrowing *secrets.GitHubNarrowing) error {
-	requester, err := m.requester(ctx, m.Store.Pool, enr)
+func (m *Machine) checkNarrowing(ctx context.Context, enr enrollmentRow, names []string, set *policy.Set, facts projectFacts, reason string, narrowing *secrets.GitHubNarrowing) error {
+	requester, err := m.requester(ctx, m.Store.Pool, enr, facts)
 	if err != nil {
 		skippedNarrowingCheck(enr.ID, "", "the requester could not be read", err)
 		return nil

@@ -197,6 +197,36 @@ func ParseRequesterShapes(raw string) (string, error) {
 	return parseRequesters(raw, nil, false)
 }
 
+// SplitRequestersGuard answers raw, a requesters tag as the store holds it, without the entry
+// RequestersRollbackGuard, and whether it held that entry. The rest is answered single-spaced when
+// the entry was there, and raw unchanged when it was not, so a tag no guard was written into
+// reaches ParseRequesters exactly as the store holds it. An entry is a run of characters between
+// white space, as ParseRequesters reads it, so a guard joined to another entry by a comma is no
+// guard, and ParseRequesters refuses that tag for its comma.
+func SplitRequestersGuard(raw string) (rest string, guarded bool) {
+	fields := strings.Fields(raw)
+	kept := fields[:0]
+	for _, field := range fields {
+		if field != RequestersRollbackGuard {
+			kept = append(kept, field)
+		}
+	}
+	if len(kept) == len(fields) {
+		return raw, false
+	}
+	return strings.Join(kept, " "), true
+}
+
+// WithRequestersGuard answers list, a requesters list ("" for none), with RequestersRollbackGuard
+// after it: the requesters tag `agent-secrets secret` writes for a secret that carries a
+// dispatch-project or a project-channels tag.
+func WithRequestersGuard(list string) string {
+	if list == "" {
+		return RequestersRollbackGuard
+	}
+	return list + " " + RequestersRollbackGuard
+}
+
 // parseRequesters is the one reading behind both exported functions. registered says which check
 // a service entry gets: membership of services, or a service name's shape alone.
 func parseRequesters(raw string, services []string, registered bool) (string, error) {
