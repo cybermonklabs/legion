@@ -189,6 +189,9 @@ jobs:
       - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
         run: bash scripts/callout-check.test.sh
         working-directory: packages/envoy
+      - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and agent-secrets; no cluster or cloud)
+        run: bash infra/scripts/operator-token-minters.test.sh
+        working-directory: packages/envoy
       - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
         run: bash scripts/dev-postgres.test.sh
         working-directory: packages/envoy

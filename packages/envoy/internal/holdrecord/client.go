@@ -164,14 +164,16 @@ func (c *Client) MoveRow(ctx context.Context, expectedGen uint64, phase natsgran
 
 // RestoreRow writes the row through `POST /v1/nats-hold/restore`, refusing the same phases as
 // MoveRow. A row restored `held` inside a hold keeps its hold id at a new `gen`, and the record's
-// completion stands, because no command is admitted while the row is missing.
+// completion stands, because no command is admitted while the row is missing. The route stores the
+// row only at one above the highest `gen` its log holds, which no command can read, and answers any
+// other gen 409 `gen_mismatch` naming that one in `restore_gen`: RestoreRow then signs the row
+// afresh at `restore_gen` and sends it once more, and answers a second refusal, another writer's
+// restore between the two, as it is.
 func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.OperatorPhase, holdID, reason string) (Row, error) {
 	if err := rowPhase(phase); err != nil {
 		return Row{}, err
 	}
-	// The route stores the row only at one above the highest gen its log holds, which no command
-	// can read, and answers that gen with a gen_mismatch: the row is signed afresh at it and sent
-	// again. A second mismatch is another writer's restore between the two, answered as it is.
+	// The first send is at gen; a gen_mismatch naming another restore_gen is answered once.
 	for attempt := 0; ; attempt++ {
 		signedAt, sig, err := c.signRow(gen, phase, holdID)
 		if err != nil {

@@ -1642,11 +1642,11 @@ class RaceJob(NamedTuple):
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
             "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the "
-            "NATS credentials and the NATS auth service",
+            "NATS credentials, the NATS auth service and the sign-in code flow",
             "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True),
-                    RacePackage("natscred"), RacePackage("internal/cipher/natscallout"))),
+                    RacePackage("natscred"), RacePackage("internal/cipher/natscallout"), RacePackage("internal/oidc"))),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "70m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
@@ -3005,7 +3005,7 @@ GATES = [
         ("skills/**", "packages/pi-envoy/src/skills-guard.test.ts:43 stages them (the roots at :29-32); scripts/pi-plugin-prepack.sh:103 stages skills; extensions/envoy.ts's resolveSkillsDirectory"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-envoy/package.json:27 prepack ({at('pi-envoy', 'Pack pi-envoy')}); packages/pi-envoy/scripts/prepack.test.ts:85"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100 write dist/THIRD_PARTY_NOTICES with it"),
-        ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:120-123"),
+        ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:144-149"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
       + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),

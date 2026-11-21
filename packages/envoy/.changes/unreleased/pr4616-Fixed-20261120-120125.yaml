@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  Dispatch's sign-in, the broker's approval sign-in and the broker's check of its sign-in client
+  now send the client's secret to the issuer's token endpoint the way the issuer's discovery
+  document lists in `token_endpoint_auth_methods_supported`: by HTTP Basic when it lists
+  `client_secret_basic`, else in the form when it lists `client_secret_post`. Each code exchange,
+  refresh and client check is now one request. Before, the client asked by HTTP Basic and, when
+  the issuer refused, asked again in the form, so a refresh Google refused could take two
+  requests. When each took more than half of the 15-second bound on a refresh, the second ran out
+  of time: Dispatch then answered the person's request as an issuer outage and kept the sign-in of
+  a person Google had refused, rather than ending it. An issuer whose document lists neither
+  method, or no such list, is asked as before, and the style its first successful grant used is
+  now kept for every later grant. A document whose `token_endpoint_auth_methods_supported` is not
+  a list of strings now fails discovery, as one whose `revocation_endpoint` is not a string
+  already did. A sign-in started while the process made its first refresh no longer races with
+  that refresh.
+time: 2026-11-20T12:01:25Z
+custom:
+    Issue: pr4616

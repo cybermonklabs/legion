@@ -6,16 +6,20 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
+	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -162,4 +166,148 @@ func TestTheHoldViewMapsEveryReading(t *testing.T) {
 		require.Equal(t, natsgrant.OperatorPhaseReleased, phase)
 		require.Equal(t, "0", holdUnknownGauge(t, registry))
 	})
+}
+
+// openPool is a pool on dsn, closed when the test ends.
+func openPool(t *testing.T, dsn string) *pgxpool.Pool {
+	t.Helper()
+	pool, err := pgxpool.New(context.Background(), dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// schemaOf is the schema a storetest DSN's connections use, which natshold.Read names its table
+// by.
+func schemaOf(t *testing.T, dsn string) string {
+	t.Helper()
+	parsed, err := url.Parse(dsn)
+	require.NoError(t, err)
+	return parsed.Query().Get("search_path")
+}
+
+// holdPool is a pool on a migrated schema of the test's own (storetest), and that schema's name. It
+// skips the test when BROKER_TEST_DATABASE_URL is unset.
+func holdPool(t *testing.T) (*pgxpool.Pool, string) {
+	t.Helper()
+	dsn := storetest.URL(t)
+	return openPool(t, dsn), schemaOf(t, dsn)
+}
+
+// proxiedHoldPool is holdPool behind a TCP relay the test cuts and restores (testnats.Proxy), as
+// the hold's own pool of the default BROKER_NATS_HOLD_POOL_SIZE, 2, reaches Postgres: that pool,
+// a direct pool on the same schema for the operator's writes, the relay and the schema.
+func proxiedHoldPool(t *testing.T) (proxied, direct *pgxpool.Pool, proxy *testnats.Proxy, schema string) {
+	t.Helper()
+	dsn := storetest.URL(t)
+	proxy = testnats.StartProxy(t, dsn)
+	return openPool(t, proxy.URL()+"&pool_max_conns=2"), openPool(t, dsn), proxy, schemaOf(t, dsn)
+}
+
+// holdTable writes the hold row on a test Postgres: the operator's signed writes, as the broker's
+// routes store them, and a database admin's writes of rows the operator did not sign.
+type holdTable struct {
+	pool   *pgxpool.Pool
+	signer holdSigner
+}
+
+// write stores the row at gen in phase under holdID, signed by the operator, with its log row in
+// the same statement, as PUT /v1/nats-hold and POST /v1/nats-hold/restore store one, and returns
+// the row. It checks no move: the routes' moves are their own tests'.
+func (h holdTable) write(t *testing.T, gen uint64, phase natsgrant.OperatorPhase, holdID string) natshold.Reading {
+	t.Helper()
+	row := h.signer.reading(t, gen, phase, holdID)
+	_, err := h.pool.Exec(context.Background(), `with written as (
+			insert into nats_hold (id, gen, phase, hold_id, reason, updated_at, updated_by, signed_at, sig)
+			values (1, $1, $2, $3, 'test', now(), $4, $5, $6)
+			on conflict (id) do update set gen = excluded.gen, phase = excluded.phase, hold_id = excluded.hold_id,
+				reason = excluded.reason, updated_at = excluded.updated_at, updated_by = excluded.updated_by,
+				signed_at = excluded.signed_at, sig = excluded.sig
+			returning gen, phase, hold_id, reason)
+		insert into nats_hold_log (gen, phase, hold_id, reason, written_at, written_by)
+		select gen, phase, hold_id, reason, now(), $4 from written`,
+		int64(row.Gen), row.Phase, row.HoldID, operatorAccount, row.SignedAt, row.Sig)
+	require.NoError(t, err, "write the hold row at gen %d", gen)
+	return row
+}
+
+// replace is a database admin's write of row over the hold row, as it is, with no log row.
+func (h holdTable) replace(t *testing.T, row natshold.Reading) {
+	t.Helper()
+	h.admin(t, `update nats_hold set gen = $1, phase = $2, hold_id = $3, signed_at = $4, sig = $5 where id = 1`,
+		int64(row.Gen), row.Phase, row.HoldID, row.SignedAt, row.Sig)
+}
+
+// admin runs statement as a database admin writing around the routes.
+func (h holdTable) admin(t *testing.T, statement string, args ...any) {
+	t.Helper()
+	_, err := h.pool.Exec(context.Background(), statement, args...)
+	require.NoError(t, err, "%s", statement)
+}
+
+// A row the operator did not sign, or an older row it signed, reads unknown to a running broker,
+// on the broker's Postgres: after the operator's signed held at gen 3, a database admin's direct
+// update of the phase to released, a row signed by another key, and the operator's own older
+// released at gen 2 written back each read unknown, and each refuses a listener hold_unknown. A
+// new view, as after the broker's restart, has no floor and accepts the older released: the
+// residual the hold's design states. (That the routes refuse an unsigned PUT with 400 is the
+// routes' own test.)
+//
+// Run by hand, the control is a view that does not verify: the admin's released admits the
+// listener, and the test fails naming it.
+func TestAnUnsignedOrReplayedHoldRowReadsUnknown(t *testing.T) {
+	pool, schema := holdPool(t)
+	table := holdTable{pool: pool, signer: newHoldSigner(t)}
+	now := time.Now()
+	registry := metrics.New()
+	deps := Deps{
+		ServiceToken: serviceTokens(map[string]platformToken{"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)}}),
+		HoldRead:     func(ctx context.Context) (natshold.Reading, bool, error) { return natshold.Read(ctx, pool, schema) },
+		HoldKeys:     table.signer.HoldKeys, Metrics: NewMetrics(registry),
+	}
+	running := deps
+	running.hold = newHoldView(running)
+	listener := func(deps Deps) error {
+		_, err := Decide(t.Context(), deps, holdServices, serviceRequest("listener-token"))
+		return err
+	}
+	requireUnknown := func(what string, cause error) {
+		t.Helper()
+		phase, known := running.hold.State(t.Context())
+		require.False(t, known, "%s read as %s", what, phase)
+		err := listener(running)
+		var refused *Refusal
+		require.True(t, errors.As(err, &refused), "the listener %s was admitted after %s", listenerAccount, what)
+		require.Equal(t, labelHoldUnknown, refused.Label)
+		require.ErrorIs(t, refused.Cause, cause, "%s", what)
+	}
+
+	released := table.write(t, 2, natsgrant.OperatorPhaseReleased, "hold-1")
+	held := table.write(t, 3, natsgrant.OperatorPhaseHeld, "hold-1")
+	phase, known := running.hold.State(t.Context())
+	require.True(t, known)
+	require.Equal(t, natsgrant.OperatorPhaseHeld, phase)
+	require.NoError(t, listener(running), "a listener was refused under the operator's signed held")
+
+	table.admin(t, `update nats_hold set phase = 'released' where id = 1`)
+	requireUnknown("the admin's update of the phase to released", signedrecord.ErrBadSignature)
+
+	table.replace(t, newHoldSigner(t).reading(t, 3, natsgrant.OperatorPhaseReleased, "hold-1"))
+	requireUnknown("a released row signed by another key", signedrecord.ErrBadSignature)
+
+	table.replace(t, released)
+	requireUnknown("the operator's older released at gen 2, written back", signedrecord.ErrReplay)
+	require.Equal(t, "1", holdUnknownGauge(t, registry))
+
+	restarted := deps
+	restarted.hold = newHoldView(restarted)
+	phase, known = restarted.hold.State(t.Context())
+	require.True(t, known, "a new view did not accept the older signed row: the residual is not what the design states")
+	require.Equal(t, natsgrant.OperatorPhaseReleased, phase)
+	require.NoError(t, listener(restarted))
+
+	table.replace(t, held)
+	phase, known = running.hold.State(t.Context())
+	require.True(t, known, "the operator's signed held at the floor read as unknown")
+	require.Equal(t, natsgrant.OperatorPhaseHeld, phase)
 }

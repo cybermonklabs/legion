@@ -4213,6 +4213,17 @@ No phase names a `$SYS` subject or the retired hold bucket `KV_envoy_maintenance
 `natsgrant.HoldProbe()` is the hold probe's grant: publish and subscribe `_ENVOY_HOLD_PROBE.none`,
 a subject nothing else uses, so the probe only shows whether the hub admits a connection.
 
+**Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
+precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
+shell it runs in, requests no credential, and lists every principal that is not a person and can
+mint the operator ServiceAccount's token, run or enter a pod as it, mint its Google service
+account's token, make a namespace of the same name on another cluster of the project, or write the
+writer hold's tables beside the broker's routes. It reads code first (`--rbac-render`,
+`--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming each principal and
+right, or 2 naming each step it could not read. `--report <file>` writes the same as JSON.
+`scripts/operator-token-minters.test.sh` runs every plant and control against a fake `kubectl`,
+`gcloud` and `agent-secrets`.
+
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by
 a later release.
