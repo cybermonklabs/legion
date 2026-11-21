@@ -4,7 +4,7 @@ body: |-
   one is `400 invalid_request`, a pod-session registration `400 SESSION_INVALID`, and an exchange
   entry fixing one stops the broker's start. Such a name's relay subject would be a NATS wildcard
   over every session's. The refusal's sentence reads "a session name is printable, carries no
-  whitespace, '*' or '>', and is at most 200 bytes"; broker-client reads it whole.
+  whitespace, '*' or '>', and is at most 200 bytes"; cipher-client reads it whole.
 time: 2026-11-21T00:20:30Z
 custom:
     Issue: feat-listener-relay-socket

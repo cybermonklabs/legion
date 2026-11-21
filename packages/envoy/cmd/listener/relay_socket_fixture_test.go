@@ -92,9 +92,12 @@ type relaySocketRigConfig struct {
 	checkEvery time.Duration
 	// maxSockets is the replica's socket cap, relaySocketMaxPerListener by default.
 	maxSockets int
-	// pendingMsgs and pendingBytes are a socket subscription's pending limits, the replica's
+	// pendingMsgs and pendingBytes are what one socket may hold for its client, the replica's
 	// own by default.
 	pendingMsgs, pendingBytes int
+	// budget is what the replica's sockets together may hold, relaySocketReplicaPendingBytes by
+	// default.
+	budget int64
 }
 
 func withSocketNATSLatency(rtt time.Duration) relaySocketRigOption {
@@ -111,6 +114,10 @@ func withMaxSockets(n int) relaySocketRigOption {
 
 func withPendingLimits(msgs, bytes int) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.pendingMsgs, c.pendingBytes = msgs, bytes }
+}
+
+func withReplicaBudget(bytes int64) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.budget = bytes }
 }
 
 func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySocketRig {
@@ -170,6 +177,9 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	}
 	if config.pendingMsgs > 0 {
 		sockets.pendingMsgs, sockets.pendingBytes = config.pendingMsgs, config.pendingBytes
+	}
+	if config.budget > 0 {
+		sockets.budget = config.budget
 	}
 	sockets.now = clock.now
 	routes := http.NewServeMux()
@@ -479,9 +489,9 @@ func publishRelayFrame(t *testing.T, url, session string, header natsgo.Header) 
 }
 
 // dialStalled opens session's socket with token on a client that reads nothing, subscribes the
-// session's relay subject as sid 1, and answers the client's connection, the replica's socket and
-// its subscription once the replica holds it.
-func (rig *relaySocketRig) dialStalled(t *testing.T, session, token string) (*websocket.Conn, *relaySocket, *natsgo.Subscription) {
+// session's relay subject as sid 1, and answers the client's connection and the replica's socket
+// once the replica holds its subscription.
+func (rig *relaySocketRig) dialStalled(t *testing.T, session, token string) (*websocket.Conn, *relaySocket) {
 	t.Helper()
 	dialer := websocket.Dialer{Subprotocols: []string{relaySubprotocol}, HandshakeTimeout: 5 * time.Second}
 	conn, response, err := dialer.Dial("ws"+strings.TrimPrefix(rig.server.URL, "http")+relaySocketPath(session), rig.upgradeHeader(t, session, token))
@@ -493,7 +503,8 @@ func (rig *relaySocketRig) dialStalled(t *testing.T, session, token string) (*we
 		t.Fatalf("send the sub: %v", err)
 	}
 	socket := rig.openSocket(t, session)
-	return conn, socket, socket.awaitSubscription(t)
+	socket.awaitSubscription(t)
+	return conn, socket
 }
 
 // flood publishes n relay frames of 512 KiB on session's relay subject, far more than a
@@ -512,15 +523,14 @@ func flood(t *testing.T, url, session string, n int) {
 	}
 }
 
-// awaitBlockedWrite returns once sub holds a frame behind the one the socket is writing, failing
-// the test when it never does within 10 s.
-func awaitBlockedWrite(t *testing.T, sub *natsgo.Subscription) {
+// awaitBlockedWrite returns once socket holds a frame behind the one it is writing to its
+// client, failing the test when it never does within 10 s.
+func awaitBlockedWrite(t *testing.T, socket *relaySocket) {
 	t.Helper()
 	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
-		pending, _, _ := sub.Pending()
-		delivered, _ := sub.Delivered()
-		return pending > 0 && delivered > 0
+		frames, _ := socket.held()
+		return frames > 1
 	}) {
-		t.Fatal("the socket's subscription never held a frame behind the one it was writing")
+		t.Fatal("the socket never held a frame behind the one it was writing")
 	}
 }

@@ -705,7 +705,7 @@ func TestSessionAtTheCapIsUsable(t *testing.T) {
 // trades under, now that it refuses a name holding a NATS wildcard ('*' or '>', whose rows are
 // TestMachineRefusesWhatItCannotDecide's): an Envoy session id, the Legion daemon's fixed session,
 // a run pod's fixed session holding a slash, the read entry's, and a person's sign-in
-// (brokerclient.SessionFor), which holds the person's address and so a '.'.
+// (cipherclient.SessionFor), which holds the person's address and so a '.'.
 func TestASessionNameHoldsNoWildcard(t *testing.T) {
 	for _, name := range []string{"01930000-0000-7000-8000-000000000001", "ses_agent", fixedSession, "run-holds/example-run", readerSession, "signin-ada@example.com-abcdefghijkl"} {
 		if !exchange.ValidSession(name) {

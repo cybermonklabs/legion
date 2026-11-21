@@ -113,18 +113,12 @@ type relayLiveOptions struct {
 	stub bool
 	// edgeProjects is ENVOY_EDGE_PROJECTS, relayLiveProject by default, comma-separated.
 	edgeProjects string
-	// grant is each replica's grant for the edge's projects, natsgrant.Edge by default; a control
-	// renders another.
-	grant func(machineID string, projects []string) (natsgrant.Permissions, error)
 }
 
 func newRelayLiveRig(t *testing.T, options relayLiveOptions) *relayLiveRig {
 	t.Helper()
 	if options.edgeProjects == "" {
 		options.edgeProjects = relayLiveProject
-	}
-	if options.grant == nil {
-		options.grant = natsgrant.Edge
 	}
 	rig := &relayLiveRig{binary: cmdtest.BuildCommand(t, cmdtest.Command{
 		Name:  "envoy-listener",
@@ -135,7 +129,7 @@ func newRelayLiveRig(t *testing.T, options relayLiveOptions) *relayLiveRig {
 	var users []testnats.StaticUser
 	grants := map[string]natsgrant.Permissions{relayLiveDispatch: natsgrant.Dispatch(relayLiveDispatch)}
 	for _, machineID := range []string{relayLiveA, relayLiveB} {
-		grant, err := options.grant(machineID, strings.Split(options.edgeProjects, ","))
+		grant, err := natsgrant.Edge(machineID, strings.Split(options.edgeProjects, ","))
 		if err != nil {
 			t.Fatalf("render the grant of replica %s for %s: %v", machineID, options.edgeProjects, err)
 		}
@@ -594,8 +588,12 @@ func TestARelaySocketRefusesAnotherSessionsSubjects(t *testing.T) {
 
 // Row 3: a send to S from a second session makes A probe S's relay subject, which B's socket
 // subscribes; the send reads S connected, and the client is sent the message and no probe frame.
-// Control: the socket closed first, and a send reads S stopped once B's unsubscribe has reached
-// the server, within 10 s.
+// The probe's reply is A's inbox, under the edge machine's inbox prefix and no relay receipt, so
+// forward's filters of the probe's header and of the stray reply each keep it from the client:
+// the control that makes the row fail is both removed ("the socket forwarded the connection
+// probe"); either alone removed, the other stops the probe and the row passes. Its second half is
+// its own control: the socket closed first, and a send reads S stopped once B's unsubscribe has
+// reached the server, within 10 s.
 func TestAProbeOfASocketSessionReadsConnected(t *testing.T) {
 	t.Parallel()
 	rig := newRelayLiveRig(t, relayLiveOptions{})

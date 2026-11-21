@@ -50,7 +50,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -88,31 +87,42 @@ const (
 	// next is refused 429.
 	relaySocketMaxPerSession = 4
 	// relaySocketMaxPerListener is how many sockets one replica holds open, of every session; the
-	// next is refused 503, on which its client opens it on another replica. With
-	// relaySocketPendingBytes it bounds what the replica buffers for its sockets.
+	// next is refused 503, on which its client opens it on another replica.
 	relaySocketMaxPerListener = 256
 	// relaySocketMaxSubscriptions is how many subscriptions one socket may hold. A socket has one
 	// subject to subscribe, so a client needs one; a second would multiply every frame.
 	relaySocketMaxSubscriptions = 1
-	// relaySocketPendingMsgs and relaySocketPendingBytes are the pending limits of a socket's
-	// subscription: the frames nats.go queues for it while its client reads them slower than they
-	// come. Past them nats.go drops frames, and the socket closes 1013 slow_consumer; a dropped
-	// frame is sent again by its owning relay, which hears no receipt for it. The owning relay
-	// holds at most relayEdgeInFlight of a session's frames in flight, so a client that reads
-	// promptly never comes near them: twice that many frames, the second half room for a
-	// redelivery beside the frames it replaces, and that many frames of relayFrameMaxBytes. With
-	// relaySocketMaxPerSession and relaySocketMaxPerListener they bound what a session's sockets
-	// buffer (64 MiB) and what a replica's do.
+	// relaySocketPendingMsgs and relaySocketPendingBytes bound what one socket holds for its
+	// client: the frames it took from its subscription and has not yet written, the one being
+	// written included. The frame that would pass either closes the socket 1013 slow_consumer,
+	// and each frame it held is sent again by its owning relay, which hears no receipt for it. The
+	// owning relay holds at most relayEdgeInFlight of a session's frames in flight, so a client
+	// that reads promptly never comes near them: twice that many frames (a redelivery beside the
+	// frames it replaces), and that many frames of relayFrameMaxBytes, which leaves no such room
+	// for frames near that size. A socket alone may so hold 16 MiB; what all of a replica's
+	// sockets hold together is bounded by relaySocketReplicaPendingBytes, not by their number.
 	relaySocketPendingMsgs  = 2 * relayEdgeInFlight
 	relaySocketPendingBytes = relayEdgeInFlight * relayFrameMaxBytes
+	// relaySocketReplicaPendingBytes bounds what all of one replica's sockets hold for their
+	// clients together, the replica's count (relaySockets.buffered) of the bytes each socket took
+	// and has not yet written: 256 MiB, a quarter of the listener container's default 1Gi
+	// (infra/gcp, defaultClusteredHubListenerMemory), whoever opened the sockets. The frame that
+	// would take the count past it closes its socket 1013 slow_consumer,
+	// so one person's many slow sockets cannot hold more, though they can close other sockets of
+	// the replica while they fill it. Beside it, each socket remembers at most
+	// relaySocketMaxReplies receipt subjects of about 150 bytes each, about 150 KiB a socket and
+	// 38 MiB for relaySocketMaxPerListener of them, which the count does not hold.
+	relaySocketReplicaPendingBytes = 256 << 20
 	// relayFrameMaxBytes is the largest message the hub carries (nats-server's max_payload, 1 MiB),
 	// and so the largest relay frame.
 	relayFrameMaxBytes = 1 << 20
 	// relaySocketReplyWindow is how long a forwarded frame's receipt subject may be published on.
 	relaySocketReplyWindow = 10 * time.Minute
 	// relaySocketMaxReplies bounds the receipt subjects one socket remembers; past it the oldest
-	// is forgotten first.
-	relaySocketMaxReplies = 1 << 16
+	// is forgotten first, and a receipt of a frame it forgot is refused publish_not_granted, on
+	// which the owning relay sends the frame again. 1024 is 64 times the frames the owning relay
+	// holds in flight for the session (relayEdgeInFlight).
+	relaySocketMaxReplies = 1 << 10
 	// relaySocketWriteWait bounds one write to the client, a frame or a control frame.
 	relaySocketWriteWait = 10 * time.Second
 	// relaySocketFlushWait bounds the flush that makes the server hold a sub, an unsub or a pub.
@@ -182,11 +192,16 @@ type relaySockets struct {
 	// relaySocketCheckEvery is how often an open socket pings its client and asks the broker
 	// about its token: relaySocketCheckDefault, which only a test lowers.
 	relaySocketCheckEvery time.Duration
-	// maxSockets is how many sockets the replica holds open (relaySocketMaxPerListener), and
-	// pendingMsgs and pendingBytes a socket subscription's pending limits
-	// (relaySocketPendingMsgs, relaySocketPendingBytes); only a test changes them.
+	// maxSockets is how many sockets the replica holds open (relaySocketMaxPerListener),
+	// pendingMsgs and pendingBytes what one socket holds for its client
+	// (relaySocketPendingMsgs, relaySocketPendingBytes), and budget what all of them hold
+	// together (relaySocketReplicaPendingBytes); only a test changes them.
 	maxSockets                int
 	pendingMsgs, pendingBytes int
+	budget                    int64
+	// buffered is the bytes every socket of the replica holds for its client, which budget
+	// bounds (relaySocket.enqueue).
+	buffered atomic.Int64
 	// now is the clock a socket judges its token's expiry by; a test moves it with the
 	// verifier's.
 	now func() time.Time
@@ -217,6 +232,7 @@ func newRelaySockets(client *bus.Client, brokers *brokerTokens, logger *logging.
 		maxSockets:            relaySocketMaxPerListener,
 		pendingMsgs:           relaySocketPendingMsgs,
 		pendingBytes:          relaySocketPendingBytes,
+		budget:                relaySocketReplicaPendingBytes,
 		now:                   time.Now,
 		open:                  map[string]map[*relaySocket]struct{}{},
 	}
@@ -278,6 +294,7 @@ func (s *relaySockets) serve(w http.ResponseWriter, r *http.Request) {
 		subs:     map[int64]*nats.Subscription{},
 		replies:  map[string]time.Time{},
 		done:     make(chan struct{}),
+		wake:     make(chan struct{}, 1),
 	}
 	if status, refusal := s.admit(socket); status != 0 {
 		writeJSONError(w, status, refusal)
@@ -393,7 +410,7 @@ type relaySocket struct {
 	check *http.Request
 
 	// writeMu orders the data frames written to the client, which gorilla/websocket takes from
-	// one writer at a time: the reader's err frames and each subscription's msg frames. ended is
+	// one writer at a time: the reader's err frames and the pump's msg frames. ended is
 	// set once, by end, which takes no lock a data write holds: a write blocked on a client that
 	// reads nothing holds writeMu for up to relaySocketWriteWait.
 	writeMu sync.Mutex
@@ -403,6 +420,17 @@ type relaySocket struct {
 
 	subsMu sync.Mutex
 	subs   map[int64]*nats.Subscription
+
+	// queueMu guards queue, the frames the socket took from its subscription and has not yet
+	// begun to write, oldest first, and heldMsgs and heldBytes, what it holds for its client: the
+	// queue and the frame the pump is writing. enqueue adds to them, and the pump and end take
+	// from them, each the replica's count (relaySockets.buffered) with them. wake tells the pump
+	// the queue holds a frame.
+	queueMu   sync.Mutex
+	queue     []queuedFrame
+	heldMsgs  int
+	heldBytes int
+	wake      chan struct{}
 
 	// repliesMu guards replies, the receipt subjects of the frames forwarded in the last
 	// relaySocketReplyWindow, by when each was forwarded, and replyOrder, the same in the order
@@ -467,6 +495,7 @@ func (socket *relaySocket) read() {
 		return nil
 	})
 	go socket.watch()
+	go socket.pump()
 	for {
 		kind, data, err := conn.ReadMessage()
 		if err != nil {
@@ -625,10 +654,10 @@ func relayReceiptBody(data []byte) bool {
 	return false
 }
 
-// forward writes one message of a subscription to the client, on the subscription's own goroutine:
-// a relay frame alone, never the connection probe. A subscription that dropped frames past its
-// pending limits closes the socket 1013 slow_consumer first (lagging), and a write that fails drops
-// the connection (end).
+// forward takes one message of a subscription, on the subscription's own goroutine: a relay frame
+// alone, never the connection probe, is held for the client (enqueue), and the pump writes it. A
+// subscription that dropped frames past nats.go's pending limits closes the socket 1013
+// slow_consumer (lagging); with the pump taking each frame at once, that is a backstop.
 func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 	if _, probe := msg.Header[bus.ConnectionProbeHeader]; probe {
 		return
@@ -638,27 +667,14 @@ func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 		return
 	}
 	if socket.lagging() {
-		socket.endSlowConsumer()
+		socket.endSlowConsumer("its subscription dropped frames past nats.go's pending limits")
 		return
 	}
-	socket.remember(msg.Reply)
-	headers := msg.Header
-	if headers == nil {
-		headers = nats.Header{}
-	}
-	frame := relayMsgFrame{
-		Op: "msg", SID: sid, Subject: msg.Subject, Reply: msg.Reply, Headers: headers,
-		Data: base64.StdEncoding.EncodeToString(msg.Data),
-	}
-	if err := socket.write(frame); err != nil && !errors.Is(err, errRelaySocketEnded) {
-		socket.sockets.logger.Warn("listener: the relay socket could not write a frame; it is closed",
-			slog.String("session_id", socket.session), slog.String("error", err.Error()))
-		socket.end(0, "")
-	}
+	socket.enqueue(sid, msg)
 }
 
-// lagging reports whether a subscription of the socket dropped frames past its pending limits: a
-// slow consumer, whose client reads its frames slower than they come.
+// lagging reports whether a subscription of the socket dropped frames past nats.go's pending
+// limits: a backstop, since the pump takes each frame from the subscription at once.
 func (socket *relaySocket) lagging() bool {
 	socket.subsMu.Lock()
 	defer socket.subsMu.Unlock()
@@ -670,11 +686,13 @@ func (socket *relaySocket) lagging() bool {
 	return false
 }
 
-// endSlowConsumer ends the socket 1013 slow_consumer: its client opens it again after 5 s, and
-// the owning relay sends the frames nats.go dropped again, since it heard no receipt for them.
-func (socket *relaySocket) endSlowConsumer() {
-	socket.sockets.logger.Warn("listener: the relay socket's subscription dropped frames past its pending limits; it is closed",
-		slog.String("session_id", socket.session), slog.Int("pending_msgs", socket.sockets.pendingMsgs), slog.Int("pending_bytes", socket.sockets.pendingBytes))
+// endSlowConsumer ends the socket 1013 slow_consumer, for why: its client opens it again after 5 s,
+// and the owning relay sends the frames the socket held again, since it heard no receipt for them.
+func (socket *relaySocket) endSlowConsumer(why string) {
+	held, bytes := socket.held()
+	socket.sockets.logger.Warn("listener: the relay socket's client reads its frames slower than they come; it is closed",
+		slog.String("session_id", socket.session), slog.String("why", why),
+		slog.Int("held_frames", held), slog.Int("held_bytes", bytes), slog.Int64("replica_held_bytes", socket.sockets.buffered.Load()))
 	socket.end(websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer)
 }
 
@@ -754,11 +772,12 @@ func (socket *relaySocket) endNATS(step string, err error) {
 	socket.end(websocket.CloseTryAgainLater, relaySocketReasonNATSUnavailable)
 }
 
-// end ends the socket once: it forwards nothing more and drops every subscription. With code 0 -
-// a read or a write that failed - it drops the connection at once. Otherwise it writes the close
-// frame of code and drops the connection once the client has answered it or relaySocketCloseGrace
-// has passed since end began, so a close and a stop are bounded by the grace whatever the client
-// reads.
+// end ends the socket once: it forwards nothing more, drops every subscription and the frames it
+// held and had not begun to write (the pump drops the one it is writing once its write returns).
+// With code 0 - a read or a write that failed - it drops the connection at once. Otherwise it
+// writes the close frame of code and drops the connection once the client has answered it or
+// relaySocketCloseGrace has passed since end began, so a close and a stop are bounded by the grace
+// whatever the client reads.
 func (socket *relaySocket) end(code int, reason string) {
 	socket.endOnce.Do(func() {
 		socket.ended.Store(true)
@@ -769,6 +788,16 @@ func (socket *relaySocket) end(code int, reason string) {
 		for _, sub := range subs {
 			_ = sub.Unsubscribe()
 		}
+		socket.queueMu.Lock()
+		dropped := 0
+		for _, frame := range socket.queue {
+			dropped += frame.bytes
+		}
+		socket.heldMsgs -= len(socket.queue)
+		socket.heldBytes -= dropped
+		socket.queue = nil
+		socket.queueMu.Unlock()
+		socket.sockets.buffered.Add(-int64(dropped))
 		close(socket.done)
 		if code == 0 {
 			// Nothing more is written to a connection whose read or write failed.
@@ -793,10 +822,13 @@ func (socket *relaySocket) end(code int, reason string) {
 
 // watch is the socket's tick: every relaySocketCheckEvery, and once at the token's expiry, it asks
 // the broker about the socket's token and closes it on the verdict; it closes it 1013
-// slow_consumer once a subscription dropped frames past its pending limits (lagging), and 1013
-// nats_unavailable once a subscription has ended under it (its connection closed and was
-// replaced); and otherwise pings the client (ping). It writes nothing itself, so a write blocked
-// on a client that reads nothing never holds back a check.
+// slow_consumer once a subscription dropped frames past nats.go's pending limits (lagging, a
+// backstop), and 1013 nats_unavailable once a subscription has ended under it (its connection
+// closed and was replaced); and otherwise pings the client (ping). It writes nothing itself, so a
+// write blocked on a client that reads nothing never holds back a check. One ask is in flight at
+// a time: a tick's ask that is still waiting on the broker when the token's expiry passes holds
+// the expiry's check back until it returns, up to relaySocketCheckWait, so the 4401 can come that
+// much after the expiry.
 func (socket *relaySocket) watch() {
 	ticker := time.NewTicker(socket.sockets.relaySocketCheckEvery)
 	defer ticker.Stop()
@@ -821,7 +853,7 @@ func (socket *relaySocket) watch() {
 			return
 		}
 		if socket.lagging() {
-			socket.endSlowConsumer()
+			socket.endSlowConsumer("its subscription dropped frames past nats.go's pending limits")
 			return
 		}
 		if !socket.subscribed() {

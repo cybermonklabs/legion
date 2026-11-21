@@ -233,10 +233,11 @@ Every other listener answers the path `404`, an upgrade included, so no shared l
 
 - **While it is open**: every 20 seconds, and once at its token's expiry, the socket asks the broker about its token again, from a copy of the upgrade request, spending nothing of the source address's introspection budget (`Verifier.LiveUntil`); every 20 seconds it also pings its client.
   It closes `4401 credential_expired` at the token's expiry, also while the broker still answers it live with that `exp` for up to a second after it, `4403 credential_refused` when the broker no longer holds the token live (a revoke of the token or of the device login it was traded from) or its answer names another caller, and `1013 broker_unavailable` when the broker cannot be asked.
-  It closes `1013 nats_unavailable` when its subscription is lost, and `1013 slow_consumer` when its client reads its frames slower than they come, past 32 frames or 16 MiB held for it.
+  It closes `1013 nats_unavailable` when its subscription is lost, and `1013 slow_consumer` when its client reads its frames slower than they come: past 32 frames or 16 MiB that the socket holds for it, or past 256 MiB that all of the replica's sockets hold together, whoever opened them (`relaySocketReplicaPendingBytes`, a quarter of the listener container's default 1Gi).
+  Each socket holds its frames in a queue of its own, which one writer drains in order, so the replica's count of what its sockets hold is exact, a frame blocked on a client that reads nothing included.
   The listener's stop closes every socket `1012 listener_stopping`.
   A close takes at most one second (`relaySocketCloseGrace`), also for a client that reads nothing: no close or check waits for a data frame blocked on such a client, and a write that fails drops the connection at once.
-  A frame unanswered at a close, or dropped for a slow consumer, is sent again by the owning relay, so a reopen loses nothing.
+  A frame unanswered at a close, or held by a socket that closed `slow_consumer`, is sent again by the owning relay, so a reopen loses nothing.
 
 - **Tests**: `cmd/listener/relay_socket_test.go` runs the socket in one process with a stand-in broker, on the rig of `relay_socket_fixture_test.go`.
   `cmd/listener/relay_socket_live_test.go` (build tag `natslive`) runs two edge listeners under `natsgrant.Edge` on the hub's NATS image, with the real broker of `internal/cipher/ciphertest` and 30-second tokens; its binary checks every second (`-ldflags "-X main.relaySocketCheckBuild=1s"`).

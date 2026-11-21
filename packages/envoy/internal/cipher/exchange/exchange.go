@@ -1230,7 +1230,7 @@ func resolveSession(fixed, named, identity string) (string, error) {
 // whitespace, no '*' or '>', and at most MaxSessionBytes. A '*' or a '>' would make the session's
 // relay subject (bus.DeliverSubject) a NATS wildcard over every session's, which a relay socket of
 // that session would subscribe. A '.' is taken: a person's sign-in trades under a name that holds
-// the person's address (brokerclient.SessionFor), and the NATS grant and the relay socket hold a
+// the person's address (cipherclient.SessionFor), and the NATS grant and the relay socket hold a
 // session to one subject token themselves (natsgrant.SessionToken). A pod-session registration of
 // a name it refuses is refused before it is written (Registration), and a release of registrations
 // (oauthstore.Store.ReleasePodSessions) drops such a name as one that matches nothing rather than

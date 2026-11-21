@@ -15,7 +15,8 @@ body: |-
   socket asks the broker about its token again and closes 4401 once it has expired, 4403 once it
   or the device login it was traded from was revoked or it names another caller, and 1013 while
   the broker cannot be asked, once its subscription is lost, or once its client reads slower than
-  32 frames or 16 MiB held for it (`slow_consumer`); the listener's stop closes every socket 1012.
+  32 frames or 16 MiB held for it, or than 256 MiB all of the replica's sockets hold together
+  (`slow_consumer`); the listener's stop closes every socket 1012.
   A close and the stop take at most one second, also for a client that reads nothing, and a
   write that fails drops the connection at once. The sockets use a NATS connection of their own.
   An edge listener's relay holds at most 16 of a session's frames in flight (its session

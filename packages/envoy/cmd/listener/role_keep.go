@@ -660,9 +660,9 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 // roleSend.noHolder), which is the one give-up a sender can address: nothing publishes a raw role
 // message it would redeliver, so the role lane always keeps.
 //
-// An edge listener keeps nothing (cfg.edge): its grant publishes no kept role lane
-// (natsgrant.Edge), so its give-up is the one a keep that kept nothing leaves, the publish route's
-// 404 with its refusal's exception (errEdgeKeepsNothing).
+// An edge listener keeps nothing (cfg.edge) and answers errEdgeKeepsNothing: its grant publishes
+// no kept role lane (natsgrant.Edge), so its give-up is the one a keep that kept nothing leaves,
+// the publish route's 404 with its refusal's exception.
 func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
 	if !roles.ValidClaimKey(role) {
 		return keptRoleCopy{}, errRoleNotKeepable
