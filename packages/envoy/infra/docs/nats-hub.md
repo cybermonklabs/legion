@@ -1223,9 +1223,9 @@ rule below holds; 1 when one shows the password may be read; and 2 when it could
 needs, when the log carries no time of the container runtime's, when authorization is not yet in
 force, left no line of the reload that loaded it, or loaded within 10 s of a pod's start, when the
 mesh is not whole or the servers do not hold one password, when a route connection from another
-address named no server, was still open when the log was read, or was logged in the 5 s before
-authorization loaded, when the log holds a line the server did not write, or when a pod changed
-during the check. It prints no password,
+address named no server or was still open when the log was read, when the log holds no hangup
+that began the reload that loaded authorization, when the log holds a line the server did not
+write, or when a pod changed during the check. It prints no password,
 since it never has one, and quotes what a peer chose, a route's `remote_id` and `remote_name` and
 an address from a log line, so no peer can write a line of its own on the operator's terminal. So
 anything that can reach a pod's port 6222 can keep the check from reaching 0, though not make it
@@ -1244,8 +1244,9 @@ the cluster records which keys were under `authorization`.
 
 Every log rule reads only lines in the form nats-server's logger writes (`logger/log.go`: the
 process id, the date and time to the microsecond, the level), at one level, and matches their
-message: whole for the start line and `Reloaded: cluster`; whole, or by the prefix
-before its digest, for `Reloaded server configuration`; by prefix for a failed reload; by a
+message: whole for the start line, the hangup, `Reloaded: cluster routes` and `Reloaded: cluster`;
+whole, or by the prefix before its digest, for `Reloaded server configuration`; by prefix for a
+failed reload; by a
 pattern from the message's start for a route connection's lines; and by substring for a
 credentialed URL, in the server's lines of itself alone. Never does a rule match the end of a line
 or text anywhere in a connection's line: a connection's lines carry text its peer chose, a
@@ -1297,23 +1298,31 @@ reads with `--timestamps`.
 - **No peer that left had the password.** `/routez` shows only who still holds a route, so a
   process that read the password and then left passes it. The log keeps it: every
   `Route connection created` line (`server/route.go:2104`) names the connection's peer. The rule's
-  window opens at the first line the container runtime read within 5 s before the `Reloaded:
-  cluster` line (`server/reload.go:470`) of the reload that loaded authorization, by the
-  runtime's time, which no line a peer writes can move, as it could move a marker such as the
-  reload's `Trapped "hangup" signal`. In that window, the peer of each such line is a pod IP, by
-  IP alone, or the pod's own loopback. Lines before the window are not judged: an implicit route
-  carries the password only once authorization applies (`route.go:1092-1094`), and the `env`
-  roll gives each new pod a new IP, so the logs of the pods it rolled first name the old IPs of
-  the ones it rolled after. A log with no `Reloaded: cluster` line among the server's own lines
-  has no window. When the route port shows authorization in force, or cannot be read, that is
-  exit 2: the record vouches that the container had no authorization when it was recorded, so it
-  loaded authorization by a reload, and that reload's line was lost or has not reached the pod;
-  judging the whole log would read the `env` roll's old pod IPs as after authorization. A
-  connection from another address is exit 1 only when it was logged after the `Reloaded:
-  cluster` line and formed a route by the log, its close line naming a server; every other one
-  is exit 2. One logged before that line, in the window, may predate the reload's new
-  configuration, which the reload takes before it logs the line (`server/reload.go:1561`), and
-  so carried no password, or may be a route the hub dialed after, with it (`route.go:1055-1093`).
+  window opens at the `Trapped "hangup" signal` line that began the reload that loaded
+  authorization: nats-server logs it when it traps the reloader's hangup, before it reads the new
+  configuration (`server/signal.go:58-82`), then publishes the new options
+  (`server/reload.go:1561`), from which moment a route the hub dials carries the password
+  (`server/route.go:1064`, `:1092-1093`), and only then logs `Reloaded: cluster`
+  (`server/reload.go:470`), at a delay nothing bounds; the chart's config reloader sends that
+  hangup (nats-server-config-reloader 0.24.0 signals SIGHUP unless told otherwise, and the chart
+  tells it nothing). That hangup is the first one after the routes stage's reload,
+  `Reloaded: cluster routes` (`server/reload.go:553`), which began with a hangup of its own; a
+  peer can write any of these lines, and taking the first of each moves the window only earlier.
+  A log with no hangup between the routes stage's reload and `Reloaded: cluster`, as when
+  authorization was loaded by a system request (`server/events.go:3219-3227`, which logs no
+  hangup) or the routes stage's reload is not in the log, has no window, exit 2. In the window,
+  the peer of each such line is a pod IP, by IP alone, or the pod's own loopback. Lines before
+  the window are not judged: an implicit route carries the password only once authorization
+  applies (`route.go:1092-1094`), and the `env` roll gives each new pod a new IP, so the logs of
+  the pods it rolled first name the old IPs of the ones it rolled after. A log with no
+  `Reloaded: cluster` line among the server's own lines has no window either. When the route
+  port shows authorization in force, or cannot be read, that is exit 2: the record vouches that
+  the container had no authorization when it was recorded, so it loaded authorization by a
+  reload, and that reload's line was lost or has not reached the pod; judging the whole log would
+  read the `env` roll's old pod IPs as after authorization. A connection from another address is
+  exit 1 when it formed a route by the log, its close line naming a server, wherever in the
+  window it was logged, since the log does not show when the reload published the password;
+  every other one is exit 2.
   One still open when the log was read, with no login refused and no close line, may be an
   accepted connection still waiting for its login: nats-server logs the connection as it
   accepts it, before any CONNECT, and closes one that logs in to no route at the cluster's auth
@@ -1333,7 +1342,8 @@ reads with `--timestamps`.
   it again. The exceptions. During `env` and `routes`, a process that reaches 6222 can still force
   exit 1 by a forged line in the server's form, in three ways: a `Removed route` line with a
   password in it; a `Failed to reload server configuration` line at ERR, which the failed-reload
-  rule (below) counts whatever it says; or a `Reloaded: cluster` line, which opens the window before that
+  rule (below) counts whatever it says; or a `Reloaded: cluster`, `Reloaded: cluster routes` or
+  `Trapped "hangup" signal` line, which opens the window before that
   process's own route connections. It times the line now and writes it once for each likely
   process id of the server's, within one route name, so that one of them carries the id the check
   reads as the server's (above); a client can do the same at any stage through an auth service

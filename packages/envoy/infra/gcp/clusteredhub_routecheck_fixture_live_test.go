@@ -186,13 +186,12 @@ func (h *stagedHub) reload(t *testing.T, stage string) {
 	h.awaitMesh(t)
 }
 
-// beforeAuthorization waits until every server started more than 11 s ago and 6 s have passed,
-// so the reload onto authorization comes more than the route check's startDelay (10 s) after each
-// container's start and more than its reloadSpan (5 s, routes/routes.go) after what a row did
-// before it, as the env roll and the two applies that follow it, each after the one before has
-// finished, leave it: a row's peers and reloads before authorization stay out of the check's window.
+// beforeAuthorization waits until every server started more than 11 s ago, so the reload onto
+// authorization comes more than the route check's startDelay (10 s) after each container's start.
+// A row's peers and reloads before authorization stay out of the check's window, which opens at
+// the hangup that begins that reload (routes/log.go, authorizationWindow).
 func (h *stagedHub) beforeAuthorization() {
-	until := time.Now().Add(6 * time.Second)
+	until := time.Now()
 	for _, s := range h.servers {
 		if at := s.startedAt.Add(11 * time.Second); at.After(until) {
 			until = at

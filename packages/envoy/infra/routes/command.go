@@ -29,9 +29,9 @@ const usageText = `usage: envoy-infra routes record --namespace <ns> --statefuls
     could not read all it needs, or the record is of another cluster, when authorization is not in
     force, left no line of the reload that loaded it, or loaded within 10 s of a pod's start, when
     the mesh is not whole or the servers do not hold one password, when a route connection from
-    another address named no server, was still open when the log was read, or was logged in the 5 s
-    before authorization loaded, when the log holds a line in the server's form the server did not
-    write, or when a pod changed during the check.
+    another address named no server or was still open when the log was read, when the log holds no
+    hangup that began the reload that loaded authorization, when the log holds a line in the
+    server's form the server did not write, or when a pod changed during the check.
 `
 
 // timeout bounds a command's reads of the hub: each kubectl call, each wait for a port-forward to

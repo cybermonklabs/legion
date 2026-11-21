@@ -394,23 +394,43 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 		{"a route connection still open when the log is read", func(h *fakeHub) {
 			h.logs["envoy-nats-1"] += createdAs("10.9.9.7:50000", "24") + "\n"
 		}, routes.Unknown, "envoy-nats-1", `1 route connection(s) with "10.9.9.7" since it loaded authorization that were still open when the log was read`},
-		{"a route connection begun by the authorization reload's hangup", func(h *fakeHub) {
+		// nats-server logs the hangup, then publishes the new options, then logs "Reloaded: cluster"
+		// (signal.go:58-82, reload.go:1561, :470), and a route the hub dials after the publication
+		// carries the new password (route.go:1064, :1092-1093): every connection after the hangup is
+		// judged, however long the reload took to log its marker.
+		{"a route connection between the authorization reload's hangup and its marker", func(h *fakeHub) {
 			h.inAuthorizationReload("envoy-nats-2", created("10.9.9.6:6222"))
 			h.logs["envoy-nats-2"] += formed("10.9.9.6:6222", "9") + "\n"
-		}, routes.Unknown, "envoy-nats-2", `1 route connection(s) with "10.9.9.6" in the 5s before the reload that loaded authorization logged`},
-		{"a route connection read within the span before the reload, before its hangup", func(h *fakeHub) {
+		}, routes.PasswordRead, "envoy-nats-2", `1 route connection(s) with "10.9.9.6" since it loaded authorization, and`},
+		{"the authorization reload's marker logged 7 s after its hangup, a route connection between", func(h *fakeHub) {
+			late := authorizationAt.Add(7 * time.Second)
+			h.editAuthorizationReload("envoy-nats-2", authorizationStart+"\n"+
+				logLineAt(authorizationAt.Add(time.Second), "INF", "10.9.9.6:6222 - rid:9 - Route connection created")+"\n"+
+				logLineAt(late, "INF", "Reloaded: cluster")+"\n"+logLineAt(late, "INF", "Reloaded server configuration (def)")+"\n")
+			h.logs["envoy-nats-2"] += formed("10.9.9.6:6222", "9") + "\n"
+		}, routes.PasswordRead, "envoy-nats-2", `1 route connection(s) with "10.9.9.6" since it loaded authorization, and`},
+		{"control: a route connection 2 s before the authorization reload's hangup", func(h *fakeHub) {
 			h.beforeAuthorization("envoy-nats-2", logLineAt(authorizationAt.Add(-2*time.Second), "INF", "10.9.9.6:6222 - rid:9 - Route connection created"))
 			h.logs["envoy-nats-2"] += formed("10.9.9.6:6222", "9") + "\n"
-		}, routes.Unknown, "envoy-nats-2", `with "10.9.9.6" in the 5s before the reload that loaded authorization`},
-		{"a route connection read before the span", func(h *fakeHub) {
-			h.beforeAuthorization("envoy-nats-2", logLineAt(authorizationAt.Add(-6*time.Second), "INF", "10.9.9.6:6222 - rid:9 - Route connection created"))
-			h.logs["envoy-nats-2"] += formed("10.9.9.6:6222", "9") + "\n"
 		}, routes.Clean, "", ""},
+		// A peer can write a hangup line; the window opens at the first one after the routes stage's
+		// reload, so a written one moves it no later.
 		{"a hangup line a route peer wrote after the reload's own", func(h *fakeHub) {
 			h.inAuthorizationReload("envoy-nats-1", logLineAt(authorizationAt, "INF", "10.9.9.6:6222 - rid:9 - Route connection created")+"\n"+
 				logLineAt(authorizationAt, "INF", `Trapped "hangup" signal`))
 			h.logs["envoy-nats-1"] += formed("10.9.9.6:6222", "9") + "\n"
-		}, routes.Unknown, "envoy-nats-1", `with "10.9.9.6" in the 5s before the reload that loaded authorization`},
+		}, routes.PasswordRead, "envoy-nats-1", `1 route connection(s) with "10.9.9.6" since it loaded authorization, and`},
+		{"a hangup line a route peer wrote before the reload's own", func(h *fakeHub) {
+			h.beforeAuthorization("envoy-nats-1", logLineAt(authorizationAt.Add(-2*time.Second), "INF", `Trapped "hangup" signal`)+"\n"+
+				logLineAt(authorizationAt.Add(-time.Second), "INF", "10.9.9.6:6222 - rid:9 - Route connection created"))
+			h.logs["envoy-nats-1"] += formed("10.9.9.6:6222", "9") + "\n"
+		}, routes.PasswordRead, "envoy-nats-1", `1 route connection(s) with "10.9.9.6" since it loaded authorization, and`},
+		{"no hangup between the routes reload and the authorization reload", func(h *fakeHub) {
+			h.editAuthorizationReload("envoy-nats-0", strings.Join(authorizationLines, "\n")+"\n")
+		}, routes.Unknown, "envoy-nats-0", `holds no "[INF] Trapped \"hangup\" signal" after the routes stage's "[INF] Reloaded: cluster routes"`},
+		{"no routes reload before the authorization reload", func(h *fakeHub) {
+			h.logs["envoy-nats-0"] = strings.Replace(h.logs["envoy-nats-0"], routesReload[1]+"\n", "", 1)
+		}, routes.Unknown, "envoy-nats-0", `holds no "[INF] Trapped \"hangup\" signal" after the routes stage's "[INF] Reloaded: cluster routes"`},
 		{"authorization loaded within 10 s of the container's start", func(h *fakeHub) {
 			h.editAuthorizationReload("envoy-nats-0", strings.Join(authorizationReloadAt(started.Add(5*time.Second)), "\n")+"\n")
 		}, routes.Unknown, "envoy-nats-0", "within 10s of its container's start at 2026-11-17T12:00:00Z"},

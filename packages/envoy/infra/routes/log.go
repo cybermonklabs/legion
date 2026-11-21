@@ -12,9 +12,10 @@ import (
 
 // The messages of a nats-server (v2.15.1) log the check reads. A rule reads only a line in the
 // logger's form that the server wrote (serversLines), at one level, and matches its message: whole
-// for the start line and "Reloaded: cluster"; whole or by the prefix that comes before a
-// digest for "Reloaded server configuration"; and by prefix for a failed reload, by pattern for a
-// route connection's lines, and by substring for a credentialed URL, each in the server's own
+// for the start line, the hangup, "Reloaded: cluster routes" and "Reloaded: cluster"; whole or by
+// the prefix that comes before a digest for "Reloaded server configuration"; and by prefix for a
+// failed reload, by pattern for a route connection's lines, and by substring for a credentialed
+// URL, each in the server's own
 // lines, or a connection's lines with their prefix, alone. Never does a rule match the end of a
 // line or text anywhere in it: a connection's lines carry text its peer chose, a client's -ERR
 // whole at the end of "Client Error" (client.go:2268), so such a rule could be met or tripped by
@@ -22,9 +23,18 @@ import (
 const (
 	// startMessage is the first line of a log: Start logs it before anything else (server.go:2295).
 	startMessage = "Starting nats-server"
+	// hangupMessage is the line nats-server logs when it traps the hangup the chart's config
+	// reloader sends it to reload (signal.go:58, `Trapped %q signal`; the reloader signals SIGHUP
+	// unless told otherwise, nack v0.24.0 cmd/nats-server-config-reloader/main.go:67, and the chart
+	// tells it nothing). It logs it before Reload reads the configuration (signal.go:80-82), so
+	// before the reload publishes the new options (reload.go:1561), which a route the hub dials then
+	// uses at once (route.go:1064, :1092-1093), and before it logs "Reloaded: cluster" (reload.go:470).
+	hangupMessage = `Trapped "hangup" signal`
+	// routesReloadedMessage is the line a reload logs when it changed the routes alone
+	// (reload.go:553): the routes stage's reload, before the one that loads authorization.
+	routesReloadedMessage = "Reloaded: cluster routes"
 	// clusterReloadedMessage is the line a reload logs when it applies a change to the cluster
-	// block's options, the authorization among them (reload.go:470). A change of the routes alone
-	// logs "Reloaded: cluster routes" instead (reload.go:553).
+	// block's options, the authorization among them (reload.go:470).
 	clusterReloadedMessage = "Reloaded: cluster"
 	// reloadedMessage is the line a reload logs when it has finished, followed by the new
 	// configuration's digest in parentheses when it has one (reload.go:2128-2132).
@@ -140,13 +150,6 @@ const (
 	startDelay = 10 * time.Second
 )
 
-// reloadSpan is how long before the "Reloaded: cluster" line of the reload that loaded
-// authorization the log rule's window opens, by the time the container runtime read each line,
-// which no process in the pod sets: a reload logs its hangup and that line within milliseconds,
-// and the rest allows for a node under load. A marker line cannot open the window instead, since a
-// route peer can write one (serversLines).
-const reloadSpan = 5 * time.Second
-
 // podLoopback are the addresses of a pod's own network namespace: the port-forward of a check's
 // route port reads connects from one, and so does any process of the pod, which the check cannot
 // tell from the server's own (Check's limit).
@@ -169,8 +172,8 @@ func checkLog(ctx context.Context, r *Report, src Source, s server, ips map[stri
 		lines, start, whole := serversLines(r, s, parseLog(body))
 		startFinding = start
 		ownLines(r, pod, lines)
-		window, from, loaded := authorizationWindow(r, s, lines, auth)
-		routeConnections(r, pod, window, from, ips, split)
+		window, loaded := authorizationWindow(r, s, lines, auth)
+		routeConnections(r, pod, window, ips, split)
 		switch {
 		case loaded:
 			why = ", and a reload that changed its cluster block left it without authorization"
@@ -269,20 +272,27 @@ func ownLines(r *Report, pod string, lines []logLine) {
 	}
 }
 
-// authorizationWindow returns the server's lines the route connection rule judges, the index among
-// them of the first "Reloaded: cluster" line (reload.go:470), of the reload that loaded
-// authorization, and whether the log shows that reload. The window opens at the first line the
-// container runtime read at most reloadSpan before that line, by the runtime's time, so no line a
-// peer writes can move it. With no such line among the server's lines, the window is empty: when
-// auth says authorization is not in force, since no connection then carried the password beyond
-// the pods; and otherwise as well, but Unknown. A container the record vouches for had no
-// authorization when it was recorded (Take), so it loaded authorization by a reload, which logs
-// that line; with the line lost, or the reload not yet on the pod, no line can be placed after it,
-// and the env roll's lines name the old IPs of the pods it rolled. The reload must have finished,
-// and the runtime must have read its line more than startDelay after the container's start, or a
-// start line a process wrote in that span through a route's name could pass the start line rule;
-// each is Unknown otherwise.
-func authorizationWindow(r *Report, s server, lines []logLine, auth authState) ([]logLine, int, bool) {
+// authorizationWindow returns the server's lines the route connection rule judges, and whether the
+// log shows the reload that loaded authorization, by its first "Reloaded: cluster" line
+// (reload.go:470). The window opens at the hangup that began that reload (hangupMessage): the
+// reload publishes the new options between the two (reload.go:1561), at a time no line shows, and a
+// route the hub dials from then on carries the password (route.go:1064, :1092-1093), so every line
+// from the hangup on is judged, however long the reload took to log its marker. That hangup is the
+// first one after the routes stage's reload, "Reloaded: cluster routes" (reload.go:553), which
+// itself began with a hangup: a peer can write any of these lines (serversLines), and taking the
+// first of each moves the window no later than the real hangup, only earlier. With no hangup
+// between the routes stage's reload and the marker, as when authorization was loaded otherwise
+// (events.go:3219-3227 reloads on a system request with no hangup) or the routes stage's reload is
+// not in the log, no line can be placed after the password came into use: Unknown, and no window.
+// With no marker among the server's lines, the window is empty: when auth says authorization is not
+// in force, since no connection then carried the password beyond the pods; and otherwise as well,
+// but Unknown. A container the record vouches for had no authorization when it was recorded (Take),
+// so it loaded authorization by a reload, which logs that line; with the line lost, or the reload
+// not yet on the pod, no line can be placed after it, and the env roll's lines name the old IPs of
+// the pods it rolled. The reload must have finished, and the runtime must have read its marker more
+// than startDelay after the container's start, or a start line a process wrote in that span through
+// a route's name could pass the start line rule; each is Unknown otherwise.
+func authorizationWindow(r *Report, s server, lines []logLine, auth authState) ([]logLine, bool) {
 	pod := s.pod.Name
 	at := slices.IndexFunc(lines, func(l logLine) bool { return l.is("INF", clusterReloadedMessage) })
 	if at < 0 {
@@ -291,7 +301,7 @@ func authorizationWindow(r *Report, s server, lines []logLine, auth authState) (
 				"its route port's INFO does not show authorization off; the record's container loaded authorization by a reload, so that line "+
 				"was lost or the reload has not reached the pod, and no route connection is judged as after authorization", "[INF] "+clusterReloadedMessage)
 		}
-		return nil, 0, false
+		return nil, false
 	}
 	if !slices.ContainsFunc(lines[at:], func(l logLine) bool {
 		return l.is("INF", reloadedMessage) || (l.level == "INF" && strings.HasPrefix(l.message, reloadedMessage+" ("))
@@ -305,16 +315,26 @@ func authorizationWindow(r *Report, s server, lines []logLine, auth authState) (
 			"be cleared; apply authorization more than %s after a pod starts", "[INF] "+clusterReloadedMessage, loadedAt.Format(time.RFC3339Nano),
 			startDelay, s.pod.StartedAt.UTC().Format(time.RFC3339), startDelay)
 	}
-	from := slices.IndexFunc(lines, func(l logLine) bool { return !l.runtime.Before(loadedAt.Add(-reloadSpan)) })
-	return lines[from:], at - from, true
+	hangup := -1
+	if routes := slices.IndexFunc(lines[:at], func(l logLine) bool { return l.is("INF", routesReloadedMessage) }); routes >= 0 {
+		if i := slices.IndexFunc(lines[routes:at], func(l logLine) bool { return l.is("INF", hangupMessage) }); i >= 0 {
+			hangup = routes + i
+		}
+	}
+	if hangup < 0 {
+		r.add(pod, Unknown, "its log, in the lines its server wrote, holds no %q after the routes stage's %q and before %q: the reload that loaded "+
+			"authorization publishes the new options after its hangup and before that line, at a time no line shows (reload.go:1561), so no "+
+			"route connection can be placed after the password came into use", "[INF] "+hangupMessage, "[INF] "+routesReloadedMessage,
+			"[INF] "+clusterReloadedMessage)
+		return nil, true
+	}
+	return lines[hangup:], true
 }
 
 // routeConnection counts one address's route connections in the window by what the log shows of
 // each.
 type routeConnection struct {
-	// before: logged before the reload's "Reloaded: cluster" line.
-	before int
-	// formed: logged at or after it, and its close line names a server.
+	// formed: its close line names a server.
 	formed int
 	// refused: its login the route credential refused, with no close line that names a server.
 	refused int
@@ -325,19 +345,19 @@ type routeConnection struct {
 }
 
 // routeConnections judges each route connection the window names with an address that is neither
-// a pod IP nor the pod's loopback. One logged at or after the reload's line, window[from], that
-// formed a route by the log, its close line naming a server, is PasswordRead. Every other one is
-// Unknown: one logged before that line may predate the reload's new configuration, which the
-// reload takes before it logs the line (reload.go:1561); one whose login the credential refused, or
-// whose close line names no server, may have formed no route, though on one the hub opened it sent
-// the password before the peer named itself (route.go:2087-2094), and a peer can name itself with
-// an empty name, which the close line does not show (client.go:2124); and one with neither line is
+// a pod IP nor the pod's loopback. One that formed a route by the log, its close line naming a
+// server, is PasswordRead: it came after the hangup that began the reload that loaded
+// authorization, and so may have come after the reload published the password. Every other one is
+// Unknown: one whose login the credential refused, or whose close line names no server, may have
+// formed no route, though on one the hub opened it sent the password before the peer named itself
+// (route.go:2087-2094), and a peer can name itself with an empty name, which the close line does
+// not show (client.go:2124); and one with neither line is
 // still open, and may be an accepted connection waiting for its login, which nats-server logs on
 // accept (route.go:2104) and closes at the cluster's auth timeout (route.go:2070-2073), so any
 // process that reaches the route port can hold one open while the log is read. When split, it
 // names the failed route logins from pod IPs that split the mesh. A host is quoted, since a line
 // can carry the address another process wrote.
-func routeConnections(r *Report, pod string, window []logLine, from int, ips map[string]bool, split bool) {
+func routeConnections(r *Report, pod string, window []logLine, ips map[string]bool, split bool) {
 	refused, named, unnamed := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	logins := map[string]int{}
 	var loginOrder []string
@@ -369,7 +389,7 @@ func routeConnections(r *Report, pod string, window []logLine, from int, ips map
 	}
 	counts := map[string]*routeConnection{}
 	var order []string
-	for i, l := range window {
+	for _, l := range window {
 		if l.level != "INF" {
 			continue
 		}
@@ -392,8 +412,6 @@ func routeConnections(r *Report, pod string, window []logLine, from int, ips map
 			order = append(order, host)
 		}
 		switch rid := match[2]; {
-		case i < from:
-			c.before++
 		case named[rid]:
 			c.formed++
 		case refused[rid]:
@@ -427,15 +445,6 @@ func routeConnections(r *Report, pod string, window []logLine, from int, ips map
 				"before any login (route.go:2104), so any process that reaches the route port can hold one open while the log is read, and one "+
 				"that held a route when /routez was read is named there. The server closes an accepted connection that logs in to no route at the "+
 				"cluster's auth timeout (route.go:2070-2073): check again", c.open, host, host)
-		}
-	}
-	for _, host := range order {
-		if c := counts[host]; c.before > 0 {
-			r.add(pod, Unknown, "its log names %d route connection(s) with %q in the %s before the reload that loaded authorization logged %q, and "+
-				"%q is no pod of the hub: the reload takes its new configuration before it logs that line (reload.go:1561), so such a connection "+
-				"carried no password if it came before, and, if the hub dialed it after, the password (route.go:1055-1093); the log cannot tell "+
-				"which. Find what ran there, and treat the password as read unless it is accounted for", c.before, host, reloadSpan,
-				"[INF] "+clusterReloadedMessage, host)
 		}
 	}
 	if split && len(loginOrder) > 0 {

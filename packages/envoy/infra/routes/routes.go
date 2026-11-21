@@ -311,16 +311,16 @@ type server struct {
 //     line's process id and a time that agrees with the runtime's): it begins with the server's
 //     start line, which the runtime read at the container's start, so it reaches back to the
 //     record; no reload failed, and no line the server wrote of itself holds a URL with a user and
-//     password, since either can hold the password; and in the window that opens reloadSpan before
-//     the reload that loaded authorization, by the runtime's time (authorizationWindow), every route
-//     connection names a pod IP, by IP alone, since the port of a connection a peer opened is
-//     ephemeral (routeConnections). Lines before the window are not judged: no connection then
-//     carried the password to an address the configuration does not name, and an env roll's pods
-//     log the addresses of the pods before them. A connection from another address is PasswordRead
-//     only when it was logged after that reload's "Reloaded: cluster" line and formed a route by
-//     the log, its close line naming a server. One logged before that line may predate the
-//     reload's new configuration; one whose login the credential refused, or whose close line names
-//     no server, may have formed no route, though one the hub dialed carried the password
+//     password, since either can hold the password; and in the window that opens at the hangup
+//     that began the reload that loaded authorization (authorizationWindow), which the server
+//     logs before it publishes the new options, every route connection names a pod IP, by IP
+//     alone, since the port of a connection a peer opened is ephemeral (routeConnections). Lines
+//     before the window are not judged: no connection then carried the password to an address the
+//     configuration does not name, and an env roll's pods log the addresses of the pods before
+//     them. A log with no such hangup after the routes stage's reload is Unknown. A connection
+//     from another address is PasswordRead when it formed a route by the log, its close line
+//     naming a server; one whose login the credential refused, or whose close line names no
+//     server, may have formed no route, though one the hub dialed carried the password
 //     (client.go:2433 checks every CONNECT); and one still open when the log was read may be an
 //     accepted connection still waiting for its login, which any process that reaches the route
 //     port can hold open. Each of these is Unknown.
