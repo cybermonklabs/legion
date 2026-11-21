@@ -91,8 +91,12 @@ type AuthorizationArgs struct {
 	// server renders exactly what it rendered before callouts existed.
 	Callout *nats.AuthCalloutArgs `pulumi:"callout,optional"`
 	// The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862): it needs
-	// callout, and no user but callout.serviceUser.
+	// callout, and no user but callout.serviceUser and jetStreamOperator.
 	PrivateProjects bool `pulumi:"privateProjects,optional"`
+	// The name of the keyed user a render with privateProjects places in the account that holds
+	// JetStream, where no client is: the operator of the move into that account
+	// (core.Authorization's JetStreamOperator). Unset, that account holds no user.
+	JetStreamOperator string `pulumi:"jetStreamOperator,optional"`
 }
 
 // Annotate names the type aws:Authorization in the schema: generated SDKs append Args to an object
@@ -118,7 +122,7 @@ func (a *AuthorizationArgs) core() *core.Authorization {
 	for i, u := range a.Users {
 		users[i] = core.User{Name: u.Name, NKey: u.NKey, Publish: u.Publish.Core(), Subscribe: u.Subscribe.Core(), HasSeed: u.HasSeed}
 	}
-	return &core.Authorization{Users: users, NoAuthUser: a.NoAuthUser, Callout: a.Callout.Core(), PrivateProjects: a.PrivateProjects}
+	return &core.Authorization{Users: users, NoAuthUser: a.NoAuthUser, Callout: a.Callout.Core(), PrivateProjects: a.PrivateProjects, JetStreamOperator: a.JetStreamOperator}
 }
 
 // NatsService is Envoy's NATS server on ECS Fargate: JetStream on one EFS file system, a Tailscale

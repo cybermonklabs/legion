@@ -376,6 +376,7 @@ func clusteredSeedRows() []clusteredSeedRow {
 			a.AuthCallout = authCallout()
 			a.AuthCallout.ServiceUser = splitSeed(s, "-")
 		}},
+		{"jetStreamOperator", "jetStreamOperator", func(a *A, s string) { a.JetStreamOperator = s }},
 		// core's refusals, passed on: a seed in a name names the user; a seed as an nkey is refused
 		// as no public key, without quoting it.
 		{"a user's name", "users", func(a *A, s string) { a.Users[1].Name = s }},

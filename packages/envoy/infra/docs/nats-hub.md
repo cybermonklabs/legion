@@ -273,8 +273,10 @@ is required: without it nats-server sends each connecting client's token to the 
 unsealed, on `$SYS.REQ.USER.AUTH`. The service connects as `authCallout.serviceUser`, an entry of
 `users` granted, as `permissions`, publish `$SYS._INBOX.>` and subscribe `$SYS.REQ.USER.AUTH`;
 with `privateProjects` the hub enforces it, refusing a service user of any other kind and one
-granted more (below). There is no `accounts` block: the service places each client in the global
-account, beside the static users, so turning the callout on moves no stream.
+granted more (below). Without `privateProjects` there is no `accounts` block: the service places
+each client in the global account, beside the static users, so turning the callout on moves no
+stream. With `privateProjects` JetStream sits in an account of its own (below), which moves every
+stream once (`cmd/jetstream-account-move`).
 
 A hub with `authCallout` runs no `listener` of its own yet: the listener connects as a user whose
 seed the hub stores, and its service identity, with which it would connect through the auth
@@ -320,16 +322,24 @@ exporter's port, 7777. `gcp:NatsHub` opens 8222 only to Google Cloud's health-ch
 rule), from which its group's health check reads `/healthz`; no input widens that, so it has
 nothing to refuse.
 
-`privateProjects` is checked when the hub is planned, and renders one thing itself: the server tag
-`server_tags: ["envoy-private-projects"]` after the ping lines (the README's
+`privateProjects` is checked when the hub is planned, and renders two things itself. The first is
+the server tag `server_tags: ["envoy-private-projects"]` after the ping lines (the README's
 [NATS authorization](../README.md#nats-authorization)). nats-server copies it into every
 authorization request, and the auth service admits Dispatch's hub-admission proof only on a request
-that carries it, and there admits a listener only in required privacy mode. What `privateProjects`
-demands (the callout, no session user, no client user beside the auth service's) and its tag reach
-a running server only when that server restarts. On `gcp:ClusteredNatsHub` each pod takes them as
-the pod roll restarts that pod (below), and until then it keeps its old `no_auth_user`, seeded
-users and tags. On `gcp:NatsHub` the VM takes them when the group replaces the VM. So the order
-holds both ways. Turn
+that carries it, and there admits a listener only in required privacy mode. The second is an
+`accounts` block: JetStream sits in `JETSTREAM`, which holds no client, and every user, the auth
+service's among them, sits in `ENVOY`, which reaches JetStream only through imports, and where the
+callout runs (`account: "ENVOY"`). A JetStream answer is then answered in `ENVOY`, where no stream
+is, so no client can have one stored on a subject a stream captures, a private project's included
+(the README's [NATS authorization](../README.md#nats-authorization) lists the exports). The auth
+service places each client in `ENVOY` once its broker's `BROKER_NATS_ACCOUNT` names that account.
+`gcp:ClusteredNatsHub`'s `jetStreamOperator` names the `permissions` entry of `users` placed in
+`JETSTREAM`, the operator `cmd/jetstream-account-move` runs as there; a client's entry is refused.
+What `privateProjects` demands (the callout, no session user, no client user beside the auth
+service's), its tag and its accounts reach a running server only when that server restarts. On
+`gcp:ClusteredNatsHub` each pod takes them as the pod roll restarts that pod (below), and until
+then it keeps its old `no_auth_user`, seeded users, tags and accounts. On `gcp:NatsHub` the VM
+takes them when the group replaces the VM. So the order holds both ways. Turn
 on Dispatch's `DISPATCH_PRIVATE_PROJECTS` only after the hub's update has completed on every server:
 every pod of the clustered hub has restarted, or the VM hub's new VM is up. Turn the hub's
 `privateProjects` off only after no project is private.
@@ -1050,8 +1060,9 @@ reload of them the server would take is an edit of their value (`server/reload.g
 `pingIntervalOption.Apply` only logs (`server/reload.go:670-672`), and `setPingTimer` reads the
 interval when it re-arms (`client.go:6037-6050`), so each connection would take such an edit at
 its timer's next re-arm, within one interval of 20 s. The hub writes the SHA-256 of `auth.conf`'s
-callout lines, `core.Authorization.CalloutLines()` (the `auth_callout` block, which has no
-`timeout` line, the ping lines and, beside `privateProjects`, the server tag), into the hub pods'
+callout lines, `core.Authorization.CalloutLines()` (beside `privateProjects` the `accounts` block,
+then the `auth_callout` block, which has no `timeout` line, the ping lines and, beside
+`privateProjects`, the server tag), into the hub pods'
 annotation `envoy-infra.sjawhar.dev/auth-callout` (absent without `authCallout`), which rolls the
 pods, by the same depends-on order as the session user's roll, on a change of any of them: a pod
 restarted on the old `auth.conf` would keep the old callout, and the reload that later brings the

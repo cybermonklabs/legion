@@ -110,16 +110,16 @@ COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/
 COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go ./listenerwire/envelope_generated.go
 
 # /out/THIRD_PARTY_NOTICES, the image's /usr/share/doc/legion/THIRD_PARTY_NOTICES: the licenses of
-# the Go modules the four binaries below compile in (with the build's CGO_ENABLED and the image's
+# the Go modules the five binaries below compile in (with the build's CGO_ENABLED and the image's
 # own GOARCH, which decide them) and of the npm packages the SPA inlines and the typeface it ships. Fails the build when a
 # module's or a package's license cannot be determined.
 COPY --from=web /repo/packages/dispatch/web/dist/THIRD_PARTY_NOTICES.txt /tmp/dispatch-web-notices
 RUN mkdir -p /out \
     && CGO_ENABLED=0 go-third-party-notices.sh /tmp/go-notices \
-      ./cmd/listener ./cmd/dispatch ./cmd/cipherd ./cmd/cipher \
+      ./cmd/listener ./cmd/dispatch ./cmd/cipherd ./cmd/cipher ./cmd/jetstream-account-move \
     && assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES \
       "Third-party software in the Legion Envoy image, with the license of each piece. Legion's own code is under the Apache License 2.0. The Debian packages the image installs carry their terms in /usr/share/doc/<package>/copyright." \
-      "Go modules compiled into /usr/local/bin/envoy-listener, envoy-dispatch, envoy-broker and agent-secrets" /tmp/go-notices \
+      "Go modules compiled into /usr/local/bin/envoy-listener, envoy-dispatch, envoy-broker, agent-secrets and jetstream-account-move" /tmp/go-notices \
       "npm packages inlined into, and the typeface shipped with, the Dispatch web app, /srv/dispatch-web (served as /THIRD_PARTY_NOTICES.txt)" /tmp/dispatch-web-notices
 
 # The legion commit this image is built from, which envoy-dispatch's /healthz reports as
@@ -138,7 +138,9 @@ RUN if [ -n "$LEGION_COMMIT" ] && ! printf '%s' "$LEGION_COMMIT" | grep -Eqx '[0
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
     go build -o /out/envoy-broker ./cmd/cipherd \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -o /out/agent-secrets ./cmd/cipher
+    go build -o /out/agent-secrets ./cmd/cipher \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
+    go build -o /out/jetstream-account-move ./cmd/jetstream-account-move
 
 # Minimal runtime — static binary, no shell needed.
 # curl is included for HEALTHCHECK and operational debugging.
@@ -156,6 +158,9 @@ COPY --from=build /out/envoy-listener /usr/local/bin/envoy-listener
 COPY --from=build /out/envoy-dispatch /usr/local/bin/envoy-dispatch
 COPY --from=build /out/envoy-broker /usr/local/bin/envoy-broker
 COPY --from=build /out/agent-secrets /usr/local/bin/agent-secrets
+# The JetStream account move's steps and its probe, each run by a one-off Job in the listener's
+# own image (cmd/jetstream-account-move, scripts/jetstream-account-probe.sh).
+COPY --from=build /out/jetstream-account-move /usr/local/bin/jetstream-account-move
 COPY --from=build /out/THIRD_PARTY_NOTICES /usr/share/doc/legion/THIRD_PARTY_NOTICES
 COPY --from=web --chown=envoy:envoy /repo/packages/dispatch/web/dist /srv/dispatch-web
 # The Amazon RDS CA bundle, for a secrets broker that signs in to an RDS database by IAM token to

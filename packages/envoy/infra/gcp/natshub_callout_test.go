@@ -194,16 +194,28 @@ func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	args.Users[1].Permissions.Publish.Allow = []string{"notifications.>"}
 	require.Equal(t, before, annotation(t, args), "a grant change alone leaves the callout's lines, and the pods, as they were")
 
-	// The server tag is a callout line, so setting privateProjects rolls every pod and removing it
-	// rolls them back: nats-server reloads server_tags, but a reload of the tags alone decides no
-	// connection again, so a server kept by a reload would keep each connection the tag's absence or
-	// presence admitted.
+	// The server tag and the accounts block are callout lines, so setting privateProjects rolls
+	// every pod and removing it rolls them back: nats-server reloads server_tags, but a reload of the
+	// tags alone decides no connection again, so a server kept by a reload would keep each connection
+	// the tag's absence or presence admitted; and it refuses to reload the callout, which a private
+	// render runs in the client account. The private lines are cut from the hub's own auth.conf:
+	// the accounts block, then the auth_callout block inside the authorization block, then the tail.
 	public := privateClusteredHub()
 	public.PrivateProjects = false
 	untagged := annotation(t, public)
 	tagged := annotation(t, privateClusteredHub())
-	require.Equal(t, digest(calloutBlock(keyAuth)+calloutPingLines+privateProjectsTagLines), tagged,
-		"setting privateProjects rolls the pods to take the server tag")
+	s, err := gcp.ResolveClusteredNatsHub(privateClusteredHub())
+	require.NoError(t, err)
+	_, fromAccounts, found := strings.Cut(s.AuthConf, "\naccounts {\n")
+	require.True(t, found, "a private auth.conf has no accounts block: %q", s.AuthConf)
+	accounts, rest, found := strings.Cut("accounts {\n"+fromAccounts, "authorization {\n")
+	require.True(t, found, "no authorization block after the accounts block in %q", s.AuthConf)
+	block, tail, found := strings.Cut(rest, "\n}\n")
+	require.True(t, found, "no closing authorization line in %q", s.AuthConf)
+	require.Contains(t, block, "    account: \"ENVOY\"\n", "the private callout runs in the client account")
+	require.Equal(t, calloutPingLines+privateProjectsTagLines, tail)
+	require.Equal(t, digest(accounts+block+"\n"+tail), tagged,
+		"setting privateProjects rolls the pods to take the server tag and the accounts block")
 	require.NotEqual(t, untagged, tagged, "privateProjects leaves the pods' annotation as it was, so the tag would reach no running server")
 	require.Equal(t, digest(calloutBlock(keyAuth)+calloutPingLines), untagged,
 		"removing privateProjects rolls the pods back to the untagged lines")

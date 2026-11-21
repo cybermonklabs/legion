@@ -129,6 +129,8 @@ func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 
 // The callout reaches the NATS container's start script as core renders it, and without one the
 // script is the golden's (TestNatsServiceRegistersTheReferenceChildren holds the rest unchanged).
+// The script is private, so its users sit in the accounts block (core's accountsBlock) and the
+// authorization block holds the callout alone, run in the client account.
 func TestNatsServiceRendersTheCallout(t *testing.T) {
 	args := privateNatsService()
 	authorization := core.Authorization{
@@ -139,7 +141,8 @@ func TestNatsServiceRendersTheCallout(t *testing.T) {
 	}
 	script, err := authorization.StartScript(args.ConfigHeader, args.ServerArgs, *args.ConfigPath)
 	require.NoError(t, err)
-	require.Contains(t, script, "  ]\n  auth_callout {\n")
+	require.Contains(t, script, "\nauthorization {\n  auth_callout {\n")
+	require.Contains(t, script, "    account: \""+core.ClientAccount+"\"\n")
 	require.NotContains(t, script, "timeout")
 	require.Equal(t, []any{script}, natsCommand(t, args))
 }

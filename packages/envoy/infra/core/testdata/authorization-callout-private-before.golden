@@ -1,0 +1,18 @@
+# Rendered by envoy-infra from placeholder inputs.
+# Public keys only.
+authorization {
+  users: [
+    # example-auth
+    {"nkey": "UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN", "permissions": {"publish": {"allow": ["$SYS._INBOX.>"]}, "subscribe": {"allow": ["$SYS.REQ.USER.AUTH"]}}}
+  ]
+  auth_callout {
+    issuer: "AB2TCXFBYSIN24KFPVJARBN5CHCL4ZCV5SBWSONTZ2WYXS3XTAEK6S3G"
+    auth_users: ["UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN"]
+    xkey: "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL"
+  }
+}
+# a replica of the auth service that answers nothing is dropped from the callout's queue group within 80 s
+ping_interval: "20s"
+ping_max: 2
+# this hub is rendered with privateProjects: the auth service admits Dispatch's hub-admission proof only on a request that carries this tag, and there admits a listener only in required privacy mode
+server_tags: ["envoy-private-projects"]

@@ -1,0 +1,75 @@
+# Rendered by envoy-infra from placeholder inputs.
+# Public keys only.
+accounts {
+  # JetStream sits in an account no client connects to: a JetStream answer aimed at a subject a stream captures is answered in ENVOY, where no stream is
+  JETSTREAM {
+    jetstream: enabled
+    users: [
+      # example-jetstream
+      {"nkey": "UDXREYGN6OYHDDYF45MCYWJGYYAPJ7VH6EJBFUQYMLNMI5XCW54ZAIQD", "permissions": {"publish": {"allow": [">"]}, "subscribe": {"allow": [">"]}}}
+    ]
+    exports: [
+      {"response_type": "stream", "service": "$JS.API.>"}
+      {"service": "$JS.ACK.>"}
+      {"service": "$JS.FC.>"}
+      {"service": "$KV.>"}
+      {"service": "notifications.agent.>"}
+      {"service": "notifications.dispatch.>"}
+      {"service": "notifications.github.>"}
+      {"service": "notifications.slack.>"}
+      {"service": "notifications.legion.>"}
+      {"service": "notifications.ghostwispr.>"}
+      {"service": "notifications.whatsapp.>"}
+      {"service": "notifications.team.>"}
+      {"service": "notifications.envoy.exceptions.notifications.agent.>"}
+      {"service": "notifications.envoy.exceptions.notifications.team.>"}
+      {"service": "notifications.envoy.kept.>"}
+      {"service": "notifications.envoy.resume.>"}
+      {"service": "notifications.envoy.takeover.>"}
+      {"service": "envoy-measure.>"}
+      {"stream": "_INBOX.>"}
+      {"stream": "_INBOX_envoy.>"}
+    ]
+  }
+  ENVOY {
+    users: [
+      # example-auth
+      {"nkey": "UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN", "permissions": {"publish": {"allow": ["$SYS._INBOX.>"]}, "subscribe": {"allow": ["$SYS.REQ.USER.AUTH"]}}}
+    ]
+    imports: [
+      {"service": {"account": "JETSTREAM", "subject": "$JS.API.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "$JS.ACK.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "$JS.FC.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "$KV.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "notifications.agent.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "notifications.dispatch.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "notifications.github.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "notifications.slack.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "notifications.legion.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "notifications.ghostwispr.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "notifications.whatsapp.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "notifications.team.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "notifications.envoy.exceptions.notifications.agent.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "notifications.envoy.exceptions.notifications.team.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "notifications.envoy.kept.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "notifications.envoy.resume.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "notifications.envoy.takeover.>"}}
+      {"service": {"account": "JETSTREAM", "subject": "envoy-measure.>"}}
+      {"stream": {"account": "JETSTREAM", "subject": "_INBOX.>"}}
+      {"stream": {"account": "JETSTREAM", "subject": "_INBOX_envoy.>"}}
+    ]
+  }
+}
+authorization {
+  auth_callout {
+    issuer: "AB2TCXFBYSIN24KFPVJARBN5CHCL4ZCV5SBWSONTZ2WYXS3XTAEK6S3G"
+    account: "ENVOY"
+    auth_users: ["UD5BKU3BU7COAOUCXHGXWOSLNVLL4TEXCWPJHDUQE4C47ZNOYFOZVKUN", "UDXREYGN6OYHDDYF45MCYWJGYYAPJ7VH6EJBFUQYMLNMI5XCW54ZAIQD"]
+    xkey: "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL"
+  }
+}
+# a replica of the auth service that answers nothing is dropped from the callout's queue group within 80 s
+ping_interval: "20s"
+ping_max: 2
+# this hub is rendered with privateProjects: the auth service admits Dispatch's hub-admission proof only on a request that carries this tag, and there admits a listener only in required privacy mode
+server_tags: ["envoy-private-projects"]

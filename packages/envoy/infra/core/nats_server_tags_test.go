@@ -58,9 +58,11 @@ func TestAPrivateHubCarriesTheServerTag(t *testing.T) {
 			require.NotContains(t, a.CalloutLines(), "server_tags")
 		})
 	}
+	// Without privateProjects the text is the merge base's private render less the tag's lines: the
+	// tag, and since then the accounts block (TestAnAllPublicHubRendersAsBefore), come only with it.
 	withoutTag, err := public.Render(header)
 	require.NoError(t, err)
-	requireSameText(t, strings.TrimSuffix(private, privateProjectsTagLines), withoutTag)
+	requireSameText(t, strings.TrimSuffix(golden(t, "authorization-callout-private-before.golden"), privateProjectsTagLines), withoutTag)
 }
 
 // TestTheServerTagReachesTheAuthorizationRequest: nats-server v2.15.1, started in this process on

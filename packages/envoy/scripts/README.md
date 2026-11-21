@@ -866,6 +866,37 @@ it sources; CI runs it in the `envoy-go-checks` job of `.github/workflows/ci.yam
 with it: a copy of the gate whose VM leg reads an absent `listenerImage` as no hub, and one that
 reads pi-envoy alone in an image, must each open on the fixture that exists to catch it.
 
+## jetstream-account-probe.sh
+
+Says whether a client of the clustered hub can still have a JetStream answer stored on a subject a
+stream captures, the reading the JetStream account move closes once its switch places every client
+in `ENVOY`, the account that reaches JetStream only through imports. It runs
+`jetstream-account-move probe` from a one-off Job in namespace `envoy`, in the listener's own image,
+as the listener Deployment's ServiceAccount and NATS credential (its seed file, or with
+`--token-file` its projected token), and prints what the probe printed:
+
+```bash
+bash scripts/jetstream-account-probe.sh --context <kube-context> [--token-file <path>] \
+  [--inbox-prefix <prefix>] [--remover-seed-secret <secret>] [--image <image>]
+```
+
+The probe's ordinary request, `$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS`, must come back with the
+stream's configuration, and its control, a plain publish to `$KV.envoy_session_consumers.probe`,
+must be refused; else it is `UNKNOWN`, since an identity refused everything stores nothing. Then the
+same request, its reply aimed at `notifications.dispatch.issue.ZZPROBE.1`, must leave nothing
+stored there. The last line is `GATE OPEN` (exit 0), `GATE SHUT` (exit 1) when anything was stored,
+each sequence removed by the JetStream account's operator when `--remover-seed-secret` names the
+Secret in `envoy` holding its seed under `seed` (`REMOVED`), or named as left (`LEFT`), or `UNKNOWN`
+(exit 3), the Job made, read and deleted or not. The probe reads the stored count up to ten times,
+200 ms apart, after a later request was answered: the listener's grant cannot subscribe the target,
+so nothing else says the answer was sent.
+
+`jetstream-account-probe.test.sh` runs the real probe behind a fake `kubectl` against in-process
+hubs of each layout (`cmd/jetstream-account-move/testhub`, core's render as its goldens pin it): the
+private render reads `GATE OPEN`; the merge base's layout `GATE SHUT`, with `REMOVED` or `LEFT`; an
+identity denied the API and a layout missing the `$JS.API.>` import each `UNKNOWN`, never
+`GATE OPEN`. CI runs it in the `envoy-go-checks` job.
+
 ## Measuring search on a copy of the corpus
 
 Three scripts measure a change to Dispatch search against the real corpus rather than a seeded

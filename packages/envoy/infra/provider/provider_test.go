@@ -168,7 +168,7 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 		"kubeconfig", "namespace", "name", "serviceName", "natsImage", "reloaderImage", "exporterImage",
 		"natsReplicas", "streamMaxBytes", "maxFileStoreGb", "diskSizeGb", "storageClassName", "natsCpu", "natsMemory",
 		"priorityClassName", "clientNamespaces", "monitorNamespaces", "metricsNamespaces", "users", "sessionUser",
-		"authCallout", "privateProjects", "listener", "tailnet", "tailnetAuthKey",
+		"authCallout", "privateProjects", "jetStreamOperator", "listener", "tailnet", "tailnetAuthKey",
 	}, slices.Collect(maps.Keys(hub.InputProperties)))
 	require.ElementsMatch(t, []string{
 		"kubeconfig", "namespace", "name", "serviceName", "natsImage", "reloaderImage", "exporterImage", "clientNamespaces",

@@ -172,8 +172,13 @@ type ClusteredNatsHubArgs struct {
 	// The auth service's callout, as gcp:NatsHub's: unset, the hub renders exactly what it rendered
 	// before callouts existed.
 	AuthCallout *nats.AuthCalloutArgs `pulumi:"authCallout,optional"`
-	// The deployment may make a Dispatch project private, as gcp:NatsHub's privateProjects.
+	// The deployment may make a Dispatch project private, as gcp:NatsHub's privateProjects. Its
+	// render puts JetStream in an account of its own (core.Authorization's PrivateProjects).
 	PrivateProjects bool `pulumi:"privateProjects,optional"`
+	// The name of the users entry, a permissions user, that a render with privateProjects places
+	// in the account holding JetStream, where no client is: the operator of the move into that
+	// account (core.Authorization's JetStreamOperator). Unset, that account holds no user.
+	JetStreamOperator string `pulumi:"jetStreamOperator,optional"`
 	// The session listener the hub runs as a workload of its own, declared outside the tailnet
 	// entry: with tailnet the entry's hosts forward the Tailscale Service's port 9020 to it, as
 	// they do to tailnet.listener, and its render is tailnet.listener's; without tailnet it is
@@ -338,6 +343,7 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 	fields := []field{
 		{"namespace", args.Namespace}, {"name", args.Name}, {"serviceName", args.ServiceName},
 		{"natsImage", args.NatsImage}, {"reloaderImage", args.ReloaderImage}, {"exporterImage", args.ExporterImage},
+		{"jetStreamOperator", args.JetStreamOperator},
 	}
 	opt := func(path string, value *string) {
 		if value != nil {
@@ -493,6 +499,9 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	if err != nil {
 		return clusteredHubSettings{}, authorizationRefusal(err, listenerPath)
 	}
+	if auth.JetStreamOperator, err = jetStreamOperator(args.Users, args.JetStreamOperator); err != nil {
+		return clusteredHubSettings{}, err
+	}
 	if s.authConf, err = auth.Render([]string{confHeader}); err != nil {
 		return clusteredHubSettings{}, authorizationRefusal(err, listenerPath)
 	}
@@ -518,6 +527,33 @@ func monitorBesidePrivateProjects(namespaces []string) error {
 	return core.InputErrorf("monitorNamespaces", "monitorNamespaces and privateProjects: nats-server's monitoring port, 8222, answers /connz, /subsz and /jsz with no authentication, "+
 		"naming the subjects, connections and consumers of every client, a private project's among them, to every pod of %q; "+
 		"leave monitorNamespaces empty: the kubelet's probes, the exporter in each pod, kubectl port-forward and exec, and Managed Prometheus need none of it", namespaces)
+}
+
+// jetStreamOperator is the jetStreamOperator input as core.Authorization takes it: name, once no
+// users entry of that name is of a kind other than permissions. A machineId, listenerMachineId,
+// dispatchMachineId or daemon entry is a client, whose kind's grant its own process holds, and the
+// operator of the account holding JetStream is no client: it connects as a permissions user of its
+// own. The entry is named by its index alone, since core, which refuses a name holding a seed
+// before it quotes one, has not read the names yet. core refuses the rest: a name that names no
+// keyed user, the auth service's user, and the input without privateProjects.
+func jetStreamOperator(users []NATSUserArgs, name string) (string, error) {
+	if name == "" {
+		return "", nil
+	}
+	for i, u := range users {
+		if u.Name != name {
+			continue
+		}
+		where := fmt.Sprintf("users[%d]", i)
+		kind, err := selectedUserKind(where, u)
+		if err != nil {
+			return "", err
+		}
+		if kind.input != "permissions" {
+			return "", core.InputErrorf("jetStreamOperator", "jetStreamOperator names %s, a %s user, which is a client of the hub; the operator of the account holding JetStream connects as a permissions user of its own", where, kind.input)
+		}
+	}
+	return name, nil
 }
 
 // hubSizing resolves each hub pod's volume (diskSizeGb), JetStream's file store within it

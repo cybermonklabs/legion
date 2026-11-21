@@ -13,8 +13,15 @@ import (
 // AuthCallout is a NATS server's authorization callout: every client that is not one of the
 // authorization's keyed users is admitted, or refused, by the auth service (dispatch://INFRA-840),
 // which reads the client's token and answers with that connection's grant. The server runs in
-// config mode, with no accounts block, so the service places each client in the global account,
-// $G, beside the static users.
+// config mode. Without PrivateProjects it has no accounts block, so the service places each client
+// in the global account, $G, beside the static users. With PrivateProjects every static user, the
+// service's among them, sits in ClientAccount and the callout runs there (accountsBlock, block),
+// and the service places each client in the account its answer's audience names, ClientAccount
+// once the broker's BROKER_NATS_ACCOUNT names it (the auth service's t-e-73): nats-server places
+// a config-mode callout's client in the account named by the user JWT's audience
+// (server/auth_callout.go:222-233, v2.15.1), whatever account the callout runs in, and
+// allowed_accounts, which this render does not set, selects only the source accounts whose clients
+// go to the callout (server/auth.go:718-738).
 type AuthCallout struct {
 	// Issuer is the public key of the account (A and 55 base32 characters) whose seed signs the
 	// auth service's answers. The server admits only a user whose JWT that key issued (v2.15.1
@@ -147,10 +154,12 @@ func (c AuthCallout) validate(a Authorization) error {
 // authorization that could admit a client past the auth service (R12 of dispatch://INFRA-3862): no
 // callout; a noAuthUser, whom a client presenting no credential becomes; a service user granted
 // more than the auth service's grant (serviceGrantRefusal), which nats-server admits by its seed
-// alone and so would be a client past the service; and any user but the service's, each a static
-// client user whose seed a client stores or could store, a pending one included. Each refusal
-// names the field, and a user by its label (its index, or its input) and name; each of
-// PrivateProjects' is a core.InputError naming privateProjects.
+// alone and so would be a client past the service; and any user but the service's and the
+// JetStreamOperator, each a static client user whose seed a client stores or could store, a
+// pending one included. The JetStreamOperator sits in JetStreamAccount, where no client is
+// (accountsBlock), so it is no client of the hub's. Each refusal names the field, and a user by its
+// label (its index, or its input) and name; each of PrivateProjects' is a core.InputError naming
+// privateProjects.
 func (a Authorization) validateCallout() error {
 	if a.Callout != nil {
 		if err := a.Callout.validate(a); err != nil {
@@ -174,14 +183,14 @@ func (a Authorization) validateCallout() error {
 			service.Name, field, entry, calloutRequestSubject, calloutReplyPrefix)
 	}
 	for i, u := range a.Users {
-		if u.Name == a.Callout.ServiceUser {
+		if u.Name == a.Callout.ServiceUser || (a.JetStreamOperator != "" && u.Name == a.JetStreamOperator) {
 			continue
 		}
 		what := "a stored client seed"
 		if !u.HasSeed {
 			what = "a static client user"
 		}
-		return InputErrorf("privateProjects", "privateProjects: %s %q: %s while a project is private; every client connects through the auth service, so callout.serviceUser %q is the only user", u.label(i), u.Name, what, a.Callout.ServiceUser)
+		return InputErrorf("privateProjects", "privateProjects: %s %q: %s while a project is private; every client connects through the auth service, so callout.serviceUser %q is the only user, beside a jetStreamOperator, which sits where no client is", u.label(i), u.Name, what, a.Callout.ServiceUser)
 	}
 	return nil
 }
@@ -206,48 +215,61 @@ func serviceGrantRefusal(u User) (field, entry string, wide bool) {
 }
 
 // CalloutLines is every line Render's text holds because of the callout, "" without one, for an
-// authorization Validate accepts: the auth_callout block inside the authorization block, then the
-// ping lines and, beside PrivateProjects, the server tag's lines that end the text (calloutParts,
-// which Render writes from too). nats-server v2.15.1 refuses a whole reload that changes its
-// callout ("config reload not supported for AuthCallout": server/reload.go diffOptions has no case
-// for it), so a server takes a changed block only when it restarts. The ping lines come and go
-// only with that block, so the one reload of them the server would take is an edit of
-// calloutPingLines itself (reload.go:1751-1754), which each connection applies when its timer next
-// re-arms, within one interval of 20 s (reload.go:670-672 only logs; client.go:6037-6050). The
-// server tag would reload, but a reload of it decides no connection again (privateProjectsTagLines).
-// A component that reloads its servers rolls them when this text changes, so every server takes a
-// change at one known moment, its restart, with each connection's timer started fresh and each
-// connection decided again; the clustered hub's pin of its routes' ping (gcp clusteredHubCluster)
-// appears and goes with the callout, so it always arrives with such a roll. auth_users is in it, so
-// a keyed user added or removed changes it.
+// authorization Validate accepts: beside PrivateProjects the accounts block, whose users list holds
+// every keyed user, then the auth_callout block inside the authorization block, then the ping
+// lines and, beside PrivateProjects, the server tag's lines that end the text (calloutParts, which
+// Render writes from too). nats-server v2.15.1 refuses a whole reload that changes its callout
+// ("config reload not supported for AuthCallout": server/reload.go diffOptions has no case for it),
+// so a server takes a changed block only when it restarts. The accounts block comes and goes with
+// PrivateProjects, which also moves the callout into ClientAccount (block), so it never arrives by
+// a reload, and nothing a reload could decide (which account a connection already open sits in,
+// which stream lives where) is left to one. The ping lines come and go only with that block, so
+// the one reload of them the server would take is an edit of calloutPingLines itself
+// (reload.go:1751-1754), which each connection applies when its timer next re-arms, within one
+// interval of 20 s (reload.go:670-672 only logs; client.go:6037-6050). The server tag would reload,
+// but a reload of it decides no connection again (privateProjectsTagLines). A component that
+// reloads its servers rolls them when this text changes, so every server takes a change at one
+// known moment, its restart, with each connection's timer started fresh and each connection
+// decided again; the clustered hub's pin of its routes' ping (gcp clusteredHubCluster) appears and
+// goes with the callout, so it always arrives with such a roll. auth_users is in it, so a keyed
+// user added or removed changes it.
 func (a Authorization) CalloutLines() string {
-	block, tail := a.calloutParts()
-	return block + tail
+	accounts, block, tail := a.calloutParts()
+	return accounts + block + tail
 }
 
-// calloutParts are the callout's lines of Render's text, both "" without a callout: block, the
-// auth_callout block inside the authorization block, after its users, and tail, the ping lines
-// and, beside PrivateProjects, the server tag's lines, which end the text. Render and CalloutLines
-// both write them from here, so a line one writes the other holds. Validate refuses PrivateProjects
-// without a callout, so no other text carries the tag.
-func (a Authorization) calloutParts() (block, tail string) {
+// calloutParts are the callout's lines of Render's text, each "" without a callout: accounts,
+// beside PrivateProjects alone, the accounts block (accountsBlock) that comes before the
+// authorization block and holds its users; block, the auth_callout block inside the authorization
+// block, after its users; and tail, the ping lines and, beside PrivateProjects, the server tag's
+// lines, which end the text. Render and CalloutLines both write them from here, so a line one
+// writes the other holds. Validate refuses PrivateProjects without a callout, so no other text
+// carries the tag or the accounts.
+func (a Authorization) calloutParts() (accounts, block, tail string) {
 	if a.Callout == nil {
-		return "", ""
+		return "", "", ""
 	}
 	tail = calloutPingLines
+	account := ""
 	if a.PrivateProjects {
 		tail += privateProjectsTagLines
+		accounts, account = a.accountsBlock(), ClientAccount
 	}
-	return a.Callout.block(a.Users), tail
+	return accounts, a.Callout.block(a.Users, account), tail
 }
 
 // block is the callout's lines of the authorization block, which follow its users: auth_callout
-// naming the issuer, the key of every keyed user of users in their order, and the xkey. It writes no
-// authorization timeout (see the budget above). auth_users is derived from users and never given:
-// in config mode nats-server sends a keyed user it does not list to the callout, even one whose
-// nkey signature was valid (v2.15.1 server/auth.go:739-761), so a static user left out of it would
-// be sent to the auth service, which knows no such client.
-func (c AuthCallout) block(users []User) string {
+// naming the issuer, beside a private render the account it runs in, the key of every keyed user
+// of users in their order, and the xkey. It writes no authorization timeout (see the budget
+// above). auth_users is derived from users and never given: in config mode nats-server sends a
+// keyed user it does not list to the callout, even one whose nkey signature was valid (v2.15.1
+// server/auth.go:739-761), so a static user left out of it would be sent to the auth service,
+// which knows no such client. account is "" for the global account, nats-server's default
+// (server/opts.go:4877-4881), which today's text leaves unwritten; a private render names
+// ClientAccount, where the service's user sits, so the server sends each authorization request
+// there, the service's subscription answers it, and a client the service places in that account
+// may not publish one (server/auth.go:764-776).
+func (c AuthCallout) block(users []User, account string) string {
 	keys := []string{}
 	for _, u := range users {
 		if u.NKey != "" {
@@ -255,8 +277,12 @@ func (c AuthCallout) block(users []User) string {
 		}
 	}
 	ascii := PyJSONOptions{EnsureASCII: true}
-	return "  auth_callout {\n" +
-		"    issuer: " + PyJSON(c.Issuer, ascii) + "\n" +
+	lines := "  auth_callout {\n" +
+		"    issuer: " + PyJSON(c.Issuer, ascii) + "\n"
+	if account != "" {
+		lines += "    account: " + PyJSON(account, ascii) + "\n"
+	}
+	return lines +
 		"    auth_users: " + PyJSON(keys, ascii) + "\n" +
 		"    xkey: " + PyJSON(c.XKey, ascii) + "\n" +
 		"  }\n"

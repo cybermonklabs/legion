@@ -48,8 +48,15 @@ type Authorization struct {
 	// Callout is nil for a server with no auth service, which renders exactly today's text.
 	Callout *AuthCallout `json:"callout"`
 	// PrivateProjects says the deployment may make a project private (R12 of
-	// dispatch://INFRA-3862): it needs Callout and no user but the auth service's.
+	// dispatch://INFRA-3862): it needs Callout and no user but the auth service's and
+	// JetStreamOperator. Its render puts JetStream in an account of its own (accountsBlock).
 	PrivateProjects bool `json:"privateProjects"`
+	// JetStreamOperator, "" for none, is the Name of the keyed user a private render places in
+	// JetStreamAccount, beside JetStream and no client: the operator that moves the streams and
+	// buckets into that account and, while the move can still roll back, out of it again
+	// (cmd/jetstream-account-move), and that removes what the account probe left
+	// (scripts/jetstream-account-probe.sh). Every other user sits in ClientAccount.
+	JetStreamOperator string `json:"jetStreamOperator"`
 }
 
 var userName = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$`)
@@ -99,6 +106,9 @@ func (a Authorization) Validate() error {
 		}
 	}
 	if err := a.validateFallback(); err != nil {
+		return err
+	}
+	if err := a.validateJetStreamOperator(); err != nil {
 		return err
 	}
 	return a.validateCallout()
@@ -158,6 +168,9 @@ func (a Authorization) seedField() string {
 	}
 	if bus.HoldsSeed(a.NoAuthUser) {
 		return "noAuthUser"
+	}
+	if bus.HoldsSeed(a.JetStreamOperator) {
+		return "jetStreamOperator"
 	}
 	if a.Callout != nil {
 		return a.Callout.seedField()
@@ -260,14 +273,16 @@ func isSubjectPattern(s string) bool {
 	return true
 }
 
-// Render returns the authorization block nats-server reads: the header lines, each as
-// "# <line>", then the block. Each keyed user is a comment naming it and one JSON object (keys
-// sorted, non-ASCII raw: nats-server's config strings take no \u escape); a pending user is not
-// rendered. With a callout, its auth_callout block follows the users inside the block, and the
-// top-level ping lines, then beside PrivateProjects the server tag's lines, end the text, all from
-// calloutParts; without one the text is exactly what it was before callouts existed. no_auth_user
-// is a top-level option, so it follows the block, naming the fallback user's key. The text ends
-// with one newline.
+// Render returns the configuration nats-server reads: the header lines, each as "# <line>", then
+// the users. Each keyed user is a comment naming it and one JSON object (keys sorted, non-ASCII
+// raw: nats-server's config strings take no \u escape); a pending user is not rendered. Without
+// PrivateProjects the users are the authorization block's, and with a callout its auth_callout
+// block follows them inside that block; without one the text is exactly what it was before
+// callouts existed. With PrivateProjects the users are the accounts block's (accountsBlock), which
+// comes first, and the authorization block holds the auth_callout block alone. The top-level ping
+// lines, then beside PrivateProjects the server tag's lines, end the text; all the callout's and
+// the accounts' lines come from calloutParts. no_auth_user is a top-level option, so it follows
+// the block, naming the fallback user's key. The text ends with one newline.
 func (a Authorization) Render(header []string) (string, error) {
 	if err := a.Validate(); err != nil {
 		return "", err
@@ -300,19 +315,19 @@ func (a Authorization) render(header []string) string {
 	for _, line := range header {
 		b.WriteString("# " + line + "\n")
 	}
+	accounts, block, tail := a.calloutParts()
+	if accounts != "" {
+		b.WriteString(accounts + "authorization {\n" + block + "}\n")
+		b.WriteString(tail)
+		return b.String()
+	}
 	b.WriteString("authorization {\n  users: [\n")
 	for _, u := range a.Users {
 		if u.NKey == "" {
 			continue
 		}
-		user := Object{
-			{"nkey", u.NKey},
-			{"permissions", Object{{"publish", u.Publish.object()}, {"subscribe", u.Subscribe.object()}}},
-		}
-		b.WriteString("    # " + u.Name + "\n")
-		b.WriteString("    " + PyJSON(user, PyJSONOptions{SortKeys: true}) + "\n")
+		b.WriteString(userLines(u, "    "))
 	}
-	block, tail := a.calloutParts()
 	b.WriteString("  ]\n" + block + "}\n")
 	if a.NoAuthUser != "" {
 		fallback, _ := a.user(a.NoAuthUser) // Validate has checked it names a keyed user

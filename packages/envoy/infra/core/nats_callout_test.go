@@ -60,21 +60,24 @@ func TestAuthCalloutRendersTheCalloutBlock(t *testing.T) {
 
 // The block sets no authorization timeout, so nats-server's default of 2 s stands: a longer one
 // would promise an auth service time that a nats.go client does not wait
-// (nats_callout_timeout_live_test.go).
+// (nats_callout_timeout_live_test.go). A private render's authorization block holds the callout
+// alone, run in the client account, its users being the accounts block's (accountsBlock).
 func TestAuthCalloutRendersNoAuthorizationTimeout(t *testing.T) {
 	text, err := privateOnly().Render(nil)
 	require.NoError(t, err)
-	require.Equal(t, "authorization {\n"+
-		"  users: [\n"+
-		"    # example-auth\n"+
-		`    {"nkey": "`+authServiceKey+`", "permissions": {"publish": {"allow": ["$SYS._INBOX.>"]}, "subscribe": {"allow": ["$SYS.REQ.USER.AUTH"]}}}`+"\n"+
-		"  ]\n"+
-		"  auth_callout {\n"+
+	require.NotContains(t, text, "timeout")
+	_, authorization, found := strings.Cut(text, "\n}\nauthorization {\n")
+	require.True(t, found, "no authorization block after the accounts block in %q", text)
+	require.Equal(t, "  auth_callout {\n"+
 		`    issuer: "`+calloutIssuer+`"`+"\n"+
+		`    account: "`+core.ClientAccount+`"`+"\n"+
 		`    auth_users: ["`+authServiceKey+`"]`+"\n"+
 		`    xkey: "`+calloutXKey+`"`+"\n"+
 		"  }\n"+
-		"}\n"+calloutPingLines+privateProjectsTagLines, text)
+		"}\n"+calloutPingLines+privateProjectsTagLines, authorization)
+	public, err := withCallout().Render(nil)
+	require.NoError(t, err)
+	require.NotContains(t, public, "timeout")
 }
 
 // renderedCalloutBlock is the callout's lines cut from text, a Render text: what follows the users'
