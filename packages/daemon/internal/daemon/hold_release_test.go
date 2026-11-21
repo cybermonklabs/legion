@@ -700,10 +700,10 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 		t.Fatalf("begin release tx: %v", err)
 	}
 	applied, committed := intake.WithCommitHooks(context.Background())
-	if _, err := admission.Apply(applied, tx, intake.DispatchConsumerPosition{AckFloorStream: 10}); err != nil {
+	if _, err := admission.Apply(applied, tx, intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true}); err != nil {
 		t.Fatalf("apply position fact: %v", err)
 	}
-	if _, err := admission.Apply(applied, tx, intake.DispatchConsumerPosition{AckFloorStream: 10, Idle: true}); err != nil {
+	if err := tx.Commit(context.Background()); err != nil {
 		t.Fatalf("commit release tx: %v", err)
 	}
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "label-added-in-race-window", intake.DispatchIssue{
