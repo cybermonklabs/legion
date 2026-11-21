@@ -1722,7 +1722,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 // rows that name another person as responsible (listedInStead), may still start or run. It is a
 // clock from that moment, not a budget of their own: those rows are read one after another, so
 // however many there are they never take the list past it. Dispatch's Inbox waits 5 seconds for
-// the whole list (agentsecrets.Client's defaultTimeout), and each read of Dispatch may take up to
+// the whole list (cipher.Client's defaultTimeout), and each read of Dispatch may take up to
 // the project-access client's own 10, so without the clock a slow Dispatch and many other people's
 // rows could empty every Inbox. A row the clock cuts short is left off, as every such row was
 // before the fallback existed, and counted in the list's one line (logFallbackCut).

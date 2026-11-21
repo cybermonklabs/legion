@@ -408,6 +408,8 @@ describe("every committed recording answers the display tree of every stored tex
       "MessageWithTrees.body",
       "MyAnswerReply.body",
       "MyAnswerRow.question",
+      "Priority.description",
+      "PriorityRow.description",
       "ReplyBlockWithTrees.text",
       "RequirementCoverage.text",
       "SearchResult.snippet",
