@@ -264,6 +264,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"comments_replies_to_block",
 		"messages_replies_to_block",
 		"events_person_words_with_declines",
+		"events_post_text_changes",
 		"comment_deliveries_session",
 		"message_deliveries_session_taken",
 		"embeddings_window_owner",

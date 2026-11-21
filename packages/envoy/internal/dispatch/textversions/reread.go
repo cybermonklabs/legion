@@ -76,13 +76,6 @@ func (r *ruleSet) changeTypes(again []string) []string {
 	return slices.Compact(types)
 }
 
-// rereadReadTimeout is the statement_timeout of a re-read batch's read of the log
-// (rereadEventsQuery): no index reads the log by type, so the read walks it from the event after
-// the last one read again to its end, and its time grows with the log, not with the text it
-// counts against the batch's bound. A re-read runs only after a fill of a lower rules version
-// wrote, which is a roll or a rollback.
-const rereadReadTimeout = time.Minute
-
 // rereadProgress is where a re-read under way stands, which the filler keeps between its
 // batches: the cursor it reads up to, and the last event its committed batches read. A batch that
 // finds another cursor starts the re-read again from the log's first event, and so does a filler
@@ -99,10 +92,10 @@ type rereadProgress struct {
 // version wrote some of:
 //
 //   - It reads, after the last event the re-read's earlier batches read, the events of the types
-//     that change a post's text (changeTypes), within the batch's bounds (rereadEventsQuery),
-//     to the log's end: a lower version's row of a post can hold a text an event of these types
-//     changed, whatever that event's id, since the row was read from the post when that version's
-//     batch wrote it.
+//     that change a post's text (changeTypes, rereadLogTypes), within the batch's bounds, through
+//     their own index (rereadEventsQuery, events_post_text_changes), to the log's end: a lower
+//     version's row of a post can hold a text an event of these types changed, whatever that
+//     event's id, since the row was read from the post when that version's batch wrote it.
 //   - It decides again (decideReread) each of those events of the types this build's rules read
 //     and version stored's did not (rereadTypes), whose id is at or below the cursor: the events
 //     above it a batch of this build writes after the re-read.
@@ -116,13 +109,13 @@ type rereadProgress struct {
 //     cursor row's rules version (raiseRulesQuery), in the same transaction.
 //
 // Each batch is bounded as a batch is: its read takes at most maxEvents events and maxBytes of
-// what the read counts, and its decision ends it at the first event that takes what the batch
-// reads of the events, of their versions' whole bodies and of the bodies it redoes past maxBytes;
-// its writes take the statement time of its bytes; the pause runs before it and the rest after it
-// (batchesTo). Its read alone takes the time rereadReadTimeout gives. The last batch's rewrite of
-// the issue rows is not bounded by count: it reads one stored version for each version that holds
-// a deleted comment's insert, a few of each such delete, whose markdown it counts in the
-// statement time. The cursor does not move. A re-read stopped before its last batch commits leaves
+// what the read counts, under the statement time batchBoundsQuery set; its decision ends it at the
+// first event that takes what the batch reads of the events, of their versions' whole bodies and
+// of the bodies it redoes past maxBytes; its writes take the statement time of its bytes; the
+// pause runs before it and the rest after it (batchesTo). The last batch's rewrite of the issue
+// rows is not bounded by count: it reads one stored version for each version that holds a deleted
+// comment's insert, a few of each such delete, whose markdown it counts in the statement time.
+// The cursor does not move. A re-read stopped before its last batch commits leaves
 // the rules version stored as it was, so the next batch reads again; and a batch of a lower
 // version that writes again lowers it again (advanceCursorQuery), so the next batch of this build
 // reads again everything up to the new cursor.
@@ -132,10 +125,7 @@ func (f *filler) rereadBatch(ctx context.Context, tx pgx.Tx, started time.Time, 
 	}
 	again := rereadTypes(stored, f.rules.version)
 	changes := f.rules.changeTypes(again)
-	if _, err := tx.Exec(ctx, batchStatementQuery, fmt.Sprintf("%dms", rereadReadTimeout.Milliseconds())); err != nil {
-		return batchResult{}, fmt.Errorf("keyword fill: bound the re-read's read: %w", err)
-	}
-	read, candidates, err := f.readLog(ctx, tx, rereadEventsQuery, f.reread.after, math.MaxInt64, changes, nil, changes)
+	read, candidates, err := f.readLog(ctx, tx, rereadEventsQuery, f.reread.after, math.MaxInt64, changes, nil)
 	if err != nil {
 		return batchResult{}, err
 	}

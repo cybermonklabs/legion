@@ -17,6 +17,7 @@ A reset of the event log (`events.EventLogWasReset`) empties both tables and sta
 After each batch it stores the reach, which `store.TextVersionsAt` reads before it answers a cut.
 The cursor row keeps the lowest rules version that wrote the rows up to the cursor, and a batch that finds a lower version than its own reads again before it writes past the cursor (`rereadBatch`), in batches bounded as the others, with their pause and rest: every event of the types its rules added up to the cursor (`rulesAdded`), each decided against the row its post held just before it; each post row whose cut body that version read from another source than this build reads first, written again; and each issue row naming a document version that holds a deleted comment's insert, its vector made again from the masked text (`store.MaskTextVersions`).
 Only the re-read's last batch raises the version, so a re-read stopped early, or a lower version's batch that writes again, has the next batch read again from the log's first event.
+The re-read reads the log through the partial index `events_post_text_changes` (`20261121160853`), whose predicate is the type list its statement names (`rereadLogTypes`).
 Its tests run a fill of rules version 1 by giving a filler that version's rule set (`ruleSet`, `rulesVersion1`).
 
 It imports `store` for the pool, the reach, the mask lock and the lease callers, `docs` (`dispatch-docs`) for the version mask, `duty` for its hold, `events` (`dispatch-events`) for the horizon and the reset check, and `sessionanswers` (`dispatch-api`) for the pause.

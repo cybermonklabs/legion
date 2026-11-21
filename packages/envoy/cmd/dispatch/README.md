@@ -2716,7 +2716,11 @@ each row of a post with a later edit or delete whose body its event cut and that
 and the vector of each issue row naming a document version that holds a deleted comment's insert, from the masked text.
 Its last batch raises `rules` to 2, and only it does: a re-read stopped before then, or a later version 1 batch that lowers `rules` again, has the next version 2 batch read again from the log's first event, which writes nothing twice.
 Only a build with version 2 writes an event of the three types, so every one in the log was written by the roll that brought them or later, and the re-read misses none.
-Its read walks the log for those types with no index of its own, under a statement time of a minute.
+Its read takes the events of the types that change a post's text through `events_post_text_changes` (below), under a batch's statement time.
+
+Migration `20261121160853_events_post_text_changes` creates `events_post_text_changes` on `events (id)` where the type is `comment.deleted`, `comment.edited`, `message.deleted` or `message.edited`: the events the keyword fill's re-read reads, in id order, which it took from a scan of the whole log before, under the keyword table's mask lock, 7.4 s of an 8.0 s re-read at 900,000 events.
+The re-read's statement names the same list as text, not as a bound argument, so a generic plan proves the predicate too (`textversions`' `rereadLogTypes`, held to the migration and to the plan by `TestTheReReadsLogReadUsesItsIndex`).
+It is built `concurrently` and non-transactional, as `20261111002444_events_person_words_with_declines` is, so it holds off no write to `events`; its census answers `0`.
 
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:

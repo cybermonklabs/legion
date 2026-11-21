@@ -3,8 +3,10 @@ package textversions
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,10 +51,15 @@ const rereadBenchIssues = 1000
 // Each iteration puts the table and the cursor row back as the seed left them, untimed, and times
 // the pass. It reports, beside the wall time of a pass (ns/op), the time the database took to
 // answer its statements as the client measured each (db-ms/op), the part of that its reads of the
-// log took (log-read-ms/op), its batches (batches/op) and the rows it wrote again
-// (rows/op, redone/op, masked/op). Run it in a build Job:
+// log took (log-read-ms/op), how long its batches held the keyword table's mask lock, from the
+// answer to the statement that took it to the answer to the commit that released it
+// (mask-lock-held-ms/op), its batches (batches/op) and the rows it wrote again (rows/op,
+// redone/op, masked/op). It logs, once, the plan of the re-read's read of the log on the seeded
+// fixture, run with ANALYZE and BUFFERS, which `go test` prints whole with -v alone (it cuts a
+// benchmark's log at ten lines otherwise). Each round of the benchmark seeds its own log, so
+// -benchtime Nx seeds twice, once for its first round of one. Run it in a build Job:
 //
-//	DISPATCH_TEST_DATABASE_URL=... go test ./internal/dispatch/textversions -run '^$' -bench BenchmarkTheRulesReRead -benchtime 3x -timeout 2h
+//	DISPATCH_TEST_DATABASE_URL=... go test ./internal/dispatch/textversions -run '^$' -bench BenchmarkTheRulesReRead -benchtime 3x -v -timeout 2h
 //
 // and to check it works on a small log: KEYWORD_REREAD_EVENTS=2000 KEYWORD_REREAD_POSTS=5
 // KEYWORD_REREAD_INSERTS=2 with -benchtime 1x.
@@ -72,6 +79,7 @@ func BenchmarkTheRulesReRead(b *testing.B) {
 		analyze events; analyze search_text_versions; analyze comments; analyze messages; analyze artifact_versions`); err != nil {
 		b.Fatalf("keep the seeded keyword rows: %v", err)
 	}
+	rereadPlanLogged.Do(func() { logRereadPlan(b, database) })
 	tracer := &statementTimer{}
 	traced := storetest.TracedStore(b, database, tracer)
 
@@ -117,9 +125,10 @@ func BenchmarkTheRulesReRead(b *testing.B) {
 	}
 	b.StopTimer()
 	n := float64(b.N)
-	statements, logReads := tracer.totals()
+	statements, logReads, lockHeld := tracer.totals()
 	b.ReportMetric(float64(statements.Milliseconds())/n, "db-ms/op")
 	b.ReportMetric(float64(logReads.Milliseconds())/n, "log-read-ms/op")
+	b.ReportMetric(float64(lockHeld.Milliseconds())/n, "mask-lock-held-ms/op")
 	b.ReportMetric(float64(batches)/n, "batches/op")
 	b.ReportMetric(float64(rows)/n, "rows/op")
 	b.ReportMetric(float64(redone)/n, "redone/op")
@@ -140,29 +149,60 @@ func benchSize(b *testing.B, name string, fallback int) int {
 	return size
 }
 
-// statementTimer sums the time each statement of the pool it traces took, from the client's send
-// to its answer: every statement's, and the re-read's reads of the log's (rereadEventsQuery). Only
-// the passes' batches run on that pool; the benchmark's own statements run on another.
-type statementTimer struct {
-	mu            sync.Mutex
-	all, readLogs time.Duration
-	open          map[*pgx.Conn]statementStart
+// rereadPlanLogged logs the plan of the re-read's read of the log once in a process, whatever
+// the rounds the benchmark runs.
+var rereadPlanLogged sync.Once
+
+// logRereadPlan logs the plan of the re-read's first read of the log on the seeded fixture
+// (rereadEventsQuery, with the arguments a re-read batch gives it), with ANALYZE and BUFFERS.
+func logRereadPlan(b *testing.B, database *store.Store) {
+	b.Helper()
+	changes := currentRules.changeTypes(rereadTypes(1, rulesVersion))
+	rows, err := database.Pool.Query(context.Background(), `explain (analyze, buffers) `+rereadEventsQuery,
+		int64(0), int64(math.MaxInt64), batchEvents, int64(batchBytes), changes, []string(nil))
+	if err != nil {
+		b.Fatalf("explain the re-read's read of the log: %v", err)
+	}
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		b.Fatalf("explain the re-read's read of the log: %v", err)
+	}
+	b.Logf("the plan of the re-read's read of the log:\n%s", strings.Join(lines, "\n"))
 }
 
-// statementStart is a statement in flight on one connection: when it was sent and whether it is
-// a read of the log.
+// statementTimer sums the time each statement of the pool it traces took, from the client's send
+// to its answer: every statement's, and the re-read's reads of the log's (rereadEventsQuery); and
+// the time from the answer to each statement that took the keyword table's mask lock exclusively
+// (store.LockTextVersionsMask) to the answer to the commit or rollback that ended its
+// transaction, which released it. Only the passes' batches run on that pool; the benchmark's own
+// statements run on another.
+type statementTimer struct {
+	mu                      sync.Mutex
+	all, readLogs, lockHeld time.Duration
+	open                    map[*pgx.Conn]statementStart
+	locked                  map[*pgx.Conn]time.Time
+}
+
+// statementStart is a statement in flight on one connection: when it was sent, and whether it is
+// a read of the log, the statement that takes the mask lock, or the end of a transaction.
 type statementStart struct {
-	at      time.Time
-	readLog bool
+	at                  time.Time
+	readLog, lock, ends bool
 }
 
 func (s *statementTimer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.open == nil {
-		s.open = map[*pgx.Conn]statementStart{}
+		s.open, s.locked = map[*pgx.Conn]statementStart{}, map[*pgx.Conn]time.Time{}
 	}
-	s.open[conn] = statementStart{at: time.Now(), readLog: data.SQL == rereadEventsQuery}
+	statement := strings.TrimSpace(data.SQL)
+	s.open[conn] = statementStart{
+		at:      time.Now(),
+		readLog: data.SQL == rereadEventsQuery,
+		lock:    strings.Contains(statement, "pg_advisory_xact_lock(hashtext('search-text-versions-mask')"),
+		ends:    statement == "commit" || statement == "rollback",
+	}
 	return ctx
 }
 
@@ -174,18 +214,28 @@ func (s *statementTimer) TraceQueryEnd(_ context.Context, conn *pgx.Conn, _ pgx.
 		return
 	}
 	delete(s.open, conn)
-	took := time.Since(start.at)
+	now := time.Now()
+	took := now.Sub(start.at)
 	s.all += took
-	if start.readLog {
+	switch {
+	case start.readLog:
 		s.readLogs += took
+	case start.lock:
+		s.locked[conn] = now
+	case start.ends:
+		if at, held := s.locked[conn]; held {
+			s.lockHeld += now.Sub(at)
+			delete(s.locked, conn)
+		}
 	}
 }
 
-// totals is the time of every statement traced, and of the reads of the log among them.
-func (s *statementTimer) totals() (time.Duration, time.Duration) {
+// totals is the time of every statement traced, of the reads of the log among them, and the time
+// the mask lock was held.
+func (s *statementTimer) totals() (time.Duration, time.Duration, time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.all, s.readLogs
+	return s.all, s.readLogs, s.lockHeld
 }
 
 // seedRereadLog writes BenchmarkTheRulesReRead's log and the rows a fill of rules version 1 wrote

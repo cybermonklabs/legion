@@ -348,11 +348,20 @@ const askBodySQL = `(e.payload->>'question') || ' ' || ask_search_suffix(e.paylo
 // document.
 const readEventsQuery = eventsCandidatesSQL + eventsSizedSQL
 
-// rereadEventsQuery is readEventsQuery over the events of the types $7 alone, which a re-read
+// rereadLogTypes is the event types a re-read batch reads of the log, as the SQL list its
+// statement names (rereadEventsQuery): the types that change a post's text after the event that
+// wrote it (changeTypes), version 2's three among them. The partial index events_post_text_changes
+// (migration 20261121160853) holds the events of exactly these types, in id order, and the list is
+// written into the statement rather than bound, so even the generic plan a cached statement
+// settles on proves the index's predicate from it. TestTheReReadsLogReadUsesItsIndex holds the
+// list to changeTypes and to the migration's text, and the plan to the index.
+const rereadLogTypes = `'comment.deleted', 'comment.edited', 'message.deleted', 'message.edited'`
+
+// rereadEventsQuery is readEventsQuery over the events of rereadLogTypes alone, which a re-read
 // batch reads (filler.rereadBatch): the types that change a post's text, of which those a lower
-// stored rules version passed over are read again. No index reads the log by type, so the read
-// walks the log's ids above $1, testing each event's type, until it has $3 of them or meets $2.
-const rereadEventsQuery = eventsCandidatesSQL + ` and e.type = any($7::text[])` + eventsSizedSQL
+// stored rules version passed over are read again. It reads them through events_post_text_changes
+// from the id above $1, until it has $3 of them or meets $2.
+const rereadEventsQuery = eventsCandidatesSQL + ` and e.type in (` + rereadLogTypes + `)` + eventsSizedSQL
 
 // eventsCandidatesSQL and eventsSizedSQL are readEventsQuery up to its filter on the events and
 // after it.
@@ -667,11 +676,11 @@ func (f *filler) readEvents(ctx context.Context, tx pgx.Tx, cursor, safe int64) 
 	return f.readLog(ctx, tx, readEventsQuery, cursor, safe, f.rules.types, f.rules.askTypes)
 }
 
-// readLog reads events above after up to through with query, readEventsQuery or one of its
-// shapes (rereadEventsQuery), within the batch's bounds, counting the payloads of types, and any
-// arguments the query takes after its six.
-func (f *filler) readLog(ctx context.Context, tx pgx.Tx, query string, after, through int64, types, asks []string, more ...any) ([]event, int, error) {
-	rows, err := tx.Query(ctx, query, append([]any{after, through, f.maxEvents, f.maxBytes, types, asks}, more...)...)
+// readLog reads events above after up to through with query, readEventsQuery or its re-read's
+// shape (rereadEventsQuery), within the batch's bounds, counting the payloads of types and reading
+// the ask's body of asks.
+func (f *filler) readLog(ctx context.Context, tx pgx.Tx, query string, after, through int64, types, asks []string) ([]event, int, error) {
+	rows, err := tx.Query(ctx, query, after, through, f.maxEvents, f.maxBytes, types, asks)
 	if err != nil {
 		return nil, 0, fmt.Errorf("keyword fill: read the events after event %d: %w", after, err)
 	}
