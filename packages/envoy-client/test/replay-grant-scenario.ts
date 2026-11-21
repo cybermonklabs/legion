@@ -65,19 +65,39 @@ export async function runReplayGrantScenario(scenario: ReplayGrantScenario): Pro
   }
   expect(JSON.parse(answer)).toMatchObject({ v: 1, session_id: sessionID });
 
+  // The control. The server never delivers a publish it refused, so its `Publish Violation` line is
+  // the evidence: subscribe, ask, then wait on that line, and only then read what arrived.
   const before = `${createInbox()}.1`;
-  expect(await askReplay(requester, sessionID, before, 1_500)).toBeUndefined();
+  const arrived: string[] = [];
+  const answers = requester.subscribe(before, {
+    callback: (_error, message) => arrived.push(message.string()),
+  });
+  await requester.flush();
+  requester.publish(
+    agentStreamControlSubject(sessionID),
+    new TextEncoder().encode(JSON.stringify({ v: 1, type: "replay" })),
+    { reply: before }
+  );
+  const refused = (log: string) =>
+    log
+      .split("\n")
+      .some((line) => line.includes("Publish Violation") && line.includes(`"${before}"`));
   let logged = "";
   const logDeadline = Date.now() + 10_000;
-  while (
-    !logged
-      .split("\n")
-      .some((line) => line.includes("Publish Violation") && line.includes(`"${before}"`))
-  ) {
-    if (Date.now() > logDeadline) {
-      throw new Error(`the server never logged a refused publish to ${before}:\n${logged}`);
+  try {
+    while (!refused(logged)) {
+      if (Date.now() > logDeadline) {
+        throw new Error(
+          `the server never logged a refused publish to ${before}; arrived there: ${JSON.stringify(arrived)}\n${logged}`
+        );
+      }
+      await Bun.sleep(100);
+      logged = await server.log();
     }
-    logged = await server.log();
+    await requester.flush();
+    expect(arrived).toEqual([]);
+  } finally {
+    answers.unsubscribe();
   }
 
   const again = await askReplay(requester, sessionID, own(), 5_000);

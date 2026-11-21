@@ -33,6 +33,12 @@ func replayHub(t *testing.T, sessions ...string) (string, *natsgo.Conn, map[stri
 		}
 		return strings.Join(quoted, ", ")
 	}
+	rules := func(allow, deny []string) string {
+		if len(deny) == 0 {
+			return fmt.Sprintf("{ allow: [%s] }", quote(allow))
+		}
+		return fmt.Sprintf("{ allow: [%s], deny: [%s] }", quote(allow), quote(deny))
+	}
 	seeds := map[string]string{}
 	entries := make([]string, 0, len(sessions))
 	for _, sessionID := range sessions {
@@ -42,8 +48,8 @@ func replayHub(t *testing.T, sessions ...string) (string, *natsgo.Conn, map[stri
 		if err != nil {
 			t.Fatalf("the grant of %s: %v", sessionID, err)
 		}
-		entries = append(entries, fmt.Sprintf("{ nkey: %q, permissions: { publish: { allow: [%s] }, subscribe: { allow: [%s] } } }",
-			public, quote(grant.Publish), quote(grant.Subscribe)))
+		entries = append(entries, fmt.Sprintf("{ nkey: %q, permissions: { publish: %s, subscribe: %s } }",
+			public, rules(grant.Publish, grant.PublishDeny), rules(grant.Subscribe, grant.SubscribeDeny)))
 	}
 	config := fmt.Sprintf(`authorization {
   users = [

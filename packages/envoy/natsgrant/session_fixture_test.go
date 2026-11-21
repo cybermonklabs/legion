@@ -27,11 +27,15 @@ const sessionFixturePath = "../../contracts/fixtures/session-grant.json"
 // session's id token by token, so it is one subject token and appears in no other token.
 const sessionFixtureID = "ses_fixture_placeholder"
 
-// sessionFixture is the fixture's shape: the id it was written for, then the grant.
+// sessionFixture is the fixture's shape: the id it was written for, then the grant, its deny lists
+// included. Session sets no deny entry today, so the encoder leaves both out (omitempty); one it
+// gains is written, and sessionGrantConfig renders it.
 type sessionFixture struct {
-	SessionID string   `json:"session_id"`
-	Publish   []string `json:"publish"`
-	Subscribe []string `json:"subscribe"`
+	SessionID     string   `json:"session_id"`
+	Publish       []string `json:"publish"`
+	Subscribe     []string `json:"subscribe"`
+	PublishDeny   []string `json:"publish_deny,omitempty"`
+	SubscribeDeny []string `json:"subscribe_deny,omitempty"`
 }
 
 // renderSessionFixture is the fixture's bytes: Go's encoder indenting by two spaces, with no HTML
@@ -54,7 +58,8 @@ func renderSessionFixture(t *testing.T, fixture sessionFixture) []byte {
 func TestTheSessionGrantFixtureIsNatsgrantSession(t *testing.T) {
 	grant, err := natsgrant.Session(sessionFixtureID)
 	require.NoError(t, err)
-	want := sessionFixture{SessionID: sessionFixtureID, Publish: grant.Publish, Subscribe: grant.Subscribe}
+	want := sessionFixture{SessionID: sessionFixtureID, Publish: grant.Publish, Subscribe: grant.Subscribe,
+		PublishDeny: grant.PublishDeny, SubscribeDeny: grant.SubscribeDeny}
 	rendered := renderSessionFixture(t, want)
 	if *updateSessionFixture {
 		require.NoError(t, os.WriteFile(sessionFixturePath, rendered, 0o644))

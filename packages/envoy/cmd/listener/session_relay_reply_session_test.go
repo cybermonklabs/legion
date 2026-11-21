@@ -43,8 +43,8 @@ func newSessionUser(t *testing.T, prefix string) *sessionUser {
 	return &sessionUser{id: prefix + id.New(), seed: seed, public: public}
 }
 
-// entry is the user's line of the server's authorization: natsgrant.Session's lists, as the auth
-// service answers them.
+// entry is the user's line of the server's authorization: natsgrant.Session's lists, deny lists
+// included, as the auth service answers them.
 func (s *sessionUser) entry() string {
 	grant, err := natsgrant.Session(s.id)
 	if err != nil {
@@ -57,8 +57,14 @@ func (s *sessionUser) entry() string {
 		}
 		return strings.Join(quoted, ", ")
 	}
-	return fmt.Sprintf("{ nkey: %q, permissions: { publish: { allow: [%s] }, subscribe: { allow: [%s] } } }",
-		s.public, quote(grant.Publish), quote(grant.Subscribe))
+	rules := func(allow, deny []string) string {
+		if len(deny) == 0 {
+			return fmt.Sprintf("{ allow: [%s] }", quote(allow))
+		}
+		return fmt.Sprintf("{ allow: [%s], deny: [%s] }", quote(allow), quote(deny))
+	}
+	return fmt.Sprintf("{ nkey: %q, permissions: { publish: %s, subscribe: %s } }",
+		s.public, rules(grant.Publish, grant.PublishDeny), rules(grant.Subscribe, grant.SubscribeDeny))
 }
 
 // connect connects to uri as the user and records every publish the server refuses it.

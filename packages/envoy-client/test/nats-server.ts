@@ -46,13 +46,24 @@ export function sessionGrantConfig(options: {
         )
       )
       .join(", ");
-  const publish = list(sessionGrantFixture.publish);
-  const subscribe = list(sessionGrantFixture.subscribe);
+  // The fixture writes a deny list only where natsgrant.Session sets one.
+  const fixture: {
+    readonly publish: readonly string[];
+    readonly subscribe: readonly string[];
+    readonly publish_deny?: readonly string[];
+    readonly subscribe_deny?: readonly string[];
+  } = sessionGrantFixture;
+  const rules = (allow: readonly string[], deny: readonly string[] | undefined) =>
+    deny === undefined || deny.length === 0
+      ? `{ allow: [${list(allow)}] }`
+      : `{ allow: [${list(allow)}], deny: [${list(deny)}] }`;
+  const publish = rules(fixture.publish, fixture.publish_deny);
+  const subscribe = rules(fixture.subscribe, fixture.subscribe_deny);
   return `jetstream {}
 authorization {
   users = [
     { nkey: ${JSON.stringify(requesterKey)} }
-    { nkey: ${JSON.stringify(sessionKey)}, permissions: { publish: { allow: [${publish}] }, subscribe: { allow: [${subscribe}] } } }
+    { nkey: ${JSON.stringify(sessionKey)}, permissions: { publish: ${publish}, subscribe: ${subscribe} } }
   ]
 }
 `;
