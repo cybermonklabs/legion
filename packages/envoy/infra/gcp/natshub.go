@@ -465,15 +465,20 @@ func seededInput(args *NatsHubArgs) (string, bool) {
 }
 
 // seedRefused refuses input, which holds an nkey user seed, naming it and not its value, as a
-// core.InputError naming the input: an entry of a list of strings, such as tags[0], by the list's
-// own name, as the hub's other refusals of such an entry name it, and a user's machine id by its
-// path, users[0].machineId, as core.CheckMachineID names it.
+// core.InputError naming seedInput(input).
 func seedRefused(input string) error {
-	name := input
-	if i := strings.LastIndexByte(input, '['); i >= 0 && strings.HasSuffix(input, "]") {
-		name = input[:i]
+	return core.InputErrorf(seedInput(input), "%s: an nkey user seed, which is never an input of the hub (not echoed)", input)
+}
+
+// seedInput is the input a seed refusal of path names, for both hubs: an entry of a list of
+// strings, such as tags[0], by the list's own name, as their other refusals of such an entry and
+// core.CheckAllowedHosts name it, and a user's machine id by its path, users[0].machineId, as
+// core.CheckMachineID names it.
+func seedInput(path string) string {
+	if i := strings.LastIndexByte(path, '['); i >= 0 && strings.HasSuffix(path, "]") {
+		return path[:i]
 	}
-	return core.InputErrorf(name, "%s: an nkey user seed, which is never an input of the hub (not echoed)", input)
+	return path
 }
 
 // calloutSeedFields are the paths and values of callout's fields, by the hub's own input name,

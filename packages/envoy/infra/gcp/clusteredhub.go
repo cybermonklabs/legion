@@ -396,7 +396,7 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 // refusal is a core.InputError naming the input, a seed in any plain string input first.
 func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, error) {
 	if input, ok := clusteredHubSeededInput(args); ok {
-		return clusteredHubSettings{}, core.InputErrorf(input, "%w", core.SeedRefusal(input))
+		return clusteredHubSettings{}, core.InputErrorf(seedInput(input), "%w", core.SeedRefusal(input))
 	}
 	if args.Kubeconfig == nil {
 		return clusteredHubSettings{}, core.InputErrorf("kubeconfig", "kubeconfig is required: the hub builds its own Kubernetes provider from it")
