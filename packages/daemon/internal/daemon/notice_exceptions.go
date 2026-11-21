@@ -314,7 +314,7 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reason, recipient string) error {
 	key := record.OutboxKey(reported.row)
 	issue, notice := reported.issue, reported.notice
-	topic := notify.RoleTopicPrefix + string(reported.architect)
+	topic := notify.RoleTopic(string(reported.architect))
 	held := r.supervisedClaim(reported.architect)
 	if !holdsRole(held) {
 		root, lingers, err := r.issueTree(ctx, issue)
@@ -484,9 +484,10 @@ type reportedNotice struct {
 
 // exceptionNotice reads the notice a report is about: a publish of this daemon's outbox (its
 // dedupe key names a row) to the role topic of an architect of this project, in either form of
-// the lane's name (the role alone, or this daemon's Dispatch project and then the role), whose
-// summary is the executor's own "<kind> on <issue>" for an issue of this project and whose payload
-// is that notice. ok is false for a report about anything else, a lane of another project
+// the lane's name (the role alone, or the project its role token names and then the role, the
+// lane notify.RoleTopic publishes the notice to, whatever this daemon's Dispatch project is),
+// whose summary is the executor's own "<kind> on <issue>" for an issue of this project and whose
+// payload is that notice. ok is false for a report about anything else, a lane of another project
 // among them.
 func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, bool) {
 	row, ok := record.ParseOutboxKey(exception.DedupeKey)
@@ -497,8 +498,8 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 	if !isRole {
 		return reportedNotice{}, false
 	}
-	project, token, legacy := subjectforms.CanonicalRole(lane)
-	if (!legacy && project != r.dispatchProject) || !strings.HasPrefix(token, "legion-"+r.project+"-") || !strings.HasSuffix(token, "-"+string(claim.RoleArchitect)) {
+	project, token, _ := subjectforms.CanonicalRole(lane)
+	if project != subjectforms.RoleProject(token) || !strings.HasPrefix(token, "legion-"+r.project+"-") || !strings.HasSuffix(token, "-"+string(claim.RoleArchitect)) {
 		return reportedNotice{}, false
 	}
 	var notice record.Notice

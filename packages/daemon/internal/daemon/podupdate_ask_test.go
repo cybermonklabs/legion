@@ -69,7 +69,7 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 				t.Fatalf("run the ask to the %s: %v", role, err)
 			}
 			token := mustClaimToken(t, "LEGION-208", role)
-			topic := notify.RoleTopicPrefix + string(token)
+			topic := notify.RoleTopic(string(token))
 			published := publisher.publishes()
 			if len(published) != 1 {
 				t.Fatalf("publishes = %#v, want the one ask", published)

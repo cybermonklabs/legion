@@ -538,7 +538,7 @@ func (r *mergeWaitReadableLive) stuckNotices(key string) []string {
 		t.Fatal(err)
 	}
 	var reasons []string
-	for _, published := range r.notices.acceptedOn(notify.RoleTopicPrefix + string(architect)) {
+	for _, published := range r.notices.acceptedOn(notify.RoleTopic(string(architect))) {
 		var payload struct {
 			Kind   string `json:"kind"`
 			Reason string `json:"reason"`
