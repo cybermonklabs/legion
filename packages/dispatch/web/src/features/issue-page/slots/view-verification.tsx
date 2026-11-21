@@ -129,11 +129,18 @@ export function useVerificationReads(issueKey: string): {
   return { checks, reads };
 }
 
-/** What the line of a read that failed is given: the press that asks that read alone again, and
- *  whether it runs again (`isFetching`), while which the line's Retry asks nothing more. */
+/** What the line of a read that failed is given: which refusal it says, the read's own count of
+ *  its refusals (`errorUpdateCount`), as the outline gives it (`outline-reads.ts`); the press
+ *  that asks that read alone again; and whether it runs again (`isFetching`), while which the
+ *  line's Retry asks nothing more. */
 function failedRead(read: {
+  readonly errorUpdateCount: number;
   readonly isFetching: boolean;
   readonly refetch: () => Promise<unknown>;
 }): FailedRead {
-  return { retry: () => void read.refetch(), retrying: read.isFetching };
+  return {
+    failure: read.errorUpdateCount,
+    retry: () => void read.refetch(),
+    retrying: read.isFetching,
+  };
 }

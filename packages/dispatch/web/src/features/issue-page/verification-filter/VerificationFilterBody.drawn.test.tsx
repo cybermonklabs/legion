@@ -1,7 +1,8 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
+  type RenderHookResult,
   type RenderResult,
   render,
   renderHook,
@@ -212,17 +213,35 @@ function holdKeys(): { held: string[]; stop: () => void } {
   return { held, stop: () => document.removeEventListener("keydown", hold) };
 }
 
-/** The reads named refused before they first answered, each by its name with its own Retry,
- *  which notes that read in `retried`, and none of them running again. The record holds them in
- *  the order named, which the body does not draw them by. */
+/** The reads named refused once before they first answered, each by its name with its own
+ *  Retry, which notes that read in `retried`, and none of them running again. The record holds
+ *  them in the order named, which the body does not draw them by. */
 function refusedReads(
   retried: VerificationRead[],
   ...reads: VerificationRead[]
 ): VerificationReads {
   const failed: Partial<Record<VerificationRead, FailedRead>> = {};
-  for (const read of reads) failed[read] = { retry: () => retried.push(read), retrying: false };
+  for (const read of reads) {
+    failed[read] = { failure: 1, retry: () => retried.push(read), retrying: false };
+  }
   return { failed, state: "failed" };
 }
+
+/** The coverage read's answer for an issue with nothing to cover: no statement and no gap. */
+const NO_COVERAGE: IssueCoverage = {
+  gaps: [],
+  has_plan: false,
+  issue: ISSUE_KEY,
+  requirements: [],
+  spec_artifact_id: "",
+};
+
+/** The results read's answer for an issue with no check, which needs no blocks read. */
+const NO_RESULTS: IssueCheckResults = {
+  checks: [],
+  issue: ISSUE_KEY,
+  verification_artifact_id: "",
+};
 
 /** A check's words with a link and a reference in them. */
 const LINKED_WORDS = "Read [the runbook](https://example.com/runbook) and dispatch://CORE-2 first.";
@@ -1485,6 +1504,41 @@ test("a read that fails before it first answers says so with a Retry, for each o
   }
 });
 
+// A screen reader reads a failed read's alert each time it is drawn. The line keys its alert by
+// the read's count of refusals (`FailedReadLine`'s `failure`), so each new refusal is said again,
+// and a run that pauses while the browser is offline, which ends the run with no new refusal,
+// does not say the failure again.
+test("a failed read's alert is drawn again for each refusal, and not when its run pauses with no new refusal", () => {
+  const met = passing("c-one");
+  const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
+  const retry = () => undefined;
+  /** The coverage read refused `failure` times, running again or not as `retrying` says. */
+  const refused = (failure: number, retrying: boolean): VerificationReads => ({
+    failed: { coverage: { failure, retry, retrying } },
+    state: "failed",
+  });
+  // One client for every drawing, as the page keeps one while its reads answer again.
+  const client = testClient();
+  const view = render(bodyOf(statements, [met], { reads: refused(1, true) }, client));
+  /** The alert on the coverage read's line. */
+  const alert = () =>
+    view.container.querySelector('[data-verification-unreadable="coverage"] [role="alert"]');
+  try {
+    const first = alert();
+    expect(first, "the refused coverage read's line drew no alert").not.toBeNull();
+    // Its run paused while the browser is offline: it runs no more, and was refused no more.
+    view.rerender(bodyOf(statements, [met], { reads: refused(1, false) }, client));
+    expect(alert(), "a run that paused with no new refusal drew the line's alert again").toBe(
+      first
+    );
+    // Refused again.
+    view.rerender(bodyOf(statements, [met], { reads: refused(2, false) }, client));
+    expect(alert(), "a new refusal left the line's old alert in place").not.toBe(first);
+  } finally {
+    view.unmount();
+  }
+});
+
 // A press by the keyboard never leaves the focus on the page's body. The body is handed its reads
 // by hand here, so each step is a line that leaves the page, with the focus on its Retry, as its
 // read stops reading as refused, and the stage the page draws the view in (`ViewStage`) keeps the
@@ -1680,14 +1734,15 @@ test("with a read refused, the view's tree gives its focus to that read's Retry"
     refused.unmount();
   }
 
-  // A tree with rows, focused as a click on the table's headings focuses it, keeps the focus,
-  // since only rows that come where the tree drew none take it.
   const client = testClient();
   const drawn = render(bodyOf(statements, [met], { staged: true }, client));
   try {
     const tree = drawn.container.querySelector<HTMLElement>('[role="tree"]');
     act(() => tree?.focus());
-    expect(document.activeElement).toBe(tree);
+    expect(
+      document.activeElement,
+      "a tree with rows gave the focus a click on its headings gave it to a row"
+    ).toBe(tree);
   } finally {
     drawn.unmount();
   }
@@ -1702,19 +1757,13 @@ test("the view's own reads of the coverage and the results send no request when 
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
-  const coverage: IssueCoverage = {
-    gaps: [],
-    has_plan: false,
-    issue: ISSUE_KEY,
-    requirements: [],
-    spec_artifact_id: "",
-  };
-  const results: IssueCheckResults = { checks: [], issue: ISSUE_KEY, verification_artifact_id: "" };
   const answeredAt = Date.now() - 31_000;
-  client.setQueryData(issueCoverageQuery(ISSUE_KEY).queryKey, coverage, { updatedAt: answeredAt });
-  client.setQueryData(issueResultsQuery(ISSUE_KEY).queryKey, results, { updatedAt: answeredAt });
-  const coverageRead = spyOn(api, "getIssueCoverage").mockResolvedValue(coverage);
-  const resultsRead = spyOn(api, "getIssueResults").mockResolvedValue(results);
+  client.setQueryData(issueCoverageQuery(ISSUE_KEY).queryKey, NO_COVERAGE, {
+    updatedAt: answeredAt,
+  });
+  client.setQueryData(issueResultsQuery(ISSUE_KEY).queryKey, NO_RESULTS, { updatedAt: answeredAt });
+  const coverageRead = spyOn(api, "getIssueCoverage").mockResolvedValue(NO_COVERAGE);
+  const resultsRead = spyOn(api, "getIssueResults").mockResolvedValue(NO_RESULTS);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
@@ -1745,19 +1794,11 @@ async function retried(
   refused: "coverage" | "results"
 ): Promise<{ asked: Record<VerificationRead, number>; reads: VerificationReads }> {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const coverage: IssueCoverage = {
-    gaps: [],
-    has_plan: false,
-    issue: ISSUE_KEY,
-    requirements: [],
-    spec_artifact_id: "",
-  };
-  const results: IssueCheckResults = { checks: [], issue: ISSUE_KEY, verification_artifact_id: "" };
   const blocksRead = spyOn(api, "getArtifactBlocks").mockRejectedValue(
     new Error("The blocks read was asked.")
   );
-  const coverageRead = spyOn(api, "getIssueCoverage").mockResolvedValue(coverage);
-  const resultsRead = spyOn(api, "getIssueResults").mockResolvedValue(results);
+  const coverageRead = spyOn(api, "getIssueCoverage").mockResolvedValue(NO_COVERAGE);
+  const resultsRead = spyOn(api, "getIssueResults").mockResolvedValue(NO_RESULTS);
   if (refused === "coverage") coverageRead.mockRejectedValueOnce(new Error("Refused."));
   else resultsRead.mockRejectedValueOnce(new Error("Refused."));
   const wrapper = ({ children }: { children: ReactNode }) => (
@@ -1812,36 +1853,66 @@ test("the Retry of a refused results read asks the results read again and no oth
   expect(reads).toEqual({ state: "answered" });
 });
 
+/** The view's reads as `refusedCoverage` mounts them, its coverage read refused once. */
+interface RefusedCoverage {
+  /** The coverage read's spy: refused once, then answering `NO_COVERAGE`, unless a case queues
+   *  another answer on it, which its next request takes. */
+  readonly coverageRead: Mock<typeof api.getIssueCoverage>;
+  /** The hook mounted, of which the cases read how the reads stand. */
+  readonly hook: RenderHookResult<{ readonly reads: VerificationReads }, unknown>;
+  /** Unmounts the hook, restores both spies and clears the client. */
+  readonly restore: () => void;
+}
+
+/**
+ * The view's reads (`useVerificationReads`) over a client of their own that asks no read again
+ * by itself, over an issue with no check, once the coverage read was refused the first time it
+ * was asked and reads as failed; the results read answers. A case that needs the coverage read's
+ * next request to answer otherwise queues that answer on `coverageRead` before it asks again: the
+ * spy's queued answers run in order, so one queued after the refusal is the next request's.
+ */
+async function refusedCoverage(): Promise<RefusedCoverage> {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const coverageRead = spyOn(api, "getIssueCoverage").mockResolvedValue(NO_COVERAGE);
+  coverageRead.mockRejectedValueOnce(new Error("Refused."));
+  const resultsRead = spyOn(api, "getIssueResults").mockResolvedValue(NO_RESULTS);
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const hook = renderHook(() => useVerificationReads(ISSUE_KEY), { wrapper });
+  const restore = () => {
+    hook.unmount();
+    coverageRead.mockRestore();
+    resultsRead.mockRestore();
+    client.clear();
+  };
+  try {
+    await waitFor(() => expect(hook.result.current.reads.state).toBe("failed"));
+  } catch (error) {
+    restore();
+    throw error;
+  }
+  return { coverageRead, hook, restore };
+}
+
 // TanStack Query puts a read that holds no answer back to `pending` while it runs again, so a
 // read refused before it first answered, asked again, would read as out rather than failed and
 // take its line, with the Retry the reader's focus may be on, off the page until it answered or
 // was refused again. It still reads as failed while the new request is out, its Retry running,
 // and leaves the failed state once it answers.
 test("a refused read asked again reads as failed, with its Retry running, while the new request is out, and as answered once it answers", async () => {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const coverage: IssueCoverage = {
-    gaps: [],
-    has_plan: false,
-    issue: ISSUE_KEY,
-    requirements: [],
-    spec_artifact_id: "",
-  };
-  const results: IssueCheckResults = { checks: [], issue: ISSUE_KEY, verification_artifact_id: "" };
-  // The coverage read's request after its refusal, which answers when the case says.
-  const again = Promise.withResolvers<IssueCoverage>();
-  const coverageRead = spyOn(api, "getIssueCoverage").mockResolvedValue(coverage);
-  coverageRead.mockRejectedValueOnce(new Error("Refused.")).mockReturnValueOnce(again.promise);
-  const resultsRead = spyOn(api, "getIssueResults").mockResolvedValue(results);
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  );
-  const hook = renderHook(() => useVerificationReads(ISSUE_KEY), { wrapper });
+  const { coverageRead, hook, restore } = await refusedCoverage();
   try {
-    await waitFor(() => expect(hook.result.current.reads.state).toBe("failed"));
     const refused = hook.result.current.reads;
     expect(refused, "the refused coverage read does not read as failed, its Retry at rest").toEqual(
-      { failed: { coverage: { retry: expect.any(Function), retrying: false } }, state: "failed" }
+      {
+        failed: { coverage: { failure: 1, retry: expect.any(Function), retrying: false } },
+        state: "failed",
+      }
     );
+    // The coverage read's request after its refusal, which answers when the case says.
+    const again = Promise.withResolvers<IssueCoverage>();
+    coverageRead.mockReturnValueOnce(again.promise);
     act(() => (refused.state === "failed" ? refused.failed.coverage?.retry() : undefined));
     await waitFor(() => expect(coverageRead).toHaveBeenCalledTimes(2));
     await waitFor(() =>
@@ -1849,12 +1920,12 @@ test("a refused read asked again reads as failed, with its Retry running, while 
         hook.result.current.reads,
         "the coverage read asked again does not read as failed, its Retry running, while its request is out"
       ).toEqual({
-        failed: { coverage: { retry: expect.any(Function), retrying: true } },
+        failed: { coverage: { failure: 1, retry: expect.any(Function), retrying: true } },
         state: "failed",
       })
     );
     await act(async () => {
-      again.resolve(coverage);
+      again.resolve(NO_COVERAGE);
       await again.promise;
     });
     await waitFor(() =>
@@ -1864,10 +1935,7 @@ test("a refused read asked again reads as failed, with its Retry running, while 
       ).toEqual({ state: "answered" })
     );
   } finally {
-    hook.unmount();
-    coverageRead.mockRestore();
-    resultsRead.mockRestore();
-    client.clear();
+    restore();
   }
 });
 
@@ -1878,24 +1946,8 @@ test("a refused read asked again reads as failed, with its Retry running, while 
 // nothing while the browser is offline, and reads as answered once the browser is back and the
 // read answers.
 test("a refused read asked again while the browser is offline still reads as failed, and as answered once the browser is back and the read answers", async () => {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const coverage: IssueCoverage = {
-    gaps: [],
-    has_plan: false,
-    issue: ISSUE_KEY,
-    requirements: [],
-    spec_artifact_id: "",
-  };
-  const results: IssueCheckResults = { checks: [], issue: ISSUE_KEY, verification_artifact_id: "" };
-  const coverageRead = spyOn(api, "getIssueCoverage").mockResolvedValue(coverage);
-  coverageRead.mockRejectedValueOnce(new Error("Refused."));
-  const resultsRead = spyOn(api, "getIssueResults").mockResolvedValue(results);
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  );
-  const hook = renderHook(() => useVerificationReads(ISSUE_KEY), { wrapper });
+  const { coverageRead, hook, restore } = await refusedCoverage();
   try {
-    await waitFor(() => expect(hook.result.current.reads.state).toBe("failed"));
     const refused = hook.result.current.reads;
     act(() => onlineManager.setOnline(false));
     act(() => (refused.state === "failed" ? refused.failed.coverage?.retry() : undefined));
@@ -1904,7 +1956,7 @@ test("a refused read asked again while the browser is offline still reads as fai
       hook.result.current.reads,
       "the coverage read asked again while the browser is offline does not still read as failed"
     ).toEqual({
-      failed: { coverage: { retry: expect.any(Function), retrying: false } },
+      failed: { coverage: { failure: 1, retry: expect.any(Function), retrying: false } },
       state: "failed",
     });
     expect(
@@ -1920,10 +1972,7 @@ test("a refused read asked again while the browser is offline still reads as fai
     );
   } finally {
     onlineManager.setOnline(true);
-    hook.unmount();
-    coverageRead.mockRestore();
-    resultsRead.mockRestore();
-    client.clear();
+    restore();
   }
 });
 

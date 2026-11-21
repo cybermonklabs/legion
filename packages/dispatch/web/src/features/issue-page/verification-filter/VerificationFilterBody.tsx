@@ -87,10 +87,13 @@ export type VerificationReads =
       readonly failed: Partial<Record<VerificationRead, FailedRead>>;
     };
 
-/** A read that failed before it first answered, as its line takes it (`FailedReadLine`): the
- *  press that asks that read alone again, and whether it runs again, while which a press asks
- *  nothing more. */
+/** A read that failed before it first answered, as its line takes it (`FailedReadLine`): which
+ *  refusal the line says, the read's `errorUpdateCount`, which keys the line's alert so it is
+ *  announced once for each refusal and not again when a run pauses (`FailedReadLine`'s
+ *  `failure`); the press that asks that read alone again; and whether it runs again, while which
+ *  a press asks nothing more. */
 export interface FailedRead {
+  readonly failure: number;
   readonly retry: () => void;
   readonly retrying: boolean;
 }
@@ -347,6 +350,7 @@ export function VerificationFilterBody({
         return line === undefined ? null : (
           <div data-verification-unreadable={read} key={read}>
             <FailedReadLine
+              failure={line.failure}
               message={UNREADABLE_LINES[read]}
               onRetry={line.retry}
               retrying={line.retrying}
