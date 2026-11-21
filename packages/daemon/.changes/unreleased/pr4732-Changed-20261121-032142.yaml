@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  Each role prompt says when to ask the `codegraph` tool, with a `write` to `xd://codegraph`: the
+  architects before the spec names what a change touches, the planner before a task names its files
+  and tests, the implementer before it changes a symbol, the tester before it judges the
+  implementer's tests, and the reviewer for each changed exported symbol (`impact`, `callers`,
+  `affected`, `explore`). An empty or failed answer means grep. A role asks `status` why, runs
+  `init` only when two answers apart say the workspace is not initialized, and runs no other index
+  action, since `status` reports an index the pod's warm-up is still building as broken. A role on
+  Claude Code runs the `codegraph` command instead. The reviewer's earlier call,
+  `codegraph({ action: … })`, is gone.
+time: 2026-11-21T03:21:42Z
+custom:
+    Issue: pr4732

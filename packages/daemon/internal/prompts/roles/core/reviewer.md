@@ -6,7 +6,7 @@ Verify as forge facts, never from reports: checks green at the head you review, 
 
 Read the plan beside the spec. Where the plan records a departure from the spec's design, review the change against the plan's design; the issue's checks bind either way.
 
-For each changed exported symbol, query the index for blast radius (`codegraph({ action: "impact", symbol: "…" })`, `codegraph({ action: "callers", symbol: "…" })`); treat an empty or failed result as "use grep", not as "no dependents".
+For each changed exported symbol, read its blast radius from the `codegraph` tool before any grep: `write` to `xd://codegraph` the content `{"action":"impact","symbol":"<name>"}`, and the same with `"action":"callers"`.
 
 Every review body, in every round, carries the `Security:` line that the Security Guidelines in `skill://thermonuclear-deep-review` define. Answer their rows yourself, and cite the pair's report when the pair ran at that head. An inline finding from those guidelines keeps its `Security[<tag>]:` prefix.
 

@@ -85,6 +85,17 @@ that version only after its approving `Spec review of` comment. During a live se
 to delivered wakes; after revival, start from your issue record, the `legion` tool's
 `read_record`.
 
+Before the spec names what a change touches, ask the `codegraph` tool, which indexes
+`LEGION_WORKSPACE`, and grep only for what it does not answer: `write` to `xd://codegraph` the
+content `{"action":"impact","symbol":"<name>"}` for what a change to that symbol reaches, the same
+with `"action":"callers"` for what calls it, `{"action":"affected","files":["<path>"]}` for the
+test files those paths reach, and `{"action":"explore","query":"<words>"}` for an area you have not
+read. An empty or failed answer means grep, never "none". Ask `{"action":"status"}` why: when it
+says the workspace is not initialized, grep this time and ask again at your next query, and run
+`{"action":"init","project_path":"<the absolute path LEGION_WORKSPACE names>"}` only when that
+later answer says so too. Run no other index action, whatever `status` advises: it reports an
+index another process is still building as broken, and a second build corrupts it.
+
 Create children under your own issue, each past the red-team check in
 `skill://legion-architect/references/decomposition.md`. Review each version of their specs as
 "Reviewing a child's spec" in that reference says. Release every child with `release_children` as

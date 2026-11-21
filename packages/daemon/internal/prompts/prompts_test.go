@@ -844,6 +844,94 @@ func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
 	}
 }
 
+// codeGraphActions are the actions the `codegraph` tool takes: the action table of
+// @bopstack/pi-codegraph 0.1.1 (its src/descriptors.ts), the version
+// packages/daemon/docker/omp-plugins/package.json pins for the worker image. A prompt that names
+// another action sends its role to a call the tool refuses.
+var codeGraphActions = []string{
+	"help", "search", "explore", "node", "callers", "callees", "files", "status",
+	"impact", "affected", "init", "index", "sync", "unlock",
+}
+
+// Every role that reads code to decide something is told when to ask the `codegraph` tool, at the
+// step where it decides: the architects before the spec names what a change touches, the planner
+// before a task names its files and tests, the implementer before it changes a symbol, the tester
+// before it judges the implementer's tests, and the reviewer for each changed exported symbol.
+// Each composed prompt gives the call's shape once, so a step dropped from Compose or copied into a
+// second part of the same prompt fails here, and the rule for an empty answer and a missing index
+// once: a role that took `status`'s advice would start a second build beside the pod's own
+// warm-up, which `status` reports as broken while it runs. Every action a composed prompt names is
+// one the tool takes. The merger reads no code and the controller works no checkout, so neither is
+// told, and a role on Claude Code, which has no such tool, is told the command instead. This shows
+// the text is loaded, never that a role follows it.
+func TestEachRoleIsToldWhenToAskCodeGraph(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const (
+		callShape = "`write` to `xd://codegraph` the content `{\"action\":"
+		laterInit = "only when that later answer says so too"
+		noRebuild = "Run no other index action, whatever `status` advises"
+	)
+	action := regexp.MustCompile(`"action":"([^"]*)"`)
+	for _, tc := range []struct {
+		name   string
+		role   claim.Role
+		isRoot bool
+	}{
+		{"root architect", claim.RoleArchitect, true},
+		{"sub-architect", claim.RoleArchitect, false},
+		{"planner", claim.RolePlanner, false},
+		{"implementer", claim.RoleImplementer, false},
+		{"tester", claim.RoleTester, false},
+		{"reviewer", claim.RoleReviewer, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
+			for _, needle := range []string{callShape, laterInit, noRebuild} {
+				if n := strings.Count(text, needle); n != 1 {
+					t.Errorf("the composed %s prompt holds %q %d times, want once", tc.name, needle, n)
+				}
+			}
+			named := action.FindAllStringSubmatch(text, -1)
+			if len(named) == 0 {
+				t.Fatalf("the composed %s prompt names no `codegraph` action, so the check below would read nothing", tc.name)
+			}
+			for _, match := range named {
+				if !slices.Contains(codeGraphActions, match[1]) {
+					t.Errorf("the composed %s prompt names the action %q, which the `codegraph` tool does not take (%q)", tc.name, match[1], codeGraphActions)
+				}
+			}
+		})
+	}
+	if strings.Contains(composedText(t, composer, claim.RoleMerger, false), "xd://codegraph") {
+		t.Error("the composed merger prompt names `xd://codegraph`; the merger reads no code")
+	}
+	for _, headless := range []bool{true, false} {
+		paths, err := composer.ControllerPromptPaths(headless)
+		if err != nil {
+			t.Fatalf("ControllerPromptPaths(%t): %v", headless, err)
+		}
+		for _, path := range paths {
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			if strings.Contains(string(body), "xd://codegraph") {
+				t.Errorf("the controller's prompt part %s names `xd://codegraph`; the controller works no checkout", path)
+			}
+		}
+	}
+	claude, err := goParts.ReadFile("go/claude-mechanics.md")
+	if err != nil {
+		t.Fatalf("read go/claude-mechanics.md: %v", err)
+	}
+	if want := "`{\"action\":\"impact\",\"symbol\":\"<name>\"}` is `codegraph impact <name>`"; !strings.Contains(string(claude), want) {
+		t.Errorf("go/claude-mechanics.md does not say %q: a role on Claude Code has the `codegraph` command and no `codegraph` tool", want)
+	}
+}
+
 // bannedCheckLimits are limits of the last look that the production check's rule no longer has:
 // each keeps the last look's pending, or its close as not run, for a merge that production does
 // not carry. Each is joined from halves, as retiredCheckSentences are, so a search of the
