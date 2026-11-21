@@ -86,7 +86,8 @@ export interface StandIns {
   readonly window?: { readonly lastAnsweredAfter: number };
   /** How the public leg starts: the local command (default), or the workflow through `gh`, its
    *  other inputs those `OUTSIDE_WORKFLOW_INPUTS` holds (default the invite link alone), its
-   *  repository's visibility as `gh repo view` reads it (default PRIVATE; empty, unreadable). */
+   *  repository's visibility as `gh repo view` reads it (default PRIVATE; INTERNAL and PUBLIC as
+   *  GitHub names them; empty, unreadable). */
   readonly workflow?: { readonly inputs?: string; readonly visibility?: string };
   /** The read sweep beside the leg and on the runner: the writer's one line (default a write
    *  delivered inside the runner's window, in the `write <UTC> <comment id> <message id>

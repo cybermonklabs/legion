@@ -812,26 +812,33 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the workflow gets only the inputs its file declares, on stdin, the sweep's project among them, only in a private repository, and a refused dispatch holds the gate at once",
+      "the workflow gets only the inputs its file declares, on stdin, the sweep's project among them, only in a private or internal repository, and a refused dispatch holds the gate at once",
       async () => {
-        const [started, refused, inPublic, unread] = await runStandIns(
+        const [started, refused, inPublic, unread, internal] = await runStandIns(
           { ...passingControls, workflow: {} },
           { ...passingControls, workflow: { inputs: "edge_host=dispatch.edge.example" } },
           { ...passingControls, workflow: { visibility: "PUBLIC" } },
-          { ...passingControls, workflow: { visibility: "" } }
+          { ...passingControls, workflow: { visibility: "" } },
+          { ...passingControls, workflow: { visibility: "INTERNAL" } }
         );
         if (
           started === undefined ||
           refused === undefined ||
           inPublic === undefined ||
-          unread === undefined
+          unread === undefined ||
+          internal === undefined
         ) {
-          throw new Error("four runs, want four");
+          throw new Error("five runs, want five");
         }
-        // A repository that is not read as PRIVATE gets no run: its inputs would be as readable as
-        // it is. The control is the first run, in a PRIVATE one.
+        // An INTERNAL repository, which only the owning enterprise's members read, gets its run.
+        expect({ verdicts: verdictsOf(internal.stdout), stdout: internal.stdout }).toMatchObject({
+          verdicts: { T1: "PASS", public: "PASS" },
+        });
+        expect(existsSync(join(internal.state, "workflow-args"))).toBe(true);
+        // A repository read as neither PRIVATE nor INTERNAL gets no run: its inputs would be as
+        // readable as it is. The controls are the first run, in a PRIVATE one, and the one above.
         for (const [run, said] of [
-          [inPublic, "is PUBLIC, not PRIVATE"],
+          [inPublic, "is PUBLIC, not PRIVATE or INTERNAL"],
           [unread, "could not be read"],
         ] as const) {
           expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
@@ -872,8 +879,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         );
         expect(rowsOf(refused.stdout).get("T1")?.got).toContain("only the public leg approves");
       },
-      // The four runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+      // The five runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
     );
 
     test(

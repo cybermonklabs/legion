@@ -546,13 +546,15 @@ else
   problem=$(lacking OUTSIDE_WORKFLOW_REPO)
   [ -n "$problem" ] || problem=$(tool_problem gh)
   # A run's inputs (the project, the sweep's project and fills naming the proxy's repository) are
-  # as readable as its repository, so the workflow starts only in a private one.
+  # as readable as its repository, so the workflow starts only in a private or an internal one: an
+  # internal repository is readable by the owning enterprise's members alone, who can read those
+  # inputs already. A public one, or a visibility not read, starts no run.
   if [ -z "$problem" ]; then
     visibility=$(gh repo view "$OUTSIDE_WORKFLOW_REPO" --json visibility --jq .visibility 2>/dev/null </dev/null)
     case $visibility in
-      PRIVATE) ;;
+      PRIVATE | INTERNAL) ;;
       '') problem="the visibility of $OUTSIDE_WORKFLOW_REPO could not be read, and a run's inputs are as readable as its repository" ;;
-      *) problem="$OUTSIDE_WORKFLOW_REPO is $visibility, not PRIVATE, and a run's inputs are as readable as its repository" ;;
+      *) problem="$OUTSIDE_WORKFLOW_REPO is $visibility, not PRIVATE or INTERNAL, and a run's inputs are as readable as its repository" ;;
     esac
   fi
   if [ -n "$problem" ]; then

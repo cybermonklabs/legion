@@ -166,10 +166,11 @@ The tailnet leg does these steps, in this order:
    through the GitHub proxy, the workflow runs of one commit of the repository the fills name
    (the one only the sweep's project's issues resolve to, which the runner's proxy rows read), and
    must get 200 with a list of workflow runs.
-6. It starts the public leg, within the code's 15 minutes, and only in a repository `gh repo view`
-   reads as `PRIVATE`, since a run's inputs are as readable as its repository (else, or where the
-   visibility cannot be read, UNKNOWN and no run): `gh workflow run --json` of
-   `OUTSIDE_WORKFLOW` (default `outside-edge-e2e.yaml`) in `OUTSIDE_WORKFLOW_REPO`, its inputs
+6. It starts the public leg, within the code's 15 minutes, and only in a private or internal
+   repository (`gh repo view` reads `PRIVATE` or `INTERNAL`), since a run's inputs are as readable
+   as its repository and an internal one is readable by the owning enterprise's members alone; a
+   public repository, or a visibility not read, reads UNKNOWN and starts no run: `gh workflow run
+   --json` of `OUTSIDE_WORKFLOW` (default `outside-edge-e2e.yaml`) in `OUTSIDE_WORKFLOW_REPO`, its inputs
    `checks=all`, `project`, `peer_session`, `tailnet_user_code`, `sweep_project`, `sweep_fills`
    (the fills file, base64, when fills mode made one) and `OUTSIDE_WORKFLOW_INPUTS` on stdin. With
    `OUTSIDE_PUBLIC_COMMAND` set, it runs that command here instead, for a local stack. When the
