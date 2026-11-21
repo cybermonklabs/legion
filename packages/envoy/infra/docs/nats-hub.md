@@ -1164,6 +1164,39 @@ route without one. Measured on three local servers of nats-server 2.15.1, a thre
 written every 20 ms throughout, the `routes` reloads and then the `authorization` reloads, one
 server at a time 20 s apart, split no mesh and lost no acknowledged write.
 
+On a hub that also runs an `authCallout`, each server's accepted reload closes every connection the
+auth service admitted to that server, and each such client reconnects through the auth service. The
+auth service names each user in its answer, which nats-server keeps as the connection's username
+(nats-server 2.15.1 `server/auth_callout.go:325-334`). Every reload counts the `users` option as
+changed, whatever the file holds (`server/reload.go:1651-1654`, `:1706-1707`), and that option is
+an authorization change (`usersOption` embeds `authOption`, `server/reload.go:387-389`, `:308-310`),
+so each of the `routes` and `authorization` reloads runs `reloadAuthorization`
+(`server/reload.go:2067-2068`, `:2091-2092`), which finds no configured user of that name and
+closes the client (`server/reload.go:2413-2431`, closed at `:2350-2352`), with no log line for the
+close. The client then reconnects and the callout runs again. This closes every callout client, not
+only one the service would now refuse, and it happens on every accepted reload of a hub with a
+callout, a reload of an unchanged file and any account layout included (measured on nats-server
+2.15.1 with the hub's own render; a reload whose answer names no user keeps its clients, the
+control). A reload that changes the `auth_callout` block itself is refused instead (`config reload
+not supported for AuthCallout`). A reload reconnects a callout client even though it reconnects no
+static user whose configured entry is unchanged, because the callout, not the configuration, names
+the callout client's user.
+
+So each of the three stages costs every callout client on the hub at least one reconnect, and up to
+one for each of the three servers. Each server's reload closes only its own clients (nats-server
+2.15.1 `server/reload.go:2291-2299`), so on the three-server hub a client a reload closes can
+reconnect through the hub's client Service to a server that has not reloaded yet and be closed there
+too: up to one reconnect per server per reload, for any reload, not only these stages. This count is
+read from the nats-server source and the hub's three-server layout, not measured on three servers.
+`env` rolls the pods one at a time, which drops each pod's clients as it restarts it; `routes` and
+`authorization` are each one reload per server, when that server's reloader sees the new file. The
+auth service must be answering before each stage's reload or roll: a reconnecting client is admitted
+again only if the callout answers within the hub's budget (the authorization timeout, 2 s by
+default, within which the service answers in 1.5 s, above), so if the service is down when a stage
+lands, every callout session on the hub stays closed until it answers. The stage order does not
+change. A rollout that runs before the callout is turned on avoids the reloads' reconnects, since no
+callout connection exists yet; its `env` roll still reconnects every client, as any roll does.
+
 A reload closes only the routes the server accepted that now fail the credential check, never one
 it opened itself (`server/reload.go:2367-2376`, `route.go:2484-2530`). So a process that joined as
 a route during `env` or `routes` keeps the routes the hub's servers opened to it, and once
