@@ -821,12 +821,14 @@ func (s *server) projectState(w http.ResponseWriter, r *http.Request) (State, []
 	defer cancel()
 	var state State
 	var claims []supervise.Claim
-	// The step that failed names the log line: the begin or the commit (the default), the
-	// statement bound, or the state source.
-	failed := "api: state transaction failed"
+	// The step that failed names the log line, as each did before the read ran through
+	// store.TransactWith: the begin, until the body runs; the statement bound; the state source;
+	// and the commit, for a failure after a body that succeeded.
+	failed := "api: begin state transaction failed"
 	err := store.TransactWith(reading, s.stateTransactions, pgx.TxOptions{
 		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
 	}, func(ctx context.Context, tx pgx.Tx) error {
+		failed = "api: commit state transaction failed"
 		if _, err := tx.Exec(ctx, "set local statement_timeout = "+strconv.FormatInt(statementBound(s.stateBound), 10)); err != nil {
 			failed = "api: bound the state transaction's statements failed"
 			return err
