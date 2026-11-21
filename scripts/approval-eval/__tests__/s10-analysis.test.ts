@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { main } from "../analyze";
@@ -9,7 +9,8 @@ import type { CaseRow } from "../build-corpus";
 import type { DispatchEvent } from "../dispatch-read";
 import type { FinalTestTree } from "../draw-io";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
-import { ANALYSIS_FILE, RANKS_STATEMENT, type S10Analysis } from "../s10-analysis";
+import { RANKS_STATEMENT, type S10Analysis } from "../s10-analysis";
+import { ANALYSIS_FILE } from "../s10-analysis-io";
 import { INPUTS_VERSION, inventoryLinesOf } from "../s10-inputs-io";
 import {
   HOLD_VERDICT,
@@ -72,10 +73,19 @@ interface RequestSpec {
   answered?: Array<{ artifactId: string; version: number }>;
   /** A settlement of his before his first `ask.answered`: its verdict, and its version if not 2. */
   settled?: { verdict: Verdict; version?: number };
-  /** Whether an `ask.answered` of his that holds another user's answer comes first. */
+  /** Whether an `ask.edited` of the ask comes after its opening, the judged moment then. */
+  edited?: boolean;
+  /**
+   * Whether an `ask.answered` of his that holds another user's answer comes first, which the
+   * inputs stage makes a deviation with no judged moment.
+   */
   notOwnFirst?: boolean;
+  /** Whether an `ask.answered` of his own that the build holds no case of comes first. */
+  uncasedFirst?: boolean;
   /** The judges a fact-check hold's judgement records, where not none. */
   holdJudges?: number;
+  /** Whether a fact-check hold's outcome records five judges, though its judgement records none. */
+  holdJudgeRecords?: boolean;
   /** Whether the inputs stage made the request a deviation, whatever the judged stage holds. */
   lineDeviation?: boolean;
   /** The inputs stage's candidates dropped for a later event, where not one seen in the log. */
@@ -100,6 +110,15 @@ let server: { stop(closeActiveConnections?: boolean): void | Promise<void> } | u
 /** The event log of each claim written here, by its build's directory; and the one served now. */
 const logs = new Map<string, DispatchEvent[]>();
 let served: DispatchEvent[] = [];
+/**
+ * How many requests the stand-in Dispatch received, the status it fails each with, if any, and
+ * what it does before it answers one, if anything.
+ */
+const dispatch: {
+  requests: number;
+  failure: number | null;
+  hook: (() => Promise<void>) | null;
+} = { requests: 0, failure: null, hook: null };
 const before = {
   reserve: process.env[RESERVE_VARIABLE],
   claimRun: process.env[CLAIM_RUN_VARIABLE],
@@ -111,10 +130,16 @@ beforeAll(async () => {
   const started = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(request) {
+    async fetch(request) {
+      dispatch.requests += 1;
+      await dispatch.hook?.();
       const url = new URL(request.url);
       if (request.headers.get("authorization") !== `Bearer ${TOKEN}`) {
         return new Response("no bearer", { status: 401 });
+      }
+      if (dispatch.failure !== null) {
+        const status = dispatch.failure;
+        return Response.json({ code: "FAILED", error: "a test's failure" }, { status });
       }
       if (url.pathname !== "/api/v1/events/log") {
         return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
@@ -353,18 +378,19 @@ function judgedFiles(spec: RequestSpec, group: string, cases: number): Record<st
             }),
           }
         : null;
-  const judges = judged
-    ? answers.map((_, at) => ({
-        label: `judge ${spec.tail} ${at + 1}`,
-        transcript: `sessions/top/judge${at + 1}.jsonl`,
-        bundle: `/work/shadow/bundles/${askId}/judge-${at + 1}.md`,
-        agent: `judge${at + 1}`,
-        asked: "anthropic/claude-opus-5-5:xhigh",
-        served: null,
-        fallback: false,
-        toolCalls: [],
-      }))
-    : [];
+  const judges =
+    judged || spec.holdJudgeRecords === true
+      ? answers.map((_, at) => ({
+          label: `judge ${spec.tail} ${at + 1}`,
+          transcript: `sessions/top/judge${at + 1}.jsonl`,
+          bundle: `/work/shadow/bundles/${askId}/judge-${at + 1}.md`,
+          agent: `judge${at + 1}`,
+          asked: "anthropic/claude-opus-5-5:xhigh",
+          served: null,
+          fallback: false,
+          toolCalls: [],
+        }))
+      : [];
   const deviationKind = own.deviation as string | null;
   const outcome = {
     askId,
@@ -402,6 +428,11 @@ function judgedFiles(spec: RequestSpec, group: string, cases: number): Record<st
       files[`requests/${askId}/sandbox/sessions/top/judge${at}.jsonl`] = `{"judge": ${at}}\n`;
     }
     files[`requests/${askId}/calls.json`] = jsonText([]);
+    // The driver keeps the started.json of every request it judged.
+    files[`requests/${askId}/started.json`] = jsonText({
+      askId,
+      startedAt: "2026-11-21T00:00:00Z",
+    });
   }
   return files;
 }
@@ -429,8 +460,9 @@ function countsOf(rows: ReadonlyArray<Record<string, unknown>>): Record<string, 
 /**
  * A claim directory of `specs`, every stage chained to the one before it, with `questions` (each
  * a tree and a tail) as question cases of the eligible trees, and the log its build read: each
- * request's opening, then any settlement or answer of another user's its spec names, then each of
- * his answers its cases record.
+ * request's opening and any edit of it, then any settlement or first answer its spec names, then
+ * each of his answers its cases record. Each ready line of the inventory records its judged
+ * moment as the inputs stage would: the last opening or edit before his answer.
  */
 async function writeClaim(
   specs: readonly RequestSpec[],
@@ -450,22 +482,26 @@ async function writeClaim(
   const rows: CaseRow[] = [];
   const treeCases = new Map<string, string[]>();
   const casesOf = new Map<string, number>();
+  const moments = new Map<string, { eventId: number; type: string; createdAt: string }>();
   const session = { kind: "session", id: "session-1" };
   const person = { kind: "user", id: PERSON };
   for (const spec of specs) {
     const askId = ask(spec.tail);
     const document = `doc-${spec.tail}`;
-    events.push(
-      event(id++, "ask.opened", session, {
-        id: askId,
-        kind: "approval",
-        state: "open",
-        issue_key: `ACME-${spec.tail}`,
-        question: "Approve the spec?",
-        approval: { artifact_id: document, name: "spec.md", version: 2 },
-        created_at: timeOf(id),
-      })
-    );
+    const statement = {
+      id: askId,
+      kind: "approval",
+      state: "open",
+      issue_key: `ACME-${spec.tail}`,
+      question: "Approve the spec?",
+      approval: { artifact_id: document, name: "spec.md", version: 2 },
+      created_at: timeOf(id),
+    };
+    for (const type of spec.edited === true ? ["ask.opened", "ask.edited"] : ["ask.opened"]) {
+      const stated = event(id++, type, session, statement);
+      events.push(stated);
+      moments.set(askId, { eventId: stated.id, type, createdAt: stated.created_at });
+    }
     if (spec.settled !== undefined) {
       const type =
         spec.settled.verdict === "approve" ? "artifact.approved" : "artifact.changes_requested";
@@ -473,11 +509,12 @@ async function writeClaim(
         event(id++, type, person, { artifact_id: document, version: spec.settled.version ?? 2 })
       );
     }
-    if (spec.notOwnFirst === true) {
+    if (spec.notOwnFirst === true || spec.uncasedFirst === true) {
+      const user = spec.notOwnFirst === true ? OTHER : PERSON;
       events.push(
         event(id++, "ask.answered", person, {
           id: askId,
-          answer: { user: OTHER, selected: ["Approve"], at: timeOf(id) },
+          answer: { user, selected: ["Approve"], at: timeOf(id) },
         })
       );
     }
@@ -560,7 +597,9 @@ async function writeClaim(
   await writeAll(claim.draw, { "draw.json": drawText, "slices.json": slicesText });
   const ordered = [...specs].sort((one, other) => (ask(one.tail) < ask(other.tail) ? -1 : 1));
   const lines = ordered.map((spec) => {
-    const ready = spec.deviation !== "inputs" && spec.lineDeviation !== true;
+    // The inputs stage makes a request whose first answer is not his own a deviation of no moment.
+    const ready =
+      spec.deviation !== "inputs" && spec.lineDeviation !== true && spec.notOwnFirst !== true;
     // The inputs stage counts the candidates of a request it searched for: none of a fact hold's.
     const searched = ready && spec.outcome !== "hold";
     return {
@@ -568,7 +607,7 @@ async function writeClaim(
       issueKey: `ACME-${spec.tail}`,
       group: spec.tree,
       cases: casesOf.get(ask(spec.tail)),
-      judged: ready ? { eventId: 50, type: "ask.opened", createdAt: "2026-11-20T09:00:00Z" } : null,
+      judged: ready ? (moments.get(ask(spec.tail)) ?? null) : null,
       state: ready ? "ready" : "deviation",
       reason: ready ? null : "the log gives no title as of the moment",
       requestSha256: ready ? sha256(`request ${spec.tail}`) : null,
@@ -1138,6 +1177,21 @@ describe("the chain the analysis reads", () => {
     );
   });
 
+  test("refuses an inventory the inputs stage wrote and the judging did not read", async () => {
+    const claim = await writeClaim(SMALL);
+    const path = join(claim.judged, "s10-judged.json");
+    const record = JSON.parse(await readFile(path, "utf8"));
+    record.inputs.files["inventory.jsonl"] = "0".repeat(64);
+    await writeFile(path, jsonText(record), "utf8");
+    const refused = await run(argsOf(claim));
+    expect(refused.status).toBe(2);
+    expect(refused.errors).toContain(
+      `${join(claim.inputs, "inventory.jsonl")} is not the inventory the inputs stage wrote and ` +
+        "the judging read"
+    );
+    expect(refused.errors).toContain(`and ${"0".repeat(64)}`);
+  });
+
   test("makes an outcome of a request the inputs stage made a deviation, other than its own, an inputs deviation", async () => {
     const claim = await writeClaim([
       { tail: "h1", tree: "T1", chose: "Approve", outcome: "verdict", lineDeviation: true },
@@ -1178,8 +1232,9 @@ describe("the chain the analysis reads", () => {
     expect(refused.errors).toContain("its slices.json is");
   });
 
-  test("refuses a read the registration does not admit, and no read at all, naming no case", async () => {
+  test("refuses a read the registration does not admit, and no read at all, naming no case and asking Dispatch nothing", async () => {
     const claim = await writeClaim(SMALL);
+    dispatch.requests = 0;
     // Every case of the claim is one the reserve holds; a reader that met one under no read would
     // name it, and the refusal comes before any reader.
     const named = [ask("c1"), ask("c2"), "@2026-"];
@@ -1207,6 +1262,8 @@ describe("the chain the analysis reads", () => {
       process.env[CLAIM_RUN_VARIABLE] = unnamed;
     }
     expect(existsSync(join(claim.directory, "analysis"))).toBe(false);
+    // Nothing from Dispatch is read before the admission (`claimStartOf`).
+    expect(dispatch.requests).toBe(0);
   });
 
   test("refuses an inventory that names a request twice", async () => {
@@ -1269,12 +1326,15 @@ describe("the claim path's flags", () => {
 
 describe("his answer, by the first qualifying event (point 7)", () => {
   /**
-   * d1: S10 approves; a settlement of his requesting changes on the ask's document at its version
-   * comes before the ask.answered approving it, so his answer requests changes.
+   * d1: S10 approves; after an edit of the ask, the judged moment, a settlement of his requesting
+   * changes on the ask's document at its version comes before the ask.answered approving it, so
+   * his answer requests changes.
    * d2: a settlement at another version than the ask names qualifies for nothing, so his answer
    * is the ask.answered, requesting changes.
-   * d3: his first ask.answered holds another user's answer, so his answer holds no verdict.
+   * d3: his first ask.answered holds another user's answer, so his answer holds no verdict, and
+   * the inputs stage made the request a deviation.
    * d4: a settlement approving comes before an ask.answered requesting changes.
+   * d5: his first ask.answered is his own, and the build holds no case of it.
    */
   const SPECS: RequestSpec[] = [
     {
@@ -1282,6 +1342,7 @@ describe("his answer, by the first qualifying event (point 7)", () => {
       tree: "T1",
       chose: "Approve",
       outcome: "verdict",
+      edited: true,
       settled: { verdict: "request_changes" },
     },
     {
@@ -1291,7 +1352,14 @@ describe("his answer, by the first qualifying event (point 7)", () => {
       outcome: "verdict",
       settled: { verdict: "approve", version: 1 },
     },
-    { tail: "d3", tree: "T3", chose: "Approve", outcome: "verdict", notOwnFirst: true },
+    {
+      tail: "d3",
+      tree: "T3",
+      chose: "Approve",
+      outcome: "deviation",
+      deviation: "inputs",
+      notOwnFirst: true,
+    },
     {
       tail: "d4",
       tree: "T4",
@@ -1299,18 +1367,20 @@ describe("his answer, by the first qualifying event (point 7)", () => {
       outcome: "verdict",
       settled: { verdict: "approve" },
     },
+    { tail: "d5", tree: "T5", chose: "Approve", outcome: "verdict", uncasedFirst: true },
   ];
   let claim: Claim;
   let analysis: S10Analysis;
   const of = (tail: string) => analysis.requests.find((one) => one.askId === ask(tail));
-  const eventOf = (type: string, tail: string): number | undefined =>
+  // Every claim of SPECS writes the same log, so its events name the same ids in each.
+  const eventOf = (type: string, tail: string): DispatchEvent | undefined =>
     logs
       .get(claim.build)
       ?.find(
         (one) =>
           one.type === type &&
           (one.payload.artifact_id === `doc-${tail}` || one.payload.id === ask(tail))
-      )?.id;
+      );
 
   beforeAll(async () => {
     claim = await writeClaim(SPECS);
@@ -1320,7 +1390,7 @@ describe("his answer, by the first qualifying event (point 7)", () => {
   test("takes a settlement on the ask's document at its version, before his ask.answered", () => {
     const d1 = of("d1");
     expect(d1?.answer).toEqual({
-      eventId: eventOf("artifact.changes_requested", "d1") ?? -1,
+      eventId: eventOf("artifact.changes_requested", "d1")?.id ?? -1,
       type: "artifact.changes_requested",
       caseId: null,
       verdict: "request_changes",
@@ -1332,14 +1402,14 @@ describe("his answer, by the first qualifying event (point 7)", () => {
     expect(d1?.cases.length).toBe(1);
     const d4 = of("d4");
     expect(d4?.answer).toMatchObject({ type: "artifact.approved", verdict: "approve" });
-    expect(d4?.answer.eventId).toBe(eventOf("artifact.approved", "d4") ?? -1);
+    expect(d4?.answer.eventId).toBe(eventOf("artifact.approved", "d4")?.id ?? -1);
     expect(d4?.byRule.v6).toMatchObject({ status: "decided", disagrees: false });
   });
 
   test("takes no settlement at another version than the ask names", () => {
     const d2 = of("d2");
     expect(d2?.answer).toMatchObject({
-      eventId: eventOf("ask.answered", "d2") ?? -1,
+      eventId: eventOf("ask.answered", "d2")?.id ?? -1,
       type: "ask.answered",
       verdict: "request_changes",
       problem: null,
@@ -1348,19 +1418,98 @@ describe("his answer, by the first qualifying event (point 7)", () => {
     expect(d2?.byRule.v6.disagrees).toBe(true);
   });
 
-  test("makes a request whose first answer is not his own a deviation", () => {
+  test("keeps a first answer not his own the inputs stage's deviation, and makes one of no case an answer deviation", () => {
     const d3 = of("d3");
     expect(d3?.answer.problem).toContain("is not his own, so it holds no verdict");
+    const d5 = of("d5");
+    expect(d5?.answer.problem).toBe(
+      "the build holds no case of his first answer to the ask, event " +
+        `${eventOf("ask.answered", "d5")?.id ?? -1}`
+    );
     for (const version of RULE_VERSIONS) {
-      expect(d3?.byRule[version].deviation).toEqual({ kind: "answer", foundBy: "analysis" });
+      expect(d3?.byRule[version].deviation).toEqual({ kind: "inputs", foundBy: "stage" });
+      expect(d5?.byRule[version].deviation).toEqual({ kind: "answer", foundBy: "analysis" });
     }
-    expect(analysis.measure).toMatchObject({ n: 4, disagreeing: 3 });
+    expect(analysis.measure).toMatchObject({ n: 5, disagreeing: 4 });
     expect(analysis.sendBack).toMatchObject({
       caught: 0,
       missed: 2,
       cleared: 1,
-      falseSendBacks: 1,
+      falseSendBacks: 2,
     });
+  });
+
+  test("refuses a line whose judged moment is not the statement before his own answer the log places", async () => {
+    const settled = eventOf("artifact.changes_requested", "d1");
+    const edit = eventOf("ask.edited", "d1");
+    const opened = eventOf("ask.opened", "d1");
+    const moment = (event: DispatchEvent | undefined): string =>
+      `event ${event?.id} (${event?.type}, ${event?.created_at})`;
+    // d1's line names his settlement's event, not the edit before it, as its judged moment.
+    const named = await writeClaim(SPECS, [], {
+      lines: (lines) =>
+        lines.map((line) =>
+          line.askId === ask("d1")
+            ? {
+                ...line,
+                judged: { eventId: settled?.id, type: "ask.edited", createdAt: edit?.created_at },
+              }
+            : line
+        ),
+    });
+    const atSettlement = await run(argsOf(named));
+    expect(atSettlement.status).toBe(2);
+    expect(atSettlement.errors).toContain(
+      `records the judged moment of ${ask("d1")} as event ${settled?.id} (ask.edited, ` +
+        `${edit?.created_at}), and the log through the build's pin places his answer, event ` +
+        `${settled?.id} (artifact.changes_requested), after ${moment(edit)}: it is not the log ` +
+        "the inputs stage read"
+    );
+    expect(existsSync(join(named.directory, "analysis"))).toBe(false);
+    // A log of as many events, d1's edit another event in it, places the settlement after the
+    // opening, where the line names the edit.
+    const swapped = await writeClaim(SPECS);
+    logs.set(
+      swapped.build,
+      (logs.get(swapped.build) ?? []).map((one) =>
+        one.id === edit?.id
+          ? { ...one, type: "issue.commented", payload: { body: "A note." } }
+          : one
+      )
+    );
+    const otherLog = await run(argsOf(swapped));
+    expect(otherLog.status).toBe(2);
+    expect(otherLog.errors).toContain(
+      `records the judged moment of ${ask("d1")} as ${moment(edit)}, and the log through the ` +
+        `build's pin places his answer, event ${settled?.id} (artifact.changes_requested), after ` +
+        `${moment(opened)}: it is not the log the inputs stage read`
+    );
+    // d3's line made ready at its opening, where the log places an answer not his own.
+    const d3Opened = eventOf("ask.opened", "d3");
+    const notOwn = await writeClaim(SPECS, [], {
+      lines: (lines) =>
+        lines.map((line) =>
+          line.askId === ask("d3")
+            ? {
+                ...line,
+                state: "ready",
+                reason: null,
+                requestSha256: sha256("request d3"),
+                judged: {
+                  eventId: d3Opened?.id,
+                  type: "ask.opened",
+                  createdAt: d3Opened?.created_at,
+                },
+              }
+            : line
+        ),
+    });
+    const notHis = await run(argsOf(notOwn));
+    expect(notHis.status).toBe(2);
+    expect(notHis.errors).toContain(
+      `places his answer, event ${eventOf("ask.answered", "d3")?.id} (ask.answered, not his ` +
+        `own), after ${moment(d3Opened)}: it is not the log the inputs stage read`
+    );
   });
 
   test("refuses a log that is not the one the build read", async () => {
@@ -1369,6 +1518,120 @@ describe("his answer, by the first qualifying event (point 7)", () => {
     const refused = await run(argsOf(other));
     expect(refused.status).toBe(2);
     expect(refused.errors).toContain("it is not the log the build read");
+  });
+});
+
+describe("the walk of Dispatch's log through the build's pin", () => {
+  const SPECS: RequestSpec[] = [
+    { tail: "w1", tree: "T1", chose: "Approve", outcome: "verdict" },
+    { tail: "w2", tree: "T2", chose: "Request changes", outcome: "verdict" },
+  ];
+
+  test("reads no event after the pin: a log served past it gives the record byte for byte", async () => {
+    const claim = await writeClaim(SPECS);
+    const plain = await analysed(claim);
+    const log = logs.get(claim.build) ?? [];
+    const pin = log.length;
+    expect(plain.chain.log).toEqual({ throughEventId: pin, eventsRead: pin });
+    // After the pin: his settlement of w2's document at its version, and another answer of his to
+    // w1. A walk that read on would read more events than the build did, and be refused.
+    const person = { kind: "user", id: PERSON };
+    logs.set(claim.build, [
+      ...log,
+      event(pin + 1, "artifact.approved", person, { artifact_id: "doc-w2", version: 2 }),
+      event(pin + 2, "ask.answered", person, {
+        id: ask("w1"),
+        answer: { user: PERSON, selected: ["Request changes"], at: timeOf(pin + 2) },
+      }),
+    ]);
+    const after = join(claim.directory, "analysis-after-pin");
+    const again = await run(argsOf(claim, after));
+    expect(again.status).toBe(0);
+    expect(await readFile(join(after, ANALYSIS_FILE), "utf8")).toBe(
+      await readFile(join(claim.directory, "analysis", ANALYSIS_FILE), "utf8")
+    );
+  });
+
+  test("refuses a walk Dispatch refuses, and one whose server is not named, writing nothing", async () => {
+    const claim = await writeClaim(SPECS);
+    dispatch.failure = 403;
+    try {
+      const refused = await run(argsOf(claim));
+      expect(refused.status).toBe(2);
+      expect(refused.errors).toContain(
+        "DispatchRefusedError: GET /api/v1/events/log?after=0&limit=1000: 403"
+      );
+    } finally {
+      dispatch.failure = null;
+    }
+    const url = process.env.DISPATCH_URL;
+    delete process.env.DISPATCH_URL;
+    try {
+      // DISPATCH_URL is in the digest: a run without it is admitted only by a read of its own.
+      const unnamed = await runDigestOf({ argv: process.argv, env: process.env }, root);
+      const refused = await run(argsOf(claim), {
+        reads: [{ reference: REFERENCE, run: unnamed }],
+        ended: null,
+      });
+      expect(refused.status).toBe(2);
+      expect(refused.errors).toContain(
+        "DispatchConfigError: DISPATCH_URL names the Dispatch server, and it is not set"
+      );
+    } finally {
+      process.env.DISPATCH_URL = url;
+    }
+    expect(existsSync(join(claim.directory, "analysis"))).toBe(false);
+  });
+
+  // The read waits 1, 2, 4 and 8 seconds between its five tries, so this case takes 15 seconds.
+  test("refuses a walk Dispatch fails past its retries, writing nothing", async () => {
+    const claim = await writeClaim(SPECS);
+    dispatch.failure = 503;
+    try {
+      const refused = await run(argsOf(claim));
+      expect(refused.status).toBe(2);
+      expect(refused.errors).toContain(
+        "DispatchUnreachableError: GET /api/v1/events/log?after=0&limit=1000: 5 tries, last " +
+          "failure 503"
+      );
+    } finally {
+      dispatch.failure = null;
+    }
+    expect(existsSync(join(claim.directory, "analysis"))).toBe(false);
+  }, 30_000);
+
+  test("refuses a run whose digest changes while it reads, or can no longer be taken, writing nothing", async () => {
+    const claim = await writeClaim(SPECS);
+    const file = join(root, "scripts/approval-eval/analyze.ts");
+    const link = join(root, "scripts/approval-eval/linked.ts");
+    // A file of the bundle changed while the log is walked: the record would name another run.
+    dispatch.hook = () => writeFile(file, "the analysis, changed\n", "utf8");
+    try {
+      const changed = await run(argsOf(claim));
+      expect(changed.status).toBe(2);
+      expect(changed.errors).toContain(
+        "changed while the analysis ran, so no registration names this run"
+      );
+    } finally {
+      dispatch.hook = null;
+      await writeFile(file, "the analysis\n", "utf8");
+    }
+    // A link in the bundle, which no digest covers, refused as the stage's own refusal.
+    dispatch.hook = async () => {
+      if (!existsSync(link)) await symlink(file, link);
+    };
+    try {
+      const unreadable = await run(argsOf(claim));
+      expect(unreadable.status).toBe(2);
+      expect(unreadable.errors).toContain(
+        "this run's digest cannot be taken: scripts/approval-eval/linked.ts is not a regular " +
+          "file or directory"
+      );
+    } finally {
+      dispatch.hook = null;
+      await rm(link, { force: true });
+    }
+    expect(existsSync(join(claim.directory, "analysis"))).toBe(false);
   });
 });
 
@@ -1392,7 +1655,7 @@ describe("the judged stage's kept evidence", () => {
     expect(analysis.requests[0]?.lostEvidence).toEqual([]);
   });
 
-  test("makes a lost transcript, changed answers or a changed bundle the request's deviation", async () => {
+  test("makes a lost transcript, changed answers, a changed bundle or a lost started.json the request's deviation", async () => {
     const cases: Array<[string, (judged: string) => Promise<void>, string, string]> = [
       [
         "transcript",
@@ -1412,6 +1675,8 @@ describe("the judged stage's kept evidence", () => {
         "judge-3.md",
         "is not the file the stage record names",
       ],
+      // Its judging finished, and its evidence is whole but for the file that it started.
+      ["sandbox", (judged) => rm(join(judged, E1, "started.json")), "started.json", "is not there"],
     ];
     for (const [kind, change, file, problem] of cases) {
       const analysis = await changed(change);
@@ -1467,28 +1732,54 @@ describe("the judged stage's kept evidence", () => {
       await writeFile(join(judged, name), text, "utf8");
       record.files[name] = sha256(text);
     }
+    const askId = /^requests\/([^/]+)\/outcome\.json$/.exec(name)?.[1];
+    if (askId !== undefined && text !== null) {
+      const listed = (await readFile(join(judged, "outcomes.jsonl"), "utf8"))
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line))
+        .map((line) => (line.askId === askId ? { ...line, outcomeSha256: sha256(text) } : line));
+      const lines = listed.map((line) => `${JSON.stringify(line)}\n`).join("");
+      await writeFile(join(judged, "outcomes.jsonl"), lines, "utf8");
+      record.files["outcomes.jsonl"] = sha256(lines);
+    }
     await writeFile(path, jsonText(record), "utf8");
   }
 
   test("makes answers the analysis cannot read, kept as named, a verdict deviation it found", async () => {
     const results = `${E1}/sandbox/results.json`;
-    const one = (verdict: string) => ({
-      never_decide: "none",
-      verdict,
-      reason: "One sentence.",
-    });
-    const cases: Array<[string | null, string, string]> = [
-      [null, "answers", "is not named in the stage record"],
-      ["not json\n", "verdict", `no recomputation: ${results} is not JSON`],
-      ["{}\n", "verdict", `no recomputation: ${results} is no list of answers`],
+    const four = [1, 2, 3, 4].map((at) => ({
+      id: `judge${at}`,
+      result: { never_decide: "none", verdict: "approve", reason: "One sentence." },
+    }));
+    const answers = (text: string | null) => (judged: string) => rehashed(judged, results, text);
+    const cases: Array<[(judged: string) => Promise<void>, string, string]> = [
+      [answers(null), "answers", "is not named in the stage record"],
+      [answers("not json\n"), "verdict", `no recomputation: ${results} is not JSON`],
+      [answers("{}\n"), "verdict", `no recomputation: ${results} is no list of answers`],
       [
-        jsonText([1, 2, 3, 4].map((at) => ({ id: `judge${at}`, result: one("approve") }))),
+        answers(jsonText([1, 2, 3, 4, 5])),
+        "verdict",
+        `no recomputation: ${results} is no list of answers`,
+      ],
+      [
+        answers(jsonText(four)),
         "verdict",
         `no recomputation: ${results} holds no answer of judge e1 5 (judge5)`,
       ],
+      [
+        async (judged) => {
+          const name = `${E1}/outcome.json`;
+          const outcome = JSON.parse(await readFile(join(judged, name), "utf8"));
+          outcome.judges[0].agent = null;
+          await rehashed(judged, name, jsonText(outcome));
+        },
+        "verdict",
+        "no recomputation: judge e1 1 has no agent, so no answer",
+      ],
     ];
-    for (const [text, kind, problem] of cases) {
-      const analysis = await changed((judged) => rehashed(judged, results, text));
+    for (const [change, kind, problem] of cases) {
+      const analysis = await changed(change);
       const e1 = analysis.requests.find((reading) => reading.askId === ask("e1"));
       expect(e1?.byRule.v6.deviation).toEqual({ kind, foundBy: "analysis" });
       if (kind === "verdict") expect(e1?.verdictProblem).toBe(problem);
@@ -1499,14 +1790,44 @@ describe("the judged stage's kept evidence", () => {
   test("makes a fact-check hold that records judges a verdict deviation it found", async () => {
     const claim = await writeClaim([
       { tail: "k1", tree: "T1", chose: "Approve", outcome: "hold", holdJudges: 1 },
+      { tail: "k2", tree: "T2", chose: "Approve", outcome: "hold", holdJudgeRecords: true },
     ]);
     const analysis = await analysed(claim);
-    const k1 = analysis.requests[0];
+    const [k1, k2] = analysis.requests;
     expect(k1?.verdictProblem).toBe(
       "no recomputation: a fact-check hold whose judgement records 1 judges and whose outcome " +
         "records 0, where a hold has none"
     );
-    expect(k1?.byRule.v6.deviation).toEqual({ kind: "verdict", foundBy: "analysis" });
+    expect(k2?.verdictProblem).toBe(
+      "no recomputation: a fact-check hold whose judgement records 0 judges and whose outcome " +
+        "records 5, where a hold has none"
+    );
+    for (const one of [k1, k2]) {
+      expect(one?.byRule.v6.deviation).toEqual({ kind: "verdict", foundBy: "analysis" });
+    }
+  });
+
+  test("refuses a stage, a started one too, whose outcomes.jsonl is not there or not as named", async () => {
+    for (const bytes of [null, "a list of outcomes\n"]) {
+      const claim = await writeClaim([
+        { tail: "m3", tree: "T1", chose: "Approve", outcome: "verdict" },
+        { tail: "m4", tree: "T2", chose: "Approve", outcome: "started" },
+      ]);
+      const path = join(claim.judged, "s10-judged.json");
+      const record = JSON.parse(await readFile(path, "utf8"));
+      expect(record.state).toBe("started");
+      record.files["outcomes.jsonl"] = sha256("the outcomes the record names\n");
+      await writeFile(path, jsonText(record), "utf8");
+      const outcomes = join(claim.judged, "outcomes.jsonl");
+      if (bytes !== null) await writeFile(outcomes, bytes, "utf8");
+      const refused = await run(argsOf(claim));
+      expect(refused.status).toBe(2);
+      expect(refused.errors).toContain(
+        bytes === null
+          ? `${outcomes}, which the stage record names, is not there`
+          : `${outcomes} is not the file the stage record names`
+      );
+    }
   });
 
   test("reads a started request's started.json with every file named, and says where it is lost", async () => {

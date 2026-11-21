@@ -106,17 +106,13 @@ export interface ToolCallDeviation {
   reason: string;
 }
 
-/** A request's outcome under one version of the rule. */
-export interface RuleOutcome {
-  outcome: "hold" | "verdict" | "deviation";
-  verdict: string | null;
-  deviation: DeviationKind | typeof UNJUDGED | null;
-}
+/** A request's outcome under one version of the rule: a hold or a verdict, or a deviation. */
+export type RuleOutcome =
+  | { outcome: "hold" | "verdict"; verdict: string; deviation: null }
+  | { outcome: "deviation"; verdict: null; deviation: DeviationKind | typeof UNJUDGED };
 
 /** A request's outcome under one version of the rule, with the calls that version refuses. */
-export interface JudgedRuleOutcome extends RuleOutcome {
-  toolCallDeviations: ToolCallDeviation[];
-}
+export type JudgedRuleOutcome = RuleOutcome & { toolCallDeviations: ToolCallDeviation[] };
 
 /**
  * A document S10 judged, at its version, as its `finish_judgement` records it: point 7 holds his
@@ -341,26 +337,35 @@ function deviationKindAt(value: unknown, where: string): DeviationKind {
   return kind;
 }
 
-/** Holds an outcome's verdict and deviation to its kind of outcome. */
-function heldToKind(
+/**
+ * An outcome's verdict and deviation held to its kind of outcome, typed by it: a hold's verdict is
+ * the fact check's and a verdict's is the rule's, with no deviation; a deviation has a kind and no
+ * verdict.
+ */
+function heldToKind<D>(
   outcome: JudgedOutcome["outcome"],
   verdict: string | null,
-  deviation: unknown,
+  deviation: D | null,
   where: string
-): void {
-  const fits =
-    outcome === "deviation"
-      ? verdict === null && deviation !== null
-      : deviation === null &&
-        (outcome === "hold"
-          ? verdict === HOLD_VERDICT
-          : verdict === "approve" ||
-            verdict === "request_changes" ||
-            verdict?.startsWith("never_decide:") === true);
-  if (!fits)
-    throw new CorpusError(
-      `${where} is a ${outcome} whose verdict and deviation are not a ${outcome}'s`
-    );
+):
+  | { outcome: "hold" | "verdict"; verdict: string; deviation: null }
+  | { outcome: "deviation"; verdict: null; deviation: D } {
+  if (outcome === "deviation") {
+    if (verdict === null && deviation !== null) return { outcome, verdict, deviation };
+  } else if (
+    deviation === null &&
+    verdict !== null &&
+    (outcome === "hold"
+      ? verdict === HOLD_VERDICT
+      : verdict === "approve" ||
+        verdict === "request_changes" ||
+        verdict.startsWith("never_decide:"))
+  ) {
+    return { outcome, verdict, deviation: null };
+  }
+  throw new CorpusError(
+    `${where} is a ${outcome} whose verdict and deviation are not a ${outcome}'s`
+  );
 }
 
 /** One version's outcome read back, held to its kind of outcome. */
@@ -370,8 +375,7 @@ function ruleOutcomeOf(value: unknown, where: string): RuleOutcome {
   const outcome = outcomeKindAt(record.outcome, where);
   const verdict = textOrNull(record.verdict, where, "verdict");
   const deviation = record.deviation === null ? null : deviationKindAt(record.deviation, where);
-  heldToKind(outcome, verdict, deviation, where);
-  return { outcome, verdict, deviation };
+  return heldToKind(outcome, verdict, deviation, where);
 }
 
 /** A tool call one version refuses, read back. */
@@ -419,7 +423,7 @@ function eachRule<T>(make: (version: RuleVersion) => T): Record<RuleVersion, T> 
 function byRuleOf<T extends RuleOutcome>(
   value: unknown,
   where: string,
-  counted: RuleOutcome,
+  counted: { outcome: string; verdict: string | null; deviation: string | null },
   read: (one: unknown, at: string) => T
 ): Record<RuleVersion, T> {
   const record = objectOrNull(value, where, "byRule");
@@ -774,13 +778,15 @@ async function heldBytes(directory: string, record: JudgedRecord, name: string):
 
 /**
  * A judged stage read whole: its record, with the sha256 of the bytes it was read from, every
- * `outcome.json` it names, and `outcomes.jsonl` where the stage is written, each held to the
- * sha256 the record names; refused where `outcomes.jsonl` and the outcomes disagree, or one ask
- * has two outcomes. Every other file the record names is read and held to its sha256 too: one
- * under `requests/<ask id>/` that is not there with those bytes (a transcript, a bundle, the
- * answers, the sandbox's record) is that request's lost evidence (`JudgedStage.evidence`), which
- * the analysis makes the request's deviation; one outside every request's directory (the kept
- * frozen code, a preflight's result) refuses the stage, which is then not what its record says.
+ * `outcome.json` it names, and `outcomes.jsonl` wherever the record names it (a written stage's
+ * always), each held to the sha256 the record names. A missing or changed one of these refuses
+ * the stage, since the outcome it holds cannot be read; so does a written stage whose
+ * `outcomes.jsonl` and outcomes disagree, and one ask with two outcomes. Every other file the
+ * record names is read and held to its sha256 too: one under `requests/<ask id>/` that is not
+ * there with those bytes (a transcript, a bundle, the answers, the calls, the sandbox's record,
+ * `started.json`) is that request's lost evidence (`JudgedStage.evidence`), which the analysis
+ * makes the request's deviation; one outside every request's directory (the kept frozen code, a
+ * preflight's result) refuses the stage, which is then not what its record says.
  */
 export async function judgedStageOf(directory: string): Promise<JudgedStage> {
   const recordPath = join(directory, JUDGED_FILE);
@@ -790,8 +796,12 @@ export async function judgedStageOf(directory: string): Promise<JudgedStage> {
   const record = judgedRecordOf(recordBytes.toString("utf8"), recordPath);
   const outcomes = new Map<string, JudgedOutcome>();
   const evidence = new Map<string, LostEvidence[]>();
+  let outcomesText: string | null = null;
   for (const name of Object.keys(record.files).sort()) {
-    if (name === OUTCOMES_FILE) continue;
+    if (name === OUTCOMES_FILE) {
+      outcomesText = (await heldBytes(directory, record, name)).toString("utf8");
+      continue;
+    }
     if (!/^requests\/[^/]+\/outcome\.json$/.test(name)) {
       const bytes = await readFile(join(directory, name)).catch(() => null);
       if (bytes !== null && sha256Of(bytes) === record.files[name]) continue;
@@ -821,7 +831,8 @@ export async function judgedStageOf(directory: string): Promise<JudgedStage> {
   }
   let lines: OutcomeLine[] | null = null;
   if (record.state === "written") {
-    const text = (await heldBytes(directory, record, OUTCOMES_FILE)).toString("utf8");
+    const text =
+      outcomesText ?? (await heldBytes(directory, record, OUTCOMES_FILE)).toString("utf8");
     lines = outcomeLinesOf(text, join(directory, OUTCOMES_FILE));
     const named = new Set(lines.map((line) => line.askId));
     if (named.size !== lines.length || named.size !== outcomes.size) {
@@ -890,12 +901,14 @@ export function reportedOutcomesOf(
       judges: [],
       sandbox: null,
       judgedAt: null,
-      byRule: eachRule(() => ({
-        outcome: "deviation",
-        verdict: null,
-        deviation: kind,
-        toolCallDeviations: [],
-      })),
+      byRule: eachRule(
+        (): JudgedRuleOutcome => ({
+          outcome: "deviation",
+          verdict: null,
+          deviation: kind,
+          toolCallDeviations: [],
+        })
+      ),
     };
   });
 }

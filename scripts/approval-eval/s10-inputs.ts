@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { claimStartOf } from "./claim-start";
+import { claimStartOf, walkThroughPin } from "./claim-start";
 import {
   CannotRunError,
   type Corpus,
@@ -621,26 +621,6 @@ async function dropScanOf(
   return { asks, through };
 }
 
-/** Walks the log through the pin into `note`, refused unless it reads the events the build read. */
-async function walkThroughPin(
-  corpus: Corpus,
-  note: (event: DispatchEvent) => void
-): Promise<number> {
-  const walk = await pageEventLog({
-    through: corpus.snapshot.throughEventId,
-    onPage: (events) => {
-      for (const event of events) note(event);
-    },
-  });
-  if (walk.eventsRead !== corpus.snapshot.eventsRead) {
-    throw new S10InputsError(
-      `the log through event ${corpus.snapshot.throughEventId} reads ${walk.eventsRead} events, ` +
-        `and the build read ${corpus.snapshot.eventsRead} there: it is not the log the build read`
-    );
-  }
-  return walk.eventsRead;
-}
-
 /** A request of the inventory that cannot be judged as the text fixes, and why. */
 interface Deviation {
   state: "deviation";
@@ -838,10 +818,10 @@ interface Run {
 
 /**
  * The run's start: the decision checked first, so a checkout whose `reserve-ask.ts` closure is not
- * the registered one reads nothing; then the claim run's start every later stage shares
- * (`claimStartOf`: the admission before any file is read, the build under that read, the draw held
- * to the build), whose snapshot must record the events it read; the chain; the inventory; and the
- * stage directory, started or resumed.
+ * the registered one reads nothing; then the claim run's start the analysis shares (`claimStartOf`:
+ * the admission before any file is read, the build under that read, whose snapshot must record the
+ * events it read, and the draw held to the build); the chain; the inventory; and the stage
+ * directory, started or resumed.
  */
 async function openRun(flags: Flags, options: InputsOptions): Promise<Run> {
   const decision = options.decision ?? (await reserveAskDecision());
@@ -854,14 +834,6 @@ async function openRun(flags: Flags, options: InputsOptions): Promise<Run> {
     flags.draw,
     { registration: options.registration, root: options.root }
   );
-  if (corpus.snapshot.eventsRead <= 0) {
-    // `readCorpus` reads a snapshot that records none as having read none; a build of the claim
-    // run always records it, so no walk here can show it reads the build's log without it.
-    throw new S10InputsError(
-      `${join(corpus.directory, "snapshot.json")} records no events read, so no walk of the log ` +
-        "here can show it is the log the build read"
-    );
-  }
   const chain: StageChain = {
     claimRun: build,
     reference,

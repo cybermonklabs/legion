@@ -1,49 +1,23 @@
-import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import type { CaseRow, CaseVerdict } from "./build-corpus";
-import { claimStartOf } from "./claim-start";
+import type { CaseVerdict } from "./build-corpus";
+import { CorpusError } from "./corpus-io";
+import type { BuildChain, FinalTestTree } from "./draw-io";
+import type { AnalysisInput, Placed } from "./s10-analysis-io";
 import {
-  CannotRunError,
-  type Corpus,
-  CorpusError,
-  numberOf,
-  outDirectory,
-  stringOf,
-} from "./corpus-io";
-import { pageEventLog } from "./dispatch-read";
-import {
-  BUILD_CHAIN_NAMES,
-  type BuildChain,
-  type ClaimDraw,
-  chainRefusal,
-  DRAW_CHAIN_NAMES,
-  type FinalTestTree,
-} from "./draw-io";
-import { REPOSITORY_ROOT, type Registration, runDigestOf } from "./reserve";
-import { renderS10Analysis, statusWords } from "./s10-analysis-text";
-import {
-  AnswerLog,
   type CandidateCounts,
   DROP_SEEN,
   type DropSeen,
-  INVENTORY_FILE,
+  type FirstAnswer,
   type InventoryLine,
   type InventoryRequest,
-  inventoryLinesOf,
-  inventoryOf,
-  STAGE_FILE,
-  stageRecordOf,
+  type Settlement,
 } from "./s10-inputs-io";
 import {
   COUNTING_RULE,
   DEVIATION_KINDS,
   HOLD_VERDICT,
-  JUDGED_FILE,
   JUDGES,
   type JudgedOutcome,
   type JudgedStage,
-  judgedStageOf,
   RESULTS_FILE,
   RULE_VERSIONS,
   type RuleVersion,
@@ -61,11 +35,12 @@ import { clopperPearsonUpper, DEFAULT_CONFIDENCE } from "./stats";
  * The claim's analysis of its one bundle, S10: the fifth command of point 13 of the registered
  * claim text, `analyze.ts --claim-s10`, by its points 4, 6, 7, 10 and 12 (point 14 (d)). It reads
  * the claim run's build, draw, inputs and judged stages, and Dispatch's event log through the
- * build's pin, and writes one file, its own stage record (`s10-analysis.json`), which holds every
- * figure it prints (`s10-analysis-text.ts` prints them).
+ * build's pin (`s10-analysis-io.ts`), and writes one file, its own stage record
+ * (`s10-analysis.json`), which holds every figure this module computes and the text prints
+ * (`s10-analysis-text.ts`).
  *
- * **The admission and the chain (point 14 (e)).** It starts as every stage of the claim run after
- * the draw starts (`claimStartOf`): admitted under the claim run's registered read before any file
+ * **The admission and the chain (point 14 (e)).** It starts as the inputs stage starts
+ * (`claimStartOf`): admitted under the claim run's registered read before any file
  * is opened, so a run under no read never meets a held case or prints one's id; then the build of
  * that claim run, and the draw of the build's bytes now. Each later stage is held to the one
  * before it, by its own parser and the sha256 its successor recorded, so no directory can be
@@ -74,10 +49,12 @@ import { clopperPearsonUpper, DEFAULT_CONFIDENCE } from "./stats";
  * of `s10-inputs.json` whose sha256 the judged stage recorded, is written, and names the same
  * claim run, build and read and the draw's two files by their bytes now; and its inventory has the
  * sha256 both records name. The log is walked through the build's pin and must read as many events
- * as the build read. The run's digest is taken once at the admission and again once every stage
- * is read, and the two must agree. The record names the claim run, the read, the digest and the
- * sha256 of each stage's record. `--claim-s10` and `--out` are paths only: no placement of either
- * is checked, since every byte the analysis reads is held to the chain.
+ * as the build read. The digest the record names is the one the admission admitted: taken right
+ * after the admission and held to the registration under the read it found (`claimStartOf`), and
+ * taken again once every stage is read, which must agree. The record names the claim run, the
+ * read, the digest and the sha256 of each stage's record. `--claim-s10` and `--out` are paths
+ * only: no placement of either is checked, since every byte the analysis reads is held to the
+ * chain.
  *
  * **The inventory (point 6).** Every answered approval request among the draw's report cases is
  * one request, keyed by ask id, the rule the inputs stage wrote its inventory by (`inventoryOf`);
@@ -95,18 +72,23 @@ import { clopperPearsonUpper, DEFAULT_CONFIDENCE } from "./stats";
  * agreement's registration places it: the first event after the ask's first opening that is his
  * `ask.answered` of the ask or, for an ask that names one document, his `artifact.approved` or
  * `artifact.changes_requested` on that document at the version the ask names. The rule is the
- * inputs stage's own (`AnswerLog`), run here over the same log through the same pin, so the two
- * stages place one answer. A settlement's verdict is its kind and its pair the one document at
- * that version; an `ask.answered`'s verdict is read from the option he chose and its pairs from
- * that event's approval, both as the build's corpus records that event. An answer that is not his
- * own, or that no event or case gives, is a deviation (`answer`); an outcome whose judged
- * documents (`judgement.documents`) are not his answered pairs is a deviation (`documents`).
+ * inputs stage's own (`AnswerLog`), over the one walk of the log through the pin both stages make
+ * (`walkThroughPin`). Where the inputs stage placed his own answer, its inventory line records
+ * the judged moment, the statement that stood then; this walk must place his own answer after
+ * that same statement, since two walks of one log place one answer, and a line it does not is
+ * refused. A settlement's verdict is its kind and its pair the one document at that version; an
+ * `ask.answered`'s verdict is read from the option he chose and its pairs from that event's
+ * approval, both as the build's corpus records that event. An answer that is not his own, or that
+ * no event or case gives, is a deviation (`answer`); an outcome whose judged documents
+ * (`judgement.documents`) are not his answered pairs is a deviation (`documents`).
  *
  * **The kept evidence (point 6).** Before an outcome counts, every file the judged record names
  * must be there with the sha256 it names (`judgedStageOf`), and a verdict's record must name each
  * judge's transcript and bundle and the answers: a request whose transcript is lost is a
  * `transcript` deviation, whose answers are lost an `answers` one, and whose other kept files (its
- * bundles, its calls, the sandbox's record) are lost a `sandbox` one.
+ * bundles, its calls, the sandbox's record, its `started.json`) are lost a `sandbox` one. A lost
+ * or changed `outcome.json` or `outcomes.jsonl`, or any file outside every request's directory,
+ * refuses the stage: no outcome can be read from it.
  *
  * **The verdict, recomputed (points 2 and 6).** Each verdict outcome is recomputed by point 2's
  * rule from the five answers its sandbox result kept (`recordedAnswersOf`, `ruleVerdictOf`). A
@@ -140,10 +122,7 @@ import { clopperPearsonUpper, DEFAULT_CONFIDENCE } from "./stats";
  * them, is refused.
  */
 
-/** The file the analysis writes under its `--out`: its stage record, which holds every figure. */
-export const ANALYSIS_FILE = "s10-analysis.json";
-
-/** The version of that record's shape. */
+/** The version of the record's shape (`s10-analysis.json`). */
 const ANALYSIS_VERSION = 1;
 
 /**
@@ -158,8 +137,8 @@ const RATE = 0.05;
 /** The planning figure d that point 10 reads the decided share against (the daily count's point 5). */
 const PLANNING_D = 0.85;
 
-/** The two settlement events "His answer" counts for an ask of one document, and their verdicts. */
-const SETTLEMENTS: Readonly<Record<string, CaseVerdict>> = {
+/** The verdict of each settlement "His answer" counts for an ask of one document. */
+const SETTLEMENT_VERDICTS: Readonly<Record<Settlement["type"], CaseVerdict>> = {
   "artifact.approved": "approve",
   "artifact.changes_requested": "request_changes",
 };
@@ -172,27 +151,6 @@ export const RANKS_STATEMENT =
   "The ranks of the neighbours' search hits come from an index of the run's start, which can " +
   "order candidates by text or records written after the judged moment; the count of candidates " +
   "dropped for an event after that moment is a partial check of that, not a bound on it.";
-
-/** The claim's analysis may not run as the registered text fixes it. */
-class S10AnalysisError extends CannotRunError {
-  override readonly name = "S10AnalysisError";
-}
-
-/** The claim path's flags, as `analyze.ts` reads them. */
-export interface ClaimS10Flags {
-  kind: "claim-s10";
-  corpus: string;
-  draw: string;
-  judged: string;
-  out: string;
-  format: "text" | "json";
-}
-
-/** What a test may hand in beside the flags: its own registration, and the root it is under. */
-export interface ClaimS10Options {
-  registration?: Registration;
-  root?: string;
-}
 
 /** A deviation's kind, and whether the stage or the analysis found it. */
 export interface FoundDeviation {
@@ -338,7 +296,8 @@ export interface PenalizedMeasure {
   };
   /** The one-sided 90 percent Clopper-Pearson upper bound on the disagreeing share of n; 1 at 0. */
   bound: number;
-  /** Whether that bound is at or under the 1 in 20. */
+  /** The rate item 8 holds the bound to, one disagreeing tree in twenty, and whether it is met. */
+  rate: number;
   withinRate: boolean;
   rows: TreeReading[];
 }
@@ -398,34 +357,19 @@ export interface S10Analysis {
   requests: RequestReading[];
 }
 
-function sha256Of(bytes: Uint8Array | string): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
 /** A pair as a key two lists of pairs are compared by. */
 function pairKey(pair: DocumentPair): string {
   return JSON.stringify([pair.artifactId, pair.version]);
 }
 
-/** One settlement of the person's in the log: its kind and the (document, version) it settled. */
-interface Settlement {
-  type: string;
-  artifactId: string;
-  version: number;
-}
-
 /**
  * His answer to one request (point 7), from the first answer `AnswerLog` placed (`placed`, its
- * event and whether it is his own) and his settlements by event id: a settlement's verdict is its
- * kind and its pair the one it settled; his own `ask.answered`'s are its case's in the corpus. An
- * answer the log does not give, one that is not his own, and one the build holds no case of are
- * each a problem, which makes the request a deviation (`answer`).
+ * event, whether it is his own, and the settlement it is): a settlement's verdict is its kind and
+ * its pair the one it settled; his own `ask.answered`'s are its case's in the corpus. An answer the
+ * log does not give, one that is not his own, and one the build holds no case of are each a
+ * problem, which makes the request a deviation (`answer`).
  */
-function answerOf(
-  request: InventoryRequest,
-  placed: { eventId: number; own: boolean } | null,
-  settlements: ReadonlyMap<number, Settlement>
-): HisAnswer {
+function answerOf(request: InventoryRequest, placed: FirstAnswer | null): HisAnswer {
   const ordered = [...request.rows].sort((one, other) => one.eventId - other.eventId);
   const label = ordered[0]?.verdict ?? null;
   if (label === null) {
@@ -448,15 +392,14 @@ function answerOf(
       "the log through the build's pin holds no answer of his to the ask after its first opening"
     );
   }
-  const settled = settlements.get(placed.eventId);
-  const verdict = settled === undefined ? undefined : SETTLEMENTS[settled.type];
-  if (settled !== undefined && verdict !== undefined) {
+  if (placed.settlement !== null) {
+    const { type, artifactId, version } = placed.settlement;
     return {
       eventId: placed.eventId,
-      type: settled.type,
+      type,
       caseId: null,
-      verdict,
-      documents: [{ artifactId: settled.artifactId, version: settled.version }],
+      verdict: SETTLEMENT_VERDICTS[type],
+      documents: [{ artifactId, version }],
       problem: null,
     };
   }
@@ -555,13 +498,6 @@ async function recomputedOf(
   return ruleVerdictOf(kept.answers);
 }
 
-/** One request of the inventory, its line, his answer and its outcome, which are read together. */
-interface Placed {
-  request: InventoryRequest;
-  line: InventoryLine;
-  answer: HisAnswer;
-}
-
 /**
  * One request read whole: his answer, its outcome, the inputs stage's counts of its candidates,
  * the analysis's checks (the inputs stage's deviation, its kept evidence, his answer, the verdict
@@ -570,9 +506,10 @@ interface Placed {
 async function requestReadingOf(
   directory: string,
   stage: JudgedStage,
-  { request, line, answer }: Placed,
+  { request, line, answer: placed }: Placed,
   outcome: JudgedOutcome
 ): Promise<RequestReading> {
+  const answer = answerOf(request, placed);
   const judgedDocuments =
     outcome.judgement?.documents.map((document) => ({
       artifactId: document.artifact_id,
@@ -604,7 +541,7 @@ async function requestReadingOf(
         `${answer.eventId} (${answer.type}), answered ${his.join(", ") || "no document"}`;
     }
   }
-  const unlike = (verdict: string | null): string | null => {
+  const unlike = (verdict: string): string | null => {
     if (recomputation === null) return null;
     if ("problem" in recomputation) return `no recomputation: ${recomputation.problem}`;
     if (recomputation.verdict === verdict) return null;
@@ -622,12 +559,7 @@ async function requestReadingOf(
       refusedCalls,
     });
     if (unlikeItsInputs) return deviation("inputs", "analysis");
-    if (one.outcome === "deviation") {
-      if (one.deviation === null) {
-        throw new CorpusError(`the outcome of ${outcome.askId} is a deviation of no kind`);
-      }
-      return deviation(one.deviation, "stage");
-    }
+    if (one.outcome === "deviation") return deviation(one.deviation, "stage");
     const problem = unlike(one.verdict);
     verdictProblem ??= problem;
     const found =
@@ -648,9 +580,6 @@ async function requestReadingOf(
         disagrees: one.verdict !== answer.verdict,
         refusedCalls,
       };
-    }
-    if (one.verdict === null) {
-      throw new CorpusError(`the outcome of ${outcome.askId} is a ${one.outcome} with no verdict`);
     }
     return {
       status: "never-decide",
@@ -786,9 +715,17 @@ function penalizedMeasureOf(
       },
     },
     bound,
+    rate: RATE,
     withinRate: bound <= RATE,
     rows,
   };
+}
+
+/** A version's outcome of one request in words, as the record's changes and the text print it. */
+export function statusWords(reading: RuleReading): string {
+  return reading.status === "deviation"
+    ? `deviation ${reading.deviation.kind}`
+    : `${reading.status} ${reading.verdict}`;
 }
 
 /** The calls `one` refuses that `other` does not, by judge and call id. */
@@ -859,24 +796,11 @@ function neighbourDisclosureOf(inventory: readonly InventoryLine[]): NeighbourDi
   return disclosure;
 }
 
-/** What the analysis is computed from: every stage read and held to the chain, nothing more. */
-interface AnalysisInput {
-  claimRun: BuildChain;
-  reference: string;
-  runDigest: string;
-  build: string;
-  draw: ClaimDraw;
-  inputs: { directory: string; stageSha256: string; inventorySha256: string };
-  judged: { directory: string; stage: JudgedStage };
-  byCaseId: ReadonlyMap<string, CaseRow>;
-  /** Each request with its inventory line and his answer, in the inventory's order. */
-  placed: readonly Placed[];
-  /** The log his answers were placed in. */
-  log: { throughEventId: number; eventsRead: number };
-}
-
-/** The whole analysis, from the stages read: every figure the record holds and the text prints. */
-async function s10AnalysisOf(input: AnalysisInput): Promise<S10Analysis> {
+/**
+ * The whole analysis, from the stages read (`s10-analysis-io.ts`): every figure the record holds
+ * and the text prints.
+ */
+export async function s10AnalysisOf(input: AnalysisInput): Promise<S10Analysis> {
   const outcomes = reportedOutcomesOf(
     input.placed.map((one) => one.line),
     input.judged.stage
@@ -969,257 +893,4 @@ async function s10AnalysisOf(input: AnalysisInput): Promise<S10Analysis> {
     neighbours: neighbourDisclosureOf(input.placed.map((one) => one.line)),
     requests: readings,
   };
-}
-
-/** The bytes of a file of a stage before this one, refused where they are not there. */
-async function stageBytesOf(path: string, what: string): Promise<Buffer> {
-  try {
-    return await readFile(path);
-  } catch {
-    throw new S10AnalysisError(`${path} could not be read: ${what}`);
-  }
-}
-
-/**
- * His answer to each request (point 7), placed by the inputs stage's own rule (`AnswerLog`) over
- * Dispatch's event log walked through the build's pin, with the person's settlements kept by event
- * id: refused unless the walk reads as many events as the build read there, so it is the log the
- * build read.
- */
-async function answersOf(
-  corpus: Corpus,
-  lines: ReadonlyArray<{ request: InventoryRequest; line: InventoryLine }>
-): Promise<{ placed: Placed[]; log: AnalysisInput["log"] }> {
-  const { person, throughEventId, eventsRead } = corpus.snapshot;
-  if (eventsRead <= 0) {
-    throw new S10AnalysisError(
-      `${join(corpus.directory, "snapshot.json")} records no events read, so no walk of the log ` +
-        "here can show it is the log the build read"
-    );
-  }
-  const log = new AnswerLog(
-    person,
-    lines.map((one) => one.request.askId)
-  );
-  const settlements = new Map<number, Settlement>();
-  const walk = await pageEventLog({
-    through: throughEventId,
-    onPage: (events) => {
-      for (const event of events) {
-        log.note(event);
-        if (SETTLEMENTS[event.type] === undefined || event.actor?.id !== person) continue;
-        const artifactId = stringOf(event.payload.artifact_id);
-        const version = numberOf(event.payload.version);
-        if (artifactId !== null && version !== null) {
-          settlements.set(event.id, { type: event.type, artifactId, version });
-        }
-      }
-    },
-  });
-  if (walk.eventsRead !== eventsRead) {
-    throw new S10AnalysisError(
-      `the log through event ${throughEventId} reads ${walk.eventsRead} events, and the build ` +
-        `read ${eventsRead} there: it is not the log the build read`
-    );
-  }
-  const placed = lines.map(({ request, line }) => ({
-    request,
-    line,
-    answer: answerOf(request, log.judgingOf(request.askId)?.answer ?? null, settlements),
-  }));
-  return { placed, log: { throughEventId, eventsRead: walk.eventsRead } };
-}
-
-/**
- * The inventory the inputs stage wrote, held to the one the draw gives (`inventoryOf`): each line
- * once by ask id, and request for request the same asks, issues, trees and counts of cases; each
- * request with its line, in the inventory's order.
- */
-function heldToDraw(
-  inventory: readonly InventoryLine[],
-  requests: readonly InventoryRequest[],
-  path: string
-): Array<{ request: InventoryRequest; line: InventoryLine }> {
-  const byAsk = new Map(requests.map((request) => [request.askId, request]));
-  const seen = new Set<string>();
-  const held = inventory.map((line) => {
-    if (seen.has(line.askId)) {
-      throw new S10AnalysisError(`${path} names the request ${line.askId} twice`);
-    }
-    seen.add(line.askId);
-    const request = byAsk.get(line.askId);
-    if (request === undefined) {
-      throw new S10AnalysisError(
-        `${path} names the request ${line.askId}, which no approval case of the draw's report ` +
-          "trees is"
-      );
-    }
-    if (
-      line.issueKey !== request.issueKey ||
-      line.group !== request.group ||
-      line.cases !== request.rows.length
-    ) {
-      throw new S10AnalysisError(
-        `${path} holds the request ${line.askId} in ${line.group} with ${line.cases} cases, ` +
-          `and the draw's report trees give it ${request.group} with ${request.rows.length}`
-      );
-    }
-    return { request, line };
-  });
-  const missing = requests.find((request) => !seen.has(request.askId));
-  if (missing !== undefined) {
-    throw new S10AnalysisError(
-      `${path} holds no line of the request ${missing.askId}, which the draw's report trees hold`
-    );
-  }
-  return held;
-}
-
-/**
- * Every stage of the claim run this analysis reads, admitted and held to the chain (the module's
- * comment says how), with his answers placed over the log, as `s10AnalysisOf` takes them.
- */
-async function chainedInput(
-  flags: ClaimS10Flags,
-  options: ClaimS10Options
-): Promise<AnalysisInput> {
-  const { corpus, reference, build, draw, runDigest } = await claimStartOf(
-    flags.corpus,
-    flags.draw,
-    options
-  );
-  const judgedDirectory = resolve(flags.judged);
-  const stage = await judgedStageOf(judgedDirectory);
-  const judgedPath = join(judgedDirectory, JUDGED_FILE);
-  if (stage.record.claimRun !== build.id) {
-    throw new S10AnalysisError(
-      `${judgedPath} was written by the claim run ${stage.record.claimRun}, and this run's is ` +
-        `${build.id}: the analysis takes only its own claim run's judged stage`
-    );
-  }
-  if (stage.record.reference !== reference) {
-    throw new S10AnalysisError(
-      `${judgedPath} was written under ${stage.record.reference}, and this run reads under ${reference}`
-    );
-  }
-  const inputsPath = join(stage.record.inputs.directory, STAGE_FILE);
-  const inputsBytes = await stageBytesOf(inputsPath, "the judged stage names it");
-  if (sha256Of(inputsBytes) !== stage.record.inputs.stageSha256) {
-    throw new S10AnalysisError(
-      `${inputsPath} is not the inputs stage ${judgedPath} judged: its sha256 is ` +
-        `${sha256Of(inputsBytes)}, and the judged stage names ${stage.record.inputs.stageSha256}`
-    );
-  }
-  const inputs = stageRecordOf(inputsBytes.toString("utf8"), inputsPath);
-  const refusal =
-    chainRefusal(inputs.claimRun, build, BUILD_CHAIN_NAMES) ??
-    chainRefusal(inputs, { reference }, { reference: "read" }) ??
-    chainRefusal(inputs.draw, draw, DRAW_CHAIN_NAMES);
-  if (refusal !== null) {
-    throw new S10AnalysisError(
-      `${inputsPath} is not this claim run's inputs stage over the build and the draw it reads: ` +
-        `${refusal}`
-    );
-  }
-  if (inputs.state !== "written" || inputs.inventorySha256 === null) {
-    throw new S10AnalysisError(`${inputsPath} records an inputs stage that never finished`);
-  }
-  const inventoryPath = join(stage.record.inputs.directory, INVENTORY_FILE);
-  const inventoryBytes = await stageBytesOf(inventoryPath, "the inputs stage names it");
-  const inventorySha256 = sha256Of(inventoryBytes);
-  const judgedRead = stage.record.inputs.files[INVENTORY_FILE];
-  if (inventorySha256 !== inputs.inventorySha256 || inventorySha256 !== judgedRead) {
-    throw new S10AnalysisError(
-      `${inventoryPath} is not the inventory the inputs stage wrote and the judging read: its ` +
-        `sha256 is ${inventorySha256}, and the records name ${inputs.inventorySha256} and ` +
-        `${judgedRead ?? "none"}`
-    );
-  }
-  const lines = heldToDraw(
-    inventoryLinesOf(inventoryBytes.toString("utf8"), inventoryPath),
-    inventoryOf(corpus.byCaseId, draw.trees, draw.report),
-    inventoryPath
-  );
-  const { placed, log } = await answersOf(corpus, lines);
-  // The digest taken at the admission is the one recorded: a file of the bundle, a file an
-  // argument names or a server changed since then would make it another run's.
-  const now = await runDigestOf(
-    { argv: process.argv, env: process.env },
-    options.root ?? REPOSITORY_ROOT
-  );
-  if (now !== runDigest) {
-    throw new S10AnalysisError(
-      `this run's digest was ${runDigest} at its admission and is ${now} now: something it covers ` +
-        "changed while the analysis ran, so no registration names this run"
-    );
-  }
-  return {
-    claimRun: build,
-    reference,
-    runDigest,
-    build: corpus.directory,
-    draw,
-    inputs: {
-      directory: stage.record.inputs.directory,
-      stageSha256: stage.record.inputs.stageSha256,
-      inventorySha256,
-    },
-    judged: { directory: judgedDirectory, stage },
-    byCaseId: corpus.byCaseId,
-    placed,
-    log,
-  };
-}
-
-/**
- * Writes the record into `out`, or keeps the one there (the module's comment, "Its own `--out`"):
- * this process's own partial write of this run's record is removed, and every other file refused.
- */
-async function writtenTo(out: string, record: S10Analysis): Promise<"written" | "kept"> {
-  await mkdir(out, { recursive: true });
-  const path = join(out, ANALYSIS_FILE);
-  const partial = `${path}.${process.pid}.partial`;
-  const text = `${JSON.stringify(record, null, 2)}\n`;
-  for (const name of await readdir(out)) {
-    const at = join(out, name);
-    if (name === ANALYSIS_FILE) continue;
-    const own = at === partial && text.startsWith(await readFile(at, "utf8"));
-    if (!own) {
-      throw new S10AnalysisError(
-        `${at} is no file this run writes, so no run here can show it is its own: remove it ` +
-          "once no run writes it"
-      );
-    }
-    await rm(at, { force: true });
-  }
-  const found = await readFile(path, "utf8").catch(() => null);
-  if (found !== null) {
-    if (found !== text) {
-      throw new S10AnalysisError(
-        `${path} is not the record this run gives over the same stages: a run takes only an ` +
-          "--out that is empty or holds its own record, byte for byte"
-      );
-    }
-    return "kept";
-  }
-  await writeFile(partial, text, "utf8");
-  await rename(partial, path);
-  return "written";
-}
-
-/** The claim's analysis as a command: the stages, the record written or kept, the text printed. */
-export async function claimS10(
-  flags: ClaimS10Flags,
-  options: ClaimS10Options = {}
-): Promise<number> {
-  const out = await outDirectory(flags.out);
-  const analysis = await s10AnalysisOf(await chainedInput(flags, options));
-  const done = await writtenTo(out, analysis);
-  console.log(
-    flags.format === "json"
-      ? JSON.stringify(analysis, null, 2)
-      : renderS10Analysis(analysis).join("\n")
-  );
-  console.error(`${done} ${join(out, ANALYSIS_FILE)}`);
-  return 0;
 }

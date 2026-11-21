@@ -1794,11 +1794,18 @@ describe("the answer rule", () => {
     // The last edit before the answer; a settlement of the one document; the person's answer
     // after another user's; a restored answer of another user; and, after a settlement of a
     // document of a list S10 cannot read, the person's answer.
-    expect(placed(ASK_A)).toEqual([18, { eventId: 20, own: true }]);
-    expect(placed(ASK_B)).toEqual([24, { eventId: 25, own: true }]);
-    expect(placed(ASK_C)).toEqual([30, { eventId: 31, own: true }]);
-    expect(placed(ASK_R)).toEqual([49, { eventId: 50, own: false }]);
-    expect(placed(ASK_N)).toEqual([57, { eventId: 59, own: true }]);
+    expect(placed(ASK_A)).toEqual([18, { eventId: 20, own: true, settlement: null }]);
+    expect(placed(ASK_B)).toEqual([
+      24,
+      {
+        eventId: 25,
+        own: true,
+        settlement: { type: "artifact.approved", artifactId: "doc-b", version: 4 },
+      },
+    ]);
+    expect(placed(ASK_C)).toEqual([30, { eventId: 31, own: true, settlement: null }]);
+    expect(placed(ASK_R)).toEqual([49, { eventId: 50, own: false, settlement: null }]);
+    expect(placed(ASK_N)).toEqual([57, { eventId: 59, own: true, settlement: null }]);
   });
 
   test("a list it cannot read names no one document, so a settlement of the lead answers nothing", () => {

@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseKind, CaseRow } from "./build-corpus";
+import type { ClaimStartOptions } from "./claim-start";
 import {
   artifactsOf,
   CannotRunError,
@@ -39,12 +40,8 @@ import {
   readRows,
 } from "./round-io";
 import type { RoundSummary } from "./run-round";
-import {
-  CLAIM_THRESHOLD,
-  type ClaimS10Flags,
-  type ClaimS10Options,
-  claimS10,
-} from "./s10-analysis";
+import { CLAIM_THRESHOLD } from "./s10-analysis";
+import { type ClaimS10Flags, claimS10 } from "./s10-analysis-io";
 import {
   type SendBackCase,
   type SendBackFigures,
@@ -141,8 +138,9 @@ import {
  * that table says where there was anything to predict.
  *
  * **The claim's analysis.** With `--claim-s10` the command reads no round: it is the claim run's
- * last stage, the analysis of the claim's one bundle, S10, over the claim run's build, draw and
- * judged stage (`s10-analysis.ts`, which says what it reads and writes).
+ * last stage, the analysis of the claim's one bundle, S10, over the claim run's build, draw,
+ * inputs stage and judged stage and Dispatch's event log through the build's pin
+ * (`s10-analysis.ts`, which says what it reads and writes).
  */
 
 /** The report is read across arms and models, and refuses a round holding too few of either. */
@@ -182,8 +180,11 @@ const USAGE = `usage: bun scripts/approval-eval/analyze.ts --corpus <dir> --roun
                       registered claim text fixes it
   --format            text, the report as it prints, or json, the same numbers as one object
 
-The claim's analysis of its one bundle, S10 (points 6, 7, 10 and 12 of the registered claim
-text), runs under the claim run's registered read and reads no round:
+The claim's analysis of its one bundle, S10 (points 4, 6, 7, 10 and 12 of the registered claim
+text), runs under the claim run's registered read and reads no round. It reads the claim run's
+build, draw, inputs stage (the one the judged stage names) and judged stage, and Dispatch's event
+log through the build's pin. Reads DISPATCH_URL and DISPATCH_TOKEN_FILE; DISPATCH_URL is in the
+run's digest, which the registration must name.
   --claim-s10         the claim run's judged stage, the --out of s10_judge.py
   --corpus            the claim run's build
   --draw              the claim run's draw, the --out of draw.ts
@@ -3487,7 +3488,7 @@ async function analyze(flags: Flags): Promise<number> {
  */
 export async function main(
   argv: readonly string[],
-  options: ClaimS10Options = {}
+  options: ClaimStartOptions = {}
 ): Promise<number> {
   let flags: Flags | ClaimS10Flags;
   try {

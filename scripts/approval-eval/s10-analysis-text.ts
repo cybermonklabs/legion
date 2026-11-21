@@ -1,5 +1,10 @@
 import { count, num, table } from "./corpus-io";
-import type { OutcomeTally, PenalizedMeasure, RuleReading, S10Analysis } from "./s10-analysis";
+import {
+  type OutcomeTally,
+  type PenalizedMeasure,
+  type S10Analysis,
+  statusWords,
+} from "./s10-analysis";
 import {
   COUNTING_RULE,
   JUDGED_FILE,
@@ -14,16 +19,6 @@ import { sendBackTables } from "./send-back";
  * every figure of its record (`s10-analysis.ts`), in the order the registered claim text reads
  * them, and nothing the record does not hold.
  */
-
-/** The rate item 8 holds the bound to: one disagreeing tree in twenty. */
-const RATE = 0.05;
-
-/** A version's outcome of one request, in words the text and a list of changes print. */
-export function statusWords(reading: RuleReading): string {
-  return reading.status === "deviation"
-    ? `deviation ${reading.deviation.kind}`
-    : `${reading.status} ${reading.verdict}`;
-}
 
 /** A share and its count over a total, or the words that say nothing was counted. */
 function shareText(part: number, whole: number): string {
@@ -116,11 +111,11 @@ export function renderS10Analysis(analysis: S10Analysis): string[] {
     "A fact-check hold and a valid never_decide verdict are never-decides, not deviations. Of the " +
       `deviations, the analysis found ${countsText(tally.deviations.foundByAnalysis)}: ` +
       "transcript, answers and sandbox, a file of the request's kept evidence (a transcript, the " +
-      "answers, the bundles, calls or sandbox record) lost or changed; answer, his first " +
-      "qualifying answer not his own or not given; verdict, a recorded verdict unlike point 2's " +
-      "rule recomputed from the five answers the stage kept; documents, his answer's (document, " +
-      "version) pairs unlike the judged ones. started is a request a run started and never " +
-      "finished; unjudged one no run reached.",
+      "answers, the bundles, calls, sandbox record or started.json) lost or changed; answer, his " +
+      "first qualifying answer not his own or not given; verdict, a recorded verdict unlike point " +
+      "2's rule recomputed from the five answers the stage kept; documents, his answer's " +
+      "(document, version) pairs unlike the judged ones. started is a request a run started and " +
+      "never finished; unjudged one no run reached.",
     "",
     "## Item 8's measure, penalized (points 10 and 12)",
     "",
@@ -140,7 +135,7 @@ export function renderS10Analysis(analysis: S10Analysis): string[] {
         "never-decide",
         "of those with a request",
         "penalized bound",
-        `at or under ${num(RATE, 2)}`,
+        `at or under ${num(measure.rate, 2)}`,
       ],
       [
         [

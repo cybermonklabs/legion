@@ -313,10 +313,21 @@ export function pagePath(directory: string, sha256: string): string {
   return join(directory, PAGES_DIRECTORY, `${sha256}.json`);
 }
 
-/** The person's first answer event on an ask, and whether it carries the person's own answer. */
+/** A settlement of a document by the person, which answers an ask of that one document. */
+export interface Settlement {
+  type: "artifact.approved" | "artifact.changes_requested";
+  artifactId: string;
+  version: number;
+}
+
+/**
+ * The person's first answer event on an ask, whether it carries the person's own answer, and the
+ * settlement it is, with the (document, version) it settled; null for an `ask.answered`.
+ */
 export interface FirstAnswer {
   eventId: number;
   own: boolean;
+  settlement: Settlement | null;
 }
 
 /** Where one request stands in a walk of the log, under the answer rule. */
@@ -382,7 +393,7 @@ export class AnswerLog {
     // `ask_answer` reads a verdict only from an answer the person gave.
     const answer = recordOf(event.payload.answer);
     const own = answer !== null && stringOf(answer.user) === this.person;
-    judging.answer = { eventId: event.id, own };
+    judging.answer = { eventId: event.id, own, settlement: null };
     judging.judged = judging.statement;
   }
 
@@ -396,13 +407,15 @@ export class AnswerLog {
     const artifactId = stringOf(event.payload.artifact_id);
     const version = numberOf(event.payload.version);
     if (artifactId === null || version === null) return;
+    const type: Settlement["type"] =
+      event.type === "artifact.approved" ? "artifact.approved" : "artifact.changes_requested";
     for (const judging of this.judging.values()) {
       if (judging.answer !== null || judging.firstOpened === null) continue;
       if (event.id <= judging.firstOpened) continue;
       const read = askDocsOf(judging.statement?.payload.approval);
       const only = "documents" in read && read.documents.length === 1 ? read.documents[0] : null;
       if (only?.artifact_id !== artifactId || only.version !== version) continue;
-      judging.answer = { eventId: event.id, own: true };
+      judging.answer = { eventId: event.id, own: true, settlement: { type, artifactId, version } };
       judging.judged = judging.statement;
     }
   }
