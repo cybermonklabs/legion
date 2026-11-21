@@ -25,10 +25,11 @@ section can use the words without stopping to explain them.
   never reads or writes a GitHub issue.
 - **GitHub** holds the code: one branch, `legion/<KEY>`, and one pull request per issue, in the
   issue's repository. Each issue targets one repository, the one Dispatch resolves for it (its
-  own, else its nearest ancestor's, else the project's default repository, which is set in
-  Dispatch), which Legion records, with that repository's default branch as GitHub names it, when
-  it first records the issue, and keeps. This release's one-time pass is the one exception: it
-  writes a configured rename's new name (`repository_renames`) over the old one on the records.
+  own, else its nearest ancestor's in its own project, else the project's default repository,
+  which is set in Dispatch), which Legion records, with that repository's default branch as GitHub
+  names it, when it first records the issue, and keeps. This release's one-time pass is the one
+  exception: it writes a configured rename's new name (`repository_renames`) over the old one on
+  the records.
   Legion acts there through two GitHub Apps, so the account that reviews a change is never the one
   that wrote it. The daemon creates a root's branch at the recorded default branch (`main`,
   `develop` or `release/v7.1` alike) when it admits the root, before its architect starts, and a

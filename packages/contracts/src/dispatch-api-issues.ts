@@ -133,9 +133,9 @@ export const issueFields = {
   /** The issue's own repository, owner/name: any repository GitHub could hold. Null when the
    *  issue names none of its own. */
   repo: z.string().nullable(),
-  /** The repository Dispatch resolves for the issue: its own, else its nearest ancestor's, else the
-   *  project's default repository (`Project.default_repo`), else null. Legion records it when it
-   *  first records the issue. */
+  /** The repository Dispatch resolves for the issue: its own, else its nearest ancestor's in its
+   *  own project, else the project's default repository (`Project.default_repo`), else null.
+   *  Legion records it when it first records the issue. */
   resolved_repo: z.string().nullable(),
   /** Null for issues created before Dispatch recorded their creator. */
   created_by: ActorSchema.nullable(),
