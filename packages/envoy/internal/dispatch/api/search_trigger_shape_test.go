@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -217,6 +218,64 @@ func callsIn(code string) []string {
 	return names
 }
 
+// normalisers are the functions that hand the parser text by design: search_vector, the two vector
+// functions, whose parameters this test reads, and search_text and search_document_text.
+var normalisers = []string{"search_vector", "issue_search_vector", "title_lexemes", "search_text", "search_document_text"}
+
+// parserReach answers, for every name that reaches the text-search parser, the chain of calls it
+// reaches it by: each of pg_catalog's entry points (parserEntries) reaches it by itself, and a
+// function outside the system schemas, but for normalisers, reaches it when its own code, as
+// maskSQL leaves it, calls a name that does, at any depth (`comment_token_count > ts_parse`). A
+// plpgsql or sql function's code is its body; one with a SQL-standard body is read whole, as
+// pg_get_functiondef writes it. A function is known by its name, so an overload of a name that
+// reaches the parser makes the name reach it.
+func parserReach(t *testing.T, ctx context.Context, database *store.Store) map[string]string {
+	t.Helper()
+	reach := map[string]string{}
+	for _, entry := range parserEntries(t, ctx, database) {
+		reach[entry.name] = entry.name
+	}
+	rows, err := database.Pool.Query(ctx, `
+		select p.proname::text, case when p.prosqlbody is not null then pg_get_functiondef(p.oid) else p.prosrc end
+		  from pg_proc p join pg_language l on l.oid = p.prolang join pg_namespace n on n.oid = p.pronamespace
+		 where l.lanname in ('sql', 'plpgsql')
+		   and n.nspname not in ('pg_catalog', 'information_schema') and n.nspname !~ '^pg_'`)
+	if err != nil {
+		t.Fatalf("read the functions outside the system schemas: %v", err)
+	}
+	calls := map[string][]string{}
+	for rows.Next() {
+		var name, source string
+		if err := rows.Scan(&name, &source); err != nil {
+			t.Fatalf("read a function: %v", err)
+		}
+		if !slices.Contains(normalisers, name) {
+			calls[name] = append(calls[name], callsIn(maskSQL(source))...)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the functions outside the system schemas: %v", err)
+	}
+	if len(calls) == 0 {
+		t.Fatal("read no function outside the system schemas: the read cannot see the helpers")
+	}
+	for changed := true; changed; {
+		changed = false
+		for name, called := range calls {
+			if reach[name] != "" {
+				continue
+			}
+			for _, call := range called {
+				if via := reach[call]; via != "" && call != name {
+					reach[name], changed = name+" > "+via, true
+					break
+				}
+			}
+		}
+	}
+	return reach
+}
+
 // Each search trigger hands Postgres's text-search parser its text only through the shared
 // normalising functions, read from the catalog as the database runs them: search_document_text for
 // a column that holds ask blocks (a document's markdown, an issue's spec), which removes them and
@@ -226,28 +285,26 @@ func callsIn(code string) []string {
 //
 // The parser's entry points are read from pg_proc (parserEntries), the list the parser-input test
 // shadows: to_tsvector and its json forms, the tsquery builders, ts_parse, ts_debug, ts_headline
-// and the rest of pg_catalog's text-search functions that take text. The test reads the source
-// of every trigger function in the database that calls one of them, a normaliser or a vector
-// function, as maskSQL leaves it: code alone, comments of either kind and string literals of
-// every kind taken out. The set must be the six it knows, so a new one is read here before it
-// merges. In each: no call of an entry point, quoted or qualified; each argument of search_vector
-// a literal or wholly one normalising call; inside the argument of each normaliser and vector
-// function no subquery and no call but coalesce, ask_search_suffix and issue_embedding_spec;
-// markdown only inside search_document_text; and once those calls are removed, no read through
-// `new` - new.x, (new).x, row_to_json(new) - but the vector it writes and the artifact_id it
-// looks a row up by. It reads search_document_text's own body too, which must be one search_text
-// call, and each parameter of the two vector functions those triggers call, which must appear only
-// inside its normaliser. A read of the row through another name, such as a variable assigned from
-// new, is beyond it, and so is text @@ query, an operator; a raw read of new for either still
-// fails here.
+// and the rest of pg_catalog's text-search functions that take text. Every function outside the
+// system schemas that calls one of them, at any depth, counts as one too, but for the normalisers
+// and vector functions (parserReach), so a helper a trigger calls cannot hide a raw parse. The test
+// reads the source of every trigger function in the database that calls one of them, a normaliser
+// or a vector function, as maskSQL leaves it: code alone, comments of either kind and string
+// literals of every kind taken out. The set must be the six it knows, so a new one is read here
+// before it merges. In each: no call of an entry point, quoted or qualified; each argument of
+// search_vector a literal or wholly one normalising call; inside the argument of each normaliser
+// and vector function no subquery and no call but coalesce, ask_search_suffix and
+// issue_embedding_spec; markdown only inside search_document_text; and once those calls are
+// removed, no read through `new` - new.x, (new).x, row_to_json(new) - but the vector it writes and
+// the artifact_id it looks a row up by. It reads search_document_text's own body too, which must be
+// one search_text call, and each parameter of the two vector functions those triggers call, which
+// must appear only inside its normaliser. A read of the row through another name, such as a
+// variable assigned from new, is beyond it, and so is text @@ query, an operator; a raw read of new
+// for either still fails here.
 func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	entries := map[string]bool{}
-	for _, entry := range parserEntries(t, ctx, database) {
-		entries[entry.name] = true
-	}
-	normalisers := []string{"search_vector", "issue_search_vector", "title_lexemes", "search_text", "search_document_text"}
+	reach := parserReach(t, ctx, database)
 	rows, err := database.Pool.Query(ctx, `
 		select distinct p.proname::text, p.prosrc
 		  from pg_trigger t join pg_proc p on p.oid = t.tgfoid
@@ -265,7 +322,7 @@ func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 		read++
 		code := maskSQL(source)
 		for _, call := range callsIn(code) {
-			if entries[call] || slices.Contains(normalisers, call) {
+			if reach[call] != "" || slices.Contains(normalisers, call) {
 				triggers[name] = code
 			}
 		}
@@ -306,8 +363,8 @@ func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 	}
 	for name, code := range triggers {
 		for _, call := range callsIn(code) {
-			if entries[call] {
-				t.Errorf("%s calls the parser itself (%s): it must build its vector through search_vector or a vector function", name, call)
+			if via := reach[call]; via != "" {
+				t.Errorf("%s calls the parser itself (%s): it must build its vector through search_vector or a vector function", name, via)
 			}
 		}
 		for _, wrapper := range []string{"search_text", "search_document_text", "issue_search_vector", "title_lexemes"} {
