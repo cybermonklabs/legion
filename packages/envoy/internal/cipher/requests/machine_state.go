@@ -1545,7 +1545,8 @@ type Dismissal struct {
 // Dispatch, and no call to Dispatch runs in a transaction that holds locks; so is whether a machine
 // login is a person's machine's (personalLogin), from its signed request, and login's member kind,
 // after the rule and only for a record whose list holds login as one of its approvers
-// (dismissApproves).
+// (dismissApproves). A machine with no client of Dispatch asks neither: every approver stands as
+// before, so whose machine a login is decides nothing.
 // The rule reads the record's rows rather than its signed request, so a record signed for another
 // broker address is refused an outsider as an unknown id too, not with the error of a request
 // this broker cannot verify.
@@ -1572,7 +1573,7 @@ func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissa
 	}
 	login = record.CanonicalLogin(login)
 	var personal bool
-	if facts.kind == record.KindLauncherCredential {
+	if facts.kind == record.KindLauncherCredential && m.Projects != nil {
 		if personal, err = m.personalLogin(ctx, recordID); err != nil {
 			return Dismissal{}, err
 		}
