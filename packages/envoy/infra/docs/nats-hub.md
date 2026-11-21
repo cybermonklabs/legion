@@ -1361,7 +1361,11 @@ Exit 1 means: treat the password as read, cut the reach of any process the check
 change the password, below. One process neither read can see: one in a hub pod's own network
 namespace, such as the reloader or the exporter, has that pod's IP, so the log check passes it,
 and `remote_id` catches it only while it holds a route under an id other than its own pod's
-server's, which it can send as its own. A change of the password goes back to
+server's, which it can send as its own. Nor does the credential fence it: the chart runs each pod
+with `shareProcessNamespace: true`, so a process of the pod that runs as the nats container's user,
+or with the capability to trace it, can read the password from that container's environment in
+`/proc`, as it can read its traffic. The credential fences a process that can only connect to 6222.
+A change of the password goes back to
 `env`, which drops `authorization` from `nats.conf`, so the routes are open again during its `env`
 and `routes` applies, and its rollout runs `routes record` and `routes check` again. The component
 cannot make that check, since it runs at an apply and reads no pod; the rollout that applies the
