@@ -982,10 +982,11 @@ What it reads, all of it read-only:
   container, in any namespace, of an image whose path ends `legion/envoy` that runs the image's own
   entrypoint (`envoy-listener`), on the bus the reading is about: the `NATS_URLS` of the
   `envoy-listener` Deployment, or a `NATS_URLS` named with `--bus-alias`. A listener container on
-  another bus (a load-test stack's, on its own NATS) is named (`SKIP`), with its machine, and not
-  read. Each is read from its pod's log: a listener logs the two metrics, as `/metrics` serves
-  them, on a `listener legacy subjects` line every minute, and the gate takes the newest of the
-  last five minutes, which must be at most three minutes older than
+  another bus (a load-test stack's, on its own NATS) is named (`SKIP`), with its machine and its
+  `NATS_URLS` (any user, password or token in it masked: `user:***@`, `***@`), and not read. Each
+  is read from its pod's log: a listener logs the two metrics, as `/metrics` serves them, on a
+  `listener legacy subjects` line every minute, and the gate takes the newest of the last five
+  minutes, which must be at most three minutes older than
   the reading. The log and not `/metrics`, because the operator may read every listener pod's log
   and may not reach Dispatch's listener's `/metrics`: the API server's pod proxy is refused in
   namespace `dispatch`, and that listener's NetworkPolicy admits its port from Dispatch's own pods
@@ -997,7 +998,13 @@ What it reads, all of it read-only:
   than counting for that machine. Every listener with its durable on the bus (`listener-<machine>`),
   bound now or not, must be one of those: one that is not prints `UNKNOWN` by name, so a listener
   nobody named, or one offline, asleep or restarting at the reading, is never left out of the count
-  while its durable lasts (7 days unbound).
+  while its durable lasts (7 days unbound); the line says to name it with `--listener` if it runs
+  outside the cluster, or its `NATS_URLS` with `--bus-alias` if it runs in the cluster and dials the
+  bus by another address. A listener container on another bus that serves as the machine of a
+  listener the reading read prints `UNKNOWN`, naming both: that machine's durable can be either's,
+  so the one read does not show what the other counted. So does one whose `ENVOY_MACHINE_ID` is no
+  literal value (set through `valueFrom` or `envFrom`, or not set), whose machine the gate cannot
+  read; set it as a literal value.
 - **Over NATS**, from a one-off Job in namespace `envoy` that connects as the in-cluster listener
   does (`lib/legacy-subjects-gate-nats.sh`): who the server says the connection is
   (`$SYS.REQ.USER.INFO`, which the in-cluster listener's static grant refuses, so the gate then
@@ -1048,9 +1055,10 @@ answer that is no JSON object, a listener that is not running or whose newest co
 stale, a build that logs or serves no old-form counter, a reading whose start-time gauge names
 another machine than the one read (or none, outside the cluster), a listener that restarted between
 the readings (its pod's restart count or its start-time gauge moved, or it is a new pod), a
-listener of the first reading that is gone, a start-time gauge served at one reading only, a record
-that cannot be written, and at the second reading: a first reading that did not read every surface,
-a stream that is not the
+listener of the first reading that is gone, a listener on another bus that serves as the machine of
+a listener read or whose `ENVOY_MACHINE_ID` is no literal value, a start-time gauge served at one
+reading only, a record that cannot be written,
+and at the second reading: a first reading that did not read every surface, a stream that is not the
 one the first reading read (its `envoy_stream_id` changed), a stream that does not hold the whole
 window (its first message is younger than the window, less an hour: it was purged or made anew),
 and readings further apart than a listener's durable outlives its listener. A listener read at two
@@ -1075,7 +1083,9 @@ log.
 It prints `IDENTITY` (whom the NATS reads ran as), `READ`, `SKIP` (a listener container on another
 bus, with its machine), `PASS`, `FOUND` (an old-form name a first reading found), `GATE SHUT` or
 `UNKNOWN` per surface, the Job's creation and deletion, and the
-verdict alone on the last line: `GATE OPEN` (exit 0) at a clean second reading, `GATE SHUT` (exit
+verdict alone on the last line; no line of a reading prints a URL's user, password or token
+(`user:***@`, `***@` in its place), whether a `NATS_URLS` or a `nats` error naming its server holds
+it. The last line is `GATE OPEN` (exit 0) at a clean second reading, `GATE SHUT` (exit
 1), `UNKNOWN` (exit 3), and at a first reading that read every surface `FIRST READING`, naming its
 `FOUND` count, the stream sequence the second reading reads after, and when to read again (exit 4).
 It writes the reading to `--record` in every case, as a new file in a directory that exists when

@@ -20,9 +20,11 @@
 # object. A first reading on a bus that still holds old-form messages, interests and consumer
 # filters is a first reading that names each. A listener that dials the bus by another address
 # than the listener Deployment's is skipped, and its durable unread, until --bus-alias names that
-# address, while a listener on another bus stays skipped. Every case runs from the same clean
-# fixture with one thing changed, so each fails for its own reason. The old-form rule itself is
-# held row by row. The summary counts cases.
+# address, and is then held to its restarts as any listener is, while a listener on another bus
+# stays skipped, its NATS_URLS printed with any credential masked, and makes the reading UNKNOWN
+# when it serves as the machine of a listener read, or sets its machine as no literal value. Every
+# case runs from the same clean fixture with one thing changed, so each fails for its own reason.
+# The old-form rule itself is held row by row. The summary counts cases.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -117,6 +119,11 @@ readonly listener_nkey=UDAW25FEZ57VZNGE6FKAMUACIAK3LZRQHNVGUGPJS6L4INOXAQTX4AFQ
 readonly durable_lapse_ns=604800000000000
 
 readonly bus_url="nats://envoy-hub.envoy.svc.cluster.local:4222"
+
+# at is the @ that ends a URL's userinfo. The fake users and passwords of the masking cases are
+# joined to their hosts with it at run time, so no line of this file holds a URL with a user and a
+# password in it, which a secret scanner takes for a leaked credential.
+readonly at=@
 
 # pod NS NAME UID CONTAINER IMAGE COMMAND(JSON) RESTARTS STATE MACHINE [NATS_URLS] prints one pod,
 # its container on the listener Deployment's bus unless NATS_URLS names another.
@@ -499,6 +506,19 @@ run_gate --context example-cluster --record "$FAKE/record.json" --bus-alias envo
 expect_status 2
 expect_line "--bus-alias envoy-nats.envoy.svc.cluster.local:4222 is not a NATS_URLS"
 [ ! -s "$FAKE/calls" ] || fail "the gate called $(head -n 1 "$FAKE/calls")"
+# The other forms an alias is refused in: empty, two lines, a trailing comma, a user and password,
+# a space after a comma, and a scheme in capitals. Each starts with no record and no call, so a form
+# the gate took fails for itself and not for the one before.
+for alias in "" $'nats://a:4222\nnats://b:4222' "nats://a:4222," "nats://alias-user:alias-pass${at}envoy-nats.envoy.svc.cluster.local:4222" \
+  "nats://a:4222, nats://b:4222" NATS://envoy-nats.envoy.svc.cluster.local:4222; do
+  rm -f "$FAKE/record.json"
+  : >"$FAKE/calls"
+  run_gate --context example-cluster --record "$FAKE/record.json" --bus-alias "$alias"
+  [ "$status" = 2 ] || fail "--bus-alias $(printf %q "$alias"): exit status $status, want 2; output:"$'\n'"$output"
+  grep -qF -- "is not a NATS_URLS: one or more scheme://host[:port], comma-separated" <<<"$output" ||
+    fail "--bus-alias $(printf %q "$alias") is not refused as no NATS_URLS; output:"$'\n'"$output"
+  [ ! -s "$FAKE/calls" ] || fail "--bus-alias $(printf %q "$alias"): the gate called $(head -n 1 "$FAKE/calls")"
+done
 done_case
 
 new_case "a first reading of another cluster is refused"
@@ -1047,6 +1067,7 @@ replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consume
 reading
 expect_status 3
 expect_line "UNKNOWN: listener machine laptop has its durable listener-laptop on the bus and is not bound to it now (offline, asleep or restarting; last active 2026-11-20T23:59:00Z)"
+expect_line "read again while it runs, naming it with --listener laptop=<url> if it runs outside the cluster, or its NATS_URLS with --bus-alias if it runs in the cluster and dials the bus by another address"
 done_case
 
 new_case "readings further apart than a listener's durable outlives its listener are UNKNOWN"
@@ -1370,6 +1391,29 @@ expect_line "SKIP: listener pod loadtest/envoy-listener-lt1 container envoy-list
 ! grep -qF -- "-n loadtest logs" "$FAKE/calls" || fail "the listener on another bus was read"
 done_case
 
+# A NATS_URLS may carry a user and password, or a token, with a scheme or with none: the SKIP line
+# prints each masked, the listener Deployment's as well as the skipped listener's. A nats CLI error
+# names the server it is connected to by its URL, the Deployment's: that line masks it too.
+new_case "every line masks a URL's user, password and token: a SKIP line's NATS_URLS and a nats CLI error's server"
+bus_url_with_password="nats://bus-user:bus-pass-1e8f${at}envoy-hub.envoy.svc.cluster.local:4222"
+jq --arg urls "$bus_url_with_password" \
+  '(.spec.template.spec.containers[0].env[] | select(.name == "NATS_URLS") | .value) = $urls' "$base/deployment.json" >"$FAKE/deployment.json"
+jq --arg old "$bus_url" --arg urls "$bus_url_with_password" \
+  --argjson p1 "$(pod loadtest envoy-listener-lt1 lt-uid-1 envoy-listener "$envoy_image" null 0 running lt-1 "nats://loadtest-nats-a:4222,lt-user:lt-pass-7c1d${at}loadtest-nats.loadtest.svc.cluster.local:4222")" \
+  --argjson p2 "$(pod loadtest envoy-listener-lt2 lt-uid-2 envoy-listener "$envoy_image" null 0 running lt-2 nats://lt-token-4b2a@loadtest-nats.loadtest.svc.cluster.local:4222)" \
+  '(.items[].spec.containers[].env[] | select(.name == "NATS_URLS" and .value == $old) | .value) = $urls | .items += [$p1, $p2]' "$base/pods.json" >"$FAKE/pods.json"
+replace_row user_info - "$(line user_info - 0 "" "04:10:18 Unexpected NATS error from server $bus_url_with_password: nats: permissions violation: Permissions Violation for Publish to \"\$SYS.REQ.USER.INFO\"")"
+reading
+expect_status 4
+expect_line "SKIP: listener pod loadtest/envoy-listener-lt1 container envoy-listener is on another bus (NATS_URLS nats://loadtest-nats-a:4222,lt-user:***@loadtest-nats.loadtest.svc.cluster.local:4222), not the listener Deployment's nats://bus-user:***@envoy-hub.envoy.svc.cluster.local:4222, and is not read (machine lt-1;"
+expect_line "SKIP: listener pod loadtest/envoy-listener-lt2 container envoy-listener is on another bus (NATS_URLS nats://***@loadtest-nats.loadtest.svc.cluster.local:4222), not the listener Deployment's nats://bus-user:***@envoy-hub.envoy.svc.cluster.local:4222, and is not read (machine lt-2;"
+expect_line "IDENTITY: the server did not say whom the NATS reads ran as (the request \$SYS.REQ.USER.INFO: answered with nothing: 04:10:18 Unexpected NATS error from server nats://bus-user:***@envoy-hub.envoy.svc.cluster.local:4222: nats: permissions violation"
+for secret in bus-pass-1e8f lt-pass-7c1d lt-token-4b2a; do
+  expect_no_line "$secret"
+  ! grep -qF -- "$secret" "$FAKE/record.json" || fail "the record holds $secret"
+done
+done_case
+
 # A hub moved into the cluster is one bus by two names: Service envoy-hub, which the listener
 # Deployment dials, selects the hub's own pods, and the hub's session listener, which serves as
 # machine envoy-hub and is bound to its durable listener-envoy-hub, dials the hub's own Service.
@@ -1395,7 +1439,7 @@ moved_cluster
 moved_reading
 expect_status 3
 expect_line "SKIP: listener pod envoy/envoy-nats-listener-5c7d container listener is on another bus (NATS_URLS $hub_service_url), not the listener Deployment's $bus_url, and is not read (machine envoy-hub; if its NATS_URLS reaches the same NATS servers, name it with --bus-alias)"
-expect_line "UNKNOWN: listener machine envoy-hub is bound to its durable listener-envoy-hub on the bus, and no listener this reading read serves as that machine"
+expect_line "UNKNOWN: listener machine envoy-hub is bound to its durable listener-envoy-hub on the bus, and no listener this reading read serves as that machine: name it with --listener envoy-hub=<url> if it runs outside the cluster, or, if it runs in the cluster and dials the bus by another address, name that NATS_URLS with --bus-alias"
 ! grep -qF -- "-n envoy logs envoy-nats-listener-5c7d" "$FAKE/calls" || fail "the listener on the hub's own Service was read with no --bus-alias"
 rm -f "$FAKE/record.json"
 : >"$FAKE/calls"
@@ -1436,6 +1480,104 @@ moved_reading --since "$FAKE/earlier.json"
 expect_status 3
 expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-5c7d container listener served at the first reading and was not read now"
 expect_last "UNKNOWN"
+done_case
+
+# A listener read through --bus-alias that restarted between the readings is caught as any
+# listener in the cluster is: by its pod's restart count, its start-time gauge, or a new pod.
+# hub_pod_set JQ sets the hub's session listener's pod in the case's cluster by the jq update JQ.
+hub_pod_set() {
+  jq "(.items[] | select(.metadata.name == \"envoy-nats-listener-5c7d\")) |= ($1)" "$FAKE/pods.json" >"$FAKE/pods.json.new"
+  mv "$FAKE/pods.json.new" "$FAKE/pods.json"
+}
+
+new_case "a listener read through --bus-alias that restarted between the readings, as Kubernetes shows it, is UNKNOWN"
+moved_cluster
+first_reading_with 73 moved_reading --bus-alias "$hub_service_url"
+hub_pod_set '.status.containerStatuses[0].restartCount = 1'
+metrics 0 0 "$((hub_start + 100000))" 0 envoy-hub >"$FAKE/metrics/envoy.envoy-nats-listener-5c7d"
+moved_reading --since "$FAKE/earlier.json" --bus-alias "$hub_service_url"
+expect_status 3
+expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-5c7d container listener restarted between the readings (restart count 0 then 1): its counter covers only the time since"
+expect_last "UNKNOWN"
+done_case
+
+new_case "a listener read through --bus-alias whose restart count alone moved between the readings is UNKNOWN"
+moved_cluster
+first_reading_with 73 moved_reading --bus-alias "$hub_service_url"
+hub_pod_set '.status.containerStatuses[0].restartCount = 1'
+moved_reading --since "$FAKE/earlier.json" --bus-alias "$hub_service_url"
+expect_status 3
+expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-5c7d container listener restarted between the readings (restart count 0 then 1): its counter covers only the time since"
+expect_last "UNKNOWN"
+done_case
+
+new_case "a listener read through --bus-alias whose start-time gauge alone moved between the readings is UNKNOWN"
+moved_cluster
+first_reading_with 73 moved_reading --bus-alias "$hub_service_url"
+metrics 7 0 "$((hub_start + 100000))" 0 envoy-hub >"$FAKE/metrics/envoy.envoy-nats-listener-5c7d"
+moved_reading --since "$FAKE/earlier.json" --bus-alias "$hub_service_url"
+expect_status 3
+expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-5c7d container listener restarted between the readings: its start-time gauge read $hub_start then $((hub_start + 100000))"
+expect_no_line "restart count"
+expect_last "UNKNOWN"
+done_case
+
+new_case "a listener read through --bus-alias that is a new pod at the second reading is UNKNOWN"
+moved_cluster
+first_reading_with 73 moved_reading --bus-alias "$hub_service_url"
+hub_pod_set '.metadata.name = "envoy-nats-listener-8e2f" | .metadata.uid = "hub-listener-uid-2"'
+mv "$FAKE/metrics/envoy.envoy-nats-listener-5c7d" "$FAKE/metrics/envoy.envoy-nats-listener-8e2f"
+moved_reading --since "$FAKE/earlier.json" --bus-alias "$hub_service_url"
+expect_status 3
+expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-8e2f container listener was not read at the first reading"
+expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-5c7d container listener served at the first reading and was not read now"
+expect_last "UNKNOWN"
+done_case
+
+# A listener on another bus that serves as the machine of a listener read: an operator who names
+# the load-test stack's bus with --bus-alias, and not the hub's own Service, while a load-test
+# listener runs as machine envoy-hub, reads the load-test listener as envoy-hub, so the durable
+# listener-envoy-hub looks read, and the hub's session listener, bound to it, is never read.
+readonly loadtest_url="nats://loadtest-nats.loadtest.svc.cluster.local:4222"
+new_case "a listener on another bus that serves as the machine of a listener read is UNKNOWN, naming both"
+moved_cluster
+jq --argjson p "$(pod loadtest envoy-listener-lt1 lt-uid-1 envoy-listener "$envoy_image" null 0 running envoy-hub "$loadtest_url")" \
+  '.items += [$p]' "$FAKE/pods.json" >"$FAKE/pods.json.new"
+mv "$FAKE/pods.json.new" "$FAKE/pods.json"
+metrics 5 0 "$listener_start" 0 envoy-hub >"$FAKE/metrics/loadtest.envoy-listener-lt1"
+moved_reading --bus-alias "$loadtest_url"
+expect_status 3
+expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-5c7d container listener, on another bus (NATS_URLS $hub_service_url) and not read, serves as machine envoy-hub, as listener pod loadtest/envoy-listener-lt1 container envoy-listener, which this reading read, does: the durable listener-envoy-hub on the bus can be either's"
+expect_last "UNKNOWN"
+# A second reading does not open on it either, whatever the first reading's record says: here it
+# says complete, as a gate without this rule wrote it, and the hub's session listener, never read,
+# counted an old-form name between the readings.
+jq --argjson s "$((73 * 3600))" '.verdict = "complete" | .unknown = [] | .started_at -= $s | .finished_at -= $s
+  | .read_at = (.started_at | todate) | .listeners |= map(.read_at -= $s)' "$FAKE/record.json" >"$FAKE/earlier.json"
+rm -f "$FAKE/record.json"
+metrics 8 0 "$hub_start" 0 envoy-hub >"$FAKE/metrics/envoy.envoy-nats-listener-5c7d"
+moved_reading --since "$FAKE/earlier.json" --bus-alias "$loadtest_url"
+expect_status 3
+expect_line "UNKNOWN: listener pod envoy/envoy-nats-listener-5c7d container listener, on another bus (NATS_URLS $hub_service_url) and not read, serves as machine envoy-hub"
+expect_no_line "GATE OPEN"
+done_case
+
+# A listener on another bus whose ENVOY_MACHINE_ID is no literal value: the gate cannot read its
+# machine, so whether a listener the reading read serves as that machine cannot be told.
+new_case "a listener on another bus whose ENVOY_MACHINE_ID is no literal value is UNKNOWN, naming it"
+jq --argjson p1 "$(pod loadtest envoy-listener-lt1 lt-uid-1 envoy-listener "$envoy_image" null 0 running lt-1 "$loadtest_url" |
+  jq '.spec.containers[0].env |= map(if .name == "ENVOY_MACHINE_ID" then {name, valueFrom: {fieldRef: {fieldPath: "metadata.name"}}} else . end)')" \
+  --argjson p2 "$(pod loadtest envoy-listener-lt2 lt-uid-2 envoy-listener "$envoy_image" null 0 running "" "$loadtest_url" |
+    jq '.spec.containers[0].envFrom = [{configMapRef: {name: "loadtest-listener-env"}}]')" \
+  --argjson p3 "$(pod loadtest envoy-listener-lt3 lt-uid-3 envoy-listener "$envoy_image" null 0 running "" "$loadtest_url")" \
+  '.items += [$p1, $p2, $p3]' "$base/pods.json" >"$FAKE/pods.json"
+reading
+expect_status 3
+expect_line "UNKNOWN: listener pod loadtest/envoy-listener-lt1 container envoy-listener, on another bus (NATS_URLS $loadtest_url) and not read, sets ENVOY_MACHINE_ID through valueFrom, so its machine cannot be read and whether a listener this reading read serves as that machine cannot be told; set ENVOY_MACHINE_ID on it as a literal value"
+expect_line "UNKNOWN: listener pod loadtest/envoy-listener-lt2 container envoy-listener, on another bus (NATS_URLS $loadtest_url) and not read, sets no ENVOY_MACHINE_ID of its own and takes envFrom, which may set it, so its machine cannot be read"
+expect_line "UNKNOWN: listener pod loadtest/envoy-listener-lt3 container envoy-listener, on another bus (NATS_URLS $loadtest_url) and not read, sets no ENVOY_MACHINE_ID, so its machine cannot be read"
+expect_last "UNKNOWN"
+! grep -qF -- "-n loadtest logs" "$FAKE/calls" || fail "a listener on another bus was read"
 done_case
 
 # nsc's output on a failure may echo the seed it read: the Job logs a fixed line instead.

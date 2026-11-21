@@ -25,10 +25,11 @@
 #     names with --bus-alias as an address of the same NATS servers (a hub in the cluster that the
 #     Service envoy-listener dials and a Service of the hub's own both select, so a listener that
 #     dials the second is on the bus). A listener container on another bus (a load-test stack's, on
-#     its own NATS) is named (SKIP), with its machine, and not read. Each is read from its
-#     pod's log: the listener logs the two metrics, as /metrics serves them, on a line "listener
-#     legacy subjects" every minute (cmd/listener startLegacySubjectsLog), and the gate takes the
-#     newest from the last five minutes, which must be at most three minutes older than the
+#     its own NATS) is named (SKIP), with its machine and its NATS_URLS, any credential in it
+#     masked, and not read. Each is read from its pod's log: the listener logs the two metrics, as
+#     /metrics serves them, on a line "listener legacy subjects" every minute (cmd/listener
+#     startLegacySubjectsLog), and the gate takes the newest from the last five minutes, which must
+#     be at most three minutes older than the
 #     reading. The log and not /metrics, because the operator may read every listener pod's log and
 #     may not reach Dispatch's listener's /metrics: the API server's pod proxy is refused in that
 #     namespace, and the listener's NetworkPolicy admits its port from Dispatch's own pods alone. A
@@ -80,11 +81,13 @@
 # a reading whose start-time gauge names another machine than the one read, or none for a listener
 # outside the cluster, a listener that restarted between the readings (its pod's restart count or
 # its start-time gauge moved, or it is a new pod), a listener of the first reading that is gone, a
-# start-time gauge served at one reading only, a record that cannot be written, and at a second
-# reading: a first reading that did not read every surface, a stream that is not the first
-# reading's (its envoy_stream_id changed), a stream that does not hold the whole window (its first
-# message is younger than the window, less an hour), and readings further apart than a listener's
-# durable outlives its listener.
+# listener on another bus that serves as the machine of a listener read (that machine's durable can
+# be either's) or whose ENVOY_MACHINE_ID is no literal value (its machine cannot be read), a
+# start-time gauge served at one reading only, a record that cannot be written, and
+# at a second reading: a first reading that did not read every surface, a stream that is not the
+# first reading's (its envoy_stream_id changed), a stream that does not hold the whole window (its
+# first message is younger than the window, less an hour), and readings further apart than a
+# listener's durable outlives its listener.
 #
 # The Job: namespace envoy, the ServiceAccount, NATS URL and credential of the listener Deployment
 # envoy/envoy-listener as it is deployed (read at each run, so the Job connects with whatever
@@ -115,7 +118,8 @@
 # 4). It writes the reading to --record in every case, as a new file in a directory that exists
 # when the gate starts: a file made at that path meanwhile is left as it is, and the reading is
 # UNKNOWN. A second reading that opened is a first reading for the next window. A usage error exits
-# 2 and reads nothing.
+# 2 and reads nothing. No line of a reading prints a URL's user, password or token (user:***@,
+# ***@ in its place), whether a NATS_URLS or a nats error naming its server holds it.
 #
 # It needs bash, kubectl (a context for the cluster that runs the listeners and the hub bridge,
 # signed in as an account that may list pods in every namespace, read the logs of the listener
@@ -295,6 +299,8 @@ if ! { kc get pods --all-namespaces -o json >"$work/pods.json" 2>"$work/pods.err
          running: ($s.state.running != null), state: ((($s.state // {}) | keys | first) // "not started"),
          restarts: ($s.restartCount // null),
          machine: ([$c.env[]? | select(.name == "ENVOY_MACHINE_ID") | .value // empty] | first // null),
+         machine_from: ([$c.env[]? | select(.name == "ENVOY_MACHINE_ID") | if .valueFrom != null then "valueFrom" else empty end] | first
+           // (if ($c.envFrom // []) | length > 0 then "envFrom" else null end)),
          urls: ([$c.env[]? | select(.name == "NATS_URLS") | .value // empty] | first // null)}]
     | {bus: map(select(on_bus)), other: map(select(on_bus | not))}' \
     "$work/pods.json" >"$work/listener-sets.json" 2>"$work/pods.err" &&

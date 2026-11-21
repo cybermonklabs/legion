@@ -8,9 +8,14 @@ body: |-
   `envoy-nats` and serves as machine `envoy-hub`, was skipped as on another bus, and its bound
   durable `listener-envoy-hub` made every reading `UNKNOWN`: the gate could never open. Such a
   cluster is read with `--bus-alias nats://envoy-nats.envoy.svc.cluster.local:4222` at both
-  readings. A `SKIP` line now names the skipped listener's machine, and says to name its
-  `NATS_URLS` with `--bus-alias` if it reaches the same servers; a listener on another bus is
-  still skipped and not read.
+  readings. A `SKIP` line now names the skipped listener's machine, prints its `NATS_URLS` with
+  any user, password or token masked, as every line of a reading now prints a URL (a `nats` error
+  naming its server included), and says to name its `NATS_URLS` with `--bus-alias` if it reaches
+  the same servers, and so does the `UNKNOWN` line for a listener durable that no listener the
+  reading read serves. A listener on another bus is still skipped and not read, and one that
+  serves as the machine of a listener the reading read makes the reading `UNKNOWN`, naming both,
+  since that machine's durable can be either's; so does one whose `ENVOY_MACHINE_ID` is no literal
+  value (`valueFrom`, `envFrom` or none), since its machine cannot be read.
 time: 2026-11-21T17:56:22Z
 custom:
     Issue: legacy-subjects-gate
