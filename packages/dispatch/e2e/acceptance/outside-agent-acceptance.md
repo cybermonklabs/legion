@@ -145,10 +145,11 @@ The tailnet leg does these steps, in this order:
    `... not delivered` when the full member's own feed was not sent both, or `write <began> <ended>
    - not written`. Only a delivered write that began after the runner's live window opened and
    ended before it closed counts. No full member's credential goes to the runner: the fills file
-   holds none, and is at most 40 KiB so that it fits one input. Its contract is #4608's fills
-   version 4 (`restricted-sweep-fills<TAB>4`), which name the SHA-256 of the origin they were made
-   at (`origin_sha256`), of the `routes.txt` they were made from (`routes`) and of the member's own
-   projects' keys and creation times (`deployment`). Fills mode writes no file that lacks a fill,
+   holds none, and is at most 40 KiB so that it fits one input. Its contract is #4608's at
+   `2a40716f65`, fills version 4 (`restricted-sweep-fills<TAB>4`), which name the SHA-256 of the
+   origin they were made at (`origin_sha256`), of the `routes.txt` they were made from (`routes`)
+   and of the member's own projects' keys and creation times (`deployment`). Fills mode writes no
+   file that lacks a fill,
    nor one where the member's project list gives a project no creation time, and the leg sends no
    fills of another version (each, the sweep row UNKNOWN on the box). A runner refuses, before its
    first request, fills of another `routes.txt` than its own checkout's, of another deployment, or
