@@ -197,14 +197,16 @@ func loadTreeIssues(ctx context.Context, q queryer, project string) ([]treeIssue
 // issue once to every component it counts for, in the issues' order. When an issue qualifies
 // several ways the strongest wins: direct (its own row names the component) over inherited (an
 // ancestor's row does) over contained (its set names a component this one contains; via is
-// that component). Retired ids match no component and count for nothing.
+// that component). Retired ids match no component and count for nothing. The owner walk climbs
+// only to parents of the project, as issueComponentsTerms does, so an issue under an issue of
+// another project takes no attachment from it: component ids belong to one project's model.
 func attachTreeIssues(ctx context.Context, q queryer, project string, issues []treeIssue, byID map[string]*model.ArchitectureTreeComponent) error {
 	rows, err := q.Query(ctx, `
 		with recursive chain as (
 			select i.key as start, i.key, i.parent_key, 0 as depth from issues i where i.project_key = $1
 			union
 			select c.start, p.key, p.parent_key, c.depth + 1
-			from chain c join issues p on p.key = c.parent_key
+			from chain c join issues p on p.key = c.parent_key and p.project_key = $1
 			where c.depth < `+parentDepthCapSQL+`
 		), owner as (
 			select distinct on (c.start) c.start as key, c.key as owner_key
