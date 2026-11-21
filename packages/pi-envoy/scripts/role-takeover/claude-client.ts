@@ -148,7 +148,7 @@ const options = parseOptions(process.argv.slice(2));
 const { PATH } = process.env;
 if (options.inbox !== undefined) await serveInbox(options.inbox);
 
-const child: Subprocess<"pipe", "pipe", "pipe"> = Bun.spawn(["bun", options.server], {
+const child: Subprocess<"pipe", "pipe", "pipe"> = Bun.spawn([process.execPath, options.server], {
   cwd: options.stateDirectory,
   env: {
     ...readEnvFile(options.envFile),

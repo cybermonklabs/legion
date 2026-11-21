@@ -144,7 +144,7 @@ async function verdictFor(
     }
   });
   const child = Bun.spawn(
-    ["bun", script, "ctx", "legion", "legion.dev/project=legsmoke", podWatch, verdict],
+    [process.execPath, script, "ctx", "legion", "legion.dev/project=legsmoke", podWatch, verdict],
     {
       env: {
         PATH: `${bin}:${process.env.PATH ?? ""}`,

@@ -1,7 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { answerTurn, judgeRun } from "./judge";
 import { FAULT_ROWS } from "./judge-prompts";
 import { sharedRuns } from "./score";
@@ -11,7 +11,10 @@ import { sharedRuns } from "./score";
 // judge-omp in production), and copies the judge's validated answer into the run directory. The
 // fake runner below records what each judge saw and writes a fixed answer. Every text is invented.
 
-const work = temporaryDirectory("skill-scenarios-judge");
+// On the memory root (`memoryRoot`): its rows write a run directory of files each, and with
+// TMPDIR on a dev box's shared disk the file took 60-66 s alone in a 2-CPU cgroup and timed out a
+// row and a hook against Bun's 5 s, where on /dev/shm it took 2-3 s.
+const work = temporaryDirectory("skill-scenarios-judge", { root: memoryRoot() });
 beforeAll(() => {
   mkdirSync(path.join(work, "profiles", "head"), { recursive: true });
   writeFileSync(path.join(work, "profiles", "head", "checkout"), "/checkouts/head\n");

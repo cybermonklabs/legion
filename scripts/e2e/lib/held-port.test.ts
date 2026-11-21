@@ -1,9 +1,21 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { pythonInterpreter, skipWithout } from "@legion/test-fixtures/host-tools";
+import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root";
+import {
+  temporaryDirectories,
+  temporaryDirectory,
+} from "@legion/test-fixtures/temporary-directories";
 
 // held-port.py's real-process tests: the helper hands its socket to the real envoy-listener of
 // this branch, which serves on it through ENVOY_LISTEN_FD. They read /proc, so they run on Linux,
@@ -11,8 +23,18 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 
 const helper = join(import.meta.dir, "held-port.py");
 const envoy = join(import.meta.dir, "..", "..", "..", "packages", "envoy");
-// A short directory of its own: the keeper's unix socket lives here (docs/testing.md).
+// The listener binary and the port files: no socket goes here, so its length does not matter.
 const work = temporaryDirectory("held-port");
+// A keeper's unix socket goes in a directory of its own, made under TMPDIR when the longest
+// socket path fits there and under /tmp otherwise, which says so (`socketRoot`): a socket path
+// holds 107 bytes on Linux (`socketPathRefusal`), and a long TMPDIR passes it. The maker names a
+// directory <prefix>-XXXXXX.
+const socketPrefix = "held-port-sockets";
+const socketDirectory = temporaryDirectories(socketPrefix, {
+  root: socketRoot("held-port.test.ts's keeper sockets", (root) =>
+    socketPathRefusal(join(root, `${socketPrefix}-XXXXXX`, "missing-keeper.sock"))
+  ),
+});
 const listener = join(work, "envoy-listener");
 const O_CLOEXEC = 0o2000000;
 
@@ -29,6 +51,11 @@ const started: Running[] = [];
 let nats: Server | undefined;
 const natsClients: Socket[] = [];
 let natsUrl = "";
+// The interpreter `python3` names in this process's own environment, which the hook below reads
+// and every run of the helper starts by its path (`pythonInterpreter`): each run's environment is
+// PATH and two names of its own, where a python3 looked up by name can be a version manager's
+// shim with no version.
+let python = "";
 
 const onLinux = process.platform === "linux";
 if (!onLinux) {
@@ -43,6 +70,7 @@ const skip = !onLinux || withoutGo;
 
 beforeAll(async () => {
   if (skip) return;
+  python = pythonInterpreter();
   const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {
     cwd: envoy,
     stdout: "pipe",
@@ -80,7 +108,7 @@ afterAll(async () => {
 });
 
 // start runs argv with the environment the listener needs and collects its output; afterEach
-// kills it.
+// kills it. Each runs in a session of its own, so sessionMembers can name every process it left.
 function start(name: string, argv: string[], stdin: "ignore" | "pipe" = "ignore"): Running {
   const process = Bun.spawn(argv, {
     env: {
@@ -89,6 +117,7 @@ function start(name: string, argv: string[], stdin: "ignore" | "pipe" = "ignore"
       NATS_URLS: natsUrl,
     },
     stdin,
+    detached: true,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -131,7 +160,7 @@ function start(name: string, argv: string[], stdin: "ignore" | "pipe" = "ignore"
 
 function exec(name: string, portFile: string, command: string[], from?: string): Running {
   return start(name, [
-    "python3",
+    python,
     helper,
     "exec",
     ...(from ? ["--from", from] : []),
@@ -227,19 +256,60 @@ async function answerWithin(port: number, milliseconds: number): Promise<string>
   }
 }
 
-// listeningInode returns the inode of the socket listening on 127.0.0.1:port from /proc/net/tcp,
-// or undefined when none listens. local_address is the IPv4 address in the host's byte order
-// (127.0.0.1 is 0100007F on the little-endian machines the tests run on) and the port, in
-// hexadecimal; st 0A is LISTEN, and the tenth field is the inode.
+// listenRows returns the fields of every socket in the LISTEN state in <root>/net/tcp and
+// <root>/net/tcp6: local_address is the address in the host's byte order (127.0.0.1 is 0100007F on
+// the little-endian machines the tests run on) and the port, in hexadecimal; st 0A is LISTEN, and
+// the tenth field is the inode. A machine with IPv6 off has no tcp6 table, and any other failure to
+// read either table is the error, as the Go tests of packages/envoy read the two. root is /proc, or
+// a directory a row lays tables out in.
+function listenRows(root = "/proc"): string[][] {
+  return ["tcp", "tcp6"].flatMap((table) => {
+    let text: string;
+    try {
+      text = readFileSync(join(root, "net", table), "utf8");
+    } catch (error) {
+      if (table === "tcp6" && (error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    return text
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/))
+      .filter((fields) => fields.length > 9 && fields[3] === "0A");
+  });
+}
+
+// listeningInode returns the inode of the socket listening on 127.0.0.1:port, or undefined when
+// none listens.
 function listeningInode(port: number): string | undefined {
   const local = `0100007F:${port.toString(16).toUpperCase().padStart(4, "0")}`;
-  const inodes = readFileSync("/proc/net/tcp", "utf8")
-    .split("\n")
-    .map((line) => line.trim().split(/\s+/))
-    .filter((fields) => fields.length > 9 && fields[1] === local && fields[3] === "0A")
+  const inodes = listenRows()
+    .filter((fields) => fields[1] === local)
     .map((fields) => fields[9]);
   if (inodes.length > 1) throw new Error(`${inodes.length} sockets listen on 127.0.0.1:${port}`);
   return inodes[0];
+}
+
+// listens says whether the socket of inode is still in the LISTEN state on any port: a socket
+// whose every holder is gone is gone from both tables with it. It reads the socket itself, not
+// its port, since any other process on the machine may bind a port once it is free.
+function listens(inode: string): boolean {
+  return listenRows().some((fields) => fields[9] === inode);
+}
+
+// sessionMembers returns the pids of the processes in session sid (the sixth field of
+// /proc/<pid>/stat, after the command's closing parenthesis).
+function sessionMembers(sid: number): number[] {
+  return readdirSync("/proc")
+    .filter((entry) => /^[0-9]+$/.test(entry))
+    .filter((entry) => {
+      try {
+        const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+        return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[3] === String(sid);
+      } catch {
+        return false;
+      }
+    })
+    .map(Number);
 }
 
 // descriptorsOf returns the descriptors of process pid that link to target.
@@ -284,7 +354,7 @@ describe.skipIf(skip)("held-port.py exec", () => {
     const running = start(
       "exec of a shell that waits, then the listener",
       [
-        "python3",
+        python,
         helper,
         "exec",
         "--port-file",
@@ -328,25 +398,56 @@ describe.skipIf(skip)("held-port.py exec", () => {
     expect(closeOnExec(pid, holders[0] as number)).toBe(true);
   }, 60_000);
 
-  test("a command that cannot run exits non-zero, and its port binds again", async () => {
+  test("a command that cannot run exits non-zero, and leaves nothing holding its socket", async () => {
     const portFile = join(work, "missing.port");
     const missing = join(work, "no-such-command");
     const running = exec("exec of a missing command", portFile, [missing]);
     const code = await running.process.exited;
     expect(code, describeRun(running)).toBe(127);
     expect(running.output()).toContain(`held-port: execute ${missing}`);
-    const port = await readPort(portFile, running);
-    expect(listeningInode(port)).toBeUndefined();
-    expect(await bindOutcome(port)).toBe("bound");
+    expect(await readPort(portFile, running)).toBeGreaterThan(0);
+    // Every process the helper could have handed its socket to is in the helper's session: none
+    // of them is left. A bind of the port would not say the socket is gone, since any other
+    // process on the machine may bind a port the helper freed.
+    expect(sessionMembers(running.process.pid)).toEqual([]);
+
+    // The socket itself, by its identity, which a copy the helper handed to a process outside its
+    // session would keep listening. The helper's own socket is gone the moment it exits, before
+    // its inode can be read, so this run's is a keeper's, read while it listens and handed over:
+    // once the keeper is gone too, a copy anything else still held would still listen.
+    const socket = join(socketDirectory(), "missing-keeper.sock");
+    const keptFile = join(work, "missing-kept.port");
+    const keeper = start("the keeper", [
+      python,
+      helper,
+      "keep",
+      "--port-file",
+      keptFile,
+      "--socket",
+      socket,
+    ]);
+    const kept = listeningInode(await readPort(keptFile, keeper));
+    if (!kept) throw new Error(`the keeper's port does not listen: ${describeRun(keeper)}`);
+    const handed = exec(
+      "exec of a missing command from the keeper",
+      join(work, "missing-handed.port"),
+      [missing],
+      socket
+    );
+    expect(await handed.process.exited, describeRun(handed)).toBe(127);
+    expect(sessionMembers(handed.process.pid)).toEqual([]);
+    keeper.process.kill("SIGTERM");
+    expect(await keeper.process.exited, describeRun(keeper)).toBe(0);
+    expect(listens(kept)).toBe(false);
   }, 60_000);
 });
 
 describe.skipIf(skip)("held-port.py keep", () => {
   test("two listeners started from one keeper serve its port, which stays held between them", async () => {
     const portFile = join(work, "kept.port");
-    const socket = join(work, "keeper.sock");
+    const socket = join(socketDirectory(), "keeper.sock");
     const keeper = start("the keeper", [
-      "python3",
+      python,
       helper,
       "keep",
       "--port-file",
@@ -359,6 +460,8 @@ describe.skipIf(skip)("held-port.py keep", () => {
     const first = exec("the first listener", join(work, "first.port"), [listener], socket);
     expect(await readPort(join(work, "first.port"), first)).toBe(port);
     await requireAnswers(port, first);
+    const kept = listeningInode(port);
+    if (!kept) throw new Error(`nothing listens on 127.0.0.1:${port}`);
     first.process.kill("SIGKILL");
     await first.process.exited;
 
@@ -375,6 +478,50 @@ describe.skipIf(skip)("held-port.py keep", () => {
     keeper.process.kill("SIGTERM");
     expect(await keeper.process.exited, describeRun(keeper)).toBe(0);
     expect(existsSync(socket)).toBe(false);
-    expect(await bindOutcome(port)).toBe("bound");
+    // The kept socket is gone with the keeper, and its port with it.
+    expect(listens(kept)).toBe(false);
   }, 120_000);
+});
+
+// The two tables as listenRows reads them, laid out under a root of the row's own, so the rows run
+// on any machine and say the same on every one: one whose IPv6 is off has no tcp6 table at all.
+describe("listenRows", () => {
+  const tables = temporaryDirectories("held-port-tables");
+  const header =
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode";
+  const listening = (local: string, inode: number) =>
+    `   0: ${local} 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 ${inode} 1 0000000000000000 100 0 0 10 0`;
+  const connected = (local: string, inode: number) =>
+    `   1: ${local} 0100007F:9C40 01 00000000:00000000 00:00000000 00000000  1000        0 ${inode} 1 0000000000000000 20 4 30 10 -1`;
+  /** A root whose net directory holds each table named, with its rows after the header. */
+  function root(contents: Record<string, string[]>): string {
+    const dir = tables();
+    mkdirSync(join(dir, "net"));
+    for (const [table, rows] of Object.entries(contents)) {
+      writeFileSync(join(dir, "net", table), `${[header, ...rows].join("\n")}\n`);
+    }
+    return dir;
+  }
+
+  test("reads the listening rows of both tables", () => {
+    const both = root({
+      tcp: [listening("0100007F:1F90", 101), connected("0100007F:1F91", 102)],
+      tcp6: [listening("00000000000000000000000001000000:1F92", 103)],
+    });
+    expect(listenRows(both).map((fields) => fields[9])).toEqual(["101", "103"]);
+  });
+
+  test("reads tcp alone on a machine with no tcp6 table", () => {
+    const ipv4Only = root({ tcp: [listening("0100007F:1F90", 201)] });
+    expect(listenRows(ipv4Only).map((fields) => fields[9])).toEqual(["201"]);
+  });
+
+  test("fails when tcp is missing, and when tcp6 is there but cannot be read", () => {
+    expect(() =>
+      listenRows(root({ tcp6: [listening("00000000000000000000000001000000:1F92", 301)] }))
+    ).toThrow(/ENOENT/);
+    const unreadable = root({ tcp: [listening("0100007F:1F90", 302)] });
+    mkdirSync(join(unreadable, "net", "tcp6"));
+    expect(() => listenRows(unreadable)).toThrow(/EISDIR/);
+  });
 });

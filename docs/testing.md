@@ -143,7 +143,44 @@ itself, whose tests import its sources by relative path.
   test. The Dispatch e2e harness is the same rule at the scale of a run: a port variable left unset
   is port 0, one that is set is used as given, and two variables naming one port are refused where
   the ports resolve rather than by whichever listener loses the race (`harnessPort` and
-  `harnessPorts` in `packages/dispatch/e2e/harness-ports.ts`).
+  `harnessPorts` in `packages/dispatch/e2e/harness-ports.ts`). A row that needs a port every
+  connection to is refused holds one the same way, bound and never listening, for as long as the
+  row dials it (`refusingOrigin` in `@legion/test-fixtures/refused-port`, called inside the row, so
+  a hold that fails fails that row alone): the port of a server the test stopped is free for any
+  other process to take, and port 1 is refused only while nothing on the machine listens there,
+  which a privileged process, or any process of a container whose `ip_unprivileged_port_start` is
+  0, can. For the same reason a row that checks a port was let go reads the socket itself, never a
+  bind of the port: by its inode, in `/proc/net/tcp` and in each holder's `/proc/<pid>/fd`
+  (`packages/envoy/internal/sockettest` for the Go tests of `packages/envoy`, the readers in
+  `scripts/e2e/lib/held-port.test.ts`), or, for a socket that is bound and never listens, which
+  `/proc/net/tcp` does not list, by the descriptor that held it (`refused-port.test.ts`).
+
+- A unix socket a suite binds, or hands a program to bind (a tmux server's `-S` path, an inbox,
+  a server's own socket under a directory the suite names), goes in a directory made where its
+  path fits, never under a bare `tmpdir()`. A socket path holds 107 bytes on Linux and 103 on
+  macOS (see "Unix sockets in Go tests" below), and a long `TMPDIR` passes that: a dev box's on a
+  data disk, a Legion pod's, a macOS `/var/folders` one. Bun 1.4.4's own `node:net` binds and
+  dials a longer path on Linux (a 146-byte one, measured), and Node 22 cuts it short, but tmux
+  refuses it ("File name too long"), Go and Postgres refuse it too, and Claude Code's mod host
+  takes "near 100 B at most" (`packages/claude-envoy/hooks/mod-protocol.ts`). A suite's socket
+  stands in for one such a program serves or dials, so the rule holds for every socket. Take the
+  root from `socketRoot(what, refusal)` (`@legion/test-fixtures/socket-root`): it answers
+  `tmpdir()` when the suite's longest socket path fits under a directory made there, and `/tmp`
+  otherwise, which it says once on stderr; `refusal` measures that path, `mkdtemp`'s six random
+  characters included, and `socketPathRefusal(path)` is the refusal for a socket with no bound of
+  its own. A directory per
+  test is `temporaryDirectories(prefix, { root })`, which names it `<prefix>-XXXXXX`
+  (`scripts/e2e/lib/held-port.test.ts`, `packages/claude-envoy/tests/legion-inbox.test.ts`); a
+  directory a test removes itself is `mkdtemp(join(root, prefix))`
+  (`packages/claude-envoy/tests/session-title.test.ts`,
+  `packages/pi-envoy/extensions/tmux-place-omp.test.ts`). `temporaryTmpdir` takes no `root`, and
+  `temporaryDirectory`'s name holds eight random characters where the refusal counts `mkdtemp`'s
+  six, so a socket goes under neither. claude-envoy's mod socket
+  has a smaller bound, 100 bytes (`MOD_SOCKET_PATH_MAX_BYTES`), so its suites take their base from
+  `modSocketScratch(prefix)` (`packages/claude-envoy/tests/mod-socket-scratch.ts`), which measures
+  it with the product's own `resolveModSocketPath`, and read the session's socket through
+  `sessionModSocket`, whose error carries the reason a session has none. Before you call such a
+  suite done, run it under a `TMPDIR` of about 100 bytes, as for Go below.
 
 - A suite that needs a program this host may not have skips with that program's name. Call
   `skipWithout("docker")` once, at the file's module scope, and hand the answer to every
@@ -155,6 +192,37 @@ itself, whose tests import its sources by relative path.
   both builds the two halves into a single list and prints one line, rather than calling
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
   (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
+
+- A suite that starts Bun, Python or Node under an environment of its own starts each by its path,
+  never by its name on PATH: Bun as `process.execPath`, Python as `pythonInterpreter()` and Node as
+  `nodeInterpreter()` (`@legion/test-fixtures/host-tools`), each of which asks the interpreter the
+  caller's own environment runs for its executable. On a dev box these are mise shims, and under a
+  HOME of the suite's own a shim has no version ("bun is not a valid shim"), or runs another
+  interpreter that stands behind it on PATH (`packages/claude-envoy/tests/open-asks-hook.test.ts`,
+  `scripts/e2e/lib/held-port.test.ts`). A module that runs under Playwright's Node asks `bun` for
+  its own `process.execPath` once (`packages/dispatch/e2e/dispatch-cli.ts`). Where the suite starts
+  a script that runs `bun` by name itself, a shell script or a `bin/` launcher, the script's PATH has
+  this Bun's own directory, `dirname(process.execPath)`, first, so its `bun` is this one
+  (`scripts/e2e/lib/app-logins.test.ts`, `scripts/e2e/lib/operator-dispatch.test.ts`, and the
+  `bin/dispatch` row of `packages/claude-envoy/tests/dist-fresh.test.ts`).
+
+- A suite that starts any other program under a HOME of its own, on the caller's PATH, passes it the
+  caller's mise configuration: `callerMiseEnvironment(stateDir)`
+  (`@legion/test-fixtures/mise-environment`) resolves MISE_DATA_DIR and MISE_CONFIG_DIR, and the
+  MISE_GLOBAL_CONFIG_FILE, MISE_SYSTEM_CONFIG_DIR, MISE_SYSTEM_CONFIG_FILE and
+  MISE_TRUSTED_CONFIG_PATHS the caller names, as mise does, from mise's own variables, the XDG base
+  directories and the caller's home. On a dev box bun, jq and jj on PATH can be mise shims, and
+  under a fresh HOME a shim finds no version and fails ("No version is set for shim: bun").
+  Passing XDG_CONFIG_HOME only when the caller sets it is not enough: a caller that leaves it unset
+  keeps its mise config in its own `~/.config/mise`. MISE_STATE_DIR is `stateDir`, a directory of
+  the suite's own, because mise writes there on every run (a link for each config it loads, and the
+  trust record `mise exec` gives the active config). `seedMiseState(stateDir)`, called in the hook
+  that stages the HOME, copies the caller's trust and ignore records into it, so a project config
+  the caller trusted still loads and nothing is written back to the caller's state. Set
+  MISE_NO_ENV=1 beside them: with the caller's config in reach, a shim runs its tool with that
+  config's `[env]` over the variables the suite set (a caller's `DATABASE_URL` over the
+  fixture's), and with it mise still picks the tool version but loads no config env
+  (`packages/pi-legion/scripts/skill-scenarios/rig.test.ts` and `rig-isolation.test.ts`).
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
@@ -168,8 +236,12 @@ itself, whose tests import its sources by relative path.
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
   `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with
   `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a
-  cache that exists to be shared by both languages and either fills for the other. The Go build and
-  module caches of the `go run` in `runDaemonPane`
+  cache that exists to be shared by both languages and either fills for the other. Where the test's
+  `TMPDIR` is on another filesystem than that cache, as on a dev box whose `TMPDIR` is on a data
+  disk, `link(2)` fails with `EXDEV` and both sides' `linkTree` puts a symlink to the cached file in
+  the HOME instead: the pin loads its native through it and writes nothing there, so the result of a
+  test does not depend on where the machine puts the two. The Go build and module caches of the
+  `go run` in `runDaemonPane`
   (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
   `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
   `go-daemon-<runner os>-<runner arch>-go<version>`, before it runs that scenario
@@ -340,13 +412,15 @@ and each command runs there.
 
 ## Unix sockets in Go tests
 
-A unix socket path must be 107 bytes or shorter. Linux's `sun_path` holds 108 bytes with the
-terminating zero, and Go refuses a longer path with `invalid argument` at `bind`, `listen` or
-`dial`. A tmux server socket has the same limit (`Filename too long`). `t.TempDir()` puts the
-test's name, cut to 64 bytes, in its path, under `GOTMPDIR` or else `TMPDIR`. With a long test name
-and a socket under it, or under a directory made from it (an `XDG_RUNTIME_DIR`, `HOME` or state
-directory a test sets to `t.TempDir()`), a temporary directory of about 20 bytes is enough to pass
-the limit, as on a dev box whose `TMPDIR` is on a data disk.
+A unix socket path must be 107 bytes or shorter on Linux and 103 bytes or shorter on macOS: each
+system's `sun_path` holds the path with its terminating zero, 108 bytes on Linux (`UNIX_PATH_MAX`
+in the kernel's `include/uapi/linux/un.h`) and 104 on macOS (xnu's `bsd/sys/un.h`). Go refuses a
+longer path with `invalid argument` at `bind`, `listen` or `dial`, and a tmux server socket has the
+same limit (`Filename too long`). `t.TempDir()` puts the test's name, cut to 64 bytes, in its path,
+under `GOTMPDIR` or else `TMPDIR`. With a long test name and a socket under it, or under a
+directory made from it (an `XDG_RUNTIME_DIR`, `HOME` or state directory a test sets to
+`t.TempDir()`), a temporary directory of about 20 bytes is enough to pass the limit, as on a dev
+box whose `TMPDIR` is on a data disk.
 
 - Take a test's socket directory from the module's `internal/testtmp`, the one helper every test
   that binds a socket calls (`packages/daemon/internal/testtmp`, and the same file in
@@ -354,7 +428,8 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   when the test ends, where `longest` is the longest path the test puts inside it, written
   relative to the directory (`"g9/.s.PGSQL.5432"`); `testtmp.Socket(t, name)` is the path of a
   socket named `name` in such a directory. `Dir` makes the directory under `TMPDIR` and measures
-  what `longest` would come to there; only when that passes 107 bytes, or `TMPDIR` holds no
+  what `longest` would come to there; only when that passes the system's limit (`maxSocketPath`:
+  107 bytes on Linux, 103 on macOS and on any system it cites no header for), or `TMPDIR` holds no
   directory at all, does it fall back to `/tmp`, and it says so with `t.Logf` when it does. Each
   module's `internal/testtmp` keeps a test that fails a new `os.TempDir()`, or a new
   `os.MkdirTemp` whose first argument is a string literal naming a directory, anywhere in that

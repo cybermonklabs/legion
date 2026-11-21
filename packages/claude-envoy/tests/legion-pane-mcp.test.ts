@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
-import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { legion } from "../package.json" with { type: "json" }
@@ -16,6 +16,15 @@ import { FakeNatsServer } from "./fake-nats-server"
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
 
+// The run's root holds the inbox socket, which stands in for the bridge's: Go binds that one
+// (packages/daemon/internal/claudebridge/inbox.go), so it holds to the 107 bytes a socket path holds
+// on Linux (`socketPathRefusal`), where Bun's own server binds past them. So the root is made under
+// TMPDIR when the socket's path fits there and under /tmp otherwise, which says so (`socketRoot`).
+// mkdtemp adds six characters.
+const rootPrefix = "claude-envoy-legion-pane-"
+const rootParent = socketRoot("legion-pane-mcp.test.ts's inbox", (parent) =>
+  socketPathRefusal(join(parent, `${rootPrefix}XXXXXX`, "inbox.sock")),
+)
 async function daemonFixture(name: string): Promise<Record<string, unknown>> {
   const file = resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name)
   return JSON.parse(await readFile(file, "utf8"))
@@ -27,7 +36,7 @@ async function daemonFixture(name: string): Promise<Record<string, unknown>> {
 // ready, offers the `legion` tool beside the Envoy tools, advertises the Send (steer) the bridge
 // serves, and hands an Envoy delivery to the inbox.
 test("a Legion pane's server registers on its transcript, claims its role, serves the legion tool and delivers through the inbox", async () => {
-  const root = await mkdtemp(join(tmpdir(), "claude-envoy-legion-pane-"))
+  const root = await mkdtemp(join(rootParent, rootPrefix))
   const configDir = join(root, "claude")
   const registered = await daemonFixture("register.json")
   const claimToken = String(registered["claimToken"])
@@ -114,7 +123,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
 
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
-    command: "bun",
+    command: process.execPath,
     args: [entry],
     cwd: root,
     env: {

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fillNativesCache, linkTree } from "./omp-natives";
@@ -39,8 +39,9 @@ async function missing(file: string): Promise<boolean> {
 
 // Of eight fills that race for one binary's cache, as the six real-binary cases and a Go test
 // binary may, one runs the binary and the rest find its copy, under the name the Go tests give it;
-// each HOME then holds that copy's inode rather than bytes of its own, and the copy takes no write
-// through a link. The staging directory of a filler that died is gone once the cache is filled.
+// each HOME on the cache's filesystem then holds that copy's inode, as a hardlink and not a
+// symlink, rather than bytes of its own, and the copy takes no write through a link. The staging
+// directory of a filler that died is gone once the cache is filled.
 test("fills racing for one binary's natives cache run it once, and each HOME links the one read-only copy", async () => {
   const dir = await scratch();
   const runs = path.join(dir, "runs");
@@ -63,9 +64,36 @@ test("fills racing for one binary's natives cache run it once, and each HOME lin
   expect(cached.mode & 0o222).toBe(0);
   for (const home of [path.join(dir, "a"), path.join(dir, "b")]) {
     await linkTree(cache, path.join(home, ".omp", "natives"));
-    const linked = await stat(path.join(home, ".omp", "natives", "9.9.9", "pi_natives.test.node"));
+    const linked = await lstat(path.join(home, ".omp", "natives", "9.9.9", "pi_natives.test.node"));
     expect([linked.dev, linked.ino]).toEqual([cached.dev, cached.ino]);
   }
+});
+
+// A HOME on another filesystem than the cache (a TMPDIR on a data disk, the cache under $HOME)
+// cannot take a hardlink: link(2) fails with EXDEV. Its native is then a symlink to the cached
+// file, which the HOME reads whole with no byte of its own. The case makes link(2) fail as it does
+// across filesystems, so it holds that branch on any machine; a link that fails for another reason
+// still fails the HOME.
+test("a HOME on another filesystem than the cache holds a symlink to the cached native", async () => {
+  const dir = await scratch();
+  const cache = path.join(dir, "cache");
+  const cached = path.join(cache, "9.9.9", "pi_natives.test.node");
+  await mkdir(path.dirname(cached), { recursive: true });
+  await writeFile(cached, "native", { mode: 0o500 });
+  const failing = (code: string) => async () => {
+    throw Object.assign(new Error(`${code}: link`), { code });
+  };
+
+  const natives = path.join(dir, "home", ".omp", "natives");
+  await linkTree(cache, natives, failing("EXDEV"));
+  const home = path.join(natives, "9.9.9", "pi_natives.test.node");
+  expect((await lstat(home)).isSymbolicLink()).toBe(true);
+  expect(await readlink(home)).toBe(cached);
+  expect(await readFile(home, "utf8")).toBe("native");
+
+  await expect(
+    linkTree(cache, path.join(dir, "other", ".omp", "natives"), failing("EACCES"))
+  ).rejects.toThrow("EACCES: link");
 });
 
 // A binary that writes only one of the variants it embeds, which the pin does, is a whole fill. A

@@ -320,8 +320,7 @@ func awaitResult(t *testing.T, result <-chan error) error {
 
 // shortSocketPath is this package's socket path: a socket named worker-stream.sock in a
 // directory of the test's own, placed by TMPDIR and falling back to /tmp for the socket path's
-// length alone, so that the bind holds within the 107 bytes a unix socket path takes
-// (docs/testing.md).
+// length alone, so that the bind holds within what a unix socket path takes (docs/testing.md).
 func shortSocketPath(t *testing.T) string {
 	t.Helper()
 	return testtmp.Socket(t, "worker-stream.sock")

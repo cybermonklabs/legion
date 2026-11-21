@@ -43,8 +43,8 @@ type rig struct {
 // shortTempDir is a directory of the test's own, removed when the test ends, with room under it
 // for the longest path these tests put there: the helper.sock their rigs bind (newLoggedRig,
 // contract_test.go). TMPDIR places it, and the helper falls back to /tmp for that length alone,
-// where t.TempDir()'s path carries the whole of the test's name and passes the 107 bytes a unix
-// socket path holds (docs/testing.md).
+// where t.TempDir()'s path carries the whole of the test's name and passes what a unix socket
+// path holds (docs/testing.md).
 func shortTempDir(t *testing.T) string {
 	t.Helper()
 	return testtmp.Dir(t, "helper.sock")

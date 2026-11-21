@@ -477,7 +477,7 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 	r.project = "t" + randomHex(t, 4)
 	// The directory is the server's TMUX_TMPDIR itself, with no subdirectory: tmux binds
 	// <TMUX_TMPDIR>/tmux-<uid>/legion-<project>, the longest path put under the directory and
-	// the one a unix socket path's 107 bytes have to hold, so that is the room asked for here.
+	// the one a unix socket path's bound has to hold, so that is the room asked for here.
 	dir := testtmp.Dir(t, filepath.Join("tmux-"+strconv.Itoa(os.Getuid()), "legion-"+r.project))
 	r.dir = dir
 	r.stateDir = filepath.Join(dir, "state")

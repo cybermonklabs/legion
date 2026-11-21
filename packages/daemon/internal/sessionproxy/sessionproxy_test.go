@@ -147,7 +147,7 @@ func (f *fakeDialer) built() []Signer {
 
 // socketPath is this package's socket path: a socket named session.sock in a directory of the
 // test's own, placed by TMPDIR and falling back to /tmp for the socket path's length alone, so
-// that the bind holds within the 107 bytes a unix socket path takes (docs/testing.md).
+// that the bind holds within what a unix socket path takes (docs/testing.md).
 func socketPath(t *testing.T) string {
 	t.Helper()
 	return testtmp.Socket(t, "session.sock")

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   closeServers,
   daemonActorEvent,
@@ -22,6 +22,8 @@ import {
 // The `negative` observations of scripts/e2e/multi-repo-acceptance.sh (no-repo, pr-in-x,
 // repo-edit); the other observations are in multi-repo-acceptance.test.ts. The stubs and fakes
 // they run against are in multi-repo-acceptance-harness.ts.
+// Hang guard, above every hook: the observer's 30 s curl --max-time, plus 30 s for the row's work.
+setDefaultTimeout(60_000);
 useScratchDirectory();
 
 afterEach(() => {

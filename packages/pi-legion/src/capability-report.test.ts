@@ -3,10 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import {
-  LegionCapabilityReport,
-  type LegionCapabilityReportBody,
-} from "@legion/contracts/legion-api";
+import { LegionCapabilityReport } from "@legion/contracts/legion-api";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
 import {
   CAPABILITY_CHECK_TIMEOUT_MS,
@@ -19,6 +16,7 @@ import {
   LIVE_CAPABILITIES,
   type LiveCapability,
   measureCapabilities,
+  ompCapabilityHost,
   WEB_SEARCH_PROBE_QUERY,
 } from "./capability-report";
 
@@ -35,7 +33,8 @@ interface RecordedSearch {
 }
 
 /** A host where every check passes: three task agents, a provider answering the search, no MCP
- * server, nothing discovered, and both commands exiting 0. `overrides` replace members. */
+ * server, a workspace holding nothing to discover, and both commands exiting 0. Every member
+ * answers from memory, so no check waits on the machine's disk. `overrides` replace members. */
 function fakeHost(overrides: Partial<CapabilityHost> = {}): CapabilityHost & {
   readonly runs: RecordedRun[];
   readonly searches: RecordedSearch[];
@@ -62,6 +61,8 @@ function fakeHost(overrides: Partial<CapabilityHost> = {}): CapabilityHost & {
     },
     discoverExtensionPaths: async () => [],
     loadSkills: async () => ({ skills: [] }),
+    namesIn: async () => [],
+    kindOf: async () => undefined,
     run: async (command, args, options) => {
       runs.push({ command, args, cwd: options.cwd, signal: options.signal });
       return command === "gh"
@@ -107,20 +108,6 @@ async function measure(
   for (const row of report.rows)
     rows[row.name as LiveCapability] = { ok: row.ok, detail: row.detail };
   return rows;
-}
-
-/**
- * The names of the rows that passed, less `repository-extensions`: alone among the live checks it
- * awaits the filesystem — a `readdir`, then a `stat` for each entry — so its outcome lands on a
- * macrotask a loaded event loop can defer past a short budget, the budget working as designed, not
- * a defect. `checkDispatchEnvoyTools` reads the disk too, but synchronously, through `whichOnPath`
- * (`Bun.which`); every other check settles in microtasks alone under `fakeHost`, so no timer can
- * defer one and its row reads the same on any machine.
- */
-function passingNamesExceptTheDiskCheck(report: LegionCapabilityReportBody): string[] {
-  return report.rows
-    .filter((row) => row.ok && row.name !== "repository-extensions")
-    .map((row) => row.name);
 }
 
 describe("the report", () => {
@@ -175,12 +162,14 @@ describe("the report", () => {
         discoverMCPServers: refuse,
         discoverExtensionPaths: refuse,
         loadSkills: refuse,
+        namesIn: refuse,
+        kindOf: refuse,
         run: refuse,
       },
       input()
     );
     expect(report.rows).toHaveLength(6);
-    expect(report.rows.map((row) => row.ok)).toEqual([false, false, false, true, false, false]);
+    expect(report.rows.map((row) => row.ok)).toEqual([false, false, false, false, false, false]);
     expect(report.rows[0]?.detail).toBe("host.discoverAgents is not a function");
   });
 
@@ -196,9 +185,10 @@ describe("the report", () => {
     const row = report.rows.find((candidate) => candidate.name === "web-search");
     expect(row).toEqual({ name: "web-search", ok: false, detail: "did not finish within 20 ms" });
     expect(seen?.aborted).toBe(true);
-    expect(passingNamesExceptTheDiskCheck(report)).toEqual([
+    expect(report.rows.filter((row) => row.ok).map((row) => row.name)).toEqual([
       "subagents",
       "mcp",
+      "repository-extensions",
       "dispatch-envoy-tools",
       "github",
     ]);
@@ -221,7 +211,12 @@ describe("the report", () => {
         ok: false,
         detail: "did not finish within 20 ms",
       });
-    expect(passingNamesExceptTheDiskCheck(report)).toEqual(["subagents", "web-search", "mcp"]);
+    expect(report.rows.filter((row) => row.ok).map((row) => row.name)).toEqual([
+      "subagents",
+      "web-search",
+      "mcp",
+      "repository-extensions",
+    ]);
   }, 5_000);
 
   test("a whole-second budget reads in seconds", async () => {
@@ -260,13 +255,7 @@ describe("the report", () => {
       detail: "did not finish within 20 ms",
     });
     expect(second.rows.map((row) => row.name)).toEqual([...LIVE_CAPABILITIES]);
-    expect(passingNamesExceptTheDiskCheck(second)).toEqual([
-      "subagents",
-      "web-search",
-      "mcp",
-      "dispatch-envoy-tools",
-      "github",
-    ]);
+    expect(second.rows.every((row) => row.ok)).toBe(true);
     // The second report is its own measurement, not the first with one row patched: it started
     // after the first ended, and every check asked the host a second time.
     expect(Date.parse(second.measuredAt)).toBeGreaterThan(Date.parse(first.measuredAt));
@@ -594,6 +583,9 @@ describe("mcp", () => {
 });
 
 describe("repository-extensions", () => {
+  /** The production host's own reads of the workspace, so the rows below walk a repository on
+   * disk. */
+  const { namesIn, kindOf } = ompCapabilityHost();
   let repository: string;
   beforeAll(async () => {
     repository = path.join(workspace, "repository");
@@ -616,11 +608,13 @@ describe("repository-extensions", () => {
     await writeFile(path.join(repository, ".claude", "skills", "beta", "SKILL.md"), "# beta\n");
   });
 
-  test("passes when the repository carries nothing to load, asking the host nothing", async () => {
+  test("passes when the repository carries nothing to load, asking the host to discover nothing", async () => {
     const empty = path.join(workspace, "empty");
     await mkdir(empty, { recursive: true });
     const rows = await measure(
       fakeHost({
+        namesIn,
+        kindOf,
         discoverExtensionPaths: async () => {
           throw new Error("must not be asked");
         },
@@ -636,6 +630,8 @@ describe("repository-extensions", () => {
   test("passes when every module and skill on disk is among what the host discovers", async () => {
     const rows = await measure(
       fakeHost({
+        namesIn,
+        kindOf,
         discoverExtensionPaths: async (cwd) => [
           path.join(cwd, ".omp", "extensions", "flat.ts"),
           path.join(cwd, ".omp", "extensions", "dirext", "index.ts"),
@@ -659,6 +655,8 @@ describe("repository-extensions", () => {
   test("fails naming what is on disk and not discovered", async () => {
     const rows = await measure(
       fakeHost({
+        namesIn,
+        kindOf,
         discoverExtensionPaths: async (cwd) => [
           path.join(cwd, ".omp", "extensions", "dirext", "index.ts"),
         ],
@@ -672,6 +670,25 @@ describe("repository-extensions", () => {
       ok: false,
       detail:
         "not discovered: .claude/skills/beta/SKILL.md, .omp/extensions/flat.ts; discovered: .omp/extensions/dirext, .omp/skills/alpha/SKILL.md",
+    });
+  });
+
+  test("walks the workspace through the host's reads, never around them", async () => {
+    // A workspace only the host holds: nothing is at this path on disk, so a walk that read the
+    // disk itself would find nothing to load and pass.
+    const cwd = path.join(workspace, "only-in-the-host");
+    const skills = path.join(cwd, ".claude", "skills");
+    const rows = await measure(
+      fakeHost({
+        namesIn: async (directory) => (directory === skills ? ["gamma"] : []),
+        kindOf: async (file) =>
+          file === path.join(skills, "gamma", "SKILL.md") ? "file" : undefined,
+      }),
+      { cwd }
+    );
+    expect(rows["repository-extensions"]).toEqual({
+      ok: false,
+      detail: "not discovered: .claude/skills/gamma/SKILL.md",
     });
   });
 });

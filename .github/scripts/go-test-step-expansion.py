@@ -55,8 +55,14 @@ test. `go test -list` builds the test binary and asks it for its names, and each
 packages here returns before it starts its database, NATS server, container or Pulumi stack when
 the run is a listing.
 
-`-race` needs cgo, so run it with `CGO_ENABLED=1` and a C compiler on PATH; a race step otherwise
-fails to build and this script stops on that step.
+`-race` needs cgo, so a -race listing runs with `CGO_ENABLED=1`, which this script sets itself, and
+needs a C compiler on PATH; a race step otherwise fails to build and this script stops on that step.
+Every go command it runs, and every line of a step's script it runs, runs under check-ci-filters.sh's
+environment for one (`go_build_tags.go_environment`): none of the caller's Go variables but the
+ones naming where Go keeps or fetches files, and no `go env -w` file, so a caller's GOFLAGS, GOOS,
+GOTOOLCHAIN or GOEXPERIMENT, or the GOROOT a version manager's python3 shim hands this interpreter,
+changes no listing. The go it starts is the first one on the PATH this interpreter has, which such a
+shim can choose; GOTOOLCHAIN's own rules then pick the toolchain go.work names.
 
 Run it at two commits and compare, which is what k1 asks for - the head in your workspace, the
 merge base in a clone under a temporary directory:
@@ -147,7 +153,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from ci_filter_coverage import called_workflows, script_lines, step_workdir
+from ci_filter_coverage import (
+    called_workflows,
+    script_lines,
+    step_workdir,
+)
+from go_build_tags import go_environment
 
 ROOT = Path(__file__).resolve().parents[2]
 # Repository-relative, as the documents below are keyed and as every message names them.
@@ -478,7 +489,7 @@ class GoTest:
 def shell(script: str, cwd: Path, what: str) -> str:
     """A line of a step's own script, run in the step's own directory."""
     done = subprocess.run(["bash", "-c", f"set -euo pipefail\n{script}"],
-                          cwd=cwd, capture_output=True, text=True)
+                          cwd=cwd, env=go_environment(), capture_output=True, text=True)
     if done.returncode != 0:
         raise Refused(f"{what} exited {done.returncode}\n"
                       f"    $ {script}\n{indent(done.stderr or done.stdout)}")
@@ -486,9 +497,12 @@ def shell(script: str, cwd: Path, what: str) -> str:
 
 
 def go(args: list[str], cwd: Path, what: str) -> str:
-    done = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    env = go_environment()
+    if "-race" in args:
+        env["CGO_ENABLED"] = "1"  # -race needs cgo
+    done = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if done.returncode != 0:
-        hint = ("\n    -race needs CGO_ENABLED=1 and a C compiler."
+        hint = ("\n    -race needs a C compiler on PATH."
                 if "-race" in args and "cgo" in (done.stderr or "") else "")
         raise Refused(f"{what} exited {done.returncode}\n"
                       f"    $ {shlex.join(args)} (in {cwd}){hint}\n{indent(done.stderr)}")
@@ -892,7 +906,7 @@ def main() -> int:
     print("#   grep '^PAIR' head.txt > head.pairs; grep '^PAIR' base.txt > base.pairs")
     print("#   diff base.pairs head.pairs      (empty: the two commits run the same functions)")
     print("# Check k1 of dispatch://INFRA-1408. No CI job runs this script; the module header")
-    print("# says why, and what it needs (CGO_ENABLED=1 for the -race steps, no service).")
+    print("# says why, and what it needs (a C compiler for the -race steps, no service).")
     print()
     print(f"== steps expanded ({len(steps)}) ==")
     print("\n".join(report))

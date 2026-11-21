@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -45,6 +45,8 @@ import {
 // `/opt/legion/bin/...`; the agent's PATH carries only a fake `git` that records every call and
 // fails, so a run that reached git would show.
 
+// Hang guard, above every hook: as-role.py's 120 s probe timeout, plus 30 s for the row's work.
+setDefaultTimeout(150_000);
 useScratchDirectory();
 
 const makeDirectory = temporaryDirectories("multi-repo-acceptance");
@@ -647,8 +649,10 @@ describe("second-owner: the role's credential, resolved once, reaching another o
         stderr: "ignore",
       });
       let postExecCmdline: Buffer | undefined;
-      // Real wait: the exec is a real kernel transition on a real pid, not an in-process timer.
-      for (let i = 0; i < 500; i++) {
+      // Real wait: the exec is a real kernel transition on a real pid, not an in-process timer. It
+      // polls until the exec has happened, with no count of its own: the file's default timeout
+      // (setDefaultTimeout above) is the one bound on it.
+      while (postExecCmdline === undefined) {
         try {
           const buf = await Bun.file(`/proc/${realProc.pid}/cmdline`).arrayBuffer();
           if (Buffer.from(buf).equals(Buffer.from("sleep\x00999\x00"))) {

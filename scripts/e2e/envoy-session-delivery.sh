@@ -333,16 +333,19 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 readonly repo_root
 readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 # lib/loopback-dsn.sh for run_database_url, the helper a proof that writes a PostgreSQL server
-# reads its caller's DSN with, and lib/port-file.sh for read_port_file, which this proof's own
-# await_port_file waits with. Neither file reads a variable of this shell. This proof sources no
-# rig: its await_port_file and keep_port, written for the pid map below, are its own, and
-# lib/rig.sh defines both of those names and a start_held that calls its own await_port_file, so
-# sourcing it for that one DSN helper would leave which await_port_file runs to the order of the
-# two files.
+# reads its caller's DSN with, lib/port-file.sh for read_port_file, which this proof's own
+# await_port_file waits with, and lib/report-port.sh for reported_port, the one reader of the port
+# a server that bound port 0 itself logs. No file of the three reads a variable of this shell. This
+# proof sources no rig: its await_port_file and keep_port, written for the pid map below, are its
+# own, and lib/rig.sh defines both of those names and a start_held that calls its own
+# await_port_file, so sourcing it for these helpers would leave which await_port_file runs to the
+# order of the files.
 # shellcheck source-path=SCRIPTDIR source=lib/loopback-dsn.sh
 . "$repo_root/scripts/e2e/lib/loopback-dsn.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
 . "$repo_root/scripts/e2e/lib/port-file.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/report-port.sh
+. "$repo_root/scripts/e2e/lib/report-port.sh"
 [ -f "$repo_root/node_modules/nats/package.json" ] || refuse "$repo_root/node_modules has no nats package: run bun install in the checkout"
 # The database's name is only this shell's pid and random bytes, so the run has it here, and the
 # one read of the DSN runs before the builds, the services and the `create database` further
@@ -486,14 +489,6 @@ keep_port() {
     >>"$work/logs/$1.log" 2>&1 &
   pid[$1]=$!
   await_port_file "$1" "$work/ports/$1.port" "$2"
-}
-# reported_port LOG PATTERN VAR: assigns VAR the port a process that bound port 0 itself reported,
-# the digits right after the first match of the extended regular expression PATTERN in LOG. It
-# fails while LOG holds no such line, so it is also the poll that waits for one.
-reported_port() {
-  local match
-  match=$(grep -m1 -oE -- "$2[0-9]+" "$1" 2>/dev/null) || return 1
-  printf -v "$3" '%s' "${match##*[!0-9]}"
 }
 # pick_port VAR: a loopback port nothing answers on, below the kernel's ephemeral range (which
 # every connection's own local port comes from) and new to this run. Only for a server that can

@@ -1,6 +1,6 @@
 import { afterAll, expect, test } from "bun:test"
 import { mkdirSync, writeFileSync } from "node:fs"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { signedIn, stubIssuer, writeSignIn } from "@legion/cipher-client/test/sign-ins"
 import { SignInEndedError } from "@legion/cipher-client/token-errors"
 import type { RequestCredential } from "@legion/envoy-client/bearer"
@@ -208,7 +208,13 @@ test("envoy-send sends to the listener and with the bearer its envoy.json names"
     }),
   )
   const send = Bun.spawn(
-    ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), "ses_receiver", "file", "send"],
+    [
+      process.execPath,
+      resolve(import.meta.dir, "../bin/envoy-send.ts"),
+      "ses_receiver",
+      "file",
+      "send",
+    ],
     {
       cwd: scratch,
       env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
@@ -237,6 +243,11 @@ function envoyConfig(token: string, port = server.port): string {
   return file
 }
 
+/** The PATH a printed resend runs under: this Bun's own directory first. The command envoy-send
+ *  prints starts `bun` by name, and the caller's first `bun` can be a version manager's shim, which
+ *  under this file's HOME has no version to run. */
+const bunFirstPath = `${dirname(process.execPath)}:${process.env["PATH"] ?? ""}`
+
 /**
  * Runs `envoy-send` as a person does, against the stand-in listener, with a bearer file: with
  * `args`, or as `command` through bash. `env` replaces the environment it runs in, which is
@@ -253,12 +264,12 @@ async function runEnvoySend(
   const file = envoyConfig(options.token ?? fixtureSecret("listener"))
   const send = Bun.spawn(
     options.command === undefined
-      ? ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), ...args]
+      ? [process.execPath, resolve(import.meta.dir, "../bin/envoy-send.ts"), ...args]
       : ["bash", "-c", options.command],
     {
       cwd: scratch,
       env: options.env ?? {
-        PATH: process.env["PATH"] ?? "",
+        PATH: bunFirstPath,
         HOME: scratch,
         ENVOY_CONFIG_FILE: file,
       },
@@ -533,7 +544,7 @@ test("the printed resend goes to the send's listener from a shell whose settings
     )
     const again = await runEnvoySend([], {
       command: resend,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, XDG_CONFIG_HOME: xdg },
+      env: { PATH: bunFirstPath, HOME: scratch, XDG_CONFIG_HOME: xdg },
     })
     expect(again.code).toBe(0)
     expect(other).toEqual([])

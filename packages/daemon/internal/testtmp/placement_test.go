@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,8 +26,8 @@ var exceptions = map[string]string{
 }
 
 // Every test of this module that wants a temporary directory of its own takes it from this
-// package, so that one place measures a socket path against what Linux holds and one place knows
-// where to fall back to (docs/testing.md, "Unix sockets in Go tests"). The check reads the
+// package, so that one place measures a socket path against what the system holds and one place
+// knows where to fall back to (docs/testing.md, "Unix sockets in Go tests"). The check reads the
 // module's test files and fails on the two shapes the copied helpers were written in: an
 // os.MkdirTemp whose first argument is a string literal naming a directory, which writes there
 // wherever the test runs and whatever TMPDIR says, and an os.TempDir, which reads TMPDIR without
@@ -49,7 +50,7 @@ func TestNoTestFilePlacesATemporaryDirectoryOfItsOwn(t *testing.T) {
 		"take the directory from testtmp.Dir(t, longest), or the socket path from testtmp.Socket(t, name): it measures "+
 		"the path against the %d bytes a unix socket path holds and falls back to %s for that length alone, saying so "+
 		"(docs/testing.md, \"Unix sockets in Go tests\")",
-		len(offences), strings.Join(offences, "\n\t"), MaxSocketPath, fallbackBase)
+		len(offences), strings.Join(offences, "\n\t"), maxSocketPath(runtime.GOOS), fallbackBase)
 }
 
 // placements names, as file:line and the call, every place in the module's test files that puts a

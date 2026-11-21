@@ -3,9 +3,10 @@
 // every model role is that stand-in, one `omp --mode rpc` child with only the caller's extensions
 // loaded, one interactive `omp` under a pseudo-terminal whose screen a test reads as an operator
 // sees it (`spawnInteractive`), and the Legion pane runner (`runLegionPane`) that puts those
-// together as one Legion pane against a stand-in daemon and listener. The profile format, the
-// flags and the RPC stream are the Oh My Pi pin's (the repository's .omp-pin), so a pin bump that
-// changes one is fixed here once.
+// together as one Legion pane against a stand-in daemon and listener. The jj and git binaries a
+// test links into a pane's `bin` are `@legion/test-fixtures/version-control-tools`'s. The profile
+// format, the flags and the RPC stream are the Oh My Pi pin's (the repository's .omp-pin), so a pin
+// bump that changes one is fixed here once.
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";

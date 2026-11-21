@@ -101,8 +101,8 @@ func TestInspectRefuses(t *testing.T) {
 			return owned(t, rawFD(t, conn.(*net.UDPConn)))
 		}, "is not a stream socket"},
 		{"unix listener", func(t *testing.T) string {
-			// A directory of the test's own, since a socket path holds 107 bytes and
-			// t.TempDir's, which spells the test's name, can pass them.
+			// A directory of the test's own, since a socket path's length is bounded
+			// (docs/testing.md) and t.TempDir's, which spells the test's name, can pass it.
 			listener := listen(t, "unix", testtmp.Socket(t, "s"))
 			return owned(t, rawFD(t, listener.(*net.UnixListener)))
 		}, "is a unix-domain socket"},

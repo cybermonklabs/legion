@@ -35,7 +35,9 @@ async function send(
     JSON.stringify({ envoy: { enabled: true, url }, dispatch: { enabled: false } }),
   )
   const preloading = preload === undefined ? [] : ["--preload", preload]
-  const child = Bun.spawn(["bun", ...preloading, command, "ses_target", "hello"], {
+  // This Bun by its path: the child's HOME is its own, where a version manager's `bun` shim first on
+  // the caller's PATH finds no version to run.
+  const child = Bun.spawn([process.execPath, ...preloading, command, "ses_target", "hello"], {
     env: { PATH: process.env["PATH"] ?? "", HOME: home, TMPDIR: home, ENVOY_CONFIG_FILE: config },
     stdout: "pipe",
     stderr: "pipe",

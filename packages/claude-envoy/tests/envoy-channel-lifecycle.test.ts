@@ -39,7 +39,7 @@ test("a hangup from the Claude process group deregisters the session before the 
     },
   })
   const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-lifecycle-"))
-  const server = Bun.spawn(["bun", entry], {
+  const server = Bun.spawn([process.execPath, entry], {
     cwd: stateDirectory,
     env: {
       PATH: process.env["PATH"] ?? "",

@@ -308,3 +308,8 @@ packages/pi-envoy/extensions/.smoke-base-*.ts
 
 # Python bytecode (scripts/e2e/lib/as-role.py and any other script run or imported locally).
 __pycache__/
+
+# Linked worktrees some setups keep at the repository root. Untracked, they made `git add -A`
+# stage whole checkouts, and biome, which reads this file (biome.json's vcs.useIgnoreFile),
+# walked every file in them on each run.
+/.worktrees/

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { chmod, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises"
+import { chmod, mkdir, rename, rm, stat } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
 import { createServer, type Server } from "node:net"
 import { dirname, join } from "node:path"
@@ -19,12 +19,7 @@ import {
 } from "../hooks/mod-protocol"
 import { type ModLink, startModLink } from "../src/mod-link"
 import { type ModSession, modSession } from "../src/mod-session"
-
-/** Where the socket homes are made. A mod socket is `<home>/claude-envoy/ce-<hash>.sock`, and that
- *  whole path has 100 bytes to fit in (`MOD_SOCKET_PATH_MAX_BYTES`): under `tmpdir()` a deep
- *  `TMPDIR` (a dev box's `/mnt/scratch/...`, a Legion pod's) leaves none, so the homes go under
- *  `/tmp`, whatever `TMPDIR` is, as channel-fatal-exit.test.ts's do. */
-const SOCKET_ROOT = "/tmp"
+import { modSocketScratch, sessionModSocket } from "./mod-socket-scratch"
 
 const scratch: string[] = []
 const links: ModLink[] = []
@@ -33,10 +28,10 @@ afterEach(async () => {
   for (const dir of scratch.splice(0)) await rm(dir, { recursive: true, force: true })
 })
 
-/** A scratch directory to put sockets in, under {@link SOCKET_ROOT} so the path stays under the
- *  bound. */
+/** A scratch directory to put sockets in, made where a mod socket under it stays inside its bound
+ *  (`modSocketScratch`). */
 async function directory(): Promise<string> {
-  const dir = await mkdtemp(join(SOCKET_ROOT, "mod-"))
+  const dir = await modSocketScratch("mod-")
   scratch.push(dir)
   return dir
 }
@@ -170,8 +165,7 @@ test("binds the path the mod computes, answers the liveness marker, and keeps th
 
 test("refuses a socket directory another user could use, rather than binding in it", async () => {
   const dir = await directory()
-  const path = modSocketPath("open", { XDG_RUNTIME_DIR: dir })
-  if (path === undefined) throw new Error("the session names no mod socket")
+  const path = sessionModSocket("open", { XDG_RUNTIME_DIR: dir })
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   await chmod(dirname(path), 0o755)
   await expect(startModLink({ sessionId: "open", env: { XDG_RUNTIME_DIR: dir } })).rejects.toThrow(
@@ -182,8 +176,7 @@ test("refuses a socket directory another user could use, rather than binding in 
 
 test("takes over a socket a dead server left behind", async () => {
   const dir = await directory()
-  const path = modSocketPath("s2", { XDG_RUNTIME_DIR: dir })
-  if (path === undefined) throw new Error("the session names no mod socket")
+  const path = sessionModSocket("s2", { XDG_RUNTIME_DIR: dir })
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   await staleSocket(path)
   expect((await stat(path)).isSocket()).toBe(true)

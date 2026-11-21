@@ -21,6 +21,19 @@
       "types": "./src/host-tools.ts",
       "bun": "./src/host-tools.ts"
     },
+    "./mise-environment": {
+      "types": "./src/mise-environment.ts",
+      "bun": "./src/mise-environment.ts"
+    },
+    "./refused-port": {
+      "types": "./src/refused-port.ts",
+      "bun": "./src/refused-port.ts"
+    },
+    "./socket-root": {
+      "types": "./src/socket-root.ts",
+      "bun": "./src/socket-root.ts",
+      "default": "./src/socket-root.ts"
+    },
     "./temporary-directories": {
       "types": "./src/temporary-directories.ts",
       "bun": "./src/temporary-directories.ts"
@@ -36,6 +49,10 @@
     "./version-control-environment": {
       "types": "./src/version-control-environment.ts",
       "bun": "./src/version-control-environment.ts"
+    },
+    "./version-control-tools": {
+      "types": "./src/version-control-tools.ts",
+      "bun": "./src/version-control-tools.ts"
     }
   },
   "scripts": {

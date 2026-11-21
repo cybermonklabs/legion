@@ -5,6 +5,7 @@ import {
   type FakeDispatchServer,
   startFakeDispatch,
 } from "@legion/envoy-client/test/fake-dispatch";
+import { refusingOrigin } from "@legion/test-fixtures/refused-port";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { ServerWebSocket } from "bun";
 
@@ -13,6 +14,7 @@ import {
   awaitDecisionBlock,
   awaitPostgres,
   awaitSeededInbox,
+  boundRefusalText,
   databaseUrlRefusal,
   type InboxRowRead,
   Interrupted,
@@ -465,18 +467,23 @@ describe("agentViewRefusal", () => {
 
   /** The answer `agentViewRefusal` gives for `sessionId` against `baseUrl` with `boundMs`, read
    *  from a process with the runtime's own WebSocket: its refusal, or null for none, and how long
-   *  the call took there, in whole milliseconds rounded up. */
+   *  the call took there, in whole milliseconds rounded up. With `heldMs`, that process's thread is
+   *  blocked for that long right after the call starts, as a loaded machine holds it, so the
+   *  call's own timer fires late. */
   async function answerFrom(
     baseUrl: string,
     headers: Record<string, string>,
     sessionId: string,
-    boundMs: number
+    boundMs: number,
+    heldMs = 0
   ): Promise<{ readonly refusal: string | null; readonly elapsedMs: number }> {
     const script =
       `const { agentViewRefusal } = await import(${JSON.stringify(supportModule)});\n` +
       "const started = performance.now();\n" +
-      `const answer = await agentViewRefusal(${JSON.stringify(baseUrl)}, ` +
+      `const pending = agentViewRefusal(${JSON.stringify(baseUrl)}, ` +
       `${JSON.stringify(headers)}, ${JSON.stringify(sessionId)}, ${boundMs});\n` +
+      (heldMs > 0 ? `Bun.sleepSync(${heldMs});\n` : "") +
+      "const answer = await pending;\n" +
       "const elapsedMs = Math.ceil(performance.now() - started);\n" +
       "process.stdout.write(JSON.stringify({ elapsedMs, refusal: answer ?? null }));\n";
     const { code, named, stderr, stdout } = await runBounded({
@@ -487,6 +494,13 @@ describe("agentViewRefusal", () => {
     if (code !== 0) throw new Error(`the child ${named} exited ${code}: ${stderr}`);
     return JSON.parse(stdout) as { readonly refusal: string | null; readonly elapsedMs: number };
   }
+
+  /** The refusal `agentViewRefusal` writes when its own bound, `neverHoldsBoundMs`, passes before
+   *  Dispatch's first frame: no other path of it writes this text, and it is written from the
+   *  bound the call was given, not from how long the call took. */
+  const boundRefusal = (received: string) =>
+    `Dispatch's first frame for the agent view of ${SESSION} (subscription ` +
+    `local-instance-smoke) had not come after 2.0 s; ${received}`;
 
   /** `answerFrom`'s refusal, where the first frame gets the short bound, which the child's own
    *  bound ends too, so no row reads a stall of this machine as Dispatch's silence. */
@@ -570,18 +584,56 @@ describe("agentViewRefusal", () => {
   test(
     "a live socket that cannot be opened at all says so",
     async () => {
-      const dispatch = dispatchAnswering(() => undefined);
-      const port = new URL(dispatch.url).port;
-      for (const server of servers.splice(0)) server.stop();
-      expect(await refusalFrom(`http://127.0.0.1:${port}`, {}, SESSION)).toBe(
-        "the live socket could not be opened"
+      // A port this row holds bound and never listens on (`refusingOrigin`), so the socket's
+      // connection is refused, and no other process can bind it to answer the socket some other way.
+      // The refusal names the runtime's own reason, so a port another server took, which answers
+      // the upgrade with a status of its own (the row below), would fail this row.
+      expect(await refusalFrom(refusingOrigin(), {}, SESSION)).toBe(
+        "the live socket could not be opened (Failed to connect)"
       );
     },
     rowLimit("short")
   );
 
   test(
-    "a Dispatch that never answers is the refusal within 1 s of the 2 s bound, naming what came instead",
+    "a server that answers the live socket's upgrade with a status of its own says which",
+    async () => {
+      const squatter = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: () => new Response("not here", { status: 404 }),
+      });
+      try {
+        expect(await refusalFrom(squatter.url.origin, {}, SESSION)).toBe(
+          "the live socket could not be opened (Expected 101 status code: 404)"
+        );
+      } finally {
+        squatter.stop(true);
+      }
+    },
+    rowLimit("short")
+  );
+
+  // The text the bound's refusal names for each count of other frames, read from the pure
+  // function agentViewRefusal's timer calls: no socket, no clock, so no order of events decides it.
+  // The never-answers row below allows either received-text; this row holds what each one says.
+  test("the bound's refusal names what the socket received instead", () => {
+    const head =
+      "Dispatch's first frame for the agent view of ses-1 (subscription sub-1) had not come " +
+      "after 2.5 s; ";
+    expect(boundRefusalText("ses-1", "sub-1", 2_500, 0, "")).toBe(
+      `${head}the socket received nothing`
+    );
+    expect(boundRefusalText("ses-1", "sub-1", 2_500, 1, '{"a":1}')).toBe(
+      `${head}the socket received 1 other frame, the last {"a":1}`
+    );
+    expect(boundRefusalText("ses-1", "sub-1", 2_500, 2, '{"b":2}')).toBe(
+      `${head}the socket received 2 other frames, the last {"b":2}`
+    );
+  });
+
+  test(
+    "a Dispatch that never answers is the refusal of the client's own 2 s bound, naming what came instead",
     async () => {
       const other = JSON.stringify({
         data: { responding: true, v: 1 },
@@ -591,13 +643,39 @@ describe("agentViewRefusal", () => {
       });
       const dispatch = dispatchAnswering((socket) => socket.send(other));
       const { elapsedMs, refusal } = await answerFrom(dispatch.url, {}, SESSION, neverHoldsBoundMs);
+      // The refusal is the client's own bound's, by its text. How long the call took past the
+      // bound is no part of it: a loaded machine runs the timer late (the row below). The one
+      // reading kept is the client's own: it does not answer before its bound. Whether the
+      // stand-in's frame reached the client before its timer fired is an order load decides, so
+      // either received-text is the bound's refusal here; what each one says is held by "the
+      // bound's refusal names what the socket received instead".
+      expect([
+        boundRefusal("the socket received nothing"),
+        boundRefusal(`the socket received 1 other frame, the last ${other}`),
+      ]).toContain(refusal ?? "no refusal");
       expect(elapsedMs).toBeGreaterThanOrEqual(neverHoldsBoundMs);
-      expect(elapsedMs).toBeLessThanOrEqual(neverHoldsBoundMs + pastBoundMs);
-      expect(refusal).toBe(
-        `Dispatch's first frame for the agent view of ${SESSION} (subscription ` +
-          `local-instance-smoke) had not come after 2.0 s; the socket received 1 other frame, ` +
-          `the last ${other}`
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "a client held past its bound still answers with its own bound's refusal",
+    async () => {
+      // The client's thread is held for 3.5 s from the moment the call starts, so its 2 s timer
+      // fires late: the call takes longer than the 3 s a wall-clock bound on it would allow, and
+      // the refusal is still the bound's. This Dispatch sends nothing, so the frames it names do
+      // not depend on whether the timer or the socket's events run first once the thread is free.
+      const heldMs = 3_500;
+      const dispatch = dispatchAnswering(() => undefined);
+      const { elapsedMs, refusal } = await answerFrom(
+        dispatch.url,
+        {},
+        SESSION,
+        neverHoldsBoundMs,
+        heldMs
       );
+      expect(elapsedMs).toBeGreaterThan(neverHoldsBoundMs + pastBoundMs);
+      expect(refusal).toBe(boundRefusal("the socket received nothing"));
     },
     rowLimit("short")
   );

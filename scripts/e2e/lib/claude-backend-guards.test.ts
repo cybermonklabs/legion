@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
@@ -34,8 +34,6 @@ const dir = temporaryDirectory("claude-backend-guards-test");
 // `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
 const found = new Map(["bash", "sleep", "sh"].map((name) => [name, hostTool(name)] as const));
 const skip = skipWithout("bash", "sleep", "sh", "perl");
-// Only the unreadable-environment case needs an interpreter.
-const withoutPython = skipWithout("python3");
 function tool(name: string): string {
   const path = found.get(name) ?? null;
   if (path === null) throw new Error(`${name} is not on PATH`);
@@ -100,7 +98,7 @@ beforeAll(() => {
 // parent. Every process spawn started goes, with everything below it, when BODY ends (stop_tree,
 // lib/process-tree.sh, which signals a process only while its parent is the one it was started
 // under).
-function run(body: string, vars: Record<string, string> = {}) {
+function run(body: string) {
   const prelude = `set -Eeuo pipefail
 root=${JSON.stringify(root)} evidence=$SCRATCH timeout_hook=
 note() { :; }
@@ -160,7 +158,13 @@ await_below() {
   // hangs the runner up where that group is orphaned, as in a Legion pod.
   const result = Bun.spawnSync(ownGroup(["bash", "-c", `${prelude}\n${body}`]), {
     cwd,
-    env: { PATH: process.env.PATH ?? "", WORK: work, CLAUDE: claude, SCRATCH: dir, ...vars },
+    env: {
+      PATH: process.env.PATH ?? "",
+      WORK: work,
+      CLAUDE: claude,
+      SCRATCH: dir,
+      BUN: process.execPath,
+    },
   });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
 }
@@ -309,10 +313,11 @@ describe.skipIf(skip)("endpoint_mismatch", () => {
     "ENVOY_URL=http://127.0.0.1:2",
     "ENVOY_NATS_URL=nats://127.0.0.1:3",
   ];
-  // agent ENV… starts an agent stand-in, sleep under env -i with exactly ENV, and checks it once its
-  // environment is the one it was given, failing the run when it never is.
+  // agent ENV… starts an agent stand-in, the Bun running this file under env -i with exactly ENV,
+  // alive until the run kills it, and checks it once its environment is the one it was given,
+  // failing the run when it never is.
   const agent = (env: string[]) => `
-spawn env -i ${env.join(" ")} "$(command -v sleep)" 600
+spawn env -i ${env.join(" ")} "$BUN" -e 'setTimeout(() => {}, 600_000)'
 ready=
 for i in $(seq 1 200); do grep -qz '^ENVOY_NATS_URL=' "/proc/$pid/environ" 2>/dev/null && { ready=1; break; }; sleep 0.05; done
 [ -n "$ready" ] || { echo "the agent stand-in $pid never carried its environment" >&2; exit 1; }
@@ -345,37 +350,35 @@ printf 'status %s: %s\\n' "$status" "$found"`;
     slow
   );
 
-  test.skipIf(withoutPython)(
+  test(
     "reports an environment it cannot read as not checked, never clean, while the agent still runs with a credential variable in it",
     () => {
       // A process that makes itself non-dumpable (prctl PR_SET_DUMPABLE 0) has its /proc entries
-      // owned by root, so its own user can no longer read its environment. The stand-in writes its
-      // ready file only once prctl succeeded and PR_GET_DUMPABLE reads 0, and keeps its stderr; the
-      // run asserts it is still running, not a zombie, on both sides of the check.
-      // It runs the interpreter python3 reports as sys.executable, resolved here with the caller's
-      // environment and passed as data, not the first python3 on PATH: under `env -i` a version
-      // manager's shim there (mise's, with no python selected) has no version and starts nothing.
-      const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
-      const python = resolved.stdout.toString().trim();
-      if (resolved.exitCode !== 0 || !isAbsolute(python)) {
-        throw new Error(
-          `could not resolve the python3 interpreter (exit ${resolved.exitCode}): ${resolved.stderr.toString() || "no absolute executable path"}`
-        );
-      }
-      const r = run(
-        `
+      // owned by root, so its own user can no longer read its environment. The stand-in is the Bun
+      // running this file, as every agent stand-in here is, and calls prctl through bun:ffi in
+      // libc.so.6, the C library that Bun is itself linked against. It writes its ready file only
+      // once prctl succeeded and PR_GET_DUMPABLE reads 0, and keeps its stderr; the run asserts it
+      // is still running, not a zombie, on both sides of the check.
+      const r = run(`
 ready=$scratch/ready err=$scratch/stderr
-env -i ${rig.join(" ")} CLAUDE_CODE_OAUTH_TOKEN=dummy "$PYTHON" -c '
-import ctypes, os, sys, time
-libc = ctypes.CDLL(None, use_errno=True)
-if libc.prctl(4, 0, 0, 0, 0) != 0:
-    sys.exit("prctl(PR_SET_DUMPABLE, 0) failed: errno %d" % ctypes.get_errno())
-if libc.prctl(3, 0, 0, 0, 0) != 0:
-    sys.exit("PR_GET_DUMPABLE is not 0 after PR_SET_DUMPABLE 0")
-with open(sys.argv[1] + ".tmp", "w") as f:
-    f.write("not dumpable\\n")
-os.rename(sys.argv[1] + ".tmp", sys.argv[1])
-time.sleep(600)
+env -i ${rig.join(" ")} CLAUDE_CODE_OAUTH_TOKEN=dummy "$BUN" -e '
+import { dlopen } from "bun:ffi";
+import { renameSync, writeFileSync } from "node:fs";
+const { prctl } = dlopen("libc.so.6", {
+  prctl: { args: ["i32", "u64", "u64", "u64", "u64"], returns: "i32" },
+}).symbols;
+const fail = (why) => {
+  console.error(why);
+  process.exit(1);
+};
+const set = prctl(4, 0, 0, 0, 0);
+if (set !== 0) fail("prctl(PR_SET_DUMPABLE, 0) returned " + set);
+if (prctl(3, 0, 0, 0, 0) !== 0) fail("PR_GET_DUMPABLE is not 0 after PR_SET_DUMPABLE 0");
+const ready = process.argv.at(-1);
+writeFileSync(ready + ".tmp", "not dumpable\\n");
+renameSync(ready + ".tmp", ready);
+// Only keeps the stand-in alive, as the agent it stands for is; the run kills it when BODY ends.
+setTimeout(() => {}, 600_000);
 ' "$ready" </dev/null >/dev/null 2>"$err" &
 pid=$!
 started+=("$pid")
@@ -391,9 +394,7 @@ echo "before: $(state "$pid")"
 if { : <"/proc/$pid/environ"; } 2>/dev/null; then echo "environ: readable"; else echo "environ: unreadable"; fi
 ${check}
 echo "after: $(state "$pid")"
-printf 'stderr: [%s]\\n' "$(cat "$err")"`,
-        { PYTHON: python }
-      );
+printf 'stderr: [%s]\\n' "$(cat "$err")"`);
       expect(r.err).toBe("");
       const lines = r.out.trim().split("\n");
       expect(lines[0]).toBe("fixture: not dumpable");

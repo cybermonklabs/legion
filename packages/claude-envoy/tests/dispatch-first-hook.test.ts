@@ -10,18 +10,21 @@ const hookEntry = join(packageRoot, "hooks", "session-hook.ts")
 const sessionStart = {
   session_id: "s-1",
   source: "startup",
-  cwd: "/tmp",
   hook_event_name: "SessionStart",
 }
 
+/** Runs the hook as Claude Code does, with `env` as its whole environment. The session's cwd is
+ *  the test's scratch HOME unless the input names one: the hook reads `<cwd>/.envoy/envoy.json`'s
+ *  Dispatch, so a shared directory's file (a `/tmp/.envoy/envoy.json` another process left) would
+ *  configure every row's Dispatch. */
 async function runHook(
   env: Record<string, string>,
   input: Record<string, unknown> = sessionStart,
   mode = "dispatch-first",
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
-  const run = Bun.spawn(["bun", hookEntry, mode], {
+  const run = Bun.spawn([process.execPath, hookEntry, mode], {
     env: { PATH: process.env["PATH"] ?? "", ...env },
-    stdin: new TextEncoder().encode(JSON.stringify(input)),
+    stdin: new TextEncoder().encode(JSON.stringify({ cwd: env["HOME"], ...input })),
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -65,7 +68,7 @@ test("a subagent gets the skill under its own SubagentStart event", async () => 
       { HOME: home, CLAUDE_PLUGIN_ROOT: packageRoot, ...withDispatch },
       {
         session_id: "s-1",
-        cwd: "/tmp",
+        // No cwd: runHook gives the row's own HOME.
         hook_event_name: "SubagentStart",
         agent_id: "agent-1",
         agent_type: "general-purpose",

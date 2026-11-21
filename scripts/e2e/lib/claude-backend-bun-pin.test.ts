@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { unrealReader } from "./proc-root";
 
 // claude-backend-tmux.sh builds claude-envoy with packages/claude-envoy/scripts/build.ts, which
 // refuses any Bun but the one the repository's .bun-version pins. A devbox whose `bun` is another
@@ -21,10 +22,13 @@ const pinned = readFileSync(join(root, ".bun-version"), "utf8").trim();
 const dir = temporaryDirectory("claude-backend-bun-pin-test");
 
 const bin = join(dir, "bin");
+/** The second row's bin: the same tools and stand-ins, but a bun that cannot run at all, as a mise
+ *  shim with no version set answers every call, `--version` among them. */
+const brokenBin = join(dir, "broken-bin");
 const scratch = join(dir, "tmp");
-function stub(name: string, body: string) {
-  writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
-  chmodSync(join(bin, name), 0o755);
+function stub(name: string, body: string, into = bin) {
+  writeFileSync(join(into, name), `#!/bin/sh\n${body}\n`);
+  chmodSync(join(into, name), 0o755);
 }
 /** Every stand-in the run's bin holds, each a name and the shell its stub runs. */
 const stubs: Array<[string, string]> = [
@@ -138,47 +142,92 @@ if (skip) {
   console.warn(`Skipped the test in ${import.meta.path} that runs the rig: ${reasons.join("; ")}.`);
 }
 const keyFile = join(dir, "model-key");
+// The proc root refuse_leftovers reads in prerequisites (`${proc_root:-/proc}`; run_processes in
+// cleanup reads the host's /proc, and a root of its own is #4357's). Over the host's /proc
+// refuse_leftovers runs three commands for each process the host has, so the row's time, held to
+// the run's 60 s, was the host's process
+// count, and a process an earlier run of the proof left anywhere on the host made the first FAIL
+// line its own. The run starts no process those walks are to find before it stops, and no earlier
+// run's process is the row's, so its root holds one entry alone: an unreal pid whose command line
+// only refuse_leftovers reads (unrealReader), so a refuse_leftovers that walked the host's /proc
+// again fails the row rather than only slowing it.
+const proc = join(dir, "proc");
+/** The second row's proc root: unrealReader makes its entry once in a root. */
+const brokenProc = join(dir, "broken-proc");
 
-// The run's own bin, home and scratch, built before the row runs: `dir` is reserved at module
+// The run's own bins, home and scratch, built before the rows run: `dir` is reserved at module
 // scope and made by the hook that reservation registered, and a run that selects no row of this
 // file runs neither hook and builds nothing.
 beforeAll(() => {
-  mkdirSync(bin);
   mkdirSync(scratch);
-  for (const [name, body] of stubs) stub(name, body);
-  for (const [name, path] of found) {
-    if (path !== null) symlinkSync(path, join(bin, name));
+  for (const [into, root] of [
+    [bin, proc],
+    [brokenBin, brokenProc],
+  ] as const) {
+    mkdirSync(into);
+    mkdirSync(root);
+    for (const [name, body] of stubs) stub(name, body, into);
+    for (const [name, path] of found) {
+      if (path !== null) symlinkSync(path, join(into, name));
+    }
   }
+  stub("bun", 'echo "No version is set for shim: bun" >&2\nexit 1', brokenBin);
   writeFileSync(keyFile, "sk-test\n", { mode: 0o600 });
 });
+
+/** Runs claude-backend-tmux.sh with PATH `path` and proc root `root`, and returns its first FAIL
+ *  line, after requiring that its refuse_leftovers read the entry `root` holds. */
+function firstFailLine(path: string, root: string): string {
+  const walked = unrealReader(root);
+  const run = Bun.spawnSync(["bash", script], {
+    env: {
+      HOME: dir,
+      PATH: path,
+      TMPDIR: scratch,
+      proc_root: root,
+      LEGION_E2E_MODEL_ROUTE: "key-file",
+      LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile,
+      // The review App's key command, which prerequisites requires and has no default for
+      // (lib/github-apps.sh), and which this run does run, on the driver: write_github_apps
+      // --key-dir resolves the key into the run's own file before the pin check
+      // (claude-backend-tmux.sh, "After write_github_apps"), so a run that set no command, or
+      // one that printed nothing, would be refused there and never reach the pin these rows are
+      // about. `printf` is the shell's own builtin, so the command answers under the stand-in
+      // PATH this run is given, and the first FAIL line below is still the pin's.
+      LEGION_E2E_REVIEW_APP_KEY_COMMAND: "printf 'a stand-in review App key'",
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 60_000,
+  });
+  const output = run.stdout.toString() + run.stderr.toString();
+  expect(walked(), `refuse_leftovers read no entry of the proc root it was given:\n${output}`).toBe(
+    true
+  );
+  return output.split("\n").find((line) => line.startsWith("FAIL ")) ?? "";
+}
 
 test.skipIf(skip)(
   "a bun other than the pinned release is refused in prerequisites, naming the pin",
   () => {
-    const run = Bun.spawnSync(["bash", script], {
-      env: {
-        HOME: dir,
-        PATH: bin,
-        TMPDIR: scratch,
-        LEGION_E2E_MODEL_ROUTE: "key-file",
-        LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile,
-        // The review App's key command, which prerequisites requires and has no default for
-        // (lib/github-apps.sh), and which this run does run, on the driver: write_github_apps
-        // --key-dir resolves the key into the run's own file before the pin check
-        // (claude-backend-tmux.sh, "After write_github_apps"), so a run that set no command, or
-        // one that printed nothing, would be refused there and never reach the pin this row is
-        // about. `printf` is the shell's own builtin, so the command answers under the stand-in
-        // PATH this run is given, and the first FAIL line below is still the pin's.
-        LEGION_E2E_REVIEW_APP_KEY_COMMAND: "printf 'a stand-in review App key'",
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: 60_000,
-    });
-    const output = run.stdout.toString() + run.stderr.toString();
-    const failLine = output.split("\n").find((line) => line.startsWith("FAIL ")) ?? "";
+    const failLine = firstFailLine(bin, proc);
     expect(failLine).toMatch(/^FAIL prerequisites: /);
     expect(failLine).toContain(pinned);
+  },
+  90_000
+);
+
+// A bun that cannot run, as mise's shim answers under a HOME whose config names no version, is
+// refused in prerequisites with its own words, not read as a Bun of no version.
+test.skipIf(skip)(
+  "a bun that cannot run is refused in prerequisites with its own error",
+  () => {
+    const failLine = firstFailLine(brokenBin, brokenProc);
+    expect(failLine).toMatch(/^FAIL prerequisites: /);
+    expect(failLine).toContain(
+      `the bun first on PATH (${brokenBin}/bun) could not run \`bun --version\`: No version is set for shim: bun`
+    );
+    expect(failLine).not.toContain("<no version>");
   },
   90_000
 );

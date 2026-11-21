@@ -261,6 +261,11 @@ With its manifest, which the Stage 1 proof (ci-job-daemon-go.yaml's "Stage 1 liv
 pi-legion this suite reads. The pack and prompt probes, which read the rest of
 it, are the plugin-pack job's.
 
+## daemon_go_tests: report-port.sh: the rig sources it
+
+The Stage 1 proof sources `scripts/e2e/lib/rig.sh`, which sources
+`scripts/e2e/lib/report-port.sh` for `report_port`, so a change to it changes the proof's run.
+
 ## plugin_pack: The plugin-pack job: internal/daemon's three tests of
 
 The plugin-pack job: internal/daemon's three tests of PLUGIN_PACK_TESTS
@@ -2265,3 +2270,31 @@ check run on the head but this job's own to what this job concluded, so one verd
 at the end of every attempt (ci-ok-reconcile.sh says what it passes over and why a refusal
 only warns). `job.status` is this job's conclusion, and `always()` is what runs the step
 after the verdict, the "Judge every job of this run" step, failed.
+
+## test_fixtures: install-jj inputs
+
+The test-fixtures job runs `./.github/actions/install-jj`. That action reads
+`ARG JJ_TOOL` from `packages/daemon/docker/worker.Dockerfile`, so both inputs select the job.
+
+## dispatch_browser: socket-root fixture
+
+`packages/dispatch/e2e/harness-start.ts` imports `@legion/test-fixtures/socket-root`, so the
+browser suite reads the shared fixture sources.
+
+## envoy_infra_go: sockettest
+
+The held-port wrapper's ordinary test, `packages/envoy/infra/host/heldportwrapper/main_test.go`,
+imports `packages/envoy/internal/sockettest`, and `packages/envoy/infra/scripts/race-unit.sh` runs
+every package of the module but `internal/textcheck`, that one among them.
+
+## dispatch_two_builds: socket-root fixture
+
+The two-build browser half starts the Dispatch e2e harness, and
+`packages/dispatch/e2e/harness-start.ts` imports `@legion/test-fixtures/socket-root`.
+
+## docs: socket-root fixture
+
+`docs/site/media/harness.ts` imports `packages/dispatch/e2e/harness-start.ts`, which imports
+`@legion/test-fixtures/socket-root`, so the docs site's tools program
+(`docs/site/tsconfig.tools.json`) compiles `packages/test-fixtures/src/socket-root.ts`.
+`docs-pages.yaml`'s `on.push.paths` names it too, since that list equals this filter.

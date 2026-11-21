@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -25,6 +25,8 @@ import {
 // run; this file covers every observation but second-owner (multi-repo-second-owner.test.ts) and
 // the `negative` ones (multi-repo-negative.test.ts). The stubs and fakes it runs against are in
 // multi-repo-acceptance-harness.ts.
+// Hang guard, above every hook: the observer's 30 s curl --max-time, plus 30 s for the row's work.
+setDefaultTimeout(60_000);
 useScratchDirectory();
 
 afterEach(() => {

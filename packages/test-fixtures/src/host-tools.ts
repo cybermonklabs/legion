@@ -1,6 +1,43 @@
+import { isAbsolute } from "node:path";
+
 /** The path of the program on this host's `PATH`, or null when the host does not have it. */
 export function hostTool(name: string): string | null {
   return Bun.which(name);
+}
+
+/**
+ * The interpreter `python3` names in this process's own environment (`sys.executable`), by its
+ * absolute path, for a test that starts Python under an environment of its own.
+ *
+ * `python3` looked up on a child's PATH can be a version manager's shim, and a shim finds its tool
+ * through the caller's HOME. On a devbox it is mise's: under a test's own HOME it has no version
+ * for python3, and where no other python3 is on the PATH behind it, it fails ("python3 is not a
+ * valid shim"); where one is, it runs that one, with every mise install directory taken off the
+ * PATH of what it runs. Run by its own path, the interpreter is the one the caller runs, and the
+ * child gets exactly the environment the test gives it. Call it once, where the test starts:
+ * it runs python3, and it throws, naming what python3 answered, when that is no absolute path.
+ */
+export function pythonInterpreter(): string {
+  return ownExecutable("python3", ["-I", "-c", "import sys; print(sys.executable)"]);
+}
+
+/** The interpreter `node` names in this process's own environment (`process.execPath`), by its
+ *  absolute path, for the same reason as {@link pythonInterpreter}: node is a mise shim on a
+ *  devbox too. Bun's own is `process.execPath` in the test itself. */
+export function nodeInterpreter(): string {
+  return ownExecutable("node", ["-p", "process.execPath"]);
+}
+
+/** What `name`, run with `args` in this process's environment, prints as its own executable,
+ *  which must be an absolute path. */
+function ownExecutable(name: string, args: readonly string[]): string {
+  const answer = Bun.spawnSync([name, ...args], { stdout: "pipe", stderr: "pipe" });
+  const executable = answer.stdout.toString().trim();
+  if (answer.exitCode !== 0 || !isAbsolute(executable))
+    throw new Error(
+      `${name} named no interpreter of its own (status ${answer.exitCode}, ${JSON.stringify(executable)}): ${answer.stderr.toString()}`
+    );
+  return executable;
 }
 
 /**

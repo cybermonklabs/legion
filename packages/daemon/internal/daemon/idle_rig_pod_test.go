@@ -74,7 +74,7 @@ func newIdleRigPods(t *testing.T, address func() string, session ompsessions.Dat
 	t.Helper()
 	// Each launcher's private directory is a numbered subdirectory of this root, and the unix
 	// socket of a generation's session database proxy is `<dir>/g<n>/.s.PGSQL.5432`. A unix
-	// socket path is bounded at 107 bytes (docs/testing.md), so the root comes from testtmp.Dir,
+	// socket path is bounded (docs/testing.md), so the root comes from testtmp.Dir,
 	// told the longest path a launcher builds under it: a counter, the generation directory and
 	// the session socket's name, written with the constants production uses. The helper measures
 	// the root it made against that path and takes a shorter base where the machine's own

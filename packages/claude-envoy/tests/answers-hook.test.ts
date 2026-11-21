@@ -235,7 +235,7 @@ async function runHook(
   cleanup.push(() => rm(directory, { recursive: true, force: true }))
   const timingFile = join(directory, "timing.json")
   const preload = options.preload === undefined ? [] : ["--preload", options.preload]
-  const run = Bun.spawn(["bun", ...preload, bundle, "answers"], {
+  const run = Bun.spawn([process.execPath, ...preload, bundle, "answers"], {
     env: {
       PATH: process.env["PATH"] ?? "",
       CLAUDE_PLUGIN_ROOT: packageRoot,

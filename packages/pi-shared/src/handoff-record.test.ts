@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
-import { lstat, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { LEGION_ROLES, type LegionRole } from "@legion/contracts";
@@ -10,12 +9,13 @@ import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { fakeLatestHandoff } from "@legion/envoy-client/test/fake-dispatch";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
   versionControlEnvironment,
   versionControlIdentity,
   versionControlNames,
 } from "@legion/test-fixtures/version-control-environment";
+import { gitBinary, jjBinary, runTool } from "@legion/test-fixtures/version-control-tools";
 import {
   findHandoffReport,
   findPushedBranchHead,
@@ -878,71 +878,54 @@ test("a pane whose Dispatch is the broker's reads the record under its own sessi
 
 // The revsets are jj's, so a fake cannot prove them: one real repository with a bare origin, the
 // round's change committed and the branch pushed, run through PATH's jj, as a pane is. A host
-// with no jj runs neither row and says so, once for the file. The jj the rows below run is the one
-// this walk found, so no spawn of theirs walks PATH again.
-const jjProgram = hostTool("jj");
+// with no jj runs neither row and says so, once for the file. The jj and git the rows run, and the
+// PATH's jj the code under test (`pathJj`) starts, are the binaries this host's `jj` and `git`
+// run (`jjBinary`, `gitBinary`), linked into a directory first on PATH: a wrapper on the host's
+// PATH finds its jj from the HOME and PATH it is given, which here are the test's, and may change
+// what jj or git does.
 const withoutJj = skipWithout("jj");
 
 // `isolatedHome` puts these on the test process as well, so the jj that the code under test
-// (`pathJj`) starts reads the test's home rather than the developer's.
-restoreEnvironment(versionControlNames);
-
-/**
- * A stand-in shared public leak check under `root`, whose path {@link isolatedHome} names: a
- * script that reads its standard input, as the real check does, so nothing is left in a pipe when
- * it exits, and clears the write it was asked about. It answers what a passing check answers, and
- * nothing else.
- *
- * The first of the two rows below pushes, and a push runs under whatever `git` is first on
- * `PATH`. In an issue pod that is Legion's wrapper (`/opt/legion/bin/git`), which points a push at
- * a hook that runs the leak guard, and the guard refuses a push it can resolve no shared check
- * for. With no check named, that push stops with `LEAK CHECK SETUP ERROR` and the row fails
- * before it tests anything, while the same row passes on a runner whose git has no such wrapper.
- * The stand-in makes the two one run.
- */
-function passingLeakCheck(root: string): string {
-  const check = path.join(root, "public-leak-check.sh");
-  writeFileSync(check, "#!/bin/sh\ncat >/dev/null 2>&1\nexit 0\n", { mode: 0o700 });
-  return check;
-}
+// (`pathJj`) starts is the test's and reads the test's home rather than the developer's.
+restoreEnvironment([...versionControlNames, "PATH"]);
 
 /**
  * The environment this file's real jj and git run in, and the one it puts on the test process: the
  * shared isolation fixture over a home under `root`, so neither the developer's
- * `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor the system gitconfig decides a result. It
- * reaches the test process too, because `pathJj` — the code under test — starts jj with the
- * process's own environment.
- *
- * The leak check is named for the children alone, not put on this process: it is a file under
- * `root`, which this file's own cleanup removes, and a name left on the process would outlive it
- * for whatever test file runs next.
+ * `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor the system gitconfig decides a result, and a
+ * PATH whose first directory holds the jj and git binaries themselves. It reaches the test process
+ * too, because `pathJj` — the code under test — starts jj with the process's own environment.
+ * A push of the rows below runs that git, so no wrapper's leak guard stands in front of it.
  */
-function isolatedHome(root: string): Record<string, string> {
-  const isolated = versionControlEnvironment(path.join(root, "home"));
-  Object.assign(process.env, isolated);
-  return {
-    PATH: process.env.PATH ?? "",
-    ...isolated,
-    PUBLIC_LEAK_CHECK: passingLeakCheck(root),
+async function isolatedHome(root: string): Promise<Record<string, string>> {
+  const bin = path.join(root, "bin");
+  await mkdir(bin);
+  await symlink(await jjBinary(root), path.join(bin, "jj"));
+  await symlink(await gitBinary(root), path.join(bin, "git"));
+  const isolated = {
+    ...versionControlEnvironment(path.join(root, "home")),
+    PATH: `${bin}:${process.env.PATH ?? ""}`,
   };
+  Object.assign(process.env, isolated);
+  return isolated;
+}
+
+/** Runs `program` — `jj` or `git` as `env`'s PATH finds it — in `cwd` with the test's own
+ * environment, failing on a non-zero exit (`runTool`). */
+async function run(
+  program: "jj" | "git",
+  cwd: string,
+  env: Record<string, string>,
+  ...args: string[]
+): Promise<string> {
+  const found = Bun.which(program, { PATH: env.PATH ?? "" });
+  if (found === null) throw new Error(`no ${program} on ${env.PATH}`);
+  return await runTool(found, cwd, env, args);
 }
 
 /** Runs jj in `cwd` with the test's own environment, failing on a non-zero exit. */
-async function jj(cwd: string, env: Record<string, string>, ...args: string[]): Promise<string> {
-  const child = Bun.spawn([jjProgram ?? "jj", ...args], {
-    cwd,
-    env,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (code !== 0) throw new Error(`jj ${args.join(" ")} exited ${code}:\n${stderr}`);
-  return stdout.trim();
-}
+const jj = (cwd: string, env: Record<string, string>, ...args: string[]) =>
+  run("jj", cwd, env, ...args);
 
 test.skipIf(withoutJj)(
   "against a real jj workspace, the implementer's report refuses an @- the branch does not carry and a record naming another commit, and names @- once it is pushed and recorded",
@@ -950,11 +933,9 @@ test.skipIf(withoutJj)(
     const root = await mkdtemp(path.join(tmpdir(), "legion-handoff-record-"));
     scratch.push(root);
     const workspace = path.join(root, "workspace");
-    const childEnv = isolatedHome(root);
+    const childEnv = await isolatedHome(root);
     const paneEnv = { ...versionControlIdentity, LEGION_WORKSPACE: workspace, LEGION_ISSUE: ISSUE };
-    await Bun.spawn(["git", "init", "--bare", "--quiet", path.join(root, "origin.git")], {
-      env: childEnv,
-    }).exited;
+    await run("git", root, childEnv, "init", "--bare", "--quiet", path.join(root, "origin.git"));
     await jj(root, childEnv, "git", "init", workspace);
     await jj(workspace, childEnv, "git", "remote", "add", "origin", path.join(root, "origin.git"));
     await writeFile(path.join(workspace, "main.py"), 'print("hi")\n');
@@ -1070,7 +1051,7 @@ test.skipIf(withoutJj)(
     const root = await mkdtemp(path.join(tmpdir(), "legion-handoff-lock-"));
     scratch.push(root);
     const workspace = path.join(root, "workspace");
-    const childEnv = isolatedHome(root);
+    const childEnv = await isolatedHome(root);
     await jj(root, childEnv, "git", "init", "--colocate", workspace);
     await writeFile(path.join(workspace, "main.py"), 'print("hi")\n');
     const lock = path.join(workspace, ".git", "index.lock");

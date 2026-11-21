@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { refusingOrigin } from "@legion/test-fixtures/refused-port";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { postSlackReply, SLACK_BOT_TOKEN_SECRET } from "../slack-post";
 
@@ -360,14 +361,12 @@ describe("postSlackReply", () => {
   });
 
   test("a Slack that does not answer is a failure that says the reply may have been posted", async () => {
-    // A port nothing listens on: the poster's request fails after the grant.
-    const closed = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
-    const url = `http://127.0.0.1:${closed.port}/api`;
-    closed.stop(true);
-    const { env } = brokerEnvironment("granted", url);
+    // A port this row holds bound and never listens on (`refusingOrigin`), so the poster's request
+    // is refused after the grant, and no other process can bind it to give an answer of its own.
+    const { env } = brokerEnvironment("granted", `${refusingOrigin()}/api`);
 
     await expect(postSlackReply(reply, { env })).rejects.toThrow(
-      "the reply may have been posted, and posting it again may put it in the thread twice"
+      "Slack did not answer chat.postMessage: the reply may have been posted, and posting it again may put it in the thread twice"
     );
   });
 

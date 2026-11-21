@@ -63,7 +63,7 @@ func env(m map[string]string) func(string) string { return func(k string) string
 // XDG_CONFIG_HOME, cfg/systemd/user/agent-secrets-helper.service (install_test.go), which is
 // longer than the h.sock every other caller binds. TMPDIR places it, and the helper falls back
 // to /tmp for that length alone, where t.TempDir()'s path carries the whole of the test's name
-// and passes the 107 bytes a unix socket path holds (docs/testing.md).
+// and passes what a unix socket path holds (docs/testing.md).
 func shortTempDir(t *testing.T) string {
 	t.Helper()
 	return testtmp.Dir(t, filepath.Join("cfg", "systemd", "user", "agent-secrets-helper.service"))
