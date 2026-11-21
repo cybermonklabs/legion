@@ -2,6 +2,7 @@ package gcp
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
@@ -59,16 +60,6 @@ var clusteredHubRouteStageNames = [...]string{
 // String is the stage's name, as routeAuthorization.stage takes it.
 func (s clusteredHubRouteStage) String() string { return clusteredHubRouteStageNames[s] }
 
-// parseClusteredHubRouteStage is the stage named name, and false for any other name.
-func parseClusteredHubRouteStage(name string) (clusteredHubRouteStage, bool) {
-	for stage, stageName := range clusteredHubRouteStageNames {
-		if stageName == name {
-			return clusteredHubRouteStage(stage), true
-		}
-	}
-	return 0, false
-}
-
 // The route credential's names: the user every route presents, and the nats container's two
 // variables. Kubernetes expands $(NATS_ROUTE_PASSWORD) in NATS_ROUTE_URLS only when the password's
 // variable comes first in the container's env, and the chart writes container.env in key order,
@@ -92,12 +83,12 @@ func newClusteredHubRoute(args *ClusteredHubRouteAuthorizationArgs, namespace st
 	if !secretKeyRule.MatchString(args.SecretKey) {
 		return nil, core.InputErrorf("routeAuthorization.secretKey", "routeAuthorization.secretKey %q must match %s", args.SecretKey, secretKeyRule)
 	}
-	stage, ok := parseClusteredHubRouteStage(args.Stage)
-	if !ok {
+	stage := slices.Index(clusteredHubRouteStageNames[:], args.Stage)
+	if stage < 0 {
 		return nil, core.InputErrorf("routeAuthorization.stage", "routeAuthorization.stage %q must be one of %s, in that order, one apply each: "+
 			"env gives the pods the credential, routes presents it, and authorization requires it", args.Stage, strings.Join(clusteredHubRouteStageNames[:], ", "))
 	}
-	return &clusteredHubRoute{secretName: args.SecretName, secretKey: args.SecretKey, stage: stage}, nil
+	return &clusteredHubRoute{secretName: args.SecretName, secretKey: args.SecretKey, stage: clusteredHubRouteStage(stage)}, nil
 }
 
 // env is the nats container's route variables, as chart container.env entries: the password from
