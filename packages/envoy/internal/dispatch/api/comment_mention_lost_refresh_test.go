@@ -14,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -37,16 +36,12 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 		t.Run(tc.name, func(t *testing.T) {
 			database := storetest.Open(t)
 			lossy := &lossyConns{}
-			config := database.Pool.Config()
-			config.ConnConfig.DialFunc = lossy.dial
-			pool, err := pgxpool.NewWithConfig(context.Background(), config)
-			if err != nil {
-				t.Fatalf("open a pool through lossy connections: %v", err)
-			}
-			t.Cleanup(pool.Close)
+			// The server's store dials through lossyConns. Reopened closes its pool after t, and
+			// with it every pool the server opens from it.
+			lossyStore := storetest.Reopened(t, database, func(config *pgxpool.Config) { config.ConnConfig.DialFunc = lossy.dial })
 			listener, _ := newMentionListener(t)
 			handler, _, _, served := newRegisteredTestServer(t, testServerOptions{
-				store: &store.Store{Pool: store.NewPool(pool)}, envoyURL: listener.URL,
+				store: lossyStore, envoyURL: listener.URL,
 				envoyTimeout: 30 * time.Second, outboxPublishes: true,
 			})
 			served.mentions.wait()
@@ -130,16 +125,12 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 			ctx := context.Background()
 			database := storetest.Open(t)
 			lossy := &lossyConns{}
-			config := database.Pool.Config()
-			config.ConnConfig.DialFunc = lossy.dial
-			pool, err := pgxpool.NewWithConfig(ctx, config)
-			if err != nil {
-				t.Fatalf("open a pool through lossy connections: %v", err)
-			}
-			t.Cleanup(pool.Close)
+			// The server's store dials through lossyConns. Reopened closes its pool after t, and
+			// with it every pool the server opens from it.
+			lossyStore := storetest.Reopened(t, database, func(config *pgxpool.Config) { config.ConnConfig.DialFunc = lossy.dial })
 			listener, state := newMentionListener(t)
 			handler, _, _, served := newRegisteredTestServer(t, testServerOptions{
-				store: &store.Store{Pool: store.NewPool(pool)}, envoyURL: listener.URL,
+				store: lossyStore, envoyURL: listener.URL,
 				envoyTimeout: 30 * time.Second, outboxPublishes: true,
 			})
 			served.mentions.wait()

@@ -1,7 +1,118 @@
 {
-  "commands": 37,
+  "commands": 137,
   "refusals": 29,
   "runs": [
+    {
+      "tool": "dispatch_accept_message_delivery",
+      "call": "valid",
+      "args": {
+        "attempt": "1",
+        "message": "<id>"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/messages/0190c7d2-1111-7222-8333-444444444444/deliveries/1/accept",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/messages/{id}/deliveries/{attempt}/accept\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_accept_suggestion",
+      "call": "valid",
+      "args": {
+        "comment": "<id>"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/comments/0190c7d2-1111-7222-8333-444444444444/accept",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/comments/{id}/accept\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_answer_ask",
+      "call": "valid",
+      "args": {
+        "ask": "<id>",
+        "expected_edited_at": null,
+        "selected": [
+          "Hold to Monday"
+        ]
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/asks/0190c7d2-1111-7222-8333-444444444444/answer",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "expected_edited_at": null,
+            "selected": [
+              "Hold to Monday"
+            ]
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/asks/{id}/answer\"}"
+      ]
+    },
     {
       "tool": "dispatch_answers",
       "call": "valid",
@@ -201,6 +312,149 @@
       ]
     },
     {
+      "tool": "dispatch_broadcast",
+      "call": "valid",
+      "args": {
+        "body": "The deploy is paused until 14:00.",
+        "delivery": "aside",
+        "session_ids": [
+          "session-0123456789abcdef"
+        ]
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/broadcasts",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "body": "The deploy is paused until 14:00.",
+            "delivery": "aside",
+            "session_ids": [
+              "session-0123456789abcdef"
+            ]
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/broadcasts\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_check_app_installation",
+      "call": "valid",
+      "args": {
+        "owner": "acme",
+        "repo": "infra"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/github/app-installation/acme/infra",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/github/app-installation/{owner}/{repo}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_check_markdown",
+      "call": "valid",
+      "args": {
+        "markdown": "# Notes\n\n- one\n"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/markdown/round-trip",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "markdown": "# Notes\n\n- one\n"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"markdown\":\"# Notes\\n\\n- one\\n\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_check_result",
+      "call": "valid",
+      "args": {
+        "check": "k1",
+        "commit": "1111111111111111111111111111111111111111",
+        "issue": "DSP-1",
+        "role": "implementer",
+        "verdict": "pass"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/results/dry-run",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "check": "k1",
+            "commit": "1111111111111111111111111111111111111111",
+            "role": "implementer",
+            "verdict": "pass"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/issues/{key}/results/dry-run\"}"
+      ]
+    },
+    {
       "tool": "dispatch_claim",
       "call": "valid",
       "args": {
@@ -388,6 +642,257 @@
       "outcome": "result",
       "text": [
         "Posted comment 01234567-0000-4000-8000-000000000001"
+      ]
+    },
+    {
+      "tool": "dispatch_count_related_checks",
+      "call": "valid",
+      "args": {
+        "project": "DSP"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/related-checks?project=DSP",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/related-checks\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_create_priority",
+      "call": "valid",
+      "args": {
+        "title": "Ship the command bar"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/priorities",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "title": "Ship the command bar"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/priorities\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_create_session_group",
+      "call": "valid",
+      "args": {
+        "name": "Release train",
+        "sessions": [
+          "session-0123456789abcdef"
+        ]
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/delivery/session-groups",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "name": "Release train",
+            "sessions": [
+              "session-0123456789abcdef"
+            ]
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/delivery/session-groups\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_decline_ask",
+      "call": "valid",
+      "args": {
+        "ask": "<id>",
+        "note": "Not mine to decide."
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/asks/0190c7d2-1111-7222-8333-444444444444/decline",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "note": "Not mine to decide."
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/asks/{id}/decline\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_delete_priority",
+      "call": "valid",
+      "args": {
+        "priority": "ship-the-command-bar"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/priorities/ship-the-command-bar",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"DELETE /api/v1/priorities/{id}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_delete_session_group",
+      "call": "valid",
+      "args": {
+        "group": "7"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/delivery/session-groups/7",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"DELETE /api/v1/delivery/session-groups/{id}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_dismiss_inbox",
+      "call": "valid",
+      "args": {
+        "seen_replies": {
+          "reply:0190c7d2-1111-7222-8333-444444444444": {
+            "version": 3
+          }
+        },
+        "threads": [
+          "reply:<id>"
+        ]
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/me/inbox/dismiss",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "seen_replies": {
+              "reply:0190c7d2-1111-7222-8333-444444444444": {
+                "version": 3
+              }
+            },
+            "threads": [
+              "reply:<id>"
+            ]
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/me/inbox/dismiss\"}"
       ]
     },
     {
@@ -669,6 +1174,141 @@
       "outcome": "result",
       "text": [
         "Ask edited: Which way should the release go?"
+      ]
+    },
+    {
+      "tool": "dispatch_edit_comment",
+      "call": "valid",
+      "args": {
+        "body": "Corrected wording.",
+        "comment": "<id>"
+      },
+      "requests": [
+        {
+          "method": "PATCH",
+          "path": "/api/v1/comments/0190c7d2-1111-7222-8333-444444444444",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "body": "Corrected wording."
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"id\":\"01234567-0000-4000-8000-000000000001\",\"issue_key\":\"DSP-1\",\"artifact_id\":null,\"author\":{\"kind\":\"session\",\"id\":\"session-1\"},\"body\":\"Looks good.\",\"anchor\":null,\"state\":\"open\",\"reply_to\":null,\"created_at\":\"2026-01-02T03:04:05Z\",\"updated_at\":\"2026-01-02T03:04:05Z\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_edit_priority",
+      "call": "valid",
+      "args": {
+        "priority": "ship-the-command-bar",
+        "title": "Ship the command bar to everyone"
+      },
+      "requests": [
+        {
+          "method": "PATCH",
+          "path": "/api/v1/priorities/ship-the-command-bar",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "title": "Ship the command bar to everyone"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"PATCH /api/v1/priorities/{id}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_edit_session_group",
+      "call": "valid",
+      "args": {
+        "add": [
+          "session-0123456789abcdef"
+        ],
+        "group": "7"
+      },
+      "requests": [
+        {
+          "method": "PATCH",
+          "path": "/api/v1/delivery/session-groups/7",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "add": [
+              "session-0123456789abcdef"
+            ]
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"PATCH /api/v1/delivery/session-groups/{id}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_find_related",
+      "call": "valid",
+      "args": {
+        "project": "DSP",
+        "title": "Search misses renamed issues"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/projects/DSP/related?title=Search misses renamed issues",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"outcome\":\"none\",\"search\":\"meaning_and_keywords\",\"related\":[]}"
       ]
     },
     {
@@ -988,6 +1628,43 @@
       ]
     },
     {
+      "tool": "dispatch_keep_decision",
+      "call": "valid",
+      "args": {
+        "block": "b1",
+        "document": "<id>",
+        "text_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/artifacts/0190c7d2-1111-7222-8333-444444444444/blocks/b1/keep",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "text_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep\"}"
+      ]
+    },
+    {
       "tool": "dispatch_limits",
       "call": "valid",
       "args": {},
@@ -1013,6 +1690,552 @@
         "One markdown document: 1,048,576 bytes.",
         "One handoff body: 262,144 bytes.",
         "Dispatch holds every write to these bounds and refuses a longer text, naming the block or the field that passed one."
+      ]
+    },
+    {
+      "tool": "dispatch_list_agent_messages",
+      "call": "valid",
+      "args": {
+        "session": "session-0123456789abcdef"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/agents/session-0123456789abcdef/messages",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/agents/{session_id}/messages\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_architecture_sources",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/settings/architecture-sources",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/settings/architecture-sources\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_ask_followers",
+      "call": "valid",
+      "args": {
+        "ask": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/asks/0190c7d2-1111-7222-8333-444444444444/followers",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "\"\""
+      ]
+    },
+    {
+      "tool": "dispatch_list_broadcasts",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/broadcasts",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/broadcasts\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_ci_reconcile_passes",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/ci-reconcile/passes",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/ci-reconcile/passes\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_collaborators",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/collaborators",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/issues/{key}/collaborators\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_decisions",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/decisions",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/issues/{key}/decisions\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_default_assignees",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/settings/project-default-assignees",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/settings/project-default-assignees\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_document_events",
+      "call": "valid",
+      "args": {
+        "document": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/artifacts/0190c7d2-1111-7222-8333-444444444444/events",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "[]"
+      ]
+    },
+    {
+      "tool": "dispatch_list_document_subscribers",
+      "call": "valid",
+      "args": {
+        "document": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/artifacts/0190c7d2-1111-7222-8333-444444444444/subscribers",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/artifacts/{id}/subscribers\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_issue_messages",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/messages",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/issues/{key}/messages\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_issue_subscribers",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/subscribers",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/issues/{key}/subscribers\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_my_answers",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/me/answers",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/me/answers\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_near_copy_checks",
+      "call": "valid",
+      "args": {
+        "project": "DSP"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/near-copy-checks?project=DSP",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/near-copy-checks\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_project_architecture_sources",
+      "call": "valid",
+      "args": {
+        "project": "DSP"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/projects/DSP/architecture-sources",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "[{\"project\":\"CORE\",\"repo\":\"acme/infra\",\"branch\":\"main\",\"enabled\":true,\"created_by\":{\"kind\":\"user\",\"login\":\"sjawhar\"},\"created_at\":\"2026-01-02T03:04:05Z\",\"last_sync_at\":\"2026-01-02T03:04:05Z\",\"last_commit\":\"abc1234\",\"last_error\":null,\"components\":3}]"
+      ]
+    },
+    {
+      "tool": "dispatch_list_repo_mappings",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/settings/repo-projects",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/settings/repo-projects\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_reviews",
+      "call": "valid",
+      "args": {
+        "document": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/artifacts/0190c7d2-1111-7222-8333-444444444444/reviews",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/artifacts/{id}/reviews\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_routes",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_list_users",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/users",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/users\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_map_repo",
+      "call": "valid",
+      "args": {
+        "owner": "acme",
+        "project": "DSP",
+        "repo": "infra"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/settings/repo-projects/acme/infra",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "project": "DSP"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"PUT /api/v1/settings/repo-projects/{owner}/{repo}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_mark_document_read",
+      "call": "valid",
+      "args": {
+        "document": "<id>",
+        "version": 3
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/me/documents/0190c7d2-1111-7222-8333-444444444444/read",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "version": 3
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"PUT /api/v1/me/documents/{id}/read\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_mark_inbox_read",
+      "call": "valid",
+      "args": {
+        "read_through": "<time>"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/me/inbox/read",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "read_through": "<time>"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/me/inbox/read\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_mark_thread_read",
+      "call": "valid",
+      "args": {
+        "read_through": "<time>",
+        "thread": "<id>"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/me/threads/0190c7d2-1111-7222-8333-444444444444/read",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "read_through": "<time>"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"PUT /api/v1/me/threads/{id}/read\"}"
       ]
     },
     {
@@ -1083,6 +2306,43 @@
       "outcome": "result",
       "text": [
         "Posted message 01234567-0000-4000-8000-000000000001 (dispatch://DSP-1/message/01234567-0000-4000-8000-000000000001)"
+      ]
+    },
+    {
+      "tool": "dispatch_name_version",
+      "call": "valid",
+      "args": {
+        "document": "spec",
+        "issue": "DSP-1",
+        "summary": "Agreed with Ana"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/DSP-1/artifacts/spec/versions",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "summary": "Agreed with Ana"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/issues/{key}/artifacts/{slug}/versions\"}"
       ]
     },
     {
@@ -1459,6 +2719,866 @@
       ]
     },
     {
+      "tool": "dispatch_read_agent_document",
+      "call": "valid",
+      "args": {
+        "document": "screenshot-png",
+        "session": "session-0123456789abcdef"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/agents/session-0123456789abcdef/artifacts/screenshot-png",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/agents/{session_id}/artifacts/{slug}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_agent_document_version",
+      "call": "valid",
+      "args": {
+        "document": "screenshot-png",
+        "session": "session-0123456789abcdef",
+        "version": 1
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/agents/session-0123456789abcdef/artifacts/screenshot-png/versions/1",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_ask",
+      "call": "valid",
+      "args": {
+        "ask": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/asks/0190c7d2-1111-7222-8333-444444444444",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"ask\":{\"id\":\"01234567-0000-4000-8000-000000000001\",\"issue_key\":\"DSP-1\",\"artifact_id\":null,\"author\":{\"kind\":\"session\",\"id\":\"session-1\"},\"question\":\"Which way should the release go?\",\"options\":[],\"multiple\":false,\"urgency\":\"med\",\"anchor\":null,\"state\":\"open\",\"answer\":null,\"kind\":\"question\",\"waiting_on\":\"human\",\"opened_event_id\":1,\"created_at\":\"2026-01-02T03:04:05Z\",\"updated_at\":\"2026-01-02T03:04:05Z\"},\"replies\":[],\"edits\":[],\"answers\":[],\"followers\":[],\"claimant\":null,\"route\":null,\"route_status\":null,\"route_holder\":null}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_block",
+      "call": "valid",
+      "args": {
+        "block": "b1",
+        "document": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/artifacts/0190c7d2-1111-7222-8333-444444444444/blocks/b1",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/artifacts/{id}/blocks/{block_id}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_block_links",
+      "call": "valid",
+      "args": {
+        "from": "dispatch://DSP-1/spec",
+        "to": "dispatch://DSP-1/artifact/plan-md"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/block-links?from=dispatch://DSP-1/spec&to=dispatch://DSP-1/artifact/plan-md",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/block-links\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_block_schema",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/schema/blocks",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/schema/blocks\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_broadcast",
+      "call": "valid",
+      "args": {
+        "broadcast": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/broadcasts/0190c7d2-1111-7222-8333-444444444444",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/broadcasts/{id}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_comment",
+      "call": "valid",
+      "args": {
+        "comment": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/comments/0190c7d2-1111-7222-8333-444444444444",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"id\":\"01234567-0000-4000-8000-000000000001\",\"issue_key\":\"DSP-1\",\"artifact_id\":null,\"author\":{\"kind\":\"session\",\"id\":\"session-1\"},\"body\":\"Looks good.\",\"anchor\":null,\"state\":\"open\",\"reply_to\":null,\"created_at\":\"2026-01-02T03:04:05Z\",\"updated_at\":\"2026-01-02T03:04:05Z\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_comment_blocks",
+      "call": "valid",
+      "args": {
+        "comment": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/comments/0190c7d2-1111-7222-8333-444444444444/blocks",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/comments/{id}/blocks\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_coverage",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/coverage",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"issue\":\"DSP-1\",\"spec_artifact_id\":\"01234567-0000-4000-8000-00000000000a\",\"has_plan\":true,\"requirements\":[],\"gaps\":[\"the spec marks no requirements\"]}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_dashboard_builds",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/dashboard/builds",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/dashboard/builds\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_delivery_run",
+      "call": "valid",
+      "args": {
+        "run": 123456789
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/delivery/runs/123456789",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/delivery/runs/{id}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_delivery_settings",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/settings/delivery",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/settings/delivery\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_document",
+      "call": "valid",
+      "args": {
+        "document": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/artifacts/0190c7d2-1111-7222-8333-444444444444",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"id\":\"01234567-0000-4000-8000-00000000000a\",\"issue_key\":\"DSP-1\",\"project\":\"DSP\",\"slug\":\"spec-md\",\"ref_key\":\"DSP-1/spec-md\",\"name\":\"spec.md\",\"kind\":\"doc\",\"primary\":true,\"created_by\":{\"kind\":\"session\",\"id\":\"session-1\"},\"created_at\":\"2026-01-02T03:04:05Z\",\"versions\":[{\"number\":1,\"named\":false,\"summary\":null,\"authors\":[{\"kind\":\"session\",\"id\":\"session-1\"}],\"created_at\":\"2026-01-02T03:04:05Z\",\"size\":12}]}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_document_read_mark",
+      "call": "valid",
+      "args": {
+        "document": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/me/documents/0190c7d2-1111-7222-8333-444444444444/read",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/me/documents/{id}/read\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_document_references",
+      "call": "valid",
+      "args": {
+        "document": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/artifacts/0190c7d2-1111-7222-8333-444444444444/references",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"artifact_id\":\"01234567-0000-4000-8000-00000000000a\",\"items\":[]}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_event_log",
+      "call": "valid",
+      "args": {
+        "limit": 50
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/events/log?limit=50",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/events/log\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_first_architecture_source",
+      "call": "valid",
+      "args": {
+        "project": "DSP"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/projects/DSP/architecture-source",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/projects/{key}/architecture-source\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_handoff",
+      "call": "valid",
+      "args": {
+        "handoff": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/handoffs/0190c7d2-1111-7222-8333-444444444444",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/handoffs/{id}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_issue_references",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/references",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"members\":[],\"truncated\":false}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_issue_summary",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/summary",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/issues/{key}/summary\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_legion_board",
+      "call": "valid",
+      "args": {
+        "project": "DSP"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/projects/DSP/legion/board",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/projects/{key}/legion/board\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_legion_daemon",
+      "call": "valid",
+      "args": {
+        "project": "DSP"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/projects/DSP/legion/daemon",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/projects/{key}/legion/daemon\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_message_blocks",
+      "call": "valid",
+      "args": {
+        "message": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/messages/0190c7d2-1111-7222-8333-444444444444/blocks",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/messages/{id}/blocks\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_my_agent_state",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/me/agents/state",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/me/agents/state\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_my_state",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/me/state",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/me/state\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_near_copy_check",
+      "call": "valid",
+      "args": {
+        "check": "<id>"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/near-copy-checks/0190c7d2-1111-7222-8333-444444444444",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/near-copy-checks/{id}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_new_issue_settings",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/settings/new-issue",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/settings/new-issue\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_priority_history",
+      "call": "valid",
+      "args": {
+        "priority": "ship-the-command-bar"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/priorities/ship-the-command-bar/history",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/priorities/{id}/history\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_question_map",
+      "call": "valid",
+      "args": {
+        "id": "<id>",
+        "kind": "artifact"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/references/questions?id=0190c7d2-1111-7222-8333-444444444444&kind=artifact",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/references/questions\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_reference_targets",
+      "call": "valid",
+      "args": {
+        "ref": [
+          "dispatch://DSP-1"
+        ]
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/reference-targets?ref=dispatch://DSP-1",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/reference-targets\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_role_holders",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/role-holders",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/issues/{key}/role-holders\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_read_search_coverage",
+      "call": "valid",
+      "args": {},
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/search/coverage",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"GET /api/v1/search/coverage\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_rebuild_document",
+      "call": "valid",
+      "args": {
+        "document": "<id>"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/artifacts/0190c7d2-1111-7222-8333-444444444444/rebuild",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/artifacts/{id}/rebuild\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_redeliver_comment",
+      "call": "valid",
+      "args": {
+        "comment": "<id>",
+        "delivery": "aside"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/comments/0190c7d2-1111-7222-8333-444444444444/deliveries",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "delivery": "aside"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/comments/{id}/deliveries\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_redeliver_message",
+      "call": "valid",
+      "args": {
+        "delivery": "aside",
+        "message": "<id>"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/messages/0190c7d2-1111-7222-8333-444444444444/deliveries",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "delivery": "aside"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/messages/{id}/deliveries\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_reject_suggestion",
+      "call": "valid",
+      "args": {
+        "comment": "<id>"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/comments/0190c7d2-1111-7222-8333-444444444444/reject",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/comments/{id}/reject\"}"
+      ]
+    },
+    {
       "tool": "dispatch_related",
       "call": "valid",
       "args": {
@@ -1482,6 +3602,184 @@
       "outcome": "result",
       "text": [
         "Related-item check searched (meaning and keywords) and found nothing."
+      ]
+    },
+    {
+      "tool": "dispatch_remove_architecture_source",
+      "call": "valid",
+      "args": {
+        "owner": "acme",
+        "project": "DSP",
+        "repo": "infra"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/projects/DSP/architecture-sources/acme/infra",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"project\":\"CORE\",\"repo\":\"acme/infra\",\"branch\":\"main\",\"enabled\":true,\"created_by\":{\"kind\":\"user\",\"login\":\"sjawhar\"},\"created_at\":\"2026-01-02T03:04:05Z\",\"last_sync_at\":\"2026-01-02T03:04:05Z\",\"last_commit\":\"abc1234\",\"last_error\":null,\"components\":3}"
+      ]
+    },
+    {
+      "tool": "dispatch_remove_document",
+      "call": "valid",
+      "args": {
+        "document": "<id>"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/artifacts/0190c7d2-1111-7222-8333-444444444444",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"DELETE /api/v1/artifacts/{id}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_rename_document",
+      "call": "valid",
+      "args": {
+        "document": "<id>",
+        "name": "design.md"
+      },
+      "requests": [
+        {
+          "method": "PATCH",
+          "path": "/api/v1/artifacts/0190c7d2-1111-7222-8333-444444444444",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "name": "design.md"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"PATCH /api/v1/artifacts/{id}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_reopen_comment",
+      "call": "valid",
+      "args": {
+        "comment": "<id>"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/comments/0190c7d2-1111-7222-8333-444444444444/reopen",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/comments/{id}/reopen\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_reply_comment_delivery",
+      "call": "valid",
+      "args": {
+        "attempt": 1,
+        "body": "Done.",
+        "comment": "<id>"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/comments/0190c7d2-1111-7222-8333-444444444444/reply",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "attempt": 1,
+            "body": "Done."
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/comments/{id}/reply\"}"
       ]
     },
     {
@@ -1649,6 +3947,28 @@
       ]
     },
     {
+      "tool": "dispatch_resolve_issue",
+      "call": "valid",
+      "args": {
+        "ref": "acme/infra#12"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/resolve?ref=acme/infra#12",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"key\":\"DSP-1\"}"
+      ]
+    },
+    {
       "tool": "dispatch_result",
       "call": "valid",
       "args": {
@@ -1757,6 +4077,80 @@
       ]
     },
     {
+      "tool": "dispatch_review_document",
+      "call": "valid",
+      "args": {
+        "document": "<id>",
+        "state": "approved"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/artifacts/0190c7d2-1111-7222-8333-444444444444/reviews",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "state": "approved"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/artifacts/{id}/reviews\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_save_architecture_source",
+      "call": "valid",
+      "args": {
+        "branch": "main",
+        "owner": "acme",
+        "project": "DSP",
+        "repo": "infra"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/projects/DSP/architecture-sources/acme/infra",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "branch": "main"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"project\":\"CORE\",\"repo\":\"acme/infra\",\"branch\":\"main\",\"enabled\":true,\"created_by\":{\"kind\":\"user\",\"login\":\"sjawhar\"},\"created_at\":\"2026-01-02T03:04:05Z\",\"last_sync_at\":\"2026-01-02T03:04:05Z\",\"last_commit\":\"abc1234\",\"last_error\":null,\"components\":3}"
+      ]
+    },
+    {
       "tool": "dispatch_search",
       "call": "valid",
       "args": {
@@ -1804,6 +4198,237 @@
       "outcome": "result",
       "text": [
         "Sent message 01234567-0000-4000-8000-000000000001 to session 01234567-0000-4000-8000-000000000001; it reached that session as aside. dispatch read --message 01234567-0000-4000-8000-000000000001 reads the conversation back."
+      ]
+    },
+    {
+      "tool": "dispatch_set_agent_state",
+      "call": "valid",
+      "args": {
+        "pinned": true,
+        "session": "session-0123456789abcdef"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/me/agents/session-0123456789abcdef/state",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "pinned": true
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"PUT /api/v1/me/agents/{session_id}/state\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_set_default_assignee",
+      "call": "valid",
+      "args": {
+        "assignee": "ana@example.com",
+        "project": "DSP"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/projects/DSP/default-assignee",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "assignee": "ana@example.com"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"PUT /api/v1/projects/{key}/default-assignee\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_set_delivery_settings",
+      "call": "valid",
+      "args": {
+        "deploy_repo": "acme/deploy",
+        "deploy_workflow_path": ".github/workflows/deploy.yml",
+        "population_authors": [
+          "ana"
+        ],
+        "pr_checks_workflow_path": ".github/workflows/checks.yml",
+        "production_job_names": [
+          "production"
+        ]
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/settings/delivery",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "deploy_repo": "acme/deploy",
+            "deploy_workflow_path": ".github/workflows/deploy.yml",
+            "population_authors": [
+              "ana"
+            ],
+            "pr_checks_workflow_path": ".github/workflows/checks.yml",
+            "production_job_names": [
+              "production"
+            ]
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"PUT /api/v1/settings/delivery\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_set_issue_state",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1",
+        "pinned": true
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/me/issues/DSP-1/state",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "pinned": true
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"PUT /api/v1/me/issues/{key}/state\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_set_legion_daemon",
+      "call": "valid",
+      "args": {
+        "project": "DSP",
+        "state_url": "https://legion.example.com"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/projects/DSP/legion/daemon",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "state_url": "https://legion.example.com"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"PUT /api/v1/projects/{key}/legion/daemon\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_snooze_ask",
+      "call": "valid",
+      "args": {
+        "ask": "<id>",
+        "snoozed_until": "<time>"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/me/asks/0190c7d2-1111-7222-8333-444444444444/snooze",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "snoozed_until": "<time>"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"PUT /api/v1/me/asks/{id}/snooze\"}"
       ]
     },
     {
@@ -1898,6 +4523,213 @@
       "outcome": "result",
       "text": [
         "Posted suggestion 01234567-0000-4000-8000-000000000001"
+      ]
+    },
+    {
+      "tool": "dispatch_sync_first_architecture_source",
+      "call": "valid",
+      "args": {
+        "project": "DSP"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/projects/DSP/architecture-source/sync",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"POST /api/v1/projects/{key}/architecture-source/sync\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_unmap_repo",
+      "call": "valid",
+      "args": {
+        "owner": "acme",
+        "repo": "infra"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/settings/repo-projects/acme/infra",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"DELETE /api/v1/settings/repo-projects/{owner}/{repo}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_unset_legion_daemon",
+      "call": "valid",
+      "args": {
+        "project": "DSP"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/projects/DSP/legion/daemon",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"DELETE /api/v1/projects/{key}/legion/daemon\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_unsnooze_ask",
+      "call": "valid",
+      "args": {
+        "ask": "<id>"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/me/asks/0190c7d2-1111-7222-8333-444444444444/snooze",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"DELETE /api/v1/me/asks/{id}/snooze\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_unsubscribe_document",
+      "call": "valid",
+      "args": {
+        "document": "<id>",
+        "session": "session-0123456789abcdef"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/artifacts/0190c7d2-1111-7222-8333-444444444444/subscribers/session-0123456789abcdef",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}\"}"
+      ]
+    },
+    {
+      "tool": "dispatch_unsubscribe_issue",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1",
+        "session": "session-0123456789abcdef"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/issues/DSP-1/subscribers/session-0123456789abcdef",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"DELETE /api/v1/issues/{key}/subscribers/{session_id}\"}"
       ]
     },
     {

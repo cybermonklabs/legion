@@ -228,6 +228,24 @@ export function commentSummary(
   ].join("\n");
 }
 
+/** An issue's comments, its `dispatch://KEY/comments`, in the order the route lists them: each
+ *  comment's id, author and time, its anchor, the block and the comment it replies to, and its
+ *  body. */
+export function commentsSummary(issueKey: string, comments: readonly Comment[]): string {
+  return [
+    `Comments: ${issueKey}`,
+    ...(comments.length === 0
+      ? ["- none"]
+      : comments.flatMap((comment) => [
+          `${comment.id} · ${actorText(comment.author)} · ${comment.created_at}`,
+          ...anchorLines(comment),
+          ...replyBlockLines(comment),
+          ...(comment.reply_to === null ? [] : [`Reply to: ${comment.reply_to}`]),
+          `Body: ${comment.body}`,
+        ])),
+  ].join("\n");
+}
+
 /** The block of its parent a reply answers: its id and the head of its text, or that no current
  *  revision of the parent holds it. A comment or message that answers no block prints nothing. */
 function replyBlockLines(record: Pick<Comment, "reply_block">): string[] {

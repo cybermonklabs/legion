@@ -32,11 +32,12 @@ import (
 // noteActingAgent names the agent behind a decision on this request's access-log line: the
 // session the act names, and otherwise the personal token, by its owner, which is what the line
 // already says of a token that named no session (accesslog.KindToken). A browser's actor names
-// no agent, so its line keeps the person optionalActor noted. The last Note wins and a session
-// noted after a token keeps that token as the line's credential, so one line still carries both
-// who acted and what they presented.
+// no agent, and an act of the command bar's under a sign-in names neither, so its line keeps the
+// person optionalActor noted. The last Note wins and a session noted after a token keeps that
+// token as the line's credential, so one line still carries both who acted and what they
+// presented.
 func noteActingAgent(r *http.Request, actor model.Actor) {
-	if actor.Act == nil {
+	if actor.Act == nil || (actor.Act.Session == "" && actor.Act.TokenID == "") {
 		return
 	}
 	if actor.Act.Session != "" {

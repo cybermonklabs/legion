@@ -11,12 +11,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -86,10 +88,9 @@ type bootConfig struct {
 	RepoProjects   string
 	DefaultProject string
 	// NewIssueLabel and NewIssueSession are DISPATCH_NEW_ISSUE_LABEL and
-	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the search bar files from a person's typed
-	// words carries, and the session that issue is routed to and its first message is sent to.
-	// Empty is a deployment that configured neither: the issue carries no label, and no
-	// conversation is started on it.
+	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the command bar's File as a new issue files
+	// carries, and the session that issue is routed to; its new_issue run posts nothing on it.
+	// Empty is a deployment that configured neither: the issue carries no label, and takes no route.
 	NewIssueLabel   string
 	NewIssueSession string
 	EnvoyURL        string
@@ -175,6 +176,56 @@ type bootConfig struct {
 	// keeps its ratio of three beats to it, since no process-level test can wait a live window
 	// and a heartbeat for a refusal to stand.
 	ProcessHeartbeat time.Duration
+	// AgentCeiling is the resident memory above which this process kills its agent process, zero
+	// for the ceiling its container gives (agentLimits); only DISPATCH_TEST_AGENT_CEILING, under the
+	// test hooks, sets it, since no process-level test can hold the agent at gigabytes.
+	AgentCeiling int64
+	// AgentLimit is the agent's GOMEMLIMIT, zero for the one its container gives (agentLimits);
+	// only DISPATCH_TEST_AGENT_GOMEMLIMIT, under the test hooks, sets it, so a test holds the
+	// agent above its claim gate.
+	AgentLimit int64
+	// AgentHooks hands DISPATCH_TEST_AGENT_HOOKS=1 on to the agent process, which turns its test
+	// hooks on (going/agent's hooks.go); only DISPATCH_TEST_AGENT_HOOKS=1, under the test hooks,
+	// sets it.
+	AgentHooks bool
+	// AgentGrowAfter hands DISPATCH_TEST_AGENT_GROW_AFTER on to the agent process, which waits
+	// that long after each start and then allocates at full speed until it is killed
+	// (growAgentHeap); zero for none. Only DISPATCH_TEST_AGENT_GROW_AFTER, under the test hooks,
+	// sets it, for the test of the memory group.
+	AgentGrowAfter time.Duration
+	// ServerHeap is how many bytes this process holds on its heap from its boot until it exits,
+	// each page resident (holdServerHeap); zero for none. Only DISPATCH_TEST_SERVER_HEAP, under
+	// the test hooks, sets it, so the test of the memory group holds the server near its peak
+	// beside its agent.
+	ServerHeap int64
+	// KeepClosedRooms keeps a copy of the document of each room a document socket leaves, on ygo's
+	// heap until the process exits (keepClosedRoomDocuments), and KeepRequestMegabytes stores 1 MB
+	// for each request in a map nothing prunes (keepRequestMegabytes): the leaks the negative
+	// control of the comparison of production's heap plants. Only DISPATCH_TEST_KEEP_CLOSED_ROOMS=1
+	// and DISPATCH_TEST_KEEP_REQUEST_MEGABYTES=1, under the test hooks, set them.
+	KeepClosedRooms      bool
+	KeepRequestMegabytes bool
+	// AgentCallHook is the rules on routes every call of which this process runs for its agent
+	// panics in, or is held in before or after its route (api.Deps.AgentCallHook); only
+	// DISPATCH_TEST_AGENT_CALL_HOOK, under the test hooks, sets it.
+	AgentCallHook api.AgentCallHook
+	// AgentSlots is how many runs the agent works at once, zero for the slots its limits give
+	// (agentLimits); only DISPATCH_TEST_AGENT_SLOTS, under the test hooks, sets it, so a test
+	// crosses the server's bound of calls at once, which the agent's own slots stay under.
+	AgentSlots int
+	// AgentProcs is the agent's GOMAXPROCS, zero for the CPUs agentEnvironment gives it (as many as
+	// this process schedules on, agentMaxProcs at the most); only DISPATCH_TEST_AGENT_PROCS, under
+	// the test hooks, sets it, so a test on a runner of few CPUs gives the agent production's share
+	// of them: a quarter, 4 of a container's 16.
+	AgentProcs int
+	// TrustFile is SSL_CERT_FILE, the file of certificate authorities crypto/x509 trusts in place
+	// of the system's, which this process hands on to its agent process, so the agent trusts the
+	// chat model's endpoint as the server does; empty for the system's.
+	TrustFile string
+	// RuntimeDir is XDG_RUNTIME_DIR, the directory the agent's socket is made in
+	// (api.Background.ListenAgent); empty, the socket is made in a directory of its own under the
+	// system's temporary directory.
+	RuntimeDir string
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
 	// the test hooks, sets it.
@@ -259,6 +310,10 @@ type bootConfig struct {
 	// or DISPATCH_CHAT_* settings of the place it names), checked whole; an empty Place is no
 	// model configured, which the server says at boot rather than refusing to start.
 	Answerer answererConfig
+	// Decision is the decision model the command bar asks before it answers
+	// (DISPATCH_DECISION_MODEL, _ENDPOINT and _TOKEN_FILE), checked whole; newDecider builds it,
+	// or none, which the server says at boot rather than refusing to start.
+	Decision decisionConfig
 }
 
 func main() {
@@ -267,6 +322,7 @@ func main() {
 	if len(os.Args) > 1 {
 		os.Exit(runSubcommand(context.Background(), os.Args[1:], env, os.Stdout, os.Stderr))
 	}
+	started := time.Now()
 	boot, err := resolveBootConfig(env)
 	if err != nil {
 		slog.Error("dispatch: resolve boot config", "error", err)
@@ -288,6 +344,35 @@ func main() {
 	if boot.ProcessHeartbeat > 0 {
 		processes.HeartbeatInterval = boot.ProcessHeartbeat
 		processes.LiveWindow = 3 * boot.ProcessHeartbeat
+	}
+	// The memory of the command bar's agent process and the server's own beside it, from the
+	// container's memory limit (agentLimits), before anything sizes itself by the server's limit:
+	// the document read cache takes a sixteenth of it. A GOMEMLIMIT the environment set is the
+	// server's limit as it stands.
+	containerLimit, err := containerMemoryLimit()
+	if err != nil {
+		slog.Warn("dispatch: read the container's memory limit; the agent's limits are those of no limit", "error", err)
+	}
+	limits := agentLimits(containerLimit)
+	if boot.AgentCeiling > 0 {
+		limits.Ceiling = boot.AgentCeiling
+	}
+	if boot.AgentSlots > 0 {
+		limits.Slots = boot.AgentSlots
+	}
+	if boot.AgentLimit > 0 {
+		limits.AgentLimit = boot.AgentLimit
+	}
+	if limits.ServerLimit > 0 && debug.SetMemoryLimit(-1) == math.MaxInt64 {
+		debug.SetMemoryLimit(limits.ServerLimit)
+	}
+	slog.Info("dispatch: memory limits", "container", containerLimit, "server", debug.SetMemoryLimit(-1),
+		"agent_ceiling", limits.Ceiling, "agent_gomemlimit", limits.AgentLimit, "agent_slots", limits.Slots)
+
+	// A test's server holds its heap near its peak before its agent starts beside it
+	// (DISPATCH_TEST_SERVER_HEAP).
+	if boot.ServerHeap > 0 {
+		holdServerHeap(boot.ServerHeap)
 	}
 
 	envoyConfig, err := loadEnvoyConfig(env, config.LoadOptions{})
@@ -545,6 +630,15 @@ func main() {
 		slog.Error("dispatch: build the answerer", "error", err)
 		os.Exit(1)
 	}
+	// decider is nil where the deployment configured no decision model or named one the
+	// measurement does not hold, which newDecider logs: the server boots and decides nothing.
+	decider := newDecider(boot.Decision)
+	// The command bar's agent waits for a ready run, and for its person's Stop, on the NOTIFYs of
+	// api.GoingRunsChannel, which the listener hub below delivers to this signal.
+	goingRuns := api.NewGoingRunSignal()
+	// A stream of a run's events waits for the run's next frames on the NOTIFYs of
+	// api.GoingRunEventsChannel, which the listener hub below delivers to this signal.
+	goingRunEvents := api.NewGoingRunEventSignal()
 
 	// The answers reads this process serves, each timed from the moment it enters the route's
 	// handler chain, as its access-log line times it: the API records them, and the keyword fill
@@ -570,6 +664,8 @@ func main() {
 		AgentPublisher: agentPublisher,
 		Files:          fileStore,
 		Lifetime:       ctx,
+		GoingRuns:      goingRuns,
+		GoingRunEvents: goingRunEvents,
 		AnswersLatency: answersLatency,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
@@ -581,7 +677,9 @@ func main() {
 	// field would read as a model configured, and the capability route would say so.
 	if answerer != nil {
 		built.Answerer = answerer
+		built.AnswerModel = boot.Answerer.Model
 	}
+	built.Decider = decider
 	brokerTokens, err := brokerTokenVerifier(boot, database, serverURL)
 	if err != nil {
 		slog.Error("dispatch: build the broker access-token verifier", "error", err)
@@ -868,6 +966,10 @@ func main() {
 	if appCfg != nil {
 		gitHubReadsWake = listenerHub.Wake(githubreads.Channel)
 	}
+	listenerHub.Handle(api.GoingRunsChannel, goingRuns.Notify)
+	listenerHub.OnConnected(goingRuns.Wake)
+	listenerHub.Handle(api.GoingRunEventsChannel, goingRunEvents.Notify)
+	listenerHub.OnConnected(goingRunEvents.Wake)
 	// The keyword fill's own wakes (textversions.Run): a commit that wrote an event wakes its
 	// holder's next pass, and a hold's release its standby's next try for the hold. A Wake is a
 	// channel of its own with one buffered signal, which one reader takes, so the fill registers
@@ -1169,6 +1271,8 @@ func main() {
 		}}
 	}
 	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
+	// A test's server leaks on purpose where its boot asks it to (plantLeaks).
+	handler = plantLeaks(handler, boot, database)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -1201,6 +1305,7 @@ func main() {
 		SchemaCreatable:  pmdoc.SchemaCreatable(),
 		EmbedderIdentity: embedderIdentity,
 		FileStore:        fileStore != nil,
+		GoingRunShape:    background.GoingRunShape,
 	}, registryPruneLeases, announcer)
 	if err != nil {
 		// A deploy that stops this process while the registration waits for a refusing peer's
@@ -1220,6 +1325,26 @@ func main() {
 	ciInstance.set(registration.ID)
 	// The registry admitted this process, so it serves: the keyword fill starts (above).
 	close(serving)
+	// The command bar's agent process makes every read and write of its runs as a call to this
+	// server over a Unix socket only this process's user can open (api.AgentListener). A socket
+	// this process cannot make leaves the runs waiting for one that can, and Dispatch serves on.
+	// The agent is this binary's own `agent` subcommand, which agentSupervisor starts with an
+	// environment of the chat model's settings alone, and starts again after each exit.
+	var agent agentShutdown
+	var supervisor *agentSupervisor
+	if listening, err := background.ListenAgent(boot.RuntimeDir); err != nil {
+		slog.Warn("dispatch: listen for the command bar's agent; its runs wait for a server process that does", "error", err)
+	} else if executable, err := os.Executable(); err != nil {
+		slog.Error("dispatch: find this binary to start the agent process from; its runs wait for a server process that does", "error", err)
+		agent = listening
+	} else {
+		env := agentEnvironment(boot.Answerer, listening.Path(), limits, boot.TrustFile,
+			agentTestHooks{Loop: boot.AgentHooks, GrowAfter: boot.AgentGrowAfter, Procs: boot.AgentProcs})
+		supervisor = startAgentSupervisor(listening, []string{executable, "agent"}, env, limits)
+		agent = supervisor
+	}
+	registerProcessMetrics(met, processFigures{started: started, readCacheBytes: documentService.ReadCacheBytes,
+		listAnswerBytes: background.ListAnswerBytes, runs: background.GoingRunCounts, agent: supervisor})
 	// The importer's flights outlive the ticker's context, so they are closed inside the
 	// background wait: shutdown runs it before waitUntilIdle and pool.Close, and a sync still
 	// fetching then would write into a closing pool. The keyword fill is waited for here too, so
@@ -1230,7 +1355,7 @@ func main() {
 		waitFill()
 	}
 	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
-		deregisterAfterDrain(registration), registration.Lost(), outboxStopped); err != nil {
+		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, agent); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
 	}
@@ -1443,11 +1568,42 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
+		{"DISPATCH_TEST_AGENT_GROW_AFTER", &boot.AgentGrowAfter},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
 	}
+	if err := testHookBytes(env, "DISPATCH_TEST_AGENT_CEILING", boot.TestHooksEnabled, &boot.AgentCeiling); err != nil {
+		return bootConfig{}, err
+	}
+	if err := testHookBytes(env, "DISPATCH_TEST_AGENT_GOMEMLIMIT", boot.TestHooksEnabled, &boot.AgentLimit); err != nil {
+		return bootConfig{}, err
+	}
+	if err := testHookBytes(env, "DISPATCH_TEST_SERVER_HEAP", boot.TestHooksEnabled, &boot.ServerHeap); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.AgentCallHook, err = agentCallHook(env, boot.TestHooksEnabled); err != nil {
+		return bootConfig{}, err
+	}
+	if raw := strings.TrimSpace(env.get("DISPATCH_TEST_AGENT_SLOTS")); raw != "" {
+		if !boot.TestHooksEnabled {
+			return bootConfig{}, errors.New("DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_AGENT_SLOTS")
+		}
+		if boot.AgentSlots, err = strconv.Atoi(raw); err != nil || boot.AgentSlots <= 0 || boot.AgentSlots > 64 {
+			return bootConfig{}, fmt.Errorf("DISPATCH_TEST_AGENT_SLOTS=%q (expected a whole number of runs from 1 to 64)", raw)
+		}
+	}
+	if raw := strings.TrimSpace(env.get("DISPATCH_TEST_AGENT_PROCS")); raw != "" {
+		if !boot.TestHooksEnabled {
+			return bootConfig{}, errors.New("DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_AGENT_PROCS")
+		}
+		if boot.AgentProcs, err = strconv.Atoi(raw); err != nil || boot.AgentProcs <= 0 || boot.AgentProcs > agentMaxProcs {
+			return bootConfig{}, fmt.Errorf("DISPATCH_TEST_AGENT_PROCS=%q (expected a whole number of CPUs from 1 to %d)", raw, agentMaxProcs)
+		}
+	}
+	boot.TrustFile = strings.TrimSpace(env.get("SSL_CERT_FILE"))
+	boot.RuntimeDir = strings.TrimSpace(env.get("XDG_RUNTIME_DIR"))
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
 	}
@@ -1459,6 +1615,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
+		{"DISPATCH_TEST_AGENT_HOOKS", &boot.AgentHooks},
+		{"DISPATCH_TEST_KEEP_CLOSED_ROOMS", &boot.KeepClosedRooms},
+		{"DISPATCH_TEST_KEEP_REQUEST_MEGABYTES", &boot.KeepRequestMegabytes},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1547,6 +1706,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	boot.Answerer, err = resolveAnswerer(env, boot.Embedder.Place)
+	if err != nil {
+		return bootConfig{}, err
+	}
+	boot.Decision, err = resolveDecisionModel(env)
 	if err != nil {
 		return bootConfig{}, err
 	}
@@ -1890,6 +2053,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.HorizonStallAfter = boot.HorizonStallAfter
 	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
+	built.AgentCallHook = boot.AgentCallHook
 	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
 	return built
@@ -2305,6 +2469,25 @@ func testHookDuration(env settingValues, name string, testHooksEnabled bool, tar
 	return nil
 }
 
+// testHookBytes reads the test-only count of bytes setting name into target, leaving target as it
+// is when the setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1, and so is
+// any value that is not a positive whole number.
+func testHookBytes(env settingValues, name string, testHooksEnabled bool, target *int64) error {
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		return fmt.Errorf("%s=%q (expected a positive whole number of bytes)", name, raw)
+	}
+	*target = value
+	return nil
+}
+
 // testHookBool reads the test-only yes/no setting name into target, leaving target as it is when
 // the setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1; set, only "1"
 // turns the hook on, so a value meant as a yes in another spelling leaves it off rather than
@@ -2319,6 +2502,26 @@ func testHookBool(env settingValues, name string, testHooksEnabled bool, target 
 	}
 	*target = raw == "1"
 	return nil
+}
+
+// agentCallHook reads DISPATCH_TEST_AGENT_CALL_HOOK, a route every call of which the server runs
+// for its agent panics in ("panic METHOD /path") or is held in ("hold DURATION METHOD /path"):
+// the zero hook where unset. It is refused without DISPATCH_TEST_HOOKS=1, and so is a value of
+// neither form.
+func agentCallHook(env settingValues, testHooksEnabled bool) (api.AgentCallHook, error) {
+	const name = "DISPATCH_TEST_AGENT_CALL_HOOK"
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return api.AgentCallHook{}, nil
+	}
+	if !testHooksEnabled {
+		return api.AgentCallHook{}, fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	hook, err := api.ParseAgentCallHook(raw)
+	if err != nil {
+		return api.AgentCallHook{}, fmt.Errorf("%s=%q (%v)", name, raw, err)
+	}
+	return hook, nil
 }
 
 // roleHolderWindows are the session windows Dispatch judges a role route's holder by, read

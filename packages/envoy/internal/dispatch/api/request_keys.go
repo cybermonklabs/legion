@@ -1172,8 +1172,13 @@ func requestKeyRecoveryArgs[T recoveryPoint](ctx context.Context, point T) (args
 // A request without a key binds nothing. A request whose key a repeat has taken over is refused
 // (errRequestKeyTakenOver), and its transaction must roll back: the repeat makes the write instead.
 // A transaction that writes in two phases queues the same statement in its write phase instead
-// (queueRequestKeyRecovery), since this one would take a transaction id in the read phase.
+// (queueRequestKeyRecovery), since this one would take a transaction id in the read phase. Either
+// way the point is handed to the landing of a request a command-bar run sent in-process
+// (goingRecordRecovery), which records it in the same transaction.
 func bindRequestKeyRecovery[T recoveryPoint](ctx context.Context, tx pgx.Tx, point T) error {
+	if err := goingRecordRecovery(ctx, point); err != nil {
+		return err
+	}
 	args, keyed, err := requestKeyRecoveryArgs(ctx, point)
 	if err != nil || !keyed {
 		return err
@@ -1194,6 +1199,9 @@ func bindRequestKeyRecovery[T recoveryPoint](ctx context.Context, tx pgx.Tx, poi
 // write phase rather than before it, so the statements queued after it have run by then and the
 // transaction the caller abandons rolls them back with this one.
 func queueRequestKeyRecovery[T recoveryPoint](ctx context.Context, b *store.WriteBatch, point T) error {
+	if err := goingRecordRecovery(ctx, point); err != nil {
+		return err
+	}
 	args, keyed, err := requestKeyRecoveryArgs(ctx, point)
 	if err != nil || !keyed {
 		return err

@@ -25,6 +25,9 @@ import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread
 import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversation/unsent-drafts";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
+import { movePanel, resetGoingStore, setPlace, useGoingValue } from "./features/going/going-store";
+import { RunChip } from "./features/going/RunChip";
+import { SidePanel } from "./features/going/SidePanel";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
@@ -525,10 +528,14 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [inboxDrawerOpen, setInboxDrawerOpen] = useState(false);
-  // Whether the bar is open. `$mod+k`, `/`, `g p` and the rail's Search control open the one
-  // bar: this page's actions, the person's recent items, the projects a query names and the
-  // hits, with a chip saying what it will act on.
-  const [barOpen, setBarOpen] = useState(false);
+  // Where the command bar's conversation is (`features/going/panel-states.ts`): closed, over the
+  // page, or at the side. `$mod+k`, `/`, `g p` and the rail's Search control open the one bar
+  // over the page - this page's actions, the person's recent items, the projects a query names,
+  // the hits and the conversation - with a chip saying what it will act on; `$mod+Shift+k` keeps
+  // the conversation in a panel at the side, which stays open on every navigation. The shell
+  // reads where it is alone, so a frame of a run draws only the parts that show the run again.
+  const place = useGoingValue((going) => going.place);
+  const barOpen = place === "over";
   // What the person opened, for the bar to list back while its box is empty. It is recorded in
   // the shell rather than on each page, so every way into an item - a link, the bar itself, a
   // reload - records it.
@@ -702,13 +709,23 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
-      // the bar's own `$mod+k` binding closes it. It fires while the reader is writing, so
-      // the key reaches the bar from inside a document's editor too.
+      // the bar's own `$mod+k` binding closes it; from the side it brings the conversation over
+      // the page. It fires while the reader is writing, so the key reaches the bar from inside a
+      // document's editor too.
       id: "search",
       inEditable: true,
       keys: "$mod+k",
       label: "Search and actions",
-      run: () => setBarOpen(true),
+      run: () => movePanel({ kind: "mod_k" }, user.login),
+    },
+    {
+      // The conversation at the side of the page, which leaves the page usable; pressed there,
+      // it closes the panel.
+      id: "search-side",
+      inEditable: true,
+      keys: "$mod+Shift+k",
+      label: "Command bar at the side",
+      run: () => movePanel({ kind: "mod_shift_k" }, user.login),
     },
     {
       // The same bar. No row: chosen from the bar it would only reopen the bar. Not
@@ -718,7 +735,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       keys: "/",
       label: "Search",
       palette: false,
-      run: () => setBarOpen(true),
+      run: () => setPlace("over"),
     },
     {
       id: "help",
@@ -748,7 +765,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       keys: "g p",
       label: "Go to project…",
       palette: false,
-      run: () => setBarOpen(true),
+      run: () => setPlace("over"),
     },
     {
       id: "inbox-drawer",
@@ -861,7 +878,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       onCreateIssue={() => setCreateOpen(true)}
       onHideSidebar={() => setSidebarHidden(true)}
       onOpenInboxDrawer={() => setInboxDrawerOpen(true)}
-      onSearch={() => setBarOpen(true)}
+      onSearch={() => setPlace("over")}
       onSignOut={() => {
         // Signing out discards the person's own writes in every tab of this browser, so it asks
         // first while any is unsent, naming each once - this tab's, and every other tab's, which
@@ -908,7 +925,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   return (
     <ShellProviders drawer={detailsDrawer} navigation={shellNavigation} openHelp={openHelp}>
       <div
-        className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${canvasText}`}
+        className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${place === "side" ? "sm:pr-96" : ""} ${canvasText}`}
         data-testid="app-shell"
       >
         <a
@@ -929,6 +946,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           ref={statusCornerRef}
         >
           <PendingWritesIndicator />
+          <RunChip />
           <DraftsNotKept />
           {connection === "stuck" ? (
             <p
@@ -1124,7 +1142,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             width={marginWidth}
           />
         </ErrorBoundary>
-        <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
+        <SearchPalette onClose={() => setPlace("closed")} open={barOpen} />
+        <SidePanel />
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
@@ -1246,10 +1265,16 @@ export function AuthGate(): ReactNode {
   // tab's, another tab's, or one a lapse lands (`Writes.onSignedOut`). Whoever signs in next here
   // must find nothing they typed, so every draft store forgets their drafts, in the page and in
   // the tab's storage, and takes none until someone signs in, the ones a field hands it as the
-  // shell goes among them (`DraftStore.signedOut`). It listens before the effect below tells the
-  // write store who is signed in, since a lapse that effect tells of can land a sign-out.
+  // shell goes among them (`DraftStore.signedOut`); and nothing of their command bar, whose runs
+  // and conversation the store forgets, its streams stopped (`resetGoingStore`). It listens before
+  // the effect below tells the write store who is signed in, since a lapse that effect tells of
+  // can land a sign-out.
   useEffect(
-    () => writesOf(queryClient).onSignedOut((person) => draftStoresSignedOut(queryClient, person)),
+    () =>
+      writesOf(queryClient).onSignedOut((person) => {
+        draftStoresSignedOut(queryClient, person);
+        resetGoingStore();
+      }),
     [queryClient]
   );
   // A write belongs to the person who pressed it: once someone else is signed in here - in place,

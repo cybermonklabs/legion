@@ -1,5 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import type { AcceptSuggestionResponse } from "@legion/contracts";
+import type { AcceptSuggestionResponse, ResolvedComment } from "@legion/contracts";
 import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -808,7 +808,7 @@ test("a read of the comments asked while a resolve is out waits for its answer, 
     reads.push(read);
     return read.promise;
   });
-  const save = Promise.withResolvers<CommentWithTrees>();
+  const save = Promise.withResolvers<ResolvedComment>();
   const resolveComment = spyOn(api, "resolveComment").mockReturnValue(save.promise);
   const view = render(
     createElement(
@@ -839,7 +839,10 @@ test("a read of the comments asked while a resolve is out waits for its answer, 
     expect(threadLists()).toEqual({ open: [], resolved: ["A"] });
 
     await act(async () => {
-      save.resolve(resolved);
+      save.resolve({
+        ...resolved,
+        previous: { resolved: false, resolved_by: null, resolved_at: null },
+      });
     });
     await waitFor(() => expect(listComments).toHaveBeenCalledTimes(1));
     listComments.mockResolvedValue([resolved]);
@@ -913,7 +916,7 @@ test("a comment somebody else writes while a resolve is out shows once the resol
     answers.push(read.resolve);
     return read.promise;
   });
-  const save = Promise.withResolvers<CommentWithTrees>();
+  const save = Promise.withResolvers<ResolvedComment>();
   const resolveComment = spyOn(api, "resolveComment").mockReturnValue(save.promise);
   const view = render(
     createElement(
@@ -966,7 +969,10 @@ test("a comment somebody else writes while a resolve is out shows once the resol
     expect(queryClient.isMutating()).toBe(1);
 
     await act(async () => {
-      save.resolve(resolved);
+      save.resolve({
+        ...resolved,
+        previous: { resolved: false, resolved_by: null, resolved_at: null },
+      });
     });
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));

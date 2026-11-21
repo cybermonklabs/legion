@@ -79,6 +79,24 @@ test("? matches the shifted character and $mod matches Meta or Control, never a 
   expect(priority.fired()).toBe(1);
 });
 
+test("$mod+Shift+k matches Meta+Shift+K and Control+Shift+K, and neither K alone nor $mod+k", () => {
+  const { keymap, press } = harness();
+  const bar = binding("search", "$mod+k");
+  const side = binding("search-side", "$mod+Shift+k");
+  keymap.register("global", [bar.definition, side.definition]);
+
+  expect(press("K", { metaKey: true, shiftKey: true })).toBe(true);
+  expect(press("K", { ctrlKey: true, shiftKey: true })).toBe(true);
+  expect(side.fired()).toBe(2);
+  expect(bar.fired()).toBe(0);
+
+  expect(press("K", { shiftKey: true })).toBe(false);
+  expect(press("k")).toBe(false);
+  expect(press("k", { ctrlKey: true })).toBe(true);
+  expect(side.fired()).toBe(2);
+  expect(bar.fired()).toBe(1);
+});
+
 test("$mod+Alt+m preserves AltGr typing away from a Mac and matches Option's physical M key on one", () => {
   const nonMac = harness();
   const nonMacComment = binding("comment", "$mod+Alt+m");

@@ -32,6 +32,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -488,7 +489,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 			close(entered)
 			<-release
 			background.Wait()
-		}, func() {}, func() {}, nil)
+		}, func() {}, func() {}, nil, nil)
 	}()
 	select {
 	case <-entered:
@@ -619,7 +620,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped)
+		shutdown(server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, nil)
 	}()
 	select {
 	case <-done:
@@ -778,7 +779,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 		// As main does: the stop of the intakes, which begins as ctx is cancelled, is what shutdown
 		// waits for beside the delivery sockets.
 		served <- serveUntilStopped(ctx, cancel, &http.Server{Handler: http.NotFoundHandler()}, listener, documentService,
-			database.Pool, func() {}, stopIntakes, func() {}, nil, nil)
+			database.Pool, func() {}, stopIntakes, func() {}, nil, nil, nil)
 	}()
 	cancel()
 	select {
@@ -994,15 +995,22 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 // in Postgres on another writer's lock on its project's row when the relay stops forwarding, so
 // whatever Postgres answers it never arrives. HTTP shutdown waits for that request, so the document
 // service starts httpDrainBeforeDocuments after the signal, with no document to settle: the issue
-// it would create has none yet. Dispatch then gives up on the connection when silentProbes health
-// probes in a row have failed with no connection taken back meanwhile, so it exits well inside a
-// runtime's grace period instead of being killed, and says why.
+// it would create has none yet. The agent, which has said hello, exits when its standard input
+// closes then, and the record of its exit, which frees its instance's runs, waits on the database
+// too, so it is cancelled at its share, agentExitRecordWait. Dispatch then gives up on the
+// connections in use when silentProbes health probes in a row have failed with no connection
+// answered meanwhile, so it exits well inside a runtime's grace period instead of being killed,
+// and says why.
 func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
 	process := startDispatchProcess(t, relay.url)
 	process.waitHealthy(t)
+	// The agent has said hello and renewed, so the record of its exit has an instance's runs to
+	// free; an agent that has not said hello by the signal records nothing, which the start of
+	// the agent beside the signal would leave to chance.
+	agentServer{dispatchProcess: process, database: database}.waitForAgentRenewal(t)
 	process.call(t, http.MethodPost, "/api/v1/projects", `{"key":"STOP","name":"Shutdown"}`, http.StatusCreated)
 
 	// An issue create takes its number from the project's row, so it queues behind this lock.
@@ -1028,9 +1036,10 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	exited := time.Since(signalled)
 	t.Logf("exited %v after SIGTERM", exited)
 	// The request in flight holds the HTTP drain for its whole share, then the document service
-	// returns at once with no room to settle, and each failed probe takes its two seconds and a
-	// poll interval. The slack is a loaded box's jitter on this real binary.
-	if bound := httpDrainBeforeDocuments + silentProbes*(2*time.Second+drainPollInterval) + 5*time.Second; exited > bound {
+	// returns at once with no room to settle, the record of the agent's exit takes its share, and
+	// each failed probe takes its two seconds and a poll interval. The slack is a loaded box's
+	// jitter on this real binary.
+	if bound := httpDrainBeforeDocuments + agentExitRecordWait + silentProbes*(2*time.Second+drainPollInterval) + 5*time.Second; exited > bound {
 		t.Errorf("Dispatch exited %v after SIGTERM with the database unanswering, want within %v", exited, bound)
 	}
 	output := process.Output.String()
@@ -1040,6 +1049,9 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	if !strings.Contains(output, "once the database stopped answering") {
 		t.Errorf("Dispatch did not say it exited because the database stopped answering")
 	}
+	if !strings.Contains(output, "free the runs of the agent process that exited; their leases run out instead") {
+		t.Errorf("Dispatch did not say the record of the agent's exit was given up on, leaving the runs' leases to run out")
+	}
 	for _, line := range strings.Split(output, "\n") {
 		if strings.Contains(line, "level=WARN") {
 			t.Logf("Dispatch logged: %s", line)
@@ -1047,13 +1059,86 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	}
 }
 
+// unansweredRecordEnd is a server's end of agent/v1 on a database that does not answer: the record
+// of the agent's exit (AgentExited) waits until its context ends, and sends the error it ended
+// with. Stop closes the agent's standard input, as the listener's does.
+type unansweredRecordEnd struct {
+	mu       sync.Mutex
+	closeIn  func()
+	recorded chan error
+}
+
+func (e *unansweredRecordEnd) Path() string                     { return "" }
+func (e *unansweredRecordEnd) Secret() []byte                   { return make([]byte, agentwire.SecretSize) }
+func (e *unansweredRecordEnd) LastRenewal() time.Time           { return time.Now() }
+func (e *unansweredRecordEnd) Health() (agentwire.Health, bool) { return agentwire.Health{}, false }
+func (e *unansweredRecordEnd) SetRunSlots(int)                  {}
+func (e *unansweredRecordEnd) Close(time.Time)                  {}
+
+func (e *unansweredRecordEnd) SetCloseStandardInput(closeIn func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.closeIn = closeIn
+}
+
+func (e *unansweredRecordEnd) AgentExited(ctx context.Context, _ bool) (bool, error) {
+	<-ctx.Done()
+	e.recorded <- ctx.Err()
+	return false, ctx.Err()
+}
+
+func (e *unansweredRecordEnd) Stop() {
+	e.mu.Lock()
+	closeIn := e.closeIn
+	e.mu.Unlock()
+	closeIn()
+}
+
+// The agent's part of the shutdown ends inside its share whatever the database does. The agent
+// process, here a shell that exits when its standard input closes as the agent does, is gone at
+// once after the stop, and the record of its exit, the write that frees the runs it held, never
+// answers: the supervisor's close waits agentExitRecordWait for it, then cancels it, so the record
+// has ended before the shutdown goes on to its idle wait, and the runs keep their leases, which
+// run out. A close that waited on that write would hold the shutdown until the write's own
+// timeout, every moment of it before the idle wait begins counting the database silent.
+func TestTheAgentsShutdownEndsInsideItsShareWithTheDatabaseUnanswering(t *testing.T) {
+	end := &unansweredRecordEnd{recorded: make(chan error, 1)}
+	supervisor := startAgentSupervisor(end, []string{"sh", "-c", "exec cat >/dev/null"}, nil, agentLimits(0))
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, running := supervisor.running(); running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the agent process did not start within 10s")
+		}
+	}
+	supervisor.Stop()
+	began := time.Now()
+	supervisor.Close(began.Add(time.Minute))
+	took := time.Since(began)
+	t.Logf("the agent's part of the shutdown took %v", took)
+	select {
+	case err := <-end.recorded:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("the record of the agent's exit ended with %v, want cancelled at its share of the shutdown", err)
+		}
+	default:
+		t.Errorf("the record of the agent's exit was still waiting on the database when the agent's part of the shutdown ended, %v after it began", took)
+	}
+	// The process's exit is bounded by agentExitGrace, as Close bounds it before a kill.
+	if share := agentExitGrace + agentExitRecordWait; took > share {
+		t.Errorf("the agent's part of the shutdown took %v with the database unanswering, want within the process's grace and the record's share, %v", took, share)
+	}
+}
+
 // A connection taken after shutdown saw the pools idle - ygo's persistence worker compacting a room
 // as it exits takes one with no deadline - is in use when the pool closes, and closing the pool
 // waits for it. On a database that has stopped answering it never comes back, so closePool gives up
-// on it by waitUntilIdle's rule, silentProbes failed health probes in a row with no connection taken
-// back, and says so, instead of waiting on it until the runtime kills Dispatch. The test's pool pings
-// every connection it hands out, as pgxpool pings one idle for over a second, so the late taker is
-// held by a ping the frozen database never answers without the test waiting out that second.
+// on it by waitUntilIdle's rule, silentProbes failed health probes in a row with no connection
+// answered, and says so, instead of waiting on it until the runtime kills Dispatch. The test's
+// pool pings every connection it hands out, as pgxpool pings one idle for over a second, so the
+// late taker is held by a ping the frozen database never answers without the test waiting out
+// that second.
 func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -1106,6 +1191,67 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 	}
 	if !strings.Contains(logged.String(), "once the database stopped answering") {
 		t.Errorf("closePool did not say it gave up because the database stopped answering:\n%s", logged.String())
+	}
+}
+
+// A connection the database leaves unanswered is discarded by pgx, and its pool takes it back only
+// once pgx gives up the cancel request it sends, 15 s after the failure - often while the idle wait
+// is counting silent probes, as the registry heartbeat's does in a shutdown with the database
+// unanswering. That is no sign the database answers, so it does not start the count again: the
+// wait gives up silentProbes probes after it began, though the discarded connection came back
+// during its last. Here the connection is discarded when its ping, which the frozen database never
+// answers, ends with its acquire's context; the wait starts so that it comes back a second into
+// the third probe.
+func TestADiscardedConnectionDoesNotStartTheSilentProbesAgain(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
+	config, err := pgxpool.ParseConfig(relay.url)
+	if err != nil {
+		t.Fatalf("parse the relay's URL: %v", err)
+	}
+	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
+	opened, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("open a pool through the relay: %v", err)
+	}
+	pool := store.NewPool(opened)
+	// The probe answers through the relay before it freezes, so its failures after are the freeze's.
+	if _, err := pool.Healthy(ctx); err != nil {
+		t.Fatalf("health probe through the relay: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "select 1"); err != nil {
+		t.Fatalf("open a shared connection through the relay: %v", err)
+	}
+
+	relay.freeze()
+	acquireCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	conn, err := pool.Acquire(acquireCtx)
+	cancel()
+	if err == nil {
+		conn.Release()
+		t.Fatal("the frozen database answered the ping of the shared connection")
+	}
+	back := time.Now().Add(15 * time.Second)
+	probe := 2*time.Second + drainPollInterval
+	time.Sleep(time.Until(back.Add(-2*probe - time.Second)))
+	before := pool.Use()
+	if before.InUse != 1 {
+		t.Fatalf("the pools hold %d connections in use before the wait, want the discarded one", before.InUse)
+	}
+	began := time.Now()
+	if waitUntilIdle(make(chan struct{}), pool) {
+		t.Fatal("waitUntilIdle reported the pools idle with HTTP still draining")
+	}
+	took := time.Since(began)
+	after := pool.Use()
+	t.Logf("the wait gave up %v after it began, the discarded connection due back %v after it began; use %+v, then %+v",
+		took, back.Sub(began), before, after)
+	if after.InUse != 0 || after.Returned <= before.Returned {
+		t.Fatalf("the discarded connection was not taken back during the wait (use %+v, then %+v), so the wait was not put to the test", before, after)
+	}
+	if bound := silentProbes*probe + 1500*time.Millisecond; took > bound {
+		t.Errorf("the wait gave up %v after it began, the discarded connection taken back during it, want within silentProbes probes, %v", took, bound)
 	}
 }
 

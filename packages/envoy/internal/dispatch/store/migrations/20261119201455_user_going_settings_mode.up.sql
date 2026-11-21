@@ -1,0 +1,21 @@
+-- 20261119201455_user_going_settings_mode.up.sql — which of a person's command-bar writes wait
+-- for them.
+--
+-- A run of the command bar proposes its writes as a plan. The person's mode says which of them
+-- wait for the person's approval, and a run takes it when it starts (going_runs.mode,
+-- 20261119201453):
+--
+--   mode   'ask', every plan waits for the person, the setting of a person who never chose one;
+--          or 'auto_review', a second call of the model lets through, without the person, the
+--          changes of the kinds it may pass that the person's words ask for, and every other
+--          write waits. The check holds the column to those two.
+--
+-- One column with a constant default and a check that the default passes: Postgres records the
+-- default in the catalog and rewrites no row, and the check reads each row of
+-- user_going_settings, one row for each person who set the bar, under the ALTER's ACCESS
+-- EXCLUSIVE lock. Every stored row and every insert that does not name the column (the release
+-- before this one writes login, confirm_writes and updated_at) read 'ask', so the two roll side by
+-- side (cmd/dispatch/README.md, "Database migrations"). The identifier is the UTC moment this was
+-- written, as `migrationid` requires of every migration past the numbered series.
+alter table user_going_settings
+  add column mode text not null default 'ask' check (mode in ('ask', 'auto_review'));

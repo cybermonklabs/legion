@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  `envoy-dispatch` sets its own Go memory limit at boot from the container's memory limit, where
+  `GOMEMLIMIT` sets none: 90% of what that limit leaves after the ceiling of the command bar's
+  agent process, which is the smaller of 4 GiB and a sixth of the container's limit.

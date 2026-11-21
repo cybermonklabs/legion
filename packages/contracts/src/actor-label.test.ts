@@ -157,3 +157,22 @@ test("an act made through a session names the session, and one through a token n
     "ana@example.com, acting through token architect"
   );
 });
+
+test("an act the command bar made names the command bar, and the token its run acts with", () => {
+  const throughTheBar: ActorAct = {
+    scopes: ["person", "approve"],
+    agent: "command-bar",
+    run: "0190c7d2-1111-7222-8333-444444444444",
+  };
+  expect(actorActText("ana@example.com", throughTheBar)).toBe(
+    "ana@example.com, through the command bar"
+  );
+  expect(
+    actorActText("ana@example.com", {
+      ...throughTheBar,
+      token_id: "token-1",
+      token_name: "architect",
+      scopes: ["person"],
+    })
+  ).toBe("ana@example.com, through the command bar with token architect");
+});

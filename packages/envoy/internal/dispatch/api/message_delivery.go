@@ -130,7 +130,7 @@ type acceptedDelivery struct {
 // naming another session can spend that session's one acceptance of a fresh attempt: the real
 // session is then refused and shows a card, and nothing is injected.
 func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+	if !presentsBearer(r) {
 		writeError(w, "ACCEPT_FORBIDDEN", http.StatusForbidden, "accept requires an agent bearer token")
 		return
 	}
@@ -930,7 +930,7 @@ func (s *server) planMessageReply(
 }
 
 func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+	if !presentsBearer(r) {
 		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires an agent bearer token")
 		return
 	}

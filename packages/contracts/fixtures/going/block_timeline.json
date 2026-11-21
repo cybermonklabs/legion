@@ -1,0 +1,23 @@
+{
+  "kind": "timeline",
+  "title": "Merges and deploys",
+  "spec": {
+    "source": "read_delivery",
+    "params": {
+      "view": "timeline"
+    },
+    "table": "events"
+  },
+  "rows": [
+    {
+      "at": "2026-11-02T10:00:00Z",
+      "label": "acme/widgets#1 A change",
+      "lane": "merge"
+    },
+    {
+      "at": "2026-11-02T11:00:00Z",
+      "label": "run 8: success",
+      "lane": "deploy"
+    }
+  ]
+}

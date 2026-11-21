@@ -10,6 +10,7 @@ import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import { ArtifactBlobView, ArtifactHeader } from "../artifacts/ArtifactHeader";
 import { ArtifactQueryStates } from "../artifacts/ArtifactQueryStates";
 import type { DocumentToolbar } from "../doc/ProofDocument";
+import { PlannedChanges } from "../going/PlannedChanges";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { useAgentText } from "../refs/AgentName";
 import { ReferencedBy } from "../refs/ReferencedBy";
@@ -156,6 +157,16 @@ export function DocumentPage(): ReactNode {
 
   return (
     <section className="space-y-6">
+      {/* The open conversation's planned changes of this document's text: each suggestion or
+          edit with its sentences and its diff, drawn on the document's own page. */}
+      <PlannedChanges
+        surface={{
+          id: artifact.data.id,
+          kind: "document",
+          names: [artifact.data.name, documentRoute.slug],
+          owner: artifact.data.issue_key ?? documentRoute.project,
+        }}
+      />
       <ArtifactHeader
         artifact={artifact.data}
         highlight={false}

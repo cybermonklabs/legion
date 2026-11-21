@@ -64,11 +64,12 @@ const itemOwnerLockRule = "Every writer of a comment, a message, an ask or one o
 // tells the next why their write is safe, and whoever adds an entry writes the reason the entry
 // above theirs is written in - the lock named, and the caller or helper that takes it.
 //
-// Ten entries take no owner lock - five exceptions, since cmd/dispatch-seed's three loaders share
-// one and the migration runners' four writers of their version tables share another - and each
-// says why. Everything else on the list holds the item's owner, which is what makes the advisory
-// lock at refs.LockItemOwner enough: those that take it in a transaction they open are rows of
-// the lock table, which proves it by holding it (item_row_owner_lock_test.go),
+// Thirteen entries take no owner lock - six exceptions, since cmd/dispatch-seed's three loaders
+// share one, the eval seed's three writers share another and the migration runners' four writers
+// of their version tables share a third - and each says why. Everything else on the list holds the
+// item's owner, which is what makes the advisory lock at refs.LockItemOwner enough: those that
+// take it in a transaction they open are rows of the lock table, which proves it by holding it
+// (item_row_owner_lock_test.go),
 // and those that write inside a transaction their caller opened rest on the lock that caller
 // took, which no test here or there drives; the gap map (itemRowLockNoRow) names each with why,
 // and TestTheLockTablePlacesEveryWriterTheCensusNames keeps every entry in one of the two. That
@@ -78,6 +79,11 @@ var itemRowWriters = map[string]map[string]string{
 		"writeAsks":     seedLoaderException,
 		"writeComments": seedLoaderException,
 		"writeMessages": seedLoaderException,
+	},
+	"going/eval/write.go": {
+		"writeAsks":     evalSeedException,
+		"writeComment":  evalSeedException,
+		"writeMessages": evalSeedException,
 	},
 	"internal/dispatch/api/ask_asked_of.go": {
 		"putAskAskedOf": "the ask's owner lock, taken with the read of the owner it guards " +
@@ -204,6 +210,18 @@ const seedLoaderException = "none, and none to take: cmd/dispatch-seed is a comm
 	"there is no other writer for a lock to serialise it against; pointed at a database a " +
 	"server serves it would take the owner lock like every serving writer"
 
+// evalSeedException is why the eval seed's three item writers are on the census with no lock.
+// going/eval's WriteSeed, which going-eval seed and the eval's own stack run, writes in one
+// transaction and only into a database that holds no project (holdsTheSeed), and every ask,
+// comment and message it writes hangs on an issue or a project document that same transaction
+// inserts. Until it commits, no other transaction sees those owners, so no other writer can write
+// an item on them for an owner lock to serialise it against; once it commits it writes nothing
+// more, and every later writer of those items is a serving one, which takes the lock.
+const evalSeedException = "none, and none to take: every item it writes hangs on an issue or a " +
+	"project document its own transaction inserts into a database that holds no project " +
+	"(holdsTheSeed), so no other writer sees the owner until that transaction commits, and after " +
+	"it commits the seed writes nothing more"
+
 // versionTableException is why the migration runners' writers of their version tables are on the
 // census with no lock. The table is the one each store's runner names at run time, Dispatch's
 // schema_migrations or the broker's broker_schema_migrations, which this scan cannot read
@@ -227,8 +245,8 @@ const versionTableException = "none, and none to take: the table is a migration 
 // without taking its owner. No writer a server runs is one: the lock table holds those that open
 // their own transaction behind a held owner lock (item_row_owner_lock_test.go), those that write
 // inside a transaction their caller opened rest on the lock that caller took, which that table
-// does not drive (itemRowLockNoRow names each with why), and the ten entries here that take no
-// owner lock each say why they take none. What this test keeps out is a writer arriving unnamed:
+// does not drive (itemRowLockNoRow names each with why), and the thirteen entries here that take
+// no owner lock each say why they take none. What this test keeps out is a writer arriving unnamed:
 // a `delete from comments` added tomorrow (dispatch://INFRA-1523) reds here until its function is
 // on the census with the lock it takes.
 //
@@ -373,6 +391,11 @@ var itemRowLockNoRow = map[string]map[string]string{
 	"cmd/dispatch-seed/write_items.go": {
 		"writeAsks":     itemRowNoOwnerLock,
 		"writeComments": itemRowNoOwnerLock,
+		"writeMessages": itemRowNoOwnerLock,
+	},
+	"going/eval/write.go": {
+		"writeAsks":     itemRowNoOwnerLock,
+		"writeComment":  itemRowNoOwnerLock,
 		"writeMessages": itemRowNoOwnerLock,
 	},
 	"internal/dispatch/api/broadcasts.go":       {"writeBroadcast": itemRowNoOwnerLock},

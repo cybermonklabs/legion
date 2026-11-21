@@ -6,13 +6,14 @@ import {
 } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
 import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { UNCONFIGURED_CAPABILITY } from "../../__tests__/network";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
@@ -205,7 +206,8 @@ test("renders grouped results with marked snippets and dims a done issue", async
     // The owner rows name their groups and are `aria-hidden`, so a reader hears each owner
     // once; they are found by their label attribute rather than by role.
     const doneGroup = document.querySelector('[aria-label="LEGION-2: Navigation instruments"]');
-    expect(screen.getAllByRole("group")).toHaveLength(2);
+    // Counted in the list: the level control under the box is a group of its own.
+    expect(within(screen.getByRole("listbox")).getAllByRole("group")).toHaveLength(2);
     expect(screen.getAllByRole("option")).toHaveLength(3);
     expect(screen.getAllByText("astrolabe", { selector: "mark" })).not.toHaveLength(0);
     expect(doneGroup).toHaveAttribute("data-status", "done");
@@ -420,16 +422,18 @@ test("a hit in a long-named document previews that document", async () => {
       },
     ])
   );
-  // The bar reads the viewer, to list what that person opened lately, and the project list, to
-  // offer a project row for every project the words name. This row's page has an origin of its
-  // own - the hrefs are read against it - and it is not the suite's, so the shell's own answers
-  // to those two routes do not resolve against it: both are answered here at the api client, as
-  // the shell answers them, signed out and with no project. Neither adds a row, so the two
-  // document hits below are the whole list.
+  // The bar reads the viewer, to list what that person opened lately, the project list, to offer
+  // a project row for every project the words name, and what this Dispatch can do, to know
+  // whether it answers. This row's page has an origin of its own - the hrefs are read against
+  // it - and it is not the suite's, so the shell's own answers to those three routes do not
+  // resolve against it: each is answered here at the api client, as the shell answers it, signed
+  // out, with no project and with nothing configured. None adds a row, so the two document hits
+  // below are the whole list.
   const whoAmI = spyOn(api, "whoAmI").mockRejectedValue(
     new ApiError(401, { code: "NO_IDENTITY", error: "no identity" })
   );
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
+  const goingCapability = spyOn(api, "goingCapability").mockResolvedValue(UNCONFIGURED_CAPABILITY);
   const testWindow = window as unknown as HappyDOMWindow;
   const pageBefore = window.location.href;
   testWindow.happyDOM.setURL("https://dispatch.test/issues/LEGION-2");
@@ -444,6 +448,7 @@ test("a hit in a long-named document previews that document", async () => {
     search.mockRestore();
     whoAmI.mockRestore();
     listProjects.mockRestore();
+    goingCapability.mockRestore();
     view.unmount();
     view.queryClient.clear();
     testWindow.happyDOM.setURL(pageBefore);
@@ -650,6 +655,41 @@ test("a re-rank that drops the highlighted hit leaves no row highlighted, and En
     // The reader's own arrow says which row, and Enter then opens that one.
     await user.keyboard("{ArrowDown}");
     expect(input).toHaveAttribute("aria-activedescendant", optionId(first));
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a first answer with no hits and a second that carries one leave that hit highlighted, and Enter opens it", async () => {
+  const user = userOnFakeClock();
+  const [only] = [issueHit("LEGION-3")];
+  const search = spyOn(api, "search").mockImplementation(bothTiers([], [only]));
+  const view = renderPalette();
+
+  try {
+    // The keystroke's search answers this query with no hit, so the list holds nothing to
+    // highlight. The clock moves the debounce's length alone, short of the pause.
+    const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+    await user.click(input);
+    await user.paste("astrolabe");
+    await tick(150);
+    expect(search.mock.calls).toHaveLength(1);
+    expect(search.mock.calls[0]?.[1]).toEqual({ keywords_only: true });
+    expect(screen.getByText(/No results for/)).toBeInTheDocument();
+    expect(optionIds()).not.toContain(optionId(only));
+    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+
+    // The pause's search answers the same query with its one hit. No row was highlighted, so
+    // no row the reader held has left: the hit is the query's first and takes the highlight.
+    // The clock crosses the 500 ms pause here deliberately: this row is about what firing it
+    // does.
+    await tick(500);
+    await waitFor(() => expect(optionIds()).toContain(optionId(only)), { timeout: 3000 });
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(only));
     await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
   } finally {
@@ -1307,10 +1347,8 @@ test("a chip narrows the search, reads back in the person's words, and comes off
 test("the page's project is the search's context, not a chip narrowing it", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
-  // The bar opened over an issue reads that issue, to offer the words as a message to an agent
-  // holding it (`SendToAgentOffer.tsx`). LEGION-2 is the page's issue and the document hit's
-  // own, and no agent holds it, so the bar offers no such row and the chips below the box are
-  // the whole of what this row reads.
+  // The bar opened over an issue page may read that issue. LEGION-2 is the page's issue and the
+  // document hit's own, and the chips below the box are the whole of what this row reads.
   const getIssue = spyOn(api, "getIssue").mockResolvedValue({
     ...issueFixture,
     artifacts: [{ ...specArtifact, issue_key: "LEGION-2", project: "LEGION" }],

@@ -3,6 +3,7 @@ package going_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -25,36 +27,41 @@ import (
 // quota's own exercises the pacer without ever waiting on it.
 const testTokensPerMinute = 300_000
 
+// testBearer is the bearer the test model's endpoint reads; a static one is the whole credential
+// these tests need.
+const testBearer = "going-test-bearer"
+
 // The two items a test's seeding search finds, and one target no citation set holds: the filter
 // admits a link by its href alone, so the href is what a reply links.
 var (
 	routeHit = going.Hit{
 		Kind:  "issue",
-		ID:    "INFRA-1279",
+		ID:    "DEMO-12",
 		Title: "The answer route",
-		Href:  "/issues/INFRA-1279",
+		Href:  "/issues/DEMO-12",
 	}
 	planHit = going.Hit{
 		Kind:  "artifact",
 		ID:    "plan-md",
 		Title: "The plan",
-		Href:  "/issues/INFRA-1279/artifact/plan-md",
+		Href:  "/issues/DEMO-12/artifact/plan-md",
 	}
 )
 
-const outsideAnswerHref = "/issues/INFRA-9999"
+const outsideAnswerHref = "/issues/DEMO-99"
 
 // errStreamWriter is the failure a test's stream writer hands back, which is the one failure Run
 // reports to its caller.
 var errStreamWriter = errors.New("the reader's connection is gone")
 
-// answerStream is everything one run emitted, so a test reads the stream as a reader does. It
-// fails at the event failAt names, by its number or by its name, which is how a test proves a run
-// hands the writer's failure back.
+// answerStream is everything one run emitted, so a test reads the stream as a reader does, and
+// the outcome the run reported. It fails at the event failAt names, by its number or by its
+// name, which is how a test proves a run hands the writer's failure back.
 type answerStream struct {
 	events   []going.Event
 	failAt   int
 	failName string
+	outcomes []going.Outcome
 }
 
 func (s *answerStream) emit(event going.Event) error {
@@ -64,6 +71,21 @@ func (s *answerStream) emit(event going.Event) error {
 	}
 	s.events = append(s.events, event)
 	return nil
+}
+
+// outcome records what the run said its answer came to, and the frames it had emitted by then.
+func (s *answerStream) outcome(outcome going.Outcome) error {
+	s.outcomes = append(s.outcomes, outcome)
+	return nil
+}
+
+// reported is the one outcome the run reported, and fails the test when it reported none or more.
+func (s *answerStream) reported(t *testing.T) going.Outcome {
+	t.Helper()
+	if len(s.outcomes) != 1 {
+		t.Fatalf("the run reported %d outcomes, want exactly 1: %+v", len(s.outcomes), s.outcomes)
+	}
+	return s.outcomes[0]
 }
 
 // names is every event's name in the order it was emitted.
@@ -129,6 +151,14 @@ func (s *answerStream) terminal(t *testing.T) going.Event {
 	return last
 }
 
+// ended checks the stream ended with end, an answer.
+func (s *answerStream) ended(t *testing.T) {
+	t.Helper()
+	if got := s.terminal(t).Name; got != contracts.GoingEventEnd {
+		t.Fatalf("stream ended with %s, want %s: %v", got, contracts.GoingEventEnd, s.names())
+	}
+}
+
 // code is the error frame's own code, and fails the test when the run ended any other way.
 func (s *answerStream) code(t *testing.T) string {
 	t.Helper()
@@ -153,8 +183,8 @@ type reads struct {
 	served int
 }
 
-// request is one question over these reads.
-func (r *reads) request(words string) going.Request {
+// request is one question over these reads, whose outcome stream records.
+func (r *reads) request(words string, stream *answerStream) going.Request {
 	return going.Request{
 		Words: words,
 		Search: func(ctx context.Context, q string) ([]going.Hit, error) {
@@ -179,6 +209,7 @@ func (r *reads) request(words string) going.Request {
 			}
 			return found, nil
 		},
+		OnOutcome: stream.outcome,
 	}
 }
 
@@ -193,11 +224,26 @@ func testReads() *reads {
 	}
 }
 
-// testAnswerer builds an Answerer over the real HTTP client against model, so every test drives
-// the client's own route, sign-in and reading of the stream.
+// testModel is the answering model at model's endpoint, on the protocol a deployment's chat
+// model speaks, so every test drives agentloop's own provider, route, sign-in and reading of the
+// stream.
+func testModel(model *goingtest.Model) agentloop.Model {
+	return agentloop.Model{
+		Endpoint: agentloop.Endpoint{
+			Kind:    agentloop.OpenAIChat,
+			BaseURL: model.URL + "/openai/v1",
+			Token:   func(context.Context) (string, error) { return testBearer, nil },
+		},
+		ID: "going-test-deployment",
+	}
+}
+
+// testAnswerer builds an Answerer over the real model loop against model.
 func testAnswerer(t *testing.T, model *goingtest.Model, cfg going.AnswererConfig) *going.Answerer {
 	t.Helper()
-	cfg.Model = testClient(t, model, going.HTTPConfig{})
+	if cfg.Model.ID == "" {
+		cfg.Model = testModel(model)
+	}
 	if cfg.TokensPerMinute == 0 {
 		cfg.TokensPerMinute = testTokensPerMinute
 	}
@@ -208,9 +254,15 @@ func testAnswerer(t *testing.T, model *goingtest.Model, cfg going.AnswererConfig
 	return answerer
 }
 
+// answer is a turn that answers with text, as the call asks for it: the Final object with no
+// block when it asks for one, the text as prose when it does not.
+func answer(text string) goingtest.Reply {
+	return goingtest.Reply{Final: &goingtest.Final{Answer: text}}
+}
+
 // searchCall is a turn that calls the one tool with q.
 func searchCall(id, q string) goingtest.Reply {
-	return goingtest.Reply{ToolCalls: []going.ToolCall{{
+	return goingtest.Reply{ToolCalls: []goingtest.ToolCall{{
 		ID:        id,
 		Name:      contracts.GoingSearchTool,
 		Arguments: fmt.Sprintf(`{"q":%q}`, q),
@@ -229,36 +281,63 @@ func answerWords(n int) string {
 	return out.String()
 }
 
-// TestNewAnswererRefusesAnswererWithoutAModel: an answerer with no chat client is a programming
-// error, refused at boot rather than at the first question.
-func TestNewAnswererRefusesAnswererWithoutAModel(t *testing.T) {
-	if _, err := going.NewAnswerer(going.AnswererConfig{TokensPerMinute: testTokensPerMinute}); err == nil {
-		t.Fatal("NewAnswerer with no model returned no error")
+// TestNewAnswererRefusesAnAnswererWithoutAModel: an answerer with no model, or one whose endpoint
+// reads no credential, is a programming error, refused at boot rather than at the first question.
+func TestNewAnswererRefusesAnAnswererWithoutAModel(t *testing.T) {
+	model := testModel(goingtest.NewModel(t))
+	tokenless := model
+	tokenless.Endpoint.Token = nil
+	for name, cfg := range map[string]going.AnswererConfig{
+		"no model":      {TokensPerMinute: testTokensPerMinute},
+		"no credential": {Model: tokenless},
+	} {
+		if _, err := going.NewAnswerer(cfg); err == nil {
+			t.Errorf("%s: NewAnswerer returned no error", name)
+		}
 	}
 }
 
-// TestRunKeepsALinkToAnItemItWasGiven: the model links a hit it was given, the link reaches the
-// reader as the item frame that names that hit and as the link's own visible text, which the
-// text frames carry as plain text, and end is last.
-func TestRunKeepsALinkToAnItemItWasGiven(t *testing.T) {
+// TestAnswerThroughAgentloop: one real call through agentloop, asked for the Final object, whose
+// answer streams as the answer property grows: the reader is given it in several text frames
+// while the model writes, each cleared by the filter - the link to a hit the model was given
+// reaches the reader as the item frame and its own visible text, and markdown punctuation is
+// escaped. The block is handed to the caller and is no frame of the stream.
+func TestAnswerThroughAgentloop(t *testing.T) {
 	link := fmt.Sprintf("[%s](%s)", routeHit.Title, routeHit.Href)
-	model := goingtest.NewModel(t, goingtest.Reply{Text: "The order is settled on " + link + ".", Chunk: 5})
+	spec := `{"series":[{"name":"opened","points":[3,5,2]}]}`
+	model := goingtest.NewModel(t, goingtest.Reply{
+		Final: &goingtest.Final{
+			Answer: "The order is settled on " + link + ", and it is *final* for now.",
+			Block:  goingtest.Block{Kind: "chart", Title: "Opened a week", Spec: spec},
+		},
+		Chunk: 5,
+	})
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
 	search := testReads()
 
-	if err := answerer.Run(t.Context(), search.request("who owns the broadcast order"), stream.emit); err != nil {
+	if err := answerer.Run(t.Context(), search.request("who owns the broadcast order", stream), stream.emit); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if got := stream.terminal(t).Name; got != contracts.GoingEventEnd {
-		t.Fatalf("stream ended with %s, want %s: %v", got, contracts.GoingEventEnd, stream.names())
+	stream.ended(t)
+	if got := stream.count(contracts.GoingEventText); got < 2 {
+		t.Errorf("the answer reached the reader in %d text frames, want several: it streams as the answer property grows (%v)", got, stream.names())
 	}
-	if got := stream.text(); !strings.Contains(got, routeHit.Title) {
-		t.Errorf("answer = %q, want it to hold the link's own text %q", got, routeHit.Title)
+	text := stream.text()
+	if !strings.Contains(text, routeHit.Title) {
+		t.Errorf("answer = %q, want it to hold the link's own text %q", text, routeHit.Title)
 	}
-	if got := stream.text(); strings.Contains(got, routeHit.Href) || strings.Contains(got, "](") {
-		t.Errorf("answer = %q, want no link syntax in a text frame: the item frame is the link", got)
+	if strings.Contains(text, routeHit.Href) || strings.Contains(text, "](") {
+		t.Errorf("answer = %q, want no link syntax in a text frame: the item frame is the link", text)
+	}
+	if !strings.Contains(text, `\*final\*`) {
+		t.Errorf("answer = %q, want the emphasis escaped as plain text", text)
+	}
+	for _, leaked := range []string{`"answer"`, `"block"`, spec, "Opened a week"} {
+		if strings.Contains(text, leaked) {
+			t.Errorf("answer = %q, want none of the object around the answer, but it holds %q", text, leaked)
+		}
 	}
 	if got := stream.count(contracts.GoingEventItem); got != 1 {
 		t.Fatalf("stream holds %d item events, want 1: %v", got, stream.names())
@@ -270,26 +349,65 @@ func TestRunKeepsALinkToAnItemItWasGiven(t *testing.T) {
 	if got := stream.count(contracts.GoingEventChanged) + stream.count(contracts.GoingEventNone); got != 0 {
 		t.Errorf("stream holds %d changed or none events, want none: %v", got, stream.names())
 	}
+
+	// The one call asked for the Final object, as a json_schema response format, with the
+	// question, the items, the search tool and the stated output bound.
+	requests := model.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("model served %d calls, want 1", len(requests))
+	}
+	var format struct {
+		Type       string `json:"type"`
+		JSONSchema struct {
+			Schema struct {
+				Required []string `json:"required"`
+			} `json:"schema"`
+		} `json:"json_schema"`
+	}
+	if err := json.Unmarshal(requests[0].ResponseFormat, &format); err != nil || format.Type != "json_schema" ||
+		!reflect.DeepEqual(format.JSONSchema.Schema.Required, []string{"answer", "block"}) {
+		t.Errorf("response_format = %s (%v), want the Final schema as a json_schema format", requests[0].ResponseFormat, err)
+	}
+	if requests[0].MaxTokens <= 0 {
+		t.Errorf("max_tokens = %d, want the run's stated output bound", requests[0].MaxTokens)
+	}
+	if requests[0].Authorization != "Bearer "+testBearer {
+		t.Errorf("Authorization = %q, want the endpoint's token as a bearer", requests[0].Authorization)
+	}
+	if len(requests[0].Tools) != 1 || requests[0].Tools[0].Name != contracts.GoingSearchTool {
+		t.Errorf("tools = %+v, want the one search tool", requests[0].Tools)
+	}
 	if len(search.queries) != 1 || search.queries[0] != "who owns the broadcast order" {
 		t.Errorf("searches = %q, want the one seeding search with the question's words", search.queries)
 	}
+
+	// The caller is handed the reply whole: the block the stream carries no frame of.
+	outcome := stream.reported(t)
+	if outcome.StructuredOutput != going.StructuredOutputAccepted || outcome.Final == nil {
+		t.Fatalf("outcome = %+v, want the structured reply accepted", outcome)
+	}
+	wantBlock := going.FinalBlock{Kind: "chart", Title: "Opened a week", Spec: spec}
+	if outcome.Final.Block != wantBlock {
+		t.Errorf("final = %+v, want block %+v", outcome.Final, wantBlock)
+	}
+	if blocks, known := answerer.Blocks(); !blocks || !known {
+		t.Errorf("Blocks = %v, %v, want true once a structured reply was accepted", blocks, known)
+	}
 }
 
-// TestRunCutsAReplyPastTheWordCap: a reply far past the cap is cut at
+// TestAnswerThroughAgentloopCutsAtTheWordCap: an answer property far past the cap is cut at
 // contracts.GoingAnswerWordMax, cut says so with that count, and end still follows - a cut answer
 // is an answer.
-func TestRunCutsAReplyPastTheWordCap(t *testing.T) {
-	model := goingtest.NewModel(t, goingtest.Reply{Text: answerWords(300), Chunk: 7})
+func TestAnswerThroughAgentloopCutsAtTheWordCap(t *testing.T) {
+	model := goingtest.NewModel(t, goingtest.Reply{Final: &goingtest.Final{Answer: answerWords(300)}, Chunk: 7})
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
 
-	if err := answerer.Run(t.Context(), testReads().request("how long may an answer be"), stream.emit); err != nil {
+	if err := answerer.Run(t.Context(), testReads().request("how long may an answer be", stream), stream.emit); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if got := stream.terminal(t).Name; got != contracts.GoingEventEnd {
-		t.Fatalf("stream ended with %s, want %s: %v", got, contracts.GoingEventEnd, stream.names())
-	}
+	stream.ended(t)
 	cut, ok := stream.first(t, contracts.GoingEventCut).Data.(going.CutData)
 	if !ok || cut.Words != contracts.GoingAnswerWordMax {
 		t.Errorf("cut = %+v, want the answer cut at %d words", cut, contracts.GoingAnswerWordMax)
@@ -299,24 +417,22 @@ func TestRunCutsAReplyPastTheWordCap(t *testing.T) {
 	}
 }
 
-// TestRunNeverEmitsALinkOutsideTheCitationSet: a link to something the model was never given
-// reaches a reader as its own text and no more - no target, no link syntax, no item - and the
-// stream says the answer was changed.
-func TestRunNeverEmitsALinkOutsideTheCitationSet(t *testing.T) {
+// TestAnswerThroughAgentloopDropsALinkOutsideTheCitationSet: a link to something the model was
+// never given reaches a reader as its own text and no more - no target, no link syntax, no item
+// - and the stream says the answer was changed.
+func TestAnswerThroughAgentloopDropsALinkOutsideTheCitationSet(t *testing.T) {
 	model := goingtest.NewModel(t, goingtest.Reply{
-		Text:  "The order is settled on [another issue](" + outsideAnswerHref + ") instead.",
+		Final: &goingtest.Final{Answer: "The order is settled on [another issue](" + outsideAnswerHref + ") instead."},
 		Chunk: 6,
 	})
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
 
-	if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order"), stream.emit); err != nil {
+	if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order", stream), stream.emit); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if got := stream.terminal(t).Name; got != contracts.GoingEventEnd {
-		t.Fatalf("stream ended with %s, want %s: %v", got, contracts.GoingEventEnd, stream.names())
-	}
+	stream.ended(t)
 	changed, ok := stream.first(t, contracts.GoingEventChanged).Data.(going.ChangedData)
 	if !ok || changed.Dropped != 1 {
 		t.Errorf("changed = %+v, want one dropped link", changed)
@@ -343,11 +459,11 @@ func TestRunSaysNoneWhenTheModelWroteNothing(t *testing.T) {
 		{"the answer links nothing", "Dispatch holds no answer to that question.", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			model := goingtest.NewModel(t, goingtest.Reply{Text: tc.text})
+			model := goingtest.NewModel(t, answer(tc.text))
 			answerer := testAnswerer(t, model, going.AnswererConfig{})
 			stream := &answerStream{}
 
-			if err := answerer.Run(t.Context(), testReads().request("what did nobody write down"), stream.emit); err != nil {
+			if err := answerer.Run(t.Context(), testReads().request("what did nobody write down", stream), stream.emit); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
 
@@ -369,6 +485,210 @@ func TestRunSaysNoneWhenTheModelWroteNothing(t *testing.T) {
 	}
 }
 
+// TestStructuredOutputRefusedByA400FallsBackToProse: a service that refuses the structured
+// request with a 400 is asked the same again for prose, which streams through the filter as the
+// structured answer does; the run has no block and reports the refusal, and the process now knows
+// its model draws no block.
+func TestStructuredOutputRefusedByA400FallsBackToProse(t *testing.T) {
+	link := fmt.Sprintf("[%s](%s)", routeHit.Title, routeHit.Href)
+	model := goingtest.NewModel(t, goingtest.Reply{
+		Final: &goingtest.Final{
+			Answer: "It is settled on " + link + " and on [another](" + outsideAnswerHref + "), *for now*.",
+			Block:  goingtest.Block{Kind: "chart", Title: "never drawn", Spec: "{}"},
+		},
+		RefuseFormat: true,
+		Chunk:        5,
+	})
+	answerer := testAnswerer(t, model, going.AnswererConfig{})
+	stream := &answerStream{}
+
+	if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order", stream), stream.emit); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	stream.ended(t)
+	requests := model.Requests()
+	if len(requests) != 2 || !requests[0].Structured() || requests[1].Structured() {
+		t.Fatalf("model served %d calls, want the refused structured one then one asking for prose", len(requests))
+	}
+	assertProseAnswer(t, stream)
+	if blocks, known := answerer.Blocks(); blocks || !known {
+		t.Errorf("Blocks = %v, %v, want false once the service refused a structured request", blocks, known)
+	}
+}
+
+// TestStructuredOutputRefusedForAnotherCauseFallsBackForThatRunAlone: a 400 whose error names no
+// structured output - a content filter's, a context too long - is that run's alone: the run
+// answers in prose, and the next run asks for the Final object again and gets blocks.
+func TestStructuredOutputRefusedForAnotherCauseFallsBackForThatRunAlone(t *testing.T) {
+	model := goingtest.NewModel(t,
+		goingtest.Reply{Status: http.StatusBadRequest,
+			Message: "The response was filtered due to the prompt triggering the content management policy."},
+		goingtest.Reply{Final: &goingtest.Final{Answer: "Dispatch holds no answer to that question."}},
+		goingtest.Reply{Final: &goingtest.Final{Answer: "Dispatch holds no answer to that question."}},
+	)
+	answerer := testAnswerer(t, model, going.AnswererConfig{})
+	for run := range 2 {
+		stream := &answerStream{}
+		if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order", stream), stream.emit); err != nil {
+			t.Fatalf("Run %d: %v", run, err)
+		}
+		stream.ended(t)
+		if run == 0 {
+			if _, known := answerer.Blocks(); known {
+				t.Error("Blocks is known after a content filter's 400, want unknown: the service never refused the structured output")
+			}
+		}
+	}
+	requests := model.Requests()
+	if len(requests) != 3 || !requests[0].Structured() || requests[1].Structured() || !requests[2].Structured() {
+		t.Fatalf("model served %d calls, want the refused structured one, its prose fallback, then the next run's structured one", len(requests))
+	}
+	if blocks, known := answerer.Blocks(); !blocks || !known {
+		t.Errorf("Blocks = %v, %v after the next run's structured reply was accepted, want true", blocks, known)
+	}
+}
+
+// TestRunTellsTheStructuredCallTheBlockItMayDraw: the structured call is told the chart the words
+// name, which is what lets it write the chart's block; the prose call that follows a refusal is
+// not told it, since prose carries no block. The chart is offered because the run holds a read
+// that fills one (TestNoBlockIsOfferedWithoutAReadThatFillsIt is the other side).
+func TestRunTellsTheStructuredCallTheBlockItMayDraw(t *testing.T) {
+	model := goingtest.NewModel(t, goingtest.Reply{
+		Final:        &goingtest.Final{Answer: "Claimed."},
+		RefuseFormat: true,
+	})
+	answerer := testAnswerer(t, model, going.AnswererConfig{})
+	stream := &answerStream{}
+	request := testReads().request("claim DEMO-12 and chart its activity", stream)
+	request.Reads = map[string]going.ReadFunc{going.ReadProjectActivity: func(context.Context, json.RawMessage) (going.Read, error) {
+		return going.Read{}, nil
+	}}
+	if err := answerer.Run(t.Context(), request, stream.emit); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	stream.ended(t)
+	requests := model.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("model served %d calls, want the structured one then the prose one", len(requests))
+	}
+	told := func(request goingtest.ReceivedRequest) string {
+		for _, message := range request.Messages {
+			if message.Role == "user" {
+				return message.Content
+			}
+		}
+		return ""
+	}
+	structured, prose := told(requests[0]), told(requests[1])
+	const chart = "kind: chart"
+	if !strings.Contains(structured, chart) {
+		t.Errorf("the structured call was told %q, want %q in it", structured, chart)
+	}
+	if strings.Contains(prose, chart) {
+		t.Errorf("the prose call was told %q, want no %q: prose carries no block", prose, chart)
+	}
+	if !strings.Contains(prose, "claim DEMO-12") {
+		t.Errorf("the prose call was told %q, want the question", prose)
+	}
+}
+
+// TestStructuredOutputRefusedByAMalformedReplyFallsBackForThatRunAlone: a service that ignores
+// the response format answers 200 with a reply that does not fit the schema, and the run asks
+// again for prose; one such reply says less about the service than a 400, so the next run asks
+// for the Final object again.
+func TestStructuredOutputRefusedByAMalformedReplyFallsBackForThatRunAlone(t *testing.T) {
+	link := fmt.Sprintf("[%s](%s)", routeHit.Title, routeHit.Href)
+	model := goingtest.NewModel(t, goingtest.Reply{
+		Text:  "It is settled on " + link + " and on [another](" + outsideAnswerHref + "), *for now*.",
+		Chunk: 5,
+	})
+	answerer := testAnswerer(t, model, going.AnswererConfig{})
+
+	for run := range 2 {
+		stream := &answerStream{}
+		if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order", stream), stream.emit); err != nil {
+			t.Fatalf("Run %d: %v", run, err)
+		}
+		stream.ended(t)
+		assertProseAnswer(t, stream)
+	}
+	requests := model.Requests()
+	if len(requests) != 4 {
+		t.Fatalf("model served %d calls over two runs, want two each: a malformed reply sets no flag", len(requests))
+	}
+	for i, request := range requests {
+		if want := i%2 == 0; request.Structured() != want {
+			t.Errorf("call %d asked for a structured reply: %v, want %v", i, request.Structured(), want)
+		}
+	}
+	if _, known := answerer.Blocks(); known {
+		t.Error("Blocks is known after two malformed replies, want unknown: neither a 400 nor an accepted reply was seen")
+	}
+}
+
+// assertProseAnswer checks a run that fell back to prose: its text was cleared by the filter as
+// a structured answer's is - the given link kept as its item, the other dropped, punctuation
+// escaped - and its outcome is the refusal, with no reply for the caller to draw a block from.
+func assertProseAnswer(t *testing.T, stream *answerStream) {
+	t.Helper()
+	text := stream.text()
+	if !strings.Contains(text, routeHit.Title) || !strings.Contains(text, `\*for now\*`) {
+		t.Errorf("answer = %q, want the prose cleared and escaped", text)
+	}
+	if strings.Contains(text, outsideAnswerHref) || strings.Contains(text, "](") {
+		t.Errorf("answer = %q, want no link syntax and no target", text)
+	}
+	if got := stream.count(contracts.GoingEventItem); got != 1 {
+		t.Errorf("stream holds %d item events, want the one the prose linked", got)
+	}
+	if got := stream.count(contracts.GoingEventChanged); got != 1 {
+		t.Errorf("stream holds %d changed events, want the dropped link said", got)
+	}
+	outcome := stream.reported(t)
+	if outcome.StructuredOutput != going.StructuredOutputRefused || outcome.Final != nil {
+		t.Errorf("outcome = %+v, want the refusal and no structured reply", outcome)
+	}
+}
+
+// TestStructuredOutputRefusedOnceMakesTheNextRunOneCall: once the service refused a structured
+// request with a 400, a later run of the same process asks for prose alone, so a deployment
+// whose model serves no structured output pays one call an answer and not two (c20).
+func TestStructuredOutputRefusedOnceMakesTheNextRunOneCall(t *testing.T) {
+	model := goingtest.NewModel(t, goingtest.Reply{
+		Final:        &goingtest.Final{Answer: "Dispatch holds no answer to that question."},
+		RefuseFormat: true,
+	})
+	answerer := testAnswerer(t, model, going.AnswererConfig{})
+	first := &answerStream{}
+	if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order", first), first.emit); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	first.ended(t)
+	if got := model.Calls(); got != 2 {
+		t.Fatalf("the first run made %d calls, want the refused structured one and the prose one", got)
+	}
+
+	second := &answerStream{}
+	if err := answerer.Run(t.Context(), testReads().request("and who answers it", second), second.emit); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	second.ended(t)
+	requests := model.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("the second run made %d calls, want 1: the refusal was remembered", len(requests)-2)
+	}
+	if requests[2].Structured() {
+		t.Error("the second run asked for a structured reply, want prose alone after a 400")
+	}
+	if outcome := second.reported(t); outcome.StructuredOutput != going.StructuredOutputRefused || outcome.Final != nil {
+		t.Errorf("the second run's outcome = %+v, want the refusal", outcome)
+	}
+	if !strings.Contains(second.text(), "Dispatch holds no answer") {
+		t.Errorf("the second run's answer = %q, want the prose", second.text())
+	}
+}
+
 // TestRunCountsTheSeedingSearchAsTheFirst: the server's own search is the first of
 // contracts.GoingSearchMax, so a model that calls the tool twice is served twice and its third
 // call comes back as a refusal it can act on, with the run still ending in an answer.
@@ -377,24 +697,22 @@ func TestRunCountsTheSeedingSearchAsTheFirst(t *testing.T) {
 		searchCall("call_1", "the broadcast order"),
 		searchCall("call_2", "who owns it"),
 		searchCall("call_3", "once more"),
-		goingtest.Reply{Text: fmt.Sprintf("It is on [%s](%s).", routeHit.Title, routeHit.Href)},
+		answer(fmt.Sprintf("It is on [%s](%s).", routeHit.Title, routeHit.Href)),
 	)
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
 	search := testReads()
 
-	if err := answerer.Run(t.Context(), search.request("who owns the broadcast order"), stream.emit); err != nil {
+	if err := answerer.Run(t.Context(), search.request("who owns the broadcast order", stream), stream.emit); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if got := stream.terminal(t).Name; got != contracts.GoingEventEnd {
-		t.Fatalf("stream ended with %s, want %s: %v", got, contracts.GoingEventEnd, stream.names())
-	}
+	stream.ended(t)
 	want := []string{"who owns the broadcast order", "the broadcast order", "who owns it"}
 	if len(search.queries) != contracts.GoingSearchMax || !reflect.DeepEqual(search.queries, want) {
 		t.Errorf("searches = %q, want the %d of %v", search.queries, contracts.GoingSearchMax, want)
 	}
-	if got := model.Calls(); got != 4 {
+	if got := model.Calls(); got != contracts.GoingModelCallMax {
 		t.Fatalf("model served %d calls, want the three tool turns and the answer", got)
 	}
 	refusal := toolResult(t, model.Requests()[3].Messages, "call_3")
@@ -404,11 +722,14 @@ func TestRunCountsTheSeedingSearchAsTheFirst(t *testing.T) {
 	if got := stream.count(contracts.GoingEventItem); got != 1 {
 		t.Errorf("stream holds %d item events, want the one the answer linked", got)
 	}
+	if outcome := stream.reported(t); outcome.StructuredOutput != going.StructuredOutputAccepted {
+		t.Errorf("outcome = %+v, want the structured reply accepted after the tool turns", outcome)
+	}
 }
 
 // toolResult is the result one tool call was answered with, as the model received it on the turn
 // after it.
-func toolResult(t *testing.T, messages []going.Message, callID string) string {
+func toolResult(t *testing.T, messages []goingtest.Message, callID string) string {
 	t.Helper()
 	for _, message := range messages {
 		if message.ToolCallID == callID {
@@ -419,38 +740,31 @@ func toolResult(t *testing.T, messages []going.Message, callID string) string {
 	return ""
 }
 
-// TestRunTellsTheModelACallFailedInTheResultsOwnText: a tool result that is an error reaches
-// the model as text, behind the prefix, because the chat completions wire carries no field for
-// one; the model is given the refusal and answers from what it has, so such a result ends no
-// run.
+// TestRunTellsTheModelACallFailedInTheResultsOwnText: a refused tool call - one that names no
+// words to search for - reaches the model as a result it can act on, and the model answers from
+// what it has, so such a result ends no run.
 func TestRunTellsTheModelACallFailedInTheResultsOwnText(t *testing.T) {
 	model := goingtest.NewModel(t,
-		goingtest.Reply{ToolCalls: []going.ToolCall{{
+		goingtest.Reply{ToolCalls: []goingtest.ToolCall{{
 			ID:        "call_1",
 			Name:      contracts.GoingSearchTool,
-			Arguments: `{"not-the-field":"the broadcast order"}`,
+			Arguments: `{"q":"   "}`,
 		}}},
-		goingtest.Reply{Text: fmt.Sprintf("It is on [%s](%s).", routeHit.Title, routeHit.Href)},
+		answer(fmt.Sprintf("It is on [%s](%s).", routeHit.Title, routeHit.Href)),
 	)
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
 	search := testReads()
 
-	if err := answerer.Run(t.Context(), search.request("who owns the broadcast order"), stream.emit); err != nil {
+	if err := answerer.Run(t.Context(), search.request("who owns the broadcast order", stream), stream.emit); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if got := stream.terminal(t).Name; got != contracts.GoingEventEnd {
-		t.Fatalf("stream ended with %s, want %s: the run goes on past a refused call: %v",
-			got, contracts.GoingEventEnd, stream.names())
-	}
+	stream.ended(t)
 	if got := model.Calls(); got != 2 {
 		t.Fatalf("model served %d calls, want the refused tool turn and the answer", got)
 	}
 	refusal := toolResult(t, model.Requests()[1].Messages, "call_1")
-	if !strings.HasPrefix(refusal, "Error: ") {
-		t.Errorf("the failed call was answered %q, want it to open with the error prefix", refusal)
-	}
 	if !strings.Contains(refusal, "Call it again with q") {
 		t.Errorf("the failed call was answered %q, want the words the model can act on", refusal)
 	}
@@ -464,26 +778,27 @@ func TestRunTellsTheModelACallFailedInTheResultsOwnText(t *testing.T) {
 // time its caller gave it: the model's call is sent under the caller's own deadline, with no
 // shorter bound of the run's or of the client's put on it, and the run is still waiting once the
 // model holds the call. The caller's deadline lies inside the run's own window
-// (contracts.GoingRunWindow), which the run and the client each put on the context
-// (runLoop, HTTPClient.Chat), so a run that keeps it sends the call with exactly that deadline.
+// (contracts.GoingRunWindow), which the run puts on the context (Answerer.Run), so a run that
+// keeps it sends the call with exactly that deadline.
 // The test ends the context itself once the model holds the call, so no clock decides the verdict.
 func TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers(t *testing.T) {
 	model := goingtest.NewModel(t, goingtest.Reply{Silent: true})
-	transport := &deadlineTransport{}
-	answerer, err := going.NewAnswerer(going.AnswererConfig{
-		Model:           testClient(t, model, going.HTTPConfig{HTTPClient: &http.Client{Transport: transport}}),
-		TokensPerMinute: testTokensPerMinute,
-	})
-	if err != nil {
-		t.Fatalf("NewAnswerer: %v", err)
-	}
+	// The shared model loop sends its calls over http.DefaultTransport (agentloop's
+	// newModelTransport), so the test records them there for its own length: no test of this
+	// package runs in parallel with another.
+	transport := &deadlineTransport{base: http.DefaultTransport}
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = transport.base })
+	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	callerDeadline, _ := ctx.Deadline()
 
 	ran := make(chan error, 1)
-	go func() { ran <- answerer.Run(ctx, testReads().request("who owns the broadcast order"), stream.emit) }()
+	go func() {
+		ran <- answerer.Run(ctx, testReads().request("who owns the broadcast order", stream), stream.emit)
+	}()
 	// The model counts the call as it arrives and then holds its response, so the run is waiting
 	// on it here, and the transport has recorded the call's deadline before sending it.
 	testwait.Eventually(t, "the model to take the run's call", func() bool { return model.Calls() == 1 })
@@ -498,6 +813,7 @@ func TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers(t *testing.T) {
 	}
 
 	cancel()
+	var err error
 	testwait.Eventually(t, "the run to end once its caller's context has", func() bool {
 		select {
 		case err = <-ran:
@@ -512,11 +828,15 @@ func TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers(t *testing.T) {
 	if got := stream.code(t); got != contracts.GoingErrorAnswerDidNotArrive {
 		t.Errorf("error code = %s, want %s", got, contracts.GoingErrorAnswerDidNotArrive)
 	}
+	if got := model.Calls(); got != 1 {
+		t.Errorf("model served %d calls, want the one the deadline ended: no fallback follows a deadline", got)
+	}
 }
 
 // deadlineTransport records the deadline each model call's request is sent under, read where the
 // HTTP client sends it, after every bound the run and the client put on their caller's context.
 type deadlineTransport struct {
+	base      http.RoundTripper
 	mu        sync.Mutex
 	deadlines []time.Time
 	unbounded int
@@ -531,7 +851,7 @@ func (d *deadlineTransport) RoundTrip(request *http.Request) (*http.Response, er
 		d.unbounded++
 	}
 	d.mu.Unlock()
-	return http.DefaultTransport.RoundTrip(request)
+	return d.base.RoundTrip(request)
 }
 
 // sent answers the deadlines recorded so far, and how many requests carried none.
@@ -541,55 +861,73 @@ func (d *deadlineTransport) sent() ([]time.Time, int) {
 	return slices.Clone(d.deadlines), d.unbounded
 }
 
-// TestRunEndsWithTheDeadlineWhenTheQuotaCannotPaceTheCall: a quota too small to pace the next
-// call inside the time left ends the run the same way, and no call is made.
+// TestRunEndsWithTheDeadlineWhenTheQuotaCannotPaceTheCall: a call estimated past a minute's whole
+// share is made at once while the share is unspent, and a quota of 1 token a minute paces calls
+// rather than refusing them all; a quota that cannot pace the next call inside the time left
+// ends that run as the deadline does, and no call is made: the quota is taken before the request
+// goes out. The clock stands still, so the second run finds the first run's token still spent.
 func TestRunEndsWithTheDeadlineWhenTheQuotaCannotPaceTheCall(t *testing.T) {
-	frozen := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
-	model := goingtest.NewModel(t, goingtest.Reply{Text: "An answer nobody will see."})
+	frozen := time.Now()
+	model := goingtest.NewModel(t, answer("The first run's answer."))
 	answerer := testAnswerer(t, model, going.AnswererConfig{
 		TokensPerMinute: 1,
 		Now:             func() time.Time { return frozen },
 	})
-	stream := &answerStream{}
 
-	if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order"), stream.emit); err != nil {
+	first := &answerStream{}
+	if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order", first), first.emit); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	first.ended(t)
+	if got := model.Calls(); got != 1 {
+		t.Fatalf("model served %d calls, want the first run's one: a call past the share is paced, not refused", got)
+	}
 
-	if got := stream.code(t); got != contracts.GoingErrorAnswerDidNotArrive {
+	second := &answerStream{}
+	if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order now", second), second.emit); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := second.code(t); got != contracts.GoingErrorAnswerDidNotArrive {
 		t.Errorf("error code = %s, want %s", got, contracts.GoingErrorAnswerDidNotArrive)
 	}
-	if got := model.Calls(); got != 0 {
-		t.Errorf("model served %d calls, want none: the quota could pace none of them", got)
+	if got := model.Calls(); got != 1 {
+		t.Errorf("model served %d calls, want the first run's one alone: the quota could pace no second call within the run's %s", got, contracts.GoingRunWindow)
 	}
 }
 
-// TestRunFailsWhenTheModelRefusesTheCall: a model service that answers a non-2xx ends the run
-// with the failure code, and the reader is told nothing the service said.
+// TestRunFailsWhenTheModelRefusesTheCall: a model service that answers a status other than a
+// 400 ends the run with the failure code, with no fallback, and the reader is told nothing the
+// service said.
 func TestRunFailsWhenTheModelRefusesTheCall(t *testing.T) {
-	model := goingtest.NewModel(t, goingtest.Reply{Status: http.StatusInternalServerError})
+	model := goingtest.NewModel(t, goingtest.Reply{Status: http.StatusUnauthorized})
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
 
-	if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order"), stream.emit); err != nil {
+	if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order", stream), stream.emit); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
 	if got := stream.code(t); got != contracts.GoingErrorAnswerFailed {
 		t.Errorf("error code = %s, want %s", got, contracts.GoingErrorAnswerFailed)
 	}
+	if got := model.Calls(); got != 1 {
+		t.Errorf("model served %d calls, want 1: a 401 is no refusal of the structured output", got)
+	}
+	if _, known := answerer.Blocks(); known {
+		t.Error("Blocks is known after a 401, want unknown")
+	}
 }
 
 // TestRunFailsWhenTheStoreCannotBeRead: the seeding search is a store read, and a store that
 // cannot answer it ends the run with the failure code.
 func TestRunFailsWhenTheStoreCannotBeRead(t *testing.T) {
-	model := goingtest.NewModel(t, goingtest.Reply{Text: "An answer nobody will see."})
+	model := goingtest.NewModel(t, answer("An answer nobody will see."))
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
 	search := testReads()
 	search.err = errors.New("the store refused this read")
 
-	if err := answerer.Run(t.Context(), search.request("who owns the broadcast order"), stream.emit); err != nil {
+	if err := answerer.Run(t.Context(), search.request("who owns the broadcast order", stream), stream.emit); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -607,7 +945,7 @@ func TestRunFailsWhenTheStoreCannotBeRead(t *testing.T) {
 func TestRunEndsWhenAToolsSearchCannotBeRead(t *testing.T) {
 	model := goingtest.NewModel(t,
 		searchCall("call_1", "who owns it"),
-		goingtest.Reply{Text: "An answer nobody should ever be written."},
+		answer("An answer nobody should ever be written."),
 	)
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
@@ -616,7 +954,7 @@ func TestRunEndsWhenAToolsSearchCannotBeRead(t *testing.T) {
 	search.served = 1
 	search.err = errors.New("the store refused this read")
 
-	if err := answerer.Run(t.Context(), search.request("who owns the broadcast order"), stream.emit); err != nil {
+	if err := answerer.Run(t.Context(), search.request("who owns the broadcast order", stream), stream.emit); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -641,11 +979,11 @@ func TestRunEndsOnTheFirstFailedReadOfATurnsCalls(t *testing.T) {
 	var logged bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 	model := goingtest.NewModel(t,
-		goingtest.Reply{ToolCalls: []going.ToolCall{
+		goingtest.Reply{ToolCalls: []goingtest.ToolCall{
 			{ID: "call_1", Name: contracts.GoingSearchTool, Arguments: `{"q":"who owns it"}`},
 			{ID: "call_2", Name: contracts.GoingSearchTool, Arguments: `{"q":"and who answers it"}`},
 		}},
-		goingtest.Reply{Text: "An answer nobody should ever be written."},
+		answer("An answer nobody should ever be written."),
 	)
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
@@ -654,7 +992,7 @@ func TestRunEndsOnTheFirstFailedReadOfATurnsCalls(t *testing.T) {
 	search.served = 1
 	search.err = errors.New("the store refused this read")
 
-	if err := answerer.Run(t.Context(), search.request("who owns the broadcast order"), stream.emit); err != nil {
+	if err := answerer.Run(t.Context(), search.request("who owns the broadcast order", stream), stream.emit); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -684,19 +1022,19 @@ func TestRunGivesAHitPastTheRuneBudgetNoBody(t *testing.T) {
 	for i := range count {
 		hit := going.Hit{
 			Kind:  "issue",
-			ID:    fmt.Sprintf("INFRA-%d", 2000+i),
+			ID:    fmt.Sprintf("DEMO-%d", 2000+i),
 			Title: fmt.Sprintf("the item ranked %d", i),
-			Href:  fmt.Sprintf("/issues/INFRA-%d", 2000+i),
+			Href:  fmt.Sprintf("/issues/DEMO-%d", 2000+i),
 		}
 		search.hits = append(search.hits, hit)
 		body := fmt.Sprintf("%s%d.", marker, i)
 		search.bodies[hit.Key()] = body + strings.Repeat("x", contracts.GoingHitRuneMax-len(body))
 	}
-	model := goingtest.NewModel(t, goingtest.Reply{Text: "Dispatch holds no answer to that question."})
+	model := goingtest.NewModel(t, answer("Dispatch holds no answer to that question."))
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
 
-	if err := answerer.Run(t.Context(), search.request("what do the ranked items say"), stream.emit); err != nil {
+	if err := answerer.Run(t.Context(), search.request("what do the ranked items say", stream), stream.emit); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -735,12 +1073,12 @@ func TestRunHandsBackTheStreamWritersFailure(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			model := goingtest.NewModel(t, goingtest.Reply{
-				Text:  fmt.Sprintf("It is on [%s](%s).", routeHit.Title, routeHit.Href),
+				Final: &goingtest.Final{Answer: fmt.Sprintf("It is on [%s](%s).", routeHit.Title, routeHit.Href)},
 				Chunk: 5,
 			})
 			answerer := testAnswerer(t, model, going.AnswererConfig{})
 
-			err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order"), tc.stream.emit)
+			err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order", tc.stream), tc.stream.emit)
 
 			if !errors.Is(err, errStreamWriter) {
 				t.Fatalf("Run = %v, want the stream writer's own failure", err)

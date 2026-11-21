@@ -9,11 +9,14 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pmezard/go-difflib/difflib"
 
+	"github.com/sjawhar/envoy/going/agent"
+	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -75,6 +78,9 @@ var subcommands = []subcommand{
 	{"openapi", func(_ context.Context, args []string, _ settingValues, stdout, stderr io.Writer) int {
 		return writeOpenAPIDocument(args, stdout, stderr)
 	}},
+	{"agent", func(ctx context.Context, _ []string, env settingValues, _, stderr io.Writer) int {
+		return runAgent(ctx, env, os.Stdin, stderr)
+	}},
 }
 
 // runSubcommand runs the subcommand args name and returns its exit code. A name it does not know
@@ -92,6 +98,86 @@ func runSubcommand(ctx context.Context, args []string, env settingValues, stdout
 	}
 	fmt.Fprintf(stderr, "envoy-dispatch: unknown subcommand %q; the subcommands are %s, and envoy-dispatch with no argument serves\n", args[0], strings.Join(names, ", "))
 	return 2
+}
+
+// runAgent runs `envoy-dispatch agent`, the command bar's agent process, which the server starts
+// itself (agentSupervisor): it reads the secret of agent/v1 from stdin, calls the server at the
+// socket DISPATCH_AGENT_SOCKET names, and runs the agent's loop (agent.Run) on the chat model its
+// settings name, paced to its share of the model's quota, with its slots, until stdin closes,
+// when it exits 0. It exits 2 when started with no socket to call, and 1 when its secret or its
+// settings cannot be read or its loop fails, which the server answers by starting it again.
+// DISPATCH_TEST_AGENT_HOOKS=1, which its server hands on only under the server's own test hooks,
+// turns the loop's test hooks on, makes each SIGUSR1 collect the agent's heap and log what it
+// found (collectAgentOnSignal) and each SIGUSR2 log its runtime figures as they stand
+// (reportAgentFiguresOnSignal), and DISPATCH_TEST_AGENT_GROW_AFTER, handed on the same way, makes
+// it allocate at full speed that long after its start (growAgentHeap).
+func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io.Writer) int {
+	socket := strings.TrimSpace(env.get("DISPATCH_AGENT_SOCKET"))
+	if socket == "" {
+		fmt.Fprintln(stderr, "agent: DISPATCH_AGENT_SOCKET is unset: envoy-dispatch agent is the command bar's agent process, which its server starts itself, naming the socket it listens on")
+		return 2
+	}
+	secret := make([]byte, agentwire.SecretSize)
+	if _, err := io.ReadFull(stdin, secret); err != nil {
+		fmt.Fprintf(stderr, "agent: read the server's secret from stdin: %v\n", err)
+		return 1
+	}
+	chat, err := resolveAnswerer(env, "")
+	if err != nil {
+		fmt.Fprintf(stderr, "agent: read the chat model's settings: %v\n", err)
+		return 1
+	}
+	model, err := chatModel(chat)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent: the chat model: %v\n", err)
+		return 1
+	}
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+	// The server holds the other end of stdin for as long as it wants this process: its close,
+	// or the server's exit, ends the loop.
+	go func() {
+		_, _ = io.Copy(io.Discard, stdin)
+		stop()
+	}()
+	slots := agentSlots
+	if raw := strings.TrimSpace(env.get("DISPATCH_AGENT_SLOTS")); raw != "" {
+		if slots, err = strconv.Atoi(raw); err != nil || slots <= 0 || slots > 64 {
+			fmt.Fprintf(stderr, "agent: DISPATCH_AGENT_SLOTS=%q (expected a whole number of runs from 1 to 64)\n", raw)
+			return 1
+		}
+	}
+	// The server checked DISPATCH_TEST_HOOKS before it passed this on, so the agent reads it alone.
+	var after time.Duration
+	if err := testHookDuration(env, "DISPATCH_TEST_AGENT_GROW_AFTER", true, &after); err != nil {
+		fmt.Fprintf(stderr, "agent: %v\n", err)
+		return 1
+	}
+	if after > 0 {
+		growAgentHeap(after, stderr)
+	}
+	hooks := strings.TrimSpace(env.get("DISPATCH_TEST_AGENT_HOOKS")) == "1"
+	if hooks {
+		collectAgentOnSignal(stderr)
+		reportAgentFiguresOnSignal(stderr)
+	}
+	config := agent.Config{Model: model, TokensPerMinute: chat.TokensPerMinute, Slots: slots, Hooks: hooks}
+	// The chat model's first token is read now, beside the hello and the first claim, so a
+	// sign-in's exchange - Azure's, whose source caches its token - is not made by a run's first
+	// model call; that call waits on the exchange in flight instead of starting its own. A read
+	// that fails here fails nothing: each call reads the token again.
+	if model.Endpoint.Token != nil {
+		go func() {
+			if _, err := model.Endpoint.Token(ctx); err != nil && ctx.Err() == nil {
+				slog.Warn("agent: read the chat model's token at start", "error", err)
+			}
+		}()
+	}
+	if err := agent.Run(ctx, agentwire.Client{Path: socket, Secret: secret}, config); err != nil {
+		fmt.Fprintf(stderr, "agent: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // writeOpenAPIDocument runs `envoy-dispatch openapi`. With no flag it writes the OpenAPI document

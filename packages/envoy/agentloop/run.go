@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
+	"runtime/debug"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	anthropicopt "github.com/anthropics/anthropic-sdk-go/option"
 	aisdk "github.com/grafana/ai-sdk"
@@ -50,6 +53,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	messages := append(history, input...)
 
 	transport := newModelTransport(req.Model.Endpoint)
+	transport.streamLimit = req.StreamLimit
 	model, options, err := languageModel(req, transport.client())
 	if err != nil {
 		return Result{}, err
@@ -105,14 +109,25 @@ func Run(ctx context.Context, req Request) (Result, error) {
 
 	result := r.result()
 	switch failure := r.failure(); {
+	case transport.overLimit():
+		result.Fault, result.Detail = FaultTooLarge, fmt.Sprintf("a model call's response passed its limit of %d bytes", req.StreamLimit)
+	case r.replyOverLimit.Load():
+		result.Fault, result.Detail = FaultTooLarge, fmt.Sprintf("a model call's reply passed its limit of %d bytes", req.ReplyLimit)
 	case failure != nil:
 		return result, failure
 	case ctx.Err() != nil:
 		return result, fmt.Errorf("agentloop: %w", ctx.Err())
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 		result.Fault, result.Detail = FaultTime, fmt.Sprintf("the run went past %s", req.Bounds.Time)
+	case transport.contentFiltered() && (stream.Err() != nil || len(result.Steps) == 0):
+		result.Fault, result.Status = FaultContentFilter, transport.failedStatus()
+		result.Detail = fmt.Sprintf("the provider's content filter refused the call with %d", result.Status)
+		if err := stream.Err(); err != nil {
+			result.Detail += ": " + err.Error()
+		}
 	case stream.Err() != nil:
 		result.Fault, result.Detail = FaultProviderError, stream.Err().Error()
+		result.Status = transport.failedStatus()
 	case len(result.Steps) == 0:
 		result.Fault, result.Detail = FaultProviderError, "the model made no reply"
 	default:
@@ -260,6 +275,12 @@ type run struct {
 	numbering sync.Mutex
 	indexes   map[string]int
 	next      int
+
+	// replied is the bytes of the reply the model call in flight has built, which only drain
+	// counts; replyOverLimit is set once a call's reply passed Request.ReplyLimit, which ends
+	// the run.
+	replied        int
+	replyOverLimit atomic.Bool
 }
 
 // readsRawChunks is whether a protocol's reply is read back out of the provider's own chunks,
@@ -283,7 +304,8 @@ type rawCall struct {
 // at all: the Final object's snapshots in a goroutine, the stream's own parts here. Each is read
 // to the end whether or not the caller takes it, and after a callback has failed. The parts a
 // protocol reads its reply back out of are kept as they go by, because the stream is the only
-// place they are said.
+// place they are said. Each call's prose, reasoning and tool arguments are counted as they go
+// by, and a call whose reply passes Request.ReplyLimit ends the run.
 func (r *run) drain(stream *aisdk.StreamTextResult) {
 	partials := make(chan struct{})
 	go func() {
@@ -292,27 +314,53 @@ func (r *run) drain(stream *aisdk.StreamTextResult) {
 			if r.req.OnPartial == nil || r.failure() != nil {
 				continue
 			}
-			if err := r.req.OnPartial(snapshot); err != nil {
-				r.fail(err)
-			}
+			r.callback("OnPartial", func() error { return r.req.OnPartial(snapshot) })
 		}
 	}()
 	for part := range stream.FullStream() {
 		switch part := part.(type) {
 		case aisdk.StreamStartStep:
 			r.calls = append(r.calls, rawCall{})
+			r.replied = 0
 		case aisdk.StreamRaw:
 			r.readRaw(part.RawValue)
+		case aisdk.StreamReasoningDelta:
+			r.reply(len(part.Text))
+		case aisdk.StreamToolInputDelta:
+			r.reply(len(part.Delta))
 		case aisdk.StreamTextDelta:
+			r.reply(len(part.Text))
 			if r.req.OnText == nil || r.failure() != nil {
 				continue
 			}
-			if err := r.req.OnText(part.Text); err != nil {
-				r.fail(err)
-			}
+			r.callback("OnText", func() error { return r.req.OnText(part.Text) })
 		}
 	}
 	<-partials
+}
+
+// reply counts bytes more of the reply of the model call in flight, and ends the run once they
+// pass Request.ReplyLimit.
+func (r *run) reply(bytes int) {
+	r.replied += bytes
+	if r.req.ReplyLimit > 0 && r.replied > r.req.ReplyLimit && !r.replyOverLimit.Swap(true) {
+		r.cancel()
+	}
+}
+
+// callback calls one of the caller's stream callbacks, which call wraps: an error it returns ends
+// the run, and so does a panic, recovered here, logged with its stack and returned as an error
+// naming it. The SDK calls OnStep on a goroutine of its own, where a panic would end the process.
+func (r *run) callback(name string, call func() error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("agentloop: a callback panicked", "callback", name, "panic", recovered, "stack", string(debug.Stack()))
+			r.fail(fmt.Errorf("agentloop: the %s callback panicked: %v", name, recovered))
+		}
+	}()
+	if err := call(); err != nil {
+		r.fail(err)
+	}
 }
 
 // readRaw reads one raw provider chunk of the model call the stream is in into that call's own
@@ -416,7 +464,8 @@ func afterHistory(messages []provider.Message, history int) int {
 
 // stepFinished keeps one model call that finished and gives it to the caller's OnStep. The
 // call's own output items are read once the run is over, so the step the callback is given
-// carries no Native.
+// carries no Native. A call whose reply passed Request.ReplyLimit ends the run instead, and is
+// given to no OnStep: the SDK can finish a step before drain has counted its parts.
 func (r *run) stepFinished(state aisdk.OnStepFinishState) {
 	step := Step{
 		Blocks: blocksOf(state.Content, r.kind),
@@ -427,12 +476,30 @@ func (r *run) stepFinished(state aisdk.OnStepFinishState) {
 	r.steps = append(r.steps, step)
 	r.text, r.reason = state.Text, state.FinishReason
 	r.mu.Unlock()
+	if r.req.ReplyLimit > 0 && replyBytes(step.Blocks) > r.req.ReplyLimit {
+		r.replyOverLimit.Store(true)
+		r.cancel()
+		return
+	}
 	if r.req.OnStep == nil || r.failure() != nil {
 		return
 	}
-	if err := r.req.OnStep(step); err != nil {
-		r.fail(err)
+	r.callback("OnStep", func() error { return r.req.OnStep(step) })
+}
+
+// replyBytes is the bytes of the reply blocks hold: its prose, its reasoning and its tool calls'
+// arguments.
+func replyBytes(blocks []Block) int {
+	bytes := 0
+	for _, block := range blocks {
+		switch block.Kind {
+		case TextBlock, ThinkingBlock, ReasoningBlock:
+			bytes += len(block.Text)
+		case ToolCallBlock:
+			bytes += len(block.Input)
+		}
 	}
+	return bytes
 }
 
 // result is the run's steps, their usage summed and the last reply's text, as they stand.
@@ -488,7 +555,13 @@ func (r *run) finish(result *Result, stream *aisdk.StreamTextResult) {
 			reason.Raw, r.req.Bounds.OutputTokens)
 		return
 	case provider.FinishReasonContentFilter:
-		result.Fault, result.Detail = FaultRefusal, fmt.Sprintf("the provider stopped the last reply: %s", reason.Raw)
+		// The SDK reads Anthropic's refusal stop reason as content-filter too, and that is the
+		// model refusing; every other provider word for it is the provider's content filter.
+		if reason.Raw == "refusal" {
+			result.Fault, result.Detail = FaultRefusal, fmt.Sprintf("the provider stopped the last reply: %s", reason.Raw)
+			return
+		}
+		result.Fault, result.Detail = FaultContentFilter, fmt.Sprintf("the provider's content filter stopped the last reply: %s", reason.Raw)
 		return
 	case provider.FinishReasonError:
 		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("the last reply ended in an error: %s", reason.Raw)

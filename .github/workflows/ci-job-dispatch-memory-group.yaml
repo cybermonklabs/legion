@@ -1,0 +1,72 @@
+name: CI job dispatch-memory-group
+
+# The steps of ci.yaml's `dispatch-memory-group` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# why: .github/ci-notes/ci.md#the-memory-group-test-the-server-ends-its-agent-before-the-kernel
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# The `|direct` fallback is ci-job-dispatch-memory.yaml's, for the reason its header gives.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  dispatch-memory-group:
+    # amd64, as production is: the test's 50 ms margin is a measurement of this architecture.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/postgres?sslmode=disable
+      # The test skips with its reason unless this is set, so envoy-go's untagged run leaves it be.
+      DISPATCH_TEST_MEMORY_GROUP: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # The image the test runs the server in, read from the Go constant that declares it, and
+      # pulled first for the reason the action gives.
+      - name: Pull the container image the test runs the server in
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/envoy/cmd/dispatch/agent_memory_group_test.go memoryGroupImage
+      - name: The server ends its agent before the kernel
+        run: go test -count=1 -timeout 15m -v -run '^TestTheServerEndsTheAgentBeforeTheKernel$' ./cmd/dispatch
+        working-directory: packages/envoy
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-memory-group
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

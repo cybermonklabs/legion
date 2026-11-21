@@ -1,4 +1,9 @@
-import { dispatchToolSpecs } from "../src/dispatch-tools";
+import {
+  type DispatchToolRoute,
+  type DispatchToolSpec,
+  dispatchToolSpecs,
+  personToolSpecs,
+} from "../src/dispatch-tools";
 import type { SchemaApi, SchemaNode } from "../src/tool-schema";
 
 // The slice of a schema the Go side needs to check a proposed call: what each argument holds,
@@ -91,12 +96,33 @@ function renderToolField(name: string, field: RecordedField): string {
   return `{${parts.join(", ")}}`;
 }
 
+// One route binding as a composite literal with its type elided, inside a []ToolRoute. Every
+// method but GET sends a JSON body, `{}` where the binding lists no argument for it, so an empty
+// list is left out as an absent one is.
+function renderToolRoute(route: DispatchToolRoute): string {
+  const parts = [`Method: ${goString(route.method)}`, `Pattern: ${goString(route.path)}`];
+  const params = Object.entries(route.params ?? {});
+  if (params.length > 0) {
+    const bound = params.map(([key, value]) => `${goString(key)}: ${goString(value)}`).join(", ");
+    parts.push(`Path: map[string]string{${bound}}`);
+  }
+  if ((route.query ?? []).length > 0) {
+    parts.push(`Query: []string{${(route.query ?? []).map(goString).join(", ")}}`);
+  }
+  if ((route.body ?? []).length > 0) {
+    parts.push(`Body: []string{${(route.body ?? []).map(goString).join(", ")}}`);
+  }
+  return `{${parts.join(", ")}}`;
+}
+
 // The Go the action catalogue is built from: every dispatch tool with its own description, its
-// own arguments and a call those arguments accept. Which of them the catalogue holds is the
-// server's to decide from its own route table, so nothing here says which tool writes: this is
-// what the TypeScript knows and the Go cannot read.
+// own arguments and a call those arguments accept, then the person tools the command bar alone
+// calls (personToolSpecs). Which of them the catalogue holds is the server's to decide from its
+// own route table, so nothing here says which tool writes: this is what the TypeScript knows and
+// the Go cannot read.
 export function renderDispatchTools() {
-  const tools = dispatchToolSpecs
+  const specs: readonly DispatchToolSpec[] = [...dispatchToolSpecs, ...personToolSpecs];
+  const tools = specs
     .map((spec) => {
       const fields = recordedFields(spec.arguments(recordingApi) as Record<string, RecordedNode>)
         .map(([name, field]) => `${renderToolField(name, field)},`)
@@ -107,6 +133,12 @@ export function renderDispatchTools() {
         `Arguments: []ToolField{\n${fields}\n}`,
         `Example: json.RawMessage(${goString(JSON.stringify(spec.example))})`,
       ];
+      const routes: readonly DispatchToolRoute[] = spec.routes ?? [];
+      if (routes.length > 0) {
+        parts.push(
+          `Routes: []ToolRoute{\n${routes.map((route) => `${renderToolRoute(route)},`).join("\n")}\n}`
+        );
+      }
       return `{\n${parts.join(",\n")},\n},`;
     })
     .join("\n");
@@ -147,16 +179,33 @@ type ToolField struct {
 }
 
 // DispatchTool is one tool of the \`dispatch\` CLI as its spec states it: the name it is called
-// by, the whole description a model chooses it on, the arguments it takes and a call those
-// arguments accept.
+// by, the whole description a model chooses it on, the arguments it takes, a call those
+// arguments accept, and, for a tool that calls one route of the table as it stands, that route's
+// binding (Routes), empty for a tool whose command is written by hand.
 type DispatchTool struct {
 	Name        string          \`json:"name"\`
 	Description string          \`json:"description"\`
 	Arguments   []ToolField     \`json:"arguments"\`
 	Example     json.RawMessage \`json:"example"\`
+	Routes      []ToolRoute     \`json:"routes,omitempty"\`
 }
 
-// DispatchTools is every dispatch tool, in the order dispatch-tools.ts states them.
+// ToolRoute is one route of the table a tool calls, as dispatch-tools.ts binds it: the method,
+// the path pattern, the argument that fills each placeholder of the pattern (Path, by
+// placeholder), the arguments sent as query parameters under their own names, and the arguments
+// sent as the members of a JSON body under their own names. Every method but GET sends a JSON
+// body. A tool's routes are tried in order, and a call takes the first whose placeholders its
+// arguments all fill.
+type ToolRoute struct {
+	Method  string            \`json:"method"\`
+	Pattern string            \`json:"pattern"\`
+	Path    map[string]string \`json:"path,omitempty"\`
+	Query   []string          \`json:"query,omitempty"\`
+	Body    []string          \`json:"body,omitempty"\`
+}
+
+// DispatchTools is every dispatch tool, in the order dispatch-tools.ts states them, then the
+// person tools the command bar alone calls (personToolSpecs), which no dispatch command offers.
 var DispatchTools = []DispatchTool{
 ${tools}
 }

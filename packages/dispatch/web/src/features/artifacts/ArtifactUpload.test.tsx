@@ -51,6 +51,7 @@ test("confirming the staged file uploads it with the typed summary", async () =>
       number: 1,
       summary: "First draft",
     },
+    previous_version: null,
   });
   // The issue holds no notes.md yet, so this upload has no base to name.
   const ownerArtifactText = spyOn(api, "ownerArtifactText").mockRejectedValue(

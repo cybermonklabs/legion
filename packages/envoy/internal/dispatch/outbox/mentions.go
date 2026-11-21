@@ -139,9 +139,9 @@ type mentionDeliveries struct {
 	// lowest session, should its attempts name several), which a fallback copy keyed by that
 	// target carries (publishFallbackCopies).
 	targetFallbackKeys map[string]string
-	// held holds each destination of the comment a fallback row owns (comment_fallback_copies):
-	// the fallback pass publishes or settles it, and the event's own publish skips it
-	// (destinations.addDestination).
+	// held holds each destination of the comment a fallback row owns (comment_fallback_copies),
+	// or that this read left to a row the batch writes (destinations.holds): the fallback pass
+	// publishes or settles it, and the event's own publish skips it (destinations.addDestination).
 	held map[string]struct{}
 	// unpinned is what the attempts of the comment that name no session yet and whose send is
 	// still coming decide (unpinnedRoleMentions): the roles they target and the state each of
@@ -918,24 +918,25 @@ func (d *destinations) workingSessionHold(sessionID string) copyHold {
 // to be decided again when it is next read (settleEvent blocks it for mentionPendingDelay). A
 // mention past the lease that wait is bounded by (model.MentionResumedSQL: the delivery sweep
 // resends it, a sender holds it queued still, or a later attempt overtook it) is that send's: the
-// copy is skipped and held as a fallback row (mentionComment.holdFallbackCopy), which the fallback
-// pass settles with nothing sent once that send lands and publishes under the mention's own key
-// should it fail (publishFallbackCopies); an insert that fails leaves the
-// copy out of the list and backs the event off, so it is read again. An attempt past that lease
-// that names no session yet decides the copies of the session its role resolves to the same way,
-// which is the one reading that names them at all (unpinnedRoleMentions): the row it holds is
-// keyed by that session, and the pass reads the attempts again rather than the keys this batch
-// read, which name no session while the sender has pinned none. A destination this event
-// already reached gave the session a copy, so it needs no row. A mention whose send was abandoned
-// is settled by the outbox first (mentionComment.settleAbandoned), and the copy follows what key's
-// attempts are once that settle commits: one a sender claimed before the settle took its row is
-// pending, so the copy is held back and the sender owns the outcome; one the settle took is
-// failed, and the copy is the outbox's. Only one of the two acts on an attempt, so the session
-// gets the mention or the copy, not both. A settle that fails holds the copy back and backs the
-// event off, so it is read again. Any other key - every attempt failed, or none was recorded - is
-// published to as if it had not been mentioned, except that a session copy for a failed attempt
-// carries that attempt's dedupe key (destinations.addSession): a send that landed before its
-// attempt failed has given the host the comment already, and the host drops the copy.
+// copy is skipped and named among the event's holds (destinations.holds), whose fallback row the
+// batch writes before it sends the event's list (holdFallbackCopies), and which the fallback pass
+// settles with nothing sent once that send lands and publishes under the mention's own key should
+// it fail (publishFallbackCopies); an insert that fails leaves the copy out of the list and backs
+// the event off, so it is read again. An attempt past that lease that names no session yet
+// decides the copies of the session its role resolves to the same way, which is the one reading
+// that names them at all (unpinnedRoleMentions): the row it holds is keyed by that session, and
+// the pass reads the attempts again rather than the keys this batch read, which name no session
+// while the sender has pinned none. A destination this event already reached gave the session a
+// copy, so it needs no row. A mention whose send was abandoned is settled by the outbox first
+// (mentionComment.settleAbandoned), and the copy follows what key's attempts are once that settle
+// commits: one a sender claimed before the settle took its row is pending, so the copy is held
+// back and the sender owns the outcome; one the settle took is failed, and the copy is the
+// outbox's. Only one of the two acts on an attempt, so the session gets the mention or the copy,
+// not both. A settle that fails holds the copy back and backs the event off, so it is read again.
+// Any other key - every attempt failed, or none was recorded - is published to as if it had not
+// been mentioned, except that a session copy for a failed attempt carries that attempt's dedupe
+// key (destinations.addSession): a send that landed before its attempt failed has given the host
+// the comment already, and the host drops the copy.
 //
 // unnamed is asked by the copies of a session the owner's own work names and by no other
 // (destinations.workingSessionHold): a live attempt whose role this read could name no holder
@@ -999,10 +1000,7 @@ func (d *destinations) leftTo(holds mentionHolds, key, destination string, unnam
 		if _, ok := d.delivered[destination]; ok {
 			return copyLeftToTheMention
 		}
-		if err := d.comment.holdFallbackCopy(holds.outcomes.kind, key, destination); err != nil {
-			d.failed = append(d.failed, err)
-			return copyLeftToTheMention
-		}
+		d.holds = append(d.holds, fallbackHold{comment: d.comment, kind: holds.outcomes.kind, key: key, destination: destination})
 		d.mentions.held[destination] = struct{}{}
 		return copyLeftToTheMention
 	}
@@ -1097,6 +1095,32 @@ func payloadHasMentions(payload any) bool {
 	values, _ := payload.(map[string]any)
 	mentions, _ := values["mentions"].([]any)
 	return len(mentions) > 0
+}
+
+// fallbackHold is a copy of a new comment that destinations.leftTo left to a fallback row: the
+// comment, the copy's destination, and the key of kind whose attempts decided it. Listing it writes
+// nothing; the batch writes its row (holdFallbackCopies).
+type fallbackHold struct {
+	comment     mentionComment
+	kind        mentionKind
+	key         string
+	destination string
+}
+
+// holdFallbackCopies writes the fallback row of each of holds (mentionComment.holdFallbackCopy)
+// and answers err, the error the event's destinations were listed with, joined with each insert
+// that failed. The batch runs it once the list is read and before it sends any of it, so each row
+// commits before the event can be marked published. A copy whose insert failed is left out of the
+// list all the same, and its error backs the event off once the destinations the list names are
+// sent, so the event is read again and the copy held again (destinations.leftTo).
+func holdFallbackCopies(holds []fallbackHold, err error) error {
+	var failed []error
+	for _, hold := range holds {
+		if holdErr := hold.comment.holdFallbackCopy(hold.kind, hold.key, hold.destination); holdErr != nil {
+			failed = append(failed, holdErr)
+		}
+	}
+	return joinFailed(err, failed)
 }
 
 // holdFallbackCopy records the fallback row of the copy of the comment at destination, decided by

@@ -91,6 +91,11 @@ type artifactUploadInput struct {
 	// check of the token against the document, so a blank write is never told to name a token
 	// for a write the server would refuse whatever token it named.
 	blank bool
+	// expectSHA256 and expectNew are the upload's condition, as the command bar's in-process
+	// caller carries it on the request's context (goingCondition.ExpectSHA256, ExpectNew): the
+	// content the document must hold, "" for none, and whether the upload is a create alone.
+	expectSHA256 string
+	expectNew    bool
 }
 
 // artifactTarget is the owner an upload or a slug lookup names: an issue (IssueKey), a project
@@ -112,6 +117,18 @@ func (target artifactTarget) refPrefix() string {
 		return *target.IssueKey
 	}
 	return target.Project
+}
+
+// artifactOwnerText names the owner of target as a refusal names it: issue DEMO-1, project DEMO,
+// or session <id>.
+func artifactOwnerText(target artifactTarget) string {
+	switch {
+	case target.Session != "":
+		return "session " + target.Session
+	case target.IssueKey != nil:
+		return "issue " + *target.IssueKey
+	}
+	return "project " + target.Project
 }
 
 type jsonArtifactUpload struct {
@@ -206,9 +223,13 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 
 // artifactUploadResponse is the body POST /api/v1/issues/{key}/artifacts,
 // POST /api/v1/projects/{key}/artifacts and POST /api/v1/agents/{session_id}/artifacts answer.
+// PreviousVersion is the number of the newest version the upload wrote its next version over, as
+// its transaction found it under the owner's lock - 0 for a document that held none yet - and null
+// where the upload made the artifact.
 type artifactUploadResponse struct {
-	Artifact model.Artifact `json:"artifact"`
-	Version  model.Version  `json:"version"`
+	Artifact        model.Artifact `json:"artifact"`
+	PreviousVersion *int           `json:"previous_version"`
+	Version         model.Version  `json:"version"`
 }
 
 func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, target artifactTarget) {
@@ -233,6 +254,21 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	if !ok {
 		return
 	}
+	// The upload's condition, which the command bar's in-process caller carries on the request's
+	// context (going_conditions.go): a write back of a document's content expects that content,
+	// and every other upload of the bar is a create alone, unless it is a row of a plan whose read
+	// before found the document of its name (AgentListener.rowUpload).
+	condition := goingConditionOf(r)
+	input.expectSHA256, input.expectNew = strings.TrimSpace(condition.ExpectSHA256), condition.ExpectNew
+	if input.expectNew && input.expectSHA256 != "" {
+		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest,
+			"a create alone asks for a document the owner does not hold and an expected content for one it does: the condition names one of them")
+		return
+	}
+	if refusal := condition.writeBackRefusal(input.expectNew || input.expectSHA256 != "", "content it expects the document to hold"); refusal != nil {
+		s.writeHandlerError(w, refusal)
+		return
+	}
 	actor, ok := s.requireActor(w, r, input.supplied)
 	if !ok {
 		return
@@ -251,6 +287,17 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		return
 	}
 	kind, storedType := artifactKind(mediaType, input.contentType, input.content)
+	// An expected content is a document's markdown (docs.Service.ReplaceTextExpecting), which only
+	// the document branch below compares: a file holds none, so an upload of one carrying it would
+	// be written unconditioned. It is a condition this route does not decide for a file, refused as
+	// a write back carrying none is, before anything is written. The bar's undo writes a document
+	// back alone, and a file upload's one condition is a create alone (expectNew), which a file
+	// decides as a document does.
+	if kind != "doc" && input.expectSHA256 != "" {
+		s.writeHandlerError(w, errorf(http.StatusInternalServerError, codeGoingConditionMissing,
+			"this upload is a file, which holds no document content for the expected content to decide it by, so nothing was written"))
+		return
+	}
 	if kind == "doc" && target.Session != "" {
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, agentOwnsFilesOnly)
 		return
@@ -296,7 +343,8 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 }
 
 // jsonArtifactUpload reads an inline upload's JSON body. As decodeJSON does, it ignores a member
-// jsonArtifactUpload does not declare and logs it at debug with the route; it keeps its own size
+// jsonArtifactUpload does not declare and logs it at debug with the route, and refuses it by name
+// in a request the command bar sends in-process (judgeUndeclaredMembers); it keeps its own size
 // refusal for the artifact cap.
 func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (artifactUploadInput, bool) {
 	var body jsonArtifactUpload
@@ -319,7 +367,10 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		s.writeHandlerError(w, refusal)
 		return artifactUploadInput{}, false
 	}
-	logUndeclaredMembers(r, &body, read.Bytes())
+	if refusal := judgeUndeclaredMembers(r, &body, read.Bytes()); refusal != nil {
+		s.writeHandlerError(w, refusal)
+		return artifactUploadInput{}, false
+	}
 	// `primary` stays declared, though no upload may set it, so that it is refused by name rather
 	// than ignored: an upload never makes a document the issue's primary one.
 	if body.Primary != nil {
@@ -420,6 +471,14 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "primary is fixed at issue creation")
 		return artifactUploadInput{}, false
 	}
+	// A field or part the upload does not read is ignored, as decodeJSON ignores a member, and
+	// refused by name in a request the command bar sends in-process, whose sender is this build.
+	if goingServedInProcess(r.Context()) {
+		if refusal := refuseUndeclared(undeclaredUploadFields(r.MultipartForm)); refusal != nil {
+			s.writeHandlerError(w, refusal)
+			return artifactUploadInput{}, false
+		}
+	}
 	// A multipart upload names the token of the version it replaces in the form field
 	// `precondition`, holding the same JSON object the JSON body's `precondition` holds.
 	precondition, read := multipartJSONField[model.EditPrecondition](s, w, r, "precondition")
@@ -460,6 +519,27 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		summary:      strings.TrimSpace(r.FormValue("summary")),
 		supplied:     supplied,
 	}, true
+}
+
+// undeclaredUploadFields is the fields and parts of a multipart upload that the upload neither
+// reads nor refuses by name, sorted: every name but those openAPIMultipartSchema declares and
+// `primary` and `content`, each of which the upload refuses by name.
+func undeclaredUploadFields(form *multipart.Form) []string {
+	declared, _ := openAPIMultipartSchema["properties"].(map[string]any)
+	var undeclared []string
+	note := func(name string) {
+		if _, reads := declared[name]; !reads && name != "primary" && name != "content" && !slices.Contains(undeclared, name) {
+			undeclared = append(undeclared, name)
+		}
+	}
+	for name := range form.Value {
+		note(name)
+	}
+	for name := range form.File {
+		note(name)
+	}
+	slices.Sort(undeclared)
+	return undeclared
 }
 
 // uploadBaseAdvice tells the reader of an upload refused for a token the document has moved past
@@ -684,6 +764,11 @@ func (s *server) storeArtifact(
 	var created bool
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if input.expectSHA256 != "" {
+			s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_CHANGED",
+				"no document is named %q, so none holds the content the upload expected, and nothing was written", input.name))
+			return
+		}
 		created = true
 		if refusal := newArtifactNameRefusal(input.name); refusal != nil {
 			s.writeHandlerError(w, refusal)
@@ -713,6 +798,13 @@ func (s *server) storeArtifact(
 		}
 	} else if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	} else if input.expectNew {
+		// Decided after the owner's lock above, as the expected content is: an artifact of the
+		// name made by another writer before this upload took that lock is never written over.
+		s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_EXISTS",
+			"%s already holds %s (slug %s), and this upload makes a new document alone, so nothing was written",
+			artifactOwnerText(target), artifact.Name, artifact.Slug))
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
@@ -779,6 +871,10 @@ func (s *server) storeArtifact(
 				return
 			}
 			documentMarkdown, err = s.deps.Docs.SeedText(documentCtx, artifact.ID, string(input.content), actor)
+		} else if input.expectSHA256 != "" {
+			// The command bar's write back expects the markdown the document holds, which says
+			// which version it replaces as a token does; a token named beside it is checked too.
+			documentMarkdown, err = s.deps.Docs.ReplaceTextExpecting(documentCtx, artifact.ID, string(input.content), actor, input.precondition, input.expectSHA256)
 		} else {
 			// An upload over a document that already exists replaces every word of it, so it
 			// names the token of the version it is replacing, which the write checks on the tree
@@ -824,6 +920,12 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+	}
+	// The version this upload writes its next version over, as its own transaction numbered it:
+	// none where it made the artifact.
+	var previousVersion *int
+	if !created {
+		previousVersion = new(version.Number - 1)
 	}
 	var diff *string
 	if !created && kind == "doc" {
@@ -909,11 +1011,18 @@ func (s *server) storeArtifact(
 			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", *target.IssueKey, actor, adviceAsks{}, *issueStatus, "", false,
 		)
 	}
+	// What the upload answers it wrote and wrote over, handed to the command bar's landing of this
+	// request, which records it in this transaction (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusCreated, func() any {
+		return artifactUploadResponse{Artifact: artifact, Version: version, PreviousVersion: previousVersion}
+	})
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if kind == "doc" && !created && input.precondition == nil {
+	// The command bar's write back names the markdown it replaces (expectSHA256), which guards it
+	// as a token does, so it is no unguarded replacement.
+	if kind == "doc" && !created && input.precondition == nil && input.expectSHA256 == "" {
 		s.noteUnguardedReplacement(artifact)
 	}
 	if kind == "doc" {
@@ -932,7 +1041,7 @@ func (s *server) storeArtifact(
 		advice.SupersededApproval = superseded
 		advice.MovedApprovalRequest = moved
 	}
-	responsePayload := artifactUploadResponse{Artifact: artifact, Version: version}
+	responsePayload := artifactUploadResponse{Artifact: artifact, Version: version, PreviousVersion: previousVersion}
 	// An issue document whose bounded issue-advice read failed leaves advice nil, and the three
 	// document reports with nothing to ride on: they are about the document alone, so they go
 	// out on their own shape here rather than being dropped with the issue state that failed,
@@ -1374,10 +1483,15 @@ type editArtifactResponse struct {
 	// past undoing, so the edit reports it rather than refusing (LEGION-269). null means the
 	// check reached no verdict - the publish failed and the room is reloading, or the room
 	// holds a tree too deep to read - which is not the same statement as the empty list.
-	LostOps      []int          `json:"lost_ops"`
-	Token        string         `json:"token"`
-	UnchangedOps []int          `json:"unchanged_ops"`
-	Version      *model.Version `json:"version"`
+	LostOps []int `json:"lost_ops"`
+	// PreviousToken is the document's token as the edit found it, and Token as the edit left it,
+	// both read in the edit's own transaction (docs.EditOutcome): a caller that undoes the edit
+	// tells by them whether what it read of the document before and after the edit is what the
+	// edit replaced and what it left.
+	PreviousToken string         `json:"previous_token"`
+	Token         string         `json:"token"`
+	UnchangedOps  []int          `json:"unchanged_ops"`
+	Version       *model.Version `json:"version"`
 	// Written is the markdown the batch wrote, read back off the tree it wrote
 	// (docs.EditOutcome.Written): each of the document's own blocks the write added, changed or
 	// moved, in document order, and a line for each one it removed or emptied. It is empty for a
@@ -1506,6 +1620,11 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 			r.Context(), tx, routeEditDocument, *artifact.IssueKey, actor, adviceAsks{}, *status, "", len(edit.AddedAskBlocks) > 0,
 		)
 	}
+	// The tokens of the document the edit found and left, read in this transaction, handed to the
+	// command bar's landing of this request, which records them in it (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusOK, func() any {
+		return editArtifactResponse{Applied: edit.Applied, Changed: edit.Changed, Token: edit.Token, PreviousToken: edit.PreviousToken}
+	})
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1524,13 +1643,14 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		unchanged = []int{}
 	}
 	responsePayload := editArtifactResponse{
-		Applied:      edit.Applied,
-		Changed:      edit.Changed,
-		LostOps:      lostOps(ledger, artifact.ID),
-		Token:        edit.Token,
-		UnchangedOps: unchanged,
-		Version:      version,
-		Written:      edit.Written,
+		Applied:       edit.Applied,
+		Changed:       edit.Changed,
+		LostOps:       lostOps(ledger, artifact.ID),
+		Token:         edit.Token,
+		PreviousToken: edit.PreviousToken,
+		UnchangedOps:  unchanged,
+		Version:       version,
+		Written:       edit.Written,
 	}
 	// The ask blocks the edit added, read from the documents the batch was applied to: whether an
 	// operation's markdown makes a block depends on where it lands and on the parser's reading of

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -328,11 +330,20 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
 		)
 	}
+	// The ask as this route answers it, with the id of the event that opened it, which the write
+	// phase fills in: the record the command bar's landing of this request makes in this
+	// transaction (goingRecordAnswer) and the response below are this one value, built by this one
+	// function, the response's display trees aside.
+	answered := func(trees bool) shapedAsk {
+		opened := ask
+		opened.OpenedEventID = &event.ID
+		return newShapedAsk(opened, trees)
+	}
+	goingRecordAnswer(r.Context(), http.StatusCreated, func() any { return answered(false) })
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	ask.OpenedEventID = &event.ID
 	s.publish(r.Context(), appendedEvents(appended...)...)
 	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(nil, ask.Question, ask.Options)...)
 	// The related-item check. An ask on an issue searches that issue's project and, normally, rides its check's
@@ -355,7 +366,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		trees: trees,
 	})
 	trees.resolve()
-	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), advice, suggestions))
+	WriteJSON(w, http.StatusCreated, withSuggestions(answered(wantsDisplayTrees(r)), advice, suggestions))
 }
 
 // editAskInput is the body of PATCH /api/v1/asks/{id}.
@@ -365,6 +376,51 @@ type editAskInput struct {
 	Multiple *bool              `json:"multiple"`
 	Urgency  *string            `json:"urgency"`
 	Actor    *model.Actor       `json:"actor"`
+}
+
+// askExpectationRefusal is the refusal of an edit whose condition (goingCondition.Expect, on the
+// request's context of the command bar's in-process undo) names a part - question, options,
+// multiple, urgency - the ask, as the edit's transaction read it under the ask's lock, no longer
+// holds as an edit writes it (askFieldValue), nil where it holds every one: a write back undoing
+// another edit puts its words back only while the ask still holds what that edit left, decided
+// under the lock the edit itself takes.
+func askExpectationRefusal(ask model.Ask, expect map[string]json.RawMessage) error {
+	var changed []string
+	for _, field := range slices.Sorted(maps.Keys(expect)) {
+		if !slices.Contains(goingAskFields, field) {
+			return errorf(http.StatusBadRequest, "INVALID_ASK", "the condition names %q, which is no part of an ask an edit writes", field)
+		}
+		if now := goingJSONOrNull(askFieldValue(ask, field)); !goingSameJSON(now, expect[field]) {
+			changed = append(changed, fmt.Sprintf("%s holds %s", field, now))
+		}
+	}
+	if len(changed) > 0 {
+		return errorf(http.StatusConflict, "ASK_CHANGED", "the ask no longer holds what the edit expected: %s", strings.Join(changed, "; "))
+	}
+	return nil
+}
+
+// askEdited is what PATCH /api/v1/asks/{id} answers: the ask as the edit left it, and beside it
+// Previous, each part the edit names - question, options, multiple, urgency - as the ask held it
+// when the edit took its lock, spelled as an edit writes it (askFieldValue). A caller that undoes
+// the edit reads it here: what it reads of the ask before or after the edit may have moved on
+// either side of the edit's own transaction.
+type askEdited struct {
+	shapedAsk
+	Previous map[string]any `json:"previous"`
+}
+
+// askPartsNamed is each part of an ask the edit names, as goingAskFields names them.
+func askPartsNamed(input editAskInput) []string {
+	named := map[string]bool{"question": input.Question != nil, "options": input.Options != nil,
+		"multiple": input.Multiple != nil, "urgency": input.Urgency != nil}
+	parts := make([]string, 0, len(named))
+	for _, part := range goingAskFields {
+		if named[part] {
+			parts = append(parts, part)
+		}
+	}
+	return parts
 }
 
 func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
@@ -378,6 +434,12 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Question == nil && input.Options == nil && input.Multiple == nil && input.Urgency == nil {
 		writeError(w, "INVALID_ASK", http.StatusBadRequest, "ask edit requires at least one field")
+		return
+	}
+	// The command bar's undo conditions every part its write back writes (going_conditions.go).
+	condition := goingConditionOf(r)
+	if refusal := condition.writeBackRefusal(condition.expects(askPartsNamed(input)), "expected value for every part it writes"); refusal != nil {
+		s.writeHandlerError(w, refusal)
 		return
 	}
 	// A block ask's text is written into its document, where text reaches the parser with line
@@ -491,7 +553,15 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		actor = *asThePerson
 	}
 
+	if refusal := askExpectationRefusal(ask, condition.Expect); refusal != nil {
+		s.writeHandlerError(w, refusal)
+		return
+	}
 	previous := model.NewAskEditPrevious(ask)
+	found := make(map[string]any, 4)
+	for _, part := range askPartsNamed(input) {
+		found[part] = askFieldValue(ask, part)
+	}
 	if input.Question != nil {
 		ask.Question = *input.Question
 	}
@@ -590,6 +660,9 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// What the edit answers it found and left, handed to the command bar's landing of this
+	// request, which records it in this transaction (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusOK, func() any { return askEdited{shapedAsk: newShapedAsk(ask, false), Previous: found} })
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -600,7 +673,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// previous wording, which no other write would ever store.
 	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(
 		texttrees.AskWrittenTexts(nil, ask.Question, ask.Options), previous.Question, previous.Options)...)
-	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+	WriteJSON(w, http.StatusOK, askEdited{shapedAsk: newShapedAsk(ask, wantsDisplayTrees(r)), Previous: found})
 }
 
 // blockArtifactOf is the document an indexed ask's block lives in. Every write that touches the

@@ -72,7 +72,7 @@ export const coverage: readonly CoverageEntry[] = [
     cells("docked composer · issue left, then back"),
     cells("phone thread · issue left, then back")
   ),
-  ...answers('IssuePage | IssuePage | conditional | !(useIssuePageChoice()[0] === "outline") ? …', {
+  ...answers('IssuePage | IssuePage | conditional | !(choice === "outline") ? …', {
     reason: REASONS[2],
   }),
   ...answers(

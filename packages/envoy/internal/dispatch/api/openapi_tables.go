@@ -237,8 +237,9 @@ var (
 
 // openAPIMultipartSchema is the multipart/form-data body the three upload routes take beside
 // their JSON one: the fields multipartArtifactUpload reads (artifacts.go, around the
-// content-type switch). `primary` and `content` are refused in a multipart body, so neither is
-// here; the file is the one part an upload cannot leave out.
+// content-type switch), which are also the fields a request the command bar sends in-process may
+// name (undeclaredUploadFields). `primary` and `content` are refused in a multipart body, so
+// neither is here; the file is the one part an upload cannot leave out.
 var openAPIMultipartSchema = map[string]any{
 	"type": "object",
 	"properties": map[string]any{

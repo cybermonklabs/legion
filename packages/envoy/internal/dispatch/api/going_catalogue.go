@@ -1,36 +1,43 @@
 package api
 
-// going_catalogue.go holds the catalogue of operations an agent may propose on Dispatch's
-// graph, and serves it at GET /api/v1/going/catalogue.
+// going_catalogue.go holds the catalogue of the dispatch tools that write, which GoingCaller runs
+// as its caller, and serves at GET /api/v1/going/catalogue the actions an agent may propose on
+// Dispatch's graph.
 //
-// The catalogue is the dispatch tools that write, all but one: the specs in
-// packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
-// each carried whole through contracts.DispatchTools — its own curated description, which is
-// what a model chooses on, and its own argument schema. Twenty-one of the thirty-seven tools
-// write, and the catalogue holds twenty of them, which is under the count where a model's choice
-// measurably falls apart, so the list is read whole: nothing searches it, and no second schema
-// is authored per route. The one it leaves out is dispatch_review, on purpose: a review records
-// an approval or a changes request in a person's name, and the loop that proposes operations on
-// Dispatch's graph must never propose one, so goingToolRoutes names no row for it.
+// The catalogue holds every write tool of goingWriteTools (going_tools.go), each carried whole
+// through contracts.DispatchTools from its spec in packages/contracts/src/dispatch-tools.ts: its
+// own curated description, which is what a model chooses on, and its own argument schema. The
+// actions it serves and the answer run's decision offers (Actions) are the twenty tools the
+// table marks Proposed, which is under the count where a model's choice measurably falls apart,
+// so that list is read whole: nothing searches it, and no second schema is authored per route.
+// dispatch_review is no action of them, on purpose: a review records an approval or a changes
+// request in a person's name, and the decision that proposes operations on Dispatch's graph must
+// never propose one.
 //
-// Which tools write is not a field a tool spec carries. goingToolRoutes names the rows of the
+// Which tools write is not a field a tool spec carries. goingWriteTools names the rows of the
 // server's own table each tool writes, and buildGoingCatalogue holds every one of them to the
 // table it mounts: a row that is no row of that table, one the table does not class as a write
 // (mutatingRoutes, the set TestEveryMutatingRouteIsClassed reads), a placeholder nothing fills,
-// or a relation in neither edge family refuses to mount (register). The other direction is a
-// report rather than a refusal, since a write no tool in the catalogue performs is not an error:
-// most are work still to do, and the two review routes, the document header's and the one
-// dispatch_review performs, are kept out on purpose. TestTheMutatingRoutesNoToolSpecNames names
-// every one of them.
+// or a relation in neither edge family refuses to mount (register). The other direction is
+// TestEveryPersonRouteHasATool's: every route a person may call is a row of a tool or a route
+// goingExcludedRoutes names.
+//
+// Every row also carries what its route takes of a call (going_translate.go) and how a write of
+// it is undone (GoingUndo, which going_undo.go runs), and the builder refuses a row missing
+// either, so no row is left that cannot run or whose undo is unstated.
 //
 // Nothing here decides anything: the catalogue says what an action is and what it takes, and
-// GoingCaller performs one an agent already chose. The loop that chooses is not in this package.
+// GoingCaller performs one already chosen. Which actions a run offers, and with what arguments,
+// is going_decision.go's; running one as its caller and undoing it is going_writes.go's and
+// going_undo.go's.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -52,216 +59,37 @@ const goingCataloguePath = "/api/v1/going/catalogue"
 // as the ask's follower, and a tool argument names no session at all.
 const goingCallerSession = "@session"
 
-// goingToolRoute is one row of the server's table a tool writes: how a call fills the row's
-// path, the argument whose value picks the row where a tool writes two that differ by what it
-// was asked to do, and the graph relations the write makes.
-type goingToolRoute struct {
-	Method  string
-	Pattern string
-	// Path binds each placeholder of Pattern to the tool argument that fills it, or to
-	// goingCallerSession. Every placeholder is bound and every binding is a placeholder, which
-	// buildGoingCatalogue holds the table to.
-	Path map[string]string
-	// WhenArgument and WhenValue pick this row among the tool's: a claim and its release are
-	// one tool and two rows, told apart by `release`, as a follow and its unfollow are by
-	// `action`. An empty WhenArgument is a row nothing guards.
-	WhenArgument string
-	WhenValue    any
-	// Relations are the graph relations this row's write makes, each a structural edge kind
-	// (model.GraphEdgeKinds) or a `block[]` attribute of a typed block (pmdoc.LinkKinds).
-	Relations []string
+// goingSendIssue stands, where a row's path binding names it, for the issue a send to an agent
+// session is posted on (GoingCaller.sendIssue, going_messages.go) rather than for an argument of
+// the tool: a send to a session that works on an issue goes on that issue's conversation. A
+// caller that names no such issue fills none, and the call takes the tool's next row.
+const goingSendIssue = "@issue"
+
+// GoingUndo is how a write of one row is undone, as the catalogue serves it: the kind, and every
+// row of the table the undo writes through, none for a write that is not undone.
+type GoingUndo struct {
+	Kind   goingUndoKind `json:"kind" enum:"reverse,write_back,close_created,not_undone"`
+	Routes []string      `json:"routes"`
 }
 
-// goingToolRoutes is the rows of the server's table each dispatch tool writes, by the tool's own
-// name, and so the tools the catalogue holds. A tool this map does not name is not in the
-// catalogue: the read tools; `dispatch_related`, whose POST row writes nothing (it runs the
-// related-item check and records none of it); and `dispatch_review`, which writes and is left
-// out on purpose. A review records an approval or a changes request in a person's name, and the
-// loop that proposes operations on Dispatch's graph must never propose one, so it gets no row
-// here.
-//
-// The rows of one tool are tried in order, so the row a call performs is the first whose guard
-// it satisfies and whose placeholders it fills: a document write names its issue, else its
-// project, else the document itself.
-var goingToolRoutes = map[string][]goingToolRoute{
-	"dispatch_issue": {{
-		Method: http.MethodPost, Pattern: "/api/v1/issues", Path: map[string]string{},
-		Relations: []string{"child_of", "blocked_by", "affects", "mentions"},
-	}},
-	"dispatch_issue_update": {{
-		Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
-		Path:      map[string]string{"key": "issue"},
-		Relations: []string{"child_of", "blocked_by", "affects"},
-	}},
-	"dispatch_claim": {
-		{
-			Method: http.MethodDelete, Pattern: "/api/v1/issues/{key}/claim",
-			Path: map[string]string{"key": "issue"}, WhenArgument: "release", WhenValue: true,
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/claim",
-			Path: map[string]string{"key": "issue"},
-		},
-	},
-	"dispatch_ask": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/asks",
-			Path:      map[string]string{"key": "issue"},
-			Relations: []string{"owned_by", "anchored_to", "followed_by", "mentions"},
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/asks",
-			Path:      map[string]string{"id": "artifact"},
-			Relations: []string{"owned_by", "anchored_to", "followed_by", "mentions"},
-		},
-	},
-	"dispatch_edit_ask": {{
-		Method: http.MethodPatch, Pattern: "/api/v1/asks/{id}",
-		Path: map[string]string{"id": "ask"}, Relations: []string{"mentions"},
-	}},
-	"dispatch_resolve_ask": {{
-		Method: http.MethodPost, Pattern: "/api/v1/asks/{id}/resolve",
-		Path: map[string]string{"id": "ask"},
-	}},
-	"dispatch_resolve_comment": {{
-		Method: http.MethodPost, Pattern: "/api/v1/comments/{id}/resolve",
-		Path: map[string]string{"id": "comment"},
-	}},
-	"dispatch_follow": {
-		{
-			Method: http.MethodDelete, Pattern: "/api/v1/asks/{id}/followers/{session_id}",
-			Path:         map[string]string{"id": "ask", "session_id": goingCallerSession},
-			WhenArgument: "action", WhenValue: "unfollow",
-			Relations: []string{"followed_by"},
-		},
-		{
-			Method: http.MethodPut, Pattern: "/api/v1/asks/{id}/followers/{session_id}",
-			Path:      map[string]string{"id": "ask", "session_id": goingCallerSession},
-			Relations: []string{"followed_by"},
-		},
-	},
-	"dispatch_comment": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/comments",
-			Path:      map[string]string{"key": "issue"},
-			Relations: []string{"owned_by", "anchored_to", "answers", "replies_to", "mentions"},
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/comments",
-			Path:      map[string]string{"id": "artifact"},
-			Relations: []string{"owned_by", "anchored_to", "answers", "replies_to", "mentions"},
-		},
-	},
-	"dispatch_suggest": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/comments",
-			Path:      map[string]string{"key": "issue"},
-			Relations: []string{"owned_by", "anchored_to", "mentions"},
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/comments",
-			Path:      map[string]string{"id": "artifact"},
-			Relations: []string{"owned_by", "anchored_to", "mentions"},
-		},
-	},
-	"dispatch_message": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/messages",
-			Path:      map[string]string{"key": "issue"},
-			Relations: []string{"replies_to", "mentions"},
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/messages/{id}/reply",
-			Path:      map[string]string{"id": "in_reply_to"},
-			Relations: []string{"replies_to", "mentions"},
-		},
-	},
-	// The issue-less send to one session. Its path names the session the tool was asked to
-	// reach, not the calling session, so the placeholder binds to the tool's own argument. The
-	// body is indexed without its references counted (createStoredMessage: a message with no
-	// issue takes refs.IndexItem alone), so this write makes no mention edge; a send naming
-	// in_reply_to makes the replies_to edge every message reply makes.
-	"dispatch_send_to_agent": {{
-		Method: http.MethodPost, Pattern: "/api/v1/agents/{session_id}/messages",
-		Path: map[string]string{"session_id": "session"}, Relations: []string{"replies_to"},
-	}},
-	"dispatch_doc_edit": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/artifacts/{slug}/edits",
-			Path:      map[string]string{"key": "issue", "slug": "artifact"},
-			Relations: []string{"mentions", "needs", "serves"},
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/projects/{key}/artifacts/{slug}/edits",
-			Path:      map[string]string{"key": "project", "slug": "artifact"},
-			Relations: []string{"mentions", "needs", "serves"},
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/edits",
-			Path:      map[string]string{"id": "artifact"},
-			Relations: []string{"mentions", "needs", "serves"},
-		},
-	},
-	"dispatch_request_approval": {{
-		Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/approval-requests",
-		Path: map[string]string{"id": "artifact"}, Relations: []string{"owned_by"},
-	}},
-	"dispatch_plan_approve": {{
-		Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/plan-reviews",
-		Path: map[string]string{"id": "artifact"},
-	}},
-	// A retraction and a record are two shapes of one tool: the retraction's row names the
-	// result in its path, so a call carrying `retract` fills it and a record, which carries
-	// none, falls through to the row below.
-	"dispatch_result": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/results/{id}/retract",
-			Path: map[string]string{"id": "retract"},
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/results",
-			Path: map[string]string{"key": "issue"},
-		},
-	},
-	"dispatch_artifact": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/artifacts",
-			Path:      map[string]string{"key": "issue"},
-			Relations: []string{"attached_to", "mentions"},
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/projects/{key}/artifacts",
-			Path:      map[string]string{"key": "project"},
-			Relations: []string{"mentions"},
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/agents/{session_id}/artifacts",
-			Path: map[string]string{"session_id": goingCallerSession},
-		},
-	},
-	"dispatch_project": {{
-		Method: http.MethodPost, Pattern: "/api/v1/projects", Path: map[string]string{},
-	}},
-	"dispatch_architecture_sync": {{
-		Method: http.MethodPost, Pattern: "/api/v1/projects/{key}/architecture-sources/sync",
-		Path: map[string]string{"key": "project"}, Relations: []string{"depends_on", "affects"},
-	}},
-	"dispatch_handoff_write": {{
-		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/handoffs/{phase}",
-		Path: map[string]string{"key": "issue", "phase": "phase"},
-	}},
-}
-
-// GoingRoute is one row of the server's table an action writes, as the catalogue serves it.
+// GoingRoute is one row of the server's table an action writes, as the catalogue serves it:
+// the row, and how a write of it is undone.
 type GoingRoute struct {
-	Method  string `json:"method"`
-	Pattern string `json:"pattern"`
+	Method  string    `json:"method"`
+	Pattern string    `json:"pattern"`
+	Undo    GoingUndo `json:"undo"`
 
-	// path and the guard are how a call reaches this row (goingToolRoute); they are the
-	// caller's business rather than the reader's, so neither is served.
+	// path and the guard are how a call reaches this row (goingToolRoute), translate what the
+	// row's route takes of the call, and auth and scopes are who the table lets call it
+	// (routeAuth, routeScopes), which decides whether a caller is offered it at all
+	// (GoingRoute.runnableBy); they are the caller's business rather than the reader's, so none is
+	// served.
 	path         map[string]string
 	whenArgument string
 	whenValue    any
+	translate    goingTranslator
+	auth         routeAuth
+	scopes       routeScopeSet
 }
 
 // GoingAction is one action an agent may propose: a dispatch tool that writes, with the
@@ -270,8 +98,8 @@ type GoingAction struct {
 	// Action is the catalogue's key: the tool's own name, such as "dispatch_issue".
 	Action string `json:"action"`
 	// Description is the tool spec's own description, whole and unchanged. It is what a model
-	// chooses on, and the confidence threshold and the model bake-off are tuned against these
-	// words, so nothing here shortens or rewrites them.
+	// chooses on, and the model bake-off measured the decision on these words, so nothing here
+	// shortens or rewrites them.
 	Description string `json:"description"`
 	// Routes are the rows of the server's table this action writes, in the order a call is
 	// matched against them.
@@ -286,16 +114,21 @@ type GoingAction struct {
 	Example json.RawMessage `json:"example"`
 }
 
-// GoingCatalogue is every action an agent may propose, read whole.
+// GoingCatalogue is every write tool GoingCaller runs, and the actions of them an agent may
+// propose.
 type GoingCatalogue struct {
 	actions []GoingAction
 	// byAction is the index into actions of each action's name.
 	byAction map[string]int
+	// proposed is the actions of the tools goingWriteTools marks Proposed.
+	proposed []GoingAction
 }
 
-// Actions is the catalogue in the order the tool specs state the tools.
+// Actions is the actions an agent may propose, in the order the tool specs state the tools: the
+// tools goingWriteTools marks Proposed, which GET /api/v1/going/catalogue serves and the answer
+// run's decision offers. Lookup holds every write tool.
 func (c GoingCatalogue) Actions() []GoingAction {
-	return c.actions
+	return c.proposed
 }
 
 // Lookup is the action that name holds, and whether the catalogue holds one at all.
@@ -356,25 +189,35 @@ func BuildGoingCatalogue() (GoingCatalogue, error) {
 
 // buildGoingCatalogue is one entry per dispatch tool that writes, and an error naming every row
 // the catalogue cannot hold: a row that is no row of this table, a row the table does not class
-// as a write, a placeholder no argument of the tool fills, a relation in neither edge family,
-// and a tool name no tool spec has. register refuses to mount a table it answers an error for,
-// so a catalogue entry can only ever name an action the server serves.
+// as a write, a placeholder no argument of the tool fills, a relation in neither edge family, a
+// row with no translation, a row whose undo is none of the four or writes through a row that is
+// no write of this table, a tool whose entry and spec disagree on its rows (goingToolRows), a
+// spec that binds its routes and that neither table names, and a tool name no tool spec has.
+// register refuses to mount a table it answers an error for, so a catalogue entry can only ever
+// name an action the server serves, and every row states how its write is undone.
 func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 	mutating := mutatingRoutes(routes)
-	served := make(map[string]bool, len(routes))
+	served := make(map[string]apiRoute, len(routes))
 	for _, route := range routes {
-		served[route.Method+" "+route.Pattern] = true
+		served[route.Method+" "+route.Pattern] = route
 	}
 	families := edgeFamilies()
 	catalogue := GoingCatalogue{
-		actions:  make([]GoingAction, 0, len(goingToolRoutes)),
-		byAction: make(map[string]int, len(goingToolRoutes)),
+		actions:  make([]GoingAction, 0, len(goingWriteTools)),
+		byAction: make(map[string]int, len(goingWriteTools)),
 	}
 	var refusals []string
 	for _, tool := range contracts.DispatchTools {
-		rows, writes := goingToolRoutes[tool.Name]
+		written, writes := goingWriteTools[tool.Name]
 		if !writes {
+			if _, reads := goingReadTools[tool.Name]; !reads && len(tool.Routes) > 0 {
+				refusals = append(refusals, tool.Name+": its spec binds its routes, and neither goingWriteTools nor goingReadTools names it")
+			}
 			continue
+		}
+		rows, agree := goingToolRows(tool, written.Routes, written.UndoRoutes)
+		if !agree {
+			refusals = append(refusals, tool.Name+": its rows are stated by its entry and its spec's routes both, or by neither")
 		}
 		takes := make(map[string]bool, len(tool.Arguments))
 		for _, argument := range tool.Arguments {
@@ -389,28 +232,14 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 		}
 		for _, row := range rows {
 			name := row.Method + " " + row.Pattern
+			mounted, isServed := served[name]
 			switch {
-			case !served[name]:
+			case !isServed:
 				refusals = append(refusals, fmt.Sprintf("%s: %s is no row of the route table", tool.Name, name))
 			case !mutating[name]:
 				refusals = append(refusals, fmt.Sprintf("%s: %s is no write of the route table", tool.Name, name))
 			}
-			for _, placeholder := range goingPlaceholders(row.Pattern) {
-				if _, bound := row.Path[placeholder]; !bound {
-					refusals = append(refusals, fmt.Sprintf("%s: %s binds nothing to {%s}", tool.Name, name, placeholder))
-				}
-			}
-			for placeholder, argument := range row.Path {
-				if !strings.Contains(row.Pattern, "{"+placeholder+"}") {
-					refusals = append(refusals, fmt.Sprintf("%s: %s has no placeholder {%s}", tool.Name, name, placeholder))
-				}
-				if argument != goingCallerSession && !takes[argument] {
-					refusals = append(refusals, fmt.Sprintf("%s: {%s} is bound to %q, which is no argument of the tool", tool.Name, placeholder, argument))
-				}
-			}
-			if row.WhenArgument != "" && !takes[row.WhenArgument] {
-				refusals = append(refusals, fmt.Sprintf("%s: %s is picked by %q, which is no argument of the tool", tool.Name, name, row.WhenArgument))
-			}
+			refusals = append(refusals, goingBindingProblems(tool.Name, row, takes)...)
 			for _, relation := range row.Relations {
 				if !slices.Contains(families, relation) {
 					refusals = append(refusals, fmt.Sprintf("%s: relation %q is neither a structural edge kind (%s) nor a block[] attribute (%s)",
@@ -420,20 +249,38 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 					entry.Relations = append(entry.Relations, relation)
 				}
 			}
+			if row.Translate == nil {
+				refusals = append(refusals, fmt.Sprintf("%s: %s takes no translation of the call's arguments", tool.Name, name))
+			}
+			undo := GoingUndo{Kind: written.Undo, Routes: row.UndoRoutes}
+			if undo.Routes == nil {
+				undo.Routes = []string{}
+			}
+			refusals = append(refusals, goingUndoProblems(tool.Name+": "+name, undo, mutating)...)
 			entry.Routes = append(entry.Routes, GoingRoute{
 				Method:       row.Method,
 				Pattern:      row.Pattern,
+				Undo:         undo,
 				path:         row.Path,
 				whenArgument: row.WhenArgument,
 				whenValue:    row.WhenValue,
+				translate:    row.Translate,
+				auth:         mounted.Auth,
+				scopes:       mounted.OAuthScopes,
 			})
 		}
 		catalogue.byAction[tool.Name] = len(catalogue.actions)
 		catalogue.actions = append(catalogue.actions, entry)
+		if written.Proposed {
+			catalogue.proposed = append(catalogue.proposed, entry)
+		}
 	}
-	for name := range goingToolRoutes {
+	for name := range goingWriteTools {
 		if _, held := catalogue.byAction[name]; !held {
 			refusals = append(refusals, name+": no dispatch tool of that name (packages/contracts/src/dispatch-tools.ts)")
+		}
+		if _, reads := goingReadTools[name]; reads {
+			refusals = append(refusals, name+": goingWriteTools and goingReadTools both name it")
 		}
 	}
 	if len(refusals) > 0 {
@@ -441,6 +288,57 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 		return GoingCatalogue{}, fmt.Errorf("%d catalogue entry problem(s):\n%s", len(refusals), strings.Join(refusals, "\n"))
 	}
 	return catalogue, nil
+}
+
+// goingBindingProblems is what is wrong with how one row of tool binds a call's arguments: a
+// placeholder its Path binds nothing to, a binding of no placeholder, a binding to an argument the
+// tool does not take (takes), and a guard on such an argument.
+func goingBindingProblems(tool string, row goingToolRoute, takes map[string]bool) []string {
+	name := row.Method + " " + row.Pattern
+	var problems []string
+	for _, placeholder := range goingPlaceholders(row.Pattern) {
+		if _, bound := row.Path[placeholder]; !bound {
+			problems = append(problems, fmt.Sprintf("%s: %s binds nothing to {%s}", tool, name, placeholder))
+		}
+	}
+	for placeholder, argument := range row.Path {
+		if !strings.Contains(row.Pattern, "{"+placeholder+"}") {
+			problems = append(problems, fmt.Sprintf("%s: %s has no placeholder {%s}", tool, name, placeholder))
+		}
+		if argument != goingCallerSession && argument != goingSendIssue && !takes[argument] {
+			problems = append(problems, fmt.Sprintf("%s: {%s} is bound to %q, which is no argument of the tool", tool, placeholder, argument))
+		}
+	}
+	if row.WhenArgument != "" && !takes[row.WhenArgument] {
+		problems = append(problems, fmt.Sprintf("%s: %s is picked by %q, which is no argument of the tool", tool, name, row.WhenArgument))
+	}
+	return problems
+}
+
+// goingUndoProblems is what is wrong with one row's undo: a kind that is none of the four, a
+// write that is not undone and names a route it would write, any other kind that names none,
+// and a route named that is no write of the table.
+func goingUndoProblems(row string, undo GoingUndo, mutating map[string]bool) []string {
+	var problems []string
+	switch undo.Kind {
+	case goingUndoNotUndone:
+		if len(undo.Routes) > 0 {
+			problems = append(problems, fmt.Sprintf("%s: its write is not undone, so its undo writes nothing, and names %s", row, strings.Join(undo.Routes, ", ")))
+		}
+	case goingUndoReverse, goingUndoWriteBack, goingUndoCloseCreated:
+		if len(undo.Routes) == 0 {
+			problems = append(problems, fmt.Sprintf("%s: its undo %s names no route it writes through", row, undo.Kind))
+		}
+	default:
+		problems = append(problems, fmt.Sprintf("%s: its undo %q is none of %s, %s, %s and %s", row, undo.Kind,
+			goingUndoReverse, goingUndoWriteBack, goingUndoCloseCreated, goingUndoNotUndone))
+	}
+	for _, route := range undo.Routes {
+		if !mutating[route] {
+			problems = append(problems, fmt.Sprintf("%s: its undo writes through %s, which is no write of the route table", row, route))
+		}
+	}
+	return problems
 }
 
 // goingCatalogueBody is what GET /api/v1/going/catalogue answers: every action, each carrying
@@ -468,17 +366,35 @@ type GoingDoer interface {
 
 // GoingCaller performs an action an agent already chose. It holds the catalogue to the proposal
 // before it builds anything: an action the catalogue does not hold, a call the action's schema
-// refuses, and a call no row of the action takes, each answer an error of their own with no
-// request made.
+// refuses, a call no row of the action takes, and a call the bar can never send as written
+// (goingUnsendable), each answer an error of their own with no request made. What the chosen
+// row's route takes is that row's translation's to say (goingToolRoute.Translate), and every read
+// the translation makes to say it - a document's id from its slug, a session's id from its title -
+// goes through the same Doer as the write.
 type GoingCaller struct {
 	Catalogue GoingCatalogue
-	// BaseURL is the Dispatch server the action is performed against, without a trailing slash.
+	// BaseURL is the Dispatch server the action is performed against, without a trailing slash;
+	// empty for the server's own route table called in-process (server.goingDoer).
 	BaseURL string
 	// Session is the agent session the caller acts as, which fills the rows addressing it: a
 	// follow records this session as the ask's follower. A caller that is no session leaves it
 	// empty, and the rows needing one are passed over.
 	Session string
 	Doer    GoingDoer
+
+	// resumeAfter says what of a call's first requests an earlier try of its call landed
+	// (goingLandedBefore), which a translation's own refusal words for what of the write already
+	// stands (goingCallInput.resumes); nil for none.
+	resumeAfter func(specs []goingSend) []goingWriteRequest
+	// knownSession is the listener's own lookup of one session, running or not
+	// (server.goingKnownSession), which a send to an agent resolves its recipient by
+	// (goingReader.recipient); nil for a call to another server's table, which reads the roster
+	// alone.
+	knownSession func(ctx context.Context, id string) (bool, error)
+	// sendIssue is the issue a send to an agent session is posted on, which fills the rows that
+	// bind goingSendIssue: the issue a row of a run's plan names (going_messages.go). Empty for a
+	// call that names none, which takes the tool's row that sends to the session itself.
+	sendIssue string
 }
 
 // GoingUnknownActionError is the refusal of an action the catalogue does not hold. It is the
@@ -492,8 +408,11 @@ func (e GoingUnknownActionError) Error() string {
 	return fmt.Sprintf("%q is no action of the catalogue: GET %s lists every action", e.Action, goingCataloguePath)
 }
 
-// GoingArgumentError is the refusal of a call the action's own schema does not accept, raised
-// before any request for the same reason.
+// GoingArgumentError is the refusal of a call the action's own schema does not accept, that no row
+// of the action takes, or that the bar can never send as written (goingUnsendable, a translation's
+// goingUntranslatable), raised before any request for the same reason. Reason is the refusal
+// alone, which the bar's panel shows as it stands; Error names the action before it, for a caller
+// that holds no line naming the action.
 type GoingArgumentError struct {
 	Action string
 	Reason string
@@ -503,62 +422,131 @@ func (e GoingArgumentError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Action, e.Reason)
 }
 
+// goingPrepared is one call made ready to send: the action, the row it performs, the arguments
+// it was given and what the row's translation made of them.
+type goingPrepared struct {
+	action    string
+	route     GoingRoute
+	arguments map[string]any
+	call      goingCall
+}
+
 // Do performs one catalogue action with the arguments given: the action's first row the call
-// fills (chooseGoingRoute) takes its path from the arguments its placeholders name, and every
-// other argument becomes the request's JSON body. Nothing is sent until the catalogue holds the
-// action and the tool's own schema accepts the call. An argument naming a document by slug is
-// the caller's to resolve to the id a row's path takes.
+// fills (chooseGoingRoute), with what that row's translation makes of the arguments. Nothing is
+// sent until the catalogue holds the action and the tool's own schema accepts the call; a write
+// that must land first (a reasoned close's reason) is sent first, and a refusal of it is the
+// answer, with the row's own write not sent.
 func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string]any) (*http.Response, error) {
-	entry, held := c.Catalogue.Lookup(action)
-	if !held {
-		return nil, GoingUnknownActionError{Action: action}
-	}
-	if reason := checkGoingArguments(entry.Request, arguments); reason != "" {
-		return nil, GoingArgumentError{Action: action, Reason: reason}
-	}
-	route, path, chosen := chooseGoingRoute(entry, arguments, c.Session)
-	if !chosen {
-		return nil, GoingArgumentError{Action: action, Reason: goingNoRouteReason(entry)}
-	}
-	inPath := make(map[string]bool, len(route.path))
-	for _, argument := range route.path {
-		inPath[argument] = true
-	}
-	body := map[string]any{}
-	for name, value := range arguments {
-		if inPath[name] {
-			continue
-		}
-		body[name] = value
-	}
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("encode %s: %w", action, err)
-	}
-	request, err := http.NewRequestWithContext(ctx, route.Method, c.BaseURL+path, bytes.NewReader(encoded))
+	prepared, err := c.prepare(ctx, action, arguments)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Content-Type", "application/json")
-	return c.Doer.Do(request)
+	response, _, err := c.send(ctx, prepared, nil)
+	return response, err
 }
 
-// chooseGoingRoute is the row a call performs and the path it performs it on: the action's first
-// row whose guard the call satisfies and every one of whose placeholders the call fills, so a
-// document write naming its issue takes the issue's row and the same write naming the document
-// alone takes the document's.
-func chooseGoingRoute(entry GoingAction, arguments map[string]any, session string) (GoingRoute, string, bool) {
-	for _, route := range entry.Routes {
-		if route.whenArgument != "" && arguments[route.whenArgument] != route.whenValue {
+// prepare holds a call to the catalogue and the action's schema, chooses its row, refuses a call
+// the bar can never send (goingUnsendable) and translates it, reading what the translation needs
+// through the Doer, and sends no write.
+func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[string]any) (goingPrepared, error) {
+	entry, held := c.Catalogue.Lookup(action)
+	if !held {
+		return goingPrepared{}, GoingUnknownActionError{Action: action}
+	}
+	if reason := checkGoingArguments(entry.Request, arguments); reason != "" {
+		return goingPrepared{}, GoingArgumentError{Action: action, Reason: reason}
+	}
+	choosing := arguments
+	if c.sendIssue != "" {
+		// The issue fills its binding alone: the tool's schema took no argument of the name.
+		choosing = maps.Clone(arguments)
+		choosing[goingSendIssue] = c.sendIssue
+	}
+	route, values, chosen := chooseGoingRoute(entry, choosing, c.Session)
+	if !chosen {
+		return goingPrepared{}, GoingArgumentError{Action: action, Reason: goingNoRouteReason(entry)}
+	}
+	if why := goingUnsendable(action, arguments); why != "" {
+		return goingPrepared{}, GoingArgumentError{Action: action, Reason: why}
+	}
+	call, err := route.translate(ctx, c.reader(), goingCallInput{arguments: arguments, path: values, session: c.Session, resumed: c.resumeAfter})
+	if err != nil {
+		var untranslatable goingUntranslatable
+		if errors.As(err, &untranslatable) {
+			return goingPrepared{}, GoingArgumentError{Action: action, Reason: string(untranslatable)}
+		}
+		return goingPrepared{}, err
+	}
+	return goingPrepared{action: action, route: route, arguments: arguments, call: call}, nil
+}
+
+// send sends a prepared call: each write that must land first, then the row's own, and answers
+// the answer of the request that ended it - the row's own, or one sent first that did not land -
+// beside how each request it sent went (goingWriteRequest). A request landed where it was
+// answered below 300. landed is the requests an earlier write of the same invocation already
+// landed that the call starts with: each the call still starts with, by method, path and body
+// (goingSameSend), is not sent again and stands in the record as it was, and the call resumes at
+// the first after them. A call every one of whose requests landed before sends nothing and answers
+// no response. A request that could not be built or sent ends the call with its error and the
+// requests before it.
+func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []goingWriteRequest) (*http.Response, []goingWriteRequest, error) {
+	requests, err := prepared.call.requests(prepared.route)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode %s: %w", prepared.action, err)
+	}
+	sent := make([]goingWriteRequest, 0, len(requests))
+	resuming := true
+	for index, spec := range requests {
+		resuming = resuming && index < len(landed) && goingSameSend(landed[index], spec)
+		if resuming {
+			sent = append(sent, landed[index])
 			continue
 		}
-		path, filled := route.Pattern, true
+		request, err := spec.build(ctx, c.BaseURL)
+		if err != nil {
+			return nil, sent, err
+		}
+		response, err := c.Doer.Do(request)
+		if err != nil {
+			return nil, sent, err
+		}
+		record := goingWriteRequest{Method: spec.method, Path: spec.path, BodySHA256: spec.digest(),
+			Outcome: goingWriteOutcome{OK: response.StatusCode < http.StatusMultipleChoices, Status: response.StatusCode}}
+		if index == len(requests)-1 || !record.Outcome.OK {
+			return response, append(sent, record), nil
+		}
+		answer, _ := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		record.Made = goingMadeID(answer)
+		sent = append(sent, record)
+	}
+	return nil, sent, nil
+}
+
+// reader is the reads a translation makes, through the caller's own Doer, and the listener's own
+// lookup of a send's recipient where the caller carries one.
+func (c GoingCaller) reader() goingReader {
+	return goingReader{doer: c.Doer, base: c.BaseURL, knownSession: c.knownSession}
+}
+
+// chooseGoingRoute is the row a call performs and the value of each placeholder of its path: the
+// action's first row whose guard the call satisfies and every one of whose placeholders the call
+// fills, with a text or a number (goingArgumentText: a document's version), so a document write
+// naming its issue takes the issue's row and the same write naming the document alone takes the
+// document's.
+func chooseGoingRoute(entry GoingAction, arguments map[string]any, session string) (GoingRoute, map[string]string, bool) {
+	for _, route := range entry.Routes {
+		if !route.takes(arguments) {
+			continue
+		}
+		values, filled := make(map[string]string, len(route.path)), true
 		for placeholder, argument := range route.path {
 			value := session
 			if argument != goingCallerSession {
 				named, held := arguments[argument]
-				text, isText := named.(string)
-				if !held || !isText {
+				_, isBoolean := named.(bool)
+				text, isText := goingArgumentText(named)
+				if !held || !isText || isBoolean {
 					filled = false
 					break
 				}
@@ -568,13 +556,28 @@ func chooseGoingRoute(entry GoingAction, arguments map[string]any, session strin
 				filled = false
 				break
 			}
-			path = strings.ReplaceAll(path, "{"+placeholder+"}", url.PathEscape(value))
+			values[placeholder] = value
 		}
 		if filled {
-			return route, path, true
+			return route, values, true
 		}
 	}
-	return GoingRoute{}, "", false
+	return GoingRoute{}, nil, false
+}
+
+// takes reports whether a call's arguments satisfy the row's guard: a row nothing guards takes
+// every call, and a guarded row only the calls naming its guard's value.
+func (route GoingRoute) takes(arguments map[string]any) bool {
+	return route.whenArgument == "" || arguments[route.whenArgument] == route.whenValue
+}
+
+// goingPath is pattern with each placeholder replaced by its value, escaped for a path.
+func goingPath(pattern string, values map[string]string) string {
+	path := pattern
+	for placeholder, value := range values {
+		path = strings.ReplaceAll(path, "{"+placeholder+"}", url.PathEscape(value))
+	}
+	return path
 }
 
 // goingNoRouteReason says what each of the action's rows wanted and the call did not name, so a
@@ -584,8 +587,11 @@ func goingNoRouteReason(entry GoingAction) string {
 	for _, route := range entry.Routes {
 		named := make([]string, 0, len(route.path))
 		for _, argument := range route.path {
-			if argument == goingCallerSession {
+			switch argument {
+			case goingCallerSession:
 				argument = "the calling session"
+			case goingSendIssue:
+				argument = "an issue the session works on"
 			}
 			named = append(named, argument)
 		}

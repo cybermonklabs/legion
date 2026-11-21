@@ -134,7 +134,12 @@ type AppContextOptions struct {
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
 	// cmd/dispatch builds it (newAnswerer). See api.DepsInput.
-	Answerer      api.Answerer
+	Answerer api.Answerer
+	// AnswerModel is the model the Answerer was configured with. See api.DepsInput.
+	AnswerModel string
+	// Decider is the measured decision model, nil for none; cmd/dispatch builds it
+	// (newDecider). See api.DepsInput.
+	Decider       *api.Decider
 	Events        *events.Broker
 	App           *auth.AppConfig
 	GitHubAPIBase string
@@ -175,6 +180,9 @@ type AppContextOptions struct {
 	// ListenerRosterUncached is for end-to-end test processes only (cmd/dispatch:
 	// DISPATCH_TEST_ROSTER_UNCACHED); see api.DepsInput.
 	ListenerRosterUncached bool
+	// AgentCallHook is for end-to-end test processes only (cmd/dispatch:
+	// DISPATCH_TEST_AGENT_CALL_HOOK); see api.Deps.AgentCallHook.
+	AgentCallHook api.AgentCallHook
 	// OutboxPublishes is that an outbox publishes this deployment's events (cmd/dispatch: every
 	// deployment but DISPATCH_NATS_DISABLED=1's); see api.Deps.OutboxPublishes.
 	OutboxPublishes bool
@@ -189,6 +197,12 @@ type AppContextOptions struct {
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// GoingRuns wakes the command-bar agent's waiting claims and renews; cmd/dispatch registers it
+	// on its listener hub for api.GoingRunsChannel. See api.Deps.GoingRuns.
+	GoingRuns *api.GoingRunSignal
+	// GoingRunEvents wakes the streams of a command-bar run's events; cmd/dispatch registers it on
+	// its listener hub for api.GoingRunEventsChannel. See api.Deps.GoingRunEvents.
+	GoingRunEvents *api.GoingRunEventSignal
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -231,6 +245,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Docs:                   opts.Docs,
 		Embedder:               opts.Embedder,
 		Answerer:               opts.Answerer,
+		AnswerModel:            opts.AnswerModel,
+		Decider:                opts.Decider,
 		Events:                 opts.Events,
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,
@@ -247,11 +263,14 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		HorizonStallAfter:      opts.HorizonStallAfter,
 		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
+		AgentCallHook:          opts.AgentCallHook,
 		OutboxPublishes:        opts.OutboxPublishes,
 		Metrics:                opts.Metrics,
 		AnswersLatency:         opts.AnswersLatency,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
+		GoingRuns:              opts.GoingRuns,
+		GoingRunEvents:         opts.GoingRunEvents,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
@@ -326,9 +345,9 @@ func New(ctx *AppContext) (http.Handler, api.Background) {
 	mux := http.NewServeMux()
 	r, background := mount(ctx, mux)
 	if ctx.devSignInHost == "" {
-		return r.enforceCookieOrigin(mux), background
+		return api.EnforceCookieOrigin(r.ctx.ServerURL, mux), background
 	}
-	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
+	return requireHost(ctx.devSignInHost, api.EnforceCookieOrigin(r.ctx.ServerURL, mux)), background
 }
 
 // mount builds New's router and mounts every route the server serves on mux, the API's table
@@ -927,53 +946,9 @@ func contentType(path string) string {
 
 // ───── helpers ──────────────────────────────────────────────────────────────
 
-// callbackURL uses Dispatch's configured canonical public origin whenever it
-// is available. A backend request's Host and TLS state are used only for
-// unconfigured local deployments; forwarded headers are deliberately ignored.
+// callbackURL is the sign-in callback on Dispatch's public origin (api.PublicOrigin).
 func callbackURL(serverURL string, req *http.Request) string {
-	return publicOrigin(serverURL, req) + "/auth/callback"
-}
-
-func publicOrigin(serverURL string, req *http.Request) string {
-	if parsed, err := url.Parse(serverURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
-		return fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
-	}
-	scheme := "http"
-	if req.TLS != nil {
-		scheme = "https"
-	}
-	return fmt.Sprintf("%s://%s", scheme, req.Host)
-}
-
-// enforceCookieOrigin refuses an unsafe request that presents a browser's credential, a session
-// cookie or an IAP assertion, unless it comes from Dispatch's own origin. A browser sends the
-// credential with a request another site's page makes: its cookie, or under IAP the IAP cookie,
-// for which IAP adds a valid assertion. A request with an Authorization header is an agent's.
-func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
-			next.ServeHTTP(w, req)
-			return
-		}
-		if origin := req.Header.Get("Origin"); origin != "" && origin == publicOrigin(r.ctx.ServerURL, req) {
-			next.ServeHTTP(w, req)
-			return
-		}
-		if req.Header.Get("Origin") == "" && req.Header.Get("Sec-Fetch-Site") == "same-origin" {
-			next.ServeHTTP(w, req)
-			return
-		}
-		writeError(w, http.StatusForbidden, "invalid request origin")
-	})
-}
-
-func unsafeMethod(method string) bool {
-	switch method {
-	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-		return true
-	default:
-		return false
-	}
+	return api.PublicOrigin(serverURL, req) + "/auth/callback"
 }
 
 // sanitizeNext restricts post-login redirect targets to local paths. An

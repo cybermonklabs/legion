@@ -3242,6 +3242,7 @@ test("a host move in the paste's own task cannot move the upload", async () => {
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue({
     artifact: { slug: "notes-md" } as never,
     version: {} as never,
+    previous_version: null,
   });
   const { rerender, view } = renderComposer();
 
@@ -3360,6 +3361,7 @@ function uploaded(slug: string, name: string, version: number) {
   return {
     artifact: { kind: "image", name, slug } as never,
     version: { number: version } as never,
+    previous_version: null,
   };
 }
 

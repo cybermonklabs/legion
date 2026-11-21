@@ -306,13 +306,49 @@ export const projectsQuery = () =>
     queryFn: () => api.listProjects(),
   });
 
-/** The two settings the bar reads before it offers a person's typed words as a new issue: the
- *  label that issue carries and the session it is routed to. One read for the session: the
- *  deployment changes it only by restarting. */
-export const newIssueSettingsQuery = () =>
+/** What the command bar can do on this Dispatch (`GET /api/v1/going/capability`): whether it
+ *  answers, whether it decides, and the session and label a new issue is filed under. It calls no
+ *  model, and changes only with the deployment or as the answering model first takes or refuses
+ *  a structured reply, so one read a minute is enough for every open of the bar. */
+export const goingCapabilityQuery = () =>
   queryOptions({
-    queryKey: ["new-issue-settings"],
-    queryFn: () => api.getNewIssueSettings(),
+    queryKey: ["going-capability"],
+    queryFn: () => api.goingCapability(),
+    staleTime: 60_000,
+  });
+
+/** The person's own command-bar setting (`GET /api/v1/me/going/settings`): its mode, which says
+ *  which changes of a run's plan wait for them. Held on Dispatch, so it follows the person to
+ *  every browser; the Settings page's Command bar section writes it. */
+export const goingSettingsQuery = () =>
+  queryOptions({
+    queryKey: ["going-settings"],
+    queryFn: () => api.myGoingSettings(),
+  });
+
+/** The latest plan of one of the bar's runs (`GET /api/v1/going/runs/{id}/plan`), which waits
+ *  for the person's approval before any change of it is made. */
+export const goingPlanQuery = (run: string) =>
+  queryOptions({
+    queryKey: ["going-plan", run],
+    queryFn: () => api.goingPlan(run),
+  });
+
+/** History (`GET /api/v1/me/going-runs`): the person's conversations of the last 7 days, each
+ *  with its runs, the newest first. A change of what waits for the person moves it
+ *  (`going_plan.updated`), and so does each run the bar starts (`useAsk`). */
+export const goingConversationsQuery = () =>
+  queryOptions({
+    queryKey: ["going-conversations"],
+    queryFn: () => api.myGoingRuns(),
+  });
+
+/** The person's runs whose plan waits for them (`GET /api/v1/me/going-plans`), which the Inbox
+ *  lists with Approve; read again on each `going_plan.updated` that names the person. */
+export const goingWaitingPlansQuery = () =>
+  queryOptions({
+    queryKey: ["going-waiting-plans"],
+    queryFn: () => api.myGoingPlans(),
   });
 
 /** Everyone who has signed in (`GET /api/v1/users`), sorted by email and kept for the session:

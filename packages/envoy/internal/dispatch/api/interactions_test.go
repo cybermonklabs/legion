@@ -57,10 +57,27 @@ func newInteractionServer(t *testing.T, makeDocs func(*store.Store) docs.API) (h
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
+	if makeDocs == nil {
+		shutDownMadeDocuments(t, deps)
+	}
 	mux := http.NewServeMux()
 	srv := register(mux, t.Context(), deps)
 	t.Cleanup(srv.waitBackground)
 	return mux, database, deps, srv
+}
+
+// shutDownMadeDocuments shuts down, after t, the document service NewDeps made for deps because its
+// input named none: NewDeps starts that service's compaction worker, and nothing else stops it.
+// Cleanups run last registered first, so a caller calls it before it registers its server's wait,
+// which must end before the service shuts down.
+func shutDownMadeDocuments(t testing.TB, deps Deps) {
+	t.Helper()
+	service := deps.Docs.(*docs.Service)
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
 }
 
 // replacementPrecondition is the token a replacement names: the one the document stands at now,

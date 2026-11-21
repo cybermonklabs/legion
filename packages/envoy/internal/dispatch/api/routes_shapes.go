@@ -171,6 +171,13 @@ type deliveryPipelineQuery struct {
 	At string `query:"at"`
 }
 
+// projectActivityQuery is GET /api/v1/projects/{key}/activity's query.
+type projectActivityQuery struct {
+	// Weeks is how many ISO weeks the read spans, this week included: 1 to 52, default 8. Any
+	// other value is 400 INVALID_QUERY.
+	Weeks int `query:"weeks"`
+}
+
 // issueListQuery is GET /api/v1/issues's query: the filters and the offset page.
 type issueListQuery struct {
 	// Pinned, `true`, lists the caller's pinned issues; it needs the person scope, the pins
@@ -331,6 +338,19 @@ type myAnswersQuery struct {
 	Offset int `query:"offset"`
 }
 
+// myGoingRunsQuery is GET /api/v1/me/going-runs's query: the filters it narrows the caller's
+// conversations by, and the offset page GET /api/v1/me/answers answers.
+type myGoingRunsQuery struct {
+	// Issue keeps the conversations with a run whose landed requests touched that issue key.
+	Issue string `query:"issue"`
+	// Q keeps the conversations with a run whose words hold that text, in any case.
+	Q string `query:"q"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
 // myRepliesQuery is GET /api/v1/me/replies's query: the kinds of row and the state it reads
 // them in, the page that state takes, and the one thread owner it may be narrowed to.
 type myRepliesQuery struct {
@@ -424,6 +444,13 @@ type nearCopyChecksQuery struct {
 	// After is the id of the row the page starts after: the last page's next_after.
 	After string `query:"after"`
 	// Limit is the page size, 1 to 1000, default 1000.
+	Limit int `query:"limit"`
+}
+
+// agentListQuery is GET /api/v1/agents's query.
+type agentListQuery struct {
+	// Limit is how many of the newest seen sessions the list answers, one or more; absent, it
+	// answers every session.
 	Limit int `query:"limit"`
 }
 
@@ -593,7 +620,10 @@ var routeShapes = map[string]routeShape{
 	// The architecture read answers architectureTreeRead, whose components carry the prose's
 	// tree, so the row names that read: the document describes the body the handler sends, and
 	// a client generated from it holds the field a reader draws.
-	"GET /api/v1/projects/{key}/architecture":        {Status: http.StatusOK, Response: architectureTreeRead{}},
+	"GET /api/v1/projects/{key}/architecture": {Status: http.StatusOK, Response: architectureTreeRead{}},
+	"GET /api/v1/projects/{key}/activity": {
+		Status: http.StatusOK, Response: projectActivity{}, Params: projectActivityQuery{},
+	},
 	"GET /api/v1/settings/project-default-assignees": {Status: http.StatusOK, Response: []projectDefaultAssignee{}},
 	"PUT /api/v1/projects/{key}/default-assignee": {
 		Status: http.StatusOK, Response: projectDefaultAssignee{}, Request: projectDefaultAssigneeInput{},
@@ -692,7 +722,7 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/issues/{key}":         {Status: http.StatusOK, Response: issueDetail{}},
 	"GET /api/v1/issues/{key}/summary": {Status: http.StatusOK, Response: issueSummary{}},
 	"PATCH /api/v1/issues/{key}": {
-		Status: http.StatusOK, Response: model.Issue{}, Request: updateIssueInput{}, Advice: writeAdvice{},
+		Status: http.StatusOK, Response: issueUpdated{}, Request: updateIssueInput{}, Advice: writeAdvice{},
 	},
 	"POST /api/v1/issues/{key}/claim": {
 		Status: http.StatusOK, Response: claimAnswer{}, Request: claimIssueInput{},
@@ -791,6 +821,8 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
+	"GET /api/v1/me/going-runs":        {Status: http.StatusOK, Response: goingConversationsPage{}, Params: myGoingRunsQuery{}},
+	"GET /api/v1/me/going-plans":       {Status: http.StatusOK, Response: goingWaitingPlansPage{}, Params: myAnswersQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {
@@ -819,9 +851,35 @@ var routeShapes = map[string]routeShape{
 		Opaque:             "the run's answer is a text/event-stream of hand-written id:/event:/data: frames, not one JSON body",
 		OpaqueContentTypes: []string{"text/event-stream"},
 	},
+	"POST /api/v1/going/requests/{id}/cancel": {Status: http.StatusOK, Response: goingCancellation{}},
+	"GET /api/v1/going/runs/{id}/plan":        {Status: http.StatusOK, Response: goingPlanAnswer{}},
+	"POST /api/v1/going/runs/{id}/plan/approve": {
+		Status: http.StatusOK, Response: goingPlanAnswer{}, Request: goingPlanApproveInput{},
+	},
+	"POST /api/v1/going/runs/{id}/plan/revise": {
+		Status: http.StatusOK, Response: goingPlanAnswer{}, Request: goingPlanReviseInput{},
+	},
+	"POST /api/v1/going/runs/{id}/plan/reject": {
+		Status: http.StatusOK, Response: goingPlanAnswer{}, Request: goingPlanRejectInput{},
+	},
+	"POST /api/v1/going/runs/{id}/undo": {Status: http.StatusOK, Response: goingUndoAnswer{}},
+	"POST /api/v1/going/runs": {
+		Status: http.StatusCreated, Response: goingRun{}, Request: goingRunInput{},
+	},
+	"GET /api/v1/going/runs/{id}": {Status: http.StatusOK, Response: goingRun{}},
+	"GET /api/v1/going/runs/{id}/events": {
+		Status:             http.StatusOK,
+		Opaque:             "the run's frames are a text/event-stream of hand-written id:/event:/data: frames, not one JSON body",
+		OpaqueContentTypes: []string{"text/event-stream"},
+	},
+	"POST /api/v1/going/runs/{id}/stop": {Status: http.StatusOK, Response: goingRun{}},
+	"GET /api/v1/me/going/settings":     {Status: http.StatusOK, Response: goingSettings{}},
+	"PUT /api/v1/me/going/settings": {
+		Status: http.StatusOK, Response: goingSettings{}, Request: goingSettingsInput{},
+	},
 	"GET /api/v1/going/capability": {Status: http.StatusOK, Response: goingCapability{}},
 	"GET /api/v1/going/catalogue":  {Status: http.StatusOK, Response: goingCatalogueBody{}},
-	"GET /api/v1/agents":           {Status: http.StatusOK, Response: []agentResponse{}},
+	"GET /api/v1/agents":           {Status: http.StatusOK, Response: []agentResponse{}, Params: agentListQuery{}},
 	"GET /api/v1/agents/{session_id}/answers": {
 		Status: http.StatusOK, Response: model.SessionAnswersResponse{}, Params: sessionAnswersQuery{},
 	},
@@ -857,7 +915,7 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/asks/{id}/followers":                 {Status: http.StatusOK, Response: askFollowersRead{}},
 	"PUT /api/v1/asks/{id}/followers/{session_id}":    {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"DELETE /api/v1/asks/{id}/followers/{session_id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
-	"PATCH /api/v1/asks/{id}":                         {Status: http.StatusOK, Response: shapedAsk{}, Request: editAskInput{}},
+	"PATCH /api/v1/asks/{id}":                         {Status: http.StatusOK, Response: askEdited{}, Request: editAskInput{}},
 	"PUT /api/v1/asks/{id}/asked-of":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: askAskedOfInput{}},
 	"POST /api/v1/asks/{id}/answer":                   {Status: http.StatusOK, Response: shapedAsk{}, Request: answerAskInput{}},
 	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: resolveAskInput{}},
@@ -868,8 +926,8 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/comments": {
 		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
 	},
-	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
-	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}},
+	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: resolvedComment{}, Request: actorInput{}, OptionalRequest: true},
+	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: resolvedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: commentRead{}},
 	"GET /api/v1/comments/{id}/blocks":   {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/comments/{id}/deliveries": {

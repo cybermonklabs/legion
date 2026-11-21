@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The real-process harness the memory tests (memory_test.go) drive Dispatch through: a test
@@ -811,16 +812,35 @@ func requireAnswered(t *testing.T, upload uploadResult) {
 	}
 }
 
-// loadOverWebsocket opens the document's room as a browser does - it connects and asks for the
-// whole document - and closes once the room has sent it.
+// loadOverWebsocket opens the document's room as a browser does (openRoom) and closes the
+// connection once the room has sent the document.
 func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
+	t.Helper()
+	connection := p.openRoom(t, artifactID)
+	if err := connection.Close(); err != nil {
+		t.Fatalf("close the connection: %v", err)
+	}
+	// The room's last peer leaving runs its settlement; give it the time a settlement of the
+	// heaviest admitted document takes here, so the peak counts it.
+	time.Sleep(3 * time.Second)
+}
+
+// openRoom opens the document's room as a browser does - it connects and asks for the whole
+// document - and returns the connection, with no read deadline left on it, once the room has
+// sent the document.
+func (p *memoryServer) openRoom(t *testing.T, artifactID string) *gws.Conn {
 	t.Helper()
 	address := "ws" + strings.TrimPrefix(p.base, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
 	connection, answer, err := gws.DefaultDialer.Dial(address, http.Header{"X-Dispatch-User": {"alice"}})
 	if err != nil {
 		t.Fatalf("connect to the document's room: %v (%#v)", err, answer)
 	}
-	defer connection.Close()
+	opened := false
+	defer func() {
+		if !opened {
+			_ = connection.Close()
+		}
+	}()
 	frame := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
 		encoder.WriteVarString(artifactID)
 		encoder.WriteVarUint(0)
@@ -847,12 +867,51 @@ func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 			break
 		}
 	}
-	if err := connection.Close(); err != nil {
-		t.Fatalf("close the connection: %v", err)
+	if err := connection.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatalf("clear the read deadline: %v", err)
 	}
-	// The room's last peer leaving runs its settlement; give it the time a settlement of the
-	// heaviest admitted document takes here, so the peak counts it.
-	time.Sleep(3 * time.Second)
+	opened = true
+	return connection
+}
+
+// profiler is the address of the server's profiler, for a server started with
+// DISPATCH_PPROF_PORT=0, which takes a port the kernel chooses and logs it (pprofListening). The
+// server logs it before it serves, but its output reaches this test through a pipe the test
+// copies on its own goroutine, so the line is waited for, until the server exits.
+func (p *memoryServer) profiler(t *testing.T) string {
+	t.Helper()
+	var listening []string
+	testwait.Holds(30*time.Second, 20*time.Millisecond, func() bool {
+		listening = pprofListening.FindStringSubmatch(p.output.String())
+		select {
+		case <-p.exited:
+			return true
+		default:
+			return listening != nil
+		}
+	})
+	if listening == nil {
+		t.Fatalf("the server logged no line naming its profiler's address:\n%s", p.outputTail())
+	}
+	return listening[1]
+}
+
+// roomFigures reads dispatch_rooms, the document rooms' figures, from /debug/vars on the server's
+// profiler, whose address is profiler (memoryServer.profiler).
+func roomFigures(t *testing.T, profiler string) docs.RoomFigures {
+	t.Helper()
+	response, err := http.Get("http://" + profiler + "/debug/vars")
+	if err != nil {
+		t.Fatalf("GET /debug/vars on the server's profiler: %v", err)
+	}
+	defer response.Body.Close()
+	var vars struct {
+		Rooms *docs.RoomFigures `json:"dispatch_rooms"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&vars); err != nil || response.StatusCode != http.StatusOK || vars.Rooms == nil {
+		t.Fatalf("GET /debug/vars on the server's profiler = %d (%v), want the process's expvar variables with dispatch_rooms", response.StatusCode, err)
+	}
+	return *vars.Rooms
 }
 
 // outputTail is the last 4,000 bytes the server has written, for a failure to show.

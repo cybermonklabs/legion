@@ -47,9 +47,16 @@
     },
     "/api/v1/agents": {
       "get": {
-        "description": "Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old.",
+        "description": "Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old, newest seen first. last_activity is the time of the session's newest event, and last_activity_issue and last_activity_type say where it is: that event's issue (absent for a document on no issue) and its type, both absent for a session with no event. ?limit= answers that many of the newest seen alone, reading the open asks and last activity of those alone (400 INVALID_QUERY for anything but a whole number of 1 or more); without it every session is listed.",
         "operationId": "getApiV1Agents",
         "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
           {
             "name": "session",
             "in": "query",
@@ -150,7 +157,7 @@
     },
     "/api/v1/agents/{session_id}/artifacts": {
       "post": {
-        "description": "Upload a file or image to an agent's conversation (multipart, as an issue upload, its kind read from its bytes): ref_key agent/\u003csession_id\u003e/\u003cslug\u003e, addressed dispatch://agent/\u003csession_id\u003e/artifact/\u003cslug\u003e. It holds files and images only: a markdown document (JSON content or a text/markdown file) is 400 ARTIFACT_INPUT, since a document belongs to an issue or a project. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE. A session_id that is empty or holds /, ?, #, whitespace, a control character or a character that ends a reference in text (\u003c\u003e\"'`[]|) is 400 INVALID_SESSION_ID on every agent artifact route.",
+        "description": "Upload a file or image to an agent's conversation (multipart, as an issue upload, its kind read from its bytes): ref_key agent/\u003csession_id\u003e/\u003cslug\u003e, addressed dispatch://agent/\u003csession_id\u003e/artifact/\u003cslug\u003e. It holds files and images only: a markdown document (JSON content or a text/markdown file) is 400 ARTIFACT_INPUT, since a document belongs to an issue or a project. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE. A session_id that is empty or holds /, ?, #, whitespace, a control character or a character that ends a reference in text (\u003c\u003e\"'`[]|) is 400 INVALID_SESSION_ID on every agent artifact route. The command bar's upload is a create alone, with force too unless the write's read before found the file of its name, as on an issue upload, by an in-process condition on the request's context (409 DOCUMENT_EXISTS). The answer's previous_version is, as an issue upload's, the version the upload wrote its next version over (null where it made the artifact).",
         "operationId": "postApiV1AgentsBySessionIdArtifacts",
         "parameters": [
           {
@@ -1121,7 +1128,7 @@
     },
     "/api/v1/artifacts/{id}/approval-requests": {
       "post": {
-        "description": "Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same.",
+        "description": "Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. The answer's opened is true only where this request opened the ask it answers, and false where it renewed an ask already open over one of its documents or the documents stood approved. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same.",
         "operationId": "postApiV1ArtifactsByIdApprovalRequests",
         "parameters": [
           {
@@ -1606,7 +1613,7 @@
     },
     "/api/v1/artifacts/{id}/edits": {
       "post": {
-        "description": "Apply quote-anchored edit ops with an optional optimistic-concurrency precondition.",
+        "description": "Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. The answer's token is the document's token as the edit left it and previous_token its token as the edit found it, both taken in the edit's own transaction, as the text read answers a token.",
         "operationId": "postApiV1ArtifactsByIdEdits",
         "parameters": [
           {
@@ -2513,7 +2520,7 @@
         "x-auth": "any"
       },
       "patch": {
-        "description": "Reword an open ask (its author, or a credential holding the person scope); a block ask's `:::ask` block is rewritten with it.",
+        "description": "Reword an open ask (its author, or a credential holding the person scope); a block ask's `:::ask` block is rewritten with it. The command bar's undo makes a write back conditional by an in-process condition on the request's context, never a body member: each part it writes (question, options, multiple, urgency) must hold, when the edit takes the ask's lock, the value the turn left, an option as {label, description?}, else 409 ASK_CHANGED naming what each other part holds now, nothing written; a write back carrying no such condition is 500 GOING_CONDITION_MISSING, nothing written. The answer is the ask as the edit left it, with previous beside it: each part the edit names as the ask held it when the edit took its lock, spelled as the edit writes it.",
         "operationId": "patchApiV1AsksById",
         "parameters": [
           {
@@ -2559,7 +2566,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AskWithTrees"
+                  "$ref": "#/components/schemas/AskEdited"
                 }
               }
             }
@@ -3545,7 +3552,7 @@
     },
     "/api/v1/comments/{id}/reopen": {
       "post": {
-        "description": "Reopen a resolved comment thread.",
+        "description": "Reopen a resolved comment thread, whatever resolution it holds. Its optional body {actor?} names the session the reopen acts for where the caller's credential proved none, as the person routes take it (403 ACTOR_SESSION_MISMATCH where the credential acts for another session); a body that does not decode is ignored, as an empty one is. The answer is the comment as the reopen left it, with previous beside it: the thread's resolution {resolved, resolved_by, resolved_at} when the reopen took the comment's lock. The command bar's undo of a resolve makes the reopen conditional by an in-process condition on the request's context, never a body member: the thread must still hold the resolution the turn left, as the comment's read answers resolved_at, when the reopen takes the comment's lock, else 409 COMMENT_CHANGED, nothing written (500 GOING_CONDITION_MISSING for such a write back carrying no condition).",
         "operationId": "postApiV1CommentsByIdReopen",
         "parameters": [
           {
@@ -3565,6 +3572,15 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorInput"
+              }
+            }
+          }
+        },
         "responses": {
           "default": {
             "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
@@ -3581,7 +3597,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CommentWithTrees"
+                  "$ref": "#/components/schemas/ResolvedComment"
                 }
               }
             }
@@ -3671,7 +3687,7 @@
     },
     "/api/v1/comments/{id}/resolve": {
       "post": {
-        "description": "Resolve a comment thread.",
+        "description": "Resolve a comment thread. The answer is the comment as the resolve left it, with previous beside it: the thread's resolution {resolved, resolved_by, resolved_at} when the resolve took the comment's lock. The command bar's undo of a reopen makes the resolve conditional by an in-process condition on the request's context, never a body member: the thread must be open when the resolve takes the comment's lock, else 409 COMMENT_CHANGED, nothing written (500 GOING_CONDITION_MISSING for such a write back carrying no condition).",
         "operationId": "postApiV1CommentsByIdResolve",
         "parameters": [
           {
@@ -3716,7 +3732,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CommentWithTrees"
+                  "$ref": "#/components/schemas/ResolvedComment"
                 }
               }
             }
@@ -4833,7 +4849,7 @@
     },
     "/api/v1/going/capability": {
       "get": {
-        "description": "Whether this deployment has a text model configured: {model_configured} and nothing else, so no endpoint, deployment name or credential can appear in it. Any caller Dispatch admits reads it, a pod's own agent token included.",
+        "description": "What the command bar can do on this deployment, each part apart: {answer: {configured, model, blocks}, decision: {configured, model, reachable}, session: {configured}, label: {configured}}. answer is the model that answers, named as configured, its blocks true once it accepted a structured reply, false once its service refused the structured output itself (a refusal for another cause, such as a content filter, is that run's alone), \"unknown\" before either; decision is the measured decision model, a name the committed record does not hold reading unset, and reachable whether its token file reads now; session and label are the two new-issue settings. It calls no model, and names no endpoint and no credential. Any caller Dispatch admits reads it, a pod's own agent token included.",
         "operationId": "getApiV1GoingCapability",
         "parameters": [
           {
@@ -4872,7 +4888,7 @@
     },
     "/api/v1/going/catalogue": {
       "get": {
-        "description": "The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-seven tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph: twenty of the dispatch tools that write, of the tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, each with how a write of it is undone (undo {kind, routes}: kind reverse, write_back, close_created or not_undone, routes the rows of this table the undo writes through), and the graph relations its verbs write. dispatch_review is not among them, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
         "operationId": "getApiV1GoingCatalogue",
         "parameters": [
           {
@@ -4911,7 +4927,7 @@
     },
     "/api/v1/going/requests": {
       "post": {
-        "description": "Ask a question of what Dispatch holds {words, project}: records the question and answers 201 with its run - {id, author, project, words, created_at, ends_at}, whose ends_at is the 30s the run has to answer in - and answers it behind that, each frame of the answer stored for GET /api/v1/going/requests/{id}/stream to carry. words is required (400 GOING_INPUT when it is blank) and at most 2000 characters (400 CAP_EXCEEDED); project is the project key the question is asked of, empty asking of every project (400 INVALID_PROJECT when it is not a key), and a credential scoped to one project asks only of that project. The run belongs to the credential that asked it, which the stream compares its reader with, so a credential that names nobody - the deployment's shared token - is refused 403 GOING_ASKER_NAMES_NOBODY and records nothing: no reader of that run could ever be served it. With no model configured the run is recorded all the same and its stream carries the error frame NO_MODEL_CONFIGURED, so a reader learns that from the stream, where every other failure of a run is reported, and not from a status of this route's own.",
+        "description": "Ask a question of what Dispatch holds {words, project, context}: records the question and answers 201 with its run - {id, author, project, words, created_at, ends_at}, whose ends_at is the 30s the run has to answer in - and answers it behind that, each frame of the answer stored for GET /api/v1/going/requests/{id}/stream to carry. words is required (400 GOING_INPUT when it is blank) and at most 2000 characters (400 CAP_EXCEEDED); project is the project key the question is asked of, empty asking of every project (400 INVALID_PROJECT when it is not a key), and a credential scoped to one project asks only of that project. context is the item the bar's context chip names where the words were typed, {path, project, issue, block}, each empty where the page names none (400 INVALID_PROJECT for a project that is not a key, 400 GOING_INPUT for an issue that is not a key or a path or block past its bound); with a measured decision model configured the run first decides which of the actions the caller's credential may run the words ask for, which names the line on top of the bar, and whether the words are about the page. The answer only reads: it changes nothing, and a change is made only by a run of the bar's agent through a plan its person approves. A caller presenting a broker-issued access token under DPoP is offered no action, since the bar acts with a person's own credential and a broker-issued token is none. The run belongs to the credential that asked it, which the stream compares its reader with, so a credential that names nobody - the deployment's shared token - is refused 403 GOING_ASKER_NAMES_NOBODY and records nothing: no reader of that run could ever be served it. This run is no run of the bar's agent: GET /api/v1/me/going-runs does not list it, and the record keeps it and its frames for 1h0m0s after it was asked. With no model configured the run is recorded all the same and its stream carries the error frame NO_MODEL_CONFIGURED, so a reader learns that from the stream, where every other failure of a run is reported, and not from a status of this route's own.",
         "operationId": "postApiV1GoingRequests",
         "parameters": [
           {
@@ -4959,9 +4975,57 @@
         "x-write-scope": "project-in-body"
       }
     },
+    "/api/v1/going/requests/{id}/cancel": {
+      "post": {
+        "description": "Cancel one run its author typed past or closed: answers 200 {id, cancelled_at}, cancelled_at the first cancel's moment for a run cancelled before. From then on the run stores no frame that does not end its stream, so its answer ends at its next delta on whichever pod is writing it, and at once on the pod this call lands on; the frames it stored before stay for its stream to carry. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, as the stream answers them.",
+        "operationId": "postApiV1GoingRequestsByIdCancel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingCancellation"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "session"
+      }
+    },
     "/api/v1/going/requests/{id}/stream": {
       "get": {
-        "description": "One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (text, item, cut, changed, none, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know.",
+        "description": "One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (decision, text, item, cut, changed, none, block, roster, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. With a measured decision model the first frame is decision, what it chose before the answer was written. After the answer's text frames come block, the one typed block the words asked for, filled from the read its spec names, and roster, {age_ms, source: live or stored}, when the run read the roster. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know.",
         "operationId": "getApiV1GoingRequestsByIdStream",
         "parameters": [
           {
@@ -5000,6 +5064,488 @@
           }
         },
         "x-auth": "any"
+      }
+    },
+    "/api/v1/going/runs": {
+      "post": {
+        "description": "Start a command-bar run {words, context?, kind?, level?, mode?, continues?}: the agent works it in the background, as the caller, until it ends, stops at a bound of its level, or waits for its person to answer a plan. words is required (400 GOING_INPUT when blank) and at most 2000 characters (400 CAP_EXCEEDED); context is the bar's chip {path, project, issue, block}; kind new_issue is the line File as a new issue: a Fast run that files the words as one new issue, its title, project, parent, priority and spec written by the agent from the words and the chip, with the label and the route the deployment names for a new issue, whose create this request approves, so it waits for nobody, and whose end names the issue and offers Undo, or, where nothing was filed, ends failed saying why (400 GOING_INPUT for any other kind, and for a level but fast); level is fast, standard (the default) or deep, which set its budgets of model calls, working time and output tokens; mode is ask or auto_review, the caller's own setting (GET /api/v1/me/going/settings) where it is absent; continues names the run it follows up, which must be the caller's own and listed in History (404 GOING_RUN_NOT_FOUND), the newest run of its conversation (409 GOING_RUN_NOT_LATEST) and ended (409 GOING_RUN_NOT_ENDED), and the new run joins its conversation. The run acts with this request's own credential, which must be a person's own sign-in or personal agent token: a broker-issued token, the deployment's shared token and a service-account token are refused 403 RUN_NEEDS_PERSON_CREDENTIAL, with nothing written. One person may have at most 20 runs queued (429 GOING_RUN_QUEUE_FULL). Answers 201 with the run, queued, as GET /api/v1/going/runs/{id} answers it.",
+        "operationId": "postApiV1GoingRuns",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoingRunInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingRun"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "session"
+      }
+    },
+    "/api/v1/going/runs/{id}": {
+      "get": {
+        "description": "The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens}, created_at, finished_at}. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 GOING_RUN_NOT_FOUND.",
+        "operationId": "getApiV1GoingRunsById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingRun"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
+    "/api/v1/going/runs/{id}/events": {
+      "get": {
+        "description": "The caller's own command-bar run's frames as server-sent events: each frame is `id:` its sequence, `event:` its name (the agent's frames, plan for each plan made or answered, and end, the run's end {state, reason, offers, issue?}, where issue is the key of the issue a new-issue run filed, whose offers then hold undo) and `data:` its JSON, written as the run stores it. Last-Event-ID resumes after that sequence. The stream ends once the run has ended and every frame it stored is written; a stream with no frame to write for 5m0s writes keepalive and ends, and the reader opens it again from its last sequence. One process serves at most 4 streams of one run and 20 of one person's runs, and refuses the next 429 GOING_RUN_READERS_FULL. 404 GOING_RUN_NOT_FOUND as GET /api/v1/going/runs/{id} answers it.",
+        "operationId": "getApiV1GoingRunsByIdEvents",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "the run's frames are a text/event-stream of hand-written id:/event:/data: frames, not one JSON body",
+            "content": {
+              "text/event-stream": {}
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
+    "/api/v1/going/runs/{id}/plan": {
+      "get": {
+        "description": "The caller's own command-bar run's latest plan: {run, plan, state (waiting, approved, running, done or rejected), summary, mode (ask or auto_review), rows: [{row, tool, class, arguments, needs, state (waiting, approved, unticked, running, done, failed or skipped), item, issue, fields, now, claim, waits, changed, result {status, code, message, delivery}}], version}. Each row is one change the run's model proposed: the write tool and the arguments it runs with, the rows before it that it needs, the item it changes, the fields it writes and their value now, the holder of its issue's claim, why it waits for the person in every mode (its class, delivers_to_session, claimed_by_session), and changed for a row that waits again because its item changed after the person saw it. result is null until the row's write answered, and its delivery is whether a row that sends a message or a broadcast was sent, queued (a delivery not yet confirmed included) or refused, null for any other row. version names the plan as this answer shows it, and moves whenever what it shows moves; an approval names it. While the run waits, each waiting row's item is read again as the caller, and the plan shows that read from then on. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's or that the record does not hold, 404 GOING_PLAN_NOT_FOUND for a run that proposed no plan.",
+        "operationId": "getApiV1GoingRunsByIdPlan",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingPlanAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
+    "/api/v1/going/runs/{id}/plan/approve": {
+      "post": {
+        "description": "Approve the caller's own run's waiting plan {plan, rows?: [{row, tick, values?}], version?}: each named row's tick, where false leaves the row out and every row that needs it, and values, arguments of the row's tool put over the arguments the plan shows; a waiting row the body does not name is approved as shown. version is the plan's version as the approving page read it: 409 GOING_PLAN_CHANGED, nothing written, where the plan's version moved since, as when another page read the plan again and its rows show another value. Each ticked row is read again as the caller with its values: one whose item changed after the plan showed - another value now, or another holder of its issue's claim - shows the new value and waits for approval again, changed; every other is approved over that read. The approval moves the run's grant to the caller's own sign-in or personal token (403 RUN_NEEDS_PERSON_CREDENTIAL for any other credential), is saved as a step of the run, and makes the run ready, whose agent runs the approved rows in order, each read again before its write: a row whose item changed since waits again, and one whose needed row failed is skipped. Answers the plan as GET answers it. 409 GOING_PLAN_NOT_CURRENT for a plan that is not the run's latest, 409 GOING_PLAN_NOT_WAITING for a run or a plan that does not wait, 400 GOING_PLAN_VALUES for a row that is no waiting row of the plan or values its tool's schema refuses, 400 GOING_PLAN_INPUT for a row with no tick.",
+        "operationId": "postApiV1GoingRunsByIdPlanApprove",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoingPlanApproveInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingPlanAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person",
+          "approve"
+        ],
+        "x-write-scope": "session"
+      }
+    },
+    "/api/v1/going/runs/{id}/plan/reject": {
+      "post": {
+        "description": "Reject the caller's own run's waiting plan {plan}: nothing of it runs, and the run ends done with PLAN_REJECTED: the person rejected the plan, and nothing of it ran. Answers the rejected plan. 409 GOING_PLAN_NOT_CURRENT for a plan that is not the run's latest, 409 GOING_PLAN_NOT_WAITING for a run or a plan that does not wait.",
+        "operationId": "postApiV1GoingRunsByIdPlanReject",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoingPlanRejectInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingPlanAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "session"
+      }
+    },
+    "/api/v1/going/runs/{id}/plan/revise": {
+      "post": {
+        "description": "Ask, in words, for another plan in place of the caller's own run's waiting plan {plan, words}: the plan is rejected and nothing of it runs, and the words, at most 4000 characters (400 GOING_PLAN_INPUT), are saved as a step of the run beside the plan's rows, which the run's model reads when it proposes the next plan. Like an approval it moves the run's grant to the caller's credential, and makes the run ready. Answers the rejected plan. 409 GOING_PLAN_NOT_CURRENT for a plan that is not the run's latest, 409 GOING_PLAN_NOT_WAITING for a run or a plan that does not wait.",
+        "operationId": "postApiV1GoingRunsByIdPlanRevise",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoingPlanReviseInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingPlanAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "session"
+      }
+    },
+    "/api/v1/going/runs/{id}/stop": {
+      "post": {
+        "description": "Stop the caller's own command-bar run at once: a run that is queued, works or waits is set stopped with the reason \"STOPPED: its person stopped it\", its end frame names it, the agent cancels its model call in flight, and what the run did stays. Answers the run as it then stands; a run that had ended is answered as it ended, unchanged. 404 GOING_RUN_NOT_FOUND as GET /api/v1/going/runs/{id} answers it.",
+        "operationId": "postApiV1GoingRunsByIdStop",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingRun"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "session"
+      }
+    },
+    "/api/v1/going/runs/{id}/undo": {
+      "post": {
+        "description": "Undo the caller's own command-bar run, as the credential that sends this and in-process: every call of the run that landed a request (each row of its plan that ran), newest first, each by the undo its tool states. write_back reads the item's value now and writes back the value the call found, field by field, only where the value now is the one the call left (an issue's fields and rank, an ask's text, a document's content as a further version); a later value another writer left is kept, its field refused 409 GOING_UNDO_CHANGED naming what it holds and who wrote the item's newest event, and the rest is written back. reverse runs the call's reverse: a claim released - none where the claim route answered claim_changed false - a release taken back only where the holder it released is the one the undo's own claim is recorded as, the session the caller's credential proved or else the person (409 GOING_UNDO_NOT_CALLERS_CLAIM otherwise, with nothing written), a follow unfollowed, a resolved comment reopened, an opened ask or approval request retracted - none where the approval route answered opened false - and a suggestion of the run rejected while it is still open. close_created closes the issue the call created, posting nothing on it, only while its status is the one the create left it in - none for a create its route answered 200 with the issue Dispatch already held for the external reference it named. not_undone names the call sent, not undone: a message, a broadcast, a review. What a call found and left is read off what its route answered of its own transaction, recorded beside its landing, never off a read since, so a run whose process ended after a write landed is undone all the same; a call whose record does not say what it left is refused 409 GOING_UNDO_AFTER_UNREAD, one whose route found a value the read its row was approved over did not see 409 GOING_UNDO_BEFORE_UNREAD, a call that names no write tool 409 GOING_UNDO_UNKNOWN, and one whose tool states an undo this server has no way to run 501 GOING_UNDO_UNSERVED, each with nothing undone. Every undo that puts a value back has the route it writes through decide, under that write's own lock, that the item still holds what the call left, by an in-process condition the undo carries on the request's context, never a body member, so a change another writer makes between the undo's read and its write is kept. An undo sends one request at the most, which records its landing in its route's own transaction under the key of the call it undoes, with the line this answers, so a second undo of the run, after a crash or beside the first, answers each call whose undo landed from that landing and sends nothing twice. Answers 200 {lines: [{plan, row, tool, item, undo, outcome, fields: [{field, ok, message}]}]}, one line per landed call, fields one per field of the item the call changed, a field's message never naming its own field. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the store does not hold, or whose conversation History no longer lists: its newest run is older than seven days.",
+        "operationId": "postApiV1GoingRunsByIdUndo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingUndoAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "session"
       }
     },
     "/api/v1/handoffs/{id}": {
@@ -5274,7 +5820,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
+        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. route, role:\u003cname\u003e or session:\u003cid\u003e, is the route the new issue takes, held to the rule PATCH /api/v1/issues/{key} holds a route to (400 ROUTE_INVALID); none, or one written empty, leaves it with none. A title over 1000 characters is 400 CAP_EXCEEDED. An issue the create made answers 201; a ref Dispatch already holds an issue for answers that issue 200, creating nothing, decided in the create's own transaction where another create of the ref commits first. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
         "operationId": "postApiV1Issues",
         "parameters": [
           {
@@ -5447,7 +5993,7 @@
         "x-auth": "any"
       },
       "patch": {
-        "description": "Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence.",
+        "description": "Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. The command bar's undo makes a write back conditional by an in-process condition on the request's context, never a body member: each field it writes must hold, under the issue's lock, the value the turn left, as the issue's read answers it (rank its rank string), else 409 ISSUE_CHANGED naming what each other field holds now, nothing written; a write back carrying no such condition is 500 GOING_CONDITION_MISSING, nothing written. The answer is the issue as the update left it, with previous beside it: each field the update names as the issue held it when the update took its lock, as the issue's read answers it (advances_revision beside advances), and rank as the place the issue held, {rank, after, before}, the issues just before and just after it in its project's rank order (null at an end); a write that names a rank answers rank_place too, the place it left the issue in, in the same shape.",
         "operationId": "patchApiV1IssuesByKey",
         "parameters": [
           {
@@ -5495,7 +6041,7 @@
                 "schema": {
                   "allOf": [
                     {
-                      "$ref": "#/components/schemas/Issue"
+                      "$ref": "#/components/schemas/IssueUpdated"
                     },
                     {
                       "properties": {
@@ -5565,7 +6111,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key \u003cowner\u003e/\u003cslug\u003e it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length.",
+        "description": "Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key \u003cowner\u003e/\u003cslug\u003e it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. The command bar's in-process caller makes an upload conditional by a condition on the request's context, never a body member: its undo's write back expects the markdown the turn left, else 409 DOCUMENT_CHANGED with nothing written (a name no document has is refused the same), and its upload is a create alone - with force too, unless the write's read before found the document of its name - a name the owner already holds when the upload takes the owner's lock being 409 DOCUMENT_EXISTS with nothing written; a write back carrying neither, and a file or image upload carrying an expected markdown, which only a document holds, is 500 GOING_CONDITION_MISSING, nothing written. The answer is {artifact, version, previous_version}: previous_version is the number of the newest version the upload wrote its next version over, as the upload found it under the owner's lock (0 for an artifact that held none yet), and null where the upload made the artifact.",
         "operationId": "postApiV1IssuesByKeyArtifacts",
         "parameters": [
           {
@@ -5779,7 +6325,7 @@
     },
     "/api/v1/issues/{key}/artifacts/{slug}/edits": {
       "post": {
-        "description": "Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename.",
+        "description": "Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. The answer's token and previous_token are the document's as the edit left it and found it, as on the edits route by id.",
         "operationId": "postApiV1IssuesByKeyArtifactsBySlugEdits",
         "parameters": [
           {
@@ -6212,7 +6758,7 @@
     },
     "/api/v1/issues/{key}/claim": {
       "post": {
-        "description": "Claim the issue for the calling session (or human): records who is working it. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names a live holder (or a human one, whose claim has no session to end); a caller whose credential holds the person scope may pass {force: true} to take it anyway, and one that does not is 403 OAUTH_SCOPE_REQUIRED. 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry.",
+        "description": "Claim the issue for the calling session (or human): records who is working it. The status does not move. The answer is the issue with legion_managed_status, claim_changed and previous_claim beside it: legion_managed_status is true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone; claim_changed is false where the claim already stood as asked (the caller already holds it, and keeps the time work started), so the request changed nothing; previous_claim is the claim that stood when the claim took the issue's lock, null for none. 409 ISSUE_CLAIMED names a live holder (or a human one, whose claim has no session to end); a caller whose credential holds the person scope may pass {force: true} to take it anyway, and one that does not is 403 OAUTH_SCOPE_REQUIRED. The command bar's undo of a release makes the claim conditional by an in-process condition on the request's context, never a body member: nobody - the caller included - may hold the issue when it takes the lock, else 409 CLAIM_HOLDER_CHANGED carrying the claim, nothing written (500 GOING_CONDITION_MISSING for such a write back carrying no condition). 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry.",
         "operationId": "postApiV1IssuesByKeyClaim",
         "parameters": [
           {
@@ -6278,7 +6824,7 @@
         "x-write-scope": "project"
       },
       "delete": {
-        "description": "Release the issue's claim: its holder, a caller whose credential holds the person scope, or anyone when the holding session is no longer live. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names the holder this caller may not release (there is no force on this route); 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked.",
+        "description": "Release the issue's claim: its holder, a caller whose credential holds the person scope, or anyone when the holding session is no longer live. The status does not move. The answer is the issue with legion_managed_status, claim_changed and previous_claim beside it: legion_managed_status is true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone; claim_changed is false where nobody held the claim, so the request changed nothing; previous_claim is the claim the release found when it took the issue's lock, the one it released, null for none. The command bar's undo of a claim makes the release conditional by an in-process condition on the request's context, never a body member: the holder the turn left must hold the issue when the release takes the lock, else 409 CLAIM_HOLDER_CHANGED carrying the claim, nothing written (500 GOING_CONDITION_MISSING for such a write back carrying no condition). 409 ISSUE_CLAIMED names the holder this caller may not release (there is no force on this route); 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked.",
         "operationId": "deleteApiV1IssuesByKeyClaim",
         "parameters": [
           {
@@ -8660,6 +9206,225 @@
         "x-write-scope": "session"
       }
     },
+    "/api/v1/me/going-plans": {
+      "get": {
+        "description": "The caller's own command-bar runs whose latest plan waits for them, while History lists their conversation, newest plan first, and nobody else's, which the Inbox shows: each row is {run, conversation, words, plan, summary, waiting (how many of its rows wait), created_at, version}, version the plan's as GET /api/v1/going/runs/{id}/plan answers it, which an approval of the plan names (409 GOING_PLAN_CHANGED once the plan has moved on from it); the plan itself is GET /api/v1/going/runs/{id}/plan, where the person answers it. Each change of what it lists appends going_plan.updated {login}, which wakes nobody. Pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}.",
+        "operationId": "getApiV1MeGoingPlans",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingWaitingPlansPage"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
+    "/api/v1/me/going-runs": {
+      "get": {
+        "description": "History: the caller's own command-bar conversations, and nobody else's, each listed until its newest run is seven days old, the one whose newest run started last first: each row is {id (its first run's id), newest_at, runs}, its runs newest first, each as GET /api/v1/going/runs/{id} answers it. A short answer of a pause in typing is no run and is in none. ?issue= keeps the conversations with a run whose landed requests touched that issue and ?q= those with a run whose words hold that text (any case); pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}.",
+        "operationId": "getApiV1MeGoingRuns",
+        "parameters": [
+          {
+            "name": "issue",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingConversationsPage"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
+    "/api/v1/me/going/settings": {
+      "get": {
+        "description": "The caller's own command-bar setting {mode}: ask, where every change of a run's plan waits for their approval, or auto_review, where a review of the run lets through the changes of fields, links and claims, and the creates with no text but a title, that their words ask for. A person who never set it reads ask.",
+        "operationId": "getApiV1MeGoingSettings",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingSettings"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      },
+      "put": {
+        "description": "Set the caller's own command-bar setting {mode} (required, ask or auto_review; 400 INVALID_STATE for anything else), answered as it now stands. A run takes the mode when it starts.",
+        "operationId": "putApiV1MeGoingSettings",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoingSettingsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingSettings"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "session"
+      }
+    },
     "/api/v1/me/inbox/dismiss": {
       "post": {
         "description": "Take threads out of the caller's Inbox, or put them back: {threads} (the row ids reply:\u003cthread id\u003e and agent:\u003croot message id\u003e) with {seen_replies}, or the Inbox's own narrowing - kind, priority, urgency, project, and issue or artifact, as POST /api/v1/me/inbox/read reads them - with {dismiss_through} (RFC3339, required with the narrowing; stored as no later than now; missing, unparsable or more than a minute ahead of the server is 400 INVALID_STATE), never both (400 INVALID_QUERY). seen_replies is what the page drew in each row threads names, keyed by that same row id, and a dismissal naming threads without it is 400 INVALID_QUERY: a reply: row's entry is {version}, that row's version as GET /api/v1/me/replies answered it, and an agent: row's is {newest_reply, unread_replies}, that row's reply.id and the ids it drew as unread. The mark is written only while the row still holds what the page drew, so a dismissal buries no write nobody has read. A restore takes no seen_replies, and neither does the narrowing, where the server draws the rows itself (each 400 INVALID_QUERY). With the narrowing it changes exactly the threads GET /api/v1/me/replies answers under it whose newest reply, or whose dismissal, is at or before dismiss_through. {restore: true} clears the marks instead of writing them, so the threads are in the Inbox again. Dismissing marks a thread read as well, so a dismissed thread never counts as unread, and a later write by somebody else clears the mark and brings the thread back unread, while the caller's own reply leaves it dismissed. An Ask row's id, a row id of neither shape and an id that is not a uuid are 400 INVALID_QUERY. Answers {dismissed}, the number of threads it changed; a request that changes nothing answers 0 and appends no event. It takes the lock order and appends the events POST /api/v1/me/inbox/read does: one user_thread_state.updated per project and one user_agent_state.updated per session it touched.",
@@ -9840,6 +10605,60 @@
         "x-write-scope": "deployment"
       }
     },
+    "/api/v1/projects/{key}/activity": {
+      "get": {
+        "description": "The events of a project's issues counted per ISO week over the last ?weeks= weeks (default 8, 1 to 52), this week last: {project, weeks: [{week (2026-W45), start (Monday 00:00 UTC), events, kinds: {event type: count}}]}, every week of the span listed, a week with no event as 0. 400 INVALID_PROJECT for a key that is no project key, 400 INVALID_QUERY for a weeks outside that bound, 404 PROJECT_NOT_FOUND for a project Dispatch does not hold.",
+        "operationId": "getApiV1ProjectsByKeyActivity",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "weeks",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectActivity"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/projects/{key}/architecture": {
       "get": {
         "description": "A project's component tree with the work attached: its sources' sync bookkeeping, each component with its source repository, per-component counts and issue rows, plus unassigned, not-architectural, and retired-link issues; 404 SOURCE_NOT_FOUND without a source.",
@@ -10349,7 +11168,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are.",
+        "description": "Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are, and the command bar's in-process conditions hold as on an issue upload (409 DOCUMENT_CHANGED, 409 DOCUMENT_EXISTS). The answer's previous_version is, as an issue upload's, the version the upload wrote its next version over (null where it made the artifact).",
         "operationId": "postApiV1ProjectsByKeyArtifacts",
         "parameters": [
           {
@@ -10563,7 +11382,7 @@
     },
     "/api/v1/projects/{key}/artifacts/{slug}/edits": {
       "post": {
-        "description": "Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename.",
+        "description": "Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. The answer's token and previous_token are the document's as the edit left it and found it, as on the edits route by id.",
         "operationId": "postApiV1ProjectsByKeyArtifactsBySlugEdits",
         "parameters": [
           {
@@ -12115,7 +12934,7 @@
     },
     "/api/v1/settings/new-issue": {
       "get": {
-        "description": "What the dashboard's search bar files a person's unmatched typed words as: {label, session}, the label that new issue carries and the session it is routed to and its first message goes to, as this deployment configured them (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is \"\" where it configured none: no label on the issue, and no conversation started on it. The bar writes the issue itself, through POST /api/v1/issues and the issue's own artifact, patch and message routes.",
+        "description": "What the command bar's File as a new issue files a person's words as: {label, session}, the label that new issue carries and the session it is routed to, as this deployment configured them (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is \"\" where it configured none: no label on the issue, and no route. The bar's File as a new issue starts a new_issue run (POST /api/v1/going/runs with kind new_issue), whose create carries both, and nothing is posted on the issue: a message to an agent is a change of a plan the person approves.",
         "operationId": "getApiV1SettingsNewIssue",
         "parameters": [
           {
@@ -12944,6 +13763,12 @@
       },
       "ActorAct": {
         "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
           "scopes": {
             "items": {
               "type": "string"
@@ -13059,6 +13884,12 @@
               "null",
               "string"
             ]
+          },
+          "last_activity_issue": {
+            "type": "string"
+          },
+          "last_activity_type": {
+            "type": "string"
           },
           "last_seen": {
             "format": "int64",
@@ -13358,12 +14189,16 @@
           "coverage_unread": {
             "type": "boolean"
           },
+          "opened": {
+            "type": "boolean"
+          },
           "version": {
             "type": "integer"
           }
         },
         "required": [
           "ask",
+          "opened",
           "artifact_id",
           "version",
           "approval",
@@ -14435,12 +15270,19 @@
           "artifact": {
             "$ref": "#/components/schemas/Artifact"
           },
+          "previous_version": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
           "version": {
             "$ref": "#/components/schemas/Version"
           }
         },
         "required": [
           "artifact",
+          "previous_version",
           "version"
         ],
         "type": "object"
@@ -14891,6 +15733,185 @@
           "previous",
           "edited_by",
           "at"
+        ],
+        "type": "object"
+      },
+      "AskEdited": {
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "anchor_block": {
+            "$ref": "#/components/schemas/BlockPath"
+          },
+          "anchor_block_error": {
+            "type": "string"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approval": {
+            "$ref": "#/components/schemas/AskApproval"
+          },
+          "approval_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "block_artifact": {
+            "$ref": "#/components/schemas/AskBlockArtifact"
+          },
+          "block_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "edited_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "multiple": {
+            "type": "boolean"
+          },
+          "opened_event_id": {
+            "type": "integer"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOptionWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "previous": {
+            "additionalProperties": {},
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "question": {
+            "type": "string"
+          },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "referenced_by_count": {
+            "type": "integer"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "urgency": {
+            "type": "string"
+          },
+          "waiting_on": {
+            "type": "string"
+          },
+          "waiting_on_person": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "artifact_id",
+          "block_id",
+          "author",
+          "kind",
+          "question",
+          "options",
+          "multiple",
+          "urgency",
+          "anchor",
+          "state",
+          "answer",
+          "created_at",
+          "edited_at",
+          "asked_of",
+          "asked_of_by",
+          "asked_of_at",
+          "previous"
         ],
         "type": "object"
       },
@@ -16430,6 +17451,9 @@
               }
             ]
           },
+          "claim_changed": {
+            "type": "boolean"
+          },
           "closed_at": {
             "format": "date-time",
             "type": [
@@ -16495,6 +17519,16 @@
           },
           "plan_artifact_id": {
             "type": "string"
+          },
+          "previous_claim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueClaim"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "primary_artifact_id": {
             "type": "string"
@@ -16571,7 +17605,9 @@
           "verification_artifact_id",
           "plan_artifact_id",
           "decisions_artifact_id",
-          "last_seq"
+          "last_seq",
+          "claim_changed",
+          "previous_claim"
         ],
         "type": "object"
       },
@@ -17540,6 +18576,9 @@
       },
       "CreateGoingRequestInput": {
         "properties": {
+          "context": {
+            "$ref": "#/components/schemas/GoingContextInput"
+          },
           "project": {
             "type": "string"
           },
@@ -17674,6 +18713,12 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "route": {
+            "type": [
+              "null",
+              "string"
             ]
           },
           "spec": {
@@ -20118,6 +21163,9 @@
               "null"
             ]
           },
+          "previous_token": {
+            "type": "string"
+          },
           "token": {
             "type": "string"
           },
@@ -20148,6 +21196,7 @@
           "applied",
           "changed",
           "lost_ops",
+          "previous_token",
           "token",
           "unchanged_ops",
           "version",
@@ -20601,14 +21650,75 @@
         ],
         "type": "object"
       },
-      "GoingCapability": {
+      "GoingAnswerCapability": {
         "properties": {
-          "model_configured": {
+          "blocks": {
+            "$ref": "#/components/schemas/GoingBlocks"
+          },
+          "configured": {
             "type": "boolean"
+          },
+          "model": {
+            "type": "string"
           }
         },
         "required": [
-          "model_configured"
+          "configured",
+          "model",
+          "blocks"
+        ],
+        "type": "object"
+      },
+      "GoingBlocks": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "enum": [
+              "unknown"
+            ],
+            "type": "string"
+          }
+        ],
+        "description": "true once the model accepted a structured reply, false once its service refused one, \"unknown\" while neither has happened or with no answering model"
+      },
+      "GoingCancellation": {
+        "properties": {
+          "cancelled_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "cancelled_at"
+        ],
+        "type": "object"
+      },
+      "GoingCapability": {
+        "properties": {
+          "answer": {
+            "$ref": "#/components/schemas/GoingAnswerCapability"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/GoingDecisionCapability"
+          },
+          "label": {
+            "$ref": "#/components/schemas/GoingSettingCapability"
+          },
+          "session": {
+            "$ref": "#/components/schemas/GoingSettingCapability"
+          }
+        },
+        "required": [
+          "answer",
+          "decision",
+          "session",
+          "label"
         ],
         "type": "object"
       },
@@ -20630,6 +21740,364 @@
         "required": [
           "total",
           "actions"
+        ],
+        "type": "object"
+      },
+      "GoingContext": {
+        "properties": {
+          "block": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "project",
+          "issue",
+          "block"
+        ],
+        "type": "object"
+      },
+      "GoingContextInput": {
+        "properties": {
+          "block": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "GoingConversation": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "newest_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/GoingRun"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "newest_at",
+          "runs"
+        ],
+        "type": "object"
+      },
+      "GoingConversationsPage": {
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/GoingConversation"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rows",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
+      "GoingDecisionCapability": {
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string"
+          },
+          "reachable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "configured",
+          "model",
+          "reachable"
+        ],
+        "type": "object"
+      },
+      "GoingHolder": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "type": "object"
+      },
+      "GoingPlanAnswer": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "ask",
+              "auto_review"
+            ],
+            "type": "string"
+          },
+          "plan": {
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/GoingPlanRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "run": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "waiting",
+              "approved",
+              "rejected",
+              "running",
+              "done"
+            ],
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "plan",
+          "state",
+          "summary",
+          "mode",
+          "rows",
+          "version"
+        ],
+        "type": "object"
+      },
+      "GoingPlanApproveInput": {
+        "properties": {
+          "plan": {
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/GoingPlanTick"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "plan"
+        ],
+        "type": "object"
+      },
+      "GoingPlanRejectInput": {
+        "properties": {
+          "plan": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "plan"
+        ],
+        "type": "object"
+      },
+      "GoingPlanReviseInput": {
+        "properties": {
+          "plan": {
+            "type": "integer"
+          },
+          "words": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan",
+          "words"
+        ],
+        "type": "object"
+      },
+      "GoingPlanRow": {
+        "properties": {
+          "arguments": {},
+          "changed": {
+            "type": "boolean"
+          },
+          "claim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GoingHolder"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "class": {
+            "type": "string"
+          },
+          "fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "issue": {
+            "type": "string"
+          },
+          "item": {
+            "type": "string"
+          },
+          "needs": {
+            "items": {
+              "type": "integer"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "now": {},
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GoingRowResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "row": {
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "waiting",
+              "approved",
+              "unticked",
+              "running",
+              "done",
+              "failed",
+              "skipped"
+            ],
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "waits": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "row",
+          "tool",
+          "class",
+          "arguments",
+          "needs",
+          "state",
+          "item",
+          "issue",
+          "fields",
+          "now",
+          "claim",
+          "waits",
+          "changed",
+          "result"
+        ],
+        "type": "object"
+      },
+      "GoingPlanTick": {
+        "properties": {
+          "row": {
+            "type": "integer"
+          },
+          "tick": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "values": {
+            "additionalProperties": {},
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "row",
+          "tick"
         ],
         "type": "object"
       },
@@ -20673,11 +22141,455 @@
           },
           "pattern": {
             "type": "string"
+          },
+          "undo": {
+            "$ref": "#/components/schemas/GoingUndo"
           }
         },
         "required": [
           "method",
-          "pattern"
+          "pattern",
+          "undo"
+        ],
+        "type": "object"
+      },
+      "GoingRowResult": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "delivery": {
+            "enum": [
+              "sent",
+              "queued",
+              "refused",
+              null
+            ],
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "code",
+          "message",
+          "delivery"
+        ],
+        "type": "object"
+      },
+      "GoingRun": {
+        "properties": {
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GoingContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "continues": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "conversation": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "level": {
+            "enum": [
+              "fast",
+              "standard",
+              "deep"
+            ],
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "ask",
+              "auto_review"
+            ],
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "working",
+              "waiting",
+              "done",
+              "stopped",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "stop_reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "used": {
+            "$ref": "#/components/schemas/GoingRunUsed"
+          },
+          "words": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "conversation",
+          "continues",
+          "words",
+          "context",
+          "level",
+          "mode",
+          "state",
+          "stop_reason",
+          "issues",
+          "used",
+          "created_at",
+          "finished_at"
+        ],
+        "type": "object"
+      },
+      "GoingRunInput": {
+        "properties": {
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GoingContextInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "continues": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "new_issue"
+            ],
+            "type": "string"
+          },
+          "level": {
+            "enum": [
+              "fast",
+              "standard",
+              "deep"
+            ],
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "ask",
+              "auto_review"
+            ],
+            "type": "string"
+          },
+          "words": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "words"
+        ],
+        "type": "object"
+      },
+      "GoingRunUsed": {
+        "properties": {
+          "calls": {
+            "type": "integer"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "working_ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "working_ms",
+          "tokens"
+        ],
+        "type": "object"
+      },
+      "GoingSettingCapability": {
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "configured"
+        ],
+        "type": "object"
+      },
+      "GoingSettings": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "ask",
+              "auto_review"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
+      "GoingSettingsInput": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "ask",
+              "auto_review"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
+      "GoingUndo": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "reverse",
+              "write_back",
+              "close_created",
+              "not_undone"
+            ],
+            "type": "string"
+          },
+          "routes": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "routes"
+        ],
+        "type": "object"
+      },
+      "GoingUndoAnswer": {
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/GoingUndoLine"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "type": "object"
+      },
+      "GoingUndoField": {
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "ok",
+          "message"
+        ],
+        "type": "object"
+      },
+      "GoingUndoLine": {
+        "properties": {
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/GoingUndoField"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "item": {
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/GoingWriteOutcome"
+          },
+          "plan": {
+            "type": "integer"
+          },
+          "row": {
+            "type": "integer"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "undo": {
+            "enum": [
+              "reverse",
+              "write_back",
+              "close_created",
+              "not_undone"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan",
+          "row",
+          "tool",
+          "item",
+          "undo",
+          "outcome",
+          "fields"
+        ],
+        "type": "object"
+      },
+      "GoingWaitingPlan": {
+        "properties": {
+          "conversation": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "plan": {
+            "type": "integer"
+          },
+          "run": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "waiting": {
+            "type": "integer"
+          },
+          "words": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "conversation",
+          "words",
+          "plan",
+          "summary",
+          "waiting",
+          "created_at",
+          "version"
+        ],
+        "type": "object"
+      },
+      "GoingWaitingPlansPage": {
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/GoingWaitingPlan"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rows",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
+      "GoingWriteOutcome": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ok",
+          "status",
+          "code",
+          "message"
         ],
         "type": "object"
       },
@@ -22863,6 +24775,31 @@
         },
         "type": "object"
       },
+      "IssueRankPlace": {
+        "properties": {
+          "after": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "before": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "rank": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rank",
+          "after",
+          "before"
+        ],
+        "type": "object"
+      },
       "IssueRefResolved": {
         "properties": {
           "key": {
@@ -23296,6 +25233,199 @@
           "total",
           "limit",
           "offset"
+        ],
+        "type": "object"
+      },
+      "IssueUpdated": {
+        "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "advances_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "assignee": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "blocked_by": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "claim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueClaim"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "closed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "components": {
+            "$ref": "#/components/schemas/IssueComponents"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decisions_artifact_id": {
+            "type": "string"
+          },
+          "external_links": {
+            "items": {
+              "$ref": "#/components/schemas/ExternalLink"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "last_seq": {
+            "type": "integer"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "parent": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "plan_artifact_id": {
+            "type": "string"
+          },
+          "previous": {
+            "additionalProperties": {},
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "primary_artifact_id": {
+            "type": "string"
+          },
+          "priority": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "rank": {
+            "type": "string"
+          },
+          "rank_place": {
+            "$ref": "#/components/schemas/IssueRankPlace"
+          },
+          "repo": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved_repo": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "route": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "verification_artifact_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "project",
+          "number",
+          "title",
+          "status",
+          "priority",
+          "rank",
+          "labels",
+          "parent",
+          "blocked_by",
+          "advances",
+          "advances_revision",
+          "assignee",
+          "claim",
+          "components",
+          "external_links",
+          "route",
+          "repo",
+          "resolved_repo",
+          "created_by",
+          "created_at",
+          "updated_at",
+          "closed_at",
+          "primary_artifact_id",
+          "verification_artifact_id",
+          "plan_artifact_id",
+          "decisions_artifact_id",
+          "last_seq",
+          "previous"
         ],
         "type": "object"
       },
@@ -25615,6 +27745,57 @@
         ],
         "type": "object"
       },
+      "ProjectActivity": {
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "weeks": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectActivityWeek"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "project",
+          "weeks"
+        ],
+        "type": "object"
+      },
+      "ProjectActivityWeek": {
+        "properties": {
+          "events": {
+            "type": "integer"
+          },
+          "kinds": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "start": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "week": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "week",
+          "start",
+          "events",
+          "kinds"
+        ],
+        "type": "object"
+      },
       "ProjectDefaultAssignee": {
         "properties": {
           "assignee": {
@@ -26581,6 +28762,177 @@
         "required": [
           "kind",
           "reason"
+        ],
+        "type": "object"
+      },
+      "ResolvedComment": {
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_block": {
+            "$ref": "#/components/schemas/BlockPath"
+          },
+          "anchor_block_error": {
+            "type": "string"
+          },
+          "answers": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ask_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/CommentDelivery"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "edited_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "mentions": {
+            "items": {
+              "$ref": "#/components/schemas/CommentMention"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "previous": {
+            "$ref": "#/components/schemas/ThreadResolution"
+          },
+          "reply_block": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reply_to": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved": {
+            "type": "boolean"
+          },
+          "resolved_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Suggestion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "turn": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "artifact_id",
+          "author",
+          "body",
+          "anchor",
+          "reply_to",
+          "answers",
+          "ask_id",
+          "turn",
+          "resolved",
+          "resolved_by",
+          "resolved_at",
+          "edited_at",
+          "suggestion",
+          "created_at",
+          "mentions",
+          "deliveries",
+          "reply_block",
+          "previous"
         ],
         "type": "object"
       },
@@ -27861,6 +30213,35 @@
         },
         "required": [
           "read_through"
+        ],
+        "type": "object"
+      },
+      "ThreadResolution": {
+        "properties": {
+          "resolved": {
+            "type": "boolean"
+          },
+          "resolved_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "resolved",
+          "resolved_by",
+          "resolved_at"
         ],
         "type": "object"
       },

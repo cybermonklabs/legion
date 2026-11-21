@@ -12,6 +12,7 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { PlannedChanges } from "../going/PlannedChanges";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { setSelectedIssues } from "../search/bar-scope";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
@@ -151,6 +152,8 @@ export function IssuesTable({
     );
     return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
   }, [allItems, filters, flags.needsYou, flags.unread, grouping, picked, search, userState.data]);
+  // The keys of the issues the list holds, which its planned changes are drawn for.
+  const plannedKeys = useMemo(() => allItems.map((item) => item.issue.key), [allItems]);
 
   const columns = useIssueTableColumns(
     userState.data,
@@ -314,6 +317,15 @@ export function IssuesTable({
             Loading closed issues…
           </p>
         ) : null}
+        {/* The open conversation's planned changes of the issues this list holds, and the new
+            issues of its project, drawn on the list itself. */}
+        <PlannedChanges
+          surface={{
+            issues: plannedKeys,
+            kind: "issues",
+            project: "project" in listing ? listing.project : "",
+          }}
+        />
         {/* Issues by status: a click shows only that status, a second click every status. */}
         <IssueTableStatus table={table} items={allItems} epics={epics} />
         {picked === null ? null : (

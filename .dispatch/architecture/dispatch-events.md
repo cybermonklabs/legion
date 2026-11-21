@@ -7,12 +7,16 @@ paths: [packages/envoy/internal/dispatch/events, packages/envoy/internal/dispatc
 The append-only event log nearly every Dispatch write lands in (a settings write such as `putDeliverySettings` or `putRepoProject` is a bare pool write with no event).
 An append (`Broker.QueueAppend`) puts its statements on the write phase's batch (`store.WriteBatch`):
 the event owner's advisory lock (`store.QueueLockOwner`, which returns at once when the transaction took it in its read phase), then the owner's row `for no key update`, which takes the transaction id (`pg_current_xact_id`) in the same statement, so the transaction holds an id before the insert draws an event id whether or not an earlier write gave it one, then one insert that takes the next sequence from the owner row and, in the same statement, advances the row's `last_seq` (and an issue's `updated_at`) to the row it inserted.
-It takes no other lock (an ownerless, session-addressed event takes neither, only its transaction id, in a statement of its own queued before the insert), so one owner's events commit in id order while two owners' writes never wait for each other and can commit out of id order.
+It takes no other lock (an ownerless event takes neither, only its transaction id, in a statement of its own queued before the insert), so one owner's events commit in id order while two owners' writes never wait for each other and can commit out of id order.
 An `ask.opened` payload records its own event id through the events id sequence's `currval` (`store.LatestEventID`), the same expression a stamp of the source's references uses right after its event.
 So nothing is read back in Go between the statements, and the whole append goes to Postgres with the rest of the write phase in one round trip;
 the appended event (id, sequence, time, project) reaches the caller through a callback once the batch has run.
 `Broker.Append` is the same statements sent at once as a batch of their own.
 `LockOwners` takes the locks of several owners up front, sorted and deduplicated by lock key (`store.LockOwners`), so two transactions never take shared owners in opposite orders.
+An ownerless event is one of three kinds, each told by its payload, and any other event that names no owner is refused (`eventOwnerKey`):
+a session-addressed message or viewer state, a priority's write (`priority.updated`), and `going_plan.updated`, a change of what one person's command-bar plans wait on (`model.GoingPlanEventPayload`), which names that person's login and nothing of the plan.
+The command bar appends `going_plan.updated` after it writes the `going_runs` row of the run whose plan changed (`appendGoingPlanEvent`), and the row's lock, which that update holds until the transaction ends, orders the event against every other write of that row.
+It is quiet (`Quiet`): the event feed carries it, so the person's open pages read their Inbox and History again, and it wakes no agent.
 An append a document ledger queues runs in the transaction's write phase, in the order the transaction made it.
 The broker writes through the transaction its caller hands it and imports `dispatch-store` for the owner lock and the write batch.
 `internal/dispatch/envoy` is the small outbound client that calls the Envoy listener's API;

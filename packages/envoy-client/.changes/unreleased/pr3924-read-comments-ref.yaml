@@ -1,0 +1,3 @@
+kind: Added
+body: |-
+  `dispatch read dispatch://KEY/comments` lists every comment on an issue, each with its author, its time, its anchor, what it replies to and its body.

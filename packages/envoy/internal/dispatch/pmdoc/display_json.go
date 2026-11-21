@@ -265,3 +265,7 @@ type displayCacheKey struct {
 // only to make room for another (DisplayCacheBytes). It counts the bytes of the encodings it
 // holds and nothing else, which is what a reader of DisplayCacheBytes is promised.
 var displayCache = bytelru.New[displayCacheKey, json.RawMessage](DisplayCacheBytes)
+
+// DisplayCacheHeld is the bytes of the encodings the display-tree cache holds now, at most
+// DisplayCacheBytes, which the server's /metrics shows.
+func DisplayCacheHeld() int64 { return displayCache.Held() }

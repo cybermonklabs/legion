@@ -220,6 +220,98 @@ if [ "${DISPATCH_E2E_EMBEDDER:-}" = "fake" ]; then
   )
 fi
 
+# The fake models, read before the sweep below: DISPATCH_E2E_MODELS=fake is the models lane
+# (`bun run e2e:models`, e2e/harness-models.ts), whose server answers through
+# e2e/fake-chat-model.ts on FAKE_CHAT_MODEL_PORT and decides through e2e/fake-decision-model.ts on
+# FAKE_DECISION_MODEL_PORT, both started by the harness. Each is configured as a deployment
+# configures its own: DISPATCH_ANSWERER=endpoint and its DISPATCH_CHAT_* settings
+# (cmd/dispatch/answerer.go), and the System One decision model with its endpoint and token file
+# (cmd/dispatch/decision.go). The decision model is the one the committed record marks chosen
+# (packages/envoy/going/decision_models.json), read here rather than written, so the server decides
+# with that entry's model and every row reads the same one (e2e/fake-models-helpers.ts). The server
+# takes only https endpoints, and both fakes serve the certificate DISPATCH_E2E_MODELS_DIR holds,
+# which the harness made for this stack beside one bearer token per fake; Go's crypto/x509 reads
+# its roots from SSL_CERT_FILE, which is how this server trusts that certificate and nothing else,
+# as packages/envoy/scripts/going-smoke.sh trusts its own. DISPATCH_TEST_HOOKS=1 below is what the
+# lane's new-issue settings hook (POST /api/v1/settings/new-issue/_test) needs, and every run sets
+# it.
+models_env=()
+if [ "${DISPATCH_E2E_MODELS:-}" = "fake" ]; then
+  : "${FAKE_CHAT_MODEL_PORT:?FAKE_CHAT_MODEL_PORT must name the fake chat model (e2e/fake-chat-model.ts) that DISPATCH_E2E_MODELS=fake answers through}"
+  : "${FAKE_DECISION_MODEL_PORT:?FAKE_DECISION_MODEL_PORT must name the fake decision model (e2e/fake-decision-model.ts) that DISPATCH_E2E_MODELS=fake decides through}"
+  : "${DISPATCH_E2E_MODELS_DIR:?DISPATCH_E2E_MODELS_DIR must name the models directory e2e/harness-start.ts made for this stack}"
+  decision_record="$(cd "$(dirname "$0")/../../envoy" && pwd)/going/decision_models.json"
+  decision_model="$(python3 - "$decision_record" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as record:
+    chosen = [entry["model"] for entry in json.load(record) if entry.get("chosen") is True]
+if len(chosen) != 1:
+    sys.exit(f"{sys.argv[1]} marks {len(chosen)} entries chosen; the models lane needs exactly one")
+print(chosen[0])
+PY
+)"
+  models_env=(
+    DISPATCH_ANSWERER=endpoint
+    DISPATCH_CHAT_ENDPOINT="https://127.0.0.1:$FAKE_CHAT_MODEL_PORT"
+    DISPATCH_CHAT_MODEL=e2e-fake-chat
+    DISPATCH_CHAT_TOKEN_FILE="$DISPATCH_E2E_MODELS_DIR/chat-token"
+    DISPATCH_DECISION_MODEL="$decision_model"
+    DISPATCH_DECISION_MODEL_ENDPOINT="https://127.0.0.1:$FAKE_DECISION_MODEL_PORT"
+    DISPATCH_DECISION_MODEL_TOKEN_FILE="$DISPATCH_E2E_MODELS_DIR/decision-token"
+    SSL_CERT_FILE="$DISPATCH_E2E_MODELS_DIR/cert.pem"
+  )
+elif [ "${DISPATCH_E2E_MODELS:-}" = "real" ]; then
+  # The real models, read before the sweep below: DISPATCH_E2E_MODELS=real is a server a person
+  # uses the command bar on with the models of a deployment, as a preview of a commit serves it,
+  # on the eval's seed (e2e/harness-eval-seed.ts) beside the fake Envoy and the fake GitHub. The
+  # chat model and the decision model are the ones the caller's own settings name, under the
+  # server's own names, since the caller is configuring the server as a deployment does:
+  # DISPATCH_ANSWERER with the settings its place reads (DISPATCH_AZURE_CHAT_* and the keyless
+  # Azure sign-in for azure, DISPATCH_CHAT_* for endpoint; cmd/dispatch/answerer.go), and the
+  # decision model DISPATCH_DECISION_MODEL with its endpoint and token file
+  # (cmd/dispatch/decision.go). Each setting the run needs and lacks is named at once and nothing
+  # starts: a server with no model would answer nothing, which is not what the caller asked for.
+  # A file setting named by a relative path is made absolute against the caller's directory,
+  # since this script changes to packages/envoy before it runs the server. GOMEMLIMIT is 3 GiB:
+  # a preview's container holds Postgres and the build beside the server, and the server keeps a
+  # GOMEMLIMIT its environment sets in place of the one its container limit gives.
+  missing=()
+  case "${DISPATCH_ANSWERER:-}" in
+    azure)
+      needed=(DISPATCH_AZURE_CHAT_ENDPOINT DISPATCH_AZURE_CHAT_DEPLOYMENT DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE
+        DISPATCH_AZURE_TENANT_ID DISPATCH_AZURE_CLIENT_ID DISPATCH_AZURE_FEDERATED_TOKEN_FILE)
+      ;;
+    endpoint) needed=(DISPATCH_CHAT_ENDPOINT DISPATCH_CHAT_MODEL DISPATCH_CHAT_TOKEN_FILE) ;;
+    *)
+      missing+=("DISPATCH_ANSWERER (azure, with the DISPATCH_AZURE_CHAT_* settings and the Azure sign-in, or endpoint, with the DISPATCH_CHAT_* settings)")
+      needed=()
+      ;;
+  esac
+  needed+=(DISPATCH_DECISION_MODEL DISPATCH_DECISION_MODEL_ENDPOINT DISPATCH_DECISION_MODEL_TOKEN_FILE)
+  for name in "${needed[@]}"; do
+    [ -n "${!name:-}" ] || missing+=("$name")
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    joined="$(printf '%s; ' "${missing[@]}")"
+    echo "run-server.sh: DISPATCH_E2E_MODELS=real serves the real chat model and decision model, and these settings of theirs are missing: ${joined%; }" >&2
+    exit 2
+  fi
+  mapfile -t model_settings < <(compgen -e)
+  for name in "${model_settings[@]}"; do
+    case "$name" in
+      DISPATCH_ANSWERER | DISPATCH_AZURE_CHAT_* | DISPATCH_AZURE_TENANT_ID | DISPATCH_AZURE_CLIENT_ID | \
+        DISPATCH_AZURE_FEDERATED_TOKEN_FILE | DISPATCH_CHAT_* | DISPATCH_DECISION_MODEL*)
+        setting="${!name}"
+        if [[ "$name" == *_FILE && -n "$setting" && "$setting" != /* ]]; then setting="$PWD/$setting"; fi
+        models_env+=("$name=$setting")
+        ;;
+    esac
+  done
+  models_env+=(GOMEMLIMIT=3GiB)
+fi
+
 # The server binary, read before the sweep below: DISPATCH_E2E_SERVER_BIN names a prebuilt
 # envoy-dispatch this run executes instead of building one from this checkout
 # (scripts/e2e/dispatch-claimant-delivery.sh's DISPATCH_BIN is the precedent), which
@@ -384,6 +476,7 @@ exec "${listen[@]}" env \
   "${broker_env[@]}" \
   "${file_store_env[@]}" \
   "${fake_embedder_env[@]}" \
+  "${models_env[@]}" \
   "${signin_env[@]}" \
   DATABASE_URL="$database_url" \
   DISPATCH_AGENT_TOKEN=e2e-token \

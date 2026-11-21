@@ -69,6 +69,10 @@ jobs:
       # firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go holds the same
       # commit.
       FIRST_ROLLOUT_COMMIT: edb69e0d7588ec037847182e74a04a343a0664c9
+      # The going-runs build's commit, the release tagged legion-envoy-v32.15.0, whose sweep
+      # deletes going_requests older than an hour (check c25 of INFRA-1588); goingReleaseCommit in
+      # packages/envoy/cmd/dispatch/twobuild_going_runs_test.go holds the same commit.
+      GOING_RELEASE_COMMIT: 6c46f6bb7dd6a1ac9b6235fb3bce990ec82eae86
     steps:
       # A BOUND OF ITS OWN AND A SECOND ATTEMPT, here and in dispatch-two-builds-same below. Of
       # the 755 checkouts of this file's two jobs in ci.yaml runs created from 2026-11-16 12:52Z
@@ -162,6 +166,27 @@ jobs:
         env:
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
+      # The going-runs build: the release c25 of INFRA-1588 runs beside the head on one database,
+      # fixed rather than the newest, because its sweep deletes going_requests older than an hour.
+      # Pinned and cached as the first-rollout build is.
+      - name: Resolve the going-runs build's commit
+        run: |
+          resolved=$(packages/envoy/scripts/build-dispatch-build.sh --commit legion-envoy-v32.15.0 --resolve)
+          if [[ "$resolved" != "$GOING_RELEASE_COMMIT" ]]; then
+            echo "::error::The tag legion-envoy-v32.15.0 names commit $resolved. GOING_RELEASE_COMMIT pins the going-runs build to commit $GOING_RELEASE_COMMIT, and goingReleaseCommit in packages/envoy/cmd/dispatch/twobuild_going_runs_test.go holds the same commit. Move the tag back to $GOING_RELEASE_COMMIT, or change the pin in both places."
+            exit 1
+          fi
+      - name: Cache the going-runs build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-going-release
+            !${{ runner.temp }}/dispatch-going-release/src
+          key: dispatch-going-release-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ env.GOING_RELEASE_COMMIT }}
+      - name: Build the going-runs build
+        env:
+          DISPATCH_GOING_RELEASE_BUILD: ${{ runner.temp }}/dispatch-going-release
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$GOING_RELEASE_COMMIT" --out "$DISPATCH_GOING_RELEASE_BUILD"
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # Only what the twobuild tag adds: envoy-go's unit step runs ./cmd/dispatch's untagged tests,
@@ -174,6 +199,7 @@ jobs:
         env:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+          DISPATCH_GOING_RELEASE_BUILD: ${{ runner.temp }}/dispatch-going-release
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
           go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
@@ -277,7 +303,9 @@ jobs:
   # from what the live fleet registers, not from which commit the previous build is, so a
   # same-build pairing is a case the suite already states. The one row that needs the first-rollout
   # build reads DISPATCH_FIRST_ROLLOUT_BUILD, which this job leaves unset, so that row skips here and
-  # runs in the job above. The two owner lock gate rows (twobuild_owner_lock_test.go) skip here too,
+  # runs in the job above. The going-runs row (twobuild_going_runs_test.go) reads
+  # DISPATCH_GOING_RELEASE_BUILD, which this job leaves unset too, so it skips here and runs in the
+  # job above. The two owner lock gate rows (twobuild_owner_lock_test.go) skip here too,
   # by the owner lock protocol the previous build registers: a build at this tree's protocol never
   # takes the gate they test, and TestTwoBuildsSerialiseOneOwnersWritersBothWays covers this pairing.
   # A row that fails only in this job holds a version assumption it never stated: that is a finding

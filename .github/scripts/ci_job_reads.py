@@ -1102,10 +1102,15 @@ MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} memory ./cmd/dispatch)
 go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch"""
+# The memory-group test of INFRA-1588's c20 (ci-job-dispatch-memory-group.yaml): one untagged
+# test of ./cmd/dispatch, named by an anchored -run, which is outside the simple form, so the step
+# is pinned whole. envoy-go's unit step compiles the same package and the test skips there.
+MEMORY_GROUP_STEP = "The server ends its agent before the kernel"
+MEMORY_GROUP_SCRIPT = "go test -count=1 -timeout 15m -v -run '^TestTheServerEndsTheAgentBeforeTheKernel$' ./cmd/dispatch"
 DISPATCH_MP_STEP = "Two-process tests of the Dispatch server"
 DISPATCH_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/dispatch)
-go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/dispatch"""
+go test -tags multiprocess -count=1 -timeout 45m -v -run "$pattern" ./cmd/dispatch"""
 # The two-build job's Go step, which runs only what the twobuild tag adds, as the two above do:
 # envoy-go's unit step runs ./cmd/dispatch's untagged tests, so a run of them here would be a
 # second one. The step is a gate of its own (dispatch_two_builds_go), so the TAG_RUNS pairing
@@ -1939,7 +1944,8 @@ TEXT_CHECK_TESTS = {
         "TestTheDecisionBlockGuardSeesWhatItGuards",
         "TestTheGuardReadsABodyStringOffARequestType"},
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": {
-        "TestOnlyTheBrokerInsertsEvents"},
+        "TestOnlyTheBrokerInsertsEvents",
+        "TestTheEventInsertGuardSeesAPlantedInserter"},
     f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": {
         "TestOnlyTheIssuePatchWritesTheRoute",
         "TestTheRouteWriterGuardSeesAPlantedWriter"},
@@ -2213,6 +2219,7 @@ BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
 BROWSER_EMBEDDER_SPECS = "Browser-test the bar's two tiers against a counting embedder"
+BROWSER_MODELS_SPECS = "Browser-test the bar's answers against fake models"
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
@@ -2236,13 +2243,14 @@ BROWSER_RECORD_STEP = "What the run left behind"
 BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
 # The visual job's second browser step: the same rows in reverse order (e2e/visual-order.ts).
 BROWSER_VISUAL_REVERSE_SPECS = "Browser-test dispatch dashboard against its baselines, rows in reverse order"
-# The seven steps that run the browser suite, named together wherever a Run or a read cites the
+# The eight steps that run the browser suite, named together wherever a Run or a read cites the
 # whole suite: one list, so a step renamed above reaches every citation of it. It is declared
-# here, below the seven names, rather than beside the first of them.
+# here, below the eight names, rather than beside the first of them.
 BROWSER_SUITE_STEPS = (
     f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
     f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}, "
     f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)}, "
+    f"{at_browser(BROWSER_MODELS_SPECS, BROWSER_EMBEDDER)}, "
     f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} and "
     f"{at_browser(BROWSER_VISUAL_REVERSE_SPECS, BROWSER_VISUAL)}"
 )
@@ -3126,6 +3134,10 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds each stack's server port through it"),
+        (f"{ENVOY}/going/decision_models.json",
+         f"{at_browser(BROWSER_MODELS_SPECS, BROWSER_EMBEDDER)} reads it: "
+         "packages/dispatch/e2e/run-server.sh:239 hands the server the model it marks chosen, and "
+         "packages/dispatch/e2e/fake-models-helpers.ts:29 reads that model's thresholds for the rows"),
         (".github/scripts/dispatch-browser-samples.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
          "start it and read its two summaries"),
@@ -3517,6 +3529,14 @@ GATES = [
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-memory', MEMORY_STEP)} takes its -run from it"),
     ) + ceiling_reads("dispatch-memory") + setup_go("dispatch-memory", f"{ENVOY}/go.mod")),
+
+    gate("dispatch_memory_group", "dispatch-memory-group", exact=[
+        pinned_step("dispatch-memory-group", MEMORY_GROUP_STEP, ENVOY, MEMORY_GROUP_SCRIPT, [
+            (ENVOY, ["./cmd/dispatch"], "go test ./cmd/dispatch", {}),
+        ]),
+    ], reads=reads(
+        (".github/actions/pull-test-images/**", at("dispatch-memory-group", "Pull the container image the test runs the server in")),
+    ) + setup_go("dispatch-memory-group", f"{ENVOY}/go.mod")),
 
     gate("dispatch_multiprocess", "dispatch-multiprocess", runs=[ceiling_run("dispatch-multiprocess")], exact=[
         pinned_step("dispatch-multiprocess", DISPATCH_MP_STEP, ENVOY, DISPATCH_MP_SCRIPT, [

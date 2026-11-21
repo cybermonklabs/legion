@@ -1,0 +1,59 @@
+kind: Added
+body: |-
+  The Dispatch command bar runs an agent. Enter on the bar's line starts a run
+  (`POST /api/v1/going/runs`, at a level, Fast, Standard or Deep, and as a follow-up of the run
+  before it), which the server's own agent process, `envoy-dispatch agent`, works. The server
+  starts that process, starts it again after an exit, kills it above its memory ceiling or when it
+  stops renewing, and answers its calls over a Unix socket under a secret it made at its start
+  (agent/v1). The agent holds no Dispatch data and no Dispatch secret: every read and write of a
+  run is a call to the server, which makes it through its own route table as the run's person,
+  checked as that person's own request would be.
+  A run acts with a grant, recorded with no secret by the request that started it or approved its
+  plan: a sign-in, a sign-in through IAP, a personal agent token or the header identity. A
+  broker-issued token, the shared token and a service-account token are refused
+  `403 RUN_NEEDS_PERSON_CREDENTIAL`. A sign-out, an expired sign-in, a revoked token or a lost
+  membership stops the run at its next call, and an IAP grant ends with the run's working budget.
+  Each change of a run records the person as its actor, with `act.agent` `command-bar` and
+  `act.run` the run's id.
+  A run changes nothing but through a plan its person approves: its model proposes one row for each
+  change, with the item, the value now and the new value. `GET /api/v1/going/runs/{id}/plan` reads
+  the plan, and `POST /api/v1/going/runs/{id}/plan/approve` (each row's tick and edited values),
+  `.../plan/revise` (words for another plan) and `.../plan/reject` answer it. The server runs the
+  approved rows alone, in order, and refuses every other write of the run `WRITE_NOT_APPROVED`; a
+  row whose item changed since its approval waits again, and each row's change is made once, also
+  when the agent or the server dies during it. The plan answers its `version`, and an approval
+  naming a version the plan has moved on from is refused `409 GOING_PLAN_CHANGED`, so a person
+  approves only what their page showed. `GET` and `PUT /api/v1/me/going/settings` hold the
+  person's `mode`: in `ask`, the default, every row waits; in `auto_review` one model call lets
+  through the field, link, claim and title-only create rows the person's words ask for. In both
+  modes the person's own approvals, reviews, answers, decisions and check results, a change of a
+  setting, a message, a broadcast, a change the outbox would deliver to an agent session and a
+  change of an issue a session claims wait for the person. A message to an agent session is posted
+  on the issue the session works on.
+  `POST /api/v1/going/runs/{id}/undo` undoes one run while History lists it: it writes back the
+  values the run's changes found where the item still holds what the run left, and keeps and names
+  a later value another writer left; it releases a claim the run took, unfollows, reopens a thread
+  the run resolved and resolves again one it reopened, retracts an ask the run opened, rejects the
+  run's open suggestions, closes the issues the run created with no message, and names a message
+  or a broadcast sent, not undone. So that an undo reads what each change found and left, routes
+  answer more of their own transaction: `PATCH /api/v1/issues/{key}` answers `previous` and, for a
+  rank, `rank_place`; `PATCH /api/v1/asks/{id}`, `POST /api/v1/comments/{id}/resolve` and
+  `.../reopen` answer `previous`; `POST` and
+  `DELETE /api/v1/issues/{key}/claim` answer `claim_changed` and `previous_claim`;
+  `POST /api/v1/artifacts/{id}/approval-requests` answers `opened`; the document edit routes answer
+  `previous_token` beside `token`; and the upload routes answer `previous_version`.
+  `GET /api/v1/going/runs/{id}` reads a run, `GET /api/v1/going/runs/{id}/events` streams its
+  frames from `Last-Event-ID`, and `POST /api/v1/going/runs/{id}/stop` stops it.
+  `GET /api/v1/me/going-runs` is History: the person's conversations while the newest run of each
+  is younger than seven days, with `?issue=` and `?q=`. `GET /api/v1/me/going-plans` lists the
+  plans that wait for the person, and the event `going_plan.updated` says that list changed.
+  The bar's line on top reads Ask, Do or File as a new issue: a key or an exact title gives its hit
+  with no model call, and other words go to a measured decision model (`DISPATCH_DECISION_MODEL`,
+  `DISPATCH_DECISION_MODEL_ENDPOINT` and `DISPATCH_DECISION_MODEL_TOKEN_FILE`, a model
+  `packages/envoy/going/decision_models.json` records), whose `decision` frame gives the line. The
+  short answer of a pause in typing calls the read tools, draws a typed block (`block`) from rows
+  the server reads itself, and stops at `POST /api/v1/going/requests/{id}/cancel`.
+  `GET /api/v1/projects/{key}/activity` counts a project's events per ISO week, and
+  `GET /api/v1/agents?limit=` lists the newest sessions alone. `/metrics` shows the server's and
+  the agent's memory and goroutines, the cache sizes, the runs by state, and the agent's slots,
+  stuck goroutines and kills for memory.

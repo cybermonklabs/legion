@@ -1048,6 +1048,12 @@ type ReadCacheFigures struct {
 	Budget  int64 `json:"budget"`
 }
 
+// ReadCacheBytes is the cold reads' cache's weight now (ReadCacheFigures.Bytes), which the
+// server's /metrics shows. It takes the read cache's lock alone, and no room's.
+func (s *Service) ReadCacheBytes() int64 {
+	return s.reads.figures().Bytes
+}
+
 // RoomFigures computes the figures now. It takes each room record's lock in turn, briefly, and the
 // read cache's, and touches no database: a pool not opened yet is reported as zeros rather than
 // opened.

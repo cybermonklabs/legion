@@ -889,28 +889,43 @@ exactly one - and the only thing that can read a count back is the fake embedder
 (e2e/fake-embedder.ts) the server calls as it calls Bedrock, under DISPATCH_E2E_EMBEDDER=fake
 (e2e/harness-embedder.ts). That switch is the server's, chosen before Playwright starts, so
 no project of another lane can carry it and e2e/search-tiers.e2e.ts skips everywhere else.
-This job is where it runs.
+This job is where it runs, and the models lane beside it: the command bar's answers,
+and blocks against the fake writing model and the fake decision
+model (e2e/fake-chat-model.ts, e2e/fake-decision-model.ts) under DISPATCH_E2E_MODELS=fake
+(e2e/harness-models.ts), a switch of the server's too, whose rows skip everywhere else. A
+second step of this job rather than a job of its own, since this job already holds the
+server's build and the browser install that lane needs.
 
 On both lanes, where the alone and multiprocess jobs run on `full` alone: this is one
-Chromium install and two rows of about 90 s, and it holds a check of the pull request it is
-on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a second server shape.
-A lane that skipped it would leave the claim unread until the merge queue.
+Chromium install, two rows of about 90 s and the models lane's specs, and it holds checks of
+the pull request it is on (check k2 of dispatch://INFRA-1042, and the command bar's answer
+checks) rather than a clock reading or a second server shape. A lane that skipped it would
+leave those claims unread until the merge queue.
 
 Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
 shard and alone legs, and this job's own conclusion is what the caller's `dispatch-browser`
 job reads. It is in the merge job's `needs` and in that job's name filter, where it gets a
 null leg and is passed over by reading one, exactly as multiprocess is.
 
-No budget measured on this file's own runs yet, so the embedder job's two step budgets are derived from the
+No budget measured on this file's own runs yet, so the embedder job's step budgets are derived from the
 multiprocess job's measured steps, which are the same steps on the same machine: its install
-step's 4 min, and 4 min for a browser step whose two rows run in about 90 s locally. The job
-budget is those two plus that job's measured 135 s maximum for every step without one,
-rounded up: 4 + 4 min plus 135 s = 11 min. The first runs replace these with readings of
-their own, as this file's head requires. Its Postgres then moved from a `services:`
-container to the harness's own, for the reason .github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs gives, which
+step's 4 min, and 4 min for a browser step whose two rows run in about 90 s locally. The
+models step reuses the contracts and the dashboard the "Browser-test the bar's two tiers
+against a counting embedder" step has just built, as the multiprocess job's sign-in step
+reuses its neighbour's, and runs the four model spec files its two filters match
+(`going-answer` also matches `going-answer-cancel` and `going-answer-safety`) on this
+config's one worker. Its reading is an estimate made when the step ran six files, two since
+deleted with the writes they tested: the six ran their 21 and 16 rows in 1.6 and 1.7 min of
+wall time on 3 workers on a farm runner, so on one worker about three times 3.3 min, 9.9 min,
+and under this file's rule 9.9 min plus 15 per cent, rounded up, is 12 min, until its first
+runs give it a reading of its own. The job budget is those three plus the multiprocess job's
+measured 135 s maximum for every step without one, rounded up: 4 + 4 + 12 min plus 135 s =
+23 min. The first runs replace these with readings of their own, as this file's head
+requires. Its Postgres then moved from a `services:` container to the harness's own, for
+the reason .github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs gives, which
 added that job's two steps for it at that job's figures: the pull at 120 s and the
-connections read at its two-minute floor. 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s
--> 15 min.
+connections read at its two-minute floor. 4 + 4 + 12 + 2 min plus 135 s and 120 s = 26 min
+15 s -> 27 min.
 
 ## Why the embedder job builds contracts
 
@@ -925,6 +940,28 @@ run-server.sh builds it too, inside the harness's boot wait; built here, the ser
 finds it current and starts in seconds. The name carries the lane because
 .github/scripts/check-ci-filters.sh names a step of this workflow by its own name, and
 the multiprocess job has a step that builds the same binary.
+
+## What the embedder job's models step runs, and why it calls Playwright directly
+
+The models lane: run-server.sh points the server at the two fake models the harness
+starts over TLS on loopback, and finds the server the "Build the Dispatch server for the
+embedder lane" step made current. Playwright directly, as the multiprocess job's sign-in
+step runs it: `bun run e2e:models` would build the contracts and the dashboard a second
+time, and the "Browser-test the bar's two tiers against a counting embedder" step before it
+built both from this checkout. `e2e:models` stays the command for a local run.
+
+Its Postgres is the harness's own, from the image and with the connections the "Pull the
+embedder stack's Postgres image" and "Read the connections the embedder stack's Postgres must
+allow" steps pulled and read, as the step before runs it. Its 12 minutes are derived in
+.github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets.
+
+## Why the embedder job's upload runs on failure alone, and serves both browser steps
+
+`if: failure()`, as the multiprocess job's upload is: the chromium project retries a
+failed row, but a row that fails after its retries fails this job and this upload runs.
+One upload serves both browser steps: a failed step skips the one after it, and each
+Playwright run empties e2e/test-results before it starts, so the directory holds the
+results of the step that failed.
 
 ## The visual review, its docker run and its budgets
 

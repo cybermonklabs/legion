@@ -1,0 +1,18 @@
+{
+  "kind": "agent_status",
+  "title": "Agents",
+  "spec": {
+    "source": "read_roster",
+    "params": {},
+    "table": "sessions"
+  },
+  "rows": [
+    {
+      "last_activity": "2026-11-02T10:00:00Z",
+      "open_asks": 1,
+      "session_id": "0199e2a0-1111-7000-8000-000000000001",
+      "state": "live",
+      "title": "Planner for DEMO-12"
+    }
+  ]
+}

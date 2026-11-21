@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -47,6 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
+	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
@@ -81,6 +84,36 @@ func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
 		if !name.MatchString(removed.Name) || removed.Replacement == "" {
 			t.Errorf("removed setting %+v, want a variable name and what replaced it", removed)
 		}
+	}
+}
+
+// The three decision-model settings are rows of the table, none required of a server that sets
+// none of them and none with a value in its place: each defaults to empty, and the server starts
+// with all three unset and no decision model.
+func TestDecisionModelSettings(t *testing.T) {
+	names := []string{"DISPATCH_DECISION_MODEL", "DISPATCH_DECISION_MODEL_ENDPOINT", "DISPATCH_DECISION_MODEL_TOKEN_FILE"}
+	for _, name := range names {
+		index := slices.IndexFunc(settings, func(row setting) bool { return row.Name == name })
+		if index < 0 {
+			t.Errorf("%s is no row of the settings table", name)
+			continue
+		}
+		if row := settings[index]; row.Default != "" || row.File || row.Required == "yes" {
+			t.Errorf("%s: Default %q, File %v, Required %q; want no default, no _FILE form, and not required", name, row.Default, row.File, row.Required)
+		}
+	}
+	unset := envGetter(signInEnvironment(nil))
+	for _, name := range names {
+		if value, set := unset.lookup(name); set || value != "" {
+			t.Errorf("%s reads %q, %v with nothing set, want empty", name, value, set)
+		}
+	}
+	boot, err := resolveBootConfig(unset)
+	if err != nil {
+		t.Fatalf("a server with no decision setting refuses to start: %v", err)
+	}
+	if boot.Decision != (decisionConfig{}) {
+		t.Fatalf("Decision = %+v with nothing set, want no decision model", boot.Decision)
 	}
 }
 
@@ -823,6 +856,17 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			if _, err := envoyJSON(t, map[string]string{"XDG_CONFIG_HOME": "relative"}); err == nil || err.Error() != `XDG_CONFIG_HOME is "relative", which is not an absolute path` {
 				t.Errorf("relative: err = %v, want a refusal naming XDG_CONFIG_HOME and its value", err)
+			}
+		},
+		"XDG_RUNTIME_DIR": func(t *testing.T) {
+			// The directory the agent's socket is made in, handed to the API server's listener;
+			// unset, the listener makes a directory of its own.
+			runtime := t.TempDir()
+			if boot := resolveWith(t, map[string]string{"XDG_RUNTIME_DIR": " " + runtime + " "}); boot.RuntimeDir != runtime {
+				t.Errorf("RuntimeDir = %q, want %q", boot.RuntimeDir, runtime)
+			}
+			if boot := resolveWith(t, map[string]string{}); boot.RuntimeDir != "" {
+				t.Errorf("unset: RuntimeDir = %q, want empty", boot.RuntimeDir)
 			}
 		},
 		"ENVOY_ALLOW_REMOTE_NATS": func(t *testing.T) {
@@ -1696,6 +1740,65 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_MODEL": ""}), "DISPATCH_CHAT_MODEL is required")
 			refusedWith(t, map[string]string{"DISPATCH_CHAT_MODEL": "llama-3-70b"}, "DISPATCH_CHAT_MODEL set, but DISPATCH_ANSWERER is unset")
 		},
+		"DISPATCH_AGENT_SOCKET": func(t *testing.T) {
+			// The agent process calls its server at the socket the setting names, under the secret its
+			// standard input carries, and exits 0 once that input closes; unset, it refuses to start.
+			var stderr bytes.Buffer
+			if code := runAgent(context.Background(), envGetter(nil), strings.NewReader(""), &stderr); code != 2 || !strings.Contains(stderr.String(), "DISPATCH_AGENT_SOCKET is unset") {
+				t.Errorf("unset: exit %d, stderr %q; want 2, naming DISPATCH_AGENT_SOCKET", code, stderr.String())
+			}
+			socket := testtmp.Socket(t, "agent.sock")
+			hellos := serveAgentHellos(t, socket)
+			secret := bytes.Repeat([]byte{7}, agentwire.SecretSize)
+			stdin, server := io.Pipe()
+			exited := make(chan int, 1)
+			go func() {
+				exited <- runAgent(context.Background(), envGetter(map[string]string{"DISPATCH_AGENT_SOCKET": " " + socket + " "}), stdin, io.Discard)
+			}()
+			if _, err := server.Write(secret); err != nil {
+				t.Fatalf("write the secret to the agent: %v", err)
+			}
+			select {
+			case got := <-hellos:
+				if !bytes.Equal(got, secret) {
+					t.Errorf("the agent's hello carried the secret %x, want %x, which its standard input carried", got, secret)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatal("the agent said no hello at the socket DISPATCH_AGENT_SOCKET names within 30 s")
+			}
+			_ = server.Close()
+			select {
+			case code := <-exited:
+				if code != 0 {
+					t.Errorf("the agent exited %d when its standard input closed, want 0", code)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the agent still ran 5 s after its standard input closed")
+			}
+		},
+		"DISPATCH_DECISION_MODEL": func(t *testing.T) {
+			if boot := resolveWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL": " jev-latest "})); boot.Decision.Model != "jev-latest" {
+				t.Errorf("Model = %q, want the trimmed model", boot.Decision.Model)
+			}
+			if boot := resolveWith(t, nil); boot.Decision.Model != "" {
+				t.Errorf("unset: Model = %q, want no decision model", boot.Decision.Model)
+			}
+		},
+		"DISPATCH_DECISION_MODEL_ENDPOINT": func(t *testing.T) {
+			if boot := resolveWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_ENDPOINT": " https://Decide.Example/base "})); boot.Decision.Endpoint != "https://Decide.Example/base" {
+				t.Errorf("Endpoint = %q, want the trimmed URL", boot.Decision.Endpoint)
+			}
+			refusedWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_ENDPOINT": "http://decide.example"}), "DISPATCH_DECISION_MODEL_ENDPOINT=")
+			refusedWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_ENDPOINT": ""}), "DISPATCH_DECISION_MODEL_ENDPOINT is required")
+		},
+		"DISPATCH_DECISION_MODEL_TOKEN_FILE": func(t *testing.T) {
+			// A path, read on each call, not at boot: a file that is not there yet boots.
+			missing := filepath.Join(t.TempDir(), "decision-token")
+			if boot := resolveWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_TOKEN_FILE": " " + missing + " "})); boot.Decision.TokenFile != missing {
+				t.Errorf("TokenFile = %q, want %q", boot.Decision.TokenFile, missing)
+			}
+			refusedWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_TOKEN_FILE": ""}), "DISPATCH_DECISION_MODEL_TOKEN_FILE is required")
+		},
 		"DISPATCH_WEB_DIST": func(t *testing.T) {
 			if dir, err := defaultWebDistDir(resolveWith(t, map[string]string{"DISPATCH_WEB_DIST": "/srv/dispatch/dist"}).WebDist); err != nil || dir != "/srv/dispatch/dist" {
 				t.Errorf("web dist = %q, %v", dir, err)
@@ -2082,6 +2185,219 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_AGENT_CEILING": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.AgentCeiling != 0 {
+				t.Errorf("unset: AgentCeiling = %d, want 0 (the ceiling the container gives)", boot.AgentCeiling)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_CEILING": " 1048576 "}); boot.AgentCeiling != 1<<20 {
+				t.Errorf("DISPATCH_TEST_AGENT_CEILING=1048576: AgentCeiling = %d", boot.AgentCeiling)
+			}
+			for _, invalid := range []string{"1MiB", "-1", "0"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_CEILING": invalid},
+					fmt.Sprintf("DISPATCH_TEST_AGENT_CEILING=%q (expected a positive whole number of bytes)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_CEILING": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_AGENT_GOMEMLIMIT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.AgentLimit != 0 {
+				t.Errorf("unset: AgentLimit = %d, want 0 (the GOMEMLIMIT the ceiling gives)", boot.AgentLimit)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_GOMEMLIMIT": " 2097152 "}); boot.AgentLimit != 2<<20 {
+				t.Errorf("DISPATCH_TEST_AGENT_GOMEMLIMIT=2097152: AgentLimit = %d", boot.AgentLimit)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_GOMEMLIMIT": "0"},
+				`DISPATCH_TEST_AGENT_GOMEMLIMIT="0" (expected a positive whole number of bytes)`)
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_GOMEMLIMIT": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_AGENT_HOOKS": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_HOOKS": "1"}); !boot.AgentHooks {
+				t.Error("DISPATCH_TEST_AGENT_HOOKS=1: the agent's hooks are off")
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{Loop: true}); !slices.Contains(env, "DISPATCH_TEST_AGENT_HOOKS=1") {
+				t.Errorf("the agent's environment with its hooks on is %v, want DISPATCH_TEST_AGENT_HOOKS=1", env)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_HOOKS": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_AGENT_CALL_HOOK": func(t *testing.T) {
+			for raw, want := range map[string][]api.AgentCallRule{
+				" panic GET /api/v1/search ":   {{Route: "GET /api/v1/search", Panic: true}},
+				"hold 20s POST /api/v1/issues": {{Route: "POST /api/v1/issues", Hold: 20 * time.Second}},
+				"hold 20s PATCH /api/v1/issues/A-3; after 1m PATCH /api/v1/issues/A-5": {
+					{Route: "PATCH /api/v1/issues/A-3", Hold: 20 * time.Second},
+					{Route: "PATCH /api/v1/issues/A-5", Hold: time.Minute, After: true},
+				},
+			} {
+				if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_CALL_HOOK": raw}); !slices.Equal(boot.AgentCallHook.Rules, want) {
+					t.Errorf("DISPATCH_TEST_AGENT_CALL_HOOK=%q: AgentCallHook = %+v, want %+v", raw, boot.AgentCallHook.Rules, want)
+				}
+			}
+			for _, invalid := range []string{"panic /api/v1/search", "hold soon GET /api/v1/search", "hold 1s get /api/v1/search", "sleep GET /x",
+				"hold 1s GET /x;", "after GET /x"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_CALL_HOOK": invalid},
+					fmt.Sprintf("DISPATCH_TEST_AGENT_CALL_HOOK=%q", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_CALL_HOOK": "panic GET /x"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_AGENT_SLOTS": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_SLOTS": " 17 "}); boot.AgentSlots != 17 {
+				t.Errorf("DISPATCH_TEST_AGENT_SLOTS=17: AgentSlots = %d", boot.AgentSlots)
+			}
+			for _, invalid := range []string{"0", "65", "many"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_SLOTS": invalid},
+					fmt.Sprintf("DISPATCH_TEST_AGENT_SLOTS=%q (expected a whole number of runs from 1 to 64)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_SLOTS": "2"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_AGENT_PROCS": func(t *testing.T) {
+			// The server reads the agent's CPUs under its test hooks and starts the agent with them
+			// as its GOMAXPROCS; unset, the agent gets as many as the server schedules on, 4 at most.
+			if boot := resolveWith(t, map[string]string{}); boot.AgentProcs != 0 {
+				t.Errorf("unset: AgentProcs = %d, want 0 (the CPUs the server gives its agent)", boot.AgentProcs)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_PROCS": " 1 "})
+			if boot.AgentProcs != 1 {
+				t.Errorf("DISPATCH_TEST_AGENT_PROCS=1: AgentProcs = %d", boot.AgentProcs)
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{Procs: boot.AgentProcs}); !slices.Contains(env, "GOMAXPROCS=1") {
+				t.Errorf("the agent's environment with DISPATCH_TEST_AGENT_PROCS=1 is %v, want GOMAXPROCS=1", env)
+			}
+			unset := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{})
+			if at := slices.IndexFunc(unset, func(entry string) bool { return strings.HasPrefix(entry, "GOMAXPROCS=") }); at < 0 {
+				t.Errorf("unset: the agent's environment is %v, want a GOMAXPROCS", unset)
+			} else if procs, err := strconv.Atoi(strings.TrimPrefix(unset[at], "GOMAXPROCS=")); err != nil || procs < 1 || procs > agentMaxProcs {
+				t.Errorf("unset: the agent's environment holds %s, want 1 to %d", unset[at], agentMaxProcs)
+			}
+			for _, invalid := range []string{"0", "5", "a quarter"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_PROCS": invalid},
+					fmt.Sprintf("DISPATCH_TEST_AGENT_PROCS=%q (expected a whole number of CPUs from 1 to %d)", invalid, agentMaxProcs))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_PROCS": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_AGENT_GROW_AFTER": func(t *testing.T) {
+			// The server hands the wait on to its agent, and the agent refuses a value that is no
+			// positive Go duration before it calls anything.
+			if boot := resolveWith(t, map[string]string{}); boot.AgentGrowAfter != 0 {
+				t.Errorf("unset: AgentGrowAfter = %v, want 0 (the agent allocates for its runs alone)", boot.AgentGrowAfter)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_GROW_AFTER": " 5s "})
+			if boot.AgentGrowAfter != 5*time.Second {
+				t.Errorf("DISPATCH_TEST_AGENT_GROW_AFTER=5s: AgentGrowAfter = %v", boot.AgentGrowAfter)
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{GrowAfter: boot.AgentGrowAfter}); !slices.Contains(env, "DISPATCH_TEST_AGENT_GROW_AFTER=5s") {
+				t.Errorf("the agent's environment is %v, want DISPATCH_TEST_AGENT_GROW_AFTER=5s", env)
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{}); slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "DISPATCH_TEST_AGENT_GROW_AFTER=") }) {
+				t.Errorf("unset: the agent's environment is %v, want no DISPATCH_TEST_AGENT_GROW_AFTER", env)
+			}
+			for _, invalid := range []string{"soon", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_GROW_AFTER": invalid},
+					fmt.Sprintf("DISPATCH_TEST_AGENT_GROW_AFTER=%q (expected a positive Go duration)", invalid))
+				var stderr bytes.Buffer
+				values := envGetter(map[string]string{"DISPATCH_AGENT_SOCKET": "agent.sock", "DISPATCH_TEST_AGENT_GROW_AFTER": invalid})
+				if code := runAgent(context.Background(), values, bytes.NewReader(make([]byte, agentwire.SecretSize)), &stderr); code != 1 ||
+					!strings.Contains(stderr.String(), fmt.Sprintf("DISPATCH_TEST_AGENT_GROW_AFTER=%q", invalid)) {
+					t.Errorf("the agent with DISPATCH_TEST_AGENT_GROW_AFTER=%s: exit %d, stderr %q; want 1, naming it", invalid, code, stderr.String())
+				}
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_GROW_AFTER": "5s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_SERVER_HEAP": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.ServerHeap != 0 {
+				t.Errorf("unset: ServerHeap = %d, want 0 (the server holds no heap for a test)", boot.ServerHeap)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SERVER_HEAP": " 1048576 "}); boot.ServerHeap != 1<<20 {
+				t.Errorf("DISPATCH_TEST_SERVER_HEAP=1048576: ServerHeap = %d", boot.ServerHeap)
+			}
+			for _, invalid := range []string{"1MiB", "-1", "0"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SERVER_HEAP": invalid},
+					fmt.Sprintf("DISPATCH_TEST_SERVER_HEAP=%q (expected a positive whole number of bytes)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_SERVER_HEAP": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_KEEP_CLOSED_ROOMS": func(t *testing.T) {
+			// The reader is the server's handler (plantLeaks): with the hook on, a document socket
+			// that has closed leaves its room's document kept, and no other request keeps one.
+			database := storetest.Open(t)
+			kept := func() int {
+				closedRoomDocuments.Lock()
+				defer closedRoomDocuments.Unlock()
+				return len(closedRoomDocuments.documents)
+			}
+			served := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+			const socket = "/ws/doc/0199e2a0-3333-7000-8000-000000000001"
+			for _, row := range []struct {
+				value, path string
+				want        int
+			}{{"", socket, 0}, {"true", socket, 0}, {"1", "/api/v1/issues", 0}, {"1", socket, 1}} {
+				before := kept()
+				boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_KEEP_CLOSED_ROOMS": row.value})
+				if boot.KeepClosedRooms != (row.value == "1") {
+					t.Errorf("DISPATCH_TEST_KEEP_CLOSED_ROOMS=%q: KeepClosedRooms = %v, want only 1 to set it", row.value, boot.KeepClosedRooms)
+				}
+				plantLeaks(served, boot, database).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, row.path, nil))
+				if got := kept() - before; got != row.want {
+					t.Errorf("DISPATCH_TEST_KEEP_CLOSED_ROOMS=%q: GET %s kept %d documents, want %d", row.value, row.path, got, row.want)
+				}
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_KEEP_CLOSED_ROOMS": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_KEEP_REQUEST_MEGABYTES": func(t *testing.T) {
+			// The reader is the server's handler (plantLeaks): with the hook on, every request stores
+			// one more megabyte.
+			stored := func() int {
+				requestMegabytes.Lock()
+				defer requestMegabytes.Unlock()
+				return len(requestMegabytes.stored)
+			}
+			served := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+			for _, row := range []struct {
+				value string
+				want  int
+			}{{"", 0}, {"true", 0}, {"1", 2}} {
+				before := stored()
+				boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_KEEP_REQUEST_MEGABYTES": row.value})
+				if boot.KeepRequestMegabytes != (row.value == "1") {
+					t.Errorf("DISPATCH_TEST_KEEP_REQUEST_MEGABYTES=%q: KeepRequestMegabytes = %v, want only 1 to set it", row.value, boot.KeepRequestMegabytes)
+				}
+				handler := plantLeaks(served, boot, nil)
+				for _, path := range []string{"/healthz", "/api/v1/issues"} {
+					handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+				}
+				if got := stored() - before; got != row.want {
+					t.Errorf("DISPATCH_TEST_KEEP_REQUEST_MEGABYTES=%q: two requests stored %d megabytes, want %d", row.value, got, row.want)
+				}
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_KEEP_REQUEST_MEGABYTES": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_AGENT_SLOTS": func(t *testing.T) {
+			// The server names the agent's slots in its environment, and the agent refuses a count
+			// that is no whole number from 1 to 64 before it calls anything.
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentMemory{Slots: 5}, "", agentTestHooks{}); !slices.Contains(env, "DISPATCH_AGENT_SLOTS=5") {
+				t.Errorf("the agent's environment is %v, want DISPATCH_AGENT_SLOTS=5", env)
+			}
+			for _, invalid := range []string{"0", "65"} {
+				var stderr bytes.Buffer
+				values := envGetter(map[string]string{"DISPATCH_AGENT_SOCKET": "agent.sock", "DISPATCH_AGENT_SLOTS": invalid})
+				if code := runAgent(context.Background(), values, bytes.NewReader(make([]byte, agentwire.SecretSize)), &stderr); code != 1 ||
+					!strings.Contains(stderr.String(), fmt.Sprintf("DISPATCH_AGENT_SLOTS=%q", invalid)) {
+					t.Errorf("DISPATCH_AGENT_SLOTS=%s: exit %d, stderr %q; want 1, naming it", invalid, code, stderr.String())
+				}
+			}
+		},
+		"SSL_CERT_FILE": func(t *testing.T) {
+			// The trust the server reads its model service's certificate by is handed on to the
+			// agent process, which calls the same service.
+			bundle := filepath.Join(t.TempDir(), "roots.pem")
+			if boot := resolveWith(t, map[string]string{"SSL_CERT_FILE": " " + bundle + " "}); boot.TrustFile != bundle {
+				t.Errorf("TrustFile = %q, want %q", boot.TrustFile, bundle)
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), bundle, agentTestHooks{}); !slices.Contains(env, "SSL_CERT_FILE="+bundle) {
+				t.Errorf("the agent's environment is %v, want SSL_CERT_FILE=%s", env, bundle)
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{}); slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "SSL_CERT_FILE=") }) {
+				t.Errorf("unset: the agent's environment is %v, want no SSL_CERT_FILE", env)
+			}
+		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ROSTER_UNCACHED": "1"}); !boot.ListenerRosterUncached {
 				t.Error("DISPATCH_TEST_ROSTER_UNCACHED=1: ListenerRosterUncached false")
@@ -2129,13 +2445,13 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 		},
 		"DISPATCH_NEW_ISSUE_SESSION": func(t *testing.T) {
-			// The session that issue is routed to, and that its first message goes to; unset, the
-			// issue is still made and no conversation is started on it.
+			// The session that issue is routed to, with no first message posted on it; unset, the
+			// issue is still made, with no route.
 			if boot := resolveWith(t, map[string]string{"DISPATCH_NEW_ISSUE_SESSION": " 0199e2a0-1111-7000-8000-000000000001 "}); boot.NewIssueSession != "0199e2a0-1111-7000-8000-000000000001" {
 				t.Errorf("NewIssueSession = %q", boot.NewIssueSession)
 			}
 			if boot := resolveWith(t, map[string]string{}); boot.NewIssueSession != "" {
-				t.Errorf("unset: NewIssueSession = %q, want no conversation started", boot.NewIssueSession)
+				t.Errorf("unset: NewIssueSession = %q, want the issue to take no route", boot.NewIssueSession)
 			}
 		},
 		"DISPATCH_TEST_EMBEDDER_OFF": func(t *testing.T) {

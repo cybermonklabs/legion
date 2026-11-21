@@ -55,8 +55,9 @@ func newAgentActivityFixture(t *testing.T) *store.Store {
 	return database
 }
 
-// agentActivityRows is one string per row of statement, sorted. Neither statement orders its
-// rows and the caller reads the answer as a map, so the comparison is of the set of rows.
+// agentActivityRows is one string per row of statement, of its first two columns - the session
+// and its newest event's time, all main's statement answers - sorted. Neither statement orders
+// its rows and the caller reads the answer as a map, so the comparison is of the set of rows.
 func agentActivityRows(t *testing.T, database *store.Store, statement string) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), statement, agentActivitySessions)
@@ -70,7 +71,7 @@ func agentActivityRows(t *testing.T, database *store.Store, statement string) []
 		if err != nil {
 			t.Fatalf("read an agent activity row: %v", err)
 		}
-		got = append(got, fmt.Sprint(values...))
+		got = append(got, fmt.Sprint(values[:2]...))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the agent activity rows: %v", err)

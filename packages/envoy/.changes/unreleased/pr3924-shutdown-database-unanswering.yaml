@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  `envoy-dispatch` stopping while its database does not answer exits within its shutdown budget
+  again. A connection pgx discards after a failure, which its pool takes back only 15 s later, no
+  longer counts as an answer that starts the three silent health probes over. And the command
+  bar's agent gives the record of its exit, which frees the runs it held, half a second of the
+  shutdown once it has exited; after that the runs keep their leases, which run out.

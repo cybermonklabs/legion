@@ -434,6 +434,14 @@ func (s *server) createStoredMessage(
 	}); err != nil {
 		return model.Message{}, nil, err
 	}
+	// An issue-less message is the agents route's (createAgentMessage), whose answer is the message
+	// it stored: handed to the command bar's landing of this request, which records it in this
+	// transaction (goingRecordAnswer), so a send of a run whose answer was never read - answered 5xx
+	// after this commit, or whose process ended - still names its message in the run's landing. It
+	// holds no attempt yet: the first is sent and settled after this commit.
+	if issueKey == nil {
+		goingRecordAnswer(ctx, http.StatusCreated, func() any { return newShapedMessage(message, false) })
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return model.Message{}, nil, err
 	}
@@ -519,8 +527,9 @@ func isSessionSwitchCommand(body string) bool {
 
 // isSessionSwitch reports whether a send of message in mode delivery is a model or thinking switch
 // the session runs as its own turn: a message a person wrote themselves (an author of kind "user"
-// with no act, the agent an author records when it wrote for its person) on no issue, no
-// broadcast's copy, sent as Send (steer) or Aside, whose body is one switch line
+// with no act, the agent an author records when it wrote for its person - a token's, or the
+// command bar's for a run of its) on no issue, no broadcast's copy, sent as Send (steer) or Aside,
+// whose body is one switch line
 // (isSessionSwitchCommand). It mirrors isUserTurnCandidate in
 // packages/pi-shared/src/accept-user-turn.ts and the accept route's own checks (acceptDelivery,
 // which refuses a message an agent wrote for its person as ACCEPT_WRITTEN_BY_AGENT), which admit

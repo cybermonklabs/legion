@@ -14,6 +14,20 @@ describe("actorText", () => {
     );
   });
 
+  test("an item's history names the command bar for a change of a run", () => {
+    const person: Actor = { kind: "user", id: "ana@example.com" };
+    const bar = { agent: "command-bar", run: "0190c7d2-1111-7222-8333-444444444444" };
+    expect(actorText({ ...person, act: { ...bar, scopes: ["person", "approve"] } })).toBe(
+      "user ana@example.com, through the command bar"
+    );
+    expect(
+      actorText({
+        ...person,
+        act: { ...bar, scopes: ["person"], token_id: "t-1", token_name: "architect" },
+      })
+    ).toBe("user ana@example.com, through the command bar with token architect");
+  });
+
   test("a session keeps its service subject, and a system actor its id", () => {
     expect(actorText({ kind: "session", id: "ses-1" })).toBe("session ses-1");
     expect(

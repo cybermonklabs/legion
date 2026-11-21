@@ -88,3 +88,11 @@ export const UserThreadStateUpdatedEventPayloadSchema = z
 export type UserThreadStateUpdatedEventPayload = z.output<
   typeof UserThreadStateUpdatedEventPayloadSchema
 >;
+
+/** `going_plan.updated`: what one person's command-bar plans wait on changed - a run's plan began
+ *  to wait for them, or a waiting plan was answered, stopped or made to wait again. It names the
+ *  person alone; their pages read their Inbox's plans (`GET /api/v1/me/going-plans`) and History
+ *  (`GET /api/v1/me/going-runs`) again. It names no owner and never notifies. */
+export const GoingPlanUpdatedEventPayloadSchema = z.strictObject({ login: z.string() }).readonly();
+
+export type GoingPlanUpdatedEventPayload = z.output<typeof GoingPlanUpdatedEventPayloadSchema>;

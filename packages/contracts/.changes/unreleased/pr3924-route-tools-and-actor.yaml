@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  `src/dispatch-route-tools.ts` holds a tool spec for each route of the Dispatch server a person can
+  call that no hand-written spec of `src/dispatch-tools.ts` calls, each with its route binding
+  (`DispatchToolSpec.routes`, `DispatchToolRoute`: the method, the path pattern, and which arguments
+  fill the path, the query and the JSON body), and `personToolSpecs`, the tools only the command bar
+  calls, which no `dispatch` command offers. `bun run gen:go` writes each binding into the Go
+  package as `DispatchTool.Routes` (`ToolRoute`), and its `DispatchTools` lists the person tools
+  after the others.
+  `ActorAct` carries `agent` and `run`, the command bar and the run a person's change was made in
+  (`ActorActSchema`), and `actorActText` reads such an act as "<person>, through the command bar",
+  or "<person>, through the command bar with token <name>" for a run under a personal token.
+  `GoingPlanUpdatedEventPayload` (`{login}`) is the payload of the event `going_plan.updated`,
+  which says that what one person's command-bar plans wait on changed.

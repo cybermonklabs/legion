@@ -56,6 +56,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return "Kept a decision";
     case "priority.updated":
       return `Priority ${event.payload.change}: ${event.payload.id}`;
+    case "going_plan.updated":
+      return "Command-bar plan updated";
     case "ask.resolved":
       return askResolutionParts(event.payload.resolution);
     case "ask.answered":

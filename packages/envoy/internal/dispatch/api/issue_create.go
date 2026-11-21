@@ -68,7 +68,10 @@ type createIssueInput struct {
 	Assignee   json.RawMessage `json:"assignee"`
 	Components json.RawMessage `json:"components"`
 	Repo       json.RawMessage `json:"repo"`
-	Actor      *model.Actor    `json:"actor"`
+	// Route is the route the new issue takes, role:<name> or session:<id>, held to the rule an
+	// update's route is (checkIssueRoute); none, or one written empty, leaves it with none.
+	Route *string      `json:"route"`
+	Actor *model.Actor `json:"actor"`
 }
 
 func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +234,14 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if err := checkIssueRoute(input.Route); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	var route *string
+	if input.Route != nil && *input.Route != "" {
+		route = input.Route
 	}
 	// The near-copy gate, run once for every create it covers whatever `force` says: a forced
 	// create's record of what it went past must be the refusal an unforced create would have met,
@@ -461,9 +472,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	issueRank := rank.Between(lastRank, "")
 
 	if _, err := tx.Exec(r.Context(), `
-		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, key, input.Project, number, input.Title, parentRef, actorJSON, labels, priority, issueRank, assignee, repo); err != nil {
+		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo, route)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, key, input.Project, number, input.Title, parentRef, actorJSON, labels, priority, issueRank, assignee, repo, route); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -556,6 +567,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The issue this create made, handed to the command bar's landing of this request, which
+	// records it in this transaction (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusCreated, func() any { return issue })
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -697,8 +711,11 @@ func (outcome nearCopyOutcome) unrecorded() nearCopyOutcome {
 }
 
 // respondWithExistingExternalIssue answers a create naming a GitHub issue Dispatch already holds
-// with that issue. Nothing was created, so no related-item check is made, and the result says so
-// (and the check is recorded as not made, reason already_exists).
+// with that issue, 200 where a create that made its issue answers 201: before the create where the
+// reference already resolves, and from the create's own transaction where another create of the
+// reference committed first (its external link's unique violation). Nothing was created, so no
+// related-item check is made, and the result says so (and the check is recorded as not made,
+// reason already_exists).
 func (s *server) respondWithExistingExternalIssue(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -728,6 +745,9 @@ func (s *server) respondWithExistingExternalIssue(
 	advice := s.writeAdvice(
 		r.Context(), adviceReadTx, "POST /api/v1/issues", existingKey, actor, adviceAsks{}, existingStatus, "", false,
 	)
+	// The issue the create names, which it made nothing of, handed to the command bar's landing of
+	// this request, which records it with whatever the request goes on to commit (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusOK, func() any { return existing })
 	if err := adviceReadTx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return

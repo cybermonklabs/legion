@@ -1247,7 +1247,7 @@ func (s *server) planCommentReply(
 }
 
 func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+	if !presentsBearer(r) {
 		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires an agent bearer token")
 		return
 	}

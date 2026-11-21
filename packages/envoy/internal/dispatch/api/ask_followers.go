@@ -191,6 +191,9 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		s.writeHandlerError(w, err)
 		return
 	}
+	// What the route answers of this change, which says nothing more than that it committed,
+	// handed to the command bar's landing of this request (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusNoContent, func() any { return nil })
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -1,0 +1,32 @@
+kind: Added
+body: |-
+  `src/going.ts` declares three more frames of the command bar's answer stream, each with its
+  shapes, and `bun run gen:go` writes their names into the Go package (`GoingEventDecision`,
+  `GoingEventBlock` and `GoingEventRoster`): `decision` (`GoingDecisionEvent`, `GoingLine`,
+  `GoingDecidedContext`), the action the decision model chose before the answer and the line on
+  top of the bar it gives, `ask`, `do` or `file`; `block` (`GoingBlockEvent`, `GoingBlockKind`,
+  `GoingBlockData`, `GoingBlockSource` and the chart, table, metric and progress specs), one typed
+  block filled from a read the server serves; and `roster` (`GoingRosterEvent`), how fresh the
+  roster the answer read was. `fixtures/going/` holds the data of each frame as the Dispatch
+  server's own Go types write it, and `src/going.test.ts` holds every fixture to these types key
+  for key.
+  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts` carry the shapes of the new
+  routes: the capability read's new shape; a run of the bar's agent, started with
+  `POST /api/v1/going/runs` (`GoingRunInput`), read and stopped as `GoingRun`
+  (`GoingRunUsed`), and undone with `POST /api/v1/going/runs/{id}/undo` (`GoingUndoAnswer`,
+  `GoingUndoLine`, `GoingUndoField`); its plan (`GoingPlanAnswer`, `GoingPlanRow`, whose `result`
+  is `GoingRowResult` with `delivery`, and `GoingHolder`), approved, revised or rejected
+  (`GoingPlanApproveInput` with `GoingPlanTick`, `GoingPlanReviseInput`, `GoingPlanRejectInput`);
+  History, `GET /api/v1/me/going-runs` (`GoingConversationsPage`, `GoingConversation`); the plans
+  that wait in the Inbox, `GET /api/v1/me/going-plans` (`GoingWaitingPlansPage`,
+  `GoingWaitingPlan`); the person's command-bar setting (`GoingSettings`, `GoingSettingsInput`,
+  its `mode` `ask` or `auto_review`); and `GET /api/v1/projects/{key}/activity`.
+  `ClaimedIssue` carries `claim_changed` and `previous_claim`, and `ApprovalRequestResponse`
+  carries `opened`.
+  No request shape gains a condition member: the command bar's compare-and-sets ride on the
+  server's own in-process requests, never in a body.
+  `PATCH /api/v1/issues/{key}` answers `IssueUpdated`, the issue with `previous` (each field the
+  update names as it found it) and, for a rank, `rank_place`; `PATCH /api/v1/asks/{id}` answers
+  `AskEdited` and `POST /api/v1/comments/{id}/resolve` `ResolvedComment`, each with `previous`;
+  `EditArtifactResponse` carries `previous_token` and `ArtifactUploadResponse`
+  `previous_version`.

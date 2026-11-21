@@ -11,18 +11,29 @@ import { type Actor, type ActorAct, serviceSubjectLabel } from "./dispatch-api";
  * when the registry is unavailable.
  */
 
+/** `ActorAct.agent` of an act the command bar made for its person, a call of one of its runs:
+ *  Go's `model.ActAgentCommandBar`. */
+const COMMAND_BAR_AGENT = "command-bar";
+
 /** The person an act is recorded as, with the agent that made it for them beside it:
- *  `<person>, acting through session <id>` when the act names the session a broker-issued token
- *  proved, `<person>, acting through token <name>` when it names only the personal token, and
- *  `person` alone when there is no act, which is every act a person made at a browser.
+ *  `<person>, through the command bar` when the command bar made it in a run of the person's,
+ *  and `<person>, through the command bar with token <name>` when that run acts with a personal
+ *  token; `<person>, acting through session <id>` when the act names the session a broker-issued
+ *  token proved, `<person>, acting through token <name>` when it names only the personal token,
+ *  and `person` alone when there is no act, which is every act a person made at a browser.
  *
  *  Every surface that shows who acted or who answered renders it through here, the dashboard's
  *  and the agent tools' alike, so no reader takes an agent's act for the person's own words. An
- *  act that names neither a session nor a token names no agent to show, so it reads as the
- *  person alone. */
+ *  act that names neither the command bar, a session nor a token names no agent to show, so it
+ *  reads as the person alone. */
 export function actorActText(person: string, act: ActorAct | undefined): string {
   if (act === undefined) {
     return person;
+  }
+  if (act.agent === COMMAND_BAR_AGENT) {
+    return act.token_name !== undefined && act.token_name !== ""
+      ? `${person}, through the command bar with token ${act.token_name}`
+      : `${person}, through the command bar`;
   }
   if (act.session !== undefined && act.session !== "") {
     return `${person}, acting through session ${act.session}`;

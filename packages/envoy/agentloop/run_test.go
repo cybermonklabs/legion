@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -642,6 +645,83 @@ func TestAServerErrorIsRetriedOnceAndARequestErrorIsNot(t *testing.T) {
 	}
 }
 
+// A provider error carries the status the provider refused the call with, so a caller can tell a
+// request the provider will not serve (a 400, such as a response format it refuses) from one it
+// could not serve now; a 500 the retry cleared is no error and carries none, and a call that drew
+// no response at all - its token could not be read - carries none either.
+func TestAProviderErrorCarriesTheStatusItWasRefusedWith(t *testing.T) {
+	t.Parallel()
+	refused := reply{status: http.StatusBadRequest, body: []byte(`{"error":{"message":"response_format is not supported","type":"invalid_request_error"}}`)}
+	overloaded := reply{
+		status: http.StatusInternalServerError, headers: map[string]string{"Retry-After": "0"},
+		body: []byte(`{"error":{"message":"overloaded","type":"server_error"}}`),
+	}
+	answered := chatStream("stop", chatUsage{Prompt: 1, Completion: 1}, "The note says plum.")
+	for _, c := range []struct {
+		name    string
+		kind    Kind
+		replies []reply
+		token   bool
+		fault   Fault
+		status  int
+	}{
+		{name: "a Chat Completions 400", kind: OpenAIChat, replies: []reply{refused}, fault: FaultProviderError, status: http.StatusBadRequest},
+		{name: "a Messages 400", kind: AnthropicMessages, replies: []reply{{status: http.StatusBadRequest, body: []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`)}}, fault: FaultProviderError, status: http.StatusBadRequest},
+		{name: "a 500 the retry did not clear", kind: OpenAIChat, replies: []reply{overloaded, overloaded}, fault: FaultProviderError, status: http.StatusInternalServerError},
+		{name: "a 500 the retry cleared", kind: OpenAIChat, replies: []reply{overloaded, answered}},
+		{name: "a token that cannot be read", kind: OpenAIChat, replies: []reply{answered}, token: true, fault: FaultProviderError},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStandIn(t, c.replies...)
+			f := newFixture(t, s, c.kind, 1)
+			if c.token {
+				f.req.Model.Endpoint.Token = func(context.Context) (string, error) { return "", errors.New("the token file is gone") }
+			}
+			result, err := Run(context.Background(), f.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Fault != c.fault || result.Status != c.status {
+				t.Errorf("fault %q with status %d, want %q with status %d: %s", result.Fault, result.Status, c.fault, c.status, result.Detail)
+			}
+		})
+	}
+}
+
+// A call the provider's content filter refused is a fault of its own, which a caller tells apart
+// from every other refusal: a Chat Completions 400 whose body names the filter - the stream chunk
+// an Azure deployment sends with the error status, and Azure OpenAI's error body - carries the
+// 400, and a reply the provider stopped for content is one too. A 400 for any other cause stays a
+// provider error (TestAProviderErrorCarriesTheStatusItWasRefusedWith).
+func TestAContentFilterRefusalIsItsOwnFault(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name   string
+		reply  reply
+		status int
+	}{
+		{name: "a 400 holding a chunk the filter stopped", status: http.StatusBadRequest, reply: reply{status: http.StatusBadRequest, body: []byte(
+			`data: {"created":1,"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"content_filter","index":0,` +
+				`"content_filter_results":{"error":{"code":"content_filter","message":"Response content blocked by label 'Jailbreak'."}}}]}` + "\n\n")}},
+		{name: "a 400 whose error is the filter's", status: http.StatusBadRequest, reply: reply{status: http.StatusBadRequest, body: []byte(
+			`{"error":{"message":"The response was filtered due to the prompt triggering the content management policy.","type":null,"param":"prompt",` +
+				`"code":"content_filter","status":400,"innererror":{"code":"ResponsibleAIPolicyViolation"}}}`)}},
+		{name: "a reply the filter stopped", reply: chatStream("content_filter", chatUsage{Prompt: 1, Completion: 1}, "The note says")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			result, err := Run(context.Background(), newFixture(t, newStandIn(t, c.reply), OpenAIChat, 1).req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Fault != FaultContentFilter || result.Status != c.status {
+				t.Errorf("fault %q with status %d, want %q with status %d: %s", result.Fault, result.Status, FaultContentFilter, c.status, result.Detail)
+			}
+		})
+	}
+}
+
 // A redirect is never followed, in a run and in a decision alike: the transport puts the
 // endpoint's credential on every request it carries, and Go's own client strips Authorization
 // on a cross-domain redirect before a transport runs, so following one would hand the token to
@@ -755,5 +835,128 @@ func TestARequestTheLoopCannotRunIsAnError(t *testing.T) {
 	}
 	if n := len(s.requests()); n != 0 {
 		t.Errorf("%d model calls were made, want none", n)
+	}
+}
+
+// A callback that panics is recovered, and the process goes on: the SDK runs the tools, OnStep and
+// the endpoint's Token on goroutines of its own, where a panic would end the test binary. A tool
+// that panics answers the model a refusal naming the panic, and the run goes on to an answer;
+// OnText, OnPartial and OnStep end the run with an error naming the panic and the steps that
+// finished; a Token that panics fails the call before it reaches the endpoint.
+func TestAPanicInACallbackIsRecovered(t *testing.T) {
+	t.Parallel()
+	t.Run("a tool", func(t *testing.T) {
+		t.Parallel()
+		s := newStandIn(t,
+			anthropicStream("tool_use", anthropicUsage{Output: 4}, anthropicToolUse("toolu_1", toolName, map[string]any{"path": "note.txt"})),
+			anthropicStream("end_turn", anthropicUsage{Output: 6}, anthropicText("The read failed.")),
+		)
+		f := newFixture(t, s, AnthropicMessages, 2)
+		f.tool.onCall = func(ToolCall) { panic("the tool's own bug") }
+		result, err := Run(context.Background(), f.req)
+		if err != nil || result.Fault != "" || result.Text != "The read failed." {
+			t.Fatalf("result %+v, %v; want the answer after the tool's panic", result, err)
+		}
+		got := s.requests()
+		if len(got) != 2 {
+			t.Fatalf("%d model calls, want 2: the panic goes back to the model and the run answers", len(got))
+		}
+		sent := messages(t, got[1])
+		var refusal map[string]any
+		for _, b := range blocks(sent[len(sent)-1]) {
+			if b["type"] == "tool_result" {
+				refusal = b
+			}
+		}
+		if refusal == nil || refusal["is_error"] != true || !strings.Contains(toolResultText(refusal), "the tool's own bug") {
+			t.Errorf("the tool's call went back as %v, want a refusal naming the panic", refusal)
+		}
+	})
+	for _, c := range []struct {
+		name string
+		set  func(*Request)
+	}{
+		{name: "OnText", set: func(r *Request) { r.OnText = func(string) error { panic("OnText's own bug") } }},
+		{name: "OnPartial", set: func(r *Request) { r.OnPartial = func(json.RawMessage) error { panic("OnPartial's own bug") } }},
+		{name: "OnStep", set: func(r *Request) { r.OnStep = func(Step) error { panic("OnStep's own bug") } }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStandIn(t, anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 9}, anthropicTexts(proseDeltas...)))
+			f := newFixture(t, s, AnthropicMessages, 1)
+			f.req.Final = json.RawMessage(proseSchema)
+			c.set(&f.req)
+			result, err := Run(context.Background(), f.req)
+			if err == nil || !strings.Contains(err.Error(), "the "+c.name+" callback panicked") || !strings.Contains(err.Error(), c.name+"'s own bug") {
+				t.Fatalf("Run returned %v, want an error naming the %s callback's panic", err, c.name)
+			}
+			if c.name == "OnStep" && len(result.Steps) != 1 {
+				t.Errorf("the result carries %d steps, want the one that finished", len(result.Steps))
+			}
+		})
+	}
+	t.Run("the endpoint's Token", func(t *testing.T) {
+		t.Parallel()
+		s := newStandIn(t, chatStream("stop", chatUsage{Prompt: 2, Completion: 1}, "never read"))
+		f := newFixture(t, s, OpenAIChat, 1)
+		f.req.Model.Endpoint.Token = func(context.Context) (string, error) { panic("the token's own bug") }
+		result, err := Run(context.Background(), f.req)
+		if err != nil || result.Fault != FaultProviderError || !strings.Contains(result.Detail, "the token callback panicked: the token's own bug") {
+			t.Fatalf("result %+v, %v; want a provider error naming the token callback's panic", result, err)
+		}
+		if n := len(s.requests()); n != 0 {
+			t.Errorf("%d model calls reached the endpoint, want none", n)
+		}
+	})
+}
+
+// A model call whose response passes Request.StreamLimit, or whose reply passes ReplyLimit, is
+// cut there and ends the run with FaultTooLarge; the same call within both limits answers.
+func TestAStreamPastItsLimitFails(t *testing.T) {
+	t.Parallel()
+	text := strings.Repeat("plum ", 2000)
+	stream := func() reply { return chatStream("stop", chatUsage{Prompt: 2, Completion: 3}, text[:5000], text[5000:]) }
+	size := len(stream().body)
+	for _, c := range []struct {
+		name         string
+		streamLimit  int64
+		replyLimit   int
+		fault        Fault
+		detail       string
+		wantAnswered bool
+	}{
+		{name: "within both limits", streamLimit: int64(size), replyLimit: len(text), wantAnswered: true},
+		{name: "a response one byte past its stream limit", streamLimit: int64(size) - 1, replyLimit: len(text), fault: FaultTooLarge,
+			detail: fmt.Sprintf("response passed its limit of %d bytes", size-1)},
+		{name: "a reply one byte past its reply limit", streamLimit: int64(size), replyLimit: len(text) - 1, fault: FaultTooLarge,
+			detail: fmt.Sprintf("reply passed its limit of %d bytes", len(text)-1)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStandIn(t, stream())
+			f := newFixture(t, s, OpenAIChat, 1)
+			f.req.Tools = nil
+			f.req.StreamLimit, f.req.ReplyLimit = c.streamLimit, c.replyLimit
+			var given atomic.Int32
+			f.req.OnStep = func(Step) error { given.Add(1); return nil }
+			result, err := Run(context.Background(), f.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.wantAnswered {
+				if result.Fault != "" || result.Text != text {
+					t.Fatalf("result fault %q (%s), text of %d bytes; want the whole answer", result.Fault, result.Detail, len(result.Text))
+				}
+				return
+			}
+			if result.Fault != c.fault || !strings.Contains(result.Detail, c.detail) {
+				t.Fatalf("result fault %q with %q, want %q naming %q", result.Fault, result.Detail, c.fault, c.detail)
+			}
+			// A reply past its limit is known whole only once its step finished, which is then
+			// given to no OnStep; a stream cut at its limit may end after its step finished.
+			if n := given.Load(); c.replyLimit < len(text) && n != 0 {
+				t.Errorf("OnStep was given %d steps of the reply past its limit, want none", n)
+			}
+		})
 	}
 }

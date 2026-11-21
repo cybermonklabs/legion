@@ -106,6 +106,10 @@ type Instance struct {
 	EmbedderIdentity string
 	// FileStore is whether the process stores uploaded files in a bucket.
 	FileStore bool
+	// GoingRunShape is the highest saved shape of a command-bar run the process reads
+	// (server_processes.going_run_shape, api.Background.GoingRunShape); 0 is a process that runs
+	// no run, whose row holds null.
+	GoingRunShape int
 }
 
 // Process is one row of the registry.
@@ -343,12 +347,12 @@ func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusa
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into server_processes (instance, commit, dashboard_build, signing_keys,
-			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol, going_run_shape)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, nullif($10::integer, 0))
 		on conflict (instance) do update set heartbeat_at = now()`,
 		id, instance.Commit, instance.DashboardBuild, instance.SigningKeys,
 		instance.SchemaVersion, instance.SchemaCreatable, instance.EmbedderIdentity, instance.FileStore,
-		store.OwnerLockProtocol); err != nil {
+		store.OwnerLockProtocol, instance.GoingRunShape); err != nil {
 		return nil, err
 	}
 	return nil, nil

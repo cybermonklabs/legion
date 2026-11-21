@@ -1368,9 +1368,10 @@ func envGetter(values map[string]string) settingValues {
 const memoryTestServeEnv = "DISPATCH_MEMORY_TEST_SERVE"
 
 // TestMain runs the package's tests, or, run by a memory test with memoryTestServeEnv set, is that
-// test's Dispatch server.
+// test's Dispatch server; that server starts its agent process from its own binary, this one, as
+// `<binary> agent` with an environment of its own, which runs main's agent subcommand here too.
 func TestMain(m *testing.M) {
-	if os.Getenv(memoryTestServeEnv) == "1" {
+	if os.Getenv(memoryTestServeEnv) == "1" || (len(os.Args) == 2 && os.Args[1] == "agent") {
 		main()
 		os.Exit(0)
 	}

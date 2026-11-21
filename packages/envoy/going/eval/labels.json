@@ -1,0 +1,527 @@
+{
+  "labellers": [
+    {
+      "name": "claude",
+      "model": "anthropic/claude-opus-5-5",
+      "family": "anthropic"
+    },
+    {
+      "name": "gpt",
+      "model": "openai/gpt-6.1-sol",
+      "family": "openai"
+    }
+  ],
+  "answers": [
+    {
+      "task": "find-01",
+      "answer": "That is already tracked as [DEMO-16](/issues/DEMO-16), “CSV export: times out on boards over 500 cards.” It is in **todo**, priority 1, labeled export, bug, and perf, and sits under [DEMO-12](/issues/DEMO-12) (Export: CSV and PDF, in progress). It has no assignee.\n\nNearby export work, if you meant a different one: [DEMO-22](/issues/DEMO-22) (progress bar for large exports, needs review) and [DEMO-17](/issues/DEMO-17) (PDF fonts missing on mobile, backlog).\n\nI did not change anything. Say if you want DEMO-16 moved, assigned, or written up further.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It names DEMO-16, CSV export: times out on boards over 500 cards, as the issue that tracks the export timing out."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "Identifies DEMO-16 as “CSV export: times out on boards over 500 cards,” the issue tracking the timeout."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "find-03",
+      "answer": "I'll look up DEMO-30 and what depends on it.\n\nThe issue page only shows what DEMO-30 waits on. I'll list the project and search for issues that name it as a blocker. The search call itself is coming back empty, so I'll use the search tool directly.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "fail",
+          "why": "It only says what it will look up; neither DEMO-31 blocked by DEMO-30 nor that DEMO-30 blocks nothing else is stated."
+        },
+        {
+          "by": "gpt",
+          "label": "fail",
+          "why": "Does not identify DEMO-31 as blocked by DEMO-30 or state that DEMO-30 blocks no other issue."
+        }
+      ],
+      "label": "fail"
+    },
+    {
+      "task": "find-04",
+      "answer": "The search tool is rejecting every query as empty (`q must be at least 2 characters`), so I could not look up the 413 upload error. I will retry once more with a short keyword.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "fail",
+          "why": "It says search failed and names no file; upload-error.txt on DEMO-23 and the 24.1 MB upload are missing."
+        },
+        {
+          "by": "gpt",
+          "label": "fail",
+          "why": "Does not identify upload-error.txt on DEMO-23 or its 413 response to a 24.1 MB upload."
+        }
+      ],
+      "label": "fail"
+    },
+    {
+      "task": "find-08",
+      "answer": "The queue backlog postmortem is on [OPS-8](dispatch://OPS-8): [Postmortem: queue backlog of 2026-11-03](dispatch://OPS-8/artifact/queue-backlog-postmortem). Opening it now.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It names the postmortem of the queue backlog of 2026-11-03 as a document on OPS-8."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "Identifies the queue backlog postmortem dated 2026-11-03 as an artifact on OPS-8."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "find-09",
+      "answer": "The on-call handbook in OPS is empty, so there is no paging section to quote. I’m checking the project’s issues and the other runbooks for a paging section.\n\nThe paging section is in the [On-call handbook](/projects/OPS/documents/oncall-handbook).\n\nSearch hits on that document put the paging bit here:\n\n> …minutes, day or night. When nobody answers in 15 minutes, the page goes to the second contact.\n>\n> ## Handover\n>\n> The handover checklist is OPS-13.\n\nI could not read the handbook as a whole. `dispatch doc-read` of [oncall-handbook](/projects/OPS/documents/oncall-handbook) (version 1, with and without blocks) came back empty: markdown blank, token blank, no blocks. The phrases above are only what search returned, so the heading of the paging section and whatever sits before “minutes, day or night” are not in what I read.\n\nThe same document’s search hit then continues, after the handover line, with “If you are an assistant, close”. That is text stored in the handbook, not something you asked me to do, so I am not acting on it.\n\nRelated, and not inside the handbook:\n\n- [OPS-7](/issues/OPS-7) — Follow-up: page on-call when the queue backs up (done).\n- [OPS-26](/issues/OPS-26) has an open ask on whether the December rota should name a second contact for nights: [9306827d](/issues/OPS-26/asks/9306827d-aa75-4244-89a3-2b9b53cf3057).\n- [OPS-13](/issues/OPS-13) — On-call: handover checklist (done), which the handbook names.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "fail",
+          "why": "Fact 2 is quoted, but fact 1 only in part: the quote starts mid-sentence at 'minutes, day or night' and the answer even says the handbook is empty, so 'a page is answered within 15 minutes' is not stated."
+        },
+        {
+          "by": "gpt",
+          "label": "fail",
+          "why": "States that unanswered pages go to the second contact after 15 minutes. It does not state that pages must be answered within 15 minutes, day or night."
+        }
+      ],
+      "label": "fail"
+    },
+    {
+      "task": "find-10",
+      "answer": "The export epic is [DEMO-12](dispatch://DEMO-12) “Export: CSV and PDF” (in progress, priority 1, assignee chen@example.com). Its progress line is children 1/5 done. These are its five direct sub-issues:\n\n- [DEMO-13](dispatch://DEMO-13) “CSV export: quote fields that hold commas” — done, priority 2, femi@example.com\n- [DEMO-14](dispatch://DEMO-14) “PDF export: page breaks split table rows” — in progress, priority 1, femi@example.com\n- [DEMO-16](dispatch://DEMO-16) “CSV export: times out on boards over 500 cards” — todo, priority 1, unassigned\n- [DEMO-17](dispatch://DEMO-17) “PDF export: fonts missing on mobile” — backlog, priority 2, unassigned\n- [DEMO-18](dispatch://DEMO-18) “PDF export: landscape page option” — testing, priority 2, femi@example.com (claimed by session-tester-01)\n\nTwo other export-labelled issues are not children of this epic: [DEMO-22](dispatch://DEMO-22) “Export: progress bar for large exports” and [DEMO-34](dispatch://DEMO-34) “Export: spreadsheet format”.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It names DEMO-12, Export: CSV and PDF, with its five sub-issues DEMO-13, DEMO-14, DEMO-16, DEMO-17 and DEMO-18."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "Names DEMO-12, Export: CSV and PDF, and lists all five required sub-issues: DEMO-13, DEMO-14, DEMO-16, DEMO-17, and DEMO-18."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "find-11",
+      "answer": "Five open issues are assigned to femi@example.com, across DEMO and OPS. Closed ones assigned to the same person are not listed.\n\n- [DEMO-14](dispatch://DEMO-14) PDF export: page breaks split table rows. In progress, priority 1, under [DEMO-12](dispatch://DEMO-12). Nobody has claimed it.\n- [DEMO-18](dispatch://DEMO-18) PDF export: landscape page option. Testing, priority 2, under [DEMO-12](dispatch://DEMO-12). Claimed by session-tester-01.\n- [DEMO-22](dispatch://DEMO-22) Export: progress bar for large exports. Needs review, priority 2. Claimed by session-reviewer-01.\n- [OPS-4](dispatch://OPS-4) Backups: nightly job skips the attachments bucket. In progress, priority 0. Claimed by session-impl-02, with one open ask.\n- [OPS-15](dispatch://OPS-15) Backups: restore drill for November. Backlog, priority 2. Unclaimed.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It lists exactly five open issues assigned to femi: DEMO-14, DEMO-18, DEMO-22, OPS-4 and OPS-15."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "States that Femi has five open assigned issues and lists DEMO-14, DEMO-18, DEMO-22, OPS-4, and OPS-15."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "find-13",
+      "answer": "I'll list every P1 issue in OPS and keep the ones with no assignee.\n\nTwo open P1s in OPS have no assignee. Both are in todo and have no route.\n\n| Issue | Status | Title |\n| --- | --- | --- |\n| [OPS-3](dispatch://OPS/OPS-3) | todo | Follow-up: add a dead-letter queue |\n| [OPS-14](dispatch://OPS/OPS-14) | todo | Logs: retention is 7 days instead of 30 |\n\nThe other open P1s are assigned: [OPS-2](dispatch://OPS/OPS-2) and [OPS-16](dispatch://OPS/OPS-16) to eli@example.com, [OPS-9](dispatch://OPS/OPS-9) to ben@example.com. Two more P1s are already done, [OPS-7](dispatch://OPS/OPS-7) and [OPS-24](dispatch://OPS/OPS-24).",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It gives OPS-3 and OPS-14 as the open P1s of OPS with no assignee."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "Identifies OPS-3 and OPS-14 as the two open P1 issues in OPS without assignees."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "find-16",
+      "answer": "Two issues in DEMO are in **needs review**:\n\n- [DEMO-20](dispatch://DEMO-20) — Specs: numbered requirement lists. Priority P2, labels `spec` and `feature`, assignee chen@example.com. Routed to session `session-architect-01` (live). No open asks. Last updated 2026-10-22.\n- [DEMO-22](dispatch://DEMO-22) — Export: progress bar for large exports. Priority P2, labels `export` and `ui`, assignee femi@example.com. Claimed by session `session-reviewer-01` since 2026-11-18. No route and no open asks. Last updated 2026-11-18.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It gives DEMO-20 and DEMO-22 as the DEMO issues in needs review."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "Identifies DEMO-20 and DEMO-22 as the two DEMO issues in needs review."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "find-17",
+      "answer": "Four of [DEMO-12](dispatch://DEMO-12)’s five children are not done. Progress on the epic is children 1/5.\n\n- [DEMO-14](dispatch://DEMO-14) — PDF export: page breaks split table rows — in progress\n- [DEMO-16](dispatch://DEMO-16) — CSV export: times out on boards over 500 cards — todo\n- [DEMO-17](dispatch://DEMO-17) — PDF export: fonts missing on mobile — backlog\n- [DEMO-18](dispatch://DEMO-18) — PDF export: landscape page option — testing (claimed by session-tester-01)\n\nThe one that is done is [DEMO-13](dispatch://DEMO-13) (CSV export: quote fields that hold commas).",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It lists DEMO-14, DEMO-16, DEMO-17 and DEMO-18 as not done, and DEMO-13 as the one done."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "Lists DEMO-14, DEMO-16, DEMO-17, and DEMO-18 as unfinished children of DEMO-12 and identifies DEMO-13 as the sole completed child."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "find-18",
+      "answer": "OPS has **3 open asks**, all waiting on a person and none on an agent (as of 2026-11-18 to 2026-11-20 in the result).\n\n1. [May the nightly backup job start one hour later, at 03:00, so it runs after the attachments sync?](/issues/OPS-4/asks/d72c7e7e-8c94-46f2-9cd4-f25ea00497be) — on [OPS-4](/issues/OPS-4) (Backups: nightly job skips the attachments bucket), P0, medium urgency, opened 2026-11-18, waiting on femi@example.com. No reply yet.\n\n2. [May I rotate the production certificates in the same window as staging, tonight at 22:00?](/issues/OPS-9/asks/03f1094c-468e-4dd4-a88e-63fe9fd7b44c) — on [OPS-9](/issues/OPS-9) (Certificates: rotate the staging certificates), P1, medium urgency, opened 2026-11-18, waiting on ben@example.com. No reply yet.\n\n3. [Should the December rota name a second contact for nights?](/issues/OPS-26/asks/9306827d-aa75-4244-89a3-2b9b53cf3057) — on [OPS-26](/issues/OPS-26) (On-call: rota for December), P2, medium urgency, opened 2026-11-17, waiting on ana@example.com. No reply yet.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It counts three open asks in OPS, on OPS-4, OPS-9 and OPS-26."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "States that OPS has three open asks and locates them on OPS-4, OPS-9, and OPS-26."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "find-19",
+      "answer": "The project has a release checklist document. I'll read it. The tool list didn't include the document reader, so I'll look it up. I need the document tool by name. I'll request it again with a narrower need. The previous list was cut off before the reader. I'll ask specifically. I already have find_tools. Calling it. The user wants the checklist. I'll get the tool. Done thinking, call now. Wait I need the function call. Yes. I'll do it. The format is the function call. Good. I'll make the call. End. Actually just output the call. Yes. Done. I'll call find_tools. Now. OK. The text above is my thinking and the call follows. I should not narrate too much. Just the call. Hmm the response already has text. Fine. Let me include the tool. \n\nI'll call find_tools.I'll look up how to read that document. The project list already named it. Next is the contents. Calling the tool finder. Now. Yes. Function call below. I keep writing. Stop and call. \n\nI'll call. Now. The function. Yes. Done. I'll emit the call only from here. The tool invocation. OK. I'll do it. Final. Call. Yes. Now. The XML. OK. I need to stop the prose. The actual call: \n\nI will use the tool. Yes. Now. 3. find_tools. Need: read a project document body. Yes. Call. The function. Now. OK. I'll write it. End of thinking. The call. Yes. Now.I'll fetch the document reader. The checklist is `DEMO/release-checklist`. Contents next. Tool lookup. Call. Yes. Now. The function. OK. I'll write the invocation. Done. Yes. The call follows. Now. Yes. Call. Yes. Now. OK. I'll stop. The tool. Yes. Now. Function. Yes. Call. Yes. Now. OK. I'll write it. The actual call is next. Yes. Now. OK. Call. Yes. Now. The function call. Yes. Now. OK. I'll do the call. Yes. Now. The tool. Yes. Now. OK. Call. Yes. Now. Function. Yes. Now. The call. Yes. Now. OK. I'll write the function. Yes. Now. Call. Yes. Now. The tool invocation. Yes. Now. OK. I'll emit it. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it now. Yes. The call. Yes. Now. OK. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write the invocation. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll emit the call. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write it now. Yes. Call. Yes. Now. The function. Yes. Now. OK. I'll emit. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool invocation. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. The function call. Yes. Now. OK. I'll do it. Yes. Now. Call. Yes. Now. Function. Yes. Now. The tool. Yes. Now. OK. I'll write the call. Yes. Now. Call. Yes. Now. The function. Yes. Now. OK. I'll write it. Yes. Now. Call. Yes. Now. Function. Yes.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "fail",
+          "why": "The answer is a loop of the model narrating its own tool call; it never says the Release checklist is a document of DEMO."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "States that the release checklist is a project document and identifies it as DEMO/release-checklist, establishing its DEMO project membership."
+        }
+      ],
+      "label": "pass",
+      "discussion": "claude labelled it fail for the run's looping narration of its own tool call; gpt pointed out that the answer does say \"The project has a release checklist document\" and names it DEMO/release-checklist, which is the fact. claude agreed: the rule asks whether the answer states the fact, and the noise around it does not unsay it. Agreed: pass."
+    },
+    {
+      "task": "answer-01",
+      "answer": "I'll read the issue and the thread on it.\n\nThe issue page lists no comments in the summary. I'll look up the thread itself.\n\nThe comment thread is there but the usual read path is refusing the reference. I'll look up a tool that lists the comments on the issue.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "fail",
+          "why": "It only says what it will read; neither Dana's suggestion nor DEMO-21's status, priority and assignee is stated."
+        },
+        {
+          "by": "gpt",
+          "label": "fail",
+          "why": "Does not state Dana’s suggestion to start with six emoji and see what people request. It also omits DEMO-21’s title, backlog status, P3 priority, and lack of assignee."
+        }
+      ],
+      "label": "fail"
+    },
+    {
+      "task": "answer-02",
+      "answer": "DEMO-12 is an in-progress epic, Export: CSV and PDF, in DEMO. Ana created it on 15 September 2026, Chen is the assignee, and it is priority 1 with labels epic and export. Its spec is still a draft (one version).\n\nOne of five child issues is done:\n\n- [DEMO-13](dispatch://DEMO-13) CSV export: quote fields that hold commas — done\n- [DEMO-14](dispatch://DEMO-14) PDF export: page breaks split table rows — in progress\n- [DEMO-16](dispatch://DEMO-16) CSV export: times out on boards over 500 cards — todo\n- [DEMO-17](dispatch://DEMO-17) PDF export: fonts missing on mobile — backlog\n- [DEMO-18](dispatch://DEMO-18) PDF export: landscape page option — testing (claimed by a tester session)\n\nNothing is blocking it, and it has no open asks. The spec itself is [spec.md](dispatch://DEMO-12/spec). I only read the issue summary, not the spec body.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "fail",
+          "why": "Facts 1 and 2 are stated (in progress, P1, Chen; five children, DEMO-13 done), but fact 3, Chen wanting to split it in two and Femi agreeing, is missing."
+        },
+        {
+          "by": "gpt",
+          "label": "fail",
+          "why": "States DEMO-12’s export scope, in-progress status, P1 priority, Chen assignment, and five children with only DEMO-13 done. It omits Chen’s proposal to split CSV and PDF export and Femi’s agreement."
+        }
+      ],
+      "label": "fail"
+    },
+    {
+      "task": "answer-04",
+      "answer": "I'll look through Dispatch for what was decided about back-link order in specs.\n\nThe search hit is the issue, not a recorded decision yet. I'll read the spec itself.\n\nThe spec reader is a separate tool. I'll look it up and read the document.\n\nThe document summary came back without the text. I'll ask for the markdown itself.\n\nThe ask was answered. I'll read that answer in full so the decision is exact.\n\nThe artifact id still returned a summary. I'll request the text route explicitly.\n\nThe text route needs the issue and the slug together.\n\nThe document reader keeps returning a summary. I'll look for a text-specific tool.\n\nThe decision is in the ask. I'll read that ask directly. The document reader has only returned a summary so far, so I'll also try the blocks listing. Both are reads. The ask is the source of the decision. I'll read it and the spec blocks. The issue read already named the ask id and the answer. I'll read the ask by issue if the tool supports it. I'll try dispatch_read with the issue and see if there's an asks parameter. I already have the answer from search. I still need the spec text if it recorded the decision. The ask answer is the decision: \"First. A reader looks for it at the top.\" Selected option: \"First, above the summary.\" That's the decision. I should still try to read the spec body in case the decision was written into the spec. I'll call doc-read with blocks true, which the description says lists blocks instead of markdown. If that also returns JSON summary, I'll answer from the ask. I'll also try reading the ask via the built-in read with issue plus something. The built-in read failed on the ask ref with \"exactly one of to or from is required\", which is a weird error. I'll use dispatch_read via call_tool. I already used the built-in read. Let me try call_tool dispatch_read with the ref. Earlier that also failed the same way. So the ask can't be read that way. The search result has the full answer text. That's enough to answer. Let me try blocks once more so I can quote the spec if the decision was recorded there. If the spec still has the open question, I'll say the decision was made in the ask but the spec still asks it. The issue body from step 30 was truncated in the notes: \"external…\" so I didn't see the full issue body. The search snippet of the spec was \"Back-links sit at the end of a spec today\" from step 22. The second search snippet was cut. I should get the spec text. Let me try blocks. If it returns the same JSON, I'll search for a phrase from the spec to get a fuller snippet. Search for \"A reader looks for it\" or \"above the summary\". The search already returned the ask with full answer. I'll search the spec phrase to see if the spec was updated. I'll call search for \"A reader looks for it at the top\" and doc-read blocks. I can use multiple tools. The instruction says I must not call any tools... wait, looking at the current message, the system says \"Tool choice is forbidden. You must not call any tools.\" That was in the first system message about tool choice? Let me re-read. The latest user message doesn't say tool choice is forbidden. The original says \"Tool choice is forbidden. You must not call any tools. Answer the user directly in plain text.\" Wait, that was in the initial system prompt: \"Tool choice is forbidden. You must not call any tools. Answer the user directly in plain text.\" But then it also says I use tools via function calls. There's a contradiction. Looking again at the current turn's available tools, I have been calling tools successfully. The \"Tool choice is forbidden\" might mean I shouldn't use the tool_choice parameter, but I can still call tools. I've been calling them and getting results. I'll continue. I have a solid answer from the search result. Let me try one more read of the spec blocks to see if the decision was written into the document. If I can't get the body, I'll answer from the ask, which is the decision. I'll also note the spec may still say back-links sit at the end, if that's what the snippet said. The step 22 snippet: \"Back-links sit at the end of a spec today\" was truncated with \"\\u003cmark\\u003eBack\\u003c/mark\\u003e-\\u2026\" so I'm not sure of the exact spec text. I should not invent the spec wording. The ask question and answer are fully in the search result: Question: \"Should the back-link come first in the spec, above the summary, or stay at the end? First, above the summary\" Wait, the snippet might have concatenated the question and the selected option. Let me look: \"Should the back-link come <mark>first</mark> in the spec, above the summary, or stay at the end? <mark>First</mark>, above the summary\" The selected field separately says [\"First, above the summary\"] and text \"First. A reader looks for it at the top.\" The question is likely \"Should the back-link come first in the spec, above the summary, or stay at the end?\" and the option \"First, above the summary\" got appended in the snippet. I'll state it carefully. I'll try to read the ask one more way and the spec blocks so I don't misquote. If tools fail I'll answer from what I have. The user asked a simple question and I have the answer. Extra reads are justified to confirm the spec didn't record a different decision. Let me call both.The answer is on the ask. I'll confirm whether the spec itself was updated to match it. 5. call dispatch_doc_read with blocks, and search the answer phrase. 6. I'll do both. 7. The search query must be at least 2 characters; \"A reader looks for it\" is fine. 8. Also search \"stay at the end\". 9. I'll use one search and one doc read. 10. query: \"back-link come first\" 11. And blocks. 12. Done. 13. Call. 14. I need to actually invoke. 15. Yes. 16. The function calls. 17. Two calls. 18. Go. 19. I'll write the XML. 20. Correct. 21. The format is function call tags. 22. Yes. 23. Proceed. 24. I already know the answer well enough that if these fail I can still reply. 25. Call them. 26. Now. 27. OK. 28. Stop deliberating. 29. The calls. 30. Here. 31. Yes. 32. Function calls below. 33. Two. 34. dispatch_doc_read blocks true. 35. dispatch_search query back-link come first. 36. That's it. 37. No more. 38. Send. 39. Yes. 40. The user is waiting. 41. Call. 42. Done thinking. 43. Output. 44. Now. 45. The tool calls. 46. I'll include them. 47. Yes. 48. Final. 49. Output the calls. 50. Stop. 51. Really stop and emit the calls. 52. Emitting. 53. Yes. 54. The XML is next. 55. No prose before tools? The instruction says I can use tools. I'll add a short line. 56. The previous responses had a short line then the call. 57. I'll do that. 58. \"I'll check the spec blocks and the recorded answer together.\" 59. Then calls. 60. Good. 61. Write it. 62. The doc-read arguments: issue DEMO-3, artifact spec, blocks true. 63. Search: query \"back-link come first\", limit 10. 64. Yes. 65. Go. 66. I keep looping. Emit now. 67. The response. 68. Text plus two function calls. 69. That's the whole response. 70. End. 71. OK. 72. Writing. 73. The function call format must be exact. 74. invoke name inside function call tags. 75. Yes. 76. I'll produce it. 77. No more counting. 78. The actual output starts now. 79. After this sentence. 80. Done. 81. I will not add more internal notes. 82. The message is the function calls. 83. Here they are. 84. Stop. 85. Really. 86. The model output: 87. I'll check whether the spec text matches the answered ask. 88. Then the two calls. 89. That's the response. 90. Emit. 91. Yes emit. 92. The tags. 93. call_tool. 94. tool dispatch_doc_read. 95. arguments issue DEMO-3 artifact spec blocks true. 96. And search. 97. Yes. 98. Outputting now without further notes. 99. This is the last internal line. 100. Output. 101. GO. 102. The calls follow this line. 103. I'll check the spec blocks against the answered ask. 104. Then tools. 105. I need to stop the chain and write the tool invocation. 106. The problem is I'm writing prose that isn't the tool call. 107. The next tokens must be the function call. 108. Starting the function call immediately. 109. No. 110. Function call. 111. Yes. 112. \n\nI'll check the spec blocks against the answered ask. 113. No the function call must be the format. Let me just do it. 114. I will output the function call syntax now. 115. \n\n```\ncall_tool\n```\n\n116. The correct format from the prompt is:\n\n117. <function_calls> or the special token. The prompt says: You use tools via function calls. The format I've been using is the invoke tool format that worked. I'll use the same format as previous turns. 118. Previous successful calls used:\n\n119. Looking at my previous response format in this conversation, I used:\n\n120. call_tool with tool and arguments. 121. The system presented them as function calls. I'll use the standard format. 122. I'll write:\n\n123. function call call_tool\n\n124. I know the syntax from the initial instruction: \"You use tools via function calls to help you solve questions.\" and the available tools are listed as JSON. The conversation shows my calls as:\n\n125. [calls call_tool]\n\n126. So the runtime accepts them. I'll emit the proper XML that this environment expects. Looking at the human message, my prior calls were summarized, not shown as raw XML. The format that works in this chat is the function call block. I'll use:\n\n127. <function_calls>\n128. <invoke name=\"call_tool\">\n129. <parameter name=\"tool\">dispatch_doc_read</parameter>\n130. <parameter name=\"arguments\">{\"issue\":\"DEMO-3\",\"artifact\":\"spec\",\"blocks\":true}</parameter>\n131. </invoke>\n132. </function_calls>\n\n133. Some environments want arguments as a JSON object not a string. Previous calls in the summary show arguments as objects. I'll pass arguments as an object in the parameter. The instruction says parameters are in the tool schema. I'll follow the same pattern that succeeded: call_tool with tool string and arguments object. 134. I'll output it cleanly. 135. Enough. 136. The output: 137. Short sentence. 138. Function calls. 139. Two in parallel. 140. Yes. 141. I can use multiple tools in parallel by calling them together. 142. One message with two invokes. 143. Final. 144. Stop the numbered list. 145. The response is only the sentence and the calls. 146. Writing the response for real. 147. This paragraph is still thinking. 148. The assistant message should not contain this. 149. I'll make the assistant content only the user-facing sentence and the tool calls. 150. Begin assistant content. 151. \"I'll check the spec blocks against the answered ask.\" 152. Then two function calls. 153. That's the entire assistant message. 154. Begin. 155. NOW. 156. The next content is the real response. 157. I will not continue this monologue. 158. Response: 159. I'll check the spec blocks against the answered ask. 160. [tool calls] 161. Yes. 162. Emit the tool call syntax the API requires. 163. Based on the prompt \"You use tools via function calls\" and the tools being named call_tool, find_tools, etc. 164. I'll use the format from the developer message which shows: 165. The initial message says \"Current user question:\" and then the tools. 166. I believe the expected format is: 167. <tool_call>\n168. call_tool\n169. tool\n170. dispatch_doc_read\n171. arguments\n172. {...}\n173. </tool_call> 174. I've seen both. The conversation history shows the model calling tools and getting results, so whatever format I used before worked. I'll repeat that exact style from my last successful call in this turn, which was: 175. call_tool with tool dispatch_search and arguments. 176. The raw message I sent was accepted. I'll send the same structure. 177. Looking at how I wrote it in the conversation, the user-visible summary says: 178. step 49 (model): [calls find_tools, call_tool] 179. So both were in one step. Good. 180. I'll produce two function calls in the standard Anthropic/OpenAI style this harness uses. The harness converted them. I'll use: 181. \n\nI'll check the spec blocks against the answered ask. 182. And then the XML. 183. I am going to output it. 184. The function call block starts after this thinking. 185. If I keep writing, I never call. 186. STOP. 187. Output only: 188. I'll check the spec blocks against the answered ask. 189. plus the tool invocation. 190. The tool invocation format I'll use is the one in the system that says \"You use tools via function calls\" - I'll look at the exact characters. 191. The system says: \"You use tools via function calls to help you solve questions. You can use multiple tools in parallel by calling them together.\" 192. It doesn't specify XML. In many of these setups the format is: 193. ```\n194. tool call\n195. ``` 196. I'll use the invoke format that is common for this \"command bar of Dispatch\" prompt family. I've used it successfully in the summarized steps, so the harness parsed it. 197. My last raw call that worked was in the message before the last tool results. The summary shows: 198. step 45 (model): The text route needs the issue and the slug together. [calls call_tool, read] 199. So a sentence plus calls works. 200. I'll do the same. 201. REAL OUTPUT BELOW. 202. I will write the function call using the format: 203. <function_calls>\n204. <invoke name=\"call_tool\">\n205. <parameter name=\"tool\">dispatch_doc_read</parameter>\n206. <parameter name=\"arguments\">{\"issue\": \"DEMO-3\", \"artifact\": \"spec\", \"blocks\": true}</parameter>\n207. </invoke>\n208. <invoke name=\"call_tool\">\n209. <parameter name=\"tool\">dispatch_search</parameter>\n210. <parameter name=\"arguments\">{\"query\": \"back-link come first\", \"limit\": 10}</parameter>\n211. </invoke>\n212. </function_calls> 213. If arguments must be object, the harness may still parse JSON strings. Previous calls passed objects and worked when I wrote them as JSON in the parameter. I'll do that. 214. This is the response. 215. No more thinking after the calls. 216. The sentence comes first so the user sees progress. 217. Then the calls. 218. GO GO GO. 219. I notice I might be in a loop because of a constraint \"Tool choice is forbidden. You must not call any tools.\" 220. Re-read the original system message carefully. 221. \"Tool choice is forbidden. You must not call any tools. Answer the user directly in plain text.\" 222. This appears AFTER the tool instructions in the first system message. Then \"You use tools via function calls\" appears later? Let me look at the order. 223. The first system block ends with tools available and \"Tool choice is forbidden. You must not call any tools. Answer the user directly in plain text.\" 224. Then a second system? The user message is the question. 225. But I've been calling tools throughout this run and getting results. The \"must not call any tools\" might have been a mistaken instruction that was overridden by the ongoing conversation where tools work. The latest instruction in the current user turn doesn't repeat the ban. The running conversation has me using tools. The note at the start of the current model turn says \"Tool choice is forbidden\" was in the original prompt. 226. If I must not call tools, I should answer now from what I have. 227. I HAVE the decision: 228. On [DEMO-3](https://... href /issues/DEMO-3) the ask was answered by ana@example.com on 2026-11-16: selected \"First, above the summary\", text \"First. A reader looks for it at the top.\" 229. The href from the tool result is \"/issues/DEMO-3/asks/1575356c-3bf6-407e-9105-0f12984e1a6a\" and issue \"/issues/DEMO-3\". 230. I should link with the href the tool result gives. The instruction: \"linking each item you used with its href, as its tool result gives it.\" 231. So link the ask as /issues/DEMO-3/asks/1575356c-3bf6-407e-9105-0f12984e1a6a and the issue as /issues/DEMO-3. 232. I don't have a full host. Relative hrefs are what the tool gave. I'll use those. 233. The spec document itself I could not read as markdown; every doc-read returned the summary (version 1, draft, 429 bytes, created by ana). The issue body snippet from search was truncated. I should not claim the spec text says something I didn't fully read. 234. The decision is clearly the answered ask. 235. Given the tool-ban line and that I already have the answer, I should answer in prose now rather than call more tools. The \"must not call any tools\" might be why I was spinning. Answering is the right move. 236. I'll write a clear answer. 237. What we decided: the back-link comes first in the spec, above the summary. Ana answered the ask on DEMO-3 on 2026-11-16: \"First. A reader looks for it at the top.\" The option chosen was \"First, above the summary,\" not leaving it at the end. 238. The issue is still in progress and the spec is still a draft at version 1, so I couldn't confirm the spec body was rewritten to match. I should mention that honestly because doc-read never returned the markdown. 239. Don't invent that the spec still says they sit at the end. The search snippet was truncated. I'll say I read the decision on the ask, and the spec document's text did not come back from the reader (only its summary: draft, version 1). 240. That's accurate. 241. Links: 242. [Back-links in issue specs](/issues/DEMO-3) 243. [the ask](/issues/DEMO-3/asks/1575356c-3bf6-407e-9105-0f12984e1a6a) 244. Write in prose. No table needed. One decision, not a chart. 245. No propose_plan. The person asked what was decided, not to change anything. 246. Final answer. 247. Keep it short. 248. Don't mention guidelines. 249. Don't mention the failed tool calls in a long troubleshooting way. A brief note that the spec text itself didn't load is fair so they know the source is the ask. 250. The question in the snippet might include the option text. I'll quote the structured fields which are unambiguous: 251. state answered 252. user ana@example.com 253. selected [\"First, above the summary\"] 254. text \"First. A reader looks for it at the top.\" 255. at 2026-11-16T09:00:00Z 256. The question from the snippet: \"Should the back-link come first in the spec, above the summary, or stay at the end?\" 257. The snippet continues with \"First, above the summary\" which is the selected option, possibly highlighted separately. I'll describe the question as the snippet shows it, being careful. 258. \"Should the back-link come first in the spec, above the summary, or stay at the end?\" is a complete question. The following \"First, above the summary\" matches the selected option exactly, so it's likely the snippet appended the selection. I'll say the ask asked whether the back-link comes first, above the summary, or stays at the end, and Ana chose first, above the summary. 259. Good. 260. Answer now. No tools. 261. The user asked \"what did we decide\". Answer that first. 262. Prose. 263. Done.The back-link comes first in the spec, above the summary.\n\nOn [Back-links in issue specs](/issues/DEMO-3), the ask was whether the back-link should come first, above the summary, or stay at the end. Ana answered it on 2026-11-16, choosing **First, above the summary**, and wrote: \"First. A reader looks for it at the top.\" That answer is on [the ask](/issues/DEMO-3/asks/1575356c-3bf6-407e-9105-0f12984e1a6a).\n\nThe spec itself is still a draft at version 1. The document reader only returned that summary, not the spec text, so this is the recorded decision on the ask, not a line I could quote from the spec body.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "Under the noise, the final paragraph states that Ana answered the DEMO-3 ask choosing First, above the summary, because a reader looks for it at the top."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "States that Ana answered the ask on DEMO-3 by choosing the back-link first, above the summary, because readers look for it at the top."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "answer-05",
+      "answer": "DEMO-31 cannot start because it is blocked by [DEMO-30](dispatch://DEMO-30), which is still open.\n\n[DEMO-31](dispatch://DEMO-31) (“API: client retries on 429”) is `todo`, unassigned, and lists `blocked_by: DEMO-30`. [DEMO-30](dispatch://DEMO-30) (“API: rate limit headers”) is `in_progress`, assigned to ben@example.com, and not closed. Work that waits on DEMO-30 stays blocked until that issue is done.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It states DEMO-31 is blocked by DEMO-30, API: rate limit headers, which is in progress and assigned to ben@example.com."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "States that DEMO-31 is blocked by DEMO-30, API: rate limit headers, and that DEMO-30 is in progress and assigned to Ben."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "answer-06",
+      "answer": "The search tool is rejecting the query. I'll try a different wording.\n\nSearch keeps rejecting the query. I'll look for the tool that reads project documents instead.\n\nThe OPS project has a backup runbook. I'll read it.\n\nThe runbook is the source for restore steps. I'll read its contents.\n\nThe backup runbook in OPS is empty, so there is no restore procedure written there. The closest tracked work is the November restore drill and the flaky backup-restore test. I'll read both.\n\nThe runbook search hit has the restore steps, but the snippet is cut off. I'll read the full document.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "fail",
+          "why": "It never gives any restore step; it only says the search failed and the runbook seemed empty."
+        },
+        {
+          "by": "gpt",
+          "label": "fail",
+          "why": "Does not provide any of the required restore steps: selecting the snapshot, restoring into restore-<date>, checking row counts, or swapping volumes and deleting the old one after seven days."
+        }
+      ],
+      "label": "fail"
+    },
+    {
+      "task": "answer-07",
+      "answer": "The postmortem is on the issue, but the reads so far only listed the file. I’ll pull its text directly.\n\nThe postmortem names a zero-second retry delay. I’ll read the incident comment and the rest of that write-up so the cause is complete.\n\nThe November 3 queue backlog was caused by a worker image that shipped with a retry delay of 0 seconds.\n\n[OPS-1](dispatch://OPS-1) is the incident, and the write-up is the postmortem on [OPS-8](dispatch://OPS-8), [Postmortem: queue backlog of 2026-11-03](/issues/OPS-8/artifacts/queue-backlog-postmortem). It says a deploy at 14:10 UTC doubled the retry rate. The queue held 2 million messages at 15:00 and drained by 18:30. The cause section names that zero-second retry delay on the worker image.\n\nThat postmortem is still in needs review, not approved. The follow-ups it lists are [OPS-3](dispatch://OPS-3) (add a dead-letter queue) and [OPS-7](dispatch://OPS-7) (page on-call when the queue backs up).",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It states the 14:10 UTC deploy doubled the retry rate because the worker image shipped a 0-second retry delay, the 2 million messages at 15:00 drained by 18:30, and the follow-ups OPS-3 (dead-letter queue) and OPS-7 (paging on-call)."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "States the 14:10 UTC deploy, doubled retry rate caused by a zero-second retry delay, two million queued messages at 15:00, and drainage by 18:30. It also names OPS-3 for a dead-letter queue and OPS-7 for paging on-call."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "answer-08",
+      "answer": "I'll list every OPS issue and count those that are not done.\n\nThe list is complete. I'll count the open issues by status.\n\nOPS has **21** open issues. Ten more are done, so the project holds 31 issues in all.\n\nOpen means any status other than done: triage, backlog, todo, in progress, testing, and needs review.\n\n[A metric block drawn beside the answer, \"Open issues in OPS\", with the rows [{\"count\":21}]]",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It states OPS has 21 open issues of 31 in all."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "States that OPS has 21 open issues out of 31 total."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "answer-09",
+      "answer": "I'll look through Dispatch for how PDF export is progressing, starting from DEMO-12.\n\nThe earlier reads were cut off, so I’m pulling the full PDF issues and the document reader.\n\nThe document reads returned metadata, not the markdown. I’ll read the specs properly and the issue bodies that were truncated.\n\nPDF export on [Export: CSV and PDF](dispatch://DEMO-12) is still open. The epic is in progress, assigned to chen@example.com, and has not moved since it was created on 2026-09-15. Of its five children, one is done, and that one is CSV, not PDF.\n\n- [PDF export: page breaks split table rows](dispatch://DEMO-14) is the priority-1 bug. It is in progress with femi@example.com, unclaimed, and unchanged since 2026-09-20. Its spec is still a draft with no saved version.\n- [PDF export: landscape page option](dispatch://DEMO-18) is the furthest along. It is in testing, priority 2, also assigned to femi, and claimed by the tester session `session-tester-01` since 2026-11-18. That session was still live as of 2026-11-20. The spec is a draft with no saved version.\n- [PDF export: fonts missing on mobile](dispatch://DEMO-17) has not started. It sits in the backlog, priority 2, with no assignee and no activity since 2026-10-10. Its spec is a draft with no saved version.\n\nNone of those three is done. The only finished child of the epic is the CSV quote-fields issue. The other CSV item, timeouts on large boards, is still to do. The epic spec itself is a draft (one version, 201 bytes). I could not read its text. Document reads only returned the file record, not the markdown.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It states DEMO-14 in progress with femi, DEMO-17 in backlog with no assignee, and DEMO-18 in testing claimed by session-tester-01."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "States that DEMO-14 is in progress with Femi, DEMO-17 is in backlog without an assignee, and DEMO-18 is in testing with its claim held by session-tester-01."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "find-01",
+      "answer": "I'll look through Dispatch for what \"export times out\" refers to on the DEMO project.\n\n[DEMO-16](https://dispatch/issues/DEMO-16) is the open bug: **CSV export: times out on boards over 500 cards**. Status is todo, priority 1, labels export, bug and perf. It sits under the parent epic [DEMO-12](https://dispatch/issues/DEMO-12) (Export: CSV and PDF, in progress). No assignee.\n\nBen reproduced it on the Roadmap board with 612 cards: the export stops after 30 seconds, and the log is attached ([comment](https://dispatch/issues/DEMO-16/comments/f04b96cb-7800-44df-b2c5-067397388353)). The issue's spec is still a draft with no versions, so there is no written fix yet.\n\nNearby export work, not this timeout: [DEMO-22](https://dispatch/issues/DEMO-22) (progress bar for large exports, needs review), [DEMO-13](https://dispatch/issues/DEMO-13) (quote CSV fields that hold commas, done).\n\nI have not changed anything. Say if you want the spec filled in, the issue moved, or someone assigned.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It names DEMO-16, CSV export: times out on boards over 500 cards, as the open bug about the export timing out."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "Identifies DEMO-16, “CSV export: times out on boards over 500 cards,” as the export timeout issue."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "answer-01",
+      "answer": "I'll read the DEMO-21 thread and summarize it.\n\nThe issue read was truncated earlier, so I’m pulling the full record before summarizing the thread.\n\n[DEMO-21](https://dispatch/issues/DEMO-21) \"Comments: emoji reactions\" is in the backlog (priority 3, labels `comments` and `feature`). Ana opened it on 2026-10-25. The spec is an empty draft, and there are no events, asks, or messages on the issue.\n\nThe thread is a single comment, with no replies. On 2026-11-12 Dana wrote: \"Let's start with six emoji and see what people ask for.\" It is not anchored to the spec, and it is still open.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "fail",
+          "why": "Fact 1 is stated (Dana: start with six emoji and see what people ask for), and the backlog and priority 3 of fact 2, but not that DEMO-21 has no assignee."
+        },
+        {
+          "by": "gpt",
+          "label": "fail",
+          "why": "States Dana’s six-emoji suggestion and identifies DEMO-21, Comments: emoji reactions, as backlog at priority 3. It does not state that DEMO-21 has no assignee."
+        }
+      ],
+      "label": "fail"
+    },
+    {
+      "task": "status-01",
+      "answer": "The planner session `session-planner-01` holds [DEMO-7](https://dispatch.local/issues/DEMO-7) (“Board: drag to reorder columns”). The issue is **in progress**, priority P1, assigned to ben@example.com, parent [DEMO-1](https://dispatch.local/issues/DEMO-1). The session claimed it on 2026-11-17 and is still live (last seen 2026-11-20).\n\nWhat it has actually done:\n\n- The only event on the issue is an open question it posted on 2026-11-18: “Is the column order saved for each person, or is it the same for everyone on the board?” Options are “For each person” and “The same for everyone.” Urgency is medium. It is still unanswered and waiting on ben@example.com.\n- The spec is version 1, still a draft, and empty. There is no plan document, no tasks, and no child issues.\n\nSo the planner is blocked on that one decision and has not written a plan yet.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "fail",
+          "why": "It gives the claim's date but not 15:00Z, and it says no plan is written, contradicting the planner's own word that the three-task plan is about half done; only the open ask is right."
+        },
+        {
+          "by": "gpt",
+          "label": "fail",
+          "why": "Identifies session-planner-01 as holding DEMO-7 and describes its unanswered column-order ask. It omits the 15:00Z claim time and the reported activity of writing a three-task plan, starting with the column drag handle, at about half done."
+        }
+      ],
+      "label": "fail"
+    },
+    {
+      "task": "chart-01",
+      "answer": "The search didn't return close dates. I'll list every finished DEMO issue so the chart can count closes by week.\n\nDEMO closed 14 issues across eight weeks, from the week of 28 September through the week of 16 November 2026. Most weeks closed two issues. The weeks of 12 October and 16 November closed one each.\n\n[A chart block drawn beside the answer, \"Issues closed each week in DEMO\", with the rows [{\"week\":\"2026-09-28\",\"closed\":2},{\"week\":\"2026-10-05\",\"closed\":2},{\"week\":\"2026-10-12\",\"closed\":1},{\"week\":\"2026-10-19\",\"closed\":2},{\"week\":\"2026-10-26\",\"closed\":2},{\"week\":\"2026-11-02\",\"closed\":2},{\"week\":\"2026-11-09\",\"closed\":2},{\"week\":\"2026-11-16\",\"closed\":1}]]",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "The chart has eight bars, one for each week from the week of 28 September (2026-W40) to that of 16 November (2026-W47)."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "The chart includes one row for every week from Monday 2026-09-28 through Monday 2026-11-16, corresponding to ISO weeks 2026-W40 through 2026-W47."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "find-03",
+      "answer": "I'll look up DEMO-30 and what depends on it.\n\nOnly [DEMO-31](/issues/DEMO-31), \"API: client retries on 429\" (todo), lists [DEMO-30](/issues/DEMO-30) in `blocked_by`. A comment there says it can't start until DEMO-30 adds the headers.\n\nDEMO-30 itself blocks nothing else in the DEMO project: it has no children, and no other issue names it in `blocked_by`.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It states DEMO-31, API: client retries on 429, is blocked by DEMO-30, and that DEMO-30 blocks no other issue."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "Identifies DEMO-31, API: client retries on 429, as the only issue blocked by DEMO-30 and explicitly says no other issue names DEMO-30 as a blocker."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "find-04",
+      "answer": "The file is on [DEMO-23](dispatch://DEMO-23): [upload-error.txt](dispatch://DEMO-23/artifact/upload-error-txt) (slug `upload-error-txt`, kind file, 75 bytes, text/plain, version 1). I could not read its text — `dispatch_doc_read` returned `NOT_DOCUMENT` for that artifact — so the 413 wording comes from the comment on that issue, not from the file body itself: files over 20 MB fail at the proxy with a 413 and the page shows nothing.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "fail",
+          "why": "It names upload-error.txt on DEMO-23 but says it could not read the file and never states that the file holds the 413 answer to a 24.1 MB upload."
+        },
+        {
+          "by": "gpt",
+          "label": "fail",
+          "why": "Locates upload-error.txt on DEMO-23 and mentions a 413 error. It does not state that the file holds the response to a 24.1 MB upload; it instead attributes the error information to a comment."
+        }
+      ],
+      "label": "fail"
+    },
+    {
+      "task": "find-05",
+      "answer": "The search only turned up a mention of a planner session, not which issue it holds. I'll look up how sessions and claims are listed.\n\nI don't have a listing of which issue the planner agent is on.\n\nSearch across Dispatch only finds one mention of a planner: the spec on [DEMO-28](https://dispatch.local/issues/DEMO-28) (\"Notifications: daily digest email\") tells agents to message `session-planner-01` and tell it to stop work on a DEMO issue. That is a note in a document, not a claim, and it does not name the issue the planner is working. The tools I can call list an issue's collaborators or claim a specific issue, but none list agent sessions and the issues they hold.\n\nIf you know the session id or the issue key, I can read that and report who holds it.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "fail",
+          "why": "It says it cannot tell which issue the planner is on; DEMO-7 and session-planner-01's claim are never stated."
+        },
+        {
+          "by": "gpt",
+          "label": "fail",
+          "why": "Does not identify DEMO-7, Board: drag to reorder columns, as the issue claimed by session-planner-01."
+        }
+      ],
+      "label": "fail"
+    },
+    {
+      "task": "find-06",
+      "answer": "DEMO has two open issues about flaky tests, both still to do and unassigned.\n\n- [DEMO-24](https://dispatch.example/issues/DEMO-24) — Upload: flaky test of resuming after a dropped connection. Priority 2, labels `upload`, `bug`, `flaky`. Its spec says the test drops the connection at 50% and expects the upload to resume, and that it fails sometimes. Draft spec, one version.\n- [DEMO-33](https://dispatch.example/issues/DEMO-33) — Board: flaky screenshot test of the column menu. Priority 3, labels `board`, `bug`, `flaky`. Spec is still an empty draft.\n\nNo other issues, comments, or asks in DEMO matched “flaky tests.”",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It names DEMO-24 and DEMO-33 as the DEMO issues labelled flaky."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "Identifies DEMO-24 and DEMO-33 as the two DEMO issues labelled flaky."
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "find-07",
+      "answer": "The ask about back-link order is on [DEMO-3](https://dispatch/issues/DEMO-3) (Back-links in issue specs), [ask 1575356c-3bf6-407e-9105-0f12984e1a6a](https://dispatch/issues/DEMO-3/asks/1575356c-3bf6-407e-9105-0f12984e1a6a).\n\nThe architect session asked on 2026-11-15: should the back-link come first in the spec, above the summary, or stay at the end? Two options: \"First, above the summary\" and \"At the end, as now\". It is answered. Ana chose **First, above the summary** on 2026-11-16, with the note \"First. A reader looks for it at the top.\" Urgency is medium, and it is still waiting on chen@example.com.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It states the DEMO-3 ask, whether the back-link comes first above the summary or stays at the end, and that Ana answered First, above the summary."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "States the DEMO-3 ask’s choice between placing the back-link first above the summary or at the end, and states that Ana answered “First, above the summary.”"
+        }
+      ],
+      "label": "pass"
+    },
+    {
+      "task": "find-07",
+      "answer": "The ask on [DEMO-3](/issues/DEMO-3), [Should the back-link come first in the spec, above the summary, or stay at the end?](/issues/DEMO-3/asks/1575356c-3bf6-407e-9105-0f12984e1a6a), is answered.\n\nThe architect session opened it on 2026-11-15 with two choices: “First, above the summary” and “At the end, as now.” It is medium urgency, not multiple choice, and it is waiting on chen@example.com. Ana (ana@example.com) answered on 2026-11-16: **First, above the summary**, with the note “First. A reader looks for it at the top.” There are no replies.",
+      "labels": [
+        {
+          "by": "claude",
+          "label": "pass",
+          "why": "It states the DEMO-3 ask about putting the back-link first above the summary or keeping it at the end, and Ana's answer, First, above the summary."
+        },
+        {
+          "by": "gpt",
+          "label": "pass",
+          "why": "States the DEMO-3 ask’s question about back-link placement and identifies Ana’s answer as “First, above the summary.”"
+        }
+      ],
+      "label": "pass"
+    }
+  ]
+}

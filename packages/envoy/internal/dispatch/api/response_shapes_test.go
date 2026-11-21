@@ -75,6 +75,7 @@ func TestResponseShapes(t *testing.T) {
 	// handler struct, kept here as the field order the named type must marshal in.
 	type approvalRequestResponseBefore struct {
 		Ask            *shapedAsk           `json:"ask"`
+		Opened         bool                 `json:"opened"`
 		ArtifactID     string               `json:"artifact_id"`
 		Version        int                  `json:"version"`
 		Approval       artifactApprovalRead `json:"approval"`
@@ -97,8 +98,8 @@ func TestResponseShapes(t *testing.T) {
 		},
 		{
 			name:   "artifactUploadResponse",
-			named:  artifactUploadResponse{Artifact: artifact, Version: version},
-			before: map[string]any{"artifact": artifact, "version": version},
+			named:  artifactUploadResponse{Artifact: artifact, PreviousVersion: new(6), Version: version},
+			before: map[string]any{"artifact": artifact, "previous_version": new(6), "version": version},
 		},
 		{
 			name:   "listUsersResponse",
@@ -130,22 +131,24 @@ func TestResponseShapes(t *testing.T) {
 		{
 			name: "editArtifactResponse",
 			named: editArtifactResponse{
-				Applied:      2,
-				Changed:      true,
-				LostOps:      lost,
-				Token:        "tok-1",
-				UnchangedOps: []int{3},
-				Version:      &version,
-				Written:      "The paragraph the edit wrote.",
+				Applied:       2,
+				Changed:       true,
+				LostOps:       lost,
+				PreviousToken: "tok-0",
+				Token:         "tok-1",
+				UnchangedOps:  []int{3},
+				Version:       &version,
+				Written:       "The paragraph the edit wrote.",
 			},
 			before: map[string]any{
-				"applied":       2,
-				"version":       &version,
-				"changed":       true,
-				"unchanged_ops": []int{3},
-				"lost_ops":      lost,
-				"token":         "tok-1",
-				"written":       "The paragraph the edit wrote.",
+				"applied":        2,
+				"version":        &version,
+				"changed":        true,
+				"unchanged_ops":  []int{3},
+				"lost_ops":       lost,
+				"previous_token": "tok-0",
+				"token":          "tok-1",
+				"written":        "The paragraph the edit wrote.",
 			},
 		},
 		{
@@ -192,13 +195,13 @@ func TestResponseShapes(t *testing.T) {
 		{
 			name: "approvalRequestResponse",
 			named: approvalRequestResponse{
-				Ask: &shapedAskRow, ArtifactID: "art-1", Version: 7,
+				Ask: &shapedAskRow, Opened: true, ArtifactID: "art-1", Version: 7,
 				Approval:       artifactApprovalRead{ArtifactApproval: approval},
 				Coverage:       []string{"a requirement with no check"},
 				CoverageUnread: true,
 			},
 			before: approvalRequestResponseBefore{
-				Ask: &shapedAskRow, ArtifactID: "art-1", Version: 7,
+				Ask: &shapedAskRow, Opened: true, ArtifactID: "art-1", Version: 7,
 				Approval:       artifactApprovalRead{ArtifactApproval: approval},
 				Coverage:       []string{"a requirement with no check"},
 				CoverageUnread: true,

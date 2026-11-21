@@ -19,7 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 const (
@@ -189,13 +189,20 @@ func TestAColdReadOfAHeavyMultiUpdateHistoryStaysWithinTheMemoryBound(t *testing
 
 func cloneColdReadArtifact(t *testing.T, memory *memoryHarness, sourceID string, number int) string {
 	t.Helper()
+	return cloneArtifact(t, memory.database, sourceID, fmt.Sprintf("cold-cache-%03d", number))
+}
+
+// cloneArtifact copies the document sourceID in database, as a document of its issue named slug
+// that holds the same updates, and answers the copy's id. A cold read of the copy folds those
+// updates as a read of the document does, so copies fill the read cache faster than uploads.
+func cloneArtifact(t *testing.T, database *store.Store, sourceID, slug string) string {
+	t.Helper()
 	ctx := context.Background()
-	tx, err := memory.database.Pool.Begin(ctx)
+	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin clone %d: %v", number, err)
+		t.Fatalf("begin clone %s: %v", slug, err)
 	}
 	defer tx.Rollback(ctx)
-	slug := fmt.Sprintf("cold-cache-%03d", number)
 	var artifactID string
 	if err := tx.QueryRow(ctx, `
 		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
@@ -203,17 +210,17 @@ func cloneColdReadArtifact(t *testing.T, memory *memoryHarness, sourceID string,
 		from artifacts where id = $1
 		returning id::text
 	`, sourceID, slug).Scan(&artifactID); err != nil {
-		t.Fatalf("clone artifact %d: %v", number, err)
+		t.Fatalf("clone artifact %s: %v", slug, err)
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into doc_updates (artifact_id, version, update, content_changed)
 		select $1, version, update, content_changed
 		from doc_updates where artifact_id = $2
 	`, artifactID, sourceID); err != nil {
-		t.Fatalf("clone updates %d: %v", number, err)
+		t.Fatalf("clone updates %s: %v", slug, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit clone %d: %v", number, err)
+		t.Fatalf("commit clone %s: %v", slug, err)
 	}
 	return artifactID
 }
@@ -255,39 +262,14 @@ func TestColdReadCacheEvictionPlateaus(t *testing.T) {
 		artifactIDs[index] = cloneColdReadArtifact(t, memory, upload.artifactID, index)
 	}
 	// The reader's profiler takes a port the kernel chooses, which the line it logs names
-	// (pprofListening). The server logs it before it serves, but its output reaches this test
-	// through a pipe the test copies on its own goroutine, so the line is waited for, until the
-	// server exits.
+	// (memoryServer.profiler).
 	memory.env = []string{"DISPATCH_PPROF_PORT=0"}
 	reader := memory.start(t)
 	memory.env = nil
-	var listening []string
-	testwait.Holds(30*time.Second, 20*time.Millisecond, func() bool {
-		listening = pprofListening.FindStringSubmatch(reader.output.String())
-		select {
-		case <-reader.exited:
-			return true
-		default:
-			return listening != nil
-		}
-	})
-	if listening == nil {
-		t.Fatalf("the reader logged no line naming its profiler's address:\n%s", reader.outputTail())
-	}
+	profiler := reader.profiler(t)
 	cache := func() docs.ReadCacheFigures {
 		t.Helper()
-		response, err := http.Get("http://" + listening[1] + "/debug/vars")
-		if err != nil {
-			t.Fatalf("GET /debug/vars on the reader's profiler: %v", err)
-		}
-		defer response.Body.Close()
-		var vars struct {
-			Rooms *docs.RoomFigures `json:"dispatch_rooms"`
-		}
-		if err := json.NewDecoder(response.Body).Decode(&vars); err != nil || response.StatusCode != http.StatusOK || vars.Rooms == nil {
-			t.Fatalf("GET /debug/vars on the reader's profiler = %d (%v), want the process's expvar variables with dispatch_rooms", response.StatusCode, err)
-		}
-		return vars.Rooms.ReadCache
+		return roomFigures(t, profiler).ReadCache
 	}
 	read := func(ids []string) {
 		for _, artifactID := range ids {

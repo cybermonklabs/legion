@@ -1,0 +1,15 @@
+-- 20261120185318_going_runs_issues_index_drop.up.sql — going_runs keeps no index of its issues.
+--
+-- going_runs_issues (20261112173940) is a GIN index of going_runs.issues, built for a History
+-- filter on one issue. No query can use it now: History's ?issue= is bool_or(r.issues @> ...) in
+-- the having of its group by conversation (api/going_runs.go, listGoingConversations), which
+-- Postgres reads per row it groups and never through an index, and the one other statement that
+-- reads issues finds its row by id (api/going_agent_call.go). Every insert and update of a run
+-- still maintains it, so it goes.
+--
+-- drop index takes going_runs' ACCESS EXCLUSIVE lock for the instant it unlinks the index and
+-- rewrites no row. No release names the index: going_runs is new on the branch that drops it
+-- (20261112173940), so no build of an earlier release plans a statement over it while this one
+-- rolls (cmd/dispatch/README.md, "Database migrations"). The identifier is the UTC moment this was
+-- written, as `migrationid` requires of every migration past the numbered series.
+drop index going_runs_issues;

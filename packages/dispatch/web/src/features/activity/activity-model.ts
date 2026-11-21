@@ -80,6 +80,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return "kept a decision";
     case "priority.updated":
       return `${event.payload.change} priority ${event.payload.id}`;
+    case "going_plan.updated":
+      return "updated a command-bar plan";
     case "issue.created":
       return "created the issue";
     case "issue.updated":

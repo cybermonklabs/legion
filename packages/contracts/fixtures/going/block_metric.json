@@ -1,0 +1,21 @@
+{
+  "kind": "metric",
+  "title": "Deploys",
+  "spec": {
+    "source": "read_delivery",
+    "params": {
+      "view": "measures"
+    },
+    "table": "totals",
+    "field": "successful_deploys",
+    "label": "Deploys",
+    "compare": "deploys_with_prs",
+    "compare_label": "Deploys with pull requests"
+  },
+  "rows": [
+    {
+      "deploys_with_prs": 9,
+      "successful_deploys": 12
+    }
+  ]
+}

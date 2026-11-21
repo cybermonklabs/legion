@@ -19,10 +19,41 @@ import (
 	"testing"
 )
 
-// issueRouteWriter is the one source file allowed to write an issue's route: the PATCH of an issue,
+// issueRouteWriter is the file whose update of an issue writes its route: the PATCH of an issue,
 // which names the column through its own set("route", ...) and appends issue.updated in the same
 // transaction.
 const issueRouteWriter = "internal/dispatch/api/issue_patch.go"
+
+// routeWriter is a file that writes an issue's route in a statement of its own, how many such
+// statements it holds, and why its write moves no earlier event's copies.
+type routeWriter struct {
+	statements int
+	why        string
+}
+
+// otherRouteWriters are the files besides the PATCH that write an issue's route, each as an
+// insert of a new issue that appends issue.created in the same transaction. A new issue has no
+// earlier event whose record a later mention's copy could pass, so each keeps the guard's rule.
+// Each is named with how many of its statements write the column, so a write moving out of the
+// scan's reach, or a second one added, reds here.
+var otherRouteWriters = map[string]routeWriter{
+	"internal/dispatch/api/issue_create.go": {statements: 1, why: "the create of an issue takes a route and appends " +
+		"issue.created in the same transaction; the new issue has no earlier event"},
+	"going/eval/write.go": {statements: 1, why: "the eval's seed (WriteSeed) inserts each issue with its route and " +
+		"its issue.created in one transaction, into a database no server has opened, so no earlier event of " +
+		"the issue, and no record of one, exists"},
+}
+
+// otherRouteWriter is the entry of otherRouteWriters path names, if any: the file itself, by its
+// path from the module's root, and no other file of the same name.
+func otherRouteWriter(path string) (string, bool) {
+	for name := range otherRouteWriters {
+		if path == name || strings.HasSuffix(path, "/"+name) {
+			return name, true
+		}
+	}
+	return "", false
+}
 
 // routeWrite matches a statement, lower-cased with its whitespace collapsed, that writes the route
 // column of Dispatch's issues table: an update that sets it, an insert or a copy that lists it.
@@ -92,17 +123,20 @@ func routeScanSkipped(path string, entry fs.DirEntry) bool {
 // the comment keeps naming the old route's session, and a later comment's copy for the new one
 // passes it (TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent's control row).
 //
-// The PATCH of an issue is that one writer (issue_patch.go): it builds its update from set("route",
-// ...) and appends issue.updated in the same transaction. The guard holds it to being the only
-// one in two scans of the envoy module, which holds Dispatch's server, its migrations and the
-// commands, scripts and seeds that write its database. Its Go source, as the module scan assembles
-// each statement (TestOnlyTheBrokerInsertsEvents): no statement there may write the column, and
-// exactly one set("route", ...) call may exist, in that file. And every other file of it - SQL,
-// shell, Python, TypeScript, JavaScript and Go read as written, migrations, seeds and scripts
-// included: no file may write it either (routeScanSkipped names what it leaves out). Outside the
-// module, the Legion daemon's issues table is its own database's and has no route, and the web
-// app's end-to-end fixtures seed a fresh database whose issues have no event yet. A second writer
-// belongs behind the same rule: give it its event, then name it here.
+// The PATCH of an issue is the one writer that moves a route (issue_patch.go): it builds its update
+// from set("route", ...) and appends issue.updated in the same transaction. Besides it, the files
+// of otherRouteWriters write a route as they insert a new issue, and append its issue.created in
+// the same transaction, each named with its reason and with how many of its statements write the
+// column. The guard holds them to being the only ones in two scans of the envoy module, which holds
+// Dispatch's server, its migrations and the commands, scripts and seeds that write its database.
+// Its Go source, as the module scan assembles each statement (TestOnlyTheBrokerInsertsEvents): no
+// statement of any other file may write the column, each named file holds its count of them, and
+// exactly one set("route", ...) call may exist, in issue_patch.go. And every other file of it -
+// SQL, shell, Python, TypeScript, JavaScript and Go read as written, migrations, seeds and scripts
+// included: no file but those may write it either (routeScanSkipped names what it leaves out).
+// Outside the module, the Legion daemon's issues table is its own database's and has no route, and
+// the web app's end-to-end fixtures seed a fresh database whose issues have no event yet. Another
+// writer belongs behind the same rule: give it its event, then name it here.
 func TestOnlyTheIssuePatchWritesTheRoute(t *testing.T) {
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
@@ -111,12 +145,18 @@ func TestOnlyTheIssuePatchWritesTheRoute(t *testing.T) {
 	}
 	var offences []string
 	setCalls := map[string]int{}
+	named := map[string]int{}
 	for _, source := range sources {
 		path := filepath.ToSlash(source.path)
 		for _, statement := range sqlStatements(source.file, constants) {
-			if writesRoute(statement) {
-				offences = append(offences, path+": "+statement)
+			if !writesRoute(statement) {
+				continue
 			}
+			if name, ok := otherRouteWriter(path); ok {
+				named[name]++
+				continue
+			}
+			offences = append(offences, path+": "+statement)
 		}
 		if calls := routeSetCalls(source.file); calls > 0 {
 			setCalls[path] += calls
@@ -142,7 +182,9 @@ func TestOnlyTheIssuePatchWritesTheRoute(t *testing.T) {
 		}
 		scanned++
 		if writesRoute(sqlWhitespace.ReplaceAllString(strings.ToLower(string(text)), " ")) {
-			offences = append(offences, filepath.ToSlash(path))
+			if _, ok := otherRouteWriter(filepath.ToSlash(path)); !ok {
+				offences = append(offences, filepath.ToSlash(path))
+			}
 		}
 		return nil
 	}); err != nil {
@@ -166,10 +208,18 @@ func TestOnlyTheIssuePatchWritesTheRoute(t *testing.T) {
 		t.Fatalf("%s holds %d set(\"route\", ...) calls the scan can see, want 1: if the write moved or "+
 			"was renamed, this guard now passes by seeing nothing", issueRouteWriter, patch)
 	}
+	for name, writer := range otherRouteWriters {
+		if named[name] != writer.statements {
+			t.Errorf("%s holds %d statements the scan sees write the route, want %d (%s): if one moved or was "+
+				"written around a value this scan cannot resolve, this guard now passes by seeing nothing",
+				name, named[name], writer.statements, writer.why)
+		}
+	}
 	if scanned < 500 {
 		t.Fatalf("the module scan read %d files, want the module: %s is not its root", scanned, moduleRoot)
 	}
-	t.Logf("%d Go files of the module parsed and %d of its files read as text; the one writer is %s", len(sources), scanned, issueRouteWriter)
+	t.Logf("%d Go files of the module parsed and %d of its files read as text; the writers are %s and %d named others",
+		len(sources), scanned, issueRouteWriter, len(otherRouteWriters))
 }
 
 // TestTheRouteWriterGuardSeesAPlantedWriter plants a second writer of the route in each shape the
@@ -222,6 +272,16 @@ func move(tx tx, key string) error {
 		routeScanSkipped("issue_patch.go", fakeFile("issue_patch.go")) ||
 		routeScanSkipped("20261117190118_events_owed_keys.up.sql", fakeFile("20261117190118_events_owed_keys.up.sql")) {
 		t.Error("the text scan reads a test file or leaves out a source or a migration")
+	}
+	// A named writer is let through by its own path alone: a planted writer elsewhere, a file of
+	// the same name in another directory included, is an offence.
+	if _, ok := otherRouteWriter("../../../going/eval/write.go"); !ok {
+		t.Error("the guard does not know the eval seed's writer by its path")
+	}
+	for _, path := range []string{"../../../internal/dispatch/api/planted.go", "../../../cmd/dispatch-seed/write.go", "../../../notgoing/eval/write.go"} {
+		if name, ok := otherRouteWriter(path); ok {
+			t.Errorf("the guard lets %s through as the named writer %s", path, name)
+		}
 	}
 }
 

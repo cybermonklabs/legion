@@ -138,6 +138,39 @@ cd packages/dispatch
 DISPATCH_E2E_EMBEDDER=fake bun run e2e -- --project=chromium --project=iphone search-tiers
 ```
 
+`DISPATCH_E2E_MODELS=fake` is the models lane: the harness makes a certificate for 127.0.0.1 and
+a bearer token per fake in a directory of each stack's own (`DISPATCH_E2E_MODELS_DIR`), starts
+`e2e/fake-chat-model.ts` and `e2e/fake-decision-model.ts` over https with it, and points the
+server at them as a deployment configures its writing model (`DISPATCH_ANSWERER=endpoint`) and
+its decision model (the model `packages/envoy/going/decision_models.json` marks chosen), with
+`SSL_CERT_FILE` naming that certificate (`e2e/harness-models.ts`, `e2e/run-server.sh`); the server
+hands the same settings to its agent process, whose runs call the same fake. A row scripts what
+each fake answers and reads back what the server asked of it through `e2e/fake-models-helpers.ts`,
+which skips the row outside the lane and reads the chosen decision model from the record rather
+than naming it. The fake writing model answers an agent run turn by turn, from a script keyed by the
+person's words (`scriptChat({ runs })`, with `findTools`, `callTool`, `proposePlan`, `say`,
+`endlessStream` and `refusedWith`), and records each call with the run's page and the tool results
+it gave the model (`runCalls`); the fake decision model can hold its answer until the row
+releases it (`hold`, `releaseDecisions`). `bun run e2e:models` runs the lane's specs on chromium
+(`going-agent-*`, `going-answer*` and `going-blocks`), and `bun run e2e:models:firefox` runs
+`going-agent-place`'s `@firefox` rows on Firefox, locally or on a build farm; the `embedder` job
+of `.github/workflows/dispatch-browser.yaml` runs only `going-answer` and `going-blocks` today.
+
+`DISPATCH_E2E_MODELS=real` serves the command bar with a deployment's models, as a preview of a
+commit does: the server calls the chat model and the decision model the caller's own settings
+name (`DISPATCH_ANSWERER` and its place's settings, `DISPATCH_DECISION_MODEL` with its endpoint
+and token file), runs with `GOMEMLIMIT=3GiB`, and starts nothing, naming each setting, when one is
+missing. The harness writes the eval's seed (`packages/envoy/going/eval/seed.json`, through `go run
+./cmd/going-eval seed`) into the stack's database before the server starts, and hands the seed's
+agent sessions to the fake Envoy (`e2e/harness-eval-seed.ts`). `bun run dispatch:local` empties
+the database and seeds its own workspace after the harness starts, so a preview starts the
+harness itself (`startHarness`) and seeds nothing more.
+
+`DISPATCH_E2E_BASE_BUILD=1` tells the scenario reset (`e2e/seed.ts`) that the server is an older
+commit's (`DISPATCH_E2E_SERVER_BIN`, `DISPATCH_E2E_SERVER_WEB_DIST`), so the tables this checkout
+adds may be missing from the database it migrated: the reset leaves out, and prints once, each
+listed table the database does not hold. Without it a missing table fails the reset.
+
 Run the local harness with its isolated database available:
 
 ```bash

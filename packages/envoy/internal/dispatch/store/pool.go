@@ -772,12 +772,22 @@ func (p *Pool) Config() *pgxpool.Config { return p.pool.Config() }
 func (p *Pool) Stat() *pgxpool.Stat { return p.pool.Stat() }
 
 // ConnectionUse is how many connections of the shared, document-rooms and room-appends pools are
-// in use, and how many those pools have taken back since they opened, whether returned or
-// discarded. The health probe's pool is left out: it is how a caller asks whether the database
-// answers.
+// in use, how many those pools have taken back since they opened, whether returned or discarded,
+// and how many of their connections the database answered. The health probe's pool is left out:
+// it is how a caller asks whether the database answers.
 type ConnectionUse struct {
 	InUse    int32
 	Returned int64
+	// Answered grows, since the pools opened, by each connection given back to lie idle, each one
+	// made, and each closed for its age once taken from the idle ones, and not by a connection
+	// pgx discards after a failure: one the database left unanswered, which its pool takes back
+	// only once pgx gives up the cancel request it sends, 15 s after the failure. It is the sum
+	// over the pools of acquisitions, connections lying idle and connections closed for their age
+	// or idleness. Taking an idle connection moves one from idle to the acquisitions; making one
+	// adds an acquisition or an idle connection; giving one back healthy adds an idle one; closing
+	// one for its age or idleness adds one to that count, less the idle one it was, if it was;
+	// discarding one only takes it from in use, which the sum leaves out.
+	Answered int64
 }
 
 // Use reports the shared, document-rooms and room-appends pools' ConnectionUse.
@@ -793,6 +803,7 @@ func (p *Pool) Use() ConnectionUse {
 		stat := pool.Stat()
 		use.InUse += stat.AcquiredConns()
 		use.Returned += stat.AcquireCount() - int64(stat.AcquiredConns())
+		use.Answered += stat.AcquireCount() + int64(stat.IdleConns()) + stat.MaxLifetimeDestroyCount() + stat.MaxIdleDestroyCount()
 	}
 	return use
 }

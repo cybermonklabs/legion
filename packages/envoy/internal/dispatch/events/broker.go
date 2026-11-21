@@ -43,9 +43,9 @@ func NewBroker() *Broker {
 // other waits for, until Postgres killed one. Taking every owner up front in one order leaves no
 // cycle to wait in: each Append then takes its owner's lock again, which returns at once, and its
 // owner's row, which no other writer holds without that lock. An ownerless event, addressed to a
-// session or a priority's write, has no owner lock and adds none; its Append takes the
-// transaction id itself. LockOwners locks no row, so the transaction holds no transaction id on
-// its account.
+// session, a priority's write or a person's command-bar plans, has no owner lock and adds none;
+// its Append takes the transaction id itself. LockOwners locks no row, so the transaction holds no
+// transaction id on its account.
 func (b *Broker) LockOwners(ctx context.Context, tx pgx.Tx, owners ...model.Event) error {
 	if b == nil {
 		return fmt.Errorf("event broker required")
@@ -83,19 +83,20 @@ func (b *Broker) LockOwners(ctx context.Context, tx pgx.Tx, owners ...model.Even
 //     write that drew id 7 can still be open after the write that drew id 8 has committed. A
 //     reader that pages the log by a global id cursor reads through a Horizon, only up to the
 //     safe horizon, never up to max(id).
-//   - An ownerless (session-addressed or priority) event takes no lock of its own: its seq is 0,
-//     so there is no sequence to allocate, and two transactions that touch no common row have no
-//     defined order, so either commit order is a valid serialization. Order matters only between
-//     writes that conflict, and every ownerless append follows its transaction's own lock on the
-//     row it changes, which orders it against every write that changes that row. A message create
-//     (api/messages.go createStoredMessage) and a broadcast (api/broadcasts.go writeBroadcast)
-//     append after inserting the new message row, a reply's insert taking its parent message
-//     row for key share through the foreign key, and a broadcast's new broadcasts and
-//     idempotency-key rows before it. An accept (api/message_delivery.go acceptDelivery) and a
-//     pending delivery's supersede receipt (recordPendingMessageDelivery) append after locking
-//     the message row for no key update and writing the attempt's message_deliveries row. The
-//     reply route's failure receipt and a session's reply (replyMessage, insertSessionReply)
-//     append after locking the attempt row for update. A viewer's state (api/state.go
+//   - An ownerless (session-addressed, priority or command-bar plan) event takes no lock of its
+//     own: its seq is 0, so there is no sequence to allocate, and two transactions that touch no
+//     common row have no defined order, so either commit order is a valid serialization. Order
+//     matters only between writes that conflict, and every ownerless append follows its
+//     transaction's own lock on the row it changes, which orders it against every write that
+//     changes that row. A message create (api/messages.go createStoredMessage) and a broadcast
+//     (api/broadcasts.go writeBroadcast) append after inserting the new message row, a reply's
+//     insert taking its parent message row for key share through the foreign key, and a
+//     broadcast's new broadcasts and idempotency-key rows before it. An accept
+//     (api/message_delivery.go acceptDelivery) and a pending delivery's supersede receipt
+//     (recordPendingMessageDelivery) append after locking the message row for no key update and
+//     writing the attempt's message_deliveries row. The reply route's failure receipt and a
+//     session's reply (replyMessage, insertSessionReply) append after locking the attempt row
+//     for update. A viewer's state (api/state.go
 //     putUserAgentState) appends only after it wrote a user_agent_state, user_agent_read or
 //     user_agent_reply_read row. A delivery settle (api/envoy_resolve.go settleDeliveryAttempt)
 //     appends after its update writes the attempt row it claimed; on the branch where that
@@ -105,9 +106,12 @@ func (b *Broker) LockOwners(ctx context.Context, tx pgx.Tx, owners ...model.Even
 //     its priority_nodes row: a create's insert, which a second create of the same id waits on
 //     through the row's (kind, id) key and then finds written, and the update of a rename, a
 //     rank move or a delete, which holds the row locked until the transaction ends. A
-//     per-session or per-priority lock would add no order these row locks do not give, only
-//     deadlock cycles: the accept path would take it before the message row and a pending
-//     delivery after, and a broadcast one per recipient in no sorted order.
+//     command-bar plan's event (api/going_run_stream.go, appendGoingPlanEvent) appends
+//     `going_plan.updated` after writing the going_runs row of the run whose plan it names, which
+//     the update holds until the transaction ends. A per-session, per-priority or per-person lock
+//     would add no order these row locks do not give, only deadlock cycles: the accept path would
+//     take it before the message row and a pending delivery after, and a broadcast one per
+//     recipient in no sorted order.
 func (b *Broker) Append(ctx context.Context, tx pgx.Tx, e model.Event) (model.Event, error) {
 	var appended model.Event
 	if err := store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
@@ -119,10 +123,10 @@ func (b *Broker) Append(ctx context.Context, tx pgx.Tx, e model.Event) (model.Ev
 }
 
 // nextOwnerSeq is the sequence an append takes: one past its owner row's last_seq, and 0 for an
-// event with no owner row (a session-addressed message or a priority's write). The insert names
-// it for the event's own seq and, for a payload that carries the owner row (ownerLastSeqPayload),
-// for the last_seq that payload stores; both read the one snapshot the statement runs in, so they
-// are the same number.
+// event with no owner row (a session-addressed message, a priority's write or a command-bar plan's
+// change). The insert names it for the event's own seq and, for a payload that carries the owner
+// row (ownerLastSeqPayload), for the last_seq that payload stores; both read the one snapshot the
+// statement runs in, so they are the same number.
 const nextOwnerSeq = `coalesce(
 				(select last_seq from issues where key = $1) + 1,
 				(select last_seq from artifacts where id = $2) + 1,
@@ -194,11 +198,12 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	// it inserted. Every statement of a data-modifying CTE reads one snapshot, so the insert reads
 	// last_seq as the statements before it left it, and the owner's update writes the very
 	// sequence the insert took. Only the owner the event names matches a row: the other two keys
-	// are null, and an ownerless event (a session-addressed message or a priority's write) takes
-	// sequence 0 and advances nothing. The thread_logins the payload names are read in the same
-	// snapshot, which holds every write the transaction made before it, and so is the last_seq a
-	// payload that carries the owner row names (ownerLastSeqPayload): it reads nextOwnerSeq, the
-	// expression the event's own seq reads, so the payload records the sequence the event took.
+	// are null, and an ownerless event (a session-addressed message, a priority's write or a
+	// command-bar plan's change) takes sequence 0 and advances nothing. The thread_logins the
+	// payload names are read in the same snapshot, which holds every write the transaction made
+	// before it, and so is the last_seq a payload that carries the owner row names
+	// (ownerLastSeqPayload): it reads nextOwnerSeq, the expression the event's own seq reads, so
+	// the payload records the sequence the event took.
 	storedPayload, storedLogins := `$6`, `null::jsonb`
 	args := []any{e.IssueKey, e.ArtifactID, e.ProjectKey, e.Type, actor, payload, e.Notify}
 	if logins != nil {
@@ -263,14 +268,15 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 }
 
 // eventOwnerKey requires at most one of IssueKey/ArtifactID/ProjectKey, and an event naming none
-// of them is one of exactly two kinds, each told by its payload: a session-addressed message or
-// viewer state (agentEventSessionID), keyed "agent:<session>", and a priority's write
-// (model.PriorityEventPayload, `priority.updated`), keyed "priority:<id>". Any other ownerless
-// event is refused, so there is still no ownerless event for a plain configuration change: a
-// cross-project singleton settings table (no project, issue, or artifact of its own) has
-// nothing valid to pass here. See api/settings_delivery.go's putDeliverySettings doc comment for
-// a worked example of a route that checked this directly and deliberately skips appending an
-// event rather than inventing an owner.
+// of them is one of exactly three kinds, each told by its payload: a session-addressed message or
+// viewer state (agentEventSessionID), keyed "agent:<session>", a priority's write
+// (model.PriorityEventPayload, `priority.updated`), keyed "priority:<id>", and a change of what a
+// person's command-bar plans wait on (model.GoingPlanEventPayload, `going_plan.updated`), keyed
+// "going_plan:<login>". Any other ownerless event is refused, so there is still no ownerless event
+// for a plain configuration change: a cross-project singleton settings table (no project, issue,
+// or artifact of its own) has nothing valid to pass here. See api/settings_delivery.go's
+// putDeliverySettings doc comment for a worked example of a route that checked this directly and
+// deliberately skips appending an event rather than inventing an owner.
 //
 // The key of an ownerless event locks nothing: eventOwnerLock names no owner lock for it, so
 // LockOwners takes none and lockEventOwner takes only the transaction id, and QueueAppend's
@@ -296,6 +302,12 @@ func eventOwnerKey(e model.Event) (string, error) {
 				return "", fmt.Errorf("ownerless priority event requires type priority.updated and a priority id")
 			}
 			return "priority:" + payload.ID, nil
+		}
+		if payload, ok := e.Payload.(model.GoingPlanEventPayload); ok {
+			if e.Type != "going_plan.updated" || payload.Login == "" {
+				return "", fmt.Errorf("ownerless command-bar plan event requires type going_plan.updated and a login")
+			}
+			return "going_plan:" + payload.Login, nil
 		}
 		sessionID, err := agentEventSessionID(e)
 		if err != nil {
@@ -341,9 +353,9 @@ func agentEventSessionID(e model.Event) (string, error) {
 }
 
 // eventOwnerLock is the owner lock of e's owner, false for an ownerless event (a session-addressed
-// message or a priority's write), which has no owner row and no lock. An event on an issue or a
-// document names its owner as every other row of that collaboration does (store.OwnerOf); a
-// project event, which no such row has, names the project.
+// message, a priority's write or a command-bar plan's change), which has no owner row and no lock.
+// An event on an issue or a document names its owner as every other row of that collaboration
+// does (store.OwnerOf); a project event, which no such row has, names the project.
 func eventOwnerLock(e model.Event) (store.Owner, bool) {
 	if owner := store.OwnerOf(e.IssueKey, e.ArtifactID); owner != nil {
 		return *owner, true
@@ -426,12 +438,13 @@ func Quiet(e model.Event) bool {
 	case "project.created", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",
 		"architecture.synced", "architecture.sync_failed", "user_state.updated", "user_agent_state.updated",
-		"user_thread_state.updated", "decision.kept", "priority.updated":
+		"user_thread_state.updated", "decision.kept", "priority.updated", "going_plan.updated":
 		// Settings, importer and per-viewer bookkeeping: retained on their log and carried by
 		// the event feed, but nobody is woken by them. A Keep records that a person read a
 		// decision and agreed with it, which asks its agent for nothing. A priority's write is
 		// the deployment's own configuration of what work advances, which open pages refetch on
-		// and nobody is asked anything by.
+		// and nobody is asked anything by. A command-bar plan's change is the person's own
+		// bookkeeping, which their pages read again on and which wakes no agent.
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was

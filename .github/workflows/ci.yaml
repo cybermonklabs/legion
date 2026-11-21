@@ -61,6 +61,7 @@ env:
       "envoy-go-race-docs": "envoy_go_race_docs",
       "envoy-go-docs-finalizers": "envoy_go_race_docs",
       "dispatch-memory": "dispatch_memory",
+      "dispatch-memory-group": "dispatch_memory_group",
       "dispatch-multiprocess": "dispatch_multiprocess",
       "dispatch-two-builds": "dispatch_two_builds",
       "listener-server-change": "listener_server_change",
@@ -194,6 +195,8 @@ jobs:
       envoy_go_claim_model: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_claim_model || 'false' }}
       envoy_go_race_docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
       dispatch_memory: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_memory || 'false' }}
+      # why: .github/ci-notes/ci.md#the-memory-group-test-the-server-ends-its-agent-before-the-kernel
+      dispatch_memory_group: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_memory_group }}
       dispatch_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_multiprocess || 'false' }}
       # why: .github/ci-notes/ci.md#the-two-build-job-builds-the-previous-release-and-runs-both-halves-against
       dispatch_two_builds: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_two_builds || 'false' }}
@@ -683,6 +686,18 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # why: .github/ci-notes/ci.md#the-memory-group-test-the-server-ends-its-agent-before-the-kernel
+  dispatch-memory-group:
+    needs: changes
+    if: needs.changes.outputs.dispatch_memory_group == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-dispatch-memory-group.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # why: .github/ci-notes/ci.md#the-dispatch-servers-two-process-tests
   dispatch-multiprocess:
     needs: changes
@@ -931,6 +946,7 @@ jobs:
       - envoy-go-race-docs
       - envoy-go-docs-finalizers
       - dispatch-memory
+      - dispatch-memory-group
       - dispatch-multiprocess
       - dispatch-two-builds
       - listener-server-change

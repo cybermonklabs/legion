@@ -4,6 +4,8 @@ import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
   architectureSourcesQuery,
+  goingConversationsQuery,
+  goingWaitingPlansQuery,
   inboxQuery,
   inboxThreadsKey,
   myRepliesKey,
@@ -1057,6 +1059,17 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // The event names one thread, or none at all - a Mark all read names its project and no
     // thread - and either way every one of the viewer's thread reads is refreshed.
     return isViewer(payloadString(event, "login"), viewer) ? [{ queryKey: myRepliesKey }] : [];
+  }
+  if (event.type === "going_plan.updated") {
+    // A run of this viewer's began to wait on its plan, or a waiting one was answered or stopped,
+    // in this tab or another: the Inbox's waiting plans and History are read again. The event
+    // names the person alone, and no run.
+    return isViewer(payloadString(event, "login"), viewer)
+      ? [
+          { queryKey: goingWaitingPlansQuery().queryKey },
+          { queryKey: goingConversationsQuery().queryKey },
+        ]
+      : [];
   }
   if (event.type === "priority.updated") {
     // A create, a rename, a move, a description or a delete of a priority, by anybody.

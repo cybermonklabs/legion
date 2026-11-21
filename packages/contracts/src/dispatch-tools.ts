@@ -7,8 +7,28 @@ import {
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-api-limits";
+import { dispatchRouteToolSpecs, resultRecordArguments } from "./dispatch-route-tools";
+
+export { personToolSpecs } from "./dispatch-route-tools";
+
 import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
+
+/**
+ * One route of the Dispatch server's route table a tool calls, as the route stands: its method,
+ * its path pattern, the argument that fills each `{placeholder}` of the pattern (`params`, by
+ * placeholder), the arguments sent as query parameters under their own names (`query`), and the
+ * arguments sent as the members of a JSON body under their own names (`body`). Every method but
+ * GET sends a JSON body, `{}` where it names none. A spec's routes are tried in order, and a call
+ * takes the first whose placeholders its arguments all fill.
+ */
+export interface DispatchToolRoute {
+  readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  readonly path: string;
+  readonly params?: Readonly<Record<string, string>>;
+  readonly query?: readonly string[];
+  readonly body?: readonly string[];
+}
 
 export interface DispatchToolSpec {
   readonly name: string;
@@ -26,6 +46,14 @@ export interface DispatchToolSpec {
   readonly strict?: boolean;
   /** A schema-valid call shown after this tool rejects malformed arguments. */
   readonly example: Readonly<Record<string, unknown>>;
+  /**
+   * The routes this tool calls, for a tool that calls one route of the table as it stands: the
+   * `dispatch` command serves such a tool with one generic command, and the Dispatch server with
+   * one generic translation. A tool whose command does more than one route's work - resolves a
+   * slug, reads before it writes, renders what it reads - carries none and has a hand-written
+   * command.
+   */
+  readonly routes?: readonly DispatchToolRoute[];
 }
 
 /** Builds a host-owned schema and applies any tool-level cross-field validation. */
@@ -823,6 +851,12 @@ const RELATED_CHECK_RESULT =
   "which items it found and how it searched, that it searched and found nothing, or that no " +
   "check was made, why, and the dispatch search to run instead.";
 
+/**
+ * Every Dispatch tool behind the `dispatch` command: `@legion/envoy-client` derives one command per
+ * spec and one flag per field (`src/dispatch-command.ts`). The specs written here come first, each
+ * served by a command written by hand, then the route-bound specs of `dispatch-route-tools.ts`,
+ * each served by its route binding.
+ */
 export const dispatchToolSpecs = [
   {
     name: "dispatch_issue",
@@ -1822,48 +1856,7 @@ export const dispatchToolSpecs = [
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
-      check: z
-        .string()
-        .describe(
-          "The check block's id, or its canonical reference dispatch://KEY/artifact/verification-md#b-<id> when the id is not unique among the issue's Verification document and those of the issues above it."
-        )
-        .optional(),
-      role: z
-        .string({ max: 32 })
-        .describe(
-          "Who ran it: implementer, tester, reviewer. At most 32 characters of a-z and -, printed in the pull-request line."
-        )
-        .optional(),
-      verdict: z.enum(["pass", "fail"]).describe("Whether the check passed.").optional(),
-      commit: z
-        .string()
-        .describe("The 40-character lowercase hex commit the check ran at.")
-        .optional(),
-      surface: z.string().describe("Where a person reaches the change.").optional(),
-      run: z.string().describe("The command that proved it.").optional(),
-      observed: z.string().describe("What the command printed.").optional(),
-      negative_control: z
-        .string()
-        .describe("The deliberately broken input and the refusal seen.")
-        .optional(),
-      failed: z
-        .number({ int: true, min: 0 })
-        .describe("Cases the run failed; 0 by default.")
-        .optional(),
-      skipped: z
-        .number({ int: true, min: 0 })
-        .describe("Cases the run skipped; 0 by default.")
-        .optional(),
-      excluded: z
-        .number({ int: true, min: 0 })
-        .describe("Cases the run excluded; 0 by default.")
-        .optional(),
-      screenshots: z
-        .array(z.string())
-        .describe(
-          "dispatch:// references to image documents of this issue or of the check's issue."
-        )
-        .optional(),
+      ...resultRecordArguments(z, (field) => field.optional()),
       retract: z
         .string()
         .describe(
@@ -2004,6 +1997,7 @@ export const dispatchToolSpecs = [
       "`Coverage: the spec marks no requirements`. Nothing is refused for a gap. " +
       `An issue read, and its dispatch://KEY/log, lists the issue's last ${DEFAULT_ISSUE_READ_EVENTS} events, oldest first; ` +
       "--events N lists the last N, and --all-events every one. " +
+      "An issue's dispatch://KEY/comments lists every comment on the issue. " +
       "A comment reply chain names the comment each nested reply answers as `Answers: <comment id>`. " +
       "Every read ends with `Referenced by:` (what cites or hangs off this node, each with its dispatch:// address, " +
       "an excerpt, and when) and `Links:` (what it cites), so tracing provenance is one call. " +
@@ -2029,7 +2023,7 @@ export const dispatchToolSpecs = [
       ref: z
         .string()
         .describe(
-          "Optional dispatch:// reference: dispatch://KEY, dispatch://KEY/spec, " +
+          "Optional dispatch:// reference: dispatch://KEY, dispatch://KEY/spec, dispatch://KEY/comments, " +
             "dispatch://KEY/artifact/<slug>[@vN], dispatch://KEY/ask/<id>, dispatch://KEY/comment/<id>, " +
             "dispatch://KEY/message/<id>, dispatch://PROJECT/artifact/<slug>[@vN], and its " +
             "/ask/<id> and /comment/<id>; or the dashboard URL of one. A block: " +
@@ -2500,4 +2494,6 @@ export const dispatchToolSpecs = [
     arguments: () => ({}),
     strict: true,
   },
+  // The tools that call one route of the table as it stands, each served by its route binding.
+  ...dispatchRouteToolSpecs,
 ] as const satisfies readonly DispatchToolSpec[];

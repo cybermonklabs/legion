@@ -559,6 +559,25 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
 		"GET /api/v1/inbox",
 		"GET /api/v1/me/answers",
+		// A person's command-bar runs are no older row: they are the person's own record, read by
+		// the person alone, as the answers above them are.
+		"GET /api/v1/me/going-runs",
+		// The Inbox's waiting plans are the person's own record as History is.
+		"GET /api/v1/me/going-plans",
+		// A run, its stream, its stop, its plan, its undo and the person's own setting of the bar
+		// are the person's as their runs are: each acts on, or is, the person's own record. The
+		// start of a run needs no scope at the gate: it refuses every credential that is no
+		// person's own itself (RUN_NEEDS_PERSON_CREDENTIAL).
+		"GET /api/v1/going/runs/{id}",
+		"GET /api/v1/going/runs/{id}/events",
+		"POST /api/v1/going/runs/{id}/stop",
+		"GET /api/v1/going/runs/{id}/plan",
+		"POST /api/v1/going/runs/{id}/plan/approve",
+		"POST /api/v1/going/runs/{id}/plan/revise",
+		"POST /api/v1/going/runs/{id}/plan/reject",
+		"POST /api/v1/going/runs/{id}/undo",
+		"GET /api/v1/me/going/settings",
+		"PUT /api/v1/me/going/settings",
 		"GET /api/v1/me/replies",
 		"PUT /api/v1/me/threads/{id}/read",
 		// The Inbox's Mark all read is no older row either: it writes the person's own read

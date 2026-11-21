@@ -231,9 +231,9 @@ export const duplicateText = `Delivered by an earlier attempt, so not delivered 
  *  same window in which a repeat is recognised (`DELIVERY_DUPLICATE_WINDOW_MS`). */
 export const queuedWait = `is stopped; it gets the message if it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours`;
 
-/** What a queued attempt reads as on the Agents page's card (`TargetedMessageCard`), the
- *  Conversation tab's delivery line (`ConversationTab`) and the search bar's send
- *  (`SendToAgentOffer`): the listener took the message for a session it knows and that is not
+/** What a queued attempt reads as on the Agents page's card (`TargetedMessageCard`) and the
+ *  Conversation tab's delivery line (`ConversationTab`): the listener took the message for a
+ *  session it knows and that is not
  *  running, and stores it until that session runs again. `session` is the recipient as the
  *  surface draws it, so a card names it through `AgentName` and a plain line names it as text. */
 export function queuedParts(session: AgentPart): AgentPart[] {

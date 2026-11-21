@@ -688,7 +688,8 @@ this job runs cmd/listener's alone.
 
 What cmd/listener's test binary compiles that `go list -deps ./cmd/listener` does
 not, so listener_command, which is that build closure, leaves them to the jobs
-that run the tests: the chat client and the router.
+that run the tests: the chat client and the shared model loop it reaches its
+models through, and the router.
 
 ## airlock_lean: The Lean model of the airlock and the Go code it covers
 
@@ -1862,6 +1863,23 @@ tests a second time, envoy-go's unit step having run them already, so the -run c
 assignment is a line of its own: under bash -e it carries the script's exit status, so an
 empty or refused list fails the step instead of running -run "", which matches every test.
 
+## The memory-group test: the server ends its agent before the kernel
+
+The test of c20 of INFRA-1588 (packages/envoy/cmd/dispatch, TestTheServerEndsTheAgentBeforeTheKernel)
+runs the Dispatch server in a Docker container whose memory limit is 8 GiB, makes the server's
+agent process allocate at full speed while the server's heap is held near its peak, and reads
+the container's memory.events: the server must kill its agent, which it watches every 50 ms,
+before the kernel's OOM killer acts. It needs a cgroup v2 host with a container runtime, which
+envoy-go's runners are not asked to be, so the test skips with its reason unless
+DISPATCH_TEST_MEMORY_GROUP is set, and this job alone sets it. The runner is ubuntu-24.04, amd64,
+because the margin the test measures (the agent's fastest growth in 50 ms) is a measurement of
+the architecture production runs on. The job runs on a pull request, as it is a standard runner
+of a public repository, which GitHub does not bill, and its one test takes minutes, not the
+tens of minutes the held-back suites take. The image the server runs in is the test's own Go
+constant (`memoryGroupImage`, a digest of .github/ci-images.yaml), which
+.github/actions/pull-test-images pulls in a step of its own, so a failed pull is told apart from a
+failed test.
+
 ## The Dispatch server's two-process tests
 
 The two-process tests (packages/envoy/cmd/dispatch/multiprocess_test.go, INFRA-66): each row
@@ -1879,6 +1897,13 @@ tests a second time, envoy-go's unit step having run them already, so the -run c
 assignment is a line of its own: under bash -e it carries the script's exit status, so an
 empty or refused list fails the step instead of running -run "", which matches every test.
 
+The tests of the server's agent process (packages/envoy/cmd/dispatch/agent_loop_test.go,
+agent_supervisor_test.go and agent_soak_test.go, INFRA-1588) carry the same tag and run here: each
+row starts a server and its agent, two processes, and waits out real leases, holds and bounds,
+about 1,130 s together in envoy-go's unit step at 2da9ac1c, which took that step's cmd/dispatch
+past its 20 minutes. The agent's limits and environment (agent_environment_test.go) take seconds
+and stay in envoy-go, and the harness every build shares is agent_harness_test.go, untagged.
+
 ## The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
 
 The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
@@ -1893,7 +1918,10 @@ which needs the whole history and the tags (fetch-depth 0), and builds it from `
 The first-rollout row runs the first-rollout build instead, the newest release before the first
 that registers its schema numbers: the job pins it by its commit (FIRST_ROLLOUT_COMMIT), the
 resolve step fails when its tag, legion-envoy-v30.20.2, names another commit, and the job builds
-it the same way.
+it the same way. The going-runs row of INFRA-1588's check c25 runs a third build, the release
+legion-envoy-v32.15.0, pinned by its commit (GOING_RELEASE_COMMIT) in the same way and for a reason
+of its own: that release's sweep deletes going_requests older than an hour, which the newest
+release need not do, so only a fixed release shows that a run of the head survives it.
 Each build is cached by its commit and the script that built it, so a pull request builds each
 release once; its src/ is left out of the cache, since the test reads only the parts the script
 copies out of it. Each row's NATS runs in its own test process (internal/testnats), so the job

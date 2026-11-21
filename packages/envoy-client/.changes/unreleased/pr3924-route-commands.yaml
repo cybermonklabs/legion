@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The `dispatch` command offers a command for each route of the Dispatch server a person can call
+  that no hand-written command covers. A tool spec that binds its routes
+  (`DispatchToolSpec.routes`) is served by one generic command: it calls the first of its routes
+  whose every placeholder an argument fills, sends the query and body arguments the route binds
+  under their own names, with the session's actor beside them, and prints the route's JSON answer
+  compact. Such a command names its own arguments and no owner, so `LEGION_ISSUE` fills none of
+  them. A change a command-bar run made prints its actor as "<person>, through the command bar".

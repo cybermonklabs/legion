@@ -27,14 +27,18 @@ const maintenanceLease = "suggestion-outcomes"
 // RunMaintenanceSweep deletes every Idempotency-Key past its window (sweepRequestKeys) and every
 // spent DPoP proof past its acceptance window (store.DPoPProofs.Sweep), ends every answer run
 // past its window that stored no terminal event and deletes every run past its TTL
-// (sweepGoingRequests), and then sends every delivery a process that died left owed
+// (sweepGoingRequests), deletes every command-bar conversation whose newest run is past its seven
+// days (sweepGoingRuns), stops every command-bar run that works under no live lease past its
+// working budget (reapGoingRuns), and then sends every delivery a process that died left owed
 // (resumeDeliveries, the server's resumeOwedDeliveries). resumeDeliveries is nil where nothing
 // delivers. It stops when ctx is done.
 //
 // It is a timer and not a woken loop (duty.RunWoken), the shape every other sweep of this server
 // took, because no commit announces any of its work: a key and a proof record pass their windows
-// by the clock alone, an answer run passes its ends_at by the clock too, and a delivery is owed
-// because the process that claimed it died, which commits nothing for a notification to carry.
+// by the clock alone, an answer run passes its ends_at by the clock too, a conversation passes
+// its seven days and a run without its agent its working budget by the clock, and a delivery is
+// owed because the process that claimed it died, which commits nothing for a notification to
+// carry.
 // They share one loop rather than taking one each: a loop of its own would need a lease
 // connection of its own (store.LeasePoolSize, whose headroom is zero) for statements that cost
 // milliseconds.
@@ -61,6 +65,12 @@ func RunMaintenanceSweep(
 		}
 		if err := sweepGoingRequests(ctx, pool); err != nil {
 			slog.Warn("dispatch: going request sweep failed", "error", err)
+		}
+		if err := sweepGoingRuns(ctx, pool); err != nil {
+			slog.Warn("dispatch: going run sweep failed", "error", err)
+		}
+		if err := reapGoingRuns(ctx, pool); err != nil {
+			slog.Warn("dispatch: going run reaper failed", "error", err)
 		}
 		if resumeDeliveries == nil {
 			return

@@ -532,15 +532,23 @@ describe.skipIf(!envoyStackEnabled)(
         });
 
         // The broker goes away: the token lapses with no other to take its place, the server
-        // drops the user it admitted, and each reconnect is refused.
+        // drops the user it admitted, and each reconnect is refused. The connection is under a
+        // minute old, so it keeps its place in the backoff: its first two redials are due at most
+        // `brokerRedialWaitBounds(1)` after it opened and `brokerRedialWaitBounds(2)` after that,
+        // from the token's lapse; and 10 s for the server's drop and the handshakes on a loaded
+        // machine.
         note("the broker goes away");
         broker.state.down = true;
-        const deadline = Date.now() + 20_000;
-        while (hub.refusals() < 2 && Date.now() < deadline) await Bun.sleep(100);
+        const refusedBy =
+          credential.expiresAt().getTime() +
+          brokerRedialWaitBounds(1).highestMs +
+          brokerRedialWaitBounds(2).highestMs +
+          10_000;
+        while (hub.refusals() < 2 && Date.now() < refusedBy) await Bun.sleep(100);
         if (hub.refusals() < 2)
           throw new Error(
             [
-              `natsd refused ${hub.refusals()} connection(s) in 20 s, not 2 or more (the auth service logged ${hub.serviceRefusals()} refusal(s)); the connection is ${opened.isClosed() ? "closed" : "open"}`,
+              `natsd refused ${hub.refusals()} connection(s) within ${(refusedBy - started) / 1000} s of the row's start, not 2 or more (the auth service logged ${hub.serviceRefusals()} refusal(s)); the connection is ${opened.isClosed() ? "closed" : "open"}`,
               "the client, by milliseconds since the row began:",
               ...trace,
               hub.logs(),

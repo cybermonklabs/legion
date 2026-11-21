@@ -143,6 +143,20 @@ var (
 	owedKeyedSendsQuery = `select m.id::text, k.recovery ->> 'delivery' ` + owedKeyedSend + `
 		order by k.created_at
 		limit $3`
+	// owedLandedSendsQuery reads, oldest first and $2 at a time, every send a command-bar run's
+	// call landed in-process whose landing names its message as the recovery point
+	// (goingRecordRecovery) and whose targeted message has no attempt at all, landed inside the
+	// key's $1 seconds (IdempotencyKeyTTL): the same send as a keyed one whose holder is gone,
+	// since a landing is written by the transaction that stored the message, and nothing else
+	// holds it.
+	owedLandedSendsQuery = `select m.id::text, l.recovery ->> 'delivery'
+		from going_landings l
+		join messages m on m.id = (l.recovery ->> 'message_id')::uuid
+		where l.recovery ? 'message_id' and l.landed_at > now() - make_interval(secs => $1)
+		  and m.target is not null
+		  and not exists (select 1 from message_deliveries d where d.message_id = m.id)
+		order by l.landed_at
+		limit $2`
 )
 
 // owedDelivery is one attempt the sweep resumes, bound to its number: a message's, or a comment
@@ -253,8 +267,8 @@ func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) erro
 }
 
 // owedDeliveries reads what the sweep resumes: the owed message attempts, the first attempt of
-// every keyed send that has none, and the owed comment mention attempts, oldest first, less every
-// one settleUndeliverable settles.
+// every keyed send that has none and of every send a run's call landed that has none, and the
+// owed comment mention attempts, oldest first, less every one settleUndeliverable settles.
 func (s *server) owedDeliveries(ctx context.Context) ([]owedDelivery, error) {
 	window := contracts.DeliveryDuplicateWindow.Seconds()
 	var owed []owedDelivery
@@ -301,6 +315,20 @@ func (s *server) owedDeliveries(ctx context.Context) ([]owedDelivery, error) {
 		return nil, fmt.Errorf("read the keyed sends with no attempt: %w", err)
 	}
 	owed = append(owed, unattempted...)
+
+	rows, err = s.deps.Store.Pool.Query(ctx, owedLandedSendsQuery, contracts.IdempotencyKeyTTL.Seconds(), deliverySweepBatch)
+	if err != nil {
+		return nil, fmt.Errorf("read the sends a run landed with no attempt: %w", err)
+	}
+	landed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (owedDelivery, error) {
+		delivery := owedDelivery{attempt: 1}
+		err := row.Scan(&delivery.messageID, &delivery.delivery)
+		return delivery, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the sends a run landed with no attempt: %w", err)
+	}
+	owed = append(owed, landed...)
 
 	rows, err = s.deps.Store.Pool.Query(ctx, `
 		select d.comment_id::text, d.target, d.attempt, d.delivery

@@ -353,10 +353,10 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets
-  # 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s -> 15 min.
+  # 4 + 4 + 12 + 2 min plus 135 s and 120 s = 26 min 15 s -> 27 min.
   embedder:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 27
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -411,8 +411,16 @@ jobs:
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
           bun run e2e:embedder
         working-directory: packages/dispatch
-      # `if: failure()`, as the multiprocess job's upload is: the chromium project retries a
-      # failed row, but a row that fails after its retries fails this job and this upload runs.
+      - name: Browser-test the bar's answers against fake models
+        # why: .github/ci-notes/dispatch-browser.md#what-the-embedder-jobs-models-step-runs-and-why-it-calls-playwright-directly
+        # 9.9 min x 1.15 = 11.4 min -> 12 min.
+        timeout-minutes: 12
+        run: |
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          DISPATCH_E2E_MODELS=fake bunx playwright test --config e2e/playwright.config.ts --project=chromium going-answer going-blocks
+        working-directory: packages/dispatch
+      # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-upload-runs-on-failure-alone-and-serves-both-browser-steps
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:

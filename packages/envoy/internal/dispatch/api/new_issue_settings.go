@@ -8,14 +8,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// newIssueSettings is what the dashboard's search bar needs to file a person's typed words as an
-// issue when those words match nothing it found: the label that issue carries and the session it
-// is routed to, as the deployment configured them (cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
-// DISPATCH_NEW_ISSUE_SESSION). Each is empty where the deployment set none: with no label the
-// issue carries none, and with no session the bar makes the issue and starts no conversation on
-// it. The bar writes the issue through the routes every other client writes through
-// (POST /api/v1/issues and the issue's own artifact, patch and message routes), so this read is
-// the only thing the configuration adds to the API.
+// newIssueSettings is what the deployment names for an issue the command bar's File as a new issue
+// files from a person's words: the label that issue carries and the session it is routed to
+// (cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is empty where the
+// deployment set none: with no label the issue carries none, and with no session it takes no
+// route. File as a new issue starts a new_issue run, whose create carries both
+// (going_new_issue.go), and nothing is posted on the issue.
 type newIssueSettings struct {
 	Label   string `json:"label"`
 	Session string `json:"session"`

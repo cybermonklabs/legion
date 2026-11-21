@@ -75,4 +75,5 @@ func TestNewDepsRefusesNewIssueSettingsNoIssueCouldTake(t *testing.T) {
 	if err != nil || deps.NewIssueLabel != "from-the-bar" || deps.NewIssueSession != "sess-1" {
 		t.Fatalf("settings with blanks around them = %q, %q, %v; want them trimmed", deps.NewIssueLabel, deps.NewIssueSession, err)
 	}
+	shutDownMadeDocuments(t, deps)
 }

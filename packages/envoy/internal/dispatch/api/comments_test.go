@@ -231,6 +231,29 @@ func TestReopenCommentClearsResolutionAndReprojects(t *testing.T) {
 	}
 }
 
+// TestReopenCommentOffTheNetworkIgnoresABodyThatDoesNotDecode (review round 5, thread 8): main's
+// reopen route read no body, so a caller off the network that sends one that does not decode -
+// a stray "{", a text where an object goes - still reopens the thread, as it did before the route
+// took its optional {actor}; only a request the command bar sends in-process is held to the body.
+func TestReopenCommentOffTheNetworkIgnoresABodyThatDoesNotDecode(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Reopened with a stray body", "before")
+	for _, body := range []string{"{", `"reopen it"`, `{"actor": 7}`} {
+		root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "resolve this"}, "alice")
+		if resolved := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+root.ID+"/resolve", nil, "alice"); resolved.Code != http.StatusOK {
+			t.Fatalf("resolve comment: status=%d body=%s", resolved.Code, resolved.Body.String())
+		}
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/comments/"+root.ID+"/reopen", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Dispatch-User", "bob")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || readThreadComment(t, handler, root.ID).Resolved {
+			t.Fatalf("the reopen sent %q answered %d %s, want the thread reopened as main reopened it", body, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestReplyToResolvedRootReopensIt(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reply reopens root", "before")

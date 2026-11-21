@@ -1,4 +1,4 @@
-import type { dispatchToolSpecs } from "@legion/contracts";
+import { type DispatchToolRoute, dispatchToolSpecs } from "@legion/contracts";
 import {
   askCommand,
   editAskCommand,
@@ -37,12 +37,20 @@ import { prioritiesCommand } from "./priorities";
 import { architectureSyncCommand, projectCommand, projectsCommand } from "./projects";
 import { readCommand } from "./read";
 import { reviewCommand } from "./reviews";
+import { routeCommand } from "./route-tools";
 import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
 import { stepsCommand } from "./steps";
 
-/** Every command the contract names, so a command added there without a handler here fails to
- *  type-check (`__tests__/dispatch-command-table.test.ts` holds the proof). */
+/** Every command the contract names. */
 export type DispatchToolName = (typeof dispatchToolSpecs)[number]["name"];
+
+/** Every command whose spec binds no route, each served by a command written by hand: a command
+ *  added there without a handler here fails to type-check (`__tests__/dispatch-command-table.test.ts`
+ *  holds the proof). A spec that binds its routes is served by `routeCommand` instead. */
+export type HandWrittenToolName = Exclude<
+  (typeof dispatchToolSpecs)[number],
+  { readonly routes: readonly DispatchToolRoute[] }
+>["name"];
 
 /**
  * One command, and whether running it resolves this call's origin. `origin: "none"` is a command
@@ -69,8 +77,8 @@ function onSession(run: (context: SessionContext) => Promise<DispatchToolResult>
   return { origin: "none", run };
 }
 
-/** What `dispatch <command>` does, one handler per command the contract names. */
-export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
+/** What `dispatch <command>` does, one handler per command whose spec binds no route. */
+export const dispatchCommands: Record<HandWrittenToolName, DispatchCommand> = {
   dispatch_issue: acting(issueCommand),
   dispatch_issue_update: acting(issueUpdateCommand),
   dispatch_claim: acting(claimCommand),
@@ -109,3 +117,12 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_limits: onSession(limitsCommand),
   dispatch_inbox: onSession(inboxCommand),
 };
+
+/** The command of `name`: its hand-written handler, or, for a spec that binds its routes, the one
+ *  generic command that calls its route (`routeCommand`); undefined for no command of that name. */
+export function dispatchCommandOf(name: string): DispatchCommand | undefined {
+  const spec = dispatchToolSpecs.find((candidate) => candidate.name === name);
+  if (spec === undefined) return undefined;
+  if ("routes" in spec) return acting(routeCommand(spec.routes));
+  return dispatchCommands[spec.name];
+}

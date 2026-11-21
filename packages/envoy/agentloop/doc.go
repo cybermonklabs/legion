@@ -1,6 +1,9 @@
-// Package agentloop runs a model and the tools it calls: the model loop of the secrets broker
-// (internal/cipher), and the only import of Grafana's AI SDK for Go in this repository. It is
-// the engine and nothing more. It keeps no conversation store, carries no tools of its own and
+// Package agentloop runs a model and the tools it calls, and is the only import of Grafana's AI
+// SDK for Go in this repository. Dispatch's server (cmd/dispatch) runs the command bar's answer
+// and decision calls through it, cmd/going-bakeoff the decision-model bake-off, and the secrets
+// broker its judge (internal/cipher/judge). The Legion daemon's module compiles it in one test
+// alone (packages/daemon/internal/sharedloop), which is why it sits outside internal/. It is the
+// engine and nothing more. It keeps no conversation store, carries no tools of its own and
 // routes nothing: a caller hands it an endpoint, a model, the messages, the tools the model may
 // call and the bounds of the run, and reads back the reply, every step and what the run cost.
 //
@@ -37,7 +40,10 @@
 // Both of the SDK's retry layers are off, and this package retries once itself: on a transport
 // error, a 429 or a 5xx, decided from the response status before any of the body is read, and
 // only while Bounds.Time is left. A stream that breaks after its first byte is FaultProviderError
-// and is never retried, so a caller's OnText never sees the same text twice.
+// and is never retried, so a caller's OnText never sees the same text twice. A FaultProviderError
+// whose last call was answered with an error status carries that status in Result.Status, read
+// by the transport off the response, so a caller can tell a request the provider refuses outright
+// (a 400) from one it failed to serve.
 //
 // # The provider's own chunks
 //
@@ -45,7 +51,9 @@
 // stream carried it, and a Chat Completions refusal is what an openai-chat call says in place of
 // a reply. Both are read off the SDK's stream of raw provider chunks, which the run asks for on
 // those two protocols and no other. The HTTP transport keeps no response body of its own: it is
-// the token, the endpoint's query parameters and the retry, and nothing else.
+// the token, the endpoint's query parameters, the retry, the last refused status and whether the
+// first 64 KiB of that refusal's body name the provider's content filter (FaultContentFilter),
+// and nothing else.
 //
 // # Cache marks
 //
@@ -72,4 +80,17 @@
 //
 // Bounds.Calls bounds model calls. A per-tool budget — how much work one tool will do before it
 // refuses — is that tool's own Run logic, which this package does not count.
+//
+// Request.StreamLimit bounds the bytes of one model call's response, read through a body the
+// transport cuts there, and Request.ReplyLimit the bytes of the reply one call builds: its prose,
+// its reasoning and its tool calls' arguments, counted as they stream. A call past either ends
+// the run with FaultTooLarge.
+//
+// # Panics
+//
+// The SDK runs the tools and calls OnStep and the endpoint's Token on goroutines of its own,
+// where a panic would end the whole process. Every callback is called under a recover: a tool
+// that panics answers the model a refusal naming the panic and the run goes on; OnText,
+// OnPartial and OnStep end the run with an error naming it, as an error they returned would; and
+// a Token that panics fails the attempt. Each panic is logged with its stack.
 package agentloop

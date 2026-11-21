@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { usesFakeBroker } from "./harness-broker";
 import { usesFakeEmbedder } from "./harness-embedder";
+import { usesFakeModels } from "./harness-models";
 import type { HarnessListenerKey } from "./harness-ports";
 import { binaryB, harnessProcessCount } from "./harness-processes";
 import { usesRealBroker } from "./harness-real-broker";
@@ -37,6 +38,9 @@ export interface HarnessListener {
   readonly bootMs: number;
   /** Whether a deployed run (`PLAYWRIGHT_BASE_URL`) starts it. */
   readonly deployed: boolean;
+  /** Set on a Dispatch server's row (run-server.sh), before the first of which a stack with the
+   *  real models writes the eval's seed into its database (e2e/harness-eval-seed.ts). */
+  readonly server?: true;
 }
 
 const script = (name: string) => fileURLToPath(new URL(`./${name}`, import.meta.url));
@@ -54,6 +58,7 @@ const dispatchServer = {
   deployed: false,
   health: "/healthz",
   report: /msg="dispatch: listening" addr=127\.0\.0\.1:(\d+)(?:\s|$)/,
+  server: true,
 } as const;
 
 // Two-process mode (e2e/harness-processes.ts): the round-robin proxy on DISPATCH_E2E_PORT, which
@@ -213,8 +218,9 @@ function realBrokerListeners(): HarnessListener[] {
 // marked `deployed`: its Dispatch server is already up, and the fake GitHub serves only a server
 // this run starts. The fake broker is listed exactly when the harness switch points this run's
 // server at it (e2e/harness-broker.ts), never for a deployed run, the real broker and its
-// issuer exactly when a spec of this run can reach them (e2e/harness-real-broker.ts), and the
-// fake embedder exactly when this run's server embeds there (e2e/harness-embedder.ts).
+// issuer exactly when a spec of this run can reach them (e2e/harness-real-broker.ts), the
+// fake embedder exactly when this run's server embeds there (e2e/harness-embedder.ts), and the
+// fake chat model and fake decision model exactly in the models lane (e2e/harness-models.ts).
 // e2e/harness-start.ts is the only starter: the stack pool (e2e/harness-pool.ts, which
 // Playwright's globalSetup runs), `bun run dispatch:local` (e2e/local-instance.ts) and the docs
 // media harness all start this table through it.
@@ -260,6 +266,28 @@ export const harnessListeners: readonly HarnessListener[] = [
           key: "fakeEmbedder" as const,
           name: "the fake embedder",
           report: /^fake embedder listener on 127\.0\.0\.1:(\d+)$/,
+        },
+      ]
+    : []),
+  ...(usesFakeModels
+    ? [
+        {
+          argv: ["bun", script("fake-chat-model.ts")],
+          bootMs: listenerBootMs,
+          deployed: false,
+          id: "fake-chat-model",
+          key: "fakeChatModel" as const,
+          name: "the fake chat model",
+          report: /^fake chat model listener on 127\.0\.0\.1:(\d+)$/,
+        },
+        {
+          argv: ["bun", script("fake-decision-model.ts")],
+          bootMs: listenerBootMs,
+          deployed: false,
+          id: "fake-decision-model",
+          key: "fakeDecisionModel" as const,
+          name: "the fake decision model",
+          report: /^fake decision model listener on 127\.0\.0\.1:(\d+)$/,
         },
       ]
     : []),

@@ -1,0 +1,18 @@
+{
+  "kind": "issue_list",
+  "title": "DEMO's open issues",
+  "spec": {
+    "source": "read_progress",
+    "params": {
+      "project": "DEMO"
+    },
+    "table": "issues"
+  },
+  "rows": [
+    {
+      "key": "DEMO-12",
+      "status": "todo",
+      "title": "Twelve"
+    }
+  ]
+}

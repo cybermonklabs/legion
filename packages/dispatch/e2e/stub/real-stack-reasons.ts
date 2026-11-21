@@ -132,15 +132,39 @@ export const realStackReasons: Record<string, string> = {
   "gated-step-approvals.e2e.ts":
     "gate state is the server's computation over versions; server-computed gate state; the write answers both steps server-side",
   "github-checks.e2e.ts": "the checks pill is the server's evaluation of fake GitHub runs",
+  "going-agent-answer.e2e.ts":
+    "every row reads what the server's agent process made of the fake writing model's turns: a short answer that wrote nothing, steps and links streamed as the run's frames, and a chart the server counts over its own read",
+  "going-agent-background.e2e.ts":
+    "a Stop and an Esc are the server's stop of a run whose model call the fake records its caller leaving, and the chip and the Inbox read a run and a plan the server keeps going with the bar closed",
+  "going-agent-documents.e2e.ts":
+    "each plan is the fake writing model's, run by the server on a claimed issue's spec, and the rows read back the suggestion, the message and the spec's text the server stored",
+  "going-agent-fast-tier.e2e.ts":
+    "the line on top and the hits are the server's search and the fake decision model's answer, counted by the fakes, and a run of a held issue's words is read back from the session's and the issue's messages",
+  "going-agent-legion.e2e.ts":
+    "the hand-off is a plan the server runs as the person, read back from the issue and its event log, and the new issue is the one the server files with its route and no message",
+  "going-agent-place.e2e.ts":
+    "the conversation kept at the side is a run of the server's agent process, and the context a click names is read from the call the fake writing model received",
+  "going-agent-plan.e2e.ts":
+    "each plan is the fake writing model's proposal, which the server reads against the items each page shows, runs once approved, and waits on again where another person changed an item",
+  "going-agent-smoke.e2e.ts":
+    "the run is the server's agent process calling the fake writing model, and its read is the server's route answered as the person",
+  "going-agent-undo.e2e.ts":
+    "each Undo is the server writing back, closing and rejecting what a run it ran changed, read back from the issues and comments it stored and another person's later write",
+  "going-answer-cancel.e2e.ts":
+    "its claim is the cancel the server makes of a run its author typed past, counted as the abandoned reply of the fake writing model the server streams from",
+  "going-answer-safety.e2e.ts":
+    "the prose it reads is what the server's filter left of the fake writing model's reply, and the links are the item frames the server's stream carries",
+  "going-answer.e2e.ts":
+    "every row reads an answer the server streams from the fake writing and decision models, cut, changed and linked by the server, and counts those models' calls",
   "going-bar.e2e.ts":
     "every row types into the bar and reads what the index and the recent-items list answer, and one writes in the live document editor",
-  "going-handoff.e2e.ts":
-    "the hand-off row is offered only while a live session holds the issue's claim, and approving it is a message the fake Envoy records",
+  "going-blocks.e2e.ts":
+    "each block is filled by the server's own read of a seeded fixture, drawn by the server's display rule and record, and replayed from the run's stored frames",
   "going-key-forms.e2e.ts":
     "each form of a key is resolved by the server, and the row reads the rows it answers",
-  "going-new-issue.e2e.ts":
-    "the bar creates an issue and the row re-reads what the server stored, its messages and its results",
   "going-operators.e2e.ts": "each operator form and each chip narrows a list the server answers",
+  "going-unconfigured.e2e.ts":
+    "its claim is the capability the server reports with nothing configured, and that the bar asks it for no answer",
   "handoffs.e2e.ts": "needs the live frame",
   "heavy-bodies.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other",

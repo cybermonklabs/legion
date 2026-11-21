@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -215,6 +216,42 @@ func newArchitectureSourceServer(t *testing.T, fake *fakeGitHubApp) (http.Handle
 		githubAPIBase: github,
 	})
 	return handler, database
+}
+
+// goingFixtureArchitectureGitHub wires a GitHub App at a stand-in where acme/arch — the
+// command-bar row fixtures' architecture source — is readable, so a sync of it imports rather than
+// access-failing (IsAccessFailure of githubapp.ErrNoAppKey), and where acme/nobranch is installed
+// and holds no architecture branch, so a sync of it resolves its installation and is then refused
+// (githubapp.ErrNoBranch). It returns the App config and the stand-in's base URL for a test
+// server's options. The App's signing key is generated once for the package, since every
+// command-bar rig wires this.
+func goingFixtureArchitectureGitHub(t *testing.T) (*auth.AppConfig, string) {
+	t.Helper()
+	fake := &fakeGitHubApp{
+		installations: map[string]string{"acme/arch": "read", "acme/nobranch": "read"},
+		repos: map[string]*fakeArchitectureRepo{
+			"acme/arch":     {commit: shaInfra, files: infraFiles()},
+			"acme/nobranch": {commit: shaInfra, branchMissing: true},
+		},
+	}
+	return &auth.AppConfig{ClientID: "Iv1.test", PEM: goingFixtureAppPEM(t)}, githubtest.Server(t, githubtest.Spec{Handle: fake.handler(t).ServeHTTP})
+}
+
+var (
+	goingFixtureAppKeyOnce sync.Once
+	goingFixtureAppPEMText string
+)
+
+func goingFixtureAppPEM(t *testing.T) string {
+	t.Helper()
+	goingFixtureAppKeyOnce.Do(func() {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			panic(err)
+		}
+		goingFixtureAppPEMText = string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	})
+	return goingFixtureAppPEMText
 }
 
 // archFiles and infraFiles are the models of two sources with no component id in common:

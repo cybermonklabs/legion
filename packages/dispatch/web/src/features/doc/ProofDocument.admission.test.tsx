@@ -69,6 +69,7 @@ test("ProofDocument repairs a document outside the schema by an upload under its
       number: 2,
       summary: null,
     },
+    previous_version: 1,
   });
   try {
     const { connections, view } = renderProofDocument();

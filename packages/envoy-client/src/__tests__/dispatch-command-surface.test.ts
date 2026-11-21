@@ -273,8 +273,26 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "artifacts") return response([]);
     if (rest === "plans") return response(plansBody());
   }
+  // A route a route-bound spec calls that no answer above reaches: the generic command prints
+  // whatever JSON its route answers, so the answer names the route it reached.
+  const bound = boundRoutes.find(
+    (candidate) => candidate.method === method && candidate.pattern.test(pathname)
+  );
+  if (bound !== undefined) return response({ route: `${bound.method} ${bound.path}` });
   throw new Error(`unexpected request: ${route}`);
 }
+
+/** The routes the route-bound specs call, each with its path pattern as an expression whose
+ *  placeholders match one segment. */
+const boundRoutes = dispatchToolSpecs.flatMap((spec) =>
+  "routes" in spec
+    ? spec.routes.map((bound) => ({
+        method: bound.method,
+        path: bound.path,
+        pattern: new RegExp(`^${bound.path.replace(/\{[^}]+\}/g, "[^/]+")}$`),
+      }))
+    : []
+);
 
 interface RecordedRequest {
   readonly method: string;

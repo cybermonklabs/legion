@@ -1317,6 +1317,18 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "limits"]);
   }
 
+  /** One route of the table a tool spec binds (`DispatchToolSpec.routes`), called as it stands:
+   *  `path` its segments with each placeholder filled, `query` its query parameters and `body` its
+   *  JSON body, none for a GET. It goes through the one request function every method does, so a
+   *  write carries its key and is asked again under it. Answers the route's JSON body. */
+  async callRoute(
+    method: string,
+    path: readonly string[],
+    options: { readonly body?: unknown; readonly query?: object } = {}
+  ): Promise<unknown> {
+    return this.#json(method, path, options.body, options.query);
+  }
+
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
    *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
    *  which no reader re-sorts. `me` is the caller, and keeps the rows waiting on them — the asks

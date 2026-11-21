@@ -411,6 +411,7 @@ const shot = new File(["bytes"], "shot.png", { type: "image/png" });
 const SHOT_STORED = {
   artifact: { kind: "image", name: "shot.png", slug: "shot-png" } as never,
   version: { number: 1 } as never,
+  previous_version: null,
 };
 const SHOT_TEXT = "![shot.png](dispatch://CORE-1/artifact/shot-png@v1)";
 

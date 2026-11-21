@@ -495,6 +495,31 @@ export function setNewIssueSettings(
   );
 }
 
+/** `GET /api/v1/going/capability`: what the command bar can do on this stack - the answering
+ *  model, the deciding model, and the session and label a new issue is filed under. */
+export function getGoingCapability(options: ApiOptions = {}) {
+  return get("/api/v1/going/capability", {}, options);
+}
+
+/** `GET /api/v1/me/going-runs`: the caller's own command-bar runs, newest first, each with every
+ *  part its record keeps. */
+export function listMyGoingRuns(
+  query: Query<"/api/v1/me/going-runs", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get("/api/v1/me/going-runs", { query }, options);
+}
+
+/** `GET /api/v1/me/going/settings`: the caller's own command-bar setting (`mode`). */
+export function getMyGoingSettings(options: ApiOptions = {}) {
+  return get("/api/v1/me/going/settings", {}, options);
+}
+
+/** `GET /api/v1/projects/{key}/artifacts`: the project's documents. */
+export function listProjectArtifacts(project: string, options: ApiOptions = {}) {
+  return get("/api/v1/projects/{key}/artifacts", { params: { key: project } }, options);
+}
+
 /** `GET /api/v1/issues/{key}/coverage`: what each requirement of the issue's spec lacks. */
 export function getIssueCoverage(issue: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/coverage", { params: { key: issue } }, options);

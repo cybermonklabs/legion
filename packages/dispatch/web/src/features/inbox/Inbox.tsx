@@ -34,6 +34,7 @@ import {
 import { searchWords } from "../agents/agent-search";
 import { CredentialRequestsSection } from "../credentials/CredentialRequestsSection";
 import { type CredentialRequests, useCredentialRequests } from "../credentials/pending";
+import { WaitingPlans } from "../going/WaitingPlans";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";
@@ -1556,6 +1557,8 @@ export function Inbox({
   const header = (
     <div className="space-y-4">
       <CredentialRequestsSection credentials={credentials} />
+      {/* The plans of the person's runs that wait for them, which they approve here. */}
+      <WaitingPlans />
       {/* The box narrows the same list the bar's fields narrow, so it stands with them, above
           the chrome that opens them. */}
       <div className="flex flex-wrap items-center gap-2">{searchBox}</div>

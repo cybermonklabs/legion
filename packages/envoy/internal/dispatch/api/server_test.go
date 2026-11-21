@@ -22,6 +22,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
+	"go.uber.org/goleak"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -41,7 +42,17 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests through storetest.Main, which drops their databases, and then
+// fails the run where a goroutine a test started outlives it (goleak): the agent's loop, which the
+// background-run checks of this package run in the test process, among them.
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(testRun(func() int { return storetest.Main(m) }))
+}
+
+// testRun is a run of the package's tests as goleak.VerifyTestMain makes one.
+type testRun func() int
+
+func (run testRun) Run() int { return run() }
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.
 func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
@@ -121,6 +132,10 @@ type testServerOptions struct {
 	// routes' own) is the deployment with no model configured, where a run is recorded and its
 	// stream carries the no-model-configured error.
 	answerer Answerer
+	// answerModel is the model the answerer was configured with, as the capability route names
+	// it; decider is the decision model, nil (every test but the capability's own) for none.
+	answerModel string
+	decider     *Decider
 	// files is the uploaded-file store; nil keeps every upload's bytes in Postgres, as a
 	// deployment with no bucket does.
 	files files.Store
@@ -331,6 +346,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		AgentPublisher:        agentPublisher,
 		Embedder:              options.embedder,
 		Answerer:              options.answerer,
+		AnswerModel:           options.answerModel,
+		Decider:               options.decider,
 		Files:                 options.files,
 		DashboardEntry:        options.dashboardEntry,
 		BuildCommit:           options.buildCommit,

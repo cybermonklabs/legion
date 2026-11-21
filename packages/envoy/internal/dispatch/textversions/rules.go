@@ -121,6 +121,7 @@ var unchangingTypes = map[string]string{
 	"handoff.recorded":                          "a handoff is not an issue, comment, message or ask",
 	"decision.kept":                             "a kept decision is not an issue, comment, message or ask",
 	"priority.updated":                          "a priority is not an issue, comment, message or ask",
+	"going_plan.updated":                        "a command-bar plan's wait is a person's state, not an issue, comment, message or ask",
 }
 
 // errUnreadablePayload is a rule's answer for a payload that lacks a field the rule reads, which

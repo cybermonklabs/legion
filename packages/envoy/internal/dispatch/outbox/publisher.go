@@ -972,14 +972,15 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 // resolveLost, which releases it as a send the stop cut off does (settleEvent). An event whose list
 // ends at a recipient read that failed is incomplete (unansweredRecipients, batchEvent.incomplete).
 //
-// The second pass is the one that acts on a mention: a copy held back for a mention past its
-// lease is written as a fallback row, and an attempt the outbox finds abandoned is settled failed
-// (destinations.leftTo). Both run on the batch's own context and store, each a statement or a
-// short transaction of its own, and each takes the gate the lookups take for the whole of its own
-// run (lanes.statement): they share the scan's one mark of the pool's one-connection-per-caller
-// rule with every other batch, and a settle waiting on the comment owner's lock would otherwise
-// refuse, or be refused by, whatever another batch runs beside it (store.ErrNestedAcquire). The
-// first pass, which answers nothing, writes nothing.
+// The second pass is the one that acts on a mention: an attempt the outbox finds abandoned is
+// settled failed while the event's destinations are listed (destinations.leftTo), and a copy held
+// back for a mention past its lease is written as a fallback row once they are, before any of
+// them is sent (holdFallbackCopies). Both run on the batch's own context and store, each a
+// statement or a short transaction of its own, and each takes the gate the lookups take for the
+// whole of its own run (lanes.statement): they share the scan's one mark of the pool's
+// one-connection-per-caller rule with every other batch, and a settle waiting on the comment
+// owner's lock would otherwise refuse, or be refused by, whatever another batch runs beside it
+// (store.ErrNestedAcquire). The first pass, which answers nothing, writes nothing.
 //
 // It answers the roles it resolved for those attempts, which the batch's own role routes read
 // rather than resolving again (resolveRoleHolders): a comment routed to the role it mentions
@@ -1003,7 +1004,7 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 		}
 		event.item = item
 		resolvable = append(resolvable, event)
-		_, _, _ = eventDestinations(ctx, deps, event, want)
+		_, _, _, _ = eventDestinations(ctx, deps, event, want)
 	}
 	// The lookups' statements run one after another, and the gate is held from the first to the
 	// last (lanes.statement), so no other batch's statement is run between two of them.
@@ -1019,7 +1020,9 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 	// of every session they would send a copy to (unpinnedRoleMentions, mentionHolds).
 	resolved := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
 	for _, event := range resolvable {
-		event.destinationsOf, event.mentionPending, event.resolveErr = eventDestinations(ctx, deps, event, found)
+		list, mentionPending, holds, err := eventDestinations(ctx, deps, event, found)
+		event.destinationsOf, event.mentionPending = list, mentionPending
+		event.resolveErr = holdFallbackCopies(holds, err)
 		event.resolveLost = lostToContextEnd(ctx, event.resolveErr)
 		var unanswered *unansweredRecipients
 		event.incomplete = errors.As(event.resolveErr, &unanswered)
@@ -1030,12 +1033,13 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 // destinations collects an event's destinations, each subject once: a subject an earlier route
 // already reaches is not added again, and neither is one a fallback row owns
 // (mentionDeliveries.held), which the fallback pass publishes or settles (publishFallbackCopies).
-// comment is the new comment whose mention attempts a settle or a hold of one of its copies writes
-// through, and delivered the destinations the event reached before this read. mentions is what
+// comment is the new comment whose mention attempts a settle writes through, and whose copies a
+// hold names; delivered the destinations the event reached before this read. mentions is what
 // the event's mentions did (a new comment's alone), and mentionPending whether a session's copy
-// was held back for a mention still being sent (leftTo). failed holds the settles and the holds
-// of held-back copies that failed, which end no list: each backs the event off once the
-// destinations the list does name are sent (err).
+// was held back for a mention still being sent (leftTo). failed holds the settles that failed,
+// which end no list: each backs the event off once the destinations the list does name are sent
+// (err). holds is the copies left to a fallback row (leftTo), which the batch writes once the list
+// is read (holdFallbackCopies).
 type destinations struct {
 	list           []destination
 	seen           map[string]struct{}
@@ -1044,6 +1048,7 @@ type destinations struct {
 	mentions       mentionDeliveries
 	mentionPending bool
 	failed         []error
+	holds          []fallbackHold
 }
 
 func (d *destinations) add(subject, label, id string) {
@@ -1138,14 +1143,19 @@ func (d *destinations) addSessions(sessionIDs []string, label string) {
 	}
 }
 
-// err joins cause, the lookup or the route failure that ended the list, with the settles and the
-// holds of held-back copies that failed (destinations.failed): each of those backs the event off
-// once the destinations the list names are sent, and holds none of them back.
+// err joins cause, the lookup or the route failure that ended the list, with the settles of
+// abandoned mentions that failed (destinations.failed): each of those backs the event off once
+// the destinations the list names are sent, and holds none of them back.
 func (d *destinations) err(cause error) error {
-	if len(d.failed) == 0 {
+	return joinFailed(cause, d.failed)
+}
+
+// joinFailed is cause joined with each error of failed, and cause itself where none failed.
+func joinFailed(cause error, failed []error) error {
+	if len(failed) == 0 {
 		return cause
 	}
-	return errors.Join(append([]error{cause}, d.failed...)...)
+	return errors.Join(append([]error{cause}, failed...)...)
 }
 
 // eventDestinations lists item's destinations in the order they are sent and recorded: its owner's
@@ -1159,20 +1169,22 @@ func (d *destinations) err(cause error) error {
 // parse, ends the list there: the destinations before it are returned with the error, which backs
 // the event off once they are sent. So a recipient read the batch has no answer for
 // (unansweredRecipients) still lets the owner topic, the route and the claimant go first. A settle
-// or a hold of a held-back copy that failed ends no list and is returned with the whole of it
-// (destinations.err).
+// that failed ends no list and is returned with the whole of it (destinations.err).
 //
-// ctx and deps are what such a settle or hold runs on (mentionComment): the batch's context and
-// its store. A pass over a lookup that answers nothing (wanted) reads no attempt, so it makes
-// neither.
-func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lookup) (list []destination, mentionPending bool, err error) {
+// It writes no fallback row: a copy left to one is left out of the list and returned in holds,
+// which the batch writes before it sends the list (holdFallbackCopies), so a reader that only asks
+// where an event would go (WouldDeliver) writes none. ctx and deps are what a settle runs on, and
+// what each of holds is written on (mentionComment): the batch's context and its store. A pass
+// over a lookup that answers nothing (wanted) reads no attempt, so it settles nothing and holds
+// nothing.
+func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lookup) (list []destination, mentionPending bool, holds []fallbackHold, err error) {
 	event := item.event
 	d := &destinations{seen: map[string]struct{}{}, delivered: item.delivered}
 	if event.Type == "comment.created" && payloadHasMentions(event.Payload) {
 		commentID := payloadString(event.Payload, "id")
 		d.comment = mentionComment{ctx: ctx, deps: deps, event: event, id: commentID}
 		if d.mentions, err = look.mentionDeliveries(commentID); err != nil {
-			return nil, false, err
+			return nil, false, nil, err
 		}
 	}
 	ownerTopic := item.item.Topic
@@ -1183,22 +1195,22 @@ func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lo
 	if event.Notify && !targeted {
 		if !suppressesCurrentRoute(event.Payload, routing.route, d) {
 			if err := addRoute(d, routing.route); err != nil {
-				return d.list, d.mentionPending, d.err(err)
+				return d.list, d.mentionPending, d.holds, d.err(err)
 			}
 		}
 		addClaimantRoute(event, routing.claimant, d)
 		if err := addPrimaryDocumentAuthors(event, routing, look, d); err != nil {
-			return d.list, d.mentionPending, d.err(err)
+			return d.list, d.mentionPending, d.holds, d.err(err)
 		}
 		if err := addAuthorRoutes(event, routing, look, d); err != nil {
-			return d.list, d.mentionPending, d.err(err)
+			return d.list, d.mentionPending, d.holds, d.err(err)
 		}
 	}
 	if err := addFollowerRoutes(event, look, d); err != nil {
-		return d.list, d.mentionPending, d.err(err)
+		return d.list, d.mentionPending, d.holds, d.err(err)
 	}
 	addPreviousClaimant(event, d)
-	return d.list, d.mentionPending, d.err(nil)
+	return d.list, d.mentionPending, d.holds, d.err(nil)
 }
 
 // addRoute adds the owner's route: a session route is the session's own subject, and a role route

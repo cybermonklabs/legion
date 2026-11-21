@@ -45,13 +45,13 @@ import {
   olderServerWarnings,
   routeHeldBySession,
 } from "./render-issue";
-import { askSummary, commentSummary, messageSummary } from "./render-item";
+import { askSummary, commentSummary, commentsSummary, messageSummary } from "./render-item";
 
 /**
  * `dispatch read`: whatever the call names — a message's conversation, an ask, a comment, a
  * message, one block, a project's documents, a document's summary, an issue's log, its children,
- * or the issue itself. Reads report their owner and follow nothing; no result subscribes the
- * session.
+ * its comments, or the issue itself. Reads report their owner and follow nothing; no result
+ * subscribes the session.
  */
 export async function readCommand(context: CommandContext): Promise<DispatchToolResult> {
   const {
@@ -300,6 +300,15 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     return {
       text: childrenSummary(parent),
       details: { issue: parent.key },
+    };
+  }
+  if (ownerArguments.ref?.kind === "comments") {
+    const comments = await client.getComments(issueKey);
+    const pictures = await picturesOf(datedBodies(comments));
+    return {
+      text: [commentsSummary(issueKey, comments), ...pictures.lines].join("\n"),
+      details: { issue: issueKey },
+      ...showImages(pictures),
     };
   }
   const readPromise = client.read(issueKey, readEvents);

@@ -180,6 +180,7 @@ func TestARowStillHoldingItsBytesIsServedFromTheRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new deps with a store: %v", err)
 	}
+	shutDownMadeDocuments(t, deps)
 	withStore := http.NewServeMux()
 	t.Cleanup(Register(withStore, t.Context(), deps).Wait)
 	served := dispatchRequest(t, withStore, http.MethodGet, "/api/v1/artifacts/"+version.Artifact.ID+"/versions/1", nil, "alice")
@@ -233,6 +234,7 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new deps without a store: %v", err)
 	}
+	shutDownMadeDocuments(t, noStore)
 	withoutStore := http.NewServeMux()
 	t.Cleanup(Register(withoutStore, t.Context(), noStore).Wait)
 	unconfigured := dispatchRequest(t, withoutStore, http.MethodGet, "/api/v1/artifacts/"+version.Artifact.ID+"/versions/1", nil, "alice")
@@ -290,6 +292,7 @@ func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("new deps without a store: %v", err)
 			}
+			shutDownMadeDocuments(t, bucketless)
 			withoutStore := http.NewServeMux()
 			t.Cleanup(Register(withoutStore, t.Context(), bucketless).Wait)
 			served := dispatchRequest(t, withoutStore, http.MethodGet, "/api/v1/artifacts/"+version.Artifact.ID+"/versions/1", nil, "alice")

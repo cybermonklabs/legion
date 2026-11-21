@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The command bar's File as a new issue is a run of the bar's agent (`POST /api/v1/going/runs`
+  with `kind` `new_issue`): it files the person's words as one issue with a title, a project and a
+  short spec, carrying the label of `DISPATCH_NEW_ISSUE_LABEL`, and its end names the issue with an
+  Undo that closes it. With `DISPATCH_NEW_ISSUE_SESSION` set the issue is routed to that session,
+  and nothing is posted on it: the person's words are no longer sent to the session as the issue's
+  first message, since a message to an agent is a change of a plan the person approves.

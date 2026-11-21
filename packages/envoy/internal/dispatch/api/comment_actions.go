@@ -67,9 +67,42 @@ func (s *server) rejectComment(w http.ResponseWriter, r *http.Request) {
 	s.commentAction(w, r, "reject")
 }
 
+// codeCommentChanged is the refusal of a reopen or a resolve whose condition the thread no longer
+// meets.
+const codeCommentChanged = "COMMENT_CHANGED"
+
+// reopenComment is POST /api/v1/comments/{id}/reopen. Its optional body names the acting session
+// where the caller's credential proved none (actSessionFromBody), as the person routes take it.
+// The route took no body before it took this one, so a body off the network that does not decode
+// is ignored, as an empty one is, and the thread reopened as it was; a request the command bar
+// sends in-process is held to its body (decodeJSON), since sender and route are one build. The
+// command bar's undo makes the reopen conditional (goingCondition.ExpectResolvedAt, on the
+// request's context): the thread must still hold the resolution of that moment, as the comment's
+// read answers resolved_at, when the reopen takes the comment's lock, or it is refused, 409
+// COMMENT_CHANGED, with nothing written. Every other caller reopens whatever resolution the thread
+// holds. It answers as the resolve does (resolvedComment): the comment as the reopen left it, and
+// the resolution it found under the comment's lock, which the command bar's undo of the reopen
+// reads.
 func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
+		return
+	}
+	var input actorInput
+	if goingServedInProcess(r.Context()) {
+		if !s.decodeOptionalJSON(w, r, &input) {
+			return
+		}
+	} else if r.ContentLength != 0 && decodeJSON(r, &input) != nil {
+		input = actorInput{}
+	}
+	if actor, ok = actSessionFromBody(w, actor, input.Actor); !ok {
+		return
+	}
+	condition := goingConditionOf(r)
+	expected := condition.ExpectResolvedAt
+	if refusal := condition.writeBackRefusal(expected != nil && strings.TrimSpace(*expected) != "", "resolution it expects the thread to hold"); refusal != nil {
+		s.writeHandlerError(w, refusal)
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -89,6 +122,15 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "reopen the thread root")
 		return
 	}
+	if expected != nil && (!comment.Resolved || comment.ResolvedAt == nil || *comment.ResolvedAt != *expected) {
+		held := "open"
+		if comment.Resolved && comment.ResolvedAt != nil {
+			held = "resolved at " + *comment.ResolvedAt
+		}
+		writeError(w, codeCommentChanged, http.StatusConflict, fmt.Sprintf(
+			"the thread is %s now, not the resolution of %s the reopen expected, so nothing was written", held, *expected))
+		return
+	}
 	artifactName, err := s.commentArtifactName(r.Context(), tx, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -104,6 +146,7 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	found := threadResolution{Resolved: comment.Resolved, ResolvedBy: comment.ResolvedBy, ResolvedAt: comment.ResolvedAt}
 	comment.Resolved = false
 	comment.ResolvedBy = nil
 	comment.ResolvedAt = nil
@@ -144,12 +187,17 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// What the reopen answers it found and left, handed to the command bar's landing of this
+	// request, which records it in this transaction (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusOK, func() any {
+		return resolvedComment{shapedComment: newShapedComment(comment, false), Previous: found}
+	})
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(r.Context(), *event)
-	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
+	WriteJSON(w, http.StatusOK, resolvedComment{shapedComment: newShapedComment(comment, wantsDisplayTrees(r)), Previous: found})
 }
 
 // editCommentInput is the body of PATCH /api/v1/comments/{id}.
@@ -305,6 +353,16 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	if !ok {
 		return
 	}
+	// The command bar's undo of a reopen makes the resolve conditional (goingCondition.ExpectOpen,
+	// on the request's context): the thread must be open when the resolve takes the comment's
+	// lock, or it is refused, 409 COMMENT_CHANGED, with nothing written.
+	condition := goingConditionOf(r)
+	if action == "resolve" {
+		if refusal := condition.writeBackRefusal(condition.ExpectOpen, "expectation that the thread is open"); refusal != nil {
+			s.writeHandlerError(w, refusal)
+			return
+		}
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -330,6 +388,9 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		s.writeHandlerError(w, err)
 		return
 	}
+	// found is the thread's resolution as a resolve found it under the comment's lock, which the
+	// resolve answers beside the comment it left (resolvedComment).
+	var found *threadResolution
 	// Everything up to Commit is the read phase (Docs.Join): this route and the document operations
 	// queue their writes on the ledger, in the order made, and Commit sends them as one batch.
 	// resolved_at is the transaction's now(), which the queued update writes, read here so the
@@ -347,6 +408,11 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		if kindErr == nil {
 			projectionKind = kind
 		}
+		if condition.ExpectOpen && comment.Resolved {
+			writeError(w, codeCommentChanged, http.StatusConflict, "the thread is resolved now, not open as the resolve expected, so nothing was written")
+			return
+		}
+		found = &threadResolution{Resolved: comment.Resolved, ResolvedBy: comment.ResolvedBy, ResolvedAt: comment.ResolvedAt}
 		resolvedAt, err := ledger.Now(r.Context())
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -510,6 +576,13 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		return
 	}
 	events = append(events, event)
+	if found != nil {
+		// What the resolve answers it found and left, handed to the command bar's landing of this
+		// request, which records it in this transaction (goingRecordAnswer).
+		goingRecordAnswer(r.Context(), http.StatusOK, func() any {
+			return resolvedComment{shapedComment: newShapedComment(comment, false), Previous: *found}
+		})
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -528,6 +601,10 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		WriteJSON(w, http.StatusOK, accepted)
 		return
 	}
+	if found != nil {
+		WriteJSON(w, http.StatusOK, resolvedComment{shapedComment: newShapedComment(comment, wantsDisplayTrees(r)), Previous: *found})
+		return
+	}
 	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
 }
 
@@ -538,4 +615,21 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 type acceptedComment struct {
 	shapedComment
 	Lost *bool `json:"lost"`
+}
+
+// threadResolution is a thread's resolution as a comment's read answers it: whether it is
+// resolved, by whom and when, null for an open thread.
+type threadResolution struct {
+	Resolved   bool         `json:"resolved"`
+	ResolvedBy *model.Actor `json:"resolved_by"`
+	ResolvedAt *string      `json:"resolved_at"`
+}
+
+// resolvedComment is what POST /api/v1/comments/{id}/resolve and POST /api/v1/comments/{id}/reopen
+// answer: the comment as the write left it, and beside it Previous, the thread's resolution when
+// the write took the comment's lock. A caller that undoes the write reads both here: what it reads
+// of the thread before or after the write may have moved on either side of its own transaction.
+type resolvedComment struct {
+	shapedComment
+	Previous threadResolution `json:"previous"`
 }

@@ -795,6 +795,7 @@ func (b editBatch) outcome(applied int) (EditOutcome, pmdoc.ValidDocument, error
 		Changed:        after != b.before,
 		Unchanged:      b.unchanged,
 		Token:          after,
+		PreviousToken:  b.before,
 		AddedAskBlocks: addedAskBlocks(b.beforeTree, b.tree),
 	}, valid, nil
 }

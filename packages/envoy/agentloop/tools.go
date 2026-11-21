@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 
 	aisdk "github.com/grafana/ai-sdk"
 	"github.com/grafana/ai-sdk/schema"
@@ -55,10 +57,18 @@ func (r *run) toolSet() (aisdk.ToolSet, error) {
 // call runs one call of t under the run's tool lock, held for the whole of the caller's Run, so
 // a step's tool calls run one at a time. The call's index is the one it took in the order the
 // model asked for it, counting on from Request.FirstToolIndex, so the first call of the run is
-// that number and one.
+// that number and one. A Run that panics is recovered, logged with its stack and answered as a
+// refusal naming the panic, so the run goes on: the SDK runs each tool on a goroutine of its
+// own, where a panic would end the process.
 func (r *run) call(ctx context.Context, t Tool, id string, input json.RawMessage) (output string, isError bool) {
 	r.tool.Lock()
 	defer r.tool.Unlock()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("agentloop: a tool panicked", "tool", t.Name, "panic", recovered, "stack", string(debug.Stack()))
+			output, isError = fmt.Sprintf("the tool %s failed: it panicked (%v)", t.Name, recovered), true
+		}
+	}()
 	return t.Run(ctx, ToolCall{Index: r.index(id), ID: id, Input: input})
 }
 

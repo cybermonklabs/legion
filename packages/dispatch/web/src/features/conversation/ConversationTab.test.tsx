@@ -1121,7 +1121,11 @@ test("a refused Resolve keeps the thread and its reply, and the one that lands c
   const resolveComment = spyOn(api, "resolveComment").mockImplementation(async (id) => {
     resolves.push(id);
     if (refuse) throw new ApiError(409, { error: "the server is down" });
-    return { ...root, resolved: true };
+    return {
+      ...root,
+      resolved: true,
+      previous: { resolved: false, resolved_by: null, resolved_at: null },
+    };
   });
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
@@ -1164,7 +1168,11 @@ function ownResolveOverAReply() {
     spyOn(api, "resolveComment").mockImplementation(async () => {
       await resolution.promise;
       stub.lists.comments = [{ ...root, resolved: true }];
-      return { ...root, resolved: true };
+      return {
+        ...root,
+        resolved: true,
+        previous: { resolved: false, resolved_by: null, resolved_at: null },
+      };
     }),
   ];
   const queryClient = newQueryClient();

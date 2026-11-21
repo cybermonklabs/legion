@@ -34,7 +34,20 @@ const (
 	entraExchangeTimeout = 30 * time.Second
 	// entraResponseLimit bounds how much of Entra's answer is read.
 	entraResponseLimit = 64 << 10
+	// entraAttempts is how many exchanges one Token makes where each before the last failed
+	// without an answer from Entra (entraUnanswered); entraRetryWait is the wait before the
+	// second, which doubles before each later one.
+	entraAttempts  = 4
+	entraRetryWait = 500 * time.Millisecond
 )
+
+// entraUnanswered is an exchange that drew no answer from Entra, or whose answer could not be
+// read: a transport error, such as a TLS handshake that timed out under load, or the exchange's
+// own timeout. Token makes it again; an answer Entra gave, a refusal among them, it does not.
+type entraUnanswered struct{ err error }
+
+func (e *entraUnanswered) Error() string { return e.err.Error() }
+func (e *entraUnanswered) Unwrap() error { return e.err }
 
 // EntraConfig configures an EntraTokenSource: Microsoft Entra's client-credentials grant with a
 // federated assertion, the keyless form of sign-in, so no Azure key is ever stored.
@@ -103,8 +116,11 @@ func NewEntraTokenSource(cfg EntraConfig) (*EntraTokenSource, error) {
 }
 
 // Token returns the cached access token while it has more than entraRefreshMargin left, and
-// otherwise exchanges the federated token for a new one. A failure is never a throttle: the
-// caller's batch is retried as any other infrastructure failure is.
+// otherwise exchanges the federated token for a new one. An exchange that drew no answer
+// (entraUnanswered) is made again, at most entraAttempts in all, after a wait that doubles from
+// entraRetryWait, while ctx and its deadline leave the time; an answer Entra refused is not. A
+// failure is never a throttle: the caller's batch is retried as any other infrastructure failure
+// is.
 func (s *EntraTokenSource) Token(ctx context.Context) (string, error) {
 	select {
 	case s.slot <- struct{}{}:
@@ -115,12 +131,29 @@ func (s *EntraTokenSource) Token(ctx context.Context) (string, error) {
 	if s.token != "" && s.now().Before(s.expires.Add(-entraRefreshMargin)) {
 		return s.token, nil
 	}
-	token, lifetime, err := s.exchange(ctx)
-	if err != nil {
-		return "", err
+	wait := entraRetryWait
+	for attempt := 1; ; attempt++ {
+		token, lifetime, err := s.exchange(ctx)
+		if err == nil {
+			s.token, s.expires = token, s.now().Add(lifetime)
+			return token, nil
+		}
+		var unanswered *entraUnanswered
+		if !errors.As(err, &unanswered) || attempt == entraAttempts || ctx.Err() != nil {
+			return "", err
+		}
+		if deadline, bounded := ctx.Deadline(); bounded && time.Until(deadline) <= wait {
+			return "", err
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", err
+		case <-timer.C:
+		}
+		wait *= 2
 	}
-	s.token, s.expires = token, s.now().Add(lifetime)
-	return token, nil
 }
 
 type entraTokenResponse struct {
@@ -156,13 +189,18 @@ func (s *EntraTokenSource) exchange(ctx context.Context) (string, time.Duration,
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
 	response, err := s.http.Do(request)
-	if err != nil {
+	switch {
+	case err != nil && response != nil:
+		// A redirect the client refused (redirects.Refused) is Entra's answer, which no exchange
+		// made again changes.
 		return "", 0, fmt.Errorf("embed: entra token exchange: %w", err)
+	case err != nil:
+		return "", 0, &entraUnanswered{fmt.Errorf("embed: entra token exchange: %w", err)}
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, entraResponseLimit))
 	if err != nil {
-		return "", 0, fmt.Errorf("embed: entra read response: %w", err)
+		return "", 0, &entraUnanswered{fmt.Errorf("embed: entra read response: %w", err)}
 	}
 	var decoded entraTokenResponse
 	decodeErr := json.Unmarshal(body, &decoded)

@@ -387,6 +387,7 @@ describe("every committed recording answers the display tree of every stored tex
       "ArtifactVersionText.markdown",
       "AskAnswerWithTrees.text",
       "AskEditPreviousWithTrees.question",
+      "AskEdited.question",
       "AskOptionWithTrees.description",
       "AskOptionWithTrees.label",
       "AskResolutionWithTrees.reason",
@@ -410,6 +411,7 @@ describe("every committed recording answers the display tree of every stored tex
       "MyAnswerRow.question",
       "ReplyBlockWithTrees.text",
       "RequirementCoverage.text",
+      "ResolvedComment.body",
       "SearchResult.snippet",
     ]);
   });

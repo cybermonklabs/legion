@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -96,11 +97,11 @@ type Deps struct {
 	Identity       identity.Identity
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
-	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
-	// from the words a person typed when those words match nothing it found
-	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
-	// DISPATCH_NEW_ISSUE_SESSION). NewIssueLabel empty is an issue that carries no label;
-	// NewIssueSession empty is an issue made with no conversation started on it.
+	// NewIssueLabel and NewIssueSession configure the issue the command bar's File as a new issue
+	// files from a person's words (GET /api/v1/settings/new-issue; cmd/dispatch:
+	// DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION), which its new_issue run's create
+	// carries (going_new_issue.go). NewIssueLabel empty is an issue that carries no label;
+	// NewIssueSession empty is an issue made with no route.
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
@@ -113,10 +114,19 @@ type Deps struct {
 	// Answerer answers one question from what Dispatch holds (INFRA-1279), for the three going
 	// routes; nil means the deployment configured no model, where a run is still recorded and
 	// its stream carries the error frame contracts.GoingErrorNoModelConfigured, and the
-	// capability route says no model is configured.
+	// capability route says no model is configured. Its Blocks is the capability's answer.blocks.
 	Answerer Answerer
-	Envoy    *envoy.Client
-	Events   *events.Broker
+	// AnswerModel is the model the Answerer was configured with, as the capability route names
+	// it (cmd/dispatch: DISPATCH_AZURE_CHAT_DEPLOYMENT or DISPATCH_CHAT_MODEL); empty with no
+	// Answerer.
+	AnswerModel string
+	// Decider is the decision model, a measured one (NewDecider), or nil where the deployment
+	// configured none or named a model the record does not hold (cmd/dispatch:
+	// DISPATCH_DECISION_MODEL and its endpoint and token file), which the capability route
+	// reports unset.
+	Decider *Decider
+	Envoy   *envoy.Client
+	Events  *events.Broker
 	// GitHub calls the GitHub App API for architecture-source access checks and the web app's
 	// GitHub reads; nil is the "no app credentials yet" state and answers ErrNoAppKey.
 	GitHub *githubapp.Client
@@ -193,6 +203,11 @@ type Deps struct {
 	// changes the listener's sessions sees the change at its next read. A deployment leaves it
 	// false.
 	ListenerRosterUncached bool
+	// AgentCallHook is for end-to-end test processes only: a route every call of which the server
+	// runs for its agent panics in, or is held in (AgentCallHook), so a test holds the recover
+	// around a call, the call slots and the call's time to the server's own process (runCall). A
+	// deployment leaves it zero.
+	AgentCallHook AgentCallHook
 	// OutboxPublishes is that an outbox publishes this deployment's events: cmd/dispatch sets it
 	// unless NATS is disabled (DISPATCH_NATS_DISABLED=1). A mention's send then goes only once no
 	// earlier event of its comment's owner still owes a send its session may take
@@ -219,6 +234,16 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
+	// GoingRuns wakes the agent's waiting claims and renews at each announcement on
+	// GoingRunsChannel, which cmd/dispatch registers it for on its listener hub; nil is a server
+	// no announcement reaches, which register gives a signal of its own, so its claims and renews
+	// wait out their bounds.
+	GoingRuns *GoingRunSignal
+	// GoingRunEvents wakes the streams of a run's events at each announcement of that run on
+	// GoingRunEventsChannel, which cmd/dispatch registers it for on its listener hub; nil is a
+	// server no announcement reaches, which register gives a signal of its own, so its streams
+	// read again every goingRunStreamCheck.
+	GoingRunEvents *GoingRunEventSignal
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -259,7 +284,12 @@ type DepsInput struct {
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is
 	// configured. See Deps.Answerer; cmd/dispatch builds it (newAnswerer).
 	Answerer Answerer
-	Events   *events.Broker
+	// AnswerModel is the model the Answerer was configured with; see Deps.AnswerModel.
+	AnswerModel string
+	// Decider is the measured decision model, nil for none; see Deps.Decider. cmd/dispatch
+	// builds it (newDecider).
+	Decider *Decider
+	Events  *events.Broker
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
@@ -302,6 +332,8 @@ type DepsInput struct {
 	// ListenerRosterUncached is for end-to-end test processes only; see
 	// Deps.ListenerRosterUncached.
 	ListenerRosterUncached bool
+	// AgentCallHook is for end-to-end test processes only; see Deps.AgentCallHook.
+	AgentCallHook AgentCallHook
 	// OutboxPublishes is that an outbox publishes this deployment's events; see
 	// Deps.OutboxPublishes.
 	OutboxPublishes bool
@@ -314,6 +346,10 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
+	// GoingRuns is the signal of GoingRunsChannel; see Deps.GoingRuns.
+	GoingRuns *GoingRunSignal
+	// GoingRunEvents is the signal of GoingRunEventsChannel; see Deps.GoingRunEvents.
+	GoingRunEvents *GoingRunEventSignal
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -383,6 +419,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,
+		AnswerModel:            strings.TrimSpace(input.AnswerModel),
+		Decider:                input.Decider,
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,
@@ -401,11 +439,14 @@ func NewDeps(input DepsInput) (Deps, error) {
 		HorizonWarnEvery:       input.HorizonWarnEvery,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
+		AgentCallHook:          input.AgentCallHook,
 		OutboxPublishes:        input.OutboxPublishes,
 		Metrics:                input.Metrics,
 		AnswersLatency:         input.AnswersLatency,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
+		GoingRuns:              input.GoingRuns,
+		GoingRunEvents:         input.GoingRunEvents,
 	}, nil
 }
 
@@ -467,6 +508,23 @@ type server struct {
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
 	going GoingCatalogue
+	// goingReads is the route rows each read tool of a going run reads through, held to the
+	// table this server mounts (going_reads.go).
+	goingReads map[string][]GoingRoute
+	// inProcess is the route table this server mounts, behind the cross-site origin check
+	// routes.New puts in front of the whole server (EnforceCookieOrigin): what a command-bar write
+	// is performed through, as its caller, so every check a route makes runs on it exactly as on
+	// a request off the network (going_writes.go). Its requests name their caller on their
+	// context and carry no cookie, so the origin check passes them. register sets it.
+	inProcess http.Handler
+	// goingRuns wakes the agent's waiting claims and renews (going_agent.go): Deps.GoingRuns, or a
+	// signal of the server's own where it is nil.
+	goingRuns *GoingRunSignal
+	// goingRunEvents wakes the streams of a run's events (going_run_stream.go):
+	// Deps.GoingRunEvents, or a signal of the server's own where it is nil.
+	goingRunEvents *GoingRunEventSignal
+	// goingReaders counts the streams of runs' events this process serves, by run and by person.
+	goingReaders goingRunReaders
 	// unguardedReplacements counts the document replacements stored naming no token
 	// (noteUnguardedReplacement); nil, which counts nothing, where Deps.Metrics is nil.
 	unguardedReplacements *metrics.Counter
@@ -598,6 +656,13 @@ type server struct {
 	// place of the two settings Deps carries; nil until a hook call sets one, which is every
 	// server without TestHooksEnabled, since that mounts no hook.
 	newIssueOverride atomic.Pointer[newIssueSettings]
+	// goingCancels is the cancel function of every going run this process is answering, by its
+	// request id, so a cancel that lands on this process ends that run at once rather than at
+	// its next frame (cancelGoingRequest). startGoingRun adds and removes its own entry.
+	goingCancels sync.Map
+	// quick holds the bounds of the short answers this process answers (going_quick.go): its
+	// slots, and each person's one question in flight.
+	quick goingQuick
 	// warnedUnmatchedRuns holds a warnedProductionRun for each deploy run productionApplies has
 	// asked about - one with no production job or no configured apply step - so this process asks
 	// delivery_run_warnings, which decides which process logs the warning (firstToWarn), once per
@@ -650,8 +715,11 @@ type queryer interface {
 // RouteMux is what Register mounts the routes on: an *http.ServeMux in a server, and in the routes
 // package's TestAKeyedWriteNeverRunsUnkeyed one that also keeps the pattern of each, so the test
 // reads every route the router mounts from the mounting itself rather than from a list kept beside
-// it, and finds a write mounted beside the table, which runs outside keyedWrites.
+// it, and finds a write mounted beside the table, which runs outside keyedWrites. It serves what is
+// mounted on it as well, since the command bar's writes call the table in-process through it
+// (server.inProcess).
 type RouteMux interface {
+	http.Handler
 	Handle(pattern string, handler http.Handler)
 	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
 }
@@ -695,7 +763,8 @@ type RouteMux interface {
 // started the relay, or at once under the test hooks.
 func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
+	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon,
+		ListenAgent: s.listenAgentAtItsDirectory, GoingRunShape: goingRunShape, GoingRunCounts: s.goingRunCounts, ListAnswerBytes: s.listAnswers.Held}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -703,6 +772,20 @@ func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 type Background struct {
 	// Wait is the wait Register describes, for shutdown.
 	Wait func()
+	// ListenAgent listens for the agent process on its Unix socket, under a secret of its own
+	// (AgentListener): agent.sock in dispatch-agent under the runtime directory it is given (the
+	// process's XDG_RUNTIME_DIR), or in a directory of its own under the system's temporary
+	// directory where that is empty, each of mode 0700. The api package reads no environment.
+	ListenAgent func(runtimeDir string) (*AgentListener, error)
+	// GoingRunShape is the highest saved shape of a command-bar run this build reads, which the
+	// process writes into its row of server_processes (processes.Instance.GoingRunShape).
+	GoingRunShape int
+	// GoingRunCounts counts the command-bar runs that work, wait in the queue and wait for their
+	// person, which the process's /metrics shows.
+	GoingRunCounts func(context.Context) (GoingRunCounts, error)
+	// ListAnswerBytes is the bytes the list-answer cache holds (listAnswers), which the process's
+	// /metrics shows.
+	ListAnswerBytes func() int64
 	// ResumeDeliveries is one pass of the delivery sweep (resumeOwedDeliveries): every delivery a
 	// process that died left owed is sent, once, under its own attempt number. The maintenance loop
 	// runs it (RunMaintenanceSweep).
@@ -766,11 +849,18 @@ func (b *backgroundWork) done() {
 	}
 }
 
-// goDetached runs work on a goroutine of its own, counted until it returns.
+// goDetached runs work on a goroutine of its own, counted until it returns. A panic in work is
+// recovered and logged with its stack: a delivery, a run of the command bar or any other work a
+// request leaves running stops alone, and the process serves on.
 func (b *backgroundWork) goDetached(work func()) {
 	b.start()
 	go func() {
 		defer b.done()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				slog.Error("dispatch: detached work panicked", "panic", recovered, "stack", string(debug.Stack()))
+			}
+		}()
 		work()
 	}()
 }
@@ -845,6 +935,22 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
 	}
 	s.going = going
+	s.inProcess = EnforceCookieOrigin(deps.ServerURL, mux)
+	s.goingRuns = deps.GoingRuns
+	if s.goingRuns == nil {
+		s.goingRuns = NewGoingRunSignal()
+	}
+	s.goingRunEvents = deps.GoingRunEvents
+	if s.goingRunEvents == nil {
+		s.goingRunEvents = NewGoingRunEventSignal()
+	}
+	goingReads, err := goingReadRoutesOf(routes)
+	if err != nil {
+		// A read tool naming a row this table does not serve would offer a read nothing judges
+		// the caller's credential against, so the table is refused rather than mounted.
+		panic("api.Register: the route table does not serve a row a going read tool reads: " + err.Error())
+	}
+	s.goingReads = goingReads
 	if shapeless := shapelessRoutes(routes); len(shapeless) > 0 {
 		// A row with no shape is a row the generated OpenAPI document would leave out, so the
 		// one definition of the API would stop being one; the table is refused rather than
@@ -1351,6 +1457,19 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 	}, nil
 }
 
+// presentsBearer reports whether r's caller is an agent's bearer: a request off the network that
+// presents an Authorization header, or a request the command bar sent in-process as a caller that
+// is no person's own sign-in, which names its caller on its context and sends no header. The
+// routes only an agent's session writes - the accept and the replies of a delivery - refuse every
+// other caller before they read anything.
+func presentsBearer(r *http.Request) bool {
+	if goingServedInProcess(r.Context()) {
+		caller, named := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
+		return named && !caller.human
+	}
+	return strings.TrimSpace(r.Header.Get("Authorization")) != ""
+}
+
 // writeAuthenticationError answers a caller that did not resolve: 401 NO_IDENTITY, or 503
 // SIGNIN_UNAVAILABLE for a person whose lapsed confirmation the sign-in issuer could not renew,
 // as identity.WriteError renders both; anything else as writeHandlerError does. Only identity's
@@ -1509,10 +1628,13 @@ func (s *server) refuseReadOnlyToken(listed bool, next http.HandlerFunc) http.Ha
 // The agent is not lost: Act names the credential that acted — its scopes, the personal token it
 // is, the session a broker-issued token proved — so a write records which credential made it and
 // not only whom it was made for. A browser's cookie names no agent, since the person themselves
-// acted, and carries none. A credential that proved no session takes the one the `session` query
-// parameter names where the caller gives it, the convention messages.go already reads; one that
-// proved a session is refused a parameter naming another, 403 ACTOR_SESSION_MISMATCH, which is
-// what bearerSessionActor answers the same disagreement in a body.
+// acted, and carries none. An act the resolved caller already carries is kept: the command bar's,
+// which the caller of a run's call names (going_grant.go), and which no request off the network
+// can carry, since only the server's own in-process caller is resolved with one. A credential
+// that proved no session takes the one the `session` query parameter names where the caller gives
+// it, the convention messages.go already reads; one that proved a session is refused a parameter
+// naming another, 403 ACTOR_SESSION_MISMATCH, which is what bearerSessionActor answers the same
+// disagreement in a body.
 func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
@@ -1532,6 +1654,12 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 		person = *actor.Owner
 	}
 	var act *model.ActorAct
+	if actor.Act != nil {
+		// A copy: the caller rides on every request of its run's call, and the session below is
+		// this request's alone.
+		carried := *actor.Act
+		act = &carried
+	}
 	if credential.TokenID != "" || credential.Session != "" {
 		session := credential.Session
 		if named := strings.TrimSpace(r.URL.Query().Get("session")); named != "" {
@@ -1542,15 +1670,13 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 			}
 			session = named
 		}
-		act = &model.ActorAct{
-			Session: session,
-			// Only the session the credential itself proved; one a personal token's `?session=`
-			// names is the caller's word.
-			SessionProven: session != "" && session == credential.Session,
-			TokenID:       credential.TokenID,
-			TokenName:     credential.TokenName,
-			Scopes:        credential.Scopes,
+		if act == nil {
+			act = &model.ActorAct{TokenID: credential.TokenID, TokenName: credential.TokenName, Scopes: credential.Scopes}
 		}
+		act.Session = session
+		// Only the session the credential itself proved; one a personal token's `?session=`
+		// names is the caller's word.
+		act.SessionProven = session != "" && session == credential.Session
 	}
 	// Proven: every credential that holds the person scope proves its person - the cookie its
 	// login, a personal or broker-issued token the owner it names.
@@ -1558,8 +1684,8 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 }
 
 // actSessionFromBody records on actor's act the session the request body names, for the
-// person-scope handlers that already decode a body actor: answerAsk, putUserState, editAsk and
-// the follower routes. A
+// person-scope handlers that already decode a body actor: answerAsk, putUserState, editAsk,
+// reopenComment and the follower routes. A
 // credential that proved no session of its own - a personal token - names its agent nowhere
 // else on a route whose body is already read, so the body's actor is taken for it, exactly as
 // `?session=` is taken on every other route (actingPerson). A credential that did prove one - a
@@ -1569,8 +1695,9 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // when the body names the session the credential proved; a session the body alone names is not
 // proven.
 //
-// Only those routes read it: decodeJSON ignores a member the route's input struct does not
-// declare (it logs it at debug), so a body actor on any other route is dropped unread, and four of
+// Only those routes read it: a route whose input struct declares no actor never sees one - off the
+// network decodeJSON ignores a member its input does not declare, and logs it at debug, and only a
+// request the command bar sends in-process refuses one, 400 (judgeUndeclaredMembers) - and four of
 // the mutating rows a person's scope opened are DELETEs with no body at all. A browser's actor
 // names no agent (act is nil), so there is nothing for a body to name, and its body actor is
 // ignored here as it always was.
@@ -1720,8 +1847,10 @@ type actorInput struct {
 // whose loss would change what a request does therefore ships as a new route, never as a member.
 // The ignored top-level members are logged at debug with the route (logUndeclaredMembers); the
 // test hooks, which no other build calls, refuse them instead (decodeJSONTestHook, and
-// refuseUndeclaredMembers for a hook that reads its body itself). A string the body holds
-// anywhere that carries U+0000 is refused, naming where it stands (unstorableJSON).
+// refuseUndeclaredMembers for a hook that reads its body itself), and so does a request the
+// command bar sends in-process (goingInProcess.Do), whose sender is always this same build
+// (judgeUndeclaredMembers). A string the body holds anywhere that carries U+0000 is refused,
+// naming where it stands (unstorableJSON).
 func decodeJSON(r *http.Request, value any) error {
 	return decodeJSONWithin(r, value, maxJSONRequestBytes, errJSONTooLarge)
 }
@@ -1732,6 +1861,19 @@ func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiErro
 	body, err := readJSONBody(r, value, limit, tooLarge)
 	if err != nil {
 		return err
+	}
+	return judgeUndeclaredMembers(r, value, body)
+}
+
+// judgeUndeclaredMembers is what a route does with the top-level members of body that value does
+// not declare. A request the command bar sends in-process (goingInProcess.Do) refuses them by name
+// (refuseUndeclaredMembers): the bar and the route are one build, so such a member is a
+// translation or an undo naming a member under a name the route does not take, which would
+// otherwise be dropped and the write made without it. Every other request logs them and goes on
+// (logUndeclaredMembers), as decodeJSON says.
+func judgeUndeclaredMembers(r *http.Request, value any, body []byte) error {
+	if goingServedInProcess(r.Context()) {
+		return refuseUndeclaredMembers(value, body)
 	}
 	logUndeclaredMembers(r, value, body)
 	return nil
@@ -1750,11 +1892,18 @@ func decodeJSONTestHook(r *http.Request, value any) error {
 }
 
 // refuseUndeclaredMembers is decodeJSONTestHook's refusal on its own, for a test hook that reads
-// its body itself and decodes it after: it answers the error naming the top-level members of body
-// that value's type does not declare, and nil when it declares them all.
+// its body itself and decodes it after, and judgeUndeclaredMembers' for a request the command bar
+// sends in-process: it answers the error naming the top-level members of body that value's type
+// does not declare, and nil when it declares them all.
 func refuseUndeclaredMembers(value any, body []byte) error {
-	if undeclared := undeclaredMembers(value, body); len(undeclared) > 0 {
-		return errorf(http.StatusBadRequest, "INVALID_JSON", "the hook does not take: %s", strings.Join(undeclared, ", "))
+	return refuseUndeclared(undeclaredMembers(value, body))
+}
+
+// refuseUndeclared is the refusal of the members or fields undeclared a body names that its route
+// does not take, each by name, nil for none.
+func refuseUndeclared(undeclared []string) error {
+	if len(undeclared) > 0 {
+		return errorf(http.StatusBadRequest, "INVALID_JSON", "this route does not take: %s", strings.Join(undeclared, ", "))
 	}
 	return nil
 }

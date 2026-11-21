@@ -65,6 +65,15 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_architecture_sync: true,
 };
 
+/** Whether `tool` names its own arguments and no owner: an issue-free tool, or one whose spec
+ *  binds its routes, whose arguments fill the route it calls and which LEGION_ISSUE never fills. */
+function ownsNoIssue(tool: string): boolean {
+  return (
+    issueFreeTools[tool] === true ||
+    dispatchToolSpecs.some((spec) => spec.name === tool && "routes" in spec)
+  );
+}
+
 function canonicalExternalIssueRef(value: string): string {
   const match = value.trim().match(externalIssueRefPattern);
   return match ? `${canonicalRepo(match[1] ?? "", match[2] ?? "")}#${match[3]}` : value;
@@ -224,6 +233,8 @@ function readWithoutEvents(args: ToolArguments): string | undefined {
       return "a message's conversation";
     case "children":
       return "the issue's children";
+    case "comments":
+      return "the issue's comments";
     // An artifact beside a log ref is refused by `ownerConflictProblems`, which says to drop the
     // artifact; the log lists events, so the count stays.
     case "log":
@@ -393,7 +404,7 @@ export async function resolveOwnerArguments(
   dashboardUrls: readonly string[],
   problems: string[]
 ): Promise<OwnerResolution> {
-  if (issueFreeTools[tool] === true) return { args: input, ref: null, owner: null };
+  if (ownsNoIssue(tool)) return { args: input, ref: null, owner: null };
   const refArgument = input.ref;
   let ref: ParsedDispatchRef | null = null;
   let args = input;
@@ -601,16 +612,14 @@ export async function checkDispatchCall(input: DispatchCallCheckInput): Promise<
   );
   // Judged on the caller's own arguments, before the ref filled any: the ref as resolved, read
   // back from a dashboard URL when it was one.
-  const conflicts =
-    issueFreeTools[tool] === true
-      ? []
-      : ownerConflictProblems(tool, args, owner.ref, optionalString(owner.args, "ref"));
+  const conflicts = ownsNoIssue(tool)
+    ? []
+    : ownerConflictProblems(tool, args, owner.ref, optionalString(owner.args, "ref"));
   problems.push(...conflicts);
   // Every owner-missing exit (no issue, bad LEGION_ISSUE, no repo in cwd) leaves owner null, and
   // a conflict already names the owners; the schema's own "issue is required" would only restate
   // the actionable line already pushed.
-  const ownerMissing =
-    issueFreeTools[tool] !== true && (owner.owner === null || conflicts.length > 0);
+  const ownerMissing = !ownsNoIssue(tool) && (owner.owner === null || conflicts.length > 0);
   const schema = toolSchema(tool);
   const parsed = schema.safeParse(owner.args, { reportInput: true });
   if (!parsed.success) {

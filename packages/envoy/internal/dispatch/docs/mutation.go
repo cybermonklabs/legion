@@ -2,6 +2,8 @@ package docs
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -690,11 +692,34 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	return canonical, nil
 }
 
+// ErrDocumentChanged is a replacement made on the condition that the live document still holds a
+// markdown it no longer holds, refused with nothing written: the document changed since the
+// caller read it.
+var ErrDocumentChanged = errors.New("the document no longer holds the content the write expected")
+
+// MarkdownSHA256 is the hex SHA-256 of markdown, as ReplaceTextExpecting's condition names a
+// document's content.
+func MarkdownSHA256(markdown string) string {
+	sum := sha256.Sum256([]byte(markdown))
+	return hex.EncodeToString(sum[:])
+}
+
 // ReplaceText replaces the entire live document tree so connected clients
 // receive document uploads as a regular server-side transaction. The precondition names the
 // token of the version the caller believes it is replacing and is checked under the write's own
 // locks; a replacement that names none is taken unchecked (see below).
 func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error) {
+	return s.ReplaceTextExpecting(ctx, artifactID, markdown, actor, precondition, "")
+}
+
+// ReplaceTextExpecting is ReplaceText on a further condition: expectSHA256, where it is not
+// empty, is the hex SHA-256 (MarkdownSHA256) of the markdown the live document must hold, read
+// under the write's own locks beside the precondition, or the replacement is refused with
+// ErrDocumentChanged and nothing written; a tree outside the schema holds no markdown to
+// compare, and is refused too. An expected content says which version the replacement replaces,
+// as a token does, so a replacement that carries one may name no token; one that names a token
+// as well is held to both.
+func (s *Service) ReplaceTextExpecting(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition, expectSHA256 string) (string, error) {
 	if _, joined := txFromContext(ctx); !joined {
 		return "", errUnjoined
 	}
@@ -733,6 +758,9 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		repairing := errors.Is(err, ErrDocOutsideSchema)
 		if err != nil && !repairing {
 			return err
+		}
+		if expectSHA256 != "" && (repairing || MarkdownSHA256(currentMarkdown) != expectSHA256) {
+			return ErrDocumentChanged
 		}
 		if repairing {
 			current = nil
@@ -1708,7 +1736,7 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 		if err != nil {
 			return EditOutcome{}, err
 		}
-		return EditOutcome{Token: token}, nil
+		return EditOutcome{Token: token, PreviousToken: token}, nil
 	}
 	var (
 		err       error
@@ -1837,7 +1865,7 @@ func (s *Service) applyOpsUnconditional(ctx context.Context, artifactID string, 
 		if err != nil {
 			return EditOutcome{}, err
 		}
-		return EditOutcome{Token: token}, nil
+		return EditOutcome{Token: token, PreviousToken: token}, nil
 	}
 	var outcome EditOutcome
 	err := s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {

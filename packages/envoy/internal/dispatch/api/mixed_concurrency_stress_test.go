@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // pooledDocumentHandler serves a Dispatch API whose pool is maxConns wide and whose documents
@@ -32,15 +33,10 @@ func pooledDocumentHandlerWith(
 	t.Helper()
 	var service *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		config := database.Pool.Config().Copy()
-		config.MaxConns = maxConns
+		// The test's own pool gives way to one maxConns wide. Reopened closes the new store's
+		// pool after t, and with it every pool the server and the document service open from it.
 		database.Pool.Close()
-		pool, err := pgxpool.NewWithConfig(context.Background(), config)
-		if err != nil {
-			t.Fatalf("open test pool: %v", err)
-		}
-		database.Pool = store.NewPool(pool)
-		t.Cleanup(pool.Close)
+		database.Pool = storetest.Reopened(t, database, func(config *pgxpool.Config) { config.MaxConns = maxConns }).Pool
 		service = docs.New(docs.Deps{Store: database, Settle: settle})
 		t.Cleanup(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

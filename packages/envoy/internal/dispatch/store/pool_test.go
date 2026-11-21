@@ -337,9 +337,10 @@ func TestListenerIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 
 // RoomAppends hands out connections of a pool of its own: a connection taken there is not one of
 // the shared pool's, names itself dispatch-room-appends to Postgres, and is counted by Use, which
-// the process drain waits on (cmd/dispatch's waitUntilIdle) before it closes the pool. A rooms
-// connection names itself dispatch-rooms, so pg_stat_activity tells a load from a room's append
-// and both from a request.
+// the process drain waits on (cmd/dispatch's waitUntilIdle) before it closes the pool, its healthy
+// release among the connections the database answered, which start the drain's count of silent
+// health probes again. A rooms connection names itself dispatch-rooms, so pg_stat_activity tells a
+// load from a room's append and both from a request.
 func TestRoomAppendsIsAPoolOfItsOwnThatUseCounts(t *testing.T) {
 	database := openTestStore(t)
 	ctx := context.Background()
@@ -376,14 +377,15 @@ func TestRoomAppendsIsAPoolOfItsOwnThatUseCounts(t *testing.T) {
 	if got := database.Pool.Stat().AcquireCount(); got != sharedAcquires {
 		t.Fatalf("a room-appends connection took %d connections of the shared pool, want none", got-sharedAcquires)
 	}
-	if use := database.Pool.Use(); use.InUse != before.InUse+1 {
-		t.Fatalf("Use counts %d connections in use with one room-appends connection held, want %d", use.InUse, before.InUse+1)
+	held := database.Pool.Use()
+	if held.InUse != before.InUse+1 {
+		t.Fatalf("Use counts %d connections in use with one room-appends connection held, want %d", held.InUse, before.InUse+1)
 	}
 	conn.Release()
 	released = true
-	if use := database.Pool.Use(); use.InUse != before.InUse || use.Returned != before.Returned+1 {
-		t.Fatalf("after the room-appends connection's release Use = %+v, want %d in use and %d returned",
-			use, before.InUse, before.Returned+1)
+	if use := database.Pool.Use(); use.InUse != before.InUse || use.Returned != before.Returned+1 || use.Answered != held.Answered+1 {
+		t.Fatalf("after the room-appends connection's release Use = %+v, want %d in use, %d returned and %d answered",
+			use, before.InUse, before.Returned+1, held.Answered+1)
 	}
 
 	rooms, err := database.Pool.Rooms()

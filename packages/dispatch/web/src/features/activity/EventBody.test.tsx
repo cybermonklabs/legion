@@ -178,6 +178,61 @@ test("EventBody names the agent an answer was given through, beside the person",
   }
 });
 
+// A change of a run of the command bar is the person's, recorded with the bar's act beside them,
+// so the history names the person through the command bar rather than as their own hand.
+test("an item's history names the command bar for a change of a run", async () => {
+  const alice = {
+    at: "2026-11-19T00:00:00Z",
+    selected: ["Ship"],
+    text: null,
+    user: "alice",
+  } satisfies AskAnswer;
+  const throughTheBar: Extract<DispatchEvent, { type: "ask.answered" }> = {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-11-19T00:00:00Z",
+    id: 6,
+    issue_key: "CORE-1",
+    notify: true,
+    payload: {
+      anchor: null,
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_id: null,
+      answer: {
+        ...alice,
+        act: {
+          agent: "command-bar",
+          run: "0190c7d2-1111-7222-8333-444444444444",
+          scopes: ["person", "approve"],
+        },
+      },
+      author: { id: "session-1", kind: "session" },
+      created_at: "2026-11-18T00:00:00Z",
+      edited_at: null,
+      id: "ask-3",
+      issue_key: "CORE-1",
+      kind: "question",
+      multiple: false,
+      opened_event_id: 1,
+      options: [{ label: "Ship" }, { label: "Hold" }],
+      question: "Publish?",
+      state: "answered",
+      urgency: "med",
+    },
+    seq: 6,
+    type: "ask.answered",
+  };
+  const view = render(<EventBody event={throughTheBar} />);
+
+  try {
+    expect(await screen.findByText("Answered by alice, through the command bar")).toBeDefined();
+  } finally {
+    view.unmount();
+  }
+});
+
 test("EventBody names how an ask was resolved: a withdrawal by the close, a retraction with its reason", async () => {
   const withdrawn: Extract<DispatchEvent, { type: "ask.resolved" }> = {
     actor: { id: "alice", kind: "user" },

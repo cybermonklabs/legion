@@ -163,7 +163,7 @@ function madeResponse() {
   if (version === undefined) {
     throw new Error("the made document fixture requires a version");
   }
-  return { artifact: madeDocument, version };
+  return { artifact: madeDocument, version, previous_version: null };
 }
 
 // The control sends the title alone, so the new document holds nothing, and the person is taken

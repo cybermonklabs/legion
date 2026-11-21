@@ -3,15 +3,18 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { ISSUE_TITLE_MAX, MAX_ISSUE_ADVANCES, PROJECT_NAME_MAX } from "./dispatch-api";
+import { dispatchRouteToolSpecs } from "./dispatch-route-tools";
 import {
   ARTIFACT_STORED_TEXT_RULE,
   DISPATCH_HANDOFF_BODY_MAX,
+  type DispatchToolRoute,
   type DispatchToolSpec,
   dispatchToolSchema,
   dispatchToolSpecs,
   ISSUE_STATUSES,
   PROJECT_KEY_RULE,
   pathKeepsBytesOf,
+  personToolSpecs,
   SEARCH_QUERY_MAX,
 } from "./dispatch-tools";
 import { type SchemaApi, type SchemaNode, zodSchemaApi } from "./tool-schema";
@@ -321,6 +324,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_steps",
       "dispatch_plans",
       "dispatch_inbox",
+      ...dispatchRouteToolSpecs.map((spec) => spec.name),
     ]);
 
     for (const [name, args] of Object.entries(validCalls) as Array<
@@ -328,6 +332,48 @@ describe("dispatchToolSpecs", () => {
     >) {
       expect(schemaFor(name).safeParse(args).success, name).toBe(true);
     }
+  });
+
+  test("every spec that binds its routes binds them to its own arguments, and its example fills one", () => {
+    const bound = dispatchToolSpecs.filter((spec) => "routes" in spec);
+    expect(bound.length).toBe(dispatchRouteToolSpecs.length);
+    for (const spec of dispatchToolSpecs) {
+      if (!("routes" in spec)) continue;
+      const shape = dispatchToolSchema(spec, schemaApi) as z.ZodObject;
+      const takes = new Set(Object.keys(shape.shape));
+      expect(shape.safeParse(spec.example).success, spec.name).toBe(true);
+      const routes: readonly DispatchToolRoute[] = spec.routes;
+      expect(routes.length, spec.name).toBeGreaterThan(0);
+      for (const route of routes) {
+        const placeholders = [...route.path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]);
+        const params = route.params ?? {};
+        expect(Object.keys(params).sort(), `${spec.name} ${route.path}`).toEqual(
+          placeholders.sort()
+        );
+        const sent = [...Object.values(params), ...(route.query ?? []), ...(route.body ?? [])];
+        for (const argument of sent) {
+          expect(takes.has(argument), `${spec.name} ${route.path} sends ${argument}`).toBe(true);
+        }
+        expect(new Set(sent).size, `${spec.name} ${route.path} sends an argument twice`).toBe(
+          sent.length
+        );
+        expect(
+          route.method === "GET" && route.body !== undefined,
+          `${spec.name} ${route.path}`
+        ).toBe(false);
+      }
+      const example = spec.example as Record<string, unknown>;
+      const fills = routes.some((route) =>
+        Object.values(route.params ?? {}).every((argument) => example[argument] !== undefined)
+      );
+      expect(fills, `${spec.name}'s example fills none of its routes`).toBe(true);
+    }
+  });
+
+  test("no person tool, which the command bar alone calls, is a command of the command line", () => {
+    const commands = new Set<string>(dispatchToolSpecs.map((spec) => spec.name));
+    expect(personToolSpecs.length).toBeGreaterThan(0);
+    for (const spec of personToolSpecs) expect(commands.has(spec.name), spec.name).toBe(false);
   });
 
   test("explains that quote anchors stay pinned to their block", () => {

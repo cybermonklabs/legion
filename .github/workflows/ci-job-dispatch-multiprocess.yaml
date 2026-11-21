@@ -32,7 +32,15 @@ env:
 jobs:
   dispatch-multiprocess:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    # The step's -timeout has to fire before the runner cancels the job, so a hung test prints the
+    # dump that names it: about 1 minute of setup and 1 of compiling the test binary come before
+    # its 45, and the rest is the slack the job's 30 left beside the step's 20 before, so 55. The
+    # 45 is the tests' measured sum with the margin the 20 gave the two-process tests alone, a
+    # third over their 900 s (2026-11-18, run 44273912999): those 900 s and the ~1,130 s of the
+    # tests of the server's agent process (agent_loop_test.go, agent_supervisor_test.go,
+    # agent_soak_test.go), measured in envoy-go's unit step at 2da9ac1c, whose 20 minutes they
+    # took over, are ~2,030 s, 34 minutes, and a third over that is 45.
+    timeout-minutes: 55
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -57,10 +65,12 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # Every test the multiprocess tag adds: the two-process tests and the tests of the server's
+      # agent process. The comment above the job's timeout-minutes says why its -timeout is 45m.
       - name: Two-process tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/dispatch)
-          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/dispatch
+          go test -tags multiprocess -count=1 -timeout 45m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

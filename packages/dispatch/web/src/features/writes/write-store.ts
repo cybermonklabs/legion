@@ -93,8 +93,9 @@ export interface WriteBase<D = unknown> {
 export type Write<D = unknown> = WriteBase<D> & WriteState;
 
 /** Whether `write` may still reach Dispatch: waiting its turn, or out, within its deadline or
- *  past it and still being tried. A refused or discarded write is not. */
-export function isLive(write: Write): boolean {
+ *  past it and still being tried. A refused or discarded write is not. Takes any row named by a
+ *  write's status, a surface's own row of a write included. */
+export function isLive(write: { readonly status: string }): boolean {
   return write.status === "queued" || write.status === "sending" || write.status === "late";
 }
 

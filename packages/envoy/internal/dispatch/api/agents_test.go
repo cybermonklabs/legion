@@ -60,6 +60,35 @@ func TestAgentsListsLiveSessionsNewestFirstForHumans(t *testing.T) {
 	}
 }
 
+// ?limit= answers the newest seen sessions alone, as many as it names, in the list's own order,
+// and a limit that is no whole number of 1 or more is refused.
+func TestAgentsListLimitAnswersTheNewestSessions(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"session_id":"older","last_seen":100},{"session_id":"b","last_seen":200},{"session_id":"newest","last_seen":300},` +
+			`{"session_id":"a","last_seen":200},{"session_id":"oldest","last_seen":50}]`))
+	}))
+	defer listener.Close()
+	handler := agentsHandler(t, listener.URL)
+
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents?limit=3", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", response.Code, response.Body.String())
+	}
+	var listed []string
+	for _, row := range decodeBody[[]map[string]any](t, response) {
+		listed = append(listed, row["session_id"].(string))
+	}
+	if want := []string{"newest", "a", "b"}; !reflect.DeepEqual(listed, want) {
+		t.Errorf("?limit=3 listed %v, want the three newest seen %v", listed, want)
+	}
+	for _, limit := range []string{"0", "-1", "three", "2&limit=3"} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents?limit="+limit, nil, "alice")
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_QUERY"`) {
+			t.Errorf("?limit=%s: status %d %s, want 400 INVALID_QUERY", limit, response.Code, response.Body.String())
+		}
+	}
+}
+
 // GET /api/v1/agents carries each session's real machine (host) wherever the listener reported
 // it, and keeps machine_id (the listener that owns the session's delivery) untouched beside it.
 func TestAgentsReportsHostFromListener(t *testing.T) {
@@ -216,7 +245,7 @@ func TestAgentsIncludeGroupedOpenAskCountsAndLastActivity(t *testing.T) {
 			('TEST-1', '{"kind":"session","id":"planner"}', 'Second open question', 'open'),
 			('TEST-2', '{"kind":"session","id":"planner"}', 'Closed issue question', 'open')`,
 		`insert into events (issue_key, seq, type, actor, payload, notify, created_at) values
-			('TEST-1', 1, 'message.created', '{"kind":"session","id":"planner"}', '{}', false, '2026-09-13T12:00:00Z'),
+			('TEST-1', 1, 'ask.opened', '{"kind":"session","id":"planner"}', '{}', false, '2026-09-13T12:00:00Z'),
 			('TEST-1', 2, 'message.created', '{"kind":"session","id":"planner"}', '{}', false, '2026-09-13T13:00:00Z')`,
 	} {
 		if _, err := database.Pool.Exec(ctx, query); err != nil {
@@ -236,9 +265,11 @@ func TestAgentsIncludeGroupedOpenAskCountsAndLastActivity(t *testing.T) {
 		t.Fatalf("status %d: %s", response.Code, response.Body.String())
 	}
 	rows := decodeBody[[]struct {
-		SessionID    string  `json:"session_id"`
-		OpenAsks     int     `json:"open_asks"`
-		LastActivity *string `json:"last_activity"`
+		SessionID         string  `json:"session_id"`
+		OpenAsks          int     `json:"open_asks"`
+		LastActivity      *string `json:"last_activity"`
+		LastActivityIssue *string `json:"last_activity_issue"`
+		LastActivityType  *string `json:"last_activity_type"`
 	}](t, response)
 	if len(rows) != 2 {
 		t.Fatalf("rows = %#v, want two live sessions", rows)
@@ -249,7 +280,12 @@ func TestAgentsIncludeGroupedOpenAskCountsAndLastActivity(t *testing.T) {
 	if rows[0].LastActivity == nil || *rows[0].LastActivity != "2026-09-13T13:00:00Z" {
 		t.Fatalf("planner activity = %#v, want newest session event", rows[0].LastActivity)
 	}
-	if rows[1].SessionID != "reviewer" || rows[1].OpenAsks != 0 || rows[1].LastActivity != nil {
+	// The newest event says where the activity is: its issue and its type, which the command
+	// bar's agent reads to find what a session last wrote.
+	if issue, kind := rows[0].LastActivityIssue, rows[0].LastActivityType; issue == nil || *issue != "TEST-1" || kind == nil || *kind != "message.created" {
+		t.Fatalf("planner activity is on %v, of type %v; want the newest event's, TEST-1 and message.created", issue, kind)
+	}
+	if rows[1].SessionID != "reviewer" || rows[1].OpenAsks != 0 || rows[1].LastActivity != nil || rows[1].LastActivityIssue != nil || rows[1].LastActivityType != nil {
 		t.Fatalf("reviewer row = %#v, want no open asks or activity", rows[1])
 	}
 }
