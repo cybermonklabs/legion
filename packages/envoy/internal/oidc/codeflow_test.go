@@ -629,29 +629,54 @@ func TestCodeFlowDiscoveryRefusesAnIssuerWithNoCodeFlowEndpoints(t *testing.T) {
 	}
 }
 
-// A discovery document whose token_endpoint_auth_methods_supported is not a list of strings is one
-// the code flow cannot read, as one whose revocation_endpoint is not a string is: its discovery
-// fails, naming the member, rather than guessing how the client authenticates.
+// A discovery document whose token_endpoint_auth_methods_supported is not an array of strings is
+// one the code flow cannot read, as one whose revocation_endpoint is not a string is: its
+// discovery fails, naming the member, rather than guessing how the client authenticates. A null is
+// not an array, and an array holding a null holds something that is not a string, though Go's
+// encoding/json reads the first into a []string as no list and the second as the empty string. An
+// array of strings, an empty one included, is read.
 func TestCodeFlowDiscoveryRefusesATokenAuthMethodsListItCannotRead(t *testing.T) {
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/.well-known/openid-configuration" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"issuer":"` + server.URL + `","jwks_uri":"` + server.URL + `/keys",` +
-			`"authorization_endpoint":"` + server.URL + `/authorize","token_endpoint":"` + server.URL + `/token",` +
-			`"token_endpoint_auth_methods_supported":"client_secret_basic"}`))
-	}))
-	t.Cleanup(server.Close)
-	flow := NewCodeFlow(server.URL, flowClientID, flowClientSecret, "")
-	err := flow.Discover(context.Background())
-	if !errors.Is(err, ErrIssuerUnavailable) || !strings.Contains(err.Error(), "token_endpoint_auth_methods_supported") {
-		t.Fatalf("Discover against a document whose list is a string: err = %v, want ErrIssuerUnavailable naming token_endpoint_auth_methods_supported", err)
-	}
-	if flow.Discovered() {
-		t.Fatal("a document the code flow cannot read reads as discovered")
+	for _, c := range []struct {
+		name     string
+		list     string // the member's JSON
+		readable bool
+	}{
+		{"a string", `"client_secret_basic"`, false},
+		{"null", `null`, false},
+		{"an array holding null alone", `[null]`, false},
+		{"client_secret_basic and null", `["client_secret_basic",null]`, false},
+		{"client_secret_basic and a number", `["client_secret_basic",1]`, false},
+		{"client_secret_basic alone", `["client_secret_basic"]`, true},
+		{"an empty array", `[]`, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/.well-known/openid-configuration" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"issuer":"` + server.URL + `","jwks_uri":"` + server.URL + `/keys",` +
+					`"authorization_endpoint":"` + server.URL + `/authorize","token_endpoint":"` + server.URL + `/token",` +
+					`"token_endpoint_auth_methods_supported":` + c.list + `}`))
+			}))
+			t.Cleanup(server.Close)
+			flow := NewCodeFlow(server.URL, flowClientID, flowClientSecret, "")
+			err := flow.Discover(context.Background())
+			if c.readable {
+				if err != nil || !flow.Discovered() {
+					t.Fatalf("Discover against a document whose list is %s: err = %v, discovered = %t, want it read", c.list, err, flow.Discovered())
+				}
+				return
+			}
+			if !errors.Is(err, ErrIssuerUnavailable) || !strings.Contains(err.Error(), "token_endpoint_auth_methods_supported") {
+				t.Fatalf("Discover against a document whose list is %s: err = %v, want ErrIssuerUnavailable naming token_endpoint_auth_methods_supported", c.list, err)
+			}
+			if flow.Discovered() {
+				t.Fatal("a document the code flow cannot read reads as discovered")
+			}
+		})
 	}
 }
 

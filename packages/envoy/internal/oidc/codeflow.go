@@ -97,8 +97,10 @@ func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow 
 
 // discoverCodeFlow reads issuer's discovery document. An issuer whose document names no
 // authorization_endpoint or token_endpoint offers no sign-in, and fails discovery. One that names
-// no revocation_endpoint is accepted, and Revoke fails against it. The config every grant starts
-// from, the code exchanges', Refresh's and CheckClient's, authenticates as tokenAuthStyle says.
+// no revocation_endpoint is accepted, and Revoke fails against it. One whose revocation_endpoint
+// is not a string, or whose token_endpoint_auth_methods_supported is not an array of strings
+// (authMethods), fails discovery. The config every grant starts from, the code exchanges',
+// Refresh's and CheckClient's, authenticates as tokenAuthStyle says.
 func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string) (*codeFlowIssuer, error) {
 	provider, err := gooidc.NewProvider(ctx, issuer)
 	if err != nil {
@@ -109,8 +111,8 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 		return nil, fmt.Errorf("oidc: issuer %s names no authorization_endpoint or token_endpoint in its discovery document, so it offers no sign-in", issuer)
 	}
 	var metadata struct {
-		RevocationEndpoint string   `json:"revocation_endpoint"`
-		TokenAuthMethods   []string `json:"token_endpoint_auth_methods_supported"`
+		RevocationEndpoint string      `json:"revocation_endpoint"`
+		TokenAuthMethods   authMethods `json:"token_endpoint_auth_methods_supported"`
 	}
 	if err := provider.Claims(&metadata); err != nil {
 		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint and token_endpoint_auth_methods_supported: %w", issuer, err)
@@ -126,6 +128,33 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 		},
 		revocationURL: metadata.RevocationEndpoint,
 	}, nil
+}
+
+// authMethods is a discovery document's token_endpoint_auth_methods_supported, read only as RFC
+// 8414 section 2 writes it, a JSON array of strings. Decoding into a []string alone is not that
+// check: encoding/json reads a null as no array and a null element as the empty string. A
+// document with no such member leaves it nil.
+type authMethods []string
+
+// UnmarshalJSON reads data as a JSON array whose every element is a string, and fails on anything
+// else, a null or an array holding a null included.
+func (m *authMethods) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return errors.New("token_endpoint_auth_methods_supported is null, not an array of strings")
+	}
+	var elements []*string
+	if err := json.Unmarshal(data, &elements); err != nil {
+		return fmt.Errorf("token_endpoint_auth_methods_supported is not an array of strings: %w", err)
+	}
+	methods := make(authMethods, len(elements))
+	for n, element := range elements {
+		if element == nil {
+			return fmt.Errorf("token_endpoint_auth_methods_supported[%d] is null, not a string", n)
+		}
+		methods[n] = *element
+	}
+	*m = methods
+	return nil
 }
 
 // tokenAuthStyle is how the client sends its secret to the token endpoint, from the issuer's
