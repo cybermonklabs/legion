@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 )
 
@@ -151,22 +151,22 @@ func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser
 }
 
 // awaitSeed waits, until testDeadline, for the server at uri to admit the nkey user whose seed is
-// seed: the proof it speaks the client protocol and enforces its configured users. A server with
-// an auth callout cannot be probed with a client that has no credential, as awaitAuth probes one,
-// because the server holds such a client for its authorization timeout while it waits for an
-// answer no service gives yet.
+// seed, each dial cut to what is left (waitBound): the proof it speaks the client protocol and
+// enforces its configured users. A server with an auth callout cannot be probed with a client that
+// has no credential, as awaitAuth probes one, because the server holds such a client for its
+// authorization timeout while it waits for an answer no service gives yet.
 func awaitSeed(t testing.TB, uri, seed string) {
 	t.Helper()
-	deadline, bounded := testDeadline(t)
+	bound := boundOf(t)
 	for {
-		conn, connectErr := ConnectSeed(t, uri, seed)
+		conn, connectErr := ConnectSeed(t, uri, seed, natsgo.Timeout(bound.step(dialTimeout)))
 		if connectErr == nil {
 			conn.Close()
 			return
 		}
-		if bounded && time.Now().After(deadline) {
-			t.Fatalf("NATS at %s did not admit the auth service's user by %s, short of the test's deadline: %v", uri, deadline.Format(time.RFC3339), connectErr)
+		if bound.over() {
+			t.Fatalf("NATS at %s did not admit the auth service's user by %s, short of the test's deadline: %v", uri, bound, connectErr)
 		}
-		time.Sleep(retryInterval)
+		bound.pause()
 	}
 }

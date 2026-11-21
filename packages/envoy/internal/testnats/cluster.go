@@ -153,7 +153,7 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 // another reason.
 func (c *Cluster) AwaitReady(t testing.TB) {
 	t.Helper()
-	deadline, bounded := testDeadline(t)
+	bound := boundOf(t)
 	// listening is when AwaitReady began listening for the members: its call, or its last restart.
 	listening := time.Now()
 	restarts := 0
@@ -172,10 +172,10 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 				continue
 			}
 		}
-		if bounded && time.Now().After(deadline) {
-			t.Fatalf("JetStream was not ready by %s, short of the test's deadline (%d members restarted): %v", deadline.Format(time.RFC3339), restarts, err)
+		if bound.over() {
+			t.Fatalf("JetStream was not ready by %s, short of the test's deadline (%d members restarted): %v", bound, restarts, err)
 		}
-		time.Sleep(retryInterval)
+		bound.pause()
 	}
 	for _, server := range c.Servers {
 		if server.running() {

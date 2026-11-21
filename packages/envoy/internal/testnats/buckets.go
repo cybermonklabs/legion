@@ -69,13 +69,13 @@ func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo
 	return kv
 }
 
-// AwaitBucket waits, until testDeadline, until every running member of the cluster both
-// answers for the stream of bucket and holds the interest a write to the bucket is routed by. A
-// member answers a lookup out of the metadata it has applied, and routes a write by the
-// subscription the bucket's stream holds on its subjects, which reaches a member that does not
-// host the stream over the cluster's routes; the two arrive on their own clocks, and a write
-// through a member that has neither yet is answered "no responders", which nats.go gives a
-// caller as `nats: no response from stream`.
+// AwaitBucket waits, until testDeadline, each lookup cut to what is left (waitBound), until every
+// running member of the cluster both answers for the stream of bucket and holds the interest a
+// write to the bucket is routed by. A member answers a lookup out of the metadata it has applied,
+// and routes a write by the subscription the bucket's stream holds on its subjects, which reaches
+// a member that does not host the stream over the cluster's routes; the two arrive on their own
+// clocks, and a write through a member that has neither yet is answered "no responders", which
+// nats.go gives a caller as `nats: no response from stream`.
 func (c *Cluster) AwaitBucket(t testing.TB, bucket string) {
 	t.Helper()
 	stream := "KV_" + bucket
@@ -100,9 +100,11 @@ func (c *Cluster) awaitBucketOn(t testing.TB, i int, server *Server, stream, sub
 	if err != nil {
 		t.Fatalf("open JetStream on member %s: %v", c.Name(i), err)
 	}
-	deadline, bounded := testDeadline(t)
+	bound := boundOf(t)
 	for {
-		_, err := js.StreamInfo(stream)
+		ctx, cancel := bound.stepContext(bucketLookupWait)
+		_, err := js.StreamInfo(stream, natsgo.Context(ctx))
+		cancel()
 		routed := false
 		if srv := server.natsServer(); srv != nil {
 			routed = srv.GlobalAccount().SubscriptionInterest(subject)
@@ -110,9 +112,9 @@ func (c *Cluster) awaitBucketOn(t testing.TB, i int, server *Server, stream, sub
 		if err == nil && routed {
 			return
 		}
-		if bounded && time.Now().After(deadline) {
-			t.Fatalf("member %s did not answer for stream %s and route %s by %s, short of the test's deadline: %v (routed %t)", c.Name(i), stream, subject, deadline.Format(time.RFC3339), err, routed)
+		if bound.over() {
+			t.Fatalf("member %s did not answer for stream %s and route %s by %s, short of the test's deadline: %v (routed %t)", c.Name(i), stream, subject, bound, err, routed)
 		}
-		time.Sleep(retryInterval)
+		bound.pause()
 	}
 }

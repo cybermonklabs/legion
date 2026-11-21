@@ -107,7 +107,11 @@ func TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady(t *testing.T) {
 	srv.SetLoggerV2(log, false, false, false)
 	go srv.Start()
 	t.Cleanup(func() { srv.Shutdown(); srv.WaitForShutdown() })
-	for !srv.ReadyForConnections(retryInterval) {
+	bound := boundOf(t)
+	for !srv.ReadyForConnections(bound.step(retryInterval)) {
+		if bound.over() {
+			t.Fatalf("the server did not accept connections by %s, short of the test's deadline: %s", bound, log)
+		}
 	}
 	if !log.fatalLogged() {
 		t.Fatalf("the server accepts connections with no fatal error logged, so its profiler took the held port %s: %s", held.Addr(), log)
