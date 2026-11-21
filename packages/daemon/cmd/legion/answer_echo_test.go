@@ -211,14 +211,17 @@ func TestADesignGateStepPrintsNoBearerItEchoes(t *testing.T) {
 }
 
 // claimsEcho is a stand-in daemon for the operator's claim routes: the list answers list of the
-// bearer the request carried, and a retry is refused 409.
-func claimsEcho(t *testing.T, list func(bearer string) string) *httptest.Server {
+// bearer the request carried, and a retry is refused 409, or answered 200 with retried where it is
+// not "".
+func claimsEcho(t *testing.T, list func(bearer string) string, retried string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == claimsRoute:
 			_, _ = io.WriteString(w, list(bearerOf(r)))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/retry") && retried != "":
+			_, _ = io.WriteString(w, retried)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/retry"):
 			w.WriteHeader(http.StatusConflict)
 			_, _ = io.WriteString(w, `{"error":"the claim is not failed"}`)
@@ -235,12 +238,15 @@ func claimsEcho(t *testing.T, list func(bearer string) string) *httptest.Server 
 // have, as a time, as a failed claim's token, as the state of the claim a suspension waits on -
 // and no line the command prints holds it. The list decodes through decodeAnswer, whose error
 // names the member of its own type and never the answer's, and a token or a state prints only in
-// the shape the daemon makes one (claimWord, stateWord).
+// the shape the daemon makes one (claimWord, stateWord). A failed claim's token is also the path
+// its retry asks, which the line of a retry answered with a body that does not read prints: a
+// token without a claim token's shape is not asked for (claimShaped), and a token in that shape
+// still is, the line naming its path.
 func TestAClaimsAnswerPrintsNoBearerItEchoes(t *testing.T) {
 	tokenFile := writeFile(t, "operator-token", echoProbe+"\n")
-	claims := func(t *testing.T, list func(bearer string) string, args ...string) string {
+	answered := func(t *testing.T, list func(bearer string) string, retried string, args ...string) string {
 		t.Helper()
-		port := portOf(t, claimsEcho(t, list))
+		port := portOf(t, claimsEcho(t, list, retried))
 		var out, errb bytes.Buffer
 		argv := append(append([]string{"legion", "claims"}, args...), "--port", port, "--operator-token-file", tokenFile)
 		if code := run(context.Background(), argv, &out, &errb); code != 1 {
@@ -248,6 +254,11 @@ func TestAClaimsAnswerPrintsNoBearerItEchoes(t *testing.T) {
 		}
 		return out.String() + errb.String()
 	}
+	claims := func(t *testing.T, list func(bearer string) string, args ...string) string {
+		t.Helper()
+		return answered(t, list, "", args...)
+	}
+	failed := func(token string) string { return `{"claims":[{"token":"` + token + `","state":"failed"}]}` }
 	suspend := func(t *testing.T, wait string, seen seenClaim) string {
 		t.Helper()
 		port, _ := heldSuspendDaemon(t, heldWorking, seen)
@@ -270,6 +281,12 @@ func TestAClaimsAnswerPrintsNoBearerItEchoes(t *testing.T) {
 		{"retry-failed-member", "a member the api.OperatorClaims", func(t *testing.T) string { return claims(t, member, "retry", "--failed") }},
 		{"retry-failed-token", "was not retried", func(t *testing.T) string {
 			return claims(t, func(bearer string) string { return `{"claims":[{"token":"` + bearer + `","state":"failed"}]}` }, "retry", "--failed")
+		}},
+		{"retry-failed-token-unread", "was not retried", func(t *testing.T) string {
+			return answered(t, failed, "not a claim", "retry", "--failed")
+		}},
+		{"retry-failed-shaped-unread", "/" + string(architectClaim) + "/retry served", func(t *testing.T) string {
+			return answered(t, func(string) string { return failed(string(architectClaim)) }, "not a claim", "retry", "--failed")
 		}},
 		{"suspend-dropped-state", "no longer holds the suspension of " + string(architectClaim), func(t *testing.T) string {
 			return suspend(t, "1h", seenClaim{echoProbe, false})

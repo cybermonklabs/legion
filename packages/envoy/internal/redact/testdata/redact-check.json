@@ -6224,6 +6224,20 @@
       "production": "legion claims retry --failed: a claim that was not retried is named by its token only in a claim token's shape (claimWord)"
     },
     {
+      "id": "legion-cli-claims-retry-unshaped-token",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAClaimsAnswerPrintsNoBearerItEchoes/retry-failed-token-unread",
+      "production": "legion claims retry --failed: a failed claim whose token has no claim token's shape is not asked for (claimShaped), so no line that names the retry's path - an answer that does not read, a request with no answer - names the token"
+    },
+    {
+      "id": "legion-cli-claims-retry-shaped-token",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAClaimsAnswerPrintsNoBearerItEchoes/retry-failed-shaped-unread",
+      "production": "legion claims retry --failed: a failed claim whose token has a claim token's shape is still asked for, and the line of an answer that does not read names its path"
+    },
+    {
       "id": "legion-cli-claims-suspend-dropped-state-echo",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
@@ -7789,6 +7803,11 @@
       "site": "legion claims retry --failed: a failed claim's token printed raw when its retry was refused",
       "source": "the search for TN deep round 5's M1 class in cmd/legion",
       "guard": "legion-cli-claims-retry-token-echo"
+    },
+    {
+      "site": "legion claims retry --failed: a failed claim's token printed raw in the retry's path when the retry's answer did not read or got none",
+      "source": "the class search of round 5's deep review",
+      "guard": "legion-cli-claims-retry-unshaped-token"
     },
     {
       "site": "legion claims suspend: a dropped suspension printed the claim's state raw",

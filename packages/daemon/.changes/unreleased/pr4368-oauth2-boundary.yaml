@@ -31,6 +31,9 @@ body: |-
   holder with the architect's session as it came, so a notice that names that session no longer
   spends its copies at once. The line of a conflicting head's base rules names the required
   status checks GitHub answers as the rule reads them, while R0 decides on them as they came.
+  `legion claims retry --failed` asks for no failed claim the daemon lists by a token without a
+  claim token's shape, and says it was not retried, so no line about a retry's path names such a
+  token.
 time: 2026-11-18T10:48:14Z
 custom:
     Issue: pr4368

@@ -135,12 +135,19 @@ func decodeAnswer(answer []byte, into any) error {
 // claim.ControllerToken's `legion-<project>-controller`, each segment lowercase letters and digits.
 var claimTokenShape = regexp.MustCompile(`^legion-[a-z0-9]+-(?:[a-z][a-z0-9]*-[0-9]+-)?[a-z]+$`)
 
+// claimShaped says whether token, a claim token of the daemon's answer, has a claim token's shape
+// and ends in a role (legionclaim.Token.Role): the shape the daemon makes every token in, which
+// holds no credential.
+func claimShaped(token legionclaim.Token) bool {
+	_, ok := token.Role()
+	return ok && claimTokenShape.MatchString(string(token))
+}
+
 // claimWord is a claim token of the daemon's answer as a line of the command names it: the token
-// where it has a claim token's shape and ends in a role (legionclaim.Token.Role), and words saying
-// it has none otherwise, since the token is the daemon's word and a line prints it only in the
-// shape the daemon makes one.
+// where it has a claim token's shape (claimShaped), and words saying it has none otherwise, since
+// the token is the daemon's word and a line prints it only in the shape the daemon makes one.
 func claimWord(token legionclaim.Token) string {
-	if _, ok := token.Role(); ok && claimTokenShape.MatchString(string(token)) {
+	if claimShaped(token) {
 		return string(token)
 	}
 	return "a claim whose token has no claim token's shape"
@@ -498,8 +505,10 @@ func printCompaction(w io.Writer, answer []byte) error {
 // one it stands in, which is where an operator's stop leaves it — and the daemon refuses the rest,
 // naming why (api's retryClaim). Under --failed each retried claim prints its line as --claim
 // prints it, each refusal is reported naming its claim, and the command fails once any was
-// refused, having asked for every one. A claim an operator stopped is retired rather than failed,
-// so --failed passes over it: name it with --claim.
+// refused, having asked for every one. A failed claim the list names by a token without a claim
+// token's shape (claimShaped), which no token the daemon makes lacks, is reported as not retried
+// and not asked for. A claim an operator stopped is retired rather than failed, so --failed passes
+// over it: name it with --claim.
 //
 // --fresh-session starts the claim in a new session rather than resuming the recorded one, which
 // is what a claim whose provider refused its session needs: resuming it would be refused again.
@@ -550,7 +559,11 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 		if supervise.ClaimState(held.State) != supervise.StateFailed {
 			continue
 		}
-		if c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(string(held.Token))+"/retry", retry, printClaim) != 0 {
+		// The token is the daemon's word, and the retry's path names it, which a retry that gets
+		// no answer, or an answer that does not read, prints (request, printAnswer, operator.do).
+		// So a claim is asked for only by a token in the shape the daemon makes one (claimShaped),
+		// and any other is not retried and is named as claimWord names it.
+		if !claimShaped(held.Token) || c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(string(held.Token))+"/retry", retry, printClaim) != 0 {
 			fmt.Fprintf(c.stderr, "%s: %s was not retried\n", c.name(), claimWord(held.Token))
 			code = 1
 		}
