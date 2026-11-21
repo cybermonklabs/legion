@@ -1827,6 +1827,24 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "dev-proxy-stands.answer-words/connect"
+      },
+      {
+        "row": "mcpbridge-endpoint-url-refused",
+        "base": "c82c3a0d9f23a4a17922f8979b461b8fe7e72f63",
+        "files": [
+          "packages/envoy/internal/mcpbridge/endpoint_url_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.endpoint-url/refused"
+      },
+      {
+        "row": "mcpbridge-endpoint-url-unreachable",
+        "base": "c82c3a0d9f23a4a17922f8979b461b8fe7e72f63",
+        "files": [
+          "packages/envoy/internal/mcpbridge/endpoint_url_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.endpoint-url/unreachable"
       }
     ],
     "boundary_fields": {
@@ -5052,6 +5070,34 @@
       }
     },
     {
+      "id": "mcpbridge-endpoint-url-refused",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAFailedPostNamesTheEndpointAsTheRuleReadsIt/refused",
+      "production": "mcpbridge HTTPServer.Start: a refused POST names the server's endpoint as the rule reads it (redact.Field)",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer).Start",
+      "capture": "mcpbridge.endpoint-url/refused",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "\"POST to %s: status %d: %s\", redact.Field(s.messageURL)",
+        "replacement": "\"POST to %s: status %d: %s\", s.messageURL"
+      }
+    },
+    {
+      "id": "mcpbridge-endpoint-url-unreachable",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAFailedPostNamesTheEndpointAsTheRuleReadsIt/unreachable",
+      "production": "mcpbridge HTTPServer.Start: a POST that failed names the server's endpoint as the rule reads it (redact.Field) and the failure through redact.Cause",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer).Start",
+      "capture": "mcpbridge.endpoint-url/unreachable",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "\"POST to %s: %w\", redact.Field(s.messageURL), redact.Cause(postErr, s.messageURL)",
+        "replacement": "\"POST to %s: %w\", s.messageURL, postErr"
+      }
+    },
+    {
       "id": "daemon-answer-words-rate-limit",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
@@ -6599,6 +6645,16 @@
       "site": "dev-airlock-stands load connect: a CONNECT refusal read with no request, so its words held no record of the Proxy-Authorization the CONNECT carried",
       "source": "the review of #4368 at c82c3a0d9f, finding 4",
       "guard": "dev-proxy-stands-answer-words-connect"
+    },
+    {
+      "site": "mcpbridge HTTPServer.Start: the server's endpoint URL printed raw in a refused POST's error",
+      "source": "the review of #4368 at c82c3a0d9f, finding 5",
+      "guard": "mcpbridge-endpoint-url-refused"
+    },
+    {
+      "site": "mcpbridge HTTPServer.Start: the server's endpoint URL printed raw, and quoted again by net/http, in a failed POST's error",
+      "source": "the review of #4368 at c82c3a0d9f, finding 5",
+      "guard": "mcpbridge-endpoint-url-unreachable"
     }
   ]
 }
