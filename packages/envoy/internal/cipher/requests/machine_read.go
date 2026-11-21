@@ -116,6 +116,11 @@ type grantRelease struct {
 	expires                         *time.Time
 	granted                         []requestedSecret
 	set                             *policy.Set
+	// facts are what Dispatch answered for this release, kept so the airlock's own reads
+	// (channelLimit) ask it nothing a second time; enr is the enrollment they were read for, so
+	// channelLimit can read them again once they aged past the bound.
+	facts projectFacts
+	enr   enrollmentRow
 }
 
 // checkRelease is every check a release of a grant makes before it reads a value, shared by
@@ -155,10 +160,10 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	var live bool
 	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select g.enrollment_id, g.expires_at, g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
-		g.request_id, r.reason, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, e.kind, e.operator, e.subject, c.service, c.host
+		g.request_id, r.reason, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, e.kind, e.operator, e.subject, c.service, c.host, e.projects
 		from grants g join enrollments e on e.id=g.enrollment_id join requests r on r.id=g.request_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id where g.id=$1`, grantID).
-		Scan(&enrollmentID, &expires, &live, &requestID, &reason, &policyVersion, &decidedBy, &lifetime, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Service, &enr.Host)
+		Scan(&enrollmentID, &expires, &live, &requestID, &reason, &policyVersion, &decidedBy, &lifetime, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Service, &enr.Host, &enr.Projects)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return grantRelease{}, ErrGrantNotLive
 	}
@@ -186,12 +191,30 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 		recorder.NoteSecrets(g.name)
 	}
 	// One policy snapshot serves both the grant re-check and the minters' name, tier and owners.
+	// A grant of a project-tagged name is re-checked on every release as a service's is: whether
+	// its project is private, and whether the session's person may still see it, are Dispatch's
+	// and not in the policy version (anyProjectTagged), so they are read here, on the pool and
+	// outside any transaction (projectFacts), before the names are re-evaluated. A grant holding
+	// a project-channels name is read every time too (anyChannelLimited): which channels its
+	// credential may post to is Dispatch's as well, and the airlock hands the pod that list.
 	set := m.Policy.Get()
-	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr) {
-		requester, err := m.requester(ctx, m.Store.Pool, enr)
+	names := make([]string, len(granted))
+	for i, g := range granted {
+		names[i] = g.name
+	}
+	var facts projectFacts
+	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyProjectTagged(set, granted) || anyChannelLimited(set, names) || personPodGrant(enr) {
+		// The session's own rows are read before Dispatch is asked, so that nothing stands between
+		// Dispatch's answers and the rule that decides on them: projectFacts answers facts younger
+		// than projectaccess.CacheTTL as it returns (atDecision), and they are decided on then.
+		own, err := m.requester(ctx, m.Store.Pool, enr, projectFacts{})
 		if err != nil {
 			return grantRelease{}, err
 		}
+		if facts, err = m.projectFacts(ctx, enr, names, set); err != nil {
+			return grantRelease{}, err
+		}
+		requester := facts.requester(own)
 		for _, g := range granted {
 			if err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester); err != nil {
 				// A grant whose frozen source is not the one the name is served from now (its type
@@ -202,7 +225,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 				// secret the policy now tags as an administrator's: a person approves every
 				// release of one, so taking the tag off again must not revive a grant no person
 				// ever approved — the session asks again, as a new request.
-				if errors.Is(err, errSourceMoved) || errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) {
+				if errors.Is(err, errSourceMoved) || errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) || errors.Is(err, errProjectNotNamed) {
 					return grantRelease{}, m.endGrant(ctx, grantID, err)
 				}
 				return grantRelease{}, err
@@ -226,7 +249,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 			}
 		}
 	}
-	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, reason: reason, expires: expires, granted: granted, set: set}, nil
+	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, reason: reason, expires: expires, granted: granted, set: set, facts: facts, enr: enr}, nil
 }
 
 // verifyChainForRelease is verifyChain for a release of grantID, which enrollmentID holds: the
@@ -271,7 +294,19 @@ func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollment
 // call gave. The release records both, with the reason of the grant's request, in its grant.used
 // row and its ReleasedMessage line (auditGrantUsed); nothing else reads them, and they decide
 // nothing about the release.
+//
+// Before checkRelease's owner check, a session that does not hold the grant is refused as for a
+// grant id no grant has, ErrGrantNotLive and only that, when the grant touches a private project
+// it cannot see, and ErrProjectAccessUnavailable when Dispatch could not say
+// (hideGrantFromSession): so ErrNotYours says only that a grant exists in a project the caller
+// sees. The session that holds the grant is checkRelease's alone, which ends a grant of a private
+// project the session no longer names for good.
 func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narrowing *secrets.GitHubNarrowing, call ReleaseCall) (Release, error) {
+	if err := m.hideGrantFromSession(ctx, grantID, enrollmentID); errors.Is(err, pgx.ErrNoRows) {
+		return Release{}, ErrGrantNotLive
+	} else if err != nil {
+		return Release{}, err
+	}
 	checked, err := m.checkRelease(ctx, grantID, enrollmentID, "values")
 	if err != nil {
 		return Release{}, err
@@ -644,6 +679,8 @@ func stillAllowed(set *policy.Set, rules proxyrules.Rules, name, frozenSource, f
 	switch {
 	case d.Outcome == policy.Deny && d.Reason == policy.ReasonRequesterNotListed:
 		return requesterNotListed(name)
+	case projectDeny(d):
+		return projectNotNamed(name)
 	case d.Outcome == policy.Deny:
 		return fmt.Errorf("%w: the current policy no longer allows %s", ErrGrantNotLive, name)
 	case d.Outcome != policy.Approval:
@@ -755,11 +792,23 @@ func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (p
 		}
 		return policy.Decision{}, false, false, err
 	}
-	requester, err := m.requester(ctx, m.Store.Pool, enr)
+	set := m.Policy.Get()
+	// The session's own rows first, so nothing stands between Dispatch's answers and the
+	// evaluation that decides on them (projectFacts, atDecision).
+	own, err := m.requester(ctx, m.Store.Pool, enr, projectFacts{})
 	if err != nil {
 		return policy.Decision{}, false, false, err
 	}
-	set := m.Policy.Get()
+	// What Dispatch holds of a tagged name is read under the judge's bound on Dispatch, whatever
+	// ctx the caller passed (JudgeDispatch): this is the judge's first read of Dispatch, and it
+	// shares the judge's Dispatch phase when the judge asks.
+	reads, cancel := JudgeDispatch(ctx)
+	facts, err := m.projectFacts(reads, enr, []string{name}, set)
+	cancel()
+	if err != nil {
+		return policy.Decision{}, false, false, err
+	}
+	requester := facts.requester(own)
 	decision, err := set.Evaluate(name, requester)
 	if err != nil {
 		return policy.Decision{}, false, false, err
@@ -1039,7 +1088,7 @@ func (m *Machine) signedForAnotherBroker(p pendingRequestRow) bool {
 	if p.RecordBody == nil || p.RecordCreatedAt == nil {
 		return false
 	}
-	_, err := m.requestedIdentifiers(*p.RecordBody, *p.RecordCreatedAt)
+	_, _, err := m.requestedIdentifiers(*p.RecordBody, *p.RecordCreatedAt)
 	return errors.Is(err, record.ErrAudienceMismatch)
 }
 
@@ -1147,7 +1196,7 @@ func writtenBeforeMigration13(alias string) string {
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
 // a second time for names it already holds
 // (TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack).
-func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, set *policy.Set) (Request, bool, error) {
+func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, set *policy.Set, facts projectFacts) (Request, bool, error) {
 	matches, err := matchingRequests(ctx, m.Store.Pool, `select r.id, g.id::text, array_agg(s.name) from requests r
 		join request_secrets s on s.request_id=r.id
 		join grants g on g.request_id=r.id
@@ -1167,19 +1216,21 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 		if err != nil {
 			return Request{}, false, err
 		}
-		if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr) {
-			requester, err := m.requester(ctx, m.Store.Pool, enr)
+		if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || anyProjectTagged(set, granted) || personPodGrant(enr) {
+			requester, err := m.requester(ctx, m.Store.Pool, enr, facts)
 			if err != nil {
 				return Request{}, false, err
 			}
 			for _, g := range granted {
 				err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
 				switch {
-				case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret):
-					// The list dropped this requester while the grant was live, or the secret
-					// became an administrator's, which a person approves every release of: end
-					// the grant here as Values does, rather than leave it live and unrevoked, and
-					// answer no reusable grant so Create goes on to ask for the names afresh.
+				case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) || errors.Is(err, errProjectNotNamed):
+					// The list dropped this requester while the grant was live, the secret
+					// became an administrator's, which a person approves every release of, or
+					// the credential no longer names the private project the secret is tagged
+					// with: end the grant here as Values does, rather than leave it live and
+					// unrevoked, and answer no reusable grant so Create goes on to ask for the
+					// names afresh.
 					if ended := m.endGrant(ctx, match.grantID, err); !errors.Is(ended, ErrGrantNotLive) {
 						return Request{}, false, ended
 					}
@@ -1346,25 +1397,39 @@ const recordDeadlineSQL = `coalesce(req.pending_expires_at, cr.expires_at)`
 // the request row recordStateSQL and recordDeadlineSQL read.
 //
 // A session's move re-points its requests row and not the append-only record, so enr is the
-// enrollment that asked. It is read for its session id alone, and an adoption moves a session's
-// rows only to another enrollment of the same session id (the carry pair enroll.Create matches
-// on), so that id is the one the enrollment holding the request names too. Which records are
-// pending comes from the requests rows, which move, so a moved card is listed once and the box it
-// moved off lists it no more. A request the model judge holds (judge_until ahead) is no person's
-// yet: recordStateSQL reads it as neither pending nor expired while its deadline has not passed,
-// so neither statement lists it until its hold has ended (handed over, or run out), and past its
-// deadline it reads expired, as every request does.
+// enrollment that asked and cur the one the request hangs off now. enr is read for its session id,
+// and both for the projects their credentials name (credentialColumns, currentCredentialColumns,
+// credentialsProjects): an adoption moves a session's rows only to another enrollment of the same
+// session id (the carry pair enroll.Create matches on), so that id is the one the enrollment
+// holding the request names too, but the projects the two credentials name can differ. Which
+// records are pending comes from the requests rows, which move, so a moved card is listed once and
+// the box it moved off lists it no more. A request the model judge holds (judge_until ahead) is
+// no person's yet: recordStateSQL reads it as neither pending nor expired while its deadline has
+// not passed, so neither statement lists it until its hold has ended (handed over, or run out),
+// and past its deadline it reads expired, as every request does.
 //
-// An agent_secret record waiting on $2, record.AnyoneApprover, is listed for the person its
-// notify column names, and for everyone where it names none (responsiblePerson), in both
-// statements. A launcher_credential record carries no notify, so the filter lists it for everyone.
+// An agent_secret record waiting on $2, record.AnyoneApprover, is read with the person its notify
+// column names (responsiblePerson), and PendingForApprover chooses whose list holds it
+// (listedInStead for a row whose responsible person is another). A launcher_credential record
+// carries no notify, so it is listed for everyone.
 const pendingListFrom = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
-		s.state, ` + recordDeadlineSQL + `
+		s.state, ` + recordDeadlineSQL + `, coalesce(cr.notify, ''), ` + credentialColumns + `, ` + currentCredentialColumns + `
 	from credential_requests cr
 	left join requests req on req.record_id = cr.id
 	left join enrollments enr on enr.id = cr.enrollment_id
+	left join enrollments cur on cur.id = req.enrollment_id
 	cross join lateral (select ` + recordStateSQL + ` as state offset 0) s
-	where (cr.approver = $1 or cr.approver = $2 and (cr.notify is null or cr.notify = $1)) and `
+	where (cr.approver = $1 or cr.approver = $2) and `
+
+// credentialColumns are the enrollment's columns namedProjects reads, over a left join aliased
+// enr, in the order a scan into enrollmentRow's Kind, Operator, Subject and Projects takes them. A
+// record no enrollment asked answers an empty kind, which names no project.
+const credentialColumns = `coalesce(enr.kind, ''), enr.operator, enr.subject, coalesce(enr.projects, '{}')`
+
+// currentCredentialColumns are credentialColumns over a left join aliased cur: the enrollment a
+// request hangs off now, where enr is the one that asked. A record with no request (a machine
+// login) answers an empty kind, which names no project.
+const currentCredentialColumns = `coalesce(cur.kind, ''), cur.operator, cur.subject, coalesce(cur.projects, '{}')`
 
 // pendingForApproverQuery is PendingForApprover's statement for a caller that asks for no state
 // (PendingStates' zero value): every record of the approver still pending by what is stored,
@@ -1429,10 +1494,12 @@ const pendingOrExpiredForApproverQuery = pendingListFrom + `(
 // An approver's records are every record naming approver; every request for a shared human-tier
 // secret, whose approver is record.AnyoneApprover, that names approver as the person responsible
 // for the agent that made it, or names no such person (credential_requests.notify, Create's
-// responsiblePerson), so it waits where everyone sees it; and every service's machine login, whose
-// approver is record.AnyoneApprover too. Who may decide is not this list's to say: anyone signed
-// in decides a shared secret's request from its page whether or not it is listed for them
-// (record.MayDecide). A service's login a broker from before that rule opened names a person
+// responsiblePerson), so it waits where everyone sees it, or names a person who may not see it
+// (listedInStead); and every service's machine login, whose approver is record.AnyoneApprover too. A
+// private project's request is on no list of a person outside the project (maySeeRecord). Who may
+// decide is not this list's to say: anyone signed in decides a shared secret's request from its
+// page whether or not it is listed for them (record.MayDecide), within the person rule. A
+// service's login a broker from before that rule opened names a person
 // instead and is listed for that person alone, though anyone who types its code may decide it
 // (record.MayDecide). Whether an agent_secret record is still pending is read from its request
 // row: every writer moves the request out of 'pending' together with the record's terminal event
@@ -1469,13 +1536,26 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	}
 	defer rows.Close()
 	var out []PendingSummary
+	// seen is what each agent-secret row's listing reads beside it: the credential projects and
+	// reason the person rule (maySeeRecord) reads, and the person the record names as responsible
+	// (notify). It is kept beside out and read only once the rows are closed, so no call to
+	// Dispatch holds the pooled connection the read does.
+	type seen struct {
+		sessionProjects []string
+		reason          string
+		notify          string
+	}
+	var reads []seen
 	for rows.Next() {
-		var id, kind, canonical, requestSession, enrollmentSession, state string
+		var id, kind, canonical, requestSession, enrollmentSession, state, notify string
 		var createdAt, expiresAt time.Time
-		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt); err != nil {
+		var asked, current enrollmentRow
+		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt, &notify,
+			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
+			&current.Kind, &current.Operator, &current.Subject, &current.Projects); err != nil {
 			return nil, err
 		}
-		identifiers, err := m.requestedIdentifiers(canonical, createdAt)
+		identifiers, reason, err := m.requestedIdentifiers(canonical, createdAt)
 		if err != nil {
 			if !byState || state != "expired" {
 				m.leaveOut(id, kind, expiresAt, err)
@@ -1487,27 +1567,125 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 			Session: Session{Request: requestSession, Enrollment: enrollmentSession},
 			State:   state, ExpiresAt: expiresAt,
 		})
+		reads = append(reads, seen{sessionProjects: m.credentialsProjects(asked, current), reason: reason, notify: notify})
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// Each agent-secret row is listed for the person responsible for it, and for everyone where it
+	// names none (responsiblePerson), and in either case only for a reader who may see it: a
+	// private project's request is left off the list of everyone outside the project, since its
+	// names and its reason are that project's (maySeeRecord). A request Dispatch cannot answer for
+	// is left off too, failing closed for that row alone and logged (logRowUnanswered), and the rest
+	// of the list is answered. A row whose responsible person is someone else is listed only where
+	// that person may not see it (listedInStead), within the list's one clock, listFallbackBound
+	// from here, so that however many people's rows touch a project, and however slowly Dispatch
+	// answers, they cannot keep the list from its caller. Such a row left off because a read
+	// failed is logged for itself, naming its responsible person (logFallbackUnread); the rows left
+	// off once the clock has run out are counted in one line for the list (logFallbackCut), since
+	// each of them is on its responsible person's list wherever that person may see it, which is
+	// where it belongs, and a line for each would bury the row a failed read leaves on nobody's
+	// list. A list whose caller went away (an Inbox tab or a page closed) is read by nobody, so the
+	// rows it leaves off then are neither counted nor logged: its clock did not run out.
+	fallback, cancel := context.WithTimeout(ctx, listFallbackBound)
+	defer cancel()
+	visible := out[:0]
+	cut := 0
+	for i, p := range out {
+		if p.Kind != record.KindAgentSecret {
+			visible = append(visible, p)
+			continue
+		}
+		notify := reads[i].notify
+		instead := notify != "" && notify != record.CanonicalLogin(approver)
+		var listed bool
+		var err error
+		if instead {
+			listed, err = m.listedInStead(fallback, p, approver, notify, reads[i].sessionProjects, reads[i].reason)
+		} else {
+			listed, err = m.maySeeRecord(ctx, "record "+p.RecordID, approver, p.Identifiers, reads[i].sessionProjects, reads[i].reason)
+		}
+		switch {
+		case err != nil && ctx.Err() != nil:
+			// The caller went away: neither the clock ran out nor Dispatch failed to answer, so
+			// the row is left off a list nobody reads, and nothing is counted or logged.
+		case err != nil && instead && fallback.Err() != nil:
+			cut++
+		case err != nil && instead:
+			m.logFallbackUnread(p.RecordID, notify, err)
+		case errors.Is(err, ErrProjectAccessUnavailable):
+			m.logRowUnanswered("pending "+p.RecordID, err, "list", "pending", "record", p.RecordID)
+		case err != nil:
+			return nil, err
+		case listed:
+			visible = append(visible, p)
+		}
+	}
+	if cut > 0 {
+		m.logFallbackCut(record.CanonicalLogin(approver), cut, fallback.Err())
+	}
+	return visible, nil
 }
 
-// requestedIdentifiers is what the record whose canonical body is canonical asks for, read from
-// the request object it embeds once that object verifies for this broker: its audience, its
-// signature and its time against when the record was written.
-func (m *Machine) requestedIdentifiers(canonical string, createdAt time.Time) ([]string, error) {
+// listFallbackBound is how long after a pending list's rows are read its fallback reads, for the
+// rows that name another person as responsible (listedInStead), may still start or run. It is a
+// clock from that moment, not a budget of their own: the reader's own rows, read on the list's
+// context before or between them, spend it too, so the fallback rows never take the list past
+// it, whatever the reader's own rows took. Dispatch's Inbox waits 5 seconds for the whole list
+// (agentsecrets.Client's defaultTimeout), and each read of Dispatch may take up to the
+// project-access client's own 10, so without the clock a slow Dispatch and many other people's
+// rows could empty every Inbox. A row the clock cuts short is left off, as every such row was
+// before the fallback existed, and counted in the list's one line (logFallbackCut).
+const listFallbackBound = 2 * time.Second
+
+// listedInStead answers whether reader's list holds the agent-secret row p, whose record names
+// notify, another person, as responsible for the agent that made it. Such a row is that person's
+// (responsiblePerson), so a person who has nothing to do with the agent is not asked. Where that
+// person may not see it (it belongs to a private project they are not on, from when it was made
+// or since), it is listed for every other reader who may see it (maySeeRecord), so a request no
+// longer waits where nobody sees it. Both reads run on fallback, the list's one clock
+// (listFallbackBound), the reader's first, so a row the reader may not see costs no read of the
+// other person's. A row touching no project asks Dispatch nothing. Its error is the first read's
+// that failed, or the clock's when the clock ran out before the first read; either way the row
+// is left off, as it was before the fallback, failing closed. The caller tells the two apart by
+// the clock: a read that failed once the clock had run out may be one the clock cut short, and
+// is counted with the rows the clock left unread.
+func (m *Machine) listedInStead(fallback context.Context, p PendingSummary, reader, notify string, sessionProjects []string, reason string) (bool, error) {
+	if err := fallback.Err(); err != nil {
+		return false, err
+	}
+	row := "record " + p.RecordID
+	mine, err := m.maySeeRecord(fallback, row, reader, p.Identifiers, sessionProjects, reason)
+	if err != nil || !mine {
+		return false, err
+	}
+	theirs, err := m.maySeeRecord(fallback, row, notify, p.Identifiers, sessionProjects, reason)
+	if err != nil {
+		return false, err
+	}
+	return !theirs, nil
+}
+
+// requestedIdentifiers is what the record whose canonical body is canonical asks for, and the
+// signed reason it asks with, read from the request object it embeds once that object verifies
+// for this broker: its audience, its signature and its time against when the record was written.
+// The reason is what the person rule reads of the row (maySeeRecord), so it comes only from an
+// object that verified.
+func (m *Machine) requestedIdentifiers(canonical string, createdAt time.Time) (identifiers []string, reason string, _ error) {
 	body, err := record.ParseBody(canonical)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	obj, err := record.VerifyRequestObject(body.Request, m.Audience, m.Skew, createdAt)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	identifiers := make([]string, len(obj.Details))
+	identifiers = make([]string, len(obj.Details))
 	for i, d := range obj.Details {
 		identifiers[i] = d.Identifier
 	}
-	return identifiers, nil
+	return identifiers, obj.Reason, nil
 }
 
 // leftOutRetention is how long past the last list that left a record out, and past the record's
@@ -1592,6 +1770,13 @@ type RecordDetail struct {
 	RequestedAt     time.Time
 	Decided         *RecordDecision
 	Session         Session
+	// SessionProjects are the Dispatch projects the credentials the request has had name: the
+	// enrollment that asked, which the record names, and the one the request hangs off now, which
+	// an adoption rewrites (credentialsProjects). SecretProjects is the project of each requested
+	// secret the live policy tags with one. Both are empty for a record touching no project.
+	// The approval page shows them.
+	SessionProjects []string
+	SecretProjects  []SecretProject
 	// JudgeDeciding is whether the model judge holds the record's request now: pending, with its
 	// judge_until ahead. No person decides such a record until the judge has given it up.
 	JudgeDeciding bool
@@ -1612,14 +1797,18 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 	var canonical, approver, kind, requestSession, enrollmentSession, state string
 	var createdAt, expiresAt time.Time
 	var judgeDeciding bool
+	var asked, current enrollmentRow
 	if err := m.Store.Pool.QueryRow(ctx, `select cr.body, cr.approver, cr.kind, cr.created_at, `+recordDeadlineSQL+`,
 			coalesce(req.session_id, ''), coalesce(enr.session_id, ''), coalesce(`+recordStateSQL+`, 'pending'),
-			coalesce(req.state = 'pending' and req.judge_until > now(), false)
+			coalesce(req.state = 'pending' and req.judge_until > now(), false), `+credentialColumns+`, `+currentCredentialColumns+`
 		from credential_requests cr
 		left join requests req on req.record_id = cr.id
 		left join enrollments enr on enr.id = cr.enrollment_id
+		left join enrollments cur on cur.id = req.enrollment_id
 		where cr.id=$1`, recordID).
-		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &state, &judgeDeciding); err != nil {
+		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &state, &judgeDeciding,
+			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
+			&current.Kind, &current.Operator, &current.Subject, &current.Projects); err != nil {
 		return RecordDetail{}, err
 	}
 	// A record the judge holds reads pending, with JudgeDeciding saying who decides it: the page
@@ -1653,8 +1842,13 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		RecordID: recordID, Kind: kind, State: state, Approver: approver, Enrollment: enr,
 		Identifiers: identifiers, Service: service, Reason: obj.Reason, LifetimeSeconds: body.LifetimeSeconds,
 		RulesVersion: body.RulesVersion, ExpiresAt: expiresAt, RequestedAt: createdAt,
-		Session:       Session{Request: requestSession, Enrollment: enrollmentSession},
+		Session: Session{Request: requestSession, Enrollment: enrollmentSession}, SessionProjects: m.credentialsProjects(asked, current),
 		JudgeDeciding: judgeDeciding,
+	}
+	if agentSecret {
+		if detail.SecretProjects, _, err = m.secretProjects(ctx, identifiers); err != nil {
+			return RecordDetail{}, err
+		}
 	}
 	// Whether the record is still undecided follows PendingForApprover's rule: an agent_secret
 	// record by its request's state, a machine login by its terminal event. A decided record's
@@ -1728,13 +1922,17 @@ type ApproverGrant struct {
 //
 // It also lists every live grant that is on no other person's page at all: one a service's machine
 // login holds, with no approver because the policy gave it without asking and no operator because
-// that login enrolled its pod for no person (enrollments.operator). Without this a pod could take a
-// shared agent-tier secret and nobody would see it. Every signed-in person sees these, as every
-// signed-in person already lists and revokes the service login behind them, which no person
-// approved (enroll.Service.LiveCredentials, record.MayDecide). The sentinel record.AnyoneApprover
-// and an empty login are no signed-in person and list nothing. No row that already belongs to
-// somebody moves: a grant with a person's approver, or on a person's own session, is listed for
-// that person and no one else, exactly as before.
+// the pod it enrolled acts for no person. That is a pod whose login carried no person
+// (enrollments.operator), and a person's pod that BROKER_POD_OPERATORS no longer maps to the
+// person its login carried (operatorOf). Without this a pod could take a shared agent-tier secret
+// and nobody would see it. Every signed-in person the person rule shows such a grant to sees it.
+// Who may end it is a separate rule, the machine login's: a service's login every signed-in person
+// lists and revokes, which no person approved (enroll.Service.LiveCredentials, record.MayDecide),
+// while a person's pod login is the person's BROKER_POD_OPERATORS maps the account to now, and
+// theirs alone to revoke, whatever the grant names. The sentinel record.AnyoneApprover and an
+// empty login are no signed-in person and list nothing. No row that already belongs to somebody
+// moves: a grant with a person's approver, or on a person's own session (a mapped person's pod
+// included), is listed for that person and no one else, exactly as before.
 //
 // It lists, to every signed-in person in the same way, every live grant whose approver is the
 // sentinel record.AnyoneApprover: the model judge approved it in anyone's stead, so the grant
@@ -1746,43 +1944,128 @@ type ApproverGrant struct {
 //
 // A pod whose account BROKER_POD_OPERATORS maps to a person is that person's own session here:
 // its enrollment's operator is the person its login was made for, so its grants are listed to
-// that person alone. This list reads the enrollment row, not the live setting that
-// requests.Machine.requester reads. So the person still sees the pod's grants, and may revoke
-// them, after the setting drops the entry or maps it to another person.
+// that person alone. The list selects a pod's grants by the enrollment row's operator, so the
+// person still finds them after the setting drops the entry or maps it to another person, but from
+// then on the pod acts for no person (unmappedPersonPod), so the grant no longer names them as its
+// operator (operatorOf): they see each such grant they may see, and end it only as its approver or,
+// where its approver is anyone, as any signed-in person may, and a grant of a private project they
+// are not on is hidden from them as from anyone outside it.
 //
 // The enrollment each grant is listed under is joined on the grants row's own enrollment_id, so a
 // grant that followed its session to another box is listed once, naming the box the session runs
-// on now.
+// on now. A grant is listed to its approver and to the person that enrollment acts for whatever
+// project it touches (namedOnGrant, operatorOf), as RevokeByApprover lets them end it whatever
+// Dispatch answers: a grant
+// of a secret no project tags goes on releasing after its person leaves a project its session
+// names, and its own people must still see it to end it. Whether any other reader may see it reads
+// the projects of both credentials its request has had, that one and the enrollment that asked
+// (credentialsProjects), as every reader of whose request this is does.
 func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]ApproverGrant, error) {
 	login := record.CanonicalLogin(approver)
 	if login == "" || login == record.AnyoneApprover {
 		return nil, nil
 	}
+	// The everyone arm takes a grant with no approver of a session a service's machine login
+	// enrolled that acts for no person: one with no operator, or a person's pod BROKER_POD_OPERATORS
+	// no longer maps to the operator its login carried (unmappedPersonPod). The mapping is the
+	// broker's setting, not a table, so it goes in as two parameters, each mapped account and the
+	// person it maps to, folded as record.CanonicalLogin folds them; the enrollment's operator is
+	// stored folded (a launcher credential's operator is written through CanonicalLogin, and an
+	// enrollment takes its credential's), and translate folds it again as fold.ASCII does, so the
+	// query and operatorOf agree on which pods are mapped, and the loop below drops no row it
+	// returns.
+	var mappedAccounts, mappedPersons []string
+	for account, person := range m.PodOperators {
+		if person = record.CanonicalLogin(person); person != "" {
+			mappedAccounts = append(mappedAccounts, account)
+			mappedPersons = append(mappedPersons, person)
+		}
+	}
 	rows, err := m.Store.Pool.Query(ctx, `select g.id, r.record_id, e.kind, e.runtime_id, coalesce(e.operator,''), e.slot, coalesce(g.approver,''), coalesce(r.decided_by,''), g.expires_at, g.created_at,
-		coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}')
+		coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}'),
+		coalesce(e.projects, '{}'), e.subject, r.reason, `+credentialColumns+`
 		from grants g
 		join requests r on r.id=g.request_id
 		join enrollments e on e.id=g.enrollment_id
 		join launcher_credentials c on c.id=e.launcher_credential_id
+		left join credential_requests cr on cr.id=r.record_id
+		left join enrollments enr on enr.id=cr.enrollment_id
 		where g.revoked_at is null and `+grantUnexpired("g")+`
 		and (g.approver=$1 or e.operator=$1 or g.approver=$2
-			or (g.approver is null and e.operator is null and c.service is not null))
-		order by g.created_at desc`, login, record.AnyoneApprover)
+			or (g.approver is null and c.service is not null and (e.operator is null
+				or (e.kind='pod' and not exists (select 1 from unnest($3::text[], $4::text[]) as mapped(account, person)
+					where mapped.account=e.subject
+					and mapped.person=translate(e.operator, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'))))))
+		order by g.created_at desc`, login, record.AnyoneApprover, mappedAccounts, mappedPersons)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []ApproverGrant
+	type seen struct {
+		sessionProjects []string
+		reason          string
+		operator        *string
+	}
+	var reads []seen
 	for rows.Next() {
 		var g ApproverGrant
-		if err := rows.Scan(&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names); err != nil {
+		var s seen
+		var current, asked enrollmentRow
+		if err := rows.Scan(&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names,
+			&current.Projects, &current.Subject, &s.reason,
+			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects); err != nil {
 			return nil, err
 		}
+		current.Kind = g.Enrollment.Kind
+		if g.Enrollment.Operator != "" {
+			current.Operator = &g.Enrollment.Operator
+		}
+		s.sessionProjects = m.credentialsProjects(asked, current)
+		s.operator = m.operatorOf(current)
+		// The row names the operator the revoke decides by (operatorOf), not the enrollment's
+		// record: a person's pod BROKER_POD_OPERATORS no longer maps names none, so the page
+		// offers Revoke only where the broker would take it, and an automatic grant of such a pod
+		// reads as one that ends with its machine login. The selection above still reads the
+		// record, so the pod's former person keeps finding the pod's grants.
+		g.Enrollment.Operator = deref(s.operator)
 		g.Granted = policy.Approval
 		if g.RecordID == nil {
 			g.Granted = policy.Automatic
 		}
 		out = append(out, g)
+		reads = append(reads, s)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// A private project's grant is left off the list of everyone outside the project but its
+	// approver and its operator (operatorOf: none for a person's pod BROKER_POD_OPERATORS no longer
+	// maps), read once the rows are closed so no call to Dispatch holds the pooled connection
+	// (maySeeRecord); a grant Dispatch cannot answer for is left off alone, as PendingForApprover
+	// leaves off a request, and one left off because the caller went away is not logged.
+	visible := out[:0]
+	for i, g := range out {
+		if named, _ := namedOnGrant(login, &g.Approver, reads[i].operator); named {
+			visible = append(visible, g)
+			continue
+		}
+		ok, err := m.maySeeRecord(ctx, "grant "+g.GrantID, login, g.Names, reads[i].sessionProjects, reads[i].reason)
+		switch {
+		case err != nil && ctx.Err() != nil:
+			// The caller went away: nothing is logged, and the grant is left off a list nobody reads.
+		case errors.Is(err, ErrProjectAccessUnavailable):
+			attrs := []any{"list", "grants", "grant", g.GrantID}
+			if g.RecordID != nil {
+				attrs = append(attrs, "record", *g.RecordID)
+			}
+			m.logRowUnanswered("grant "+g.GrantID, err, attrs...)
+		case err != nil:
+			return nil, err
+		case ok:
+			visible = append(visible, g)
+		}
+	}
+	return visible, nil
 }

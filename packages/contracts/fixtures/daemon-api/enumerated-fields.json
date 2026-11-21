@@ -637,6 +637,32 @@
   },
   {
     "answer": "state",
+    "keyPath": "repositories.live.*.cache.state",
+    "values": [
+      {
+        "value": "cloning",
+        "since": 202
+      },
+      {
+        "value": "failing",
+        "since": 202
+      },
+      {
+        "value": "ready",
+        "since": 202
+      },
+      {
+        "value": "refused",
+        "since": 202
+      },
+      {
+        "value": "starting",
+        "since": 202
+      }
+    ]
+  },
+  {
+    "answer": "state",
     "keyPath": "repositories.caches.*.state",
     "values": [
       {

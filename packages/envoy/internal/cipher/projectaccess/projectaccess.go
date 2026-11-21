@@ -12,25 +12,24 @@
 //
 // Answers are cached CacheTTL per project and person and per person, aged from before each
 // question was sent, which bounds how long a person removed from a project's access list goes on
-// passing a check here; Visible asks again for an answer that aged past it while a list was
-// checked, and a slower answer never replaces one to a question asked later. A failure to reach
-// Dispatch is never cached and is never an answer: each caller decides what an outage means for
-// its own check.
+// passing a check here; Visible and States ask again for an answer that aged past it while a list
+// was read, a caller holding answers across further reads ages them again where it decides
+// (Stale), a question asked under Fresh skips the cache, and a slower answer never replaces one to
+// a question asked later. A failure to reach Dispatch is never cached and is never an answer: each
+// caller decides what an outage means for its own check.
 package projectaccess
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
@@ -82,18 +81,16 @@ var (
 	// ErrListRequired is a restricted member's credential that names no project: such a person
 	// sees only the projects that name them, so their credential names which.
 	ErrListRequired = errors.New("projectaccess: a restricted member's credential names its projects")
-	// ErrBrokerRefused is the broker's own account token not working: Dispatch answering 401 or
-	// 403 to it (Dispatch does not list the broker's account as one that may ask, or does not
-	// accept the token, one minted for another audience, say), or the broker unable to read it
-	// from BROKER_PROJECT_ACCESS_TOKEN_FILE at all (missing, empty or unreadable). Either is a
-	// misconfiguration and not an outage, so no caller mints or enrolls through it as it would
-	// through a failure to reach Dispatch: every check made with that credential would be wrong.
-	ErrBrokerRefused = errors.New("projectaccess: the broker's own account token was refused or could not be read")
 	// ErrUnknownMemberKind is Dispatch answering a member kind that is none of MemberFull,
 	// MemberRestricted and MemberNone. The broker cannot tell whether such a person is held to the
 	// projects that name them, so no caller reads it as any of the three, and none mints or
 	// enrolls through it.
 	ErrUnknownMemberKind = errors.New("projectaccess: dispatch answered a member kind this broker does not know")
+	// ErrUnknownVisibility is Dispatch answering a project's visibility as anything but
+	// VisibilityPublic or VisibilityPrivate, an answer with no visibility at all included. The
+	// broker cannot tell whether such a project is private, so no caller reads it as either: it
+	// is never kept, and each caller fails as it does when Dispatch cannot be asked.
+	ErrUnknownVisibility = errors.New("projectaccess: dispatch answered a project visibility this broker does not know")
 	// ErrUnchecked is ListAllowed's answer for an empty list whose person's member kind Dispatch
 	// could not be asked for: the list is allowed, as it is today, but unchecked, so the caller
 	// that goes on to mint or enroll logs that it did so. It wraps the failure it stands for.
@@ -110,11 +107,26 @@ func (e *NotVisibleError) Error() string { return ErrNotVisible.Error() + ": " +
 // Unwrap is ErrNotVisible.
 func (e *NotVisibleError) Unwrap() error { return ErrNotVisible }
 
+// ProjectNotFoundError is Access's answer for a project Dispatch does not hold: it is
+// ErrProjectNotFound (errors.Is), and it carries when the question it answers was asked, so a
+// caller whose decision rests on a project's absence ages that answer as it ages any other
+// (Stale). A source that keeps no clock answers a zero AskedAt, or ErrProjectNotFound alone.
+type ProjectNotFoundError struct {
+	Project string
+	AskedAt time.Time
+}
+
+func (e *ProjectNotFoundError) Error() string { return ErrProjectNotFound.Error() + ": " + e.Project }
+
+// Unwrap is ErrProjectNotFound.
+func (e *ProjectNotFoundError) Unwrap() error { return ErrProjectNotFound }
+
 // Answer is Dispatch's answer for one project and one person.
 type Answer struct {
 	// Project is the project's key.
 	Project string `json:"project"`
-	// Visibility is "public" or "private".
+	// Visibility is VisibilityPublic or VisibilityPrivate: *Client answers ErrUnknownVisibility
+	// for any other, and never an Answer.
 	Visibility string `json:"visibility"`
 	// Owner is the owner's login.
 	Owner string `json:"owner"`
@@ -128,14 +140,36 @@ type Answer struct {
 	// Repositories is every "owner/name" repository Dispatch maps to the project, renames
 	// included, nil when the answer carries none.
 	Repositories []string `json:"repositories"`
+	// SlackChannels is every Slack channel id the project's owner named, sorted, and empty for a
+	// project that names none (dispatch://INFRA-3862's #t-a-31). SlackChannelsPresent says
+	// whether the answer carried the key at all: a Dispatch from before that task carries none,
+	// and the broker fails closed on it rather than reading it as "no limit" (requests'
+	// AirlockSecret.Limited), so the two deploy in either order safely. Decoded through a
+	// pointer, which is the one way a missing key and an empty list read differently.
+	SlackChannels []string `json:"-"`
+	// SlackChannelsPresent is whether the answer carried slack_channels.
+	SlackChannelsPresent bool `json:"-"`
 	// AskedAt is when the question this answers was asked, read before it was sent, so an
 	// answer's age is never less than it truly is. *Client always sets it; a zero AskedAt is an
-	// answer from a source that keeps no clock, which Visible takes as fresh.
+	// answer from a source that keeps no clock, which Stale takes as fresh.
 	AskedAt time.Time `json:"-"`
+	// Missing is States' entry for a project Dispatch does not hold: Project and AskedAt are set
+	// beside it, and nothing else. Access never answers one; it answers a *ProjectNotFoundError.
+	Missing bool `json:"-"`
 }
 
+// The two visibilities Dispatch answers a project with.
+const (
+	VisibilityPublic  = "public"
+	VisibilityPrivate = "private"
+)
+
 // Private reports whether the project is private.
-func (a Answer) Private() bool { return a.Visibility == "private" }
+func (a Answer) Private() bool { return a.Visibility == VisibilityPrivate }
+
+// Public reports whether the project is public. A project is public only when Dispatch says so:
+// a caller reads no other visibility, an empty one included, as public.
+func (a Answer) Public() bool { return a.Visibility == VisibilityPublic }
 
 // Access is every question a broker reader asks Dispatch; *Client answers all three.
 type Access interface {
@@ -144,18 +178,17 @@ type Access interface {
 	Access(ctx context.Context, project, person string) (Answer, error)
 	// MemberKind is the person's member kind.
 	MemberKind(ctx context.Context, person string) (string, error)
-	// States answers one fact per key, for the caller that must resolve every answer before it
-	// opens a transaction: present for a project Dispatch holds, absent for one it does not. It
-	// is one call per key against the cache, not a batch route.
+	// States answers one Answer per key, for the caller that must resolve every answer before it
+	// opens a transaction: Missing for a project Dispatch does not hold. Each answer was asked
+	// less than CacheTTL before it returns. It is one call per key against the cache, not a batch
+	// route.
 	States(ctx context.Context, projects []string) (map[string]Answer, error)
 }
 
 // Client asks Dispatch's routes at one base URL, presenting the broker's own account token.
 type Client struct {
-	base    string
-	account ciphertoken.Account
-	http    *http.Client
-	now     func() time.Time
+	read dispatchread.Reader
+	now  func() time.Time
 
 	mu      sync.Mutex
 	answers map[accessKey]cachedAnswer
@@ -176,31 +209,48 @@ type cachedKind struct {
 }
 
 // New is a client of Dispatch at baseURL (BROKER_PROJECT_ACCESS_URL), presenting account
-// (BROKER_PROJECT_ACCESS_TOKEN_FILE's reader) on every call. A nil httpClient is
-// http.DefaultClient; each call is bounded by its own 10 s whatever the client.
+// (BROKER_PROJECT_ACCESS_TOKEN_FILE's reader) on every call, through the broker's one read of
+// Dispatch (dispatchread). A nil httpClient is http.DefaultClient; each call is bounded by its own
+// 10 s whatever the client.
 func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *Client {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
 	return &Client{
-		base:    strings.TrimRight(baseURL, "/"),
-		account: account,
-		http:    httpClient,
+		read:    dispatchread.New(baseURL, account, httpClient, requestTimeout, maxAnswerBytes),
 		now:     time.Now,
 		answers: map[accessKey]cachedAnswer{},
 		kinds:   map[string]cachedKind{},
 	}
 }
 
+// freshKey marks a context whose questions are asked of Dispatch whatever the cache holds (Fresh).
+type freshKey struct{}
+
+// Fresh is ctx for questions Dispatch must answer now rather than the cache: Access and
+// MemberKind under it ask Dispatch even while the cache holds a young answer, and keep what it
+// answers as any other answer is kept. It is for a check that must see a change younger than
+// CacheTTL, as the model judge's approval does when it checks the project rule again before it
+// is written (requests.Machine.ApplyJudgeDecision): the run's own reads filled the cache well
+// inside CacheTTL, so a check that read them back could not see a project that turned private
+// while the model was asked.
+func Fresh(ctx context.Context) context.Context {
+	return context.WithValue(ctx, freshKey{}, true)
+}
+
+// fresh reports whether ctx is one Fresh made, or derived from one.
+func fresh(ctx context.Context) bool {
+	marked, _ := ctx.Value(freshKey{}).(bool)
+	return marked
+}
+
 // Access is Dispatch's answer for project and person, from the cache while it is younger than
-// CacheTTL. A person is asked about by their lowercase login; an empty person asks whether the
-// project is public. An answer is aged from before its question was sent, so a slow answer is
-// kept no longer than CacheTTL from the moment Dispatch could last have changed it.
+// CacheTTL, unless ctx is one Fresh made. A person is asked about by their lowercase login; an
+// empty person asks whether the project is public. An answer is aged from before its question was
+// sent, so a slow answer is kept no longer than CacheTTL from the moment Dispatch could last have
+// changed it.
 func (c *Client) Access(ctx context.Context, project, person string) (Answer, error) {
 	key := accessKey{project: project, person: record.CanonicalLogin(person)}
-	if cached, ok := c.cachedAnswer(key); ok {
+	if cached, ok := c.cachedAnswer(key); ok && !fresh(ctx) {
 		if cached.projectNotFound {
-			return Answer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, project)
+			return Answer{}, &ProjectNotFoundError{Project: project, AskedAt: cached.at}
 		}
 		return cached.answer, nil
 	}
@@ -209,23 +259,39 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 		query.Set("person", key.person)
 	}
 	asked := c.now()
-	var answer Answer
-	status, err := c.get(ctx, projectPath+url.PathEscape(project), query, &answer)
+	// The answer's own fields, and slack_channels beside them through a pointer, in one decode: a
+	// Dispatch from before dispatch://INFRA-3862's #t-a-31 carries no such key, and "no key" must
+	// read differently from "an empty list", which a []string alone could not say. Answer's own
+	// SlackChannels is json:"-", so the key reaches this field and no other.
+	var wire struct {
+		Answer
+		SlackChannels *[]string `json:"slack_channels"`
+	}
+	status, err := c.get(ctx, projectPath+url.PathEscape(project), query, &wire)
 	switch {
 	case err != nil:
 		return Answer{}, err
 	case status == http.StatusNotFound:
 		c.keepAnswer(key, cachedAnswer{projectNotFound: true, at: asked})
-		return Answer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, project)
+		return Answer{}, &ProjectNotFoundError{Project: project, AskedAt: asked}
+	}
+	answer := wire.Answer
+	// A visibility that is neither of the two is no answer: it is never kept, and no caller can
+	// read it as public, which is what a missing field would otherwise decode to beside Private.
+	if !answer.Public() && !answer.Private() {
+		return Answer{}, fmt.Errorf("%w: %q for %s", ErrUnknownVisibility, answer.Visibility, project)
+	}
+	if wire.SlackChannels != nil {
+		answer.SlackChannels, answer.SlackChannelsPresent = *wire.SlackChannels, true
 	}
 	answer.AskedAt = asked
 	c.keepAnswer(key, cachedAnswer{answer: answer, at: asked})
 	return answer, nil
 }
 
-// MemberKind is the person's member kind, from the cache while it is younger than CacheTTL: one of
-// MemberFull, MemberRestricted and MemberNone. Any other answer, an empty one included, is
-// ErrUnknownMemberKind naming it, never kept and never a failure to ask.
+// MemberKind is the person's member kind, from the cache while it is younger than CacheTTL, unless
+// ctx is one Fresh made: one of MemberFull, MemberRestricted and MemberNone. Any other answer, an
+// empty one included, is ErrUnknownMemberKind naming it, never kept and never a failure to ask.
 func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
 	person = record.CanonicalLogin(person)
 	if person == "" {
@@ -234,7 +300,7 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 	c.mu.Lock()
 	cached, ok := c.kinds[person]
 	c.mu.Unlock()
-	if ok && c.now().Sub(cached.at) < CacheTTL {
+	if ok && !fresh(ctx) && c.now().Sub(cached.at) < CacheTTL {
 		return cached.kind, nil
 	}
 	asked := c.now()
@@ -264,19 +330,39 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 	return answer.MemberKind, nil
 }
 
-// States answers each of projects Dispatch holds, as it is to a question naming no person, and
-// leaves out each it does not. Any other failure is the whole answer's.
+// States answers each of projects as it is to a question naming no person, and Missing for each
+// Dispatch does not hold. Any other failure is the whole answer's.
+//
+// The projects are asked one at a time, so, as in Visible, an answer that was young when the call
+// began can be older than CacheTTL by its end: a project read first and turned private while the
+// rest were read would otherwise be answered public past the bound. States asks again for each
+// such answer, going over the list at most maxRecheckPasses times, so every answer it returns was
+// asked less than CacheTTL before it returns, and a list whose answers still age out faster than
+// Dispatch answers them is a failure, never an aged answer.
 func (c *Client) States(ctx context.Context, projects []string) (map[string]Answer, error) {
 	states := make(map[string]Answer, len(projects))
-	for _, project := range projects {
-		answer, err := c.Access(ctx, project, "")
-		if errors.Is(err, ErrProjectNotFound) {
-			continue
+	pending := projects
+	for pass := 0; len(pending) > 0; pass++ {
+		if pass == maxRecheckPasses {
+			return nil, fmt.Errorf("projectaccess: the states of %d projects aged past %s while they were read", len(projects), CacheTTL)
 		}
-		if err != nil {
-			return nil, err
+		for _, project := range pending {
+			answer, err := c.Access(ctx, project, "")
+			var missing *ProjectNotFoundError
+			switch {
+			case errors.As(err, &missing):
+				answer = Answer{Project: project, Missing: true, AskedAt: missing.AskedAt}
+			case err != nil:
+				return nil, err
+			}
+			states[project] = answer
 		}
-		states[project] = answer
+		pending = nil
+		for _, project := range projects {
+			if Stale(c, states[project].AskedAt) {
+				pending = append(pending, project)
+			}
+		}
 	}
 	return states, nil
 }
@@ -322,127 +408,118 @@ func (c *Client) sweepLocked() {
 	}
 }
 
-// get asks one route and decodes a 200 into into. An account token it cannot read is
-// ErrBrokerRefused naming BROKER_PROJECT_ACCESS_TOKEN_FILE, asked nothing: the broker's own
-// credential is broken, not Dispatch. A 401 or a 403 is ErrBrokerRefused too, Dispatch refusing
-// that token, decided by the status alone before any of the body is read: a body cut short or
-// past the bound only leaves the error without the code it names, and never turns the refusal
-// into a failure to ask, which a caller mints through. A 404 is an answer, returned as its status
-// with no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's project route
-// answers a project it does not hold with; any other 404 (a Dispatch that does not serve the
-// route, a wrong path behind an ingress) is a failure naming its code. Every other status, a
-// transport failure and a body it could not read or decode are errors naming what failed and
-// never the token.
+// get asks one route through dispatchread and decodes a 200 into into. A token of the broker's
+// own that it cannot read, or that Dispatch refuses 401 or 403, is dispatchread.ErrBrokerRefused
+// (dispatchread.Reader.Get), which a caller never mints through. A 404 is an answer, returned as
+// its status with no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's
+// project route answers a project it does not hold with; any other 404 (a Dispatch that does not
+// serve the route, a wrong path behind an ingress) is a failure naming its code. Every other
+// status, a transport failure and a body it could not read or decode are errors naming what
+// failed and never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
-	bearer, err := c.account.Read()
+	answer, err := c.read.Get(ctx, path, query)
 	if err != nil {
-		return 0, fmt.Errorf("%w: BROKER_PROJECT_ACCESS_TOKEN_FILE could not be read: %w", ErrBrokerRefused, err)
+		return 0, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
-	target := c.base + path
-	if len(query) > 0 {
-		target += "?" + query.Encode()
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return 0, fmt.Errorf("projectaccess: build the request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+bearer)
-	request.Header.Set("Accept", "application/json")
-	response, err := c.http.Do(request)
-	if err != nil {
-		return 0, fmt.Errorf("projectaccess: ask dispatch: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, refusalCode(response.Body))
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxAnswerBytes+1))
-	if err != nil {
-		return 0, fmt.Errorf("projectaccess: read dispatch's answer: %w", err)
-	}
-	if len(body) > maxAnswerBytes {
-		return 0, fmt.Errorf("projectaccess: dispatch's answer to %s is over %d bytes", path, maxAnswerBytes)
-	}
-	switch response.StatusCode {
+	switch answer.Status {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		code := refusalCode(bytes.NewReader(body))
+		code := dispatchread.RefusalCode(answer.Body)
 		if code == projectNotFoundCode {
 			return http.StatusNotFound, nil
 		}
 		return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
 	default:
-		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, response.StatusCode, refusalCode(bytes.NewReader(body)))
+		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, answer.Status, dispatchread.RefusalCode(answer.Body))
 	}
-	if err := json.Unmarshal(body, into); err != nil {
+	if err := json.Unmarshal(answer.Body, into); err != nil {
 		return 0, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", path, err)
 	}
 	return http.StatusOK, nil
 }
 
-// refusalCode is the code a refusal's body names, read from at most maxAnswerBytes of it: empty
-// for a body that is cut short, runs past the bound or names none, since the status has already
-// decided what the answer is and the code only adds to its error.
-func refusalCode(body io.Reader) string {
-	var refusal struct {
-		Code string `json:"code"`
-	}
-	raw, _ := io.ReadAll(io.LimitReader(body, maxAnswerBytes))
-	_ = json.Unmarshal(raw, &refusal)
-	return refusal.Code
-}
-
 // Visible answers nil when person may see every one of projects, else a *NotVisibleError (which
 // is ErrNotVisible) naming the first it may not see. A project Dispatch does not hold is the same
 // refusal, so the text never says whether a project exists. Any other failure is returned as it
-// is, and is no refusal.
+// is, and is no refusal. It is VisibleAsOf without the time.
+func Visible(ctx context.Context, a Access, person string, projects []string) error {
+	_, err := VisibleAsOf(ctx, a, person, projects)
+	return err
+}
+
+// VisibleAsOf is Visible, answering beside a nil error when the oldest answer it passed was
+// asked: zero for an empty list and for a source that keeps no clock. A caller that reads more
+// before it decides ages its decision from it (Stale).
 //
 // The projects are asked one at a time, so an answer that was young when the check began can be
-// older than CacheTTL by its end. Visible asks again for each such answer before it returns, so
-// every answer it passes was asked less than CacheTTL before it returns: the bound the exchange's
-// mint rests on. It goes over the list at most maxRecheckPasses times, and a list whose answers
-// still age out faster than Dispatch answers them is a failure, not a pass.
-func Visible(ctx context.Context, a Access, person string, projects []string) error {
+// older than CacheTTL by its end. VisibleAsOf asks again for each such answer before it returns,
+// so every answer it passes was asked less than CacheTTL before it returns: the bound the
+// exchange's mint rests on. It goes over the list at most maxRecheckPasses times, and a list whose
+// answers still age out faster than Dispatch answers them is a failure, not a pass.
+func VisibleAsOf(ctx context.Context, a Access, person string, projects []string) (time.Time, error) {
 	asked := make(map[string]time.Time, len(projects))
 	pending := projects
 	for pass := 0; len(pending) > 0; pass++ {
 		if pass == maxRecheckPasses {
-			return fmt.Errorf("projectaccess: the answers for %s aged past %s while %d projects were checked", person, CacheTTL, len(projects))
+			return time.Time{}, fmt.Errorf("projectaccess: the answers for %s aged past %s while %d projects were checked", person, CacheTTL, len(projects))
 		}
 		for _, project := range pending {
 			answer, err := a.Access(ctx, project, person)
 			if errors.Is(err, ErrProjectNotFound) {
-				return &NotVisibleError{Project: project}
+				return time.Time{}, &NotVisibleError{Project: project}
 			}
 			if err != nil {
-				return err
+				return time.Time{}, err
 			}
 			if !answer.Visible {
-				return &NotVisibleError{Project: project}
+				return time.Time{}, &NotVisibleError{Project: project}
 			}
 			asked[project] = answer.AskedAt
 		}
 		pending = nil
-		now := time.Now()
-		if clocked, ok := a.(interface{ clock() time.Time }); ok {
-			now = clocked.clock()
-		}
 		for _, project := range projects {
-			if at := asked[project]; !at.IsZero() && now.Sub(at) >= CacheTTL {
+			if Stale(a, asked[project]) {
 				pending = append(pending, project)
 			}
 		}
 	}
-	return nil
+	var oldest time.Time
+	for _, at := range asked {
+		oldest = Oldest(oldest, at)
+	}
+	return oldest, nil
 }
 
-// maxRecheckPasses bounds how many times Visible goes over a list for answers that aged out
-// while it was checked.
+// maxRecheckPasses bounds how many times Visible and States go over a list for answers that aged
+// out while it was read.
 const maxRecheckPasses = 3
 
-// clock is the time c reads, for Visible to age c's answers by the same clock that stamped them.
+// Stale reports whether an answer to a question asked at asked is too old for a decision to rest
+// on: asked CacheTTL or longer ago, by a's own clock where a is a *Client and by the wall clock
+// otherwise. A zero asked is an answer from a source that keeps no clock, and is never stale. It
+// is the one statement of an answer's age, for Visible, States and every caller that holds
+// answers across further reads before it decides on them.
+func Stale(a Access, asked time.Time) bool {
+	if asked.IsZero() {
+		return false
+	}
+	now := time.Now()
+	if clocked, ok := a.(interface{ clock() time.Time }); ok {
+		now = clocked.clock()
+	}
+	return now.Sub(asked) >= CacheTTL
+}
+
+// Oldest is the earlier of two ask times, a zero one standing for none: the age of a decision
+// resting on both answers.
+func Oldest(a, b time.Time) time.Time {
+	if a.IsZero() || (!b.IsZero() && b.Before(a)) {
+		return b
+	}
+	return a
+}
+
+// clock is the time c reads, for Stale to age c's answers by the same clock that stamped them.
 func (c *Client) clock() time.Time { return c.now() }
 
 // ListAllowed is the one statement of the rule for a person's list, used by the exchange and by
@@ -450,17 +527,17 @@ func (c *Client) clock() time.Time { return c.now() }
 // ErrListRequired when MemberKind answers MemberRestricted, and with ErrUnknownMemberKind when it
 // answers a kind that is none of the three; MemberFull and MemberNone answer nil, so a person
 // Dispatch has never seen mints and enrolls as today. A MemberKind failure that is
-// ErrBrokerRefused or ErrUnknownMemberKind is returned as it is, and no caller mints through
-// either. Any other MemberKind failure answers an error that is ErrUnchecked and wraps it: the
-// list is allowed, as it is today while Dispatch cannot be reached, and the caller that goes on
-// logs that it did so unchecked.
+// dispatchread.ErrBrokerRefused or ErrUnknownMemberKind is returned as it is, and no caller mints
+// through either. Any other MemberKind failure answers an error that is ErrUnchecked and wraps it:
+// the list is allowed, as it is today while Dispatch cannot be reached, and the caller that goes
+// on logs that it did so unchecked.
 func ListAllowed(ctx context.Context, a Access, person string, projects []string) error {
 	if len(projects) > 0 {
 		return Visible(ctx, a, person, projects)
 	}
 	kind, err := a.MemberKind(ctx, person)
 	switch {
-	case errors.Is(err, ErrBrokerRefused), errors.Is(err, ErrUnknownMemberKind):
+	case errors.Is(err, dispatchread.ErrBrokerRefused), errors.Is(err, ErrUnknownMemberKind):
 		return err
 	case err != nil:
 		return fmt.Errorf("%w: %w", ErrUnchecked, err)

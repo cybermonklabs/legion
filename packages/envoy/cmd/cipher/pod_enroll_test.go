@@ -500,7 +500,7 @@ func TestTwoRunsOnOneDirectoryTakeTurns(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			codes[i] = cmdEnrollPod(testPodService, tokenFile, out, &outs[i], &errs[i])
+			codes[i] = cmdEnrollPod(testPodService, tokenFile, out, podProjects{}, &outs[i], &errs[i])
 		}()
 	}
 	close(start)
