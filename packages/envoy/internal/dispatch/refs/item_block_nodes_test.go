@@ -92,7 +92,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	citer := insertIndexedItem(t, tx, ItemComment, "CORE-1", "See dispatch://CORE-1/comment/"+comment+"#b-b2.")
 	ask := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE-2 first?", model.AskOption{Label: "Yes"})
 	askMentions := NewReader(ctx, tx, "ask", ask.ID, itemBlockServer).Mentions(ask.Question)
-	if _, err := replaceRefs(ctx, tx, "ask", ask.ID, text.Refs(askMentions), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "ask", ask.ID, text.Refs(askMentions), nil, false); err != nil {
 		t.Fatalf("index the ask's own references: %v", err)
 	}
 	indexAskPartsAt(t, tx, ask, 1)
@@ -214,7 +214,7 @@ func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
 	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}}; truncated || !reflect.DeepEqual(members, want) {
 		t.Errorf("closure = %#v (truncated %t); want %#v", members, truncated, want)
 	}
-	citers, err := ReferencedBy(ctx, tx, handbook)
+	citers, err := ReferencedBy(ctx, tx, handbook, "")
 	if err != nil {
 		t.Fatalf("read referenced-by: %v", err)
 	}
@@ -283,12 +283,12 @@ func TestBlockTextsReadsEachBlockAsTheOneItemReadsDo(t *testing.T) {
 	artifact, document := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
 	parts := []part{{"intro", "heading", "# Rollout"}, {"plan", "paragraph", "Ship it on Monday."}}
 	markdown, blocks := documentOf(parts)
-	if _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil, ""); err != nil {
 		t.Fatalf("index version 1 of the document: %v", err)
 	}
 	parts[1].text = "Ship it on Tuesday, after the freeze."
 	markdown, blocks = documentOf(parts)
-	if _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil, ""); err != nil {
 		t.Fatalf("index version 2 of the document: %v", err)
 	}
 

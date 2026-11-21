@@ -5,16 +5,18 @@
 #
 # Who runs it, and what it takes:
 #
-#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh <download conclusion>
+#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh <download conclusion> <lane>
 #
 # <download conclusion> is what the step "Download every leg's blob report" concluded, the merge
 # job's `${{ steps.download-blobs.conclusion }}`: the missing-blob message below reads it,
-# a refused download being why no blob arrived for any leg. GH_TOKEN is the run's own
+# a refused download being why no blob arrived for any leg. <lane> is the run's lane, the
+# workflow's own `${{ inputs.lane }}`: it says which caller's jobs of this run are this lane's,
+# as the filter below says. GH_TOKEN is the run's own
 # `${{ github.token }}`, which the step's `env:` gives this script for the read of this run's
 # jobs. It is never an argument: an argument is on the process's command line, which every
 # process of the runner can read in /proc while the step runs.
 #
-# The conclusion is an argument rather than a key of the step's `env:`, for the reason
+# The conclusion and the lane are arguments rather than keys of the step's `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
 # gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job
 # out of check-ci-filters.sh's reduction of what a go command compiles. GH_TOKEN is in that set,
@@ -35,18 +37,18 @@
 # dispatch-browser-run-reads.sh reads for this run's jobs.
 #
 # Run from the repository root, with those five set:
-#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh success
+#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh success pull-request
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Reading one, the rows".
 set -euo pipefail
 
 usage() {
-  echo "::error::dispatch-browser-reading-rows.sh takes the blob download's conclusion, with" \
-    "the run's token in GH_TOKEN: GH_TOKEN=<token>" \
-    ".github/scripts/dispatch-browser-reading-rows.sh <download conclusion>. It was given: $*"
+  echo "::error::dispatch-browser-reading-rows.sh takes the blob download's conclusion and the" \
+    "run's lane, with the run's token in GH_TOKEN: GH_TOKEN=<token>" \
+    ".github/scripts/dispatch-browser-reading-rows.sh <download conclusion> <lane>. It was given: $*"
   exit 1
 }
 
-[ "$#" -eq 1 ] || usage "$@"
+[ "$#" -eq 2 ] || usage "$@"
 
 blobs="$RUNNER_TEMP/selected-blobs/blob-report"
 counts="$RUNNER_TEMP/selected-blobs/rows"
@@ -58,6 +60,7 @@ jobs="$RUNNER_TEMP/jobs.json"
 # and which the step's `GH_TOKEN` need not follow, that key being in ENV_ALLOWED. The missing-blob
 # message reads it: a download that was refused is why no blob arrived for any leg.
 downloaded=$1
+lane=$2
 # The run's own token is GH_TOKEN, a key of the step's `env:` and never an argument, for the
 # reason this script's head gives. `actions: read` is the caller's, and ci.yaml's job that calls
 # this workflow already holds it.
@@ -101,10 +104,26 @@ downloaded=$1
 # and runs the filter as a second `jq`, gh refusing `--slurp` beside `--jq`; the
 # script's head says the rest.
 .github/scripts/dispatch-browser-run-reads.sh jobs "$jobs"
+# One caller's jobs and no other's. ci.yaml's dispatch-references job calls this workflow
+# with the references lane in the same run as its dispatch-browser job, and the jobs
+# API lists both callers' jobs - `dispatch-references / shard (1)` beside
+# `dispatch-browser / shard (1)` - which the script's name filter takes alike. So the
+# references lane keeps the jobs under that caller's name and every other lane drops
+# them: read together, each merge job would owe a blob for the other's legs and add up
+# their printed rows against a merged report that holds none of them. A run with no
+# dispatch-references job holds no such name, so the other lanes read what they read
+# before. The name is that ci.yaml job's id, which carries no `name:`. Written back to
+# the same file, so reading three takes the same jobs. A read that left no file jq can
+# read is left as it is, for the check below to name.
+if own=$(jq --arg lane "$lane" \
+  '[.[] | select((.name | startswith("dispatch-references / ")) == ($lane == "references"))]' "$jobs"); then
+  printf '%s\n' "$own" > "$jobs"
+fi
 # The legs this lane owed, read from those jobs rather than written out a second time
 # here. A leg the lane does not run is skipped by its job's own `if:` - the alone and
-# multiprocess jobs on the pull-request lane - and owes nothing. A leg that failed
-# before it could upload is in the list and still owes its blob.
+# multiprocess jobs on the pull-request lane, and those two, the embedder job and the
+# visual job on the references lane - and owes nothing. A leg that failed before it
+# could upload is in the list and still owes its blob.
 # A read that fails leaves the list empty, and the check below says so: `|| true` keeps
 # pipefail and `set -e` from ending the script on jq's status first.
 legs=$(jq -r '.[] | select(.leg != null and .conclusion != "skipped") | .leg' "$jobs" |

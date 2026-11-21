@@ -45,14 +45,17 @@ type searchParameters struct {
 	status        string
 	author        string
 	since         *time.Time
-	limit         int
-	offset        int
-	keywordsOnly  bool
-	trees         bool
-	ownKeys       []string
-	broaden       []string
-	excluded      string
-	reading       *searchReading
+	// kinds are the kinds this search leaves out of the ranking, the count and the page
+	// (searchKinds), so its zero value searches every kind the index holds.
+	kinds        searchKinds
+	limit        int
+	offset       int
+	keywordsOnly bool
+	trees        bool
+	ownKeys      []string
+	broaden      []string
+	excluded     string
+	reading      *searchReading
 }
 
 // numberScope is the project a bare issue number names: the project filter when the request

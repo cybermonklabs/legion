@@ -6,6 +6,7 @@ import { primarySpec, roleDocument } from "../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import type { PublishedReferences } from "../refs/reference-names";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
 import {
@@ -65,6 +66,9 @@ export interface OutlineReads {
    *  task's or a callout's words come from them alone, so what a words filter matches waits on
    *  them, as well as on the reads the nodes come from (`readsHeld`). */
   readonly namesHeld: boolean;
+  /** What the page publishes of its batched names read (`IssueTreeView.published`), which the
+   *  outline hands its rows in the render that draws them (`IssueTree`'s `published`). */
+  readonly published: PublishedReferences;
   /** The reads of the issue's conversation the tree's turns come from, each undefined until it
    *  has answered, and whether each of the six reads the tree's other nodes come from - the
    *  coverage, the decisions, the results, the asks, the comments and the messages - holds its
@@ -212,7 +216,7 @@ function blocksUnreadable(issue: IssueDetails, id: string): string {
  * outline leaves out (`useAddressFallback`).
  */
 export function useOutlineReads(issue: IssueDetails): OutlineReads {
-  const { blocksHeld, namesFailure, namesHeld, root } = useIssueTree(issue);
+  const { blocksHeld, namesFailure, namesHeld, published, root } = useIssueTree(issue);
   const key = issue.key;
   const documentIds = treeDocumentIds(issue);
   const documents = useQueries({
@@ -279,6 +283,7 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
   return {
     failed,
     namesHeld,
+    published,
     reads: own.reads,
     readsHeld: own.reads.held && blocksHeld,
     readsSettled: own.settled && documents.settled,

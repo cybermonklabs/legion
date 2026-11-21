@@ -1,4 +1,5 @@
-import { beforeEach, expect, jest, test } from "bun:test";
+import { beforeAll, beforeEach, expect, jest, test } from "bun:test";
+import type { OfferedReference } from "@legion/proof-editor";
 import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -17,10 +18,17 @@ import {
   documentSurfaceHandlers,
   renderProofDocument,
 } from "../../__tests__/proof-document";
-import type { Ask, AskRead, IssueReferenceSummary } from "../../api/types";
+import type { Agent, Ask, AskRead, IssueReferenceSummary } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { shortForm } from "../refs/routes";
 import { DocumentRuntime } from "./runtime";
 import { VersionView } from "./VersionView";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 
@@ -134,15 +142,25 @@ function seededQueryClient(): QueryClient {
 }
 
 /** What the host last told the editor to draw: the words of each candidate to the title drawn
- *  over them, or null while it resolved none. */
+ *  over them, or null while it resolved none - the plain candidates' answers (`targets`), or the
+ *  mentions' (`mentions`). */
 function drawnTitles(
-  references: { targets: ReadonlyMap<string, { title: string } | null> } | null | undefined
+  references:
+    | Record<"mentions" | "targets", ReadonlyMap<string, { title: string } | null>>
+    | null
+    | undefined,
+  answers: "mentions" | "targets" = "targets"
 ): Record<string, string | null> {
   const drawn: Record<string, string | null> = {};
-  for (const [words, target] of references?.targets ?? []) {
+  for (const [words, target] of references?.[answers] ?? []) {
     drawn[words] = target?.title ?? null;
   }
   return drawn;
+}
+
+/** `keys` as the editor offers the candidates its reader found that no mention names. */
+function plain(keys: readonly string[]): OfferedReference[] {
+  return keys.map((key) => ({ key, mention: false }));
 }
 
 test("the live editor is told to draw a bare key's, a #id's and a bare reference's title", async () => {
@@ -165,7 +183,7 @@ test("the live editor is told to draw a bare key's, a #id's and a bare reference
       { end: 56, key: "dispatch://CORE-1/artifact/design", start: 23 },
     ]);
     act(() => {
-      references.onKeys(["#q2", "CORE-2", "dispatch://CORE-1/artifact/design"]);
+      references.onKeys(plain(["#q2", "CORE-2", "dispatch://CORE-1/artifact/design"]));
     });
 
     await waitFor(() =>
@@ -198,7 +216,7 @@ test("a #id the author left a hyphen on draws its title over the id alone", asyn
     await waitFor(() => expect(editors).toHaveLength(1));
     await waitFor(() => expect(editors[0]?.references).toBeDefined());
     act(() => {
-      editors[0]?.references?.onKeys(["#q2-"]);
+      editors[0]?.references?.onKeys(plain(["#q2-"]));
     });
 
     // The question is q2, so the title stands for `#q2`, the three characters the reference
@@ -227,7 +245,7 @@ test("a key no issue holds and a #id no question declares are left as the author
     await waitFor(() => expect(editors).toHaveLength(1));
     await waitFor(() => expect(editors[0]?.references).toBeDefined());
     act(() => {
-      editors[0]?.references?.onKeys(["#q9", "CORE-404"]);
+      editors[0]?.references?.onKeys(plain(["#q9", "CORE-404"]));
     });
 
     await tick(20);
@@ -253,7 +271,7 @@ test("the live editor is told to draw the title for a link whose text is its own
     // destination as one reference running end to end, which is then the candidate's key.
     expect(references.scan(AUTOLINK)).toEqual([{ end: AUTOLINK.length, key: AUTOLINK, start: 0 }]);
     act(() => {
-      references.onKeys([AUTOLINK]);
+      references.onKeys(plain([AUTOLINK]));
     });
 
     await waitFor(() =>
@@ -264,13 +282,160 @@ test("the live editor is told to draw the title for a link whose text is its own
   }
 });
 
+const SESSION = "01a1058e-f14f-7684-87eb-3dc885955551";
+
+/** The session the mentions below name, as the registry lists it now: renamed since the
+ *  mentions were written. */
+const renamed: Agent = {
+  capabilities: [],
+  dir: "/workspaces/planner",
+  host: "host-a",
+  last_activity: null,
+  last_seen: 1_700_000_000_000,
+  machine_id: "host-a",
+  open_asks: 0,
+  roles: [],
+  session_id: SESSION,
+  state: "live",
+  title: "Planner now",
+};
+
+/** The session holding the reviewer role, as the registry lists it: a role reference is named
+ *  while a session it lists holds the role. */
+const reviewing: Agent = {
+  ...renamed,
+  dir: "/workspaces/reviewer",
+  roles: ["reviewer"],
+  session_id: "01a1058e-f14f-7684-87eb-3dc885955552",
+  title: "Reviewer",
+};
+
+// R4 and R5 in the editor, as a rendered body reads them: a party's mention - the editor offers
+// its address as a mention - is drawn as `@` and the current name, a link with `@` words to
+// anything but a party is left as its words, a known person is drawn as their login and no link,
+// and a role a session holds as its token, linked. A session's live page is no reference in the
+// shared grammar, so a link to it is never offered at all, and keeps its words as a rendered body
+// does.
+test("the live editor draws a mention as @ and the party's current name, a person as their login and a role as its token", async () => {
+  const queryClient = seededQueryClient();
+  queryClient.setQueryData(["agents"], [renamed, reviewing]);
+  queryClient.setQueryData(["users"], [{ login: "dana@example.test" }]);
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+  const address = `dispatch://agent/${SESSION}`;
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    await waitFor(() => expect(editors[0]?.references).toBeDefined());
+    const references = editors[0]?.references;
+    if (references === undefined || references === null) throw new Error("references missing");
+    expect(references.scan(`${window.location.origin}/agents/${SESSION}/live`)).toEqual([]);
+    act(() => {
+      references.onKeys([
+        { key: address, mention: true },
+        { key: "dispatch://CORE-2", mention: true },
+        ...plain(["dispatch://person/dana@example.test", "dispatch://role/reviewer"]),
+      ]);
+    });
+
+    await waitFor(() =>
+      expect(drawnTitles(editors[0]?.references, "mentions")).toEqual({
+        [address]: "@Planner now",
+        "dispatch://CORE-2": null,
+      })
+    );
+    await waitFor(() =>
+      expect(drawnTitles(editors[0]?.references)).toEqual({
+        "dispatch://person/dana@example.test": "dana@example.test",
+        "dispatch://role/reviewer": "reviewer",
+      })
+    );
+    const targets = editors[0]?.references?.targets;
+    expect(editors[0]?.references?.mentions.get(address)?.href).toBe(address);
+    expect(targets?.get("dispatch://person/dana@example.test")?.href).toBeUndefined();
+    expect(targets?.get("dispatch://role/reviewer")?.href).toBe("dispatch://role/reviewer");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The editor and the host agree on a mention through the typed field alone
+// (`OfferedReference.mention`): the editor offers a party's address once as its own link's words
+// and once as a mention's, and draws each from its own map (`@legion/proof-editor`'s
+// `reference-decorations.test.ts`), so the host answers the first in `targets` as the party's
+// name and the second in `mentions` as the mention sign and that name - never one for the other.
+test("the host answers a mention the editor offers in the map the editor draws mentions from", async () => {
+  const queryClient = seededQueryClient();
+  queryClient.setQueryData(["agents"], [renamed]);
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+  const address = `dispatch://agent/${SESSION}`;
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors[0]?.references).toBeDefined());
+    act(() => {
+      editors[0]?.references?.onKeys([
+        { key: address, mention: false },
+        { key: address, mention: true },
+      ]);
+    });
+
+    await waitFor(() =>
+      expect(drawnTitles(editors[0]?.references, "mentions")).toEqual({ [address]: "@Planner now" })
+    );
+    expect(drawnTitles(editors[0]?.references)).toEqual({ [address]: "Planner now" });
+  } finally {
+    view.unmount();
+  }
+});
+
+// A session Dispatch holds a record of that has no title has no name for a mention to read as:
+// its mention is drawn as the mention sign and the session's short form, as a rendered body
+// draws it, never left as the words its writer chose, which would pass for a current name. The
+// same address written as its own link's words is still a link in those words.
+test("the live editor draws a mention of a known session with no title as @ and its short form", async () => {
+  const queryClient = seededQueryClient();
+  queryClient.setQueryData(["agents"], [{ ...renamed, title: "" }]);
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+  const address = `dispatch://agent/${SESSION}`;
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors[0]?.references).toBeDefined());
+    act(() => {
+      editors[0]?.references?.onKeys([
+        { key: address, mention: false },
+        { key: address, mention: true },
+      ]);
+    });
+
+    const short = shortForm({ kind: "agent-session", session: SESSION });
+    await waitFor(() =>
+      expect(drawnTitles(editors[0]?.references, "mentions")).toEqual({ [address]: `@${short}` })
+    );
+    expect(drawnTitles(editors[0]?.references)).toEqual({ [address]: address });
+  } finally {
+    view.unmount();
+  }
+});
+
 function CurrentRoute(): ReactNode {
   const location = useLocation();
-  return <div data-testid="current-route">{location.pathname}</div>;
+  return (
+    <>
+      <div data-testid="current-route">{location.pathname}</div>
+      {/* The whole of where the reader is: a click that navigates to the empty path keeps none
+          of the version and the block they were reading. */}
+      <div data-testid="current-location">
+        {`${location.pathname}${location.search}${location.hash}`}
+      </div>
+    </>
+  );
 }
 
-/** The past version of the document, rendered as the document page renders it. */
-function renderVersion(markdown: string = TEXT) {
+/** The past version of the document, rendered as the document page renders it, with the reader
+ *  standing at `at`. */
+function renderVersion(markdown: string = TEXT, at = "/") {
   const fake = fakeDocumentRuntime();
   const queryClient = seededQueryClient();
   queryClient.setQueryData(["artifact", "artifact-1", "version", 1], {
@@ -286,7 +451,7 @@ function renderVersion(markdown: string = TEXT) {
     summary: null,
   });
   const view = render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[at]}>
       <QueryClientProvider client={queryClient}>
         <DocumentRuntime.Provider value={fake.runtime}>
           <CurrentRoute />
@@ -295,6 +460,7 @@ function renderVersion(markdown: string = TEXT) {
             asks={[]}
             createdAt="2026-09-09T00:00:00Z"
             highlight={undefined}
+            issueKey="CORE-1"
             owner={undefined}
             version={1}
           />
@@ -315,7 +481,7 @@ test("a past version is told to draw the same three titles over its own text", a
     const references = editors[0]?.references;
     if (references === undefined || references === null) throw new Error("references missing");
     act(() => {
-      references.onKeys(references.scan(TEXT).map((candidate) => candidate.key));
+      references.onKeys(plain(references.scan(TEXT).map((candidate) => candidate.key)));
     });
 
     await waitFor(() =>
@@ -342,7 +508,7 @@ test("a past version is told to draw the title for a link whose text is its own 
     // The editor reads a link whose text is its destination as one candidate of that address.
     expect(references.scan(AUTOLINK)).toEqual([{ end: AUTOLINK.length, key: AUTOLINK, start: 0 }]);
     act(() => {
-      references.onKeys([AUTOLINK]);
+      references.onKeys(plain([AUTOLINK]));
     });
 
     await waitFor(() =>
@@ -373,6 +539,34 @@ test("a click on a reference in a past version opens what it names", async () =>
 
     await user.click(anchor);
     expect(within(view.container).getByTestId("current-route").textContent).toBe("/issues/CORE-2");
+  } finally {
+    view.unmount();
+  }
+});
+
+// Nothing shows a person (R5), so a click on the mention of one is the link's own and opens
+// nothing: the reader stays on the version and the block they were reading, where the empty
+// path this used to navigate to took them off both.
+test("a click on a person in a document opens nothing and keeps the reader's place", async () => {
+  const user = userEvent.setup();
+  const at = "/projects/CORE/documents/design?v=2#b-one";
+  const { editors, view } = renderVersion(TEXT, at);
+
+  try {
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const root = editors[0]?.root;
+    if (root === undefined) throw new Error("editor root missing");
+    // A person's mention as the document stores and draws it: a link whose words are their
+    // name, its `dispatch://` target sanitized out of the href and carried beside it.
+    act(() => {
+      root.innerHTML =
+        '<p><a data-dispatch-href="dispatch://person/alice@example.com" href="">alice@example.com</a></p>';
+    });
+    const anchor = root.querySelector("a");
+    if (anchor === null) throw new Error("anchor missing");
+
+    await user.click(anchor);
+    expect(within(view.container).getByTestId("current-location").textContent).toBe(at);
   } finally {
     view.unmount();
   }

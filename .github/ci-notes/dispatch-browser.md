@@ -13,7 +13,9 @@ first sections below.
 
 Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
-on everything else, and the nightly workflow calls it with the full lane. The rows are spread
+on everything else, ci.yaml's dispatch-references job calls it with the references lane on a
+pull request that changes what the reference rows test, and the nightly workflow calls it with
+the full lane. The rows are spread
 over four shard machines, the three `-alone` projects get a machine each, the two-process job,
 the fake-embedder job and the containerised visual review take one each, and one merge job
 joins what the shard and alone legs wrote into a single report and publishes the run's flake
@@ -61,9 +63,29 @@ default GITHUB_TOKEN permissions rather than its own workflow's block (GitHub's
 reusable-workflow reference, "Supported keywords for jobs that call a reusable workflow").
 ci.yaml's dispatch-browser job declares what these jobs need: `contents: read` for every job's
 checkout, and the merge job's `actions: read` (it reads the run's jobs through the API) and
-`checks: write` (the ci-ok report it ends with, which only that call turns on).
-dispatch-browser-nightly.yaml's full job declares the first two: its call passes no
-`ci-ok-changes` either, so the report step skips there and no check is posted.
+`checks: write` (the ci-ok report it ends with, which only that call turns on). ci.yaml's
+dispatch-references job and dispatch-browser-nightly.yaml's full job each declare the first two:
+neither call passes `ci-ok-changes`, so the report step skips there and no check is posted.
+
+## The third lane, references, and the lane prefix every artifact name takes
+
+`references` runs the `chromium` project over every row of the eleven spec files the
+reference framework's Verification document names and the nine of the reading list's walk,
+with main's parse-count walk beside them, on the four shard machines and the merge job alone,
+so a pull request that changes the reference framework gets those rows from CI at its head
+rather than from a run by hand. It gates nothing:
+.github/ci-notes/ci.md#the-reference-rows-preview-job-what-it-runs-and-why-it-gates-nothing
+says why. The lane's spec files are written in one place, the `references)` arm of
+.github/scripts/dispatch-browser-shard-suite.sh, the script the shard job's browser step runs.
+
+Two lanes can run in one workflow run - the references lane beside the pull-request lane, on
+a pull request that selects both callers - and an artifact name is unique within a run, so
+every artifact this file uploads or downloads is named under the lane's prefix,
+ARTIFACT_LANE in the `env:` and nowhere else: `dispatch-references` for the references
+lane and `dispatch-browser` for the other two, and the merge job reads only its own lane's
+legs. The other two lanes' names are what they were before the references lane existed, but
+for the binaries artifact, `dispatch-browser-e2e-binaries` now where it was
+`dispatch-e2e-binaries`, so that every name takes the prefix in the one form.
 
 ## Why GOPROXY falls through to direct
 
@@ -73,6 +95,18 @@ proxy.golang.org reset a download mid-stream and turned a Go lane red on a modul
 go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
 straight from the source and checks them against go.sum, so this is a second path, not a weaker
 check.
+
+## Why ARTIFACT_LANE is written once, in the workflow's env
+
+The prefix of every artifact name of this run's lane, for the reason
+.github/ci-notes/dispatch-browser.md#the-third-lane-references-and-the-lane-prefix-every-artifact-name-takes
+gives. Every upload and download of dispatch-browser.yaml reads it as
+`${{ env.ARTIFACT_LANE }}`, and the one run: step that needs it, "Take the newest attempt of
+each leg's blob report", reads "$ARTIFACT_LANE" from its environment, so the condition is
+written there once and an artifact that reads it cannot take the other lane's name. A
+workflow's own `env:` may read `inputs` (GitHub's context availability table: `env` takes
+github, secrets, inputs and vars). .github/scripts/ci_filter_coverage.py's ENV_ALLOWED names
+it, since go reads no such name.
 
 ## Why the binaries job builds what the suite runs
 
@@ -97,8 +131,10 @@ run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
 
 It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
 already decided the call. ci.yaml's dispatch-browser job holds the `dispatch_browser` filter
-and the merge-group attempt term, and the nightly calls this file unconditionally, so a
-condition here could only hold back a run its caller had asked for.
+and the merge-group attempt term, its dispatch-references job holds the
+`dispatch_references` filter and runs on a pull request alone, and the nightly calls this
+file unconditionally, so a condition here could only hold back a run its caller had asked
+for.
 
 ## The binaries job's budget
 
@@ -139,7 +175,10 @@ $RUNNER_TEMP, so the checkout stays clean.
 
 One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
 failed jobs re-runs a shard or an alone leg without this one, and that attempt must find
-the artifact this job uploaded on the attempt before.
+the artifact this job uploaded on the attempt before. One name per lane, though: the
+references lane can run in the same run as the pull-request lane, and the second of two
+uploads under one name is refused, so the name takes ARTIFACT_LANE's prefix (the workflow's
+`env:`). The shard and alone jobs download it under the same name.
 
 ## The shard job, its stacks and its container
 
@@ -200,18 +239,24 @@ ci_filter_coverage.py's ENV_ALLOWED and stay in the browser step's `env:`; the
 multiprocess job's pinned build step, "Build the Dispatch server", is read under dispatch-browser.yaml's own `env:` and
 defaults, so neither may grow a name outside that set.
 
-The browser step's budget, its `timeout-minutes: 9`, is measured, on the two runs of the head that sharded this
-suite: 42334424798, the pull-request lane, and 42316487530, the full lane. Four legs each,
-in shard order, in seconds:
+The browser step's budget, its `timeout-minutes: 12`, is measured over every shard browser
+step of `ci.yaml` from 2026-11-13T16:00Z to 2026-11-20T16:00Z, the read of #4523, which sets
+the same budget: 19,219 steps in 4,742 runs of pull requests, merge groups and the nightly
+schedule, `workflow_dispatch` runs left out. Its longest uncut step is 585 s (run
+44557669985, job 135679815991, shard (3)), a leg that had to finish its retries to report a
+failing row, and the next is 558 s (run 44601631311, job 135835839778, shard (4)); both jobs'
+own step times read the same. A leg with a failing row must finish to report it, so a pull
+request's legs count as much as a merge group's.
 
-  step                                     pull-request lane        full lane
-  Browser-test dispatch dashboard         413, 293, 307, 292  419, 297, 334, 295
-  every other step summed                  76, 67, 72, 85      79, 76, 80, 77
+An earlier read of this change, of main's merge queue and of pull request #3125 alone before
+2026-11-20T15:50Z (1,718 steps in 376 runs), found a longest step cut at the 9 minutes the
+step had then, 540 s (run 44759668335, job 136371179565, shard (1)), and 522 s uncut; the
+wider read holds both.
 
-The rule is in this file's head. The browser step's maximum is the full lane's 419 s, so
-419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asks of the longest
-shard's browser step, and which the container does not move: it is the same rows in the
-same browsers.
+The rule is in this file's head. The pooled maximum is 585 s, so
+585 x 1.15 = 673 s -> 12 min, the same rows in the same browsers. The 9 minutes it replaces
+came from the sharded head's own runs, whose longest leg was 419 s (42316487530, the full
+lane): the suite grew since.
 
 The job budget, the shard job's `timeout-minutes`, is the rule's arithmetic, read on sha256:ba003193, the build of commit
 47a222cd (run 42480325123, job 128730667606), and not on the digest this file pins, which
@@ -270,13 +315,12 @@ reached over those 24 legs, in seconds:
 The three uploads are three steps of this job and not one, so the sum below counts each
 of them: 3 + 2 + 4, not 4.
 
-The browser step's own 9 minutes above still holds at the merged head, where #2958's
-accessibility rows joined the shards: its maxima here are 381 s (run 42521581875, job
-128856388199), 355 s (job 128851420516) and 283 s (nightly run 42522550380), all under the
-419 s that budget was derived from, so the pooled maximum the rule reads is still that
-419 s and the budget the rule gives is still 9 minutes. The 474 s main measured for this
-step, which raised it to 10 minutes there, is not in that sample: it was taken on the bare
-runner with the Playwright install this change removes still in the job.
+The browser step's 9 minutes held at the head where #2958's accessibility rows joined the
+shards: its maxima there were 381 s (run 42521581875, job 128856388199), 355 s (job
+128851420516) and 283 s (nightly run 42522550380), all under the 419 s that budget was
+derived from. The 474 s main measured for this step, which raised it to 10 minutes there,
+was taken on the bare runner with the Playwright install this change removed still in the
+job. The wider read above, at 585 s, is what the budget rests on now.
 
 The browser step was the one step of this job that carried a budget, so the job's budget was
 that budget plus the maxima above of every step without one, which summed to 219 s:
@@ -297,9 +341,9 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 540 s, the two download attempts' 120 s each, and the steps without a
-budget at 219 - 5 - 45 + 355 = 524 s: 1,304 s, 21 min 44 s, rounded up to the 22 minutes
-of the shard job's `timeout-minutes`. The browser step's own budget is unchanged, and it still fires before the job's.
+browser step's 720 s, the two download attempts' 120 s each, and the steps without a
+budget at 219 - 5 - 45 + 355 = 524 s: 1,484 s, 24 min 44 s, rounded up to the 25 minutes
+of the shard job's `timeout-minutes`. The browser step's own budget fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
 again at this change's head, the suite holds 1,427 rows in 194 files, which is two
@@ -346,7 +390,7 @@ run-broker.sh serves from.
 
 The step budget note above does not count this step, which is new here. It copies one
 106 MB artifact on the runner's disk (141 ms for those bytes on a pod), and the 16 s
-that rounding up to 22 minutes leaves hold it.
+that rounding up to 25 minutes leaves hold it.
 
 ## Why the shard job makes the downloaded binaries executable
 
@@ -463,11 +507,11 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 9`, is the 9 minutes the job's head derives from the sharded head's own
-runs, and neither the container nor #2958's added rows move it: at the merged head this
-step's maxima are 381 s, 355 s and 283 s, which the job's head lists with their runs,
-all under the sharded head's 419 s, so the pooled maximum the rule reads is still
-419 s.
+The step's budget, `timeout-minutes: 12`, is the 12 minutes the job's head derives from #4523's
+read of every shard browser step of `ci.yaml` from 2026-11-13T16:00Z to 2026-11-20T16:00Z:
+the pooled maximum is 585 s (run 44557669985, job 135679815991), so 585 x 1.15 = 673 s
+-> 12 min. The next longest, 558 s (run 44601631311, job 135835839778), is under it, and the
+job's head lists both with their reads.
 
 ## Why the file store's address is set on the step and not in the environment
 
@@ -489,10 +533,15 @@ The browser step writes blob-report/ and rows/ into one directory instead, so th
 artifact holds the same two entries under the same names, which is what
 .github/scripts/dispatch-browser-latest-blobs.sh and the merge job read.
 
+The name's prefix is the lane's, ARTIFACT_LANE of the workflow's `env:`, for the reason
+this file's head gives: the references lane can run in the same run as the pull-request
+lane, so its three uploads here are `dispatch-references-…` and the other two lanes' are
+`dispatch-browser-…` as before. The merge job downloads and selects under the same prefix.
+
 ## What the shard job collects after a run
 
 What the run left behind: in the job's own log, where a reader of a failed row looks
-first, and collected into the one directory the `dispatch-browser-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}` artifact takes. A failed row's
+first, and collected into the one directory the `${{ env.ARTIFACT_LANE }}-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}` artifact takes. A failed row's
 trace says what the browser saw; these say what its stack's own servers did, which is
 where a stack-only failure (a port, a migration, a server that never came up) is legible.
 CI read `docker logs dispatch-e2e-files` for the store before this job ran in a
@@ -705,7 +754,7 @@ the shard job's upload of this name is and for the reason it gives.
 ## What the alone job collects after a run
 
 What the run left behind: the stack's own server logs, in the job's own log and collected
-into the one directory the `dispatch-browser-record-alone-${{ matrix.project }}-${{ github.run_attempt }}` artifact takes, beside the sampler's two files, which
+into the one directory the `${{ env.ARTIFACT_LANE }}-record-alone-${{ matrix.project }}-${{ github.run_attempt }}` artifact takes, beside the sampler's two files, which
 the browser step already wrote there. No file store runs on this machine, so there is no
 store log to collect.
 
@@ -777,7 +826,7 @@ connections read, which takes the two-minute floor until runs of it are measured
 the stack's container and builds the stall library, and its four runs since took 118 s,
 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
 the 202 s its 4 min derives from. With budgets on the steps, the
-`if: failure()` upload of `dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
+`if: failure()` upload of `${{ env.ARTIFACT_LANE }}-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
 
 The move into this workflow changed none of that: the job runs the same steps on the same
 machine, and full-lane run 42316487530 falls inside every figure above - 9 s install,
@@ -891,10 +940,14 @@ exactly one - and the only thing that can read a count back is the fake embedder
 no project of another lane can carry it and e2e/search-tiers.e2e.ts skips everywhere else.
 This job is where it runs.
 
-On both lanes, where the alone and multiprocess jobs run on `full` alone: this is one
-Chromium install and two rows of about 90 s, and it holds a check of the pull request it is
-on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a second server shape.
-A lane that skipped it would leave the claim unread until the merge queue.
+On the pull-request and full lanes, where the alone and multiprocess jobs run on `full`
+alone: this is one Chromium install and two rows of about 90 s, and it holds a check of the
+pull request it is on (check k2 of dispatch://INFRA-1042, the bar's embedding count) rather
+than a clock reading or a second server shape. A lane that skipped it would leave the claim
+unread until the merge queue. Not on `references`, which its `if:` holds it off: that lane
+runs the spec files its arm of .github/scripts/dispatch-browser-shard-suite.sh names, and
+e2e/search-tiers.e2e.ts is none of them, and this job's check stays the pull-request lane's,
+which runs it.
 
 Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
 shard and alone legs, and this job's own conclusion is what the caller's `dispatch-browser`
@@ -1181,6 +1234,9 @@ newest attempt of each leg's blob report" can
 tell the attempts apart. A run's artifact list holds every attempt's artifacts and this
 pattern matches them all; two attempts of one leg hold the same inner paths, so merging
 them into one directory let one attempt overwrite the other in an order nothing fixes.
+The pattern is this lane's prefix, ARTIFACT_LANE of the workflow's `env:`, which the shard
+job's upload names too: a references run beside a pull-request run in one workflow run
+must not join the other's legs.
 
 ## Why a refused blob download is reported as a refused read
 
@@ -1208,7 +1264,9 @@ The newest attempt of each leg, and no other, into one directory of the shape th
 is what .github/scripts/ci-ok-report.sh already does with the jobs' ci-ok reports; the
 script's head says what two attempts of one leg did to a merged report when they were
 downloaded over each other. It runs from $GITHUB_WORKSPACE, this step's own directory,
-and its log names the attempt it took for each leg.
+and its log names the attempt it took for each leg. The third argument is the lane's
+artifact prefix, ARTIFACT_LANE from this step's environment, which the download step
+matched.
 
 ## What the merged report's three outputs are for
 
@@ -1255,10 +1313,12 @@ third, a missing blob, is in reading one, where it is found.
 
 ## When the merge job posts ci-ok
 
-ci.yaml's call only: on a merge-group run whose group ci.yaml's dispatch-browser job's
-own result decides it posts the failing ci-ok at once, and on every other run it posts
-nothing, the verdict being ci.yaml's `ci-ok` job's own check run
+ci.yaml's dispatch-browser call only: on a merge-group run whose group ci.yaml's
+dispatch-browser job's own result decides it posts the failing ci-ok at once, and on
+every other run it posts nothing, the verdict being ci.yaml's `ci-ok` job's own check run
 (.github/actions/ci-ok-report says how). This is the job that posts for that call: it
 needs every other job of this workflow, and the step is its last, which is the shape
 .github/scripts/ci_filter_coverage.py's check_ci_ok holds a called workflow to. The
-nightly workflow passes no `ci-ok-changes`, and the step skips.
+nightly workflow passes no `ci-ok-changes`, and the step skips; nor does ci.yaml's
+dispatch-references job, which is outside ci-ok on purpose (CI_OK_EXEMPT), and which
+check_ci_ok refuses to let report.

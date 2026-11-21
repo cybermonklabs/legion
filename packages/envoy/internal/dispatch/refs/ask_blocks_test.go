@@ -582,7 +582,7 @@ func TestAnAskWriteReadsItsQuestionsOnce(t *testing.T) {
 	}
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		replacement.Queue(b)
-		indexing.Queue(b)
+		indexing.SettlingForms().Queue(b)
 		return nil
 	}); err != nil {
 		t.Fatalf("index the ask's question and its parts: %v", err)

@@ -149,7 +149,7 @@ func TestMentionsStoreTheWholeIdOfAShortReferenceAndTheKeysThatExist(t *testing.
 		source := resolverSource(index + 1)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
 		located := NewReader(ctx, tx, "comment", source, resolverServer).Mentions(test.body)
-		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
+		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", source); !reflect.DeepEqual(got, test.want) {
@@ -226,7 +226,7 @@ func TestMentionsStoreTheWholeIdOfAProjectDocumentsShortReference(t *testing.T) 
 		source := resolverSource(index + 100)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
 		located := NewReader(ctx, tx, "comment", source, resolverServer).Mentions(test.body)
-		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
+		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", source); !reflect.DeepEqual(got, test.want) {
@@ -296,7 +296,7 @@ func TestQuestionReferencesResolveAgainstTheTextsOwnDocument(t *testing.T) {
 			insertPrefixComment(t, tx, test.source, "ACME-1", test.body)
 		}
 		located := NewReader(ctx, tx, "comment", test.source, resolverServer).Mentions(test.body)
-		if _, err := replaceRefs(ctx, tx, "comment", test.source, text.Refs(located), nil); err != nil {
+		if _, err := replaceRefs(ctx, tx, "comment", test.source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", test.source); !reflect.DeepEqual(got, test.want) {
@@ -465,7 +465,7 @@ func TestAFailedResolverLeavesTheWriteStoringTheTextAsWritten(t *testing.T) {
 	if want := text.ExtractAt(body, resolverServer); !reflect.DeepEqual(located, want) {
 		t.Errorf("a failed resolver read %#v; want the text as written, %#v", located, want)
 	}
-	if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, true); err != nil {
 		t.Fatalf("the write failed on what its body cites: %v", err)
 	}
 	want := []Target{{"ask", resolverAsk[:8]}}

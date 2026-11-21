@@ -100,7 +100,8 @@ type BlockIndexing struct {
 //
 // A block whose text (markdown[From:To]) is unchanged keeps the version its text last changed in;
 // a new, changed or restored block takes this version, dated versionAt, and its excerpt is its
-// text cut to BlockExcerptRunes, the excerpt a document's mention has shown since migration 0092.
+// text as BlockExcerpt cuts it, the excerpt a document's mention has shown since migration 0092;
+// serverURL is the deployment whose dashboard URLs that excerpt is cut around.
 // A block the version no longer holds is deleted. The windows the version's blocks are embedded
 // in are not planned here and not written by this index: the row it records marks the document
 // owed them, and the block-index tick's window arm writes them (Queue, DocumentsOwedWindows).
@@ -121,6 +122,7 @@ func PlanBlocks(
 	blocks []model.ArtifactBlock,
 	located []text.Located,
 	pointers []Pointer,
+	serverURL string,
 ) (BlockIndexing, error) {
 	stored := maps.Clone(index.sums)
 	indexing := BlockIndexing{artifactID: artifactID, version: version, versionAt: versionAt, firstIndexing: len(stored) == 0}
@@ -142,7 +144,7 @@ func PlanBlocks(
 			continue
 		}
 		indexing.ids, indexing.types, indexing.sums = append(indexing.ids, block.ID), append(indexing.types, block.Type), append(indexing.sums, hexSum)
-		indexing.excerpts = append(indexing.excerpts, text.HeadRunes(body, BlockExcerptRunes))
+		indexing.excerpts = append(indexing.excerpts, BlockExcerpt(body, serverURL))
 		indexing.textIDs, indexing.texts = append(indexing.textIDs, block.ID), append(indexing.texts, &body)
 	}
 	indexing.deleted = make([]string, 0, len(stored))

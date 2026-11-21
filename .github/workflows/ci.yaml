@@ -89,6 +89,7 @@ env:
     [
       "cancel-started",
       "ci-ok",
+      "dispatch-references",
       "pr-title"
     ]
 
@@ -179,6 +180,8 @@ jobs:
       dispatch_ui: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_ui }}
       # why: .github/ci-notes/ci.md#why-the-browser-suite-is-ungated-and-what-the-label-decides
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser }}
+      # why: .github/ci-notes/ci.md#why-the-reference-rows-preview-carries-no-full-ci-term
+      dispatch_references: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_references }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
       # why: .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the
       envoy_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go || 'false' }}
@@ -547,6 +550,18 @@ jobs:
       # why: .github/ci-notes/ci.md#what-the-lane-input-reads
       lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # why: .github/ci-notes/ci.md#the-reference-rows-preview-job-what-it-runs-and-why-it-gates-nothing
+  dispatch-references:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.dispatch_references == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    # why: .github/ci-notes/ci.md#why-the-dispatch-references-job-declares-two-scopes-and-not-checks-write
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/dispatch-browser.yaml
+    with:
+      lane: references
 
   claude-envoy:
     needs: changes

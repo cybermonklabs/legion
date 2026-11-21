@@ -88,7 +88,7 @@ export function PriorityPage(): ReactNode {
       </div>
     );
 
-  const { description, title } = item.priority;
+  const { description, description_tree: descriptionTree, title } = item.priority;
   const owners = [...new Set(items.map(ownerOf))].sort((a, b) => a.localeCompare(b));
 
   return (
@@ -106,8 +106,9 @@ export function PriorityPage(): ReactNode {
                   label="Title"
                   onSave={(next) => {
                     const named = next.trim();
-                    if (named === "" || named === title) return;
-                    patch.mutate({
+                    // A blank title, or the one it already has, is no write to make.
+                    if (named === "" || named === title) return Promise.resolve();
+                    return patch.mutateAsync({
                       id,
                       input: { title: named },
                       label: `Rename the priority “${title}” to “${named}”`,
@@ -130,7 +131,7 @@ export function PriorityPage(): ReactNode {
                   id={OWNER_FIELD}
                   label="Owner"
                   onSave={(owner) =>
-                    patch.mutate({
+                    patch.mutateAsync({
                       id,
                       input: { owner },
                       label: `Owner of the priority “${title}”`,
@@ -165,9 +166,10 @@ export function PriorityPage(): ReactNode {
             <PriorityDescription
               canWrite={canWrite}
               description={description}
+              descriptionTree={descriptionTree}
               label={`Description of ${item.order}`}
               onSave={(next) =>
-                patch.mutate({
+                patch.mutateAsync({
                   id,
                   input: { description: next },
                   label: `Description of the priority “${title}”`,

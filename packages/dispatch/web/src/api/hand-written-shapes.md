@@ -115,7 +115,11 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   `Refusals`, and the emitter has no route to attach it to. The dashboard reads it from this
   hand-written type, and `scripts/gen-go.ts` renders the code into Go. Giving it a Go type and
   attaching it to the `Refusals` of every route that takes an id would generate it; that is a
-  change to which routes declare which refusals, which this issue does not make.
+  change to which routes declare which refusals, which this issue does not make. Its
+  `first_line_tree` is the display tree of `first_line`, which the server sends beside it under
+  `Dispatch-Trees: 1` as it does for every other stored text the dashboard draws, so the list
+  of candidates draws each line from the server's tree rather than the page's own parse; a
+  document candidate, whose first line is its file's name, has none.
 
 ## What is not generated, and is not an exception either
 

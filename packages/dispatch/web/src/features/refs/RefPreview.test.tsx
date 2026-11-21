@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the hover-intent sites below need a pointer event user-event cannot send (a pointerType, a held button, a relatedTarget), and `scroll` has no user-event form at all.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -17,10 +17,17 @@ import type {
   IssueDetails,
   IssueReferenceSummary,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "./markdown-engine";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { shortForm } from "./routes";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function issue(key: string, title: string): IssueDetails {
   return {
@@ -166,6 +173,35 @@ test("the card opens only after the hover delay, loads populated, and closes whe
     });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     expect(first).not.toHaveAttribute("aria-describedby");
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+// The hover asks for its target before the card opens, so a card that opens on a target whose
+// read failed shows the reference's short form rather than asking the same read a second time.
+test("a hover over a target whose read fails asks for it once, not again when its card opens", async () => {
+  const getIssue = spyOn(api, "getIssue").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no issue CORE-1" })
+  );
+  jest.useFakeTimers();
+  const view = render(<Harness />);
+  try {
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+    fireEvent.pointerOver(screen.getByRole("link", { name: "first" }), { pointerType: "mouse" });
+    // The mocked read settles on microtasks alone, which the async act flushes.
+    await act(async () => {});
+    expect(getIssue).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    await act(async () => {});
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      shortForm({ key: "CORE-1", kind: "issue" })
+    );
+    expect(getIssue).toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();
     getIssue.mockRestore();

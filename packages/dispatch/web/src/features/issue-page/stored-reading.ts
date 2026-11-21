@@ -140,10 +140,10 @@ const EDGE_SPACE = /^[ \t]+|[ \t]+$/gu;
  * engine's parse less GFM's autolink literals (`STORED_TEXT_PARSE`) and held as a `DisplayTree`
  * of the shape the server's reading of a text has, or, for a text that holds no markup
  * (`isPlainText`), built as that parse would read it (`plainReading`). The walks that read the
- * server's reading - its words (`wordsOf`), a node's first block (`lineWords`), its addresses
- * written short (`withShortAddresses`) - so read a stored text the same way. Its words are the
- * words of that parse, which are what the server's reading holds for every text that holds none
- * of three things: a container directive, a Proof mark span and a bare address holding markup
+ * server's reading - its words (`wordsOf`) and a node's first block (`lineReading`), which the
+ * shared projection draws - so read a stored text the same way. Its words are the words of that
+ * parse, which are what the server's reading holds for every text that holds none of three
+ * things: a container directive, a Proof mark span and a bare address holding markup
  * (`STORED_TEXT_PARSE`), so a place that has only the text reads what the server's reading of it
  * would hold (R21).
  *
@@ -170,7 +170,7 @@ const EDGE_SPACE = /^[ \t]+|[ \t]+$/gu;
  * caller that names no holder is answered the reading a holder holds where there is one, and
  * otherwise a reading parsed for it alone and remembered nowhere, since nothing would ever
  * release it. A reading is shared by every caller that reads its text, so nothing may change
- * one: `withShortAddresses` writes an address into a copy of the nodes it changes.
+ * one.
  */
 export function storedReading(markdown: string, holder?: object): DisplayTree {
   // A holder asking again for the text it last asked for is answered first, before even the
@@ -250,10 +250,12 @@ function blocksOf(nodes: readonly Parsed[]): DisplayTree[] {
 /**
  * The reading of one block of the parse and what it holds, by the server's name for it. A block
  * of HTML is a paragraph holding it as one `html` leaf, as the server shows one, since the
- * server's schema carries HTML inline only. Front matter is one text run of its lines between
- * two plain `---` fences, and of the two fences alone where it holds nothing, as the server
- * writes it (`parseFrontmatterBlock`, `pmdoc/lines.go`). A link reference definition, which only
- * names a link's target, draws nothing and is `undefined`.
+ * server's schema carries HTML inline only. An ordered list keeps the number it starts on as its
+ * `order`, as the server keeps it (`parseList`, `pmdoc/parse.go`), so `3. Ship it` reads `3.`.
+ * Front matter is one text run of its lines between two plain `---` fences, and of the two fences
+ * alone where it holds nothing, as the server writes it (`parseFrontmatterBlock`,
+ * `pmdoc/lines.go`). A link reference definition, which only names a link's target, draws
+ * nothing and is `undefined`.
  */
 function blockOf(node: Parsed): DisplayTree | undefined {
   switch (node.type) {
@@ -263,10 +265,12 @@ function blockOf(node: Parsed): DisplayTree | undefined {
     case "blockquote":
       return withContent("blockquote", blocksOf(node.children));
     case "list":
-      return withContent(
-        node.ordered === true ? "ordered_list" : "bullet_list",
-        blocksOf(node.children)
-      );
+      return node.ordered === true
+        ? {
+            ...withContent("ordered_list", blocksOf(node.children)),
+            attrs: { order: node.start ?? 1 },
+          }
+        : withContent("bullet_list", blocksOf(node.children));
     case "listItem":
       return withContent("list_item", blocksOf(node.children));
     case "code": {

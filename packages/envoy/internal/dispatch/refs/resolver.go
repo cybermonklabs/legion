@@ -86,6 +86,13 @@ func NewReaderInScope(ctx context.Context, q Queryer, fromKind, fromID, serverUR
 	return reader
 }
 
+// ServerURL is the deployment the reader reads its mentions with, whose dashboard URLs are
+// references: what a write that cuts the head of the same text an edge shows cuts it against
+// (EditedTargets).
+func (r *Reader) ServerURL() string {
+	return r.serverURL
+}
+
 // Mentions is the references body writes, read with the whole grammar (text.Mentions): the
 // `dispatch://` and dashboard addresses it spells out, the issue keys it writes bare, the
 // `#id`s naming the question blocks of the document the reader's source belongs to, and the

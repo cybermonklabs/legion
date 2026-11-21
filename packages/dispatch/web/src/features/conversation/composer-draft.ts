@@ -1,16 +1,15 @@
 import type { AskOption } from "../../api/types";
-import type { AcceptedMention, ComposerOwner, ReplyTarget } from "./composer-model";
-import { mentionText, survivingMentions } from "./send-request";
+import { draftParties, partyMention, partyMentionSpan } from "../refs/party-references";
+import type { ComposerOwner, ReplyTarget } from "./composer-model";
 
 /** The composer's draft as its field holds it, and what a draft starts from at an address: the
  *  channel's seed and a new reply's prefill. `MentionComposer` and the hooks that keep its drafts
  *  (`useKeptDrafts.ts`) both read these, so neither of the two imports the other. */
 
-/** A draft as the composer holds it: the text, the mentions accepted in it, and, when it is a
- *  suggestion, its replacement. Mentions are offsets into that exact text. */
+/** A draft as the composer holds it: the text, and, when it is a suggestion, its replacement.
+ *  Who it addresses is in that text, written there as a reference (R4). */
 export interface Draft {
   readonly body: string;
-  readonly mentions: readonly AcceptedMention[];
   readonly replacement?: string;
 }
 
@@ -39,110 +38,63 @@ export function submittedAskOptions(options: readonly AskOptionDraft[]): AskOpti
   return submitted;
 }
 
-export function mentionDisplay(title: string, target: string): string {
-  const trimmed = title.trim();
-  if (trimmed !== "" && !/^(?:session|role):/i.test(trimmed) && !/[@\r\n]/.test(trimmed)) {
-    return trimmed;
-  }
-  return target.replace(":", " ");
-}
-
 /** The target a message in this channel already reaches: mentioning it says nothing. */
 function ownTarget(owner: ComposerOwner): string | null {
   return owner.kind === "session" ? `session:${owner.sessionId}` : null;
 }
 
 /**
- * What a draft becomes under a channel's seed: the reader's prose with the records still in step
- * with it, and the channel's own mentions seeded in front of whatever is not already there. A
- * mount applies it to no draft at all; a host that changes the seed - an Agents row's issue pick,
- * or a reply that moves the message to another channel - has it applied to the live draft in
- * place, so the draft never parts from the composer, or from a send it has in flight.
+ * What a draft's text becomes under a channel's seed: the reader's prose with the channel's own
+ * mentions written in front of whatever it does not already name. A mount applies it to no
+ * draft at all; a host that changes the seed - an Agents row's issue pick, or a reply that
+ * moves the message to another channel - has it applied to the live draft in place, so the
+ * draft never parts from the composer, or from a send it has in flight.
  *
- * Three rules keep the text and the accepted records saying the same thing, because only the
- * records reach the wire (`survivingMentions` at send) while only the text reaches the reader:
+ * Both rules read the text itself (`draftParties`), which is the whole record of who a draft
+ * names (R4):
  *
- * - A record counts only while its span is untouched (`survivingMentions`). A span the reader
- *   edited is their prose: the record goes, the text stays.
  * - The channel's own mention belongs to the channel. Entering one that seeds none - a direct
- *   message, which already reaches its session - takes the untouched record for that session out
- *   of the text with its separating space. Every other surviving record stays, so a trip back
- *   restores it.
- * - Seeding is by target, not by position: a mention this channel owes is added only when no
- *   surviving record already names it, wherever in the body that record sits.
+ *   message, which already reaches its session - takes that session's mention out of the text,
+ *   its words and its separating space with it. A trip back seeds it again.
+ * - Seeding is by party, not by position: a mention this channel owes is added only when the
+ *   text does not name that party already, wherever in it that mention sits.
  */
 export function seededDraft(
   seedMentions: readonly { readonly target: string; readonly title: string }[],
-  draft: Draft | undefined,
+  draft: string,
   owner: ComposerOwner
-): { body: string; mentions: AcceptedMention[] } {
-  let body = draft?.body ?? "";
-  let records = survivingMentions(body, draft?.mentions ?? []);
+): string {
+  let body = draft;
   const own = ownTarget(owner);
-  const addressed = own === null ? undefined : records.find((record) => record.target === own);
+  const addressed = own === null ? undefined : partyMentionSpan(body, own);
   if (addressed !== undefined) {
     const cut =
       body.slice(addressed.end, addressed.end + 1) === " " ? addressed.end + 1 : addressed.end;
-    const width = cut - addressed.start;
     body = body.slice(0, addressed.start) + body.slice(cut);
-    records = records
-      .filter((record) => record !== addressed)
-      .map((record) =>
-        record.start >= cut
-          ? { ...record, end: record.end - width, start: record.start - width }
-          : record
-      );
   }
-  const owed = seedMentions.filter(
-    (mention) => !records.some((record) => record.target === mention.target)
-  );
-  let offset = 0;
-  const seeded = owed.map((mention) => {
-    const text = mentionDisplay(mention.title, mention.target);
-    const start = offset;
-    offset += mentionText(text).length;
-    const end = offset;
-    offset += 1;
-    return { end, start, target: mention.target, text };
-  });
-  const prefix = owed
-    .map((mention) => mentionText(mentionDisplay(mention.title, mention.target)))
+  const named = new Set(draftParties(body).targets);
+  const prefix = seedMentions
+    .flatMap((mention) =>
+      named.has(mention.target) ? [] : (partyMention(mention.target, mention.title) ?? [])
+    )
     .join(" ");
-  const shift = prefix === "" ? 0 : prefix.length + 1;
-  return {
-    body: [prefix, body].filter((part) => part !== "").join(" "),
-    mentions: [
-      ...seeded,
-      ...records.map((record) => ({
-        ...record,
-        end: record.end + shift,
-        start: record.start + shift,
-      })),
-    ],
-  };
+  return [prefix, body].filter((part) => part !== "").join(" ");
 }
 
-/** What a new reply to `replyTo` starts with: the mentions its parent carries, each once, as the
- *  mention picker writes them. */
+/** What a new reply to `replyTo` starts with: the parties its parent was delivered to, each
+ *  mentioned once, as the links that name them. The reply's own mentions are its words, and the
+ *  reader edits them as words. A mention the parent was delivered to twice is one party, and the
+ *  draft they are written into is empty, which is what a channel's own seed is written into
+ *  (`seededDraft`). */
 export function replyPrefill(replyTo: ReplyTarget): Draft {
   const carried = replyTo.mentions ?? [];
   const deduplicated = carried.filter(
     (mention, index) =>
       carried.findIndex((candidate) => candidate.target === mention.target) === index
   );
-  const texts = deduplicated.map((mention) =>
-    mentionText(mentionDisplay(mention.title, mention.target))
-  );
-  let offset = 0;
   return {
-    body: texts.join(" "),
-    mentions: deduplicated.map((mention, index) => {
-      const text = mentionDisplay(mention.title, mention.target);
-      const start = offset;
-      offset += texts[index]?.length ?? 0;
-      const end = offset;
-      offset += 1;
-      return { end, start, target: mention.target, text };
-    }),
+    body: deduplicated
+      .flatMap((mention) => partyMention(mention.target, mention.title) ?? [])
+      .join(" "),
   };
 }
