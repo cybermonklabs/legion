@@ -62,13 +62,16 @@ func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 
 // deviceLoginCanOpen reports whether form is a device authorization the provider can open a login
 // for: the device login's own client, and a person's machine login Deps.DeviceLogin would open
-// short of its jti (machine.Service.CheckPersonLogin: the object's signature, audience, times,
-// detail and reason, no service, a person's login_hint and a dpop_jkt that is its key), none of
-// which reads the database. A request that fails either is refused by the provider or by
-// Deps.DeviceLogin with nothing written. A replay of an object that passes spends the edge's shared
-// bucket, since only Deps.DeviceLogin reads its jti; that is the accepted cost of checking without
-// the database. The judgment reads its own clock, so a login it refuses can still open; such a
-// login spends the bucket once open (deviceAuthorization).
+// short of its jti (machine.Service.CheckPersonLogin: the object's signature, audience, times, one
+// launcher_credential detail, its reason, no service, a person's login_hint and a dpop_jkt that is
+// its key), none of which reads the database. A request that fails it, a mismatched dpop_jkt, a
+// service's login, a missing login_hint and agent_secret details among them, spends nothing of the
+// edge's shared bucket. A request that passes it and still opens no login spends one token: a
+// replay, whose jti only Deps.DeviceLogin reads; one the provider refuses for a reason of its own
+// after this check; and one the named person's bucket refuses (spendDeviceLoginBucket), whose login
+// is rolled back. Each needs an object signed for the edge, which anyone with a key of their own
+// makes as they make a valid login. The judgment reads its own clock, so a login it refuses can
+// still open; such a login spends the bucket once open (deviceAuthorization).
 func (s *server) deviceLoginCanOpen(form url.Values) bool {
 	if form.Get("client_id") != oauthwire.ClientID {
 		return false

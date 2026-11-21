@@ -405,9 +405,9 @@ const overallKey = "edge"
 // whose iat crosses a second between the two clock reads is, spends it once open, or is rolled
 // back. So one pod holds at most about 30 + 900/2 = 480 pending edge logins, three rows each,
 // whatever the number of addresses a flood comes from. An outside collaborator opens a few logins
-// a day, so the limit is far above any real use. A request that opens no login and that the
-// pre-check refuses (another client's id, an object the device login would refuse) spends
-// nothing; a replay of a valid object, whose jti only the device login reads, spends one.
+// a day, so the limit is far above any real use. A request the pre-check refuses (another
+// client's id, an object the device login would refuse) spends nothing; one that passes it and
+// opens no login (a replay, whose jti only the device login reads, among them) spends one.
 //
 // Its cost: it caps new device logins at the edge for every outside person together. A caller
 // who sends valid device authorizations from about 15 addresses (each within its own address
