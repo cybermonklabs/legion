@@ -234,8 +234,8 @@ export async function deviceLoginPlace(path: string): Promise<void> {
 
 /** How the login's file is opened to be read: read-only, without waiting (an open of a named pipe
  *  would wait for a writer), and never as this process's controlling terminal (the open of a tty
- *  can make it one). A link is followed: the setting may name one, and the directory of the file
- *  it links to is checked before the open ({@link readDeviceLogin}). */
+ *  can make it one). A link is followed: the setting may name one, and the directory of each file
+ *  it leads through is checked before the open ({@link checkLinkDirectories}). */
 const LOGIN_READ = constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOCTTY;
 
 /** The most links a read follows from the login's path to its file: Linux's own bound
@@ -243,34 +243,45 @@ const LOGIN_READ = constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOCTT
 const LINKS_FOLLOWED_AT_MOST = 40;
 
 /**
- * The path a link at `path` leads to, or null where `path` is no link. Each link is followed by
- * its `lstat` and `readlink` alone, up to the first path that is no link or that is not there, so
- * no file a link names is opened before its directory is checked ({@link readDeviceLogin}), and a
- * path that is no link, as a save leaves it, costs one `lstat`. A relative target is taken from
- * the link's own directory, joined and not normalized, so the system resolves a `..` in it as an
- * open does. More than {@link LINKS_FOLLOWED_AT_MOST} links is refused as a loop of links.
+ * Refuses a link at `path`, the login's path, whose way to the login's file runs through a
+ * directory another user could replace a file in ({@link checkLoginDirectory}): the directory of
+ * each link it leads through and of the file at its end, each checked before that link is read or
+ * that file opened. `path`'s own directory the caller has checked. Each link is followed by its
+ * `lstat` and `readlink` alone, up to the first path that is no link or that is not there, so no
+ * file a link names is opened, and a path that is no link, as a save leaves it, costs one `lstat`.
+ * A relative target is taken from the link's own directory, joined and not normalized, so the
+ * system resolves a `..` in it as an open does. More than {@link LINKS_FOLLOWED_AT_MOST} links is
+ * refused as a loop of links. `absent` is the refusal of a directory that is not there.
  */
-async function linkTarget(path: string): Promise<string | null> {
+async function checkLinkDirectories(path: string, absent: () => Error): Promise<void> {
+  let checked = dirname(path);
   let at = path;
   for (let followed = 0; ; followed += 1) {
-    const end = followed === 0 ? null : at;
+    if (dirname(at) !== checked) {
+      checked = dirname(at);
+      await checkLoginDirectory(
+        checked,
+        absent,
+        `the directory of a file ${DEVICE_LOGIN_FILE_NAMED} links to`
+      );
+    }
     let info: Stats;
     try {
       info = await lstat(at);
     } catch (error) {
-      if (readErrorCode(error) === "ENOENT") return end;
+      if (readErrorCode(error) === "ENOENT") return;
       throw refusedBy(error, `read ${DEVICE_LOGIN_FILE_NAMED}`);
     }
-    if (!info.isSymbolicLink()) return end;
+    if (!info.isSymbolicLink()) return;
     if (followed === LINKS_FOLLOWED_AT_MOST) throw notARegularFile("a loop of links");
     let target: string;
     try {
       target = await readlink(at);
     } catch (error) {
       // The link was replaced since its lstat (EINVAL: a save's rename) or removed: what is there
-      // now is the end.
+      // now is the end, in a directory checked already.
       const code = readErrorCode(error);
-      if (code === "EINVAL" || code === "ENOENT") return end;
+      if (code === "EINVAL" || code === "ENOENT") return;
       throw refusedBy(error, `read ${DEVICE_LOGIN_FILE_NAMED}`);
     }
     at = isAbsolute(target) ? target : `${dirname(at)}/${target}`;
@@ -287,11 +298,11 @@ async function linkTarget(path: string): Promise<string | null> {
  * value, a key that is not a P-256 PKCS#8 key, an expiry that is no time) is refused. The
  * directory is checked before the file is opened: in one another user can write to, that user
  * picks what an open would open, and the open of a device can do something. Where the setting
- * names a link, the directory of the file it links to is checked too ({@link linkTarget}), before
- * the open, for the same reason: the file is in that directory. The path is then opened once
- * ({@link LOGIN_READ}), and the checks and the read are of that one open file: a look at the path
- * and a second open could open a named pipe put in its place between the two, and a read of a pipe
- * nobody writes to never returns. Each refusal names the file by its setting
+ * names a link, the directory of each link it leads through and of the file at its end is checked
+ * too ({@link checkLinkDirectories}), before the open, for the same reason. The path is then
+ * opened once ({@link LOGIN_READ}), and the checks and the read are of that one open file: a look
+ * at the path and a second open could open a named pipe put in its place between the two, and a
+ * read of a pipe nobody writes to never returns. Each refusal names the file by its setting
  * ({@link DEVICE_LOGIN_FILE_NAMED}) and quotes none of its content. The refresh and access tokens
  * are held (`holdSecret`), so no line this process prints carries them.
  */
@@ -303,14 +314,7 @@ export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
   const failed = (error: unknown) =>
     new Error(`read ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   await checkLoginDirectory(dirname(path), absent);
-  const linked = await linkTarget(path);
-  if (linked !== null) {
-    await checkLoginDirectory(
-      dirname(linked),
-      absent,
-      `the directory of the file ${DEVICE_LOGIN_FILE_NAMED} links to`
-    );
-  }
+  await checkLinkDirectories(path, absent);
   let handle: FileHandle;
   try {
     handle = await open(path, LOGIN_READ);

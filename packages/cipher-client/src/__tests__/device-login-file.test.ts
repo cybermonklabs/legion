@@ -277,6 +277,96 @@ test("a login reached through a link into a directory others may write is refuse
   }
 });
 
+test("a login reached through a link in a directory others may write is refused before it is opened", async () => {
+  // A link in the middle of a chain sits in a directory of its own: another user who can write
+  // there replaces that link, and with it picks what the open opens.
+  const stub = broker();
+  const path = loginPath();
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const middle = join(makeDirectory(), "middle", "device-login.json");
+  await mkdir(dirname(middle), { mode: 0o700 });
+  const target = join(makeDirectory(), "real", "device-login.json");
+  await writeDeviceLoginFile(target, stub.url);
+  await fs.symlink(target, middle);
+  await fs.symlink(middle, path);
+  const opened: string[] = [];
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    opened.push(String(args[0]));
+    return await realOpen(...args);
+  }) as typeof fs.open);
+  try {
+    await chmod(dirname(middle), 0o777);
+    const refused = await readDeviceLogin(path).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refused?.message).toContain("mode 0777");
+    expect(refused?.message).toContain("links to");
+    expect(refused?.message).toContain("chmod 700");
+    expect(refused?.message).not.toContain(dirname(middle));
+    expect(opened).not.toContain(path);
+    // Control: the same chain with every directory others may at most read and enter is read.
+    await chmod(dirname(middle), 0o755);
+    expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
+    expect(opened).toContain(path);
+  } finally {
+    opens.mockRestore();
+  }
+});
+
+test("a relative link in a directory reached through a link climbs from where the link really is", async () => {
+  // The system resolves a `..` in a link's target from the directory the link is really in. Here
+  // the login's directory is a link, so `..` from it is not what the path's own spelling says.
+  const stub = broker();
+  const base = makeDirectory();
+  const real = join(base, "deep", "legion");
+  await mkdir(real, { recursive: true, mode: 0o700 });
+  const target = join(base, "deep", "hop", "next.json");
+  await writeDeviceLoginFile(target, stub.url);
+  await fs.symlink(real, join(base, "legion"));
+  const path = join(base, "legion", "device-login.json");
+  await fs.symlink(join("..", "hop", "next.json"), path);
+  expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
+  // The directory checked is the one the file is really in.
+  await chmod(dirname(target), 0o777);
+  const refused = await readDeviceLogin(path).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(refused?.message).toContain("mode 0777");
+  expect(refused?.message).toContain("links to");
+});
+
+test("a link a save replaced between its lstat and its readlink is read as what is there now", async () => {
+  // A save renames a regular file over the link: its readlink then answers EINVAL, and the read
+  // goes on with the file the save left, in the login's own directory.
+  const stub = broker();
+  const path = loginPath();
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const target = join(dirname(path), "saved.json");
+  await writeDeviceLoginFile(target, stub.url);
+  await fs.symlink(target, path);
+  let reads = 0;
+  const realReadlink = fs.readlink;
+  const readlinks = spyOn(fs, "readlink").mockImplementation((async (
+    ...args: Parameters<typeof fs.readlink>
+  ) => {
+    reads += 1;
+    if (reads === 1) throw Object.assign(new Error("not a link"), { code: "EINVAL" });
+    return await realReadlink(...args);
+  }) as typeof fs.readlink);
+  try {
+    expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
+  } finally {
+    readlinks.mockRestore();
+  }
+  // Control: the read did reach the link's readlink.
+  expect(reads).toBe(1);
+});
+
 test("a lookup of the login's path that fails as missing does not make a regular login missing", async () => {
   // Bun's realpath opens the path and then reads where that open went, so it answers ENOENT where
   // a save renames a new file over the path between the two. A regular file needs no lookup.

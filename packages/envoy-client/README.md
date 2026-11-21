@@ -1098,8 +1098,9 @@ something other than a regular file, a link to one included: a directory, which 
 replace, a named pipe, which a read waits on until a process writes to it, a socket, a device or a
 loop of links. It reads the login a new one replaces, and every login it trades, only from a
 regular file of at most 64 KiB, in a directory it checks before it opens the file; where the
-setting names a link, it checks the directory of the file the link leads to as well. It exits 1
-when the broker refuses the login, the person denies it, its code expires, or the broker answers
+setting names a link, it checks the directory of each link on the way and of the file at its end
+as well. It exits 1 when the broker refuses the login, the person denies it, its code expires, or
+the broker answers
 a poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare
 challenge), naming its status; a poll the broker did not answer, its 429 and a 5xx are polled
 again, at the broker's interval, from 1 s and at most 60 s before any `slow_down` (each of which
