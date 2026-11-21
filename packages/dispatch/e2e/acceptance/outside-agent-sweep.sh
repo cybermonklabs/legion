@@ -15,6 +15,13 @@
 # and so is the live socket's control. Fills mode writes the full member's half of the GitHub proxy
 # rows (a `can_fail` line for each read that can fail) only with the full member's browser session,
 # since the proxy reads no token, so the sweep needs OUTSIDE_FULL_COOKIE_FILE.
+#
+# The contract this file reads is #4608's at fbabf8561c, fills version 3: `routes`, the SHA-256 of
+# the routes.txt the fills were made from, and `deployment`, of the member's own projects' keys and
+# creation times. A runner refuses fills of another version, of another routes.txt than its own
+# checkout's, or of another deployment, and refuses a SWEEP_LIVE_SECONDS below 30; each such refusal
+# is its UNKNOWN, and the sweep row's. So the workflow's checkout must hold this checkout's
+# routes.txt, and this box sends the fills only when they are version 3.
 
 # sweep_setup: sets sweep_script and sweep_problem, from the inputs and the browser's reading.
 sweep_setup() {
@@ -47,10 +54,16 @@ sweep_exec() {
 # sweep_prepare: the fills, and then the writer, which comments every 15 s on a scratch issue
 # (OUTSIDE_SWEEP_WRITE_ISSUE), about four comments a minute, until sweep_writer_stop.
 sweep_prepare() {
+  local first='' version=3
   [ -z "$sweep_problem" ] || return 0
   say "the sweep's fills mode"
   if ! (sweep_exec fills "$work/sweep-fills.log") || [ ! -s "$work/sweep-fills" ]; then
     sweep_problem="the sweep's fills mode made no file: $(text_of "$work/sweep-fills.log")"
+    return 0
+  fi
+  IFS= read -r first <"$work/sweep-fills"
+  if [ "$first" != "restricted-sweep-fills$tab$version" ]; then
+    sweep_problem="the sweep beside this leg wrote fills of another version than $version, which a runner of #4608's contract refuses: their first line is ${first:0:60}"
   elif [ "$(wc -c <"$work/sweep-fills")" -gt 40960 ]; then
     sweep_problem="the sweep's fills file is $(wc -c <"$work/sweep-fills") bytes, past the 40 KiB one workflow input holds"
   else

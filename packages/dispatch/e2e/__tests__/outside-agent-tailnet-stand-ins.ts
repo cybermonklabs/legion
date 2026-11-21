@@ -88,10 +88,12 @@ export interface StandIns {
   /** The read sweep beside the leg and on the runner: the writer's one line (default a write
    *  delivered inside the runner's window, in the `write <UTC> <comment id> <message id>
    *  delivered` form); fills mode refusing to write a file, as it refuses one that lacks a fill;
-   *  and the runner's last line and exit (default PASS, 0). */
+   *  the fills' version (default 3, #4608's contract at fbabf8561c); and the runner's last line
+   *  and exit (default PASS, 0). */
   readonly sweep?: {
     readonly writer?: string;
     readonly fillsRefused?: boolean;
+    readonly fillsVersion?: number;
     readonly verdict?: string;
     readonly exit?: number;
   };
@@ -363,9 +365,10 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   const state = scratch("state");
   writeFileSync(join(state, "canary-refusal"), `${standIns.canaryRefusal}\n`);
   if (standIns.approve === false) writeFileSync(join(state, "login-expires"), "");
-  // The fills the sweep's fills mode writes, version 2: the project, where and when they were
-  // made, the repository, and a `can_fail` line for each proxy read, but only with the full
-  // member's cookie, as restricted-sweep.sh does.
+  // The fills the sweep's fills mode writes, version 3: the project, where they were made, the
+  // SHA-256 of the routes.txt and of the deployment they were made from and at, when, the
+  // repository, and a `can_fail` line for each proxy read, but only with the full member's
+  // cookie, as restricted-sweep.sh does.
   const canFail = [
     "GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}",
     "GET /api/github/rest/repos/{owner}/{repo}/issues/{number}",
@@ -376,9 +379,11 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   writeFileSync(
     join(state, "fills"),
     [
-      "restricted-sweep-fills\t2",
+      `restricted-sweep-fills\t${standIns.sweep?.fillsVersion ?? 3}`,
       "project\tPRIV",
       "origin\thttp://127.0.0.1",
+      `routes\t${"a".repeat(64)}`,
+      `deployment\t${"b".repeat(64)}`,
       `made_at\t${Math.floor(Date.now() / 1000)}`,
       `proxy_repo\t${proxyRepository}`,
       ...canFail.map((read) => `can_fail\t${read}`),

@@ -140,10 +140,16 @@ The tailnet leg does these steps, in this order:
    writer comments on the scratch issue `OUTSIDE_SWEEP_WRITE_ISSUE` and sends a direct message to
    the fills' session of that project, and prints `write <UTC> <comment id> <message id>
    delivered`, or `... not delivered` when the full member's own feed was not sent both; only a
-   delivered write counts. No full member's credential goes to the runner: the fills file (version
-   2, `restricted-sweep-fills<TAB>2`) holds none, and is at most 40 KiB so that it fits one input.
-   Fills mode writes no file that lacks a fill, and a runner refuses fills older than 55 minutes,
-   so the leg starts the public leg right after. The runner's own control of the member's feed is
+   delivered write counts. No full member's credential goes to the runner: the fills file holds
+   none, and is at most 40 KiB so that it fits one input. Its contract is #4608's at `fbabf8561c`,
+   fills version 3 (`restricted-sweep-fills<TAB>3`), which name the SHA-256 of the `routes.txt`
+   they were made from (`routes`) and of the member's own projects' keys and creation times
+   (`deployment`). Fills mode writes no file that lacks a fill, and the leg sends no fills of
+   another version. A runner refuses, before its first request, fills of another `routes.txt` than
+   its own checkout's, of another deployment, or older than 55 minutes, and a `SWEEP_LIVE_SECONDS`
+   below 30; so the workflow's checkout must hold this checkout's `routes.txt`, the workflow sets
+   no shorter window, and the leg starts the public leg right after the fills. Each refusal is the
+   runner's UNKNOWN, and the sweep row's. The runner's own control of the member's feed is
    the member's direct message to `SWEEP_MEMBER_SESSION`, their own session in the scratch
    project. The runner is the workflow's sweep step, not a leg, so the workflow sets it, to the
    session its driver registered at the edge as the test person; it needs no input from this leg.

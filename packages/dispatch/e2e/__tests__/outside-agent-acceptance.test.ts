@@ -645,6 +645,42 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
+      "the sweep reads UNKNOWN for each refusal of a version 3 runner, and the leg sends no fills of another version",
+      async () => {
+        // The runner's own refusals before its first request, as #4608's fbabf8561c words them.
+        const refusals = [
+          `UNKNOWN: SWEEP_FILLS_FILE was made from another route index: its routes.txt's SHA-256 is ${"a".repeat(64)}, and this run's is ${"c".repeat(64)}`,
+          "UNKNOWN: SWEEP_FILLS_FILE was made at another deployment: the member's own projects were created at other times there (fills bbbbbbbbbbbb, here dddddddddddd)",
+          "UNKNOWN: SWEEP_LIVE_SECONDS must be at least 30 on a runner, whose live window leaves the writer's 15 s delivery bound before its feed closes: 20",
+        ];
+        const runs = await runStandIns(
+          ...refusals.map((verdict) => ({ ...passingControls, sweep: { verdict, exit: 2 } })),
+          { ...passingControls, sweep: { fillsVersion: 2 } }
+        );
+        refusals.forEach((verdict, index) => {
+          const run = runs[index];
+          if (run === undefined) throw new Error(`run ${index} is missing`);
+          expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+            verdicts: { sweep: "UNKNOWN" },
+          });
+          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(`the sweep exited 2: ${verdict}`);
+        });
+        // Fills of another version stay on the box: no run gets them, and the sweep row says why.
+        const otherVersion = runs[3];
+        if (otherVersion === undefined) throw new Error("run 3 is missing");
+        expect({
+          verdicts: verdictsOf(otherVersion.stdout),
+          stdout: otherVersion.stdout,
+        }).toMatchObject({ verdicts: { sweep: "UNKNOWN" } });
+        expect(rowsOf(otherVersion.stdout).get("sweep")?.got).toContain(
+          "the sweep beside this leg wrote fills of another version than 3"
+        );
+      },
+      // The four runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+    );
+
+    test(
       "T1 reads a login nobody approved UNKNOWN, and T4 counts a revoke row with no verdict as UNKNOWN",
       async () => {
         const [control, expired, noVerdict] = await runStandIns(
