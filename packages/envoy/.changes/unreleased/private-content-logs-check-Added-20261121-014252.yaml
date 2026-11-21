@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  `scripts/private-content-logs-check.sh` proves, on one `dev-stack.sh --callout` run, that
+  Dispatch, the listener and the broker write no private project's text to their logs. It makes
+  the banner's `DEV_STACK_PRIV_PROJECT` private, writes a fresh marker into every text field of an
+  issue, a document, a comment mentioning the project's session, an ask, its answer, a direct
+  message and a secret tagged with the project, and into the names a request path carries, waits
+  for the comment's delivery, and searches every file under the stack's `logs/` for the marker:
+  a line that names it fails the run (exit 1), and a service log that did not grow, a refused step
+  or a delivery that never came is UNKNOWN (exit 2). `--control` claims a role named for the marker
+  at the listener, which logs it, so the run fails naming `logs/listener.log`.
+  `scripts/private-content-logs-check.test.sh` holds its verdicts to fakes in `envoy-go-checks`.
+time: 2026-11-21T01:42:52Z
+custom:
+    Issue: private-content-logs-check

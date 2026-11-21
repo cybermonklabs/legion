@@ -474,6 +474,38 @@ it presents `--service-token-file`, and `--no-credential` presents nothing.
 `CALLOUT_CHECK_GRANT_ALL=1`, a service granting every session's channel, fails line 2, and
 a hub that never drops the killed broker's connection fails line 6.
 
+## private-content-logs-check.sh
+
+Proves, on one `dev-stack.sh --callout` run, that Dispatch, the listener and the broker write no
+private project's text to their logs, which every worker of a deployment can read. It makes PRIV
+private through Dispatch's access route and registers PRIV's session at the listener for the
+`steer` delivery mode, then puts a fresh marker `R14-MARK-<16 hex>` in every text field of an
+issue, a project document, a comment mentioning PRIV's session, an ask, its answer and a direct
+message, written through the real routes, and in the value of a secret tagged
+`dispatch-project=PRIV`, written to the stack's secret store and reread by the broker. Its lower
+case goes in the names a request path carries: the document's slug, read back by it, a person
+added to PRIV's access list, and a GitHub proxy path no class reads. The broker logs a reread only
+when it refuses one, so the run also asks for one under a proof no session signed. It waits until
+Dispatch records the comment's delivery to PRIV's session as taken into the session's own stream
+(`sent`, or `queued`, which is what this stack records, since none of its clients reads that
+stream), then searches every file under the stack's `logs/` for the marker, ignoring case. A line
+that names it is `FAIL logs/<file>:<line>: ...` (exit 1). `UNKNOWN` (exit 2) is a refused step, a
+delivery that never came, a file that could not be read, or a service log (`dispatch.log`,
+`listener.log`, `broker.log`) that did not grow from the first marked write. PRIV's owner and
+session are the banner's `DEV_STACK_PRIV_*` lines. The session registers under the stack's shared
+listener token:
+a listener that delivers a private project's mention only to a session whose own credential lists
+the project never delivers the comment, and the run is `UNKNOWN` until the session registers with
+a token of its own. No step makes the broker read the secret's value. `--control` also claims a
+role named for the marker at the listener, which logs it, so the run must fail naming
+`logs/listener.log`, and is `UNKNOWN` when it does not. Like `callout-check.sh` it uses an
+exported callout stack or starts its own; `private-content-logs-check.test.sh` holds its verdicts
+to fakes.
+
+```bash
+LEGION_TEST_PG_DSN=postgres://... bash scripts/private-content-logs-check.sh [--control]
+```
+
 ## backend-count.sh
 
 Counts, for each test it names, the runs that passed on each store backend: the test's
