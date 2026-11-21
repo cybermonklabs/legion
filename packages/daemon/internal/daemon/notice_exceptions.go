@@ -577,7 +577,7 @@ func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) 
 	// hook that logs the release.
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, row := range released {
-			if err := r.records.ExpediteOutbox(ctx, tx, row, now); err != nil {
+			if _, err := r.records.ExpediteOutbox(ctx, tx, row, now); err != nil {
 				return err
 			}
 		}

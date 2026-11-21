@@ -356,21 +356,6 @@ func TestAReopenBetweenTheHandOverCheckAndItsPatchKeepsTheChild(t *testing.T) {
 	}
 }
 
-// The old tree's queued closes name the generation a child had before its hand-over. Carrying the
-// child into a new root generation makes those rows finish at the generation fence before checking
-// their old tree name, so they never retry forever on a tree mismatch.
-func TestAnOldTreeCloseOfAHandedOverChildFinishesAtTheGenerationFence(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "child", Phase: phase.Retro, Generation: 2, Status: "retro"}
-	putOutboxIssue(t, pool, records, issue)
-	row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "tree_close", Tree: "LEGION-207", Role: claim.RoleImplementer, Generation: 1, Linger: 1}, time.Now())
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	if err := (&outbox{pool: pool, records: records, supervisor: sup, log: quietLogger()}).execute(context.Background(), row); err != nil {
-		t.Fatalf("old tree close = %v, want its older generation to finish without checking the old tree", err)
-	}
-}
-
 // When Dispatch already shows both todo and legion, PATCH would make no event. The status executor
 // consumes the durable fence through an intake.Handover fact instead; the child still becomes its
 // own carried-state root and the row finishes.

@@ -1086,7 +1086,7 @@ func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 // two different mount namespaces' names for one file.
 func TestAClockPassKeepsALockAGitOfARoleNamespaceHoldsOpen(t *testing.T) {
 	requireRoleNamespaces(t)
-	scratch := namespaceScratch(t)
+	scratch := namespaceScratch(t, "")
 	c := newLockCloneUnder(t, filepath.Join(scratch, "issue"))
 	held := c.lock("index.lock", "a role's git is writing this", time.Hour)
 	free := c.lock("refs/heads/legion.lock", "nobody's", time.Hour)
