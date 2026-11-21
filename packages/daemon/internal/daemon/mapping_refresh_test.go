@@ -112,8 +112,14 @@ func mappingRigJS(t *testing.T, installs *installations, opts ...func(*workflowR
 	if err != nil {
 		t.Fatal(err)
 	}
+	// AckWait is a hang guard, not the subject: the consumers' preparation reads the issue's record
+	// from the store (prepareRepository, recordOf), and the mapping change reads the mapping, each
+	// bounded by AckWait. At 1 s a read a loaded runner made slower was cut and its event naked
+	// and prepared again, so whether a row's event applied inside its wait was the machine's to
+	// decide. A minute, or what is left of the test binary's deadline less a second when that is
+	// sooner (testwait.Bounded), only a hung read reaches.
 	if w.consumers, err = intake.OpenConsumers(ctx, js, w.pool, intake.ConsumerSpec{Project: "LEGION", Repositories: heard, Logger: quietLogger(),
-		AckWait: time.Second, NakDelay: 10 * time.Millisecond, PrepareRepository: w.prepareRepository, RepositoryMapping: w.mappingChange}); err != nil {
+		AckWait: testwait.Bounded(t, time.Minute, time.Second), NakDelay: 10 * time.Millisecond, PrepareRepository: w.prepareRepository, RepositoryMapping: w.mappingChange}); err != nil {
 		t.Fatal(err)
 	}
 	running, stop := context.WithCancel(ctx)
