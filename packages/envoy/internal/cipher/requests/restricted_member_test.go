@@ -319,7 +319,7 @@ func TestAJudgesApprovalIsRefusedWhileTheMemberKindCannotBeRead(t *testing.T) {
 // TestARestrictedMembersPodGetsNoSecretAfterTheSettingChanges: a person's pod enrolled for a
 // restricted member before the broker asked Dispatch, whose account BROKER_POD_OPERATORS then
 // drops or maps to another person, is still held to the person it was enrolled for. The setting
-// decides whom the pod acts for, and so whose owned secrets it gets (actingPerson). It does not
+// decides whom the pod acts for, and so whose owned secrets it gets (operatorOf). It does not
 // change whose launcher credential enrolled the pod, and that person's member kind is what decides
 // that the pod gets no secret at all. So once the machine asks Dispatch, the pod's ask for a
 // shared agent-tier secret is denied restricted-member, an ask for a name it holds a grant of is
@@ -382,8 +382,8 @@ func TestARestrictedMembersPodGetsNoSecretAfterTheSettingChanges(t *testing.T) {
 				change.apply(m.PodOperators, pod.of.account)
 				// The case under test: the pod acts for no person now, and its row keeps the person
 				// it was enrolled for.
-				if row, err := m.enrollment(ctx, enr); err != nil || m.actingPerson(row) != "" || deref(row.Operator) != pod.of.person {
-					t.Fatalf("after %s, enrollment %s = %+v, %v, acting for %q; want it acting for no person and recording %s", change.name, enr, row, err, m.actingPerson(row), pod.of.person)
+				if row, err := m.enrollment(ctx, enr); err != nil || m.operatorOf(row) != nil || deref(row.Operator) != pod.of.person {
+					t.Fatalf("after %s, enrollment %s = %+v, %v, acting for %q; want it acting for no person and recording %s", change.name, enr, row, err, deref(m.operatorOf(row)), pod.of.person)
 				}
 				dispatch := projectaccesstest.NewServer(t, nil, map[string]string{
 					outsider:        projectaccess.MemberRestricted,

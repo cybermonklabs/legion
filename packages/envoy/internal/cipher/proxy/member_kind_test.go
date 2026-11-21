@@ -49,7 +49,7 @@ func TestAMemberKindReadTheCallerEndedIsNoDispatchFailure(t *testing.T) {
 }
 
 // TestAPersonWhoseMemberKindCannotBeReadIsCarriedNothing: while the broker cannot learn from
-// Dispatch whether the person a grant's session acts for is a restricted member
+// Dispatch whether the person a grant's session was made for is a restricted member
 // (*projectaccess.MemberKindUncheckable, which requests.Machine answers on both reads the proxy
 // makes), the proxy carries nothing: a call to the bound host whose values read cannot tell, and a
 // CONNECT whose connection read cannot tell, are each 503 in the broker's fixed words under

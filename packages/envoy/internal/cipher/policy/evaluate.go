@@ -25,11 +25,14 @@ type Requester struct {
 	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each as
 	// a human-tier secret.
 	Withheld []string
-	// Restricted is true when Dispatch calls Operator a restricted member: a person an access
-	// list admitted from outside the deployment's sign-in domain, who sees only the projects that
-	// name them (projectaccess.MemberRestricted). The request machine asks Dispatch before any
-	// transaction opens (requests.Machine.Projects), so the policy reads it as plain data.
-	// Evaluate denies such a requester every secret, ReasonRestrictedMember.
+	// Restricted is true when Dispatch calls the person the session was made for a restricted
+	// member: a person an access list admitted from outside the deployment's sign-in domain, who
+	// sees only the projects that name them (projectaccess.MemberRestricted). That person is the
+	// session's enrollment's operator, which is not Operator for a person's pod that
+	// BROKER_POD_OPERATORS no longer maps (requests.Machine.restrictedOperator). The request
+	// machine asks Dispatch before any transaction opens (requests.Machine.Projects), so the
+	// policy reads it as plain data. Evaluate denies such a requester every secret,
+	// ReasonRestrictedMember.
 	Restricted bool
 	// Projects is the projects the credential names that its person may see, as the caller
 	// resolved them: a session's enrollment's list, or the project an operator's entry maps a

@@ -559,18 +559,7 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow, fac
 			}
 		}
 	}
-	return facts.requester(policy.Requester{Operator: m.actingPerson(e), Service: service, Withheld: withheld, Restricted: e.Restricted}), nil
-}
-
-// actingPerson is the person the session e acts for: its operator, and no one for a pod whose
-// account BROKER_POD_OPERATORS no longer maps (unmappedPersonPod), a service's pod and a
-// machine's own session. requester decides by that person. restrictedOperator does not: it asks
-// Dispatch about the person e was made for, whom the setting does not change.
-func (m *Machine) actingPerson(e enrollmentRow) string {
-	if m.unmappedPersonPod(e) {
-		return ""
-	}
-	return deref(e.Operator)
+	return facts.requester(policy.Requester{Operator: deref(m.operatorOf(e)), Service: service, Withheld: withheld, Restricted: e.Restricted}), nil
 }
 
 // restrictedOperator reports whether Dispatch calls the person e was made for (its operator, the
@@ -583,7 +572,7 @@ func (m *Machine) actingPerson(e enrollmentRow) string {
 // no person, ask nothing, and neither does a machine with no client of Dispatch.
 //
 // The person is the operator the enrollment recorded, not the one requester reads
-// (actingPerson). A person's pod whose account BROKER_POD_OPERATORS drops, or maps to another
+// (operatorOf). A person's pod whose account BROKER_POD_OPERATORS drops, or maps to another
 // person, acts for no person from then on, which decides whose owned secrets it may have; it is
 // still the pod that person's login enrolled, so it is still asked about as that person. Were it
 // asked about the person it acts for, a restricted member's pod would ask nothing once the setting
