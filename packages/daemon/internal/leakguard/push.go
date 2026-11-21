@@ -96,23 +96,25 @@ type PushRequest struct {
 }
 
 // PushName is what a refusal and a setup failure of a push call the write: "the push to origin",
-// and "the push" where the caller has no remote's name. It is exported because a caller that
-// reports a failure of its own before the guard runs — `legion leak-check pre-push` reading
-// git's update lines — must name the write in the same words the guard would, and two copies of
-// one sentence are two that drift apart.
+// the remote as git named it to the hook and as shownText shows it, and "the push" where the
+// caller has no remote's name. It is exported because a caller that reports a failure of its own
+// before the guard runs — `legion leak-check pre-push` reading git's update lines — must name the
+// write in the same words the guard would, and two copies of one sentence are two that drift
+// apart.
 func PushName(remote string) string {
 	if remote == "" {
 		return "the push"
 	}
-	return "the push to " + remote
+	return "the push to " + shownText(remote)
 }
 
 // Push checks a push before it is made. The shared check runs in its pre-push shape — the update
-// lines on its standard input, the repository as its working directory — and then, for a
-// destination GitHub reports public, this repository's own rules read the push's records: each
-// ref name, and for each commit the destination does not already hold, the author, the
-// committer, the message, each added or renamed path, and each added line. Under a deployment
-// that runs no shared check (sharedCheck) the rules are the whole of it.
+// lines on its standard input, the repository as its working directory — and then, where a rule is
+// named and for a destination GitHub reports public, the deployment's private-name rules read the
+// push's records: each ref name, and for each commit the destination does not already hold, the
+// author, the committer, the message, each added or renamed path, and each added line. Where no
+// rule is named, no visibility is read and no git reads a commit. Under a deployment that runs no
+// shared check (sharedCheck) the rules are the whole of it.
 func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	what := PushName(req.Remote)
 	check, err := g.sharedCheck(what)
@@ -136,6 +138,13 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 			return err
 		}
 	}
+	rules, err := g.rules(what)
+	if err != nil {
+		return err
+	}
+	if rules == nil {
+		return nil
+	}
 	public, err := g.scanThrough(ctx, what, RepoFromURL(req.URL))
 	if err != nil {
 		return err
@@ -147,7 +156,7 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the push's commits could not be read", Err: err}
 	}
-	return g.rules(ctx, what, records)
+	return rules.Check(ctx, what, records...)
 }
 
 // pushRecords is everything a push would publish, as records: one per ref name, and for each
@@ -237,9 +246,9 @@ func zeroSHA(sha string) bool {
 // itself; the added and renamed paths and the added lines come from its diff, read in the shape
 // its number of parents calls for (diffTree).
 //
-// A record about a file carries that file's path as its label and the line or the path as its
-// text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
-// is anchored on a whole path, and a label carrying anything else would take it away.
+// A record about a file carries that file's path as its label and as its Path, which is what the
+// engine's path rules and a rule file's path-scoped allowlist read, and the path or the line as its
+// text; an added line carries the line of the file it is added at as its FirstLine (addedLines).
 func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record, error) {
 	// git writes the separator for itself, as %x00 in the format: an argument of this process's
 	// own holding a zero byte is a child that cannot be started at all. %P comes before the
@@ -266,7 +275,7 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 		return nil, err
 	}
 	for _, path := range paths {
-		records = append(records, Record{Label: path, Text: path})
+		records = append(records, Record{Label: path, Text: path, Path: path})
 	}
 	added, err := g.addedLines(ctx, dir, commit, parents)
 	if err != nil {
@@ -337,16 +346,24 @@ func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int)
 	return paths, nil
 }
 
-// addedLines are the lines one commit adds, each as a record of the file it is added to. The
-// diff is read with no context lines, so every line of it that a patch marks as added is one.
+// addedLines are the lines one commit adds, each as a record of the file it is added to and of the
+// line of that file it stands at. The diff is read with no context lines, so every line of it that
+// a patch marks as added is one.
 //
 // A merge's combined diff marks each line with one column per parent, so a line added against
 // any of them begins with that many characters, one of which is a "+" ("++text" for a line of
 // the resolution's own, in a merge of two). The whole prefix comes off, and a line added against
 // one parent alone is read as added: the destination gains it from this commit whatever a parent
-// holds. The "+++ b/<path>" that names the file is read only where a header stands, between a
-// "diff --" line and the hunk that follows it, so a line of content that reads like one is not
-// mistaken for the name of a file.
+// holds. The "+++ b/<path>" that names the file (with a tab after the path where it holds a
+// space, which diffPath takes off) is read only where a header stands, between a "diff --" line
+// and the hunk that follows it, so a line of content that reads like one is not mistaken for the
+// name of a file.
+//
+// A line's place is counted from its hunk's header (hunkStart), one up for each line of the hunk
+// that the new file holds: in a diff of one parent a "+" line, and in a combined diff a line none
+// of whose columns is a "-", since a "-" in a column is a line of that parent the result does not
+// hold. A context line would count too, though no context is asked for, and "\ No newline at end
+// of file" is no line of the file at all.
 func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int) ([]Record, error) {
 	out, err := g.git(ctx, dir, diffTree(parents, "--unified=0", "--no-color", commit)...)
 	if err != nil {
@@ -355,6 +372,8 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int)
 	width := max(parents, 1)
 	var records []Record
 	path, header := "", false
+	// next is the line of the new file the hunk's next line of that file stands at.
+	next := 0
 	for line := range strings.Lines(out) {
 		line = strings.TrimRight(line, "\r\n")
 		switch {
@@ -364,19 +383,54 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int)
 			path = diffPath(strings.TrimPrefix(line, "+++ "))
 		case strings.HasPrefix(line, "@@"):
 			header = false
-		case header || path == "" || len(line) < width:
-		case strings.Contains(line[:width], "+"):
-			if text := line[width:]; strings.TrimSpace(text) != "" {
-				records = append(records, Record{Label: path, Text: text})
+			if next, err = hunkStart(line, width); err != nil {
+				return nil, fmt.Errorf("git diff-tree %s: %w", short(commit), err)
 			}
+		case header || path == "" || len(line) < width:
+		case strings.Trim(line[:width], " +-") != "":
+			// "\ No newline at end of file": no line of either side.
+		case strings.Contains(line[:width], "-"):
+			// A line of a parent that the new file does not hold.
+		default:
+			if text := line[width:]; strings.Contains(line[:width], "+") && strings.TrimSpace(text) != "" {
+				records = append(records, Record{Label: path, Text: text, Path: path, FirstLine: next})
+			}
+			next++
 		}
 	}
 	return records, nil
 }
 
+// hunkStart is the line of the new file a hunk header says its first line of that file stands
+// at: the c of "@@ -a,b +c,d @@", and in a merge's combined diff the last range of
+// "@@@ -a,b -c,d +e,f @@@", which follows one range for each of the width parents. A count of 1
+// is left out of a range (git writes "+c" for "+c,1"), and a header that names no such line is
+// refused rather than counted from a guess.
+func hunkStart(header string, width int) (int, error) {
+	fields := strings.Fields(header)
+	if len(fields) > width+1 {
+		if result, ok := strings.CutPrefix(fields[width+1], "+"); ok {
+			first, _, _ := strings.Cut(result, ",")
+			if line, err := strconv.Atoi(first); err == nil && line >= 0 {
+				return line, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("the hunk header %q names no line of the new file", header)
+}
+
 // diffPath is the path a patch's "+++" line names, with the b/ prefix off and the C quoting a
 // path with a byte git will not print raw undone. A deletion's /dev/null names no file.
+//
+// git writes a tab after the name where the path holds a space (diff.c; measured with git 2.47.3:
+// `+++ b/docs/a b.md<tab>`, and `+++ "b/docs/a \"b\" c.md"<tab>` where it quotes the name too),
+// and one trailing tab comes off before the name is unquoted: kept, it would end the record's
+// label and Path, leave a quoted name quoted, and keep a path-scoped allowlist anchored on the
+// path from clearing the file. A raw tab there is always git's and never the path's, since git
+// C-quotes a tab in a path as `\t`, under core.quotePath=false too. A merge's combined diff writes
+// no tab after the name (combine-diff.c, dump_quoted_path), and the trim leaves its name as it is.
 func diffPath(field string) string {
+	field = strings.TrimSuffix(field, "\t")
 	if field == "/dev/null" {
 		return ""
 	}

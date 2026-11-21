@@ -1,0 +1,5 @@
+kind: Changed
+body: 'A private-name refusal shows, for each match, the record, the rule''s description, the matched text and its line, within fixed bounds: 200 bytes of the record''s label, written on one line, 200 bytes of the match, 120 bytes of the line on each side of it, and 40 lines a refusal. A gh call is read one argument, one JSON string and one GraphQL string at a time, so a rule that needs two words matches only inside one field that GitHub stores.'
+time: 2026-11-19T05:03:21.355635643Z
+custom:
+    Issue: pr4472

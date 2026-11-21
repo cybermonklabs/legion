@@ -627,12 +627,13 @@ func settingsInterval(set shimwire.LauncherVolumeTrim) time.Duration {
 // It recovers from any panic in its own work, which is a deliberate departure from this daemon's
 // practice — no production path of it outside this trimmer recovers a panic it did not expect,
 // because a process that cannot keep its invariants should die and be restarted (the one recover
-// outside the trimmer, leakguard's compile, turns the panic regexp.MustCompile raises on a pattern
-// of the embedded rule file into an error) — because this goroutine runs in the process that is
-// PID 1 of the roles container: its panic takes the container down and costs six live roles their
-// round, over a cache sweep that nothing depends on. The fault is logged with its stack and
-// carried into the next report, and three in a row of one kind of work stop the trimmer until
-// the launcher process restarts (fault, run), which no other ending of the four does.
+// outside the trimmer, leakguard's compileRules, turns the panic regexp.MustCompile raises on a
+// pattern of the deployment's private-name rule file into an error) — because this goroutine runs
+// in the process that is PID 1 of the roles container: its panic takes the container down and
+// costs six live roles their round, over a cache sweep that nothing depends on. The fault is
+// logged with its stack and carried into the next report, and three in a row of one kind of work
+// stop the trimmer until the launcher process restarts (fault, run), which no other ending of the
+// four does.
 //
 // Each kind keeps a row of its own (faultRow). The reading's is the interval's reading of the
 // settings and of the volume, with the line that says what the interval decided

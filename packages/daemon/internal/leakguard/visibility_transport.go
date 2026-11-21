@@ -24,9 +24,7 @@ import (
 
 // transportError is a read that failed on its connection to GitHub before GitHub answered
 // anything: a visibility read, or cmd/legion's fork read (CurlResponse.Unreached). program is the
-// program that made the read (gh or curl), and said is what it printed about the failure, with the
-// repository's name masked where the read masks it: the visibility read does, and the fork read,
-// which names the repository anyway, does not.
+// program that made the read (gh or curl), and said is what it printed about the failure.
 type transportError struct {
 	program string
 	said    string
@@ -92,7 +90,7 @@ func ghTransportFailure(status int, printed, slug string) *transportError {
 	}
 	for _, failure := range ghTransportFailures {
 		if strings.HasSuffix(cause, failure) {
-			return &transportError{program: "gh", said: strings.ReplaceAll(line, slug, maskPath(slug))}
+			return &transportError{program: "gh", said: line}
 		}
 	}
 	return nil
@@ -137,13 +135,13 @@ func stoppedByItsOwnBound(ctx context.Context, err error) (*stoppedError, bool) 
 	return stopped, errors.As(err, &stopped) && ctx.Err() == nil
 }
 
-// ghStoppedByItsBound is the transport failure of a gh REST read of slug that the guard's own bound
+// ghStoppedByItsBound is the transport failure of a gh REST read that the guard's own bound
 // (ghReadContext) stopped: err is run's error, printed what gh printed before the stop, and ctx the
 // caller's context. It is one only where the stop was the guard's own bound (stoppedByItsOwnBound)
 // and where gh printed no status line, so GitHub sent no response. Anything else is nil: a stop by
 // the caller's deadline or by its cancel stays the error it is, since no bound is left for another
 // read, and so does a gh that heard GitHub's status line and then hung.
-func ghStoppedByItsBound(ctx context.Context, err error, printed, slug string) *transportError {
+func ghStoppedByItsBound(ctx context.Context, err error, printed string) *transportError {
 	stopped, own := stoppedByItsOwnBound(ctx, err)
 	if !own {
 		return nil
@@ -155,7 +153,7 @@ func ghStoppedByItsBound(ctx context.Context, err error, printed, slug string) *
 	if line := strings.TrimSpace(printed); line != "" {
 		message += ": " + line
 	}
-	return &transportError{program: "gh", said: strings.ReplaceAll(message, slug, maskPath(slug))}
+	return &transportError{program: "gh", said: message}
 }
 
 // errNoCurlRead is a read through curl that the guard could not make: no curl at the guard's curl,
@@ -373,13 +371,12 @@ func (r CurlResponse) RateLimit() error {
 
 // Unreached is the *transportError of a curl that got no answer from GitHub (curlUnreached), and
 // nil for any other: a curl that printed a status line heard GitHub, whatever its exit. Its text
-// quotes curl as it printed, unmasked, for a caller that names the repository it read anyway; the
-// visibility read masks it (curlAnswer).
+// quotes curl as it printed, as the visibility read's does (curlAnswer).
 func (r CurlResponse) Unreached() error {
 	if httpStatus, _ := r.Status(); !curlUnreached(r.Exit, httpStatus) {
 		return nil
 	}
-	return &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", r.Exit, strings.TrimSpace(strings.TrimSpace(r.Body())+" "+strings.TrimSpace(r.Stderr)))}
+	return &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", r.Exit, said(r.Body(), r.Stderr))}
 }
 
 // curlInherits is which names of the caller's environment the curl read keeps: those a program
@@ -443,14 +440,13 @@ func curlUnreached(exit, httpStatus int) bool {
 // whose body's visibility is public, private or internal, read as gh's is, is the answer. Anything
 // else is an error.
 func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
-	masked := maskPath(slug)
 	body := visibilityBody(stdout)
 	httpStatus, _ := responseHeaders(stdout)
 	if status != 0 {
 		if curlUnreached(status, httpStatus) {
-			return "", &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", status, said(body, stderr, slug))}
+			return "", &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", status, said(body, stderr))}
 		}
-		return "", fmt.Errorf("curl's read of repos/%s exited %d: %s", masked, status, said(body, stderr, slug))
+		return "", fmt.Errorf("curl's read of repos/%s exited %d: %s", shownText(slug), status, said(body, stderr))
 	}
 	if limited := rateLimitFrom(stdout); limited != nil {
 		return "", limited
@@ -459,19 +455,19 @@ func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
 		return "", &notFoundError{slug: slug}
 	}
 	if httpStatus != http.StatusOK {
-		return "", fmt.Errorf("curl's read of repos/%s answered the status %d: %s", masked, httpStatus, said(body, stderr, slug))
+		return "", fmt.Errorf("curl's read of repos/%s answered the status %d: %s", shownText(slug), httpStatus, said(body, stderr))
 	}
 	var answer struct {
 		Visibility string `json:"visibility"`
 	}
 	if err := json.Unmarshal([]byte(body), &answer); err != nil {
-		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %v", masked, err)
+		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %v", shownText(slug), err)
 	}
 	switch visibility := Visibility(strings.ToLower(strings.TrimSpace(answer.Visibility))); visibility {
 	case Public, Private, Internal:
 		return visibility, nil
 	default:
-		return "", fmt.Errorf("curl's read of repos/%s answered no visibility GitHub reports", masked)
+		return "", fmt.Errorf("curl's read of repos/%s answered no visibility GitHub reports", shownText(slug))
 	}
 }
 
@@ -517,7 +513,7 @@ func (g *Guard) ghToken(ctx context.Context, slug string) (string, error) {
 		return "", procgroup.Said(err, stderr.String())
 	}
 	if status != 0 {
-		return "", fmt.Errorf("gh auth git-credential get exited %d: %s", status, said("", stderr.String(), slug))
+		return "", fmt.Errorf("gh auth git-credential get exited %d: %s", status, said("", stderr.String()))
 	}
 	// git's credential protocol takes the last value of a key, as git itself reads gh's answer.
 	token := ""

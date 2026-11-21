@@ -401,7 +401,7 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 		env:  ghReadEnv(slug),
 	})
 	if err != nil {
-		if unreached := ghStoppedByItsBound(ctx, err, printed, slug); unreached != nil {
+		if unreached := ghStoppedByItsBound(ctx, err, printed); unreached != nil {
 			return "", unreached
 		}
 		return "", procgroup.Said(err, printed)
@@ -419,13 +419,13 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 		if httpStatus, _ := responseHeaders(printed); httpStatus == http.StatusNotFound {
 			return "", &notFoundError{slug: slug}
 		}
-		return "", fmt.Errorf("gh api repos/%s exited %d: %s", maskPath(slug), status, strings.TrimSpace(printed))
+		return "", fmt.Errorf("gh api repos/%s exited %d: %s", shownText(slug), status, strings.TrimSpace(printed))
 	}
 	switch visibility := Visibility(strings.ToLower(strings.TrimSpace(visibilityBody(printed)))); visibility {
 	case Public, Private, Internal:
 		return visibility, nil
 	default:
-		return "", fmt.Errorf("gh api repos/%s answered no visibility GitHub reports", maskPath(slug))
+		return "", fmt.Errorf("gh api repos/%s answered no visibility GitHub reports", shownText(slug))
 	}
 }
 
@@ -484,25 +484,26 @@ func (g *Guard) unservedOwner(status int, printed, slug string) *unservedOwnerEr
 // bundle under ownersDir holds no directory for slug's owner, owner as `legion gh` names it
 // (Guard.unservedOwner). The refusal says nothing of the repository's visibility, which the guard
 // reads with no credential instead (Guard.readUnservedOwner). It says what `legion gh` printed,
-// the repository and its owner masked.
+// the repository and its owner as written.
 type unservedOwnerError struct {
 	slug, owner, ownersDir string
 }
 
 func (e *unservedOwnerError) Error() string {
-	return fmt.Sprintf("gh api repos/%s exited 2: %s", maskPath(e.slug), ownerNotServedLine(maskPath(e.owner), e.ownersDir))
+	return fmt.Sprintf("gh api repos/%s exited 2: %s", shownText(e.slug), ownerNotServedLine(e.owner, e.ownersDir))
 }
 
 // notFoundError is the guard's REST read of slug that GitHub answered 404, through gh
 // (Guard.ghVisibility) or through curl (curlAnswer): no repository of that name exists, or the
 // read's credential cannot see it. GitHub answered, so no other read follows it, and a write it
-// refuses is a *NotFound (Guard.scanThrough). It says what GitHub answered, the repository masked.
+// refuses is a *NotFound (Guard.scanThrough). It says what GitHub answered, the repository as
+// shownText shows it.
 type notFoundError struct {
 	slug string
 }
 
 func (e *notFoundError) Error() string {
-	return notFoundText(maskPath(e.slug))
+	return notFoundText(shownText(e.slug))
 }
 
 // graphQLVisibility reads slug's visibility from GitHub's GraphQL API through gh, as the same
@@ -570,7 +571,7 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 		whole = errors.Is(err, io.EOF)
 	}
 	if !whole {
-		return "", fmt.Errorf("gh api graphql for %s exited %d without one whole GraphQL answer: %s", maskPath(slug), status, said(body, stderr, slug))
+		return "", fmt.Errorf("gh api graphql for %s exited %d without one whole GraphQL answer: %s", shownText(slug), status, said(body, stderr))
 	}
 	httpStatus, headers := responseHeaders(printed)
 	if len(answer.Errors) > 0 {
@@ -578,7 +579,7 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 		errs := make([]string, len(answer.Errors))
 		for i, e := range answer.Errors {
 			limitedOnly = limitedOnly && (e.Type == "RATE_LIMITED" || githubrest.NamesSecondaryLimit(e.Message))
-			errs[i] = strings.ReplaceAll(e.Message, slug, maskPath(slug))
+			errs[i] = e.Message
 			if e.Type != "" {
 				errs[i] = e.Type + ": " + errs[i]
 			}
@@ -586,25 +587,25 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 		if limitedOnly {
 			return "", &rateLimitError{}
 		}
-		return "", fmt.Errorf("GraphQL answered %s with %s", maskPath(slug), strings.Join(errs, "; "))
+		return "", fmt.Errorf("GraphQL answered %s with %s", shownText(slug), strings.Join(errs, "; "))
 	}
 	if limited, _ := githubrest.Limit(gitHubResponse(httpStatus, headers), []byte(answer.Message)); limited {
 		return "", &rateLimitError{}
 	}
 	switch {
 	case httpStatus == 0:
-		return "", fmt.Errorf("gh api graphql for %s printed no status line this reads: %s", maskPath(slug), said(body, stderr, slug))
+		return "", fmt.Errorf("gh api graphql for %s printed no status line this reads: %s", shownText(slug), said(body, stderr))
 	case httpStatus != 200:
-		return "", fmt.Errorf("gh api graphql for %s answered the status %d: %s", maskPath(slug), httpStatus, said(body, stderr, slug))
+		return "", fmt.Errorf("gh api graphql for %s answered the status %d: %s", shownText(slug), httpStatus, said(body, stderr))
 	}
 	if status != 0 {
-		return "", fmt.Errorf("gh api graphql for %s exited %d: %s", maskPath(slug), status, said(body, stderr, slug))
+		return "", fmt.Errorf("gh api graphql for %s exited %d: %s", shownText(slug), status, said(body, stderr))
 	}
 	if answer.Data == nil || answer.Data.Repository == nil {
-		return "", fmt.Errorf("GraphQL answered no repository for %s: %s", maskPath(slug), said(body, stderr, slug))
+		return "", fmt.Errorf("GraphQL answered no repository for %s: %s", shownText(slug), said(body, stderr))
 	}
 	if answered := answer.Data.Repository.NameWithOwner; !strings.EqualFold(answered, slug) {
-		return "", fmt.Errorf("GraphQL answered for the repository %q, not %s", maskPath(answered), maskPath(slug))
+		return "", fmt.Errorf("GraphQL answered for the repository %q, not %s", answered, shownText(slug))
 	}
 	switch answer.Data.Repository.Visibility {
 	case "PUBLIC":
@@ -614,15 +615,16 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 	case "INTERNAL":
 		return Internal, nil
 	default:
-		return "", fmt.Errorf("GraphQL answered %q as the visibility of %s, which is none GitHub defines", answer.Data.Repository.Visibility, maskPath(slug))
+		return "", fmt.Errorf("GraphQL answered %q as the visibility of %s, which is none GitHub defines", answer.Data.Repository.Visibility, shownText(slug))
 	}
 }
 
-// said is what a visibility read of slug printed, as a refusal quotes it: the body of its answer
-// and its standard error, each trimmed and joined by a space, with slug masked (maskPath). The
-// GraphQL read (graphQLAnswer) and the curl read (curlAnswer) quote it.
-func said(body, stderr, slug string) string {
-	return strings.ReplaceAll(strings.TrimSpace(strings.TrimSpace(body)+" "+strings.TrimSpace(stderr)), slug, maskPath(slug))
+// said is what a read printed, as a refusal quotes it: the body of its answer and its standard
+// error, each trimmed and joined by a space. The GraphQL read (graphQLAnswer), the curl read
+// (curlAnswer), the token read for curl (Guard.ghToken) and a fork read curl got no answer to
+// (CurlResponse.Unreached) quote it.
+func said(body, stderr string) string {
+	return strings.TrimSpace(strings.TrimSpace(body) + " " + strings.TrimSpace(stderr))
 }
 
 // gitHubResponse is the status line and the headers gh's --include output printed, as an answer
@@ -737,8 +739,7 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 		return "", procgroup.Said(err, printed)
 	}
 	if status != 0 {
-		masked := maskPath(slug)
-		return "", fmt.Errorf("git ls-remote of %s exited %d: %s", masked, status, strings.ReplaceAll(strings.TrimSpace(printed), slug, masked))
+		return "", fmt.Errorf("git ls-remote of %s exited %d: %s", shownText(slug), status, strings.TrimSpace(printed))
 	}
 	return Public, nil
 }

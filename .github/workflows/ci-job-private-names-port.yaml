@@ -10,11 +10,11 @@ name: CI job private-names-port
 # What runs here is one harness, .github/scripts/check-private-names-port.test.sh: the port of
 # this repository's four private-name rules, proved by comparison rather than by assertion. Every
 # case runs through .github/scripts/check-private-names.sh, the frozen shell script, and through
-# packages/daemon/internal/leakguard's rule file as the `legion` binary of this head runs it, and
-# the two are held to one verdict and one class.
+# the rule file .github/private-names.toml as the `legion` binary of this head runs it, named to
+# it in LEGION_PRIVATE_NAME_RULES_FILE, and the two are held to one verdict and one class.
 #
 # It is a job because of what that comparison costs the filters: the harness builds ./cmd/legion
-# out of packages/daemon (:70), so the filter that selects it has to name the whole closure of
+# out of packages/daemon (:76), so the filter that selects it has to name the whole closure of
 # that build - `go list -deps ./cmd/legion`, ci-filters.yaml's legion_command. While the step
 # was the test job's, that closure sat on the `test` filter, and a change to any package of the
 # daemon or to the envoy packages it imports ran thirty-odd shell harnesses, the Claude Code
@@ -25,9 +25,9 @@ name: CI job private-names-port
 #
 # Everything the harness needs, and nothing else:
 #   * the checkout, which is the whole of its corpus: the harness, the frozen script it compares
-#     against, and the daemon sources the build reads, the rule file leakguard embeds among them;
+#     against, the rule file it names to the binary, and the daemon sources the build reads;
 #   * setup-go on packages/daemon/go.mod, the module the build runs in. The harness refuses
-#     without a `go` on PATH (:66) and fails the run when the binary does not build (:70-73).
+#     without a `go` on PATH (:72) and fails the run when the binary does not build (:76-79).
 # No Bun, no Oh My Pi, no uv, no tmux, no database and no container image: the harness starts a
 # `go build` and the binary it built, and makes every fixture with git, which the runner image
 # carries. It restores no Actions cache either, as the test job that carried this step restored

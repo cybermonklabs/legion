@@ -129,8 +129,9 @@ func (s specs) ownersOf(role claim.Role) []string {
 	return s.appOwners(role)
 }
 
-// SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer and the NATS nkey seed, each
-// when the daemon has one), its prompt — the role prompt parts, the addressing sentence, the
+// SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer, the deployment's
+// private-name rule file and the NATS nkey seed, each when the daemon has one), its prompt — the
+// role prompt parts, the addressing sentence, the
 // deployment instructions and the instructions of each arm the claim's unit was drawn into
 // — and its repository with that repository's default branch, whose workspace is on the daemon's
 // host by then when the runtime leaves workspaces to the daemon

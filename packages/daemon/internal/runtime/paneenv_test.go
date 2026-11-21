@@ -41,6 +41,7 @@ func TestPaneVariableRefusalNamesWhyAndNeverTheValue(t *testing.T) {
 		// runtime sets nothing that turns them off, so no value of the operator's is overridden.
 		{"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "0", ""},
 		{"ENVOY_TOKEN_FILE", "/etc/acme/envoy", "it points at the launch secret ENVOY_TOKEN, which the runtime hands every launch as a file of the launch's own"},
+		{"LEGION_PRIVATE_NAME_RULES_FILE", "/etc/acme/private-names.toml", "it points at the launch secret LEGION_PRIVATE_NAME_RULES, which the runtime hands every launch as a file of the launch's own"},
 		{"NATS_NKEY_SEED_FILE", "/etc/acme/seed", "it points at the launch secret NATS_NKEY_SEED, which the runtime hands every launch as a file of the launch's own"},
 		{"DATABASE_URL", "postgres://acme:" + password + "@db.internal.example/widgets", withSecret},
 		{"WIDGETS_NATS", "nats://h1.internal.example:4222,nats://acme:" + password + "@h2.internal.example:4222", withSecret},

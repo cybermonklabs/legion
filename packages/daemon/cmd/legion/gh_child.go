@@ -90,10 +90,13 @@ var ghChildTestEnviron []string
 //     (runtime's identity environment). Its configuration is ghChildGitConfig's, not the caller's;
 //   - LEGION_GH_PATH and LEGION_GH_OWNERS_DIR, which `legion gh auth git-credential`, git's
 //     credential helper through GH_PATH, reads, beside the GH_CONFIG_DIR runGh sets, whose token
-//     that helper reads a fork with (forkUpstreamDir); PUBLIC_LEAK_CHECK, LEGION_LEAK_CHECKER_MANIFEST_SHA256
-//     and WRAPPED_GIT_AT, which the pre-push hook of a push gh's git makes reads, the first through
-//     leakguard.Resolve and the second as the manifest digest its guard holds that check to; and
-//     LEGION_ROLE and LEGION_ISSUE, which both log.
+//     that helper reads a fork with (forkUpstreamDir); PUBLIC_LEAK_CHECK,
+//     LEGION_LEAK_CHECKER_MANIFEST_SHA256, LEGION_PRIVATE_NAME_RULES_FILE and WRAPPED_GIT_AT,
+//     which the pre-push hook of a push gh's git makes (`gh repo create --source=. --push`) reads,
+//     the first through leakguard.Resolve, the second as the manifest digest its guard holds that
+//     check to, and the third as the rule file its guard runs: without it, that push would run the
+//     shared check alone and none of the role's private-name rules; and LEGION_ROLE and
+//     LEGION_ISSUE, which both log.
 //
 // Everything else stays out: the trust stores, GIT_SSL_CAINFO, GIT_SSL_NO_VERIFY, SSLKEYLOGFILE,
 // GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR, GIT_CONFIG_PARAMETERS, GIT_CEILING_DIRECTORIES,
@@ -124,7 +127,8 @@ var ghChildNames = map[string]bool{
 	"GH_MDWIDTH": true, "GH_SPINNER_DISABLED": true,
 	"GIT_TERMINAL_PROMPT": true,
 	"GIT_AUTHOR_NAME":     true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true,
-	"LEGION_GH_PATH": true, "LEGION_GH_OWNERS_DIR": true, leakguard.CheckVar: true, leakguard.CheckerVar: true, wrappedGitAt: true,
+	"LEGION_GH_PATH": true, "LEGION_GH_OWNERS_DIR": true,
+	leakguard.CheckVar: true, leakguard.CheckerVar: true, leakguard.RulesFileVar: true, wrappedGitAt: true,
 	"LEGION_ROLE": true, "LEGION_ISSUE": true,
 }
 

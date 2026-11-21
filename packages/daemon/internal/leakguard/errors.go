@@ -8,10 +8,11 @@ import "strings"
 // not enforce them.
 type RefusedBy string
 
-// The two sentences a refusal names the refusing check by. byRules is this package's own rule
-// pass; bySharedCheck is the shared public leak check, whose own report the refusal carries.
+// The two sentences a refusal names the refusing check by. byRules is this package's rule pass
+// over the deployment's private-name rules; bySharedCheck is the shared public leak check, whose
+// own report the refusal carries.
 const (
-	byRules       RefusedBy = "this repository's own private-name rules match it"
+	byRules       RefusedBy = "the deployment's private-name rules match it"
 	bySharedCheck RefusedBy = "the shared public leak check refused it"
 )
 
@@ -23,10 +24,11 @@ type Refusal struct {
 	What string
 	// By names the check that refused: byRules or bySharedCheck.
 	By RefusedBy
-	// Lines is the report. The rule pass writes one line per refusal, each naming the record and
-	// the class and nothing else, with a path masked as check-private-names.sh masks one. A
-	// refusal by the shared check carries that check's own report instead, which is the only
-	// account of it anyone gets.
+	// Lines is the report. The rule pass writes one line per finding, naming the record, the
+	// class the deployment's rule gives it, the text that matched and the line it stands on,
+	// within the bounds RuleSet.scan names, with a record about a file named by its path, each
+	// label as shownText shows it. A refusal by the shared check carries that check's own report
+	// instead, which is the only account of it anyone gets.
 	Lines []string
 }
 
@@ -45,10 +47,11 @@ func (r *Refusal) Error() string {
 
 // SetupFailure is a write refused because a check could not be made to run: no shared check
 // resolved, the shared check exited 2 or some status it does not document, the rule engine failed,
-// or a destination's visibility could not be read, other than a read GitHub answered 404, which is
-// a *NotFound. It refuses the write exactly as a *Refusal does — a check that did not run has
-// cleared nothing — and says so in the shared check's own words, so that a person reading a log
-// can tell a broken pod from a write that names something private.
+// the rule file the deployment named could not be used, or a destination's visibility could not be
+// read, other than a read GitHub answered 404, which is a *NotFound. It refuses the write exactly
+// as a *Refusal does — a check that did not run has cleared nothing — and says so in the shared
+// check's own words, so that a person reading a log can tell a broken pod from a write that names
+// something private.
 type SetupFailure struct {
 	// What is the write, in the entry point's words, as a Refusal's is.
 	What string
@@ -78,7 +81,7 @@ func (f *SetupFailure) Unwrap() error {
 type NotFound struct {
 	// What is the write, in the entry point's words, as a Refusal's is.
 	What string
-	// Repo is the destination, "owner/name", already masked as a report masks a path (maskPath).
+	// Repo is the destination, "owner/name", as shownText shows a text the caller wrote.
 	Repo string
 }
 
@@ -87,7 +90,7 @@ func (f *NotFound) Error() string {
 }
 
 // notFoundText is what a *NotFound and the read's own *notFoundError say of repo, a repository
-// GitHub answered 404 for, repo already masked.
+// GitHub answered 404 for, repo already shown as shownText shows it.
 func notFoundText(repo string) string {
 	return "GitHub answers 404 for " + repo + ", so the repository does not exist or this credential cannot read it"
 }

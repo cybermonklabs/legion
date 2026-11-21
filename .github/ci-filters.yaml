@@ -619,6 +619,8 @@ release_push_test: &release_push_test
   - '.github/scripts/release-bump.sh'
   - '.github/workflows/release.yaml'
   - 'packages/pi-legion/.changie.yaml'
+  # why: .github/ci-notes/ci.md#release_push_test-the-rule-file-release-pushsh-reads-beside-itself
+  - '.github/private-names.toml'
 release_bump_test: &release_bump_test
   - *ci_router
   - *ci_filters_data
@@ -3168,6 +3170,8 @@ private_names_port:
   - *go_workspace
   - *legion_command
   - '.github/scripts/check-private-names-port.test.sh'
+  # why: .github/ci-notes/ci.md#private_names_port-the-rule-file-the-harness-names-to-the-binary
+  - '.github/private-names.toml'
   # why: .github/ci-notes/ci.md#private_names_port-test-libsh-which-the-harness-sources-for-checkissummary
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-private-names.sh'

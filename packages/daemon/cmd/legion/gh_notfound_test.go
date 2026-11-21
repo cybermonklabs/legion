@@ -149,11 +149,14 @@ func TestGhTellsAVisibilityRead404AsNotFound(t *testing.T) {
 			t.Run(read.name+", gh "+strings.Join(args, " "), func(t *testing.T) {
 				stub, record := visibilityReadGh(t, read.gh(t))
 				curl := newFakeGitHub(t, "ghs_acme_write", read.curl(t))
+				// The fixture rule file is named: with no rule file the guard reads no
+				// destination's visibility.
 				code, stdout, stderr := legionGh(t, map[string]string{
 					"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 					"GH_TOKEN": "", "GITHUB_TOKEN": "", "XDG_STATE_HOME": t.TempDir(),
-					"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
-					testCurlEnv:         curl.program,
+					"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+					leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
+					testCurlEnv:            curl.program,
 				}, args...)
 				if code != 2 || stdout != "" {
 					t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 2 and nothing on stdout", args, code, stdout, stderr)
@@ -196,13 +199,14 @@ func TestLeakCheckPrePushTellsAVisibilityRead404AsNotFound(t *testing.T) {
 				testMainEnv: "1", "PATH": ghWrapperDir(t) + ":" + bin + ":" + os.Getenv("PATH"),
 				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 				"GH_TOKEN": "", "GITHUB_TOKEN": "", "XDG_STATE_HOME": t.TempDir(),
-				"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+				"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+				leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
 			} {
 				t.Setenv(name, value)
 			}
 			// A ref the push deletes, named for a host the rules refuse: its name is the push's one
 			// record, so a scan refuses the push and no scan passes it, and no git reads a commit.
-			line := "refs/heads/work " + noSHA + " refs/heads/legion/" + theLeakCheckHost + " " + noSHA + "\n"
+			line := "refs/heads/work " + noSHA + " refs/heads/legion/" + leakguardtest.RulesHost + " " + noSHA + "\n"
 			code, printed := leakCheck(t, line, "pre-push", "origin", "https://github.com/"+noSuchRepo+".git")
 			if code != leakguard.StatusSetupFailure {
 				t.Errorf("exited %d, want %d: %s", code, leakguard.StatusSetupFailure, printed)

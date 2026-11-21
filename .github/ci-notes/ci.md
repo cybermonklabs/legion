@@ -236,7 +236,7 @@ and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, b
 packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
 for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
 outside the daemon: contracts' fixtures
-(internal/api/state_golden_test.go:1391, internal/intake/intake_test.go:856,960), the
+(internal/api/state_golden_test.go:1418, internal/intake/intake_test.go:873,977), the
 agents internal/prompts/roles_test.go:261 stats, the tools skill its :689 holds
 roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:432
 holds the reviewer's prompt to, the GitHub App helper
@@ -357,6 +357,12 @@ test-lib.sh, which each of them sources for `check`, `is` and `summary`.
 Before these the job's filter carried one pattern, '.github/scripts/*', for all of
 them: a change to any one script ran every harness, and 28 of the 66 commits that
 touched that directory since 2026-10-01 changed no Go file (dispatch://INFRA-1413).
+
+## release_push_test: The rule file release-push.sh reads beside itself
+
+release-push.sh:379 reads .github/private-names.toml beside itself for its leak
+guard, and release-push.test.sh:172-175 copies it into each fixture checkout it runs
+a copy of the script from.
 
 ## priorities_seed_check_test: The one harness of the job outside .github/scripts
 
@@ -974,19 +980,25 @@ envoy-go-docs-finalizers on it).
 ## private_names_port: The private-name port harness, in a job of its own: it
 
 The private-name port harness, in a job of its own: it builds the `legion` binary
-of this head (.github/scripts/check-private-names-port.test.sh:70) and holds the
-rules that binary carries to the frozen shell script's verdicts, case for case.
-That build is why this list is as long as it is - legion_command is what the
-binary is made of, the rule file packages/daemon/internal/leakguard embeds among
-it - and why the step has a job: while it was the test job's, the whole closure
-sat on the `test` filter, so a change to one package of the daemon ran thirty-odd
-shell harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
+of this head (.github/scripts/check-private-names-port.test.sh:76) and holds the
+rules of .github/private-names.toml, as that binary runs them, to the frozen shell
+script's verdicts, case for case. That build is why this list is as long as it is -
+legion_command is what the binary is made of - and why the step has a job: while
+it was the test job's, the whole closure sat on the `test` filter, so a change to
+one package of the daemon ran thirty-odd shell harnesses and the Bun suites of
+scripts/ with it (dispatch://INFRA-1413).
+
+## private_names_port: The rule file the harness names to the binary
+
+The rule file the harness names to the binary in LEGION_PRIVATE_NAME_RULES_FILE
+(.github/scripts/check-private-names-port.test.sh:55,92), since the binary embeds
+none, and reads each rule's description out of (:170).
 
 ## private_names_port: test-lib.sh, which the harness sources for check/is/summary
 
-test-lib.sh, which the harness sources for check/is/summary (:63), and the
+test-lib.sh, which the harness sources for check/is/summary (:69), and the
 frozen script it runs every case through beside the binary, symlinked into each
-fixture (:213,421,467,556). That script is the subject of
+fixture (:228,476,522,616). That script is the subject of
 the check_private_names_test filter, which gates another job's step: this job reads
 it as the engine it compares against.
 
