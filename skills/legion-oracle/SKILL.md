@@ -11,8 +11,10 @@ Legion repository.
 
 ## Research steps
 
-If your deployment instructions name a role that answers research questions, send it the question
-first with `envoy_publish(topic="notifications.role.<name>", expects_reply="required")` and end
+If your deployment instructions (the `# Deployment instructions` part of your system prompt, from
+`legion.yaml`'s `instructions:`) name a role that answers research questions (a role, not the
+`oracle` task agent), send it the question first with
+`envoy_publish(topic="notifications.role.<name>", expects_reply="required")` and end
 your turn: the reply starts your next one. When the publish says Envoy only kept the question
 because no session holds the role, put the publish's answer in your output and research at once.
 
@@ -30,10 +32,9 @@ exist. Each `task` runs as a job of its own: `wait` for each result and answer f
 | 4. External practices | `web_search`, then `read` what the tool's or standard's maintainer publishes; give its URL | current practice for [topic] |
 
 Before you rely on a step 1 hit, `grep` `docs/solutions/` for its path. If another file lists that
-path under its front-matter `supersedes:` key, use that file instead; if one has a line
-`Extends docs/solutions/<hit path>`, read both. For a hit that tells a worker to check the GitHub
-App of a commit's author or committer, follow the trailer rule of
-`skill://legion-worker/references/default-branch-check.md` instead.
+path under its front-matter `supersedes:` key (on that line or as a list item below it), use that
+file instead; if one has a line `Extends docs/solutions/<hit path>`, read both. Nothing else
+reconciles these links.
 
 ## Output
 

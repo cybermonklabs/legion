@@ -43,6 +43,6 @@ dispatch search --query 'reviewer threads OR review comments'
 | Before you | Read |
 | --- | --- |
 | run your first `dispatch` command in this session | `skill://dispatch` |
-| write or change a spec, or write an ask, comment or message a person reads | `skill://dispatch-writing-specs` |
+| write or change a spec, or write an ask, comment or message a person reads | `skill://dispatch-writing-specs` and `skill://plain-words` |
 | plan work whose spec a person approved | superpowers' `writing-plans` (`skill://dispatch-writing-specs`, "The plan") |
 | write a Legion architect's own spec | `skill://legion-architect` too |

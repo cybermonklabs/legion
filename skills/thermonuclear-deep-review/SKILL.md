@@ -1,14 +1,12 @@
 ---
 name: thermonuclear-deep-review
-description: Use when asked for a thermonuclear or deep review, or for a security and correctness audit, of a branch or PR diff.
+description: Use when asked for a thermonuclear or deep review, or for a security and correctness audit, of a branch or PR diff. Covers bugs, breaking changes, security issues, developer-experience regressions and feature-gate leaks.
 disable-model-invocation: true
 ---
 
 # Thermonuclear Deep Review
 
-If this skill disagrees with the code, a command's output or its `--help`, follow those and say which line of this skill is wrong.
-
-Make your own scratch as `skill://thermonuclear-code-quality` says.
+Make your own scratch as `skill://thermonuclear-code-quality` says, and delete only the paths you made: every role of this issue writes into one shared `$TMPDIR`.
 
 ## Verdict
 

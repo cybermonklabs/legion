@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr4622
+body: |-
+  The Legion plugin ships the skills and the two review agents of this change: the skills take
+  back the rules the skill cut of #4447 lost, no skill holds the follow-the-code sentence, and
+  the thermonuclear review agents carry it once each.

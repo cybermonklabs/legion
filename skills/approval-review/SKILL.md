@@ -1,11 +1,11 @@
 ---
 name: approval-review
-description: "Use when you judge an approval request: a Dispatch request to approve a spec, plan or other document at a version, a first pass over one, or any task that predicts what the reviewer would answer."
+description: "Use when you judge an approval request: a Dispatch request to approve a spec, plan or other document at a version, a first pass over one, or any task that predicts what the reviewer would answer. Read it before the first request you judge in a session."
 ---
 
 # Approval review
 
-Your verdict predicts whether the person this deployment serves would approve this version or ask for changes. Judge the document against what that person decides, not against your own taste. Every request still goes to the person: your verdict records what you would have answered.
+Your verdict predicts whether the person this deployment serves would approve this version or ask for changes. Judge the document against what that person decides, not against your own taste. Until a deployment turns deciding on, every request still goes to the person: your verdict records what you would have answered.
 
 ## Before you read the document
 
@@ -20,10 +20,12 @@ Your verdict predicts whether the person this deployment serves would approve th
 
 ## The person's nearest past decisions
 
+Retrieve the person's past decisions with the `dispatch` command and nothing else.
+
 1. Write the case in one or two sentences, in the document's own terms. That is your query.
 2. Run `dispatch search --query '<that sentence>' --limit 50`, paging with `--offset`. Keep the hits that are approval asks the person answered.
-3. Drop each hit the person answered after the case you judge: you could not have had it live. Drop each hit on the judged document or its issue: an earlier round of the same document is the answer, not a neighbour. Count what you dropped.
-4. Keep the eight nearest that remain. Read each with `dispatch read --ref dispatch://KEY/ask/<id>` for the question, the verdict and the person's own words, not the neighbour's document.
+3. Drop each hit the person answered after the case you judge: you could not have had it live. Drop each hit on the judged document or its issue, however near, and count how many of those you dropped: an earlier round of the same document is the answer, not a neighbour.
+4. Keep the eight nearest that remain: the first eight in the order `dispatch search` ranks them, which is by how near each hit is to your query. Read each with `dispatch read --ref dispatch://KEY/ask/<id>` for the question, the verdict and the person's own words, not the neighbour's document.
 5. Judge the case with those decisions in front of you, and say how many you found.
 
 ## If a deployment turns deciding on

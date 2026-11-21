@@ -21,36 +21,45 @@ What the work taught is a `dispatch comment` for the skill librarian; no role wr
 ## When retro stops
 
 When a step fails (the body cannot be computed, read or written, or Dispatch refuses a write), do
-not call `handoff_complete`: send the command and its output to the architect's topic on your
-`Legion addressing` line. A defect you find in the work goes to the architect with its evidence,
-and you hold your completion until it answers: while retro holds the phase,
-`request_backward_move` is yours, and `handoff_complete` takes it away. End each turn of that hold
-with a WAITING line naming the defect and the answer you wait on.
+not call `handoff_complete`: send the command and its output with `envoy_publish` to the
+architect's topic on your `Legion addressing` line. A defect you find in the work goes to the
+architect with its evidence, and you hold your completion until it answers: while retro holds the
+phase, `request_backward_move` is yours, and `handoff_complete` takes it away. End each turn of
+that hold with a WAITING line naming the defect and the answer you wait on. The Dispatch message
+(step 5) is for a finished retro only.
 
 ## Steps
 
-1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, the
-   tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) and the review at the
-   version your task's `Handoff:` line names (`--phase review --version <n>`). A pass must stand at
-   the approved head for every `before_merge` check, and the body's `Checks` block carries each.
-   - A check carrying `ci_check` is CI's: its derived result is the pass it needs
-     (`skill://legion-worker/references/ci-checks.md`). A `ci_check` check has no pass standing at
-     that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or
-     `cancelled`. Wait for a run that has not concluded, and read again where GitHub could not be
-     read. Send a name that no run answers (`absent`) to the architect as a finding, since the
-     check's words are wrong, and the same for a check whose `run` is a whole test suite. Neither
-     wait nor that finding moves the issue back.
+1. **Read the evidence**: the issue, its checks (`dispatch results --issue <issue>`), the pull
+   request, the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) and the
+   review at the version your task's `Handoff:` line names (`--phase review --version <n>`). A pass
+   must stand at the approved head for every `before_merge` check, and the body's `Checks` block
+   carries each.
+   - A check carrying `ci_check` is CI's: its derived result is the pass it needs, and its CI job
+     is its evidence (`skill://legion-worker/references/ci-checks.md`). In cybermonklabs/legion a
+     surface may also be the daemon's real-process tests, a live proof under `scripts/e2e/`, or a
+     live check at the operator's next daemon restart recorded on the pull request. A `ci_check`
+     check has no pass standing at that head when its derived result is a fail, or its run
+     concluded `skipped`, `neutral` or `cancelled`. Wait for a run that has not concluded. Where
+     GitHub could not be read, read it again; when that second read fails too, the step fails as
+     "When retro stops" says. Send a name that no run answers (`absent`) to the architect as a
+     finding, since the check's words are wrong, and the same for a check whose `run` is a whole
+     test suite. Neither wait nor that finding moves the issue back.
    - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a
      unit suite: `request_backward_move` with `to: implementing` for the implementer's result or a
      `ci_check` check, or `to: testing` for the tester's, its `reason` naming the check's block id.
-2. **Get a second reading.** First list in your session the constraints the issue did not state,
-   choices between two working options, abandoned approaches and reusable code. Then run
-   `task(agent="oracle")` with the issue, the pull request body and the diff, asking for reusable
-   learnings, and `wait` for its answer. Drop a point that cites no file, symbol, quoted text or
+     When retro runs again, that gap is your first learning.
+2. **Get a second reading.** First write in your reply, before the `task` call, the constraints the
+   issue did not state, choices between two working options, abandoned approaches and reusable
+   code, so the second answer does not set your list. Then run `task(agent="oracle")` with the
+   issue, the pull request body and the diff, asking for reusable learnings, and `wait` for its
+   answer. You decide which points to keep. Drop a point that cites no file, symbol, quoted text or
    commit of this pull request.
-3. **Record the learnings** as one `dispatch comment` on the issue, per
-   `skill://legion-retro/references/learnings.md`. When no point qualifies, write no comment and
-   say so in step 5's message.
+3. **Record the learnings.** Write each kept point you can state as a rule a worker on another
+   issue could follow as one `dispatch comment` on the issue, per
+   `skill://legion-retro/references/learnings.md`, which says what a point must carry for the
+   skill librarian to use it. When no point qualifies, write no comment and say so in step 5's
+   message.
 4. **Update the PR body**, per `skill://legion-retro/references/pr-body-content.md`, when the
    repository derives body lines from changed paths.
 5. **Post one Dispatch message on the issue**, at most 32,000 characters (never a `gh issue`

@@ -195,15 +195,7 @@ func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool
 	if err != nil {
 		t.Fatalf("Compose %s (root %t): %v", role, isRoot, err)
 	}
-	var text strings.Builder
-	for _, path := range parts.RolePromptPaths {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		text.Write(body)
-	}
-	return text.String()
+	return readJoined(t, parts.RolePromptPaths...)
 }
 
 // No role's handoff is a commit: each is a record on the Dispatch issue, so no phase worker's
@@ -331,6 +323,21 @@ func TestTheComposedPromptsNameAnIssueWithNoBeforeMergeCheckAsAGap(t *testing.T)
 // still one phrase to match.
 func foldWhitespace(text string) string {
 	return strings.Join(strings.Fields(text), " ")
+}
+
+// readJoined is the bytes of each of paths, read in order and joined; a read that fails ends the
+// test (t.Fatalf), naming the path.
+func readJoined(t *testing.T, paths ...string) string {
+	t.Helper()
+	var text strings.Builder
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text.Write(body)
+	}
+	return text.String()
 }
 
 // ruleParagraphs are the blank-line-separated paragraphs of a composed prompt that hold marker,

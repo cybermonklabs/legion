@@ -7,24 +7,9 @@ A Legion pane installs both plugins; any other session has only the skills of `@
 
 ## What a skill holds
 
+- Write a skill as [`writing-agent-skills`](https://github.com/sjawhar/dotfiles/blob/main/plugins/sjawhar/skills/writing-agent-skills/SKILL.md) says: its `description`, how long a `SKILL.md` and each reference may be, and how to add, test and remove a rule.
+
 - `SKILL.md` opens with frontmatter: `name`, the directory's name, and `description`, each on one line.
-
-- The `description` starts "Use when", says when to load the skill and not its steps, and is at most 300 characters.
-
-- The `SKILL.md` body is at most 150 lines and 8 KB: the routing, and the rules the model would not follow by default.
-
-- A procedure is numbered steps, with no narrative.
-
-- Detail goes in `references/`, one level deep, each file at most 150 lines and 8 KB.
-  `SKILL.md` names each reference where it is needed, with the condition for reading it ("Read `references/x.md` when ...").
-  Merge a small reference into `SKILL.md`, and delete one that nothing names.
-
-- No history: no dates, incidents, issue keys or pull request numbers.
-  No emphasis words used as force: a rule that needs force is a check.
-
-- A fact lives in one skill, and the others link to it.
-
-- Keep each skill file path that code, a prompt or another skill names, or change the namer in the same change.
 
 ## Links and names
 
@@ -38,3 +23,6 @@ A Legion pane installs both plugins; any other session has only the skills of `@
 - A task agent runs as a background job, so a prompt that dispatches one also names `wait`, the tool that reads its result.
 
 - `packages/pi-shared/test/skills-guard.ts` holds the checks each plugin's tests run over its staged skills.
+
+- The rule to follow the code, a command's output or its `--help` over a skill is in no skill.
+  The worker, architect and both controller parts in `packages/daemon/internal/prompts/go/` and the two thermonuclear agent definitions in `packages/pi-legion/agents/` carry it, and `packages/daemon/internal/prompts/code_precedence_test.go` and `packages/pi-legion/src/skills-guard.test.ts` hold it there.

@@ -42,7 +42,7 @@ Wrong rewrites read better: "The request failed" asserts a failure the system on
 
 Two calls, stated rather than hidden:
 - "should proceed to consume" became the imperative "read". That is right for an instruction to the agent that acts, and wrong in descriptive text.
-- The last sentence is new content: it makes the warning actionable. Say so when you add one, and drop it if the source's silence was deliberate.
+- The last sentence is new content: it makes the warning actionable. Add a sentence like it only when the user asks for the reasoning, and name it there as added content. Drop it if the source's silence was deliberate.
 
 ## D. README prose (STE-flavored)
 

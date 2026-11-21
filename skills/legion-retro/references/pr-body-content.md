@@ -20,8 +20,8 @@ request's repository and number.
    matching path pattern requires. A line that says work was done names work this pull request
    did: a line whose work is undone is a finding for the architect.
 3. Make a directory outside the workspace with `dir=$(mktemp -d)` (jj would commit a file inside
-   it), save the live body as `$dir/before.md` and `$dir/body.md`, and stop unless the read
-   succeeded and is not empty:
+   it), save the live body as `$dir/before.md` (to restore on failure) and `$dir/body.md` (to
+   edit), and stop unless the read succeeded and is not empty:
 
    ```bash
    cd -- "$LEGION_WORKSPACE" && ( set -o pipefail && gh api repos/<owner>/<repo>/pulls/<n> --jq .body | tee "$dir/before.md" "$dir/body.md" ) && test -s "$dir/before.md"
