@@ -51,7 +51,8 @@ func TestRecordAndCheckRunWithoutAKubeconfig(t *testing.T) {
 	t.Run("in a pod, with no kubeconfig", func(t *testing.T) {
 		t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
 		t.Setenv("KUBERNETES_SERVICE_PORT", "443")
-		script := strings.Replace(fakeKubectl, `*" config view --minify --output json") exec cat "$dir/config.json" ;;`, inClusterConfigView, 1)
+		script := strings.Replace(fakeKubectl, `*" config view --minify --output json") [ -f "$dir/config.json" ] || { echo "error: current-context must exist in order to minify" >&2; exit 1; }
+  exec cat "$dir/config.json" ;;`, inClusterConfigView, 1)
 		require.NotEqual(t, fakeKubectl, script, "the fake's config view answers as in a pod")
 		record, check, out := run(t, script)
 		require.Equal(t, []int{0, 0}, []int{record, check}, out)
