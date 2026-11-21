@@ -151,7 +151,11 @@ test("dispatch login refuses a file setting that names no regular file, before a
       },
       "is a named pipe, not a regular file",
     ],
-    ["link that loops", (file: string) => symlinkSync(file, file), ": ELOOP"],
+    [
+      "link that loops",
+      (file: string) => symlinkSync(file, file),
+      "is a loop of links, not a regular file",
+    ],
   ] as const) {
     const stub = broker();
     const file = path.join(tempDir(), "legion", "device-login.json");

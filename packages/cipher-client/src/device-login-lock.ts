@@ -199,7 +199,9 @@ async function removeIfStill(
   const took = await look(moved, what);
   const same = took !== null && isIt(took);
   if (!same) await link(moved, path).catch(() => {});
-  await rm(moved, { force: true });
+  await rm(moved, { force: true }).catch((error: unknown) => {
+    throw new Error(`remove ${what}, moved aside: ${readErrorCode(error)}`);
+  });
   return same;
 }
 
@@ -322,7 +324,8 @@ function namedWithUuid(name: string, prefix: string): boolean {
 /**
  * Removes each file in `dir` that `left` takes by its name and that is untouched for
  * {@link DEVICE_LOGIN_STALE_LOCK_MS}: a file another caller left when it died. A younger one may be
- * a live caller's, mid-step, and is left alone, and so is one that cannot be read.
+ * a live caller's, mid-step, and is left alone, and so is one that cannot be read or removed: a
+ * later caller removes it, and a failure here, whose text repeats the path, stops no caller.
  */
 export async function removeUntouched(dir: string, left: (name: string) => boolean): Promise<void> {
   const names = await readdir(dir).catch(() => [] as string[]);
@@ -330,7 +333,7 @@ export async function removeUntouched(dir: string, left: (name: string) => boole
     const path = join(dir, name);
     const info = await stat(path).catch(() => null);
     if (info !== null && Date.now() - info.mtimeMs > DEVICE_LOGIN_STALE_LOCK_MS) {
-      await rm(path, { force: true });
+      await rm(path, { force: true }).catch(() => {});
     }
   }
 }

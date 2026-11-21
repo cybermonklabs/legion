@@ -118,7 +118,7 @@ async function checkLoginDirectory(dir: string, absent?: () => Error): Promise<v
     info = await stat(dir);
   } catch (error) {
     if (absent !== undefined && readErrorCode(error) === "ENOENT") throw absent();
-    throw new Error(`read the directory of ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
+    throw refusedBy(error, `read the directory of ${DEVICE_LOGIN_FILE_NAMED}`);
   }
   checkPrivate(
     info,
@@ -130,23 +130,46 @@ async function checkLoginDirectory(dir: string, absent?: () => Error): Promise<v
 }
 
 /**
- * The refusal of a login file's path whose status, `info`, is not a regular file's: a directory,
- * which no rename replaces, a named pipe, which a read waits on until a process writes to it, a
- * socket or a device. It names what is there, by the file's setting, and the fix.
+ * The refusal of a login file's path where something other than a regular file is there: `there`
+ * is its status, or the words for what the runtime's code says is there. A directory, which no
+ * rename replaces, a named pipe, which a read waits on until a process writes to it, a socket, a
+ * device or a loop of links. It names what is there, by the file's setting, and the fix.
  */
-function notARegularFile(info: Stats): Error {
-  const what = info.isDirectory()
-    ? "a directory"
-    : info.isFIFO()
-      ? "a named pipe"
-      : info.isSocket()
-        ? "a socket"
-        : info.isCharacterDevice() || info.isBlockDevice()
-          ? "a device"
-          : "something";
+function notARegularFile(there: Stats | string): Error {
+  const what =
+    typeof there === "string"
+      ? there
+      : there.isDirectory()
+        ? "a directory"
+        : there.isFIFO()
+          ? "a named pipe"
+          : there.isSocket()
+            ? "a socket"
+            : there.isCharacterDevice() || there.isBlockDevice()
+              ? "a device"
+              : "something";
   return new Error(
     `${DEVICE_LOGIN_FILE_NAMED} is ${what}, not a regular file, so no login can be kept in its place; remove it, or set ${DEVICE_LOGIN_FILE_VAR} to a file's path`
   );
+}
+
+/**
+ * The refusal of `doing`, a step on the login's file or its directory, that the runtime refused
+ * with `error`. Where its code says what is in the path, that is said, as {@link notARegularFile}
+ * says it: a socket or a device, which an open is refused (`ENXIO`), a loop of links (`ELOOP`), or
+ * a file where a directory of the path must be (`ENOTDIR`). Else the code alone is named, never
+ * the runtime's text, which repeats the path.
+ */
+function refusedBy(error: unknown, doing: string): Error {
+  const code = readErrorCode(error);
+  if (code === "ENXIO") return notARegularFile("a socket or a device");
+  if (code === "ELOOP") return notARegularFile("a loop of links");
+  if (code === "ENOTDIR") {
+    return new Error(
+      `${DEVICE_LOGIN_FILE_NAMED} has a file, not a directory, in its path, so no login can be kept there; set ${DEVICE_LOGIN_FILE_VAR} to a path in a directory`
+    );
+  }
+  return new Error(`${doing}: ${code}`);
 }
 
 /**
@@ -159,7 +182,7 @@ export async function deviceLoginDirectory(path: string): Promise<void> {
   try {
     await mkdir(dir, { recursive: true, mode: 0o700 });
   } catch (error) {
-    throw new Error(`make the directory of ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
+    throw refusedBy(error, `make the directory of ${DEVICE_LOGIN_FILE_NAMED}`);
   }
   await checkLoginDirectory(dir);
 }
@@ -189,7 +212,7 @@ export async function deviceLoginPlace(path: string): Promise<void> {
     info = await stat(path);
   } catch (error) {
     if (readErrorCode(error) === "ENOENT") return;
-    throw new Error(`read ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
+    throw refusedBy(error, `read ${DEVICE_LOGIN_FILE_NAMED}`);
   }
   if (!info.isFile()) throw notARegularFile(info);
 }
@@ -227,7 +250,9 @@ export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
   try {
     handle = await open(path, LOGIN_READ);
   } catch (error) {
-    throw readErrorCode(error) === "ENOENT" ? absent() : failed(error);
+    throw readErrorCode(error) === "ENOENT"
+      ? absent()
+      : refusedBy(error, `read ${DEVICE_LOGIN_FILE_NAMED}`);
   }
   let data: string;
   try {
@@ -419,8 +444,10 @@ export async function saveDeviceLogin(
   } catch (error) {
     throw keep && whole ? await keptCopy(temp, path, error) : error;
   } finally {
-    // After the rename, or once the copy is kept, there is no temporary file to remove.
-    await rm(temp, { force: true });
+    // After the rename, or once the copy is kept, there is no temporary file to remove. One that
+    // cannot be removed is left for a later save to remove once it is stale, and its failure,
+    // whose text repeats the path, never takes the place of the save's answer.
+    await rm(temp, { force: true }).catch(() => {});
   }
   // The rename is what readers see; syncing the directory is what keeps it across a power cut.
   // A directory this platform cannot sync still holds the whole login, so that failure is no

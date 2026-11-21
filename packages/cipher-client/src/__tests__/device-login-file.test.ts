@@ -10,9 +10,12 @@
 // or a read's `readFile` or `close`).
 
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { rmSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { chmod, mkdir, readdir, stat } from "node:fs/promises";
+import { createServer } from "node:net";
 import { basename, dirname, join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
@@ -26,7 +29,8 @@ import {
   type KeptDeviceLogin,
   startDeviceLogin,
 } from "../device-login";
-import { type DeviceLogin, readDeviceLogin } from "../device-login-file";
+import { type DeviceLogin, deviceLoginPlace, readDeviceLogin } from "../device-login-file";
+import { DEVICE_LOGIN_STALE_LOCK_MS } from "../device-login-lock";
 import { DEVICE_LOGIN_COMMAND } from "../token-errors";
 
 const PERSON = "ada@example.com";
@@ -215,6 +219,44 @@ test("a login in a directory others may write is refused before its file is open
   expect(opened).not.toContain(path);
 });
 
+test("a login path no open can read is refused in words, not a bare code", async () => {
+  // Each is refused by the open itself, before any status is read: a socket (ENXIO), a loop of
+  // links (ELOOP), and a path through a file where a directory must be (ENOTDIR).
+  const dir = dirname(loginPath());
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const socket = join(dir, "socket.json");
+  const server = createServer().listen(socket);
+  await once(server, "listening");
+  const loop = join(dir, "loop.json");
+  await fs.symlink(join(dir, "back.json"), loop);
+  await fs.symlink(loop, join(dir, "back.json"));
+  const file = join(dir, "a-file");
+  await fs.writeFile(file, "", { mode: 0o600 });
+  try {
+    for (const [path, words] of [
+      [socket, "is a socket or a device, not a regular file"],
+      [loop, "is a loop of links, not a regular file"],
+      [join(file, "device-login.json"), "has a file, not a directory, in its path"],
+    ] as const) {
+      const refused = await readDeviceLogin(path).then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+      expect(refused?.message, path).toContain(words);
+      expect(refused?.message, path).not.toMatch(/: E[A-Z]+$/);
+      expect(refused?.message, path).not.toContain(dir);
+    }
+    // The check of the place before a login words the loop the same way.
+    const placed = await deviceLoginPlace(loop).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(placed?.message).toContain("is a loop of links, not a regular file");
+  } finally {
+    server.close();
+  }
+});
+
 test("a login file over 64 KiB is refused before it is read", async () => {
   // JSON takes white space after its object, so the login padded still parses as the login: only
   // the bound refuses it. At 64 KiB it is read; one byte over, it is refused.
@@ -383,4 +425,108 @@ test("a login whose save keeps its copy and whose lock is then not let go names 
   expect(kept.message).toContain(".kept-");
   expect((kept.cause as Error | undefined)?.message).toContain("move the lock beside");
   expect((kept.cause as Error | undefined)?.message).toContain("EIO");
+});
+
+/** An error as Bun's fs gives it, its text repeating the path `at` it was handed. */
+function pathError(code: string, at: string): Error {
+  return Object.assign(new Error(`${code}: ${at}`), { code });
+}
+
+test("an fs error of the lock's read or its release never prints the login's path", async () => {
+  // The path is the setting a person may have pasted a secret into, so no message names it.
+  // The removal of the lock moved aside fails: the login is kept, and the lock left says why.
+  {
+    const stub = broker({ credentialId: "cred-rm-1" });
+    const path = loginPath();
+    const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+    const realRm = fs.rm;
+    const rms = spyOn(fs, "rm").mockImplementation((async (...args: Parameters<typeof fs.rm>) => {
+      const at = String(args[0]);
+      if (at.startsWith(`${path}.lock.stale-`)) throw pathError("ERR_FS_EISDIR", at);
+      return await realRm(...args);
+    }) as typeof fs.rm);
+    let answer: KeptDeviceLogin | Error;
+    try {
+      answer = await finish(started, path);
+    } finally {
+      rms.mockRestore();
+    }
+    expect(answer).not.toBeInstanceOf(Error);
+    const kept = answer as KeptDeviceLogin;
+    expect(kept.lockLeft).toContain("ERR_FS_EISDIR");
+    expect(kept.lockLeft).not.toContain(dirname(path));
+  }
+  // The close of each read of the lock fails: the save's look at its lock fails, so the copy is
+  // kept, and the refusal says why.
+  {
+    const stub = broker({ credentialId: "cred-close-1" });
+    const path = loginPath();
+    const lock = `${path}.lock`;
+    const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+    const realOpen = fs.open;
+    let closes = 0;
+    const opens = spyOn(fs, "open").mockImplementation((async (
+      ...args: Parameters<typeof fs.open>
+    ) => {
+      const handle = await realOpen(...args);
+      // Only a read of the lock: the lock is made by an open of "wx".
+      if (String(args[0]) === lock && typeof args[1] === "number") {
+        const close = handle.close.bind(handle);
+        handle.close = async () => {
+          await close();
+          closes += 1;
+          throw pathError("EIO", lock);
+        };
+      }
+      return handle;
+    }) as typeof fs.open);
+    let answer: KeptDeviceLogin | Error;
+    try {
+      answer = await finish(started, path);
+    } finally {
+      opens.mockRestore();
+    }
+    expect(closes).toBeGreaterThan(0);
+    expect(answer).toBeInstanceOf(Error);
+    const message = (answer as Error).message;
+    expect(message).toContain("EIO");
+    expect(message).toContain("needs no revoke");
+    expect(message).not.toContain(dirname(path));
+  }
+});
+
+test("a removal of what a save leaves that fails stops no save, and prints no path", async () => {
+  const stub = broker({ credentialId: "cred-swept-1" });
+  const path = loginPath();
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  // A temporary copy a save that died left, untouched for the stale bound.
+  const left = join(dirname(path), `.device-login-${randomUUID()}.json.tmp`);
+  await fs.writeFile(left, "{}", { mode: 0o600 });
+  const old = new Date(Date.now() - DEVICE_LOGIN_STALE_LOCK_MS - 1_000);
+  await fs.utimes(left, old, old);
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  // Each removal of a temporary copy fails, the one left's and the save's own after its rename,
+  // with an error that repeats the path.
+  const realRm = fs.rm;
+  let failed = 0;
+  const rms = spyOn(fs, "rm").mockImplementation((async (...args: Parameters<typeof fs.rm>) => {
+    const at = String(args[0]);
+    if (/^\.device-login-[0-9a-f-]{36}\.json\.tmp$/.test(basename(at))) {
+      failed += 1;
+      throw pathError("EACCES", at);
+    }
+    return await realRm(...args);
+  }) as typeof fs.rm);
+  let answer: KeptDeviceLogin | Error;
+  try {
+    answer = await finish(started, path);
+  } finally {
+    rms.mockRestore();
+  }
+  expect(failed).toBe(2);
+  expect(answer).not.toBeInstanceOf(Error);
+  expect((answer as KeptDeviceLogin).credentialId).toBe("cred-swept-1");
+  expect((await readDeviceLogin(path)).credentialId).toBe("cred-swept-1");
+  // What could not be removed is left for a later save to remove.
+  expect(await readdir(dirname(path))).toContain(basename(left));
 });
