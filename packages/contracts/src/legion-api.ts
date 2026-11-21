@@ -1810,7 +1810,7 @@ export type LegionGrant = z.output<typeof LegionGrantResponse>;
 /** Every completed fact route returns an intentional empty JSON object. The shape names no field,
  * so it accepts any JSON object and refuses a body that is not one (an array, a string); a field
  * the daemon adds to a fact route is caught by the golden drift test in `legion-api.test.ts`,
- * where each of the eight fact-route goldens is `{}`, not at runtime. */
+ * where each fact-route golden is `{}`, not at runtime. */
 export const LegionEmptyResponse = z.object({});
 /** `api.HandoffCompleteResponse`: an empty object. The merger merges and the daemon merges
  * nothing, so no completion has anything to answer with. */
@@ -2092,9 +2092,9 @@ export const LegionRootCloseRequest = z.strictObject({
   reason: nonEmptyString,
 });
 
-/** `api.ChildRequest`, an architect's park_child or rerun_child of one issue it owns: any child of
- * its tree for the tree root's architect, and only an issue under its own issue for a child's own
- * architect (`ISSUE_NOT_OWNED` otherwise). */
+/** `api.ChildRequest`, an architect's rerun_child of one issue it owns: any child of its tree for
+ * the tree root's architect, and only an issue under its own issue for a child's own architect
+ * (`ISSUE_NOT_OWNED` otherwise). */
 export const LegionChildRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

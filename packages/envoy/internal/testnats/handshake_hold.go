@@ -11,6 +11,8 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // lockHeldWait is how long a read of a connection's status may take before RequireLockHeld and
@@ -48,15 +50,15 @@ type HandshakeHold struct {
 }
 
 // StartHandshakeHold relays to the NATS server at target, a client URL such as Start returns,
-// through a proxy and the hold's own relay, on loopback ports of their own, until the test ends. URL
-// is the same server through both.
+// through a proxy and the hold's own relay, each on a loopback address and port of its own
+// (testport.LoopbackIP), until the test ends. URL is the same server through both.
 func StartHandshakeHold(t testing.TB, target string) *HandshakeHold {
 	t.Helper()
 	server, err := url.Parse(target)
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the handshake hold relays to: %v", target, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the handshake hold: %v", err)
 	}

@@ -19,6 +19,7 @@ const (
 	authRenewProof
 	authAccount
 	authService
+	authEdgeListener
 	authSignIn
 )
 
@@ -40,6 +41,9 @@ type caller struct {
 	// signIn is the broker sign-in session a request to the approval page carries, the zero
 	// approval.Session when it carries none that is live.
 	signIn approval.Session
+	// edge is the edge-listener entry of BROKER_NATS_SERVICES whose account the identity token
+	// that authenticated the request names: the projects it may ask about.
+	edge EdgeListener
 }
 
 // power is one authority over the broker a caller of an accountAuth route may hold: one bit, so
@@ -211,6 +215,19 @@ func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, machine.Ser
 	}}
 }
 
+// edgeListenerAuth is a route for an edge listener: an Envoy listener that serves the sessions of
+// the projects its entry names to agents outside the deployment's network. It calls with its own
+// identity token, the one a listed caller presents (a projected ServiceAccount token for the
+// broker's audience, or a Google identity token), verified the same way, and is known by the
+// edge-listener entry of BROKER_NATS_SERVICES that names that token's account, not by
+// BROKER_API_ACCOUNTS. The handler is given that entry, whose projects are the only ones it may
+// ask about.
+func edgeListenerAuth(h func(*server, http.ResponseWriter, *http.Request, EdgeListener)) routeHandler {
+	return routeHandler{auth: authEdgeListener, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
+		h(s, w, r, who.edge)
+	}}
+}
+
 // signInAuth is a route of the broker's own approval page, for a person in a browser signed in to
 // the broker itself (OpenID Connect with the broker's own client, BROKER_SIGNIN_*). The handler is
 // given the session the request's __Host-broker-session cookie names, or the zero session when it
@@ -248,7 +265,11 @@ func routes() []apiRoute {
 		// already public in the broker's own reference. Mounted only when the broker runs its
 		// OAuth provider, since with none it would name endpoints that are not there.
 		{http.MethodGet, "/.well-known/oauth-authorization-server", public((*server).authorizationServerMetadata)},
-		// Enroll a session's or pod's signing key under the caller's machine credential.
+		// Enroll a session's or pod's signing key under the caller's machine credential. Where
+		// BROKER_PROJECT_ACCESS_URL is set, an enrollment under a person's machine login or pod
+		// login is made only once Dispatch has said what kind of member that person is: a
+		// restricted member's is refused 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, and every one is
+		// refused 503 MEMBER_KIND_UNCHECKABLE while that cannot be read from Dispatch.
 		{http.MethodPost, "/v1/enrollments", launcherAuth((*server).createEnrollment)},
 		// Revoke an enrollment made under the caller's machine credential's operator, or a pod
 		// enrollment the caller's own machine credential made.
@@ -308,6 +329,9 @@ func routes() []apiRoute {
 		// Describe the calling session's enrollment and its live grants.
 		{http.MethodGet, "/v1/enrollments/self", sessionAuth((*server).readSelf)},
 		// Request secrets: the policy grants or denies them at once, or a person must approve them.
+		// Where BROKER_PROJECT_ACCESS_URL is set, a session whose person Dispatch calls a
+		// restricted member is denied every secret, restricted-member, and a session whose person's
+		// kind cannot be read from Dispatch is refused 503 MEMBER_KIND_UNCHECKABLE, no request written.
 		{http.MethodPost, "/v1/requests", sessionAuth((*server).createRequest)},
 		// Read a request the calling session's owner made: its person, its Legion claim or its
 		// machine, or, for a session that records no owner, the session alone; with ?wait=N (whole
@@ -325,7 +349,10 @@ func routes() []apiRoute {
 		// Release a live grant's values to the session that holds it. Every other session is 403
 		// NOT_YOURS, but one the grant's private project hides it from, as the read's rule says, is
 		// answered 403 GRANT_NOT_LIVE, as for an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE
-		// while Dispatch cannot say; neither releases anything.
+		// while Dispatch cannot say; neither releases anything. Where BROKER_PROJECT_ACCESS_URL is
+		// set, a restricted member's session is refused 403 GRANT_NOT_LIVE and the grant ended, and
+		// one whose person's kind cannot be read from Dispatch is refused 503
+		// MEMBER_KIND_UNCHECKABLE with nothing released.
 		{http.MethodPost, "/v1/grants/{id}/values", sessionAuth((*server).grantValues)},
 		// End a grant the calling session holds. Every other session is 403 NOT_YOURS, but one the
 		// grant's private project hides it from, as the read's rule says, is answered 404 NOT_FOUND,
@@ -440,6 +467,20 @@ func routes() []apiRoute {
 		// period has committed before the review reads it. It is the one route readsGrantLog
 		// reaches: the review reads the broker's record and changes nothing in it.
 		{http.MethodGet, "/v1/grant-log", accountAuth(readsGrantLog, (*server).listGrantLog)},
+		// Answer an edge listener the repositories the issues of one project resolve to,
+		// ?project=<KEY>, as Dispatch answers them (GET /api/v1/access/projects/{key}/repositories
+		// at BROKER_PROJECT_ACCESS_URL), read from Dispatch on every call and never kept:
+		// {"project", "repositories": ["owner/name", …]}, [] when none. Only an edge listener
+		// whose BROKER_NATS_SERVICES entry lists the project is answered; a project the entry does
+		// not list is 403 PROJECT_NOT_LISTED and Dispatch is not asked. Whenever the broker cannot
+		// get Dispatch's whole answer within 2 seconds (Dispatch's 503 or any other refusal, a
+		// stall, a body it cannot read, or no BROKER_PROJECT_ACCESS_URL at all) it is 503
+		// REPOSITORIES_UNKNOWN, never a list; and past 16 calls of one edge listener waiting on
+		// Dispatch at once on one broker process, 503 REPOSITORIES_BUSY. That bound is each
+		// process's, so N replicas let one edge listener hold 16 × N calls on Dispatch: a guard on
+		// Dispatch's load, not a security bound. The edge-listener entries are read whether or not
+		// the broker runs the NATS auth service.
+		{http.MethodGet, "/v1/project-repositories", edgeListenerAuth((*server).projectRepositories)},
 		// List the calling credential's operator's own logins, their machines' logins and the token
 		// logins of the accounts BROKER_POD_OPERATORS maps to them, as Dispatch's machine-logins
 		// page lists them, without the service logins that page also lists. This route, the machine

@@ -7,9 +7,11 @@
 # with the event, sha, ref and migration-base Actions would hand it. The fixture's history has
 # the real shapes: a main that is one line of commits, as the queue lands them; a branch forked
 # from it 100 commits below both tips, past the script's first fetch depth; a branch that merged
-# main after it forked; a merge-group entry on top of main's tip; and a history that shares no
-# commit with main. One case breaks the checkout's object store once the fetch has written main's
-# ref, so git merge-base fails with 128 rather than answers.
+# main after it forked; branches that hold a newer commit of main only along a path longer than
+# the second fetch, or than the third, beside a short path to an older one; a merge-group entry on
+# top of main's tip; and a history that shares no commit with main. One case breaks the checkout's
+# object store once the fetch has written main's ref, so git merge-base fails with 128 rather than
+# answers.
 #
 # Run from anywhere: .github/scripts/edited-migrations-base.test.sh
 # CI runs it in ci.yaml's test job.
@@ -83,15 +85,20 @@ line() {
   done
 }
 
-# Main: 200 commits in one line. The feature branch forks at its 100th and adds 100 of its own,
-# so its fork point is 100 commits below both tips.
-line 50 'main, early'
+# Main: 1000 commits in one line below every branch, then 200 more, which the comments below count
+# from 1. The 1000 keep main's root past the third fetch the script makes, 1024 commits deep, so
+# a case that settles by then settles in a checkout that is still shallow. The feature branch
+# forks at main's 100th and adds 100 of its own, so its fork point is 100 commits below both tips.
+line 1000 'main, below the branches'
+line 50 'main, early' "$mark"
 early_mark=$mark
 line 50 'main, up to the fork' "$early_mark"
 fork_mark=$mark
 line 50 'main, after the fork' "$fork_mark"
 later_mark=$mark
-line 50 'main, late' "$later_mark"
+line 25 'main, late' "$later_mark"
+newer_mark=$mark
+line 25 'main, latest' "$newer_mark"
 main_tip_mark=$mark
 line 100 'feature' "$fork_mark"
 feature_mark=$mark
@@ -100,6 +107,24 @@ line 3 'merged branch, before the merge' "$early_mark"
 commit 'Merge main into the branch' "$mark" "$later_mark"
 line 2 'merged branch, after the merge' "$mark"
 merged_mark=$mark
+# A branch that holds main's 175th commit only through 300 commits of its own, more than the
+# script's second fetch, and that then merged a branch of one commit on main's 150th: two paths
+# back to main, the short one to an older commit of main than the long one.
+line 300 'two paths, the long one' "$newer_mark"
+long_mark=$mark
+commit 'two paths, the short one' "$later_mark"
+short_mark=$mark
+commit 'Merge the short path' "$long_mark" "$short_mark"
+two_paths_mark=$mark
+# The same two paths with the merge's parents the other way round: the short branch merged the
+# long one.
+commit 'Merge the long path' "$short_mark" "$long_mark"
+mirror_mark=$mark
+# The same short branch merged into a path of 1100 commits on main's 175th, more than the script's
+# third fetch: the fetch that settles it holds the whole of both histories.
+line 1100 'two paths, the longest one' "$newer_mark"
+commit 'Merge the short path into the longest' "$mark" "$short_mark"
+whole_mark=$mark
 # The commit the queue builds for a group's first entry: the change, on main's tip.
 commit 'merge group entry' "$main_tip_mark"
 entry_mark=$mark
@@ -114,15 +139,20 @@ done < "$work/marks"
 early=${shas[$early_mark]}
 fork=${shas[$fork_mark]}
 later=${shas[$later_mark]}
+newer=${shas[$newer_mark]}
 main_tip=${shas[$main_tip_mark]}
 main_parent=$(git_fixture -C "$origin" rev-parse "$main_tip^1")
 feature=${shas[$feature_mark]}
 merged=${shas[$merged_mark]}
+two_paths=${shas[$two_paths_mark]}
+mirror=${shas[$mirror_mark]}
+whole=${shas[$whole_mark]}
 entry=${shas[$entry_mark]}
 queue_ref="gh-readonly-queue/main/pr-7-$feature"
 unrelated=${shas[$unrelated_mark]}
 {
   printf 'update refs/heads/%s %s\n' main "$main_tip" feature "$feature" merged "$merged" \
+    two-paths "$two_paths" two-paths-mirror "$mirror" two-paths-whole "$whole" \
     "$queue_ref" "$entry" unrelated "$unrelated"
   printf 'delete refs/fixture/commits\n'
 } > "$work/refs"
@@ -172,6 +202,16 @@ check "100 commits of main are above the fork point" \
 check "100 commits of the feature are above it" \
   "$(is "$(git_fixture -C "$origin" rev-list --count "$fork..$feature")" 100)"
 
+echo "fixture: the two-path branch holds the newer commit of main only past the second fetch, and an older one within the first"
+check "302 commits of the branch are above the newer commit of main" \
+  "$(is "$(git_fixture -C "$origin" rev-list --count "$newer..$two_paths")" 302)"
+check "the short path reaches the older commit of main two commits below the branch's tip" \
+  "$(is "$(git_fixture -C "$origin" rev-parse "$two_paths^2^")" "$later")"
+check "50 commits of main are above the older commit, so main's first fetch holds it" \
+  "$(is "$(git_fixture -C "$origin" rev-list --count "$later..$main_tip")" 50)"
+check "the merge base of the whole histories is the newer commit" \
+  "$(is "$(git_fixture -C "$origin" merge-base "$two_paths" "$main_tip")" "$newer")"
+
 echo "case: a workflow_dispatch from a branch that names no migration-base compares with the branch's merge base with main"
 dir=$(checkout feature)
 pick "$dir" workflow_dispatch refs/heads/feature "$feature" ''
@@ -181,6 +221,8 @@ check "it names the base and why" \
   "$(contains "$err" "^edited-migrations base: $fork, the merge base of HEAD $feature with main $main_tip: this workflow_dispatch run on refs/heads/feature names no migration-base, and a branch lands onto main\$")"
 check "it raises no error" "$(is "$(contains "$err" '::error::')" false)"
 check "the base is in the checkout" "$(holds "$dir" "$fork")"
+check "it stops at the second fetch, 256 commits deep: main's 256th commit below its tip is not in the checkout" \
+  "$(is "$(holds "$dir" "$(git_fixture -C "$origin" rev-parse "$main_tip~256")")" false)"
 
 echo "case: a branch that merged main after it forked compares with the commit of main it merged, not its fork point"
 dir=$(checkout merged)
@@ -190,6 +232,35 @@ check "the base is the merged commit of main" "$(is "$out" "$later")"
 check "it names the base and why" \
   "$(contains "$err" "^edited-migrations base: $later, the merge base of HEAD $merged with main $main_tip: ")"
 check "the base is in the checkout" "$(holds "$dir" "$later")"
+
+echo "case: a branch that holds a newer commit of main only past the second fetch, beside a short path to an older one, compares with the newer one"
+dir=$(checkout two-paths)
+# The CI step runs the script from packages/envoy, a directory below the checkout's root.
+mkdir -p "$dir/packages/envoy"
+pick "$dir/packages/envoy" workflow_dispatch refs/heads/two-paths "$two_paths" ''
+check "it answers" "$(is "$status" 0)"
+check "the base is the merge base of the whole histories, the newer commit of main" "$(is "$out" "$newer")"
+check "it names the base and why" \
+  "$(contains "$err" "^edited-migrations base: $newer, the merge base of HEAD $two_paths with main $main_tip: ")"
+check "the base is in the checkout" "$(holds "$dir" "$newer")"
+check "it settles while the checkout is still shallow, short of main's root" \
+  "$(is "$(git -C "$dir" rev-parse --is-shallow-repository)" true)"
+
+echo "case: the same two paths, with the long one as the merge's second parent, compare with the newer commit too"
+dir=$(checkout two-paths-mirror)
+pick "$dir" workflow_dispatch refs/heads/two-paths-mirror "$mirror" ''
+check "it answers" "$(is "$status" 0)"
+check "the base is the newer commit of main" "$(is "$out" "$newer")"
+check "it settles while the checkout is still shallow, short of main's root" \
+  "$(is "$(git -C "$dir" rev-parse --is-shallow-repository)" true)"
+
+echo "case: two paths whose long one is past the third fetch compare with the newer commit once the fetch holds both whole histories"
+dir=$(checkout two-paths-whole)
+pick "$dir" workflow_dispatch refs/heads/two-paths-whole "$whole" ''
+check "it answers" "$(is "$status" 0)"
+check "the base is the newer commit of main" "$(is "$out" "$newer")"
+check "it settles once the checkout is whole" \
+  "$(is "$(git -C "$dir" rev-parse --is-shallow-repository)" false)"
 
 echo "case: a migration-base named on a branch's dispatch is the base, over the merge base"
 dir=$(checkout feature)

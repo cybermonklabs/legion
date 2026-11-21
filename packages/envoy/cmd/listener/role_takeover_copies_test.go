@@ -191,7 +191,7 @@ func (rig *copiesRig) startTaker(t *testing.T, sessionID string) *sessionStandIn
 func (rig *copiesRig) crash(t *testing.T, sessionID string, standIn *sessionStandIn) {
 	t.Helper()
 	standIn.silent.Store(true)
-	standIn.conn.Close()
+	standIn.close()
 	awaitNoRelaySubscriber(t, rig.url, sessionID)
 }
 
@@ -666,7 +666,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		awaitAckState(t, rig.consumers, copiesHolder, len(unread), seqs[read[1]])
 		// A clean stop: the session deregisters, and its process ends.
 		rig.deregister(t, copiesHolder, "")
-		holder.conn.Close()
+		holder.close()
 		rig.awaitNoConsumer(t, copiesHolder)
 		record, recorded := rig.resumeRecord(t, copiesHolder)
 		if !recorded || record.Floor != seqs[read[1]] || record.StreamID != rig.streamID(t) {

@@ -11,14 +11,9 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type {
-  Agent,
-  ClaimHolderLiveness,
-  Issue,
-  IssueClaim,
-  IssueDetails,
-  Subscriber,
-} from "../../api/types";
+import type { ClaimHolderLiveness, Issue, IssueDetails, Subscriber } from "../../api/types";
+import { runningAgent } from "../credentials/agent-fixture";
+import { claimIssue as base, sessionClaim as claim } from "../issue-page/issue-fixtures";
 import { MarginProvider } from "../margin/margin-context";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
@@ -26,42 +21,6 @@ import { claimIsTakeable } from "./ClaimChip";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
 import type { IssuePriorityWrite } from "./useIssuePriority";
-
-const claim: IssueClaim = {
-  actor: { kind: "session", id: "session-one", origin: { session_title: "Implementer" } },
-  at: "2026-09-24T06:00:00Z",
-};
-
-const base: Issue = {
-  advances: [],
-  advances_revision: 0,
-  assignee: "alice",
-  claim: null,
-  components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-  closed_at: null,
-  created_at: "2026-09-24T05:00:00Z",
-  created_by: { id: "alice", kind: "user" },
-  external_links: [],
-  key: "CORE-1",
-  labels: [],
-  last_seq: 1,
-  number: 1,
-  parent: null,
-  blocked_by: [],
-  plan_artifact_id: "",
-  decisions_artifact_id: "",
-  primary_artifact_id: "artifact-1",
-  verification_artifact_id: "",
-  priority: null,
-  project: "CORE",
-  rank: "U",
-  route: null,
-  repo: null,
-  resolved_repo: null,
-  status: "in_progress",
-  title: "Claim the issue before working it",
-  updated_at: "2026-09-24T06:00:00Z",
-};
 
 /** These rows are about the claim chip, not the priority: the header's write never runs, and it
  *  draws no priority, as `base` has none. */
@@ -130,33 +89,10 @@ function header(
   };
 }
 
-/** One live session, as `GET /api/v1/agents` lists it. */
-function running(sessionID: string, title: string): Agent {
-  return {
-    session_id: sessionID,
-    title,
-    dir: "/w",
-    host: "host",
-    machine_id: "host",
-    roles: [],
-    capabilities: [],
-    last_seen: 1,
-    open_asks: 0,
-    last_activity: null,
-    state: "live",
-  };
-}
-
-/** The same session after it has missed its heartbeats: the listener still lists it, and says
- *  so on the row (`state`), with the heartbeat it was last seen at. */
-function unresponsive(sessionID: string, title: string, lastSeen: number): Agent {
-  return { ...running(sessionID, title), last_seen: lastSeen, state: "unresponsive" };
-}
-
 test("a claimed issue names its holder and releases the claim from the header", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Implementer"),
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockResolvedValue({ ...base, claim: null });
   const view = header({ ...base, claim });
@@ -192,7 +128,7 @@ test("a claimed issue names its holder and releases the claim from the header", 
 test("a holder the registry no longer lists reads as not running", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-two", "Someone else"),
+    runningAgent({ session_id: "session-two", title: "Someone else" }),
   ]);
   const view = header({ ...base, claim });
   try {
@@ -215,7 +151,7 @@ test("a holder the registry no longer lists reads as not running", async () => {
 test("a release that fails says so and offers a retry", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Implementer"),
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(new Error("network error"));
   const view = header({ ...base, claim });
@@ -238,19 +174,7 @@ test("a release that fails says so and offers a retry", async () => {
 test("the claim shows the holder's live title, not the one stamped on the claim", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    {
-      session_id: "session-one",
-      title: "Live registry title",
-      dir: "/w",
-      host: "host",
-      machine_id: "host",
-      roles: [],
-      capabilities: [],
-      last_seen: 1,
-      open_asks: 0,
-      last_activity: null,
-      state: "live",
-    },
+    runningAgent({ session_id: "session-one", title: "Live registry title" }),
   ]);
   const view = header({ ...base, claim });
   try {
@@ -287,7 +211,12 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
   // Six minutes of silence: inside the claim's grace, so the server would still refuse a take.
   const lastSeen = Date.now() - 6 * 60_000;
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    unresponsive("session-one", "Implementer", lastSeen),
+    runningAgent({
+      session_id: "session-one",
+      title: "Implementer",
+      last_seen: lastSeen,
+      state: "unresponsive",
+    }),
   ]);
   const view = header({ ...base, claim });
   try {
@@ -337,7 +266,12 @@ test("an unresponsive holder past its takeable moment reads takeable now, still 
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const lastSeen = Date.now() - (ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS + 60_000);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    unresponsive("session-one", "Implementer", lastSeen),
+    runningAgent({
+      session_id: "session-one",
+      title: "Implementer",
+      last_seen: lastSeen,
+      state: "unresponsive",
+    }),
   ]);
   const view = header({ ...base, claim });
   try {
@@ -482,7 +416,7 @@ async function unsubscribePlanner(user: UserEvent, held: boolean) {
 test("a release the reader stopped says Retry sends it again, not that it failed", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Implementer"),
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(dropped());
   const view = header({ ...base, claim });

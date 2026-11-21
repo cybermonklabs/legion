@@ -38,8 +38,9 @@ import (
 
 // The tags a namespace secret carries, and their fixed values.
 const (
-	// TagOwner names who owns the secret: OwnerShared, a person's lowercase email, or a registered
-	// service's name.
+	// TagOwner names who owns the secret: OwnerShared, a person's lowercase email, a Google group
+	// as group:<its lowercase email> (ValidGroupOwner), whose members each decide as the one owner
+	// does, or a registered service's name.
 	TagOwner = "owner"
 	// TagTier is TierAgent or TierHuman.
 	TagTier = "tier"
@@ -62,6 +63,16 @@ const (
 	// secret to one account email, and a mint for any other account is refused, so a value
 	// rewritten to name another account releases no token.
 	TypeGoogleServiceAccount = "google-service-account"
+	// TypeAnthropicFederation mints an Anthropic organization's token by Workload Identity
+	// Federation: the Google identity token of the one service account the stored value names,
+	// {"organization_id", "federation_rule_id", "service_account_id", "service_account" and,
+	// for a rule enabled for more than one workspace, "workspace_id"}, traded at Anthropic's token
+	// exchange for the token the federation rule grants. The deployment's
+	// BROKER_SERVICE_ACCOUNT_SECRETS binds each such secret to one account, as it binds a
+	// google-service-account secret. The token can be an organization administrator's, so the
+	// type is human tier only, its grants an hour at most, and its requesters held as
+	// google-service-account's are (TagRules).
+	TypeAnthropicFederation = "anthropic-federation"
 	// TagMaxGrant bounds a request's signed grant lifetime for this secret (ParseMaxGrant).
 	TagMaxGrant = "max-grant"
 	// TagDefaultGrant, set to DefaultGrantSession, keeps a request that names no lifetime for this
@@ -73,12 +84,13 @@ const (
 	// (ParseGitHubOwners). A github-app secret without it is refused, since a public App can be
 	// installed by any account, and an installation on an account it does not list gets no token.
 	TagGitHubOwners = "github-owners"
-	// TagRequesters lists who may ask for the secret at all: people by lowercase email and
-	// registered services by name, separated by white space (ParseRequesters). A session or pod
-	// the list does not name is denied before owner and tier are read (ReasonRequesterNotListed),
-	// so the tag narrows who may ask and never widens it. It bounds no grant by itself: the
-	// hour-long cap is the business of TagAdmin and of the google-service-account type, each of
-	// which demands one (TagRules).
+	// TagRequesters lists who may ask for the secret at all: people by lowercase email, Google
+	// groups as group:<lowercase email>, whose members' sessions it admits, and registered
+	// services by name, separated by white space (ParseRequesters). A session or pod the list
+	// does not name is denied before owner and tier are read (ReasonRequesterNotListed), so the
+	// tag narrows who may ask and never widens it. It bounds no grant by itself: the hour-long cap
+	// is the business of TagAdmin and of the google-service-account and anthropic-federation
+	// types, each of which demands one (TagRules).
 	TagRequesters = "requesters"
 	// TagScopes lists the OAuth scope names of the token a google-service-account secret mints,
 	// separated by white space, each the part of a Google scope that follows
@@ -170,7 +182,7 @@ const (
 )
 
 // Types is every value a secret's type tag may name. The broker holds a minter for each.
-var Types = []string{TypeGitHubApp, TypeGoogleLogin, TypeAzureLogin, TypeGoogleServiceAccount}
+var Types = []string{TypeGitHubApp, TypeGoogleLogin, TypeAzureLogin, TypeGoogleServiceAccount, TypeAnthropicFederation}
 
 // ValidType reports whether type is one of Types.
 func ValidType(secretType string) bool {
@@ -387,136 +399,6 @@ func ParseScopes(raw string) (string, error) {
 	return strings.Join(scopes, " "), nil
 }
 
-// ErrRequestersMissing is a requesters tag that names nobody: a tag that let no one ask would
-// serve the secret to no session at all, which is a mistake rather than a policy.
-var ErrRequestersMissing = errors.New("requesters names at least one person or service")
-
-// ErrRequestersComma is a requesters tag that holds a comma: its entries are separated by spaces,
-// as github-owners' and BROKER_SERVICES' are, since an AWS tag value takes a space and no comma.
-var ErrRequestersComma = errors.New(`requesters separates its entries with spaces, not commas ("<email> <service>")`)
-
-// ErrRequestersEntry is a requesters entry that names neither a person nor a service: one holding
-// an @ that is not a lowercase email of the form a person signs in under (an uppercase one is
-// refused rather than lowercased, since the tag is compared against the sign-in as it is written),
-// or one naming a service the deployment does not register.
-var ErrRequestersEntry = errors.New("requesters names people by their lowercase sign-in email and services by their registered name")
-
-// ParseRequesters reads a requesters tag for a caller that holds the deployment's registered
-// service list — the loader (Loader.Services), the one reader whose answer decides whether the
-// secret is served. People are named by lowercase email and services by name, separated by white
-// space. It refuses a comma anywhere (ErrRequestersComma), a list that names nobody
-// (ErrRequestersMissing), and an entry that is neither (ErrRequestersEntry). An entry holding an
-// @ is a person, and must be the lowercase email their sign-in names them by (emailPattern),
-// since Evaluate compares it against record.CanonicalLogin of the session's operator; any other
-// entry is a service, and must be one of services, ALWAYS, so a nil or empty list refuses every
-// service entry, exactly as the owner tag already refuses a name the deployment does not
-// register (Loader.secret). ParseRequesterShapes checks a service entry's shape alone, for the
-// one caller that holds no registered list. It answers the entries sorted, each
-// once and joined by single spaces, so a Secret holding them stays comparable, two spellings of
-// one list are one policy, and the value is one an AWS tag and a Secret Manager annotation both
-// hold.
-func ParseRequesters(raw string, services []string) (string, error) {
-	return parseRequesters(raw, services, true)
-}
-
-// ParseRequesterShapes reads a requesters tag for a caller that holds no registered service list:
-// `agent-secrets`, which never sees BROKER_SERVICES. It is ParseRequesters in every respect but
-// one — an entry naming a service is checked for a service name's shape alone
-// (record.ValidService) rather than against the registered list — so the CLI refuses a malformed
-// tag before it writes, and the broker's answer to the write's reread (ReasonRequestersMalformed)
-// is what catches a name no deployment registers. ParseRequesters exists for the loader, which
-// holds that list and must apply it.
-func ParseRequesterShapes(raw string) (string, error) {
-	return parseRequesters(raw, nil, false)
-}
-
-// SplitRequestersGuard answers raw, a requesters tag as the store holds it, without the entry
-// RequestersRollbackGuard, and whether it held that entry. The rest is answered single-spaced when
-// the entry was there, and raw unchanged when it was not, so a tag no guard was written into
-// reaches ParseRequesters exactly as the store holds it. An entry is a run of characters between
-// white space, as ParseRequesters reads it, so a guard joined to another entry by a comma is no
-// guard, and ParseRequesters refuses that tag for its comma.
-func SplitRequestersGuard(raw string) (rest string, guarded bool) {
-	fields := strings.Fields(raw)
-	kept := fields[:0]
-	for _, field := range fields {
-		if field != RequestersRollbackGuard {
-			kept = append(kept, field)
-		}
-	}
-	if len(kept) == len(fields) {
-		return raw, false
-	}
-	return strings.Join(kept, " "), true
-}
-
-// WithRequestersGuard answers list, a requesters list ("" for none), with RequestersRollbackGuard
-// after it: the requesters tag `agent-secrets secret` writes for a secret that carries a
-// dispatch-project or a project-channels tag.
-func WithRequestersGuard(list string) string {
-	if list == "" {
-		return RequestersRollbackGuard
-	}
-	return list + " " + RequestersRollbackGuard
-}
-
-// parseRequesters is the one reading behind both exported functions. registered says which check
-// a service entry gets: membership of services, or a service name's shape alone.
-func parseRequesters(raw string, services []string, registered bool) (string, error) {
-	if strings.Contains(raw, ",") {
-		return "", ErrRequestersComma
-	}
-	var requesters []string
-	for _, entry := range strings.Fields(raw) {
-		switch {
-		case strings.Contains(entry, "@"):
-			if !emailPattern.MatchString(entry) {
-				return "", fmt.Errorf("%w, not %q", ErrRequestersEntry, entry)
-			}
-		case registered:
-			if !slices.Contains(services, entry) {
-				return "", fmt.Errorf("%w, not %q: no registered service has that name", ErrRequestersEntry, entry)
-			}
-		default:
-			if !record.ValidService(entry) {
-				return "", fmt.Errorf("%w, not %q", ErrRequestersEntry, entry)
-			}
-		}
-		requesters = append(requesters, entry)
-	}
-	if len(requesters) == 0 {
-		return "", ErrRequestersMissing
-	}
-	slices.Sort(requesters)
-	return strings.Join(slices.Compact(requesters), " "), nil
-}
-
-// SplitRequesters splits a requesters tag into the people it names and the services it names,
-// each list in the order the tag holds them and both nil for a tag that names nobody. The @ is
-// the whole of the test: both parsers behind the tag make every person entry a lowercase email,
-// which holds one, and every service entry a service name, which holds none (ParseRequesters
-// against the deployment's registered list, ParseRequesterShapes against a service name's shape
-// alone), so a reader of the split needs neither alphabet and no entry can be both. An entry is
-// answered as it was written, since a tag the loader read is already sorted, compacted and
-// single-spaced and a caller comparing an entry against an owner tag compares it as the sign-in
-// writes it.
-func SplitRequesters(requesters string) (people, services []string) {
-	for _, entry := range strings.Fields(requesters) {
-		if strings.Contains(entry, "@") {
-			people = append(people, entry)
-		} else {
-			services = append(services, entry)
-		}
-	}
-	return people, services
-}
-
-// devServiceAccount is the id, the part before the @, of a service account the deployment binds
-// to one person: it binds each person's DEV_<NAME> secret to their own dev-<name> account, whose
-// token therefore goes to that person and to nobody else. RequesterRule reads it to refuse a
-// service entry on such a secret's requesters list.
-var devServiceAccount = regexp.MustCompile(`^dev-[a-z0-9-]+$`)
-
 // TagSet is one secret's tags as TagRules weighs them: the values the loader read from the store
 // (Loader.secret) or the values `agent-secrets secret create` and `retag` will write, beside the
 // one thing that is no tag at all, BoundAccount.
@@ -540,71 +422,6 @@ type TagSet struct {
 	MaxGrant time.Duration
 }
 
-// RequesterFault is which condition of the requesters rules refuses a secret's requesters tag,
-// as RequesterRule answers it. TagRules turns every fault but RequesterFaultNone into the one
-// load reason ReasonRequestersNotOwner, so the fault is what tells those conditions apart for a
-// caller that must say which flag fixes a write.
-type RequesterFault int
-
-const (
-	// RequesterFaultNone is a tag set no requesters condition refuses.
-	RequesterFaultNone RequesterFault = iota
-	// RequesterFaultOwnerNotPerson is a google-service-account secret whose owner is no person
-	// (ValidPersonOwner). The token it mints acts as a service account, which is given to the
-	// one person who owns the secret, so a secret owned by shared or by a service can carry no
-	// such type and no requesters list could make it servable.
-	RequesterFaultOwnerNotPerson
-	// RequesterFaultServiceBelowHumanTier is a google-service-account secret whose requesters
-	// name a service at a tier that is not human. A service's pod may ask for such a token only
-	// where a person approves each release of it, which human tier is.
-	RequesterFaultServiceBelowHumanTier
-	// RequesterFaultNotTheOwnerOnce is a google-service-account secret whose requesters do not
-	// name its person owner exactly once: no list at all, a list naming no person, one naming
-	// somebody else, or one naming more than one person. The secret is served to that one
-	// person, who is therefore on its list, beside the registered services a human-tier secret
-	// may name as well.
-	RequesterFaultNotTheOwnerOnce
-	// RequesterFaultServiceOnDevAccount is a secret the deployment binds to a dev-<name> account
-	// (TagSet.BoundAccount, devServiceAccount) whose requesters name a service, at either tier.
-	// Such an account is one person's own, so no service may ask for its token, whatever type
-	// the secret is.
-	RequesterFaultServiceOnDevAccount
-)
-
-// RequesterRule answers which condition refuses t's requesters, and RequesterFaultNone for a set
-// no such condition refuses. It holds the conditions most fundamental first: the owner is no
-// person, so no list could make the secret servable; the list names a service below human tier;
-// the list does not name that owner exactly once; the secret is bound to a dev-<name> account
-// and the list names a service, which holds for every type.
-//
-// The loader reads none of these apart: it reads TagRules' reason, and every fault here is the
-// one reason ReasonRequestersNotOwner. The fault exists for `agent-secrets`' tagRefusal, which
-// says which flag fixes the write and so must name the condition that refused it rather than
-// another that happens to be true beside it — a secret owned by shared is answered for its owner
-// however its list and tier read, and a list naming a service at agent tier is answered for the
-// tier and not for the person it leaves out.
-func RequesterRule(t TagSet) RequesterFault {
-	// Each entry's own shape is ParseRequesters' and ParseRequesterShapes' business, and they
-	// answer the entries sorted and separated by single spaces, so the conditions below read
-	// only the @ that tells a person from a service (SplitRequesters), and read it once for all
-	// of them.
-	people, services := SplitRequesters(t.Requesters)
-	if t.Type == TypeGoogleServiceAccount {
-		switch {
-		case !ValidPersonOwner(t.Owner):
-			return RequesterFaultOwnerNotPerson
-		case len(services) > 0 && t.Tier != TierHuman:
-			return RequesterFaultServiceBelowHumanTier
-		case len(people) != 1 || people[0] != t.Owner:
-			return RequesterFaultNotTheOwnerOnce
-		}
-	}
-	if id, _, bound := strings.Cut(t.BoundAccount, "@"); bound && devServiceAccount.MatchString(id) && len(services) > 0 {
-		return RequesterFaultServiceOnDevAccount
-	}
-	return RequesterFaultNone
-}
-
 // TagRules is the one statement of what a secret's tags demand of each other, which the loader
 // applies to every secret it reads and `agent-secrets secret` create and retag apply before they
 // write (so it asks for no registered service list of its own). It takes a TagSet rather than a
@@ -619,16 +436,19 @@ func RequesterRule(t TagSet) RequesterFault {
 //     released only by a person's approval, which agent tier does not ask for.
 //   - ReasonAdminRequesters: an admin secret carries no requesters tag. Who may ask for an
 //     administrator's credential is named, never left to owner and tier alone.
-//   - ReasonMaxGrantRequired: an admin secret, or a google-service-account one, sets no
-//     max-grant or one longer than an hour. Such a grant is reviewed while it is live, so it
-//     lasts an hour at most. A secret that merely lists its requesters keeps its own cap, or
-//     none.
+//   - ReasonTypeHumanTier: an anthropic-federation secret is not human tier. Its token can be an
+//     organization administrator's, which a person approves each release of.
+//   - ReasonMaxGrantRequired: an admin secret, a google-service-account one or an
+//     anthropic-federation one sets no max-grant or one longer than an hour. Such a grant is
+//     reviewed while it is live, so it lasts an hour at most. A secret that merely lists its
+//     requesters keeps its own cap, or none.
 //   - ReasonRequestersNotOwner: a condition of RequesterRule refuses the secret's requesters —
-//     a google-service-account secret whose owner is no person, one whose list names a service
-//     below human tier, or one whose list does not name its person owner exactly once, and a
-//     secret of any type the deployment binds to a dev-<name> account whose list names a
-//     service. The one reason is all a load answers; which of those conditions refused it is
-//     RequesterRule's fault, which `agent-secrets` reads to name the flag that fixes the write.
+//     a google-service-account or anthropic-federation secret whose owner is neither a person
+//     nor a group, one whose list names a service below human tier, or one whose list does not
+//     name its owner exactly once, and a secret of any type the deployment binds to a dev-<name>
+//     account whose list names a service. The one reason is all a load answers; which of those
+//     conditions refused it is RequesterRule's fault, which `agent-secrets` reads to name the
+//     flag that fixes the write.
 //
 // The rules above are weighed in the order they are written, so a secret several of them refuse
 // is refused by the first.
@@ -642,7 +462,10 @@ func TagRules(t TagSet) string {
 	if t.Admin && t.Requesters == "" {
 		return ReasonAdminRequesters
 	}
-	if (t.Admin || t.Type == TypeGoogleServiceAccount) && (t.MaxGrant == 0 || t.MaxGrant > time.Hour) {
+	if t.Type == TypeAnthropicFederation && t.Tier != TierHuman {
+		return ReasonTypeHumanTier
+	}
+	if (t.Admin || t.Type == TypeGoogleServiceAccount || t.Type == TypeAnthropicFederation) && (t.MaxGrant == 0 || t.MaxGrant > time.Hour) {
 		return ReasonMaxGrantRequired
 	}
 	if RequesterRule(t) != RequesterFaultNone {
@@ -763,6 +586,7 @@ const (
 	ownerPerson ownerKind = iota
 	ownerShared
 	ownerService
+	ownerGroup
 )
 
 // Secret is one namespace secret the policy serves.
@@ -774,7 +598,8 @@ type Secret struct {
 	// name in Secret Manager. A type secret's is TypeSource of its type and that store source, so
 	// the type is frozen into every request (ParseTypeSource reads it back).
 	Source string
-	// Owner is OwnerShared, a person's email, or a registered service.
+	// Owner is OwnerShared, a person's email, a group as group:<its email>, or a registered
+	// service.
 	Owner string
 	// Tier is TierAgent or TierHuman.
 	Tier string
@@ -831,6 +656,16 @@ func (secret Secret) Type() string {
 	return secretType
 }
 
+// PersonApprovesEveryRelease reports whether a person approves every release of the secret, so
+// the model judge decides none of its requests whatever seconds the airlock rules give the name: a
+// secret tagged admin (TagAdmin), and an anthropic-federation secret (TypeAnthropicFederation,
+// read from its Source with ParseTypeSource), whose token can be an organization administrator's
+// whether or not the tag says so. Each of the judge's gates reads it (requests' judgeKey,
+// judgeStillDecides, currentPolicyAdmits and JudgePolicy).
+func (secret Secret) PersonApprovesEveryRelease() bool {
+	return secret.Admin || secret.Type() == TypeAnthropicFederation
+}
+
 // GitHubOwnerLogins is GitHubOwners as a list of lowercase logins, nil when it is "".
 func (secret Secret) GitHubOwnerLogins() []string {
 	if secret.GitHubOwners == "" {
@@ -854,41 +689,9 @@ func (secret Secret) ScopeURLs() []string {
 	return urls
 }
 
-// requesterNames is Requesters as a list of the emails and service names it holds, nil when it
-// is "". It is unexported because lists, just below, is its one caller: nothing outside this
-// package reads a secret's requesters as a list.
-func (secret Secret) requesterNames() []string {
-	if secret.Requesters == "" {
-		return nil
-	}
-	return strings.Fields(secret.Requesters)
-}
-
-// lists reports whether secret's requesters name r: the person whose session it is, or the
-// service of the pod it is. Each sort is matched only by an entry of its own sort, which the @
-// tells apart (ParseRequesters makes every person entry hold one and every service entry hold
-// none): a login record.CanonicalLogin answers may be a GitHub login rather than an email, for
-// a record decided before people were named by email, and such a login has a service name's own
-// alphabet, so an operator named "legion-daemon" would otherwise be served every secret that
-// lists the legion-daemon service. An empty Operator and an empty Service (a session has no
-// service) match nothing, never an entry. A pod's Operator is empty unless BROKER_POD_OPERATORS
-// maps the pod's account to the person its login carried (requests.Machine.requester).
-func (secret Secret) lists(r Requester) bool {
-	operator := record.CanonicalLogin(r.Operator)
-	for _, entry := range secret.requesterNames() {
-		person := strings.Contains(entry, "@")
-		if person && operator != "" && entry == operator {
-			return true
-		}
-		if !person && r.Service != "" && entry == r.Service {
-			return true
-		}
-	}
-	return false
-}
-
 // approver is who decides an approval request for secret: anyone signed in to Dispatch for a
-// shared secret, its owner otherwise.
+// shared secret, its owner otherwise, a group owner as written (group:<address>), whose members
+// each decide it (record.MayDecide).
 func (secret Secret) approver() string {
 	if secret.ownership == ownerShared {
 		return record.AnyoneApprover
@@ -928,6 +731,11 @@ type Set struct {
 	// each version and type it has not decoded, and refuses the secret only when the decoder does
 	// (ReasonValueMalformed).
 	versions map[string]string
+	// groups is the group reader of the Current that published the set (Loader.Groups), which
+	// every decision on the set asks who is a member of a group, and nil for a set no Current
+	// published. It is in neither Version nor any digest: who is a member changes with no change
+	// of the policy's tags.
+	groups record.Directory
 }
 
 // ValueVersion is the version of the type secret name's value as s lists it, and "" for a name s
@@ -1027,195 +835,9 @@ func NewSet(secrets map[string]Secret) *Set {
 	return &Set{Version: hex.EncodeToString(digest.Sum(nil)), Secrets: secrets}
 }
 
-// Requester is an enrolled session or pod as the policy sees it.
-type Requester struct {
-	// Operator is the email of the person whose machine login the session enrolled under. For a
-	// pod it is the person a person's pod login carried, while BROKER_POD_OPERATORS still maps the
-	// pod's account to that person (requests.Machine.requester), and empty for any other pod.
-	Operator string
-	// Service is the service of the machine login that enrolled the session, set only when the
-	// session is a pod whose verified service account is one of the accounts BROKER_SERVICES maps
-	// to that same service (requests.Machine.requester); empty otherwise. A service may list
-	// several accounts, but each account is listed once and proves exactly one service, since a
-	// machine login's service is its own claim and only the pod's account can prove it: an
-	// account listed for another service, or for none, proves nothing here.
-	Service string
-	// Withheld is the names the session's operator withheld from it by revoking a grant of them
-	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each as
-	// a human-tier secret.
-	Withheld []string
-	// Projects is the projects the credential names that its person may see, as the caller
-	// resolved them: a session's enrollment's list, or the project an operator's entry maps a
-	// pod to. Evaluate reads it for a secret tagged with a private project alone.
-	Projects []string
-	// Named is the projects the credential names, before the visibility filter Projects is the
-	// result of. ListsPrivate reads it, so a credential that named a private project stays
-	// limited once its person can no longer see that project, which is exactly the moment its
-	// limit must not fall away. Evaluate's dispatch-project rule reads Projects and never this.
-	Named []string
-	// ProjectStates is the state of each project a tagged name being evaluated carries, resolved
-	// by the caller from Dispatch before any transaction begins. It is plain data, not a lookup,
-	// so Evaluate stays pure and is safe to call while a lock is held. A secret tagged with a
-	// project it holds no state for is ErrNoProjectState.
-	ProjectStates map[string]ProjectState
-}
-
-// Decision is how the policy answers one requester's ask for one name.
-type Decision struct {
-	// Outcome is Automatic, Approval or Deny.
-	Outcome string
-	// Approver is who decides an Approval: the owner's email, or record.AnyoneApprover for a
-	// shared secret.
-	Approver string
-	// Source is what the secret's value is read by (Secret.Source).
-	Source string
-	// Reason names the rule behind a Deny the policy can name, and is empty for every other
-	// decision: a caller tells a session why it was refused without reading the policy itself.
-	Reason string
-}
-
 // ServiceOwned reports whether the set serves name as a registered service's secret. Who is a
 // service's own session rests on BROKER_SERVICES' accounts, which are not in Version, so a caller
 // re-checks a grant of such a name on every use rather than only once Version moves.
 func (s *Set) ServiceOwned(name string) bool {
 	return s.Secrets[name].ownership == ownerService
-}
-
-// ReasonRequesterNotListed is the Reason of a Deny the requesters tag decided: neither the
-// person the asking session is signed in as nor the service the asking pod proves is on the
-// secret's list, so it is refused whatever its owner and tier would have given them.
-const ReasonRequesterNotListed = "requester-not-listed"
-
-// ReasonNoReason is the Reason of a Deny the request machine decided: the request named a
-// credential that would wait for a person's approval and carried no reason, so it is refused
-// rather than put to anyone. Set.Evaluate never answers it, since the reason is not the
-// policy's to see.
-const ReasonNoReason = "a reason is necessary; ask again with --reason"
-
-// ReasonProjectNotNamed is the Reason of a Deny the project tag decided: the secret belongs to
-// a private project and the asking credential does not name it, so it is refused whatever its
-// owner and tier would have given it.
-const ReasonProjectNotNamed = "project-not-named"
-
-// ReasonProjectMissing is the Reason of a Deny for a secret whose project tag names a key
-// Dispatch holds no project for: it goes to nobody, since the broker cannot tell whether the
-// project it was meant for is private. A caller is told ReasonProjectNotNamed instead
-// (CallerReason), so a refusal never says whether a project exists.
-const ReasonProjectMissing = "project-missing"
-
-// ReasonProjectChannelsNeedAirlock is the Reason of a Deny for a project-channels secret
-// (TagProjectChannels) with no airlock entry, asked for by a credential that names a private
-// project (Requester.ListsPrivate). Outside the airlock the release hands the session the real
-// token, which it could then spend anywhere; behind it the proxy holds each post to the channels
-// the project's owner named. A credential that names no private project is unchanged.
-const ReasonProjectChannelsNeedAirlock = "project-channels-need-airlock"
-
-// ListsPrivate reports whether any project the credential names is private: the one predicate
-// the project-channels limit is read from, by Evaluate and by the release alike. It reads Named,
-// the projects as named, so losing sight of a project never lifts the limit that project put on
-// the credential.
-func (r Requester) ListsPrivate() bool {
-	for _, project := range r.Named {
-		if r.ProjectStates[project] == ProjectPrivate {
-			return true
-		}
-	}
-	return false
-}
-
-// ErrNoProjectState is ProjectRule's answer, and so Evaluate's, for a secret tagged with a project
-// the requester holds no state for (Requester.ProjectStates): the caller did not resolve it, and
-// the policy does no I/O to resolve it itself.
-var ErrNoProjectState = errors.New("policy: a project-tagged secret was evaluated with no state for its project")
-
-// ProjectRule is the one statement of the dispatch-project rule (TagProject): what a secret
-// tagged with project answers r, as far as that tag decides. It answers "" for a secret the tag
-// lets through: one with no tag, one of a public project, and one of a private project r's
-// Projects name. It answers ReasonProjectNotNamed for a private project r's Projects do not name,
-// and ReasonProjectMissing for a key Dispatch holds no project for. A tagged project r holds no
-// state for is ErrNoProjectState. Evaluate reads it before owner and tier, and the airlock's
-// connection check (requests' airlockProjectRule) reads it for every name a held grant carries,
-// so the release and the proxy apply one rule.
-func ProjectRule(project string, r Requester) (string, error) {
-	if project == "" {
-		return "", nil
-	}
-	switch r.ProjectStates[project] {
-	case ProjectPublic:
-		return "", nil
-	case ProjectPrivate:
-		if slices.Contains(r.Projects, project) {
-			return "", nil
-		}
-		return ReasonProjectNotNamed, nil
-	case ProjectMissing:
-		return ReasonProjectMissing, nil
-	}
-	return "", ErrNoProjectState
-}
-
-// CallerReason is the reason a session is told for a Deny whose Reason is reason. It is reason
-// itself, except that ReasonProjectMissing is told as ReasonProjectNotNamed: the two differ only
-// in whether Dispatch holds the project, which a caller who may not see the project must not
-// learn. The broker's own log keeps the reason Evaluate answered.
-func CallerReason(reason string) string {
-	if reason == ReasonProjectMissing {
-		return ReasonProjectNotNamed
-	}
-	return reason
-}
-
-// ReasonSignInOff is the Reason of a Deny the request machine decided on a broker that signs
-// nobody in (BROKER_SIGNIN=off): the name's answer would be a person's approval, and no person
-// can sign in to give one, so the request is refused at once rather than left pending for
-// nobody. It is named before ReasonNoReason, since asking again with a reason would be refused
-// the same way. Set.Evaluate never answers it, since whether anyone can sign in is not the
-// policy's to see.
-const ReasonSignInOff = "a person must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)"
-
-// Evaluate answers r's ask for name. A name the set does not serve is ErrUnknownSecret. A secret
-// whose requesters are listed (Secret.Requesters) is denied, ReasonRequesterNotListed, to every
-// requester the list does not name, before owner and tier are read at all. A secret tagged with
-// a project (Secret.Project) is then read by ProjectRule: no state is ErrNoProjectState, a
-// project Dispatch does not hold is denied to everyone (ReasonProjectMissing), and a private
-// project is denied to a credential that does not name it (ReasonProjectNotNamed); a public
-// project, and a private one r names, go on to owner and tier unchanged. A name withheld from r
-// (Requester.Withheld) is decided as a human-tier secret: what r would have got at once is an
-// approval request to the owner, or to anyone for a shared secret, and a service's own secret,
-// which no person approves, is denied.
-func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
-	secret, ok := s.Secrets[name]
-	if !ok {
-		return Decision{}, ErrUnknownSecret
-	}
-	if secret.Requesters != "" && !secret.lists(r) {
-		return Decision{Outcome: Deny, Reason: ReasonRequesterNotListed, Source: secret.Source}, nil
-	}
-	switch reason, err := ProjectRule(secret.Project, r); {
-	case err != nil:
-		return Decision{}, fmt.Errorf("%w: %s is tagged %s", err, name, secret.Project)
-	case reason != "":
-		return Decision{Outcome: Deny, Reason: reason, Source: secret.Source}, nil
-	}
-	// After the project rule: a secret whose use a private project's owner limits goes to such a
-	// credential only behind the airlock, where the proxy holds each post to the channels that
-	// owner named. Outside it the release hands over the real token, which the session could then
-	// spend anywhere.
-	if secret.ProjectChannels != "" && secret.AirlockDigest == "" && r.ListsPrivate() {
-		return Decision{Outcome: Deny, Reason: ReasonProjectChannelsNeedAirlock, Source: secret.Source}, nil
-	}
-	withheld := slices.Contains(r.Withheld, name)
-	d := Decision{Source: secret.Source}
-	switch {
-	case secret.ownership == ownerService:
-		d.Outcome = Deny
-		if r.Service == secret.Owner && !withheld {
-			d.Outcome = Automatic
-		}
-	case secret.Tier == TierAgent && !withheld && (secret.ownership == ownerShared || record.CanonicalLogin(r.Operator) == secret.Owner):
-		d.Outcome = Automatic
-	default:
-		d.Outcome, d.Approver = Approval, secret.approver()
-	}
-	return d, nil
 }

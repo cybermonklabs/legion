@@ -276,9 +276,16 @@ type Machine struct {
 	Policy     *policy.Current
 	Secrets    secrets.Reader
 	PendingTTL time.Duration
-	// Audience is BROKER_PUBLIC_URL: the aud every request object's signature is checked against.
+	// Audience is BROKER_PUBLIC_URL: the aud a new request object is held to exactly (Create), and
+	// the origin a stored record's object is read back by (record.VerifyStoredRequestObject).
 	Audience string
-	Skew     time.Duration
+	// EdgeAudience is BROKER_EDGE_URL, and "" for a broker with no edge. Every read of a stored
+	// record here hands it to record.VerifyStoredRequestObject beside Audience: the pending
+	// lists, the record a lookup reads, and the decision's re-verification. That check takes it
+	// for a machine login's record alone, since the edge opens nothing else, so a session's
+	// request signed for the edge is another broker's here, as one of a third address is.
+	EdgeAudience string
+	Skew         time.Duration
 	// Replay records a request object's jti (the proof_jtis table), answering false when it was
 	// already seen. Wired to enroll.Service.Replay in production.
 	Replay func(ctx context.Context, jti string, expires time.Time) (fresh bool, err error)
@@ -359,11 +366,14 @@ type Machine struct {
 	// judge does belongs on the requester's path, so the hook must return at once: Consider
 	// starts a goroutine of its own and does.
 	Judge func(PendingRequest)
-	// Projects asks Dispatch whether a project is private and whether a person may see it
-	// (projectaccess.Client, BROKER_PROJECT_ACCESS_URL). It is read only for a request, release,
-	// decision or airlock connection holding a project-tagged secret, and always before any
-	// transaction (projectFacts); nil on a broker with no such client, which serves no tagged
-	// secret (policy.Loader.ProjectChecks).
+	// Projects asks Dispatch whether a project is private, whether a person may see it and what
+	// kind of member a person is (projectaccess.Client, BROKER_PROJECT_ACCESS_URL), the client
+	// enroll.Service.Projects is. Create, every release, decision and airlock connection read the
+	// member kind of the person a session was made for (restrictedOperator), and a restricted
+	// member's session is denied every secret; a project is read only for a request, release,
+	// decision or airlock connection holding a project-tagged secret (projectFacts). Both are read
+	// before any transaction. nil on a broker with no such client, which asks nothing and serves
+	// no tagged secret (policy.Loader.ProjectChecks).
 	Projects projectaccess.Access
 	// Exchange is the broker's token exchange configuration, read for the project an operator's
 	// entry maps a pod's or a machine's account to (exchange.Set.MappedProjects), which is the
@@ -376,6 +386,11 @@ type Machine struct {
 	// broker with sign-in on left or leaves pending (denyUndecidable); every name the policy
 	// grants at once is granted as ever.
 	SignInOff bool
+	// Groups is the broker's group reader (groups.Reader), the one the policy's sets carry
+	// (policy.Loader.Groups): who is a member of a group approver, for a decision
+	// (ApplyDecision), a revoke (RevokeByApprover) and the lists of a member's pending records
+	// and grants (PendingForApprover, GrantsForApprover). A nil reader admits nobody to a group.
+	Groups record.Directory
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
@@ -492,6 +507,11 @@ type enrollmentRow struct {
 	// for the Legion daemon, the role claim token whose issue's assignee is asked for a shared
 	// secret's request (claimAssignee). The live-enrollment read (enrollment) fills it.
 	Claim string
+	// Restricted is whether Dispatch called the person this enrollment was made for a restricted
+	// member when the caller asked, before any transaction (restrictedOperator): Create and every
+	// release ask, and requester hands it to the policy, which denies such a session every
+	// secret. It is false wherever nobody asked.
+	Restricted bool
 }
 
 // requester is enrollment e as the policy sees it, read through q: the person it acts for (none
@@ -522,6 +542,11 @@ type enrollmentRow struct {
 // The withheld names are read by the enrollment's own id, and an adoption carries a session's
 // withheld_secrets rows to the enrollment it moves to, so these are the names withheld from the
 // session rather than from a box it has left.
+// A session whose person the caller found a restricted member (enrollmentRow.Restricted) is
+// marked so, and the policy denies it every secret (policy.ReasonRestrictedMember). That person is
+// the one the enrollment was made for (restrictedOperator), so a person's pod the setting no
+// longer maps is marked too; a service's pod and a machine's own session, made for no person, are
+// never marked.
 func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow, facts projectFacts) (policy.Requester, error) {
 	rows, err := q.Query(ctx, `select name from withheld_secrets where enrollment_id=$1`, e.ID)
 	if err != nil {
@@ -546,11 +571,45 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow, fac
 			}
 		}
 	}
-	operator := deref(e.Operator)
-	if m.unmappedPersonPod(e) {
-		operator = ""
+	return facts.requester(policy.Requester{Operator: deref(m.operatorOf(e)), Service: service, Withheld: withheld, Restricted: e.Restricted}), nil
+}
+
+// restrictedOperator reports whether Dispatch calls the person e was made for (its operator, the
+// person of the launcher credential that enrolled it) a restricted member
+// (projectaccess.Restricted), asked through m.Projects on no transaction, as the rule
+// internal/cipher/projectaccess states for every caller is: Create asks it before it reads a
+// live grant to reuse, every release before it re-checks the grant, and every airlock proxy
+// connection before it carries anything (AirlockConnection), since the proxy holds a grant's
+// values past the release that read them. A service's pod and a machine's own session, made for
+// no person, ask nothing, and neither does a machine with no client of Dispatch.
+//
+// The person is the operator the enrollment recorded, not the one requester reads
+// (operatorOf). A person's pod whose account BROKER_POD_OPERATORS drops, or maps to another
+// person, acts for no person from then on, which decides whose owned secrets it may have; it is
+// still the pod that person's login enrolled, so it is still asked about as that person. Were it
+// asked about the person it acts for, a restricted member's pod would ask nothing once the setting
+// changed, and be given every shared agent-tier secret again.
+//
+// It is the second half of the rule that a restricted member's agents get no secret, the first
+// being that such a person's machine login enrolls nothing (enroll.Service.checkMember). This
+// half reaches the sessions that rule never saw: one a broker with no client of Dispatch
+// enrolled, and one whose person Dispatch called something else when it enrolled. A failure to
+// ask, of any kind, is a *projectaccess.MemberKindUncheckable, which Create, every release, every
+// airlock connection and every approval return as it is: a check that cannot decide refuses, so
+// while Dispatch cannot be asked about a person nothing is decided, released or carried for that
+// person's sessions, and each asks again.
+//
+// An approval of a request still pending from before the broker asked asks too, before its
+// transaction (applyDecisionAttempt, for the enrollment its read before the transaction found),
+// and records a restricted member's request as the policy's denial, restricted-member, so no
+// grant is written for it; and so does the model judge's read of the policy (JudgePolicy), which
+// then answers deny before any model is asked.
+func (m *Machine) restrictedOperator(ctx context.Context, e enrollmentRow) (bool, error) {
+	person := deref(e.Operator)
+	if m.Projects == nil || person == "" {
+		return false, nil
 	}
-	return facts.requester(policy.Requester{Operator: operator, Service: service, Withheld: withheld}), nil
+	return projectaccess.Restricted(ctx, m.Projects, person)
 }
 
 // Create verifies the request object (record.VerifyRequestObject, jti replay through the Replay
@@ -692,6 +751,14 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 // request is new, and createChecked holds the rest, so a test can write through it the request a
 // broker from before one of them would have stored.
 func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollmentID, sessionID string, obj record.RequestObject, names []string, narrowing *secrets.GitHubNarrowing) (Request, error) {
+	// Whether the session's person is a restricted member, asked here, on no transaction and
+	// before a live grant is looked for, so every read below — the reuse's re-check, the judge's
+	// lifetime, the narrowing check and the transaction's own evaluation — denies such a session
+	// every name (restrictedOperator). An answer that could not be had refuses the ask whole.
+	var err error
+	if enr.Restricted, err = m.restrictedOperator(ctx, enr); err != nil {
+		return Request{}, err
+	}
 	set, err := m.rereadMissing(ctx, enrollmentID, names, m.Policy.Get())
 	if err != nil {
 		return Request{}, err
@@ -1471,9 +1538,10 @@ type Dismissal struct {
 // other read of the record gives them, so a person outside a private project learns nothing of its
 // records from a dismissal that names one; ErrProjectAccessUnavailable where Dispatch could not
 // say whether login may see it; record.ErrNotApprover when the record's approver is neither
-// record.CanonicalLogin(login) nor record.AnyoneApprover, which is the list's own rule for whose
-// list holds a record, and for an empty login or one that is record.AnyoneApprover itself, which
-// name nobody; ErrNotExpired for a record nobody has decided whose deadline has not passed; and
+// record.CanonicalLogin(login), record.AnyoneApprover, nor a group the group reader admits login
+// to now (record.GroupAdmits), which is the list's own rule for whose list holds a record, and for
+// an empty login, one that is record.AnyoneApprover itself, or one spelled as a group, which name
+// nobody; ErrNotExpired for a record nobody has decided whose deadline has not passed; and
 // ErrTerminal for every other record, one approved, denied or revoked, and a secret request
 // cancelled before its deadline. A secret request cancelled after its deadline is expired, and is
 // dismissed like any other.
@@ -1512,7 +1580,9 @@ func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissa
 		return Dismissal{}, err
 	}
 	login = record.CanonicalLogin(login)
-	if login == "" || login == record.AnyoneApprover || approver != login && approver != record.AnyoneApprover {
+	_, loginIsGroup := record.GroupOf(login)
+	if login == "" || login == record.AnyoneApprover || loginIsGroup ||
+		approver != login && approver != record.AnyoneApprover && !record.GroupAdmits(m.Groups, approver, login) {
 		return Dismissal{}, record.ErrNotApprover
 	}
 	lock := `select 1 from credential_requests where id=$1 for share`
@@ -1730,6 +1800,13 @@ var ErrJudgeHolds = errors.New("the model judge is deciding this request; it goe
 // ErrJudgeHoldEnded is the judge's own write refused on a request it does not hold.
 var ErrJudgeHoldEnded = errors.New("the model judge no longer holds this request")
 
+// ErrRequestersGroupUnread is a decision refused because a name's requesters tag names a Google
+// group the broker has not read in the last two hours (policy.ReasonRequesterGroupUnread): the
+// list may still name the session's person, so the request stays pending, and the same decision
+// is taken once the group is read. It is always wrapped beside record.ErrNotApprover, so a caller
+// that knows only that refusal reads it as one.
+var ErrRequestersGroupUnread = errors.New("who may ask for it names a Google group the broker has not read in the last two hours")
+
 // DenyJudged ends recordID as the model judge running as modelID refusing it: the one way a
 // request the judge holds ends other than in the judge's grant, its hand-over to its person
 // (LogJudged) or the end of the hold. why is the sentence its agent reads in the request's
@@ -1743,11 +1820,12 @@ func (m *Machine) DenyJudged(ctx context.Context, recordID, modelID string, judg
 }
 
 // judgeKey reports whether the model judge decides a request for name: the airlock rules give
-// the judge seconds of it, and it carries no administrator's tag, of which a person approves every
-// release whatever the rules say.
+// the judge seconds of it, and it is no secret a person approves every release of — one tagged
+// admin, or an anthropic-federation secret (policy.Secret.PersonApprovesEveryRelease) — whatever
+// the rules say.
 func (m *Machine) judgeKey(set *policy.Set, name string) (uint32, bool) {
 	seconds, judged := m.Airlock.JudgeSeconds(name)
-	if !judged || set.Secrets[name].Admin {
+	if !judged || set.Secrets[name].PersonApprovesEveryRelease() {
 		return 0, false
 	}
 	return seconds, true
@@ -2076,16 +2154,19 @@ func (d decider) eventLogin() *string {
 // for the judge the record's own approver — the owner's login, or record.AnyoneApprover for a
 // shared secret — since the judge approves in that approver's stead and holds none of their
 // rights over the grant afterwards (D1: the grant's approver is what GrantsForApprover lists and
-// what mayRevoke reads).
+// what mayRevoke reads). A grant a member of a group approver decided records the group, as
+// written, and not the member: the grant is the group's to list and revoke, every member's as it
+// was the one owner's, while requests.decided_by and the record's decision name the member.
 func (d decider) grantApprover(recordApprover string) string {
-	if d.isJudge() {
+	if _, group := record.GroupOf(record.CanonicalLogin(recordApprover)); d.isJudge() || group {
 		return recordApprover
 	}
 	return d.login
 }
 
 // maySettle reports whether this decider may settle a name the current policy routes to
-// policyApprover, on a record whose own approver is recordApprover (currentPolicyAdmits).
+// policyApprover, on a record whose own approver is recordApprover (currentPolicyAdmits), with
+// groups the set's group reader.
 //
 // A person is held to the rule they are held to everywhere: the policy's own approver for the
 // name must admit them (record.MayDecide). The judge is no login and MayDecide admits none of
@@ -2097,11 +2178,11 @@ func (d decider) grantApprover(recordApprover string) string {
 // secret that went shared or stopped being shared — the judge settles nothing and the request
 // waits for the person who decides it today. The judge is never admitted where the record's own
 // approver would not be.
-func (d decider) maySettle(policyApprover, recordApprover string) bool {
+func (d decider) maySettle(policyApprover, recordApprover string, groups record.Groups) bool {
 	if d.isJudge() {
 		return record.CanonicalLogin(policyApprover) == record.CanonicalLogin(recordApprover)
 	}
-	return record.MayDecide(record.KindAgentSecret, policyApprover, "", d.login)
+	return record.MayDecide(record.KindAgentSecret, policyApprover, "", d.login, groups)
 }
 
 // enrollmentHoldsForItsSession is "enrollment e still holds something for its session": a live
@@ -2174,9 +2255,28 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	if err != nil {
 		return Decision{}, false, err
 	}
+	// An approval asks Dispatch about the request's person too, on the pool and before the
+	// transaction, as Create and every release do (restrictedOperator), for the enrollment the
+	// read above found holding the request: a restricted member's request left pending from
+	// before the broker asked is then the policy's denial, restricted-member, and no grant is
+	// written for a release to refuse. A denial asks nothing, since it releases nothing. The
+	// transaction decides by this answer only while the request still hangs off that enrollment,
+	// and makes another attempt when it moved. It is asked first, on the same reads as
+	// decisionFacts (decisionReads: one JudgeDispatch bound for the judge, afresh), so the
+	// project facts' atDecision read is the last read of Dispatch before the transaction and the
+	// facts the decision rests on are under projectaccess.CacheTTL old when it is made. The
+	// judge's refusal reads neither, so it builds no reads at all.
+	var restricted bool
 	var facts projectFacts
 	if approve || !who.isJudge() {
-		if facts, err = m.decisionFacts(ctx, recordID, who, pre, set); err != nil {
+		reads, cancel := decisionReads(ctx, who)
+		defer cancel()
+		if approve {
+			if restricted, err = m.restrictedOperator(reads, pre.holder); err != nil {
+				return Decision{}, false, err
+			}
+		}
+		if facts, err = m.decisionFacts(reads, recordID, who, pre, set); err != nil {
 			return Decision{}, false, err
 		}
 	}
@@ -2234,6 +2334,9 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	if holder != enr.ID || enr.ID != pre.holder.ID {
 		return Decision{}, true, nil
 	}
+	// The answer asked of Dispatch before the transaction is this enrollment's: the check above
+	// makes another attempt when the request moved since.
+	enr.Restricted = restricted
 	parsed, err := verifyRecordBody(recordID, body)
 	if err != nil {
 		return Decision{}, false, err
@@ -2251,7 +2354,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		// how long the resulting decision window may stay open (PendingTTL, hours) — re-verifying
 		// it with the real current time would fail every decision made more than a few minutes
 		// after creation.
-		verified, err := record.VerifyRequestObject(parsed.Request, m.Audience, m.Skew, createdAt)
+		verified, err := record.VerifyStoredRequestObject(parsed.Request, m.Audience, m.EdgeAudience, m.Skew, createdAt)
 		if err != nil {
 			return fmt.Errorf("%w: request object no longer verifies: %s", ErrGrantChainInvalid, err)
 		}
@@ -2287,7 +2390,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 			}
 		}
 	} else {
-		who.login, err = parsed.ApproverLogin(record.KindAgentSecret, "", who.login)
+		who.login, err = parsed.ApproverLogin(record.KindAgentSecret, "", who.login, m.Groups)
 		if err != nil {
 			return Decision{}, false, err
 		}
@@ -2314,10 +2417,20 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		lifetime = defaultLifetime(set, names, nil)
 	}
 	// denied is set when the current policy denies one of the names because the secret's
-	// requesters tag no longer lists this session: the approval is recorded as the request's own
-	// denial below rather than refused, since no login could approve such a name.
+	// requesters tag no longer lists this session, or because Dispatch calls the session's person
+	// a restricted member: the approval is recorded as the request's own denial below rather than
+	// refused, since no login could approve such a name. A restricted member's approval is that
+	// denial before the policy is read, naming the request's first name, so it writes no grant
+	// whatever its names: currentPolicyAdmits passes over a name the policy no longer serves, so a
+	// request whose every name left the policy has no name for Evaluate to deny, and would
+	// otherwise be granted. currentPolicyAdmits still runs, so its refusals (the judge's own rules,
+	// a withheld name no one may approve now) leave the request pending as they always did, and a
+	// name it denies is the one the denial names.
 	var denied *policyDenial
 	if approve {
+		if enr.Restricted {
+			denied = &policyDenial{name: requested[0].name, reason: policy.CallerReason(policy.ReasonRestrictedMember)}
+		}
 		requester, err := m.requester(ctx, tx, enr, facts)
 		if err != nil {
 			return Decision{}, false, err
@@ -2470,13 +2583,16 @@ func decidedUnder(ctx context.Context, tx pgx.Tx, requestID string, granted []re
 	return err
 }
 
-// policyDenial is currentPolicyAdmits' answer for a name the current policy denies because the
-// secret's requesters tag no longer lists this session's person or its pod's service, or because
-// the secret belongs to a private project the session does not name (or to one Dispatch does not
-// hold). It is deliberately not a record.ErrNotApprover: no login could approve such a name, so
-// leaving the card pending would wait on a person who can do nothing with it.
-// applyDecisionAttempt records the approval as the request's denial instead, and its message is
-// that denial's detail, in the words a session is told (policy.CallerReason).
+// policyDenial is currentPolicyAdmits' answer for a name the current policy denies whoever
+// decides: the secret's requesters tag no longer lists this session's person or its pod's service
+// (policy.ReasonRequesterNotListed), the secret belongs to a private project the session does not
+// name (or to one Dispatch does not hold), or Dispatch calls the session's person a restricted
+// member (policy.ReasonRestrictedMember). applyDecisionAttempt makes the last one itself too, ahead
+// of currentPolicyAdmits, so that a request whose names the policy no longer serves is denied too.
+// It is deliberately not a record.ErrNotApprover: no login could approve such a name, so leaving
+// the card pending would wait on a person who can do nothing with it. applyDecisionAttempt records
+// the approval as the request's denial instead, and its message is that denial's detail, in the
+// words a session is told (policy.CallerReason).
 type policyDenial struct{ name, reason string }
 
 func (e *policyDenial) Error() string {
@@ -2522,7 +2638,9 @@ const PolicyDeniedActor = "broker:policy"
 // approve now, as with a withheld name: the session asks again within it.
 //
 // The model judge is held to two rules of its own, ahead of all of this: it settles no withheld
-// name and no administrator's secret, however the policy reads that name now. The run made both
+// name and no secret a person approves every release of (an administrator's, or an Anthropic
+// federation secret: policy.Secret.PersonApprovesEveryRelease), however the policy reads that name
+// now. The run made both
 // checks itself before it asked a model anything (judge's withheld and admin checks), and then
 // spent up to 20 seconds on the model call, so what either of them read could have changed in
 // those seconds, and this transaction is the boundary where it is read again — every other check
@@ -2550,8 +2668,8 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 			if slices.Contains(requester.Withheld, g.name) {
 				return fmt.Errorf("%w: %s is withheld from this session, and the judge settles no withheld name", record.ErrNotApprover, g.name)
 			}
-			if set.Secrets[g.name].Admin {
-				return fmt.Errorf("%w: %s is an administrator's secret, and a person approves every release of one", record.ErrNotApprover, g.name)
+			if set.Secrets[g.name].PersonApprovesEveryRelease() {
+				return fmt.Errorf("%w: a person approves every release of %s, an administrator's or an Anthropic federation secret", record.ErrNotApprover, g.name)
 			}
 		}
 	}
@@ -2563,7 +2681,13 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 		if err != nil {
 			return err
 		}
-		if d.Outcome == policy.Deny && (d.Reason == policy.ReasonRequesterNotListed || projectDeny(d)) {
+		if d.Outcome == policy.Deny && d.Reason == policy.ReasonRequesterGroupUnread {
+			// The list may still name this session's person, which no read in the last two hours
+			// can say: the decision is refused and the request stays pending, rather than recorded
+			// as the request's own denial, which a fresh read could prove wrong.
+			return fmt.Errorf("%w: %w: %s; it stays pending until the group is read", record.ErrNotApprover, ErrRequestersGroupUnread, g.name)
+		}
+		if d.Outcome == policy.Deny && (d.Reason == policy.ReasonRequesterNotListed || d.Reason == policy.ReasonRestrictedMember || projectDeny(d)) {
 			return &policyDenial{name: g.name, reason: policy.CallerReason(d.Reason)}
 		}
 	}
@@ -2581,7 +2705,7 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 		if d.Outcome == policy.Deny && slices.Contains(requester.Withheld, g.name) {
 			return fmt.Errorf("%w: %s is withheld from this session and the current policy denies it, so no one may approve it now", record.ErrNotApprover, g.name)
 		}
-		if d.Outcome == policy.Approval && !who.maySettle(d.Approver, recordApprover) {
+		if d.Outcome == policy.Approval && !who.maySettle(d.Approver, recordApprover, set.Groups()) {
 			return fmt.Errorf("%w: the current policy has %s approve %s", record.ErrNotApprover, d.Approver, g.name)
 		}
 	}
@@ -2637,8 +2761,14 @@ func (m *Machine) verifyChain(ctx context.Context, grantID string) (recordID str
 		return "", nil
 	}
 	if _, err := m.Chain.Verify(ctx, *id); err != nil {
+		// A group approval whose group cannot vouch for its decider now (stale, or never read)
+		// has lapsed: the grant is no longer live, and no chain failed. The typed error is kept
+		// beneath, so noteLapsedApprover reads its group and decider.
+		if errors.Is(err, record.ErrApproverNotAdmittedNow) {
+			return *id, fmt.Errorf("%w: %w", ErrGrantNotLive, err)
+		}
 		if errors.Is(err, record.ErrChainBroken) {
-			return *id, fmt.Errorf("%w: %s", ErrGrantChainInvalid, err)
+			return *id, fmt.Errorf("%w: %w", ErrGrantChainInvalid, err)
 		}
 		return *id, err
 	}
@@ -2728,6 +2858,15 @@ func anyServiceOwned(set *policy.Set, granted []requestedSecret) bool {
 // gate's two callers from telling the sorts apart.
 func anyListed(set *policy.Set, granted []requestedSecret) bool {
 	return slices.ContainsFunc(granted, func(g requestedSecret) bool { return set.Secrets[g.name].Requesters != "" })
+}
+
+// anyGroupOwned is the release re-check's gate (checkRelease, reuseLiveGrant) for a group's
+// secret: who is a member of the group rests on the group reader's last read, which the policy's
+// version does not cover, so a grant holding a name a group owns is re-checked on every use, and
+// an automatic grant of it ends at its next use once the group is stale or the member left. A
+// group entry in a requesters tag is anyListed's already.
+func anyGroupOwned(set *policy.Set, granted []requestedSecret) bool {
+	return slices.ContainsFunc(granted, func(g requestedSecret) bool { return set.GroupOwned(g.name) })
 }
 
 // personPodGrant reports whether enr is a person's pod: a pod enrollment that carries an

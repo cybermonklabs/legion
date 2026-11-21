@@ -108,9 +108,10 @@ func WithRoleClaimWatch(options ...kvwatch.Option) OpenOption {
 
 // LegacySubjectCounter counts each name a caller gave in its old form, under a kind label: an
 // interest a registration names (LegacyTopicWarnings) or a stored row holds when it is read into a
-// session's consumer filter (CountStoredLegacyTopics), or a role a claim names (ClaimedRole). The
+// session's consumer filter (CountStoredLegacyTopics), a role a claim names (ClaimedRole), or a
+// role a publish to its lane, a message on the role lane or a holder lookup names (ReadRole). The
 // listener passes its envoy_listener_legacy_subjects_total counter, whose movement is what tells
-// an operator a reader of the old form is still about.
+// an operator a reader or a writer of the old form is still about.
 type LegacySubjectCounter interface {
 	Inc(labels ...[2]string)
 }

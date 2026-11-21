@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 )
@@ -515,8 +516,11 @@ func TestGitWrapperAfterClearsAMarkerItDoesNotNeed(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("git showenv = %d: %s", code, stderr)
 			}
-			if want := wrappedGitAt + "=0:" + git; !strings.Contains(stdout, "DISPATCH_SESSION_ID=marker-session") || !slices.Contains(strings.Split(stdout, "\n"), want) {
-				t.Fatalf("the alias's environment = %q, want the session and %s", stdout, want)
+			// Each variable is read whole, by name (envlisting): a text search for
+			// DISPATCH_SESSION_ID=marker-session also matches X_DISPATCH_SESSION_ID or a longer value.
+			vars := envlisting.Vars(stdout)
+			if want := "0:" + git; vars["DISPATCH_SESSION_ID"] != "marker-session" || vars[wrappedGitAt] != want {
+				t.Fatalf("the alias's environment = %q, want DISPATCH_SESSION_ID=marker-session and %s=%s", stdout, wrappedGitAt, want)
 			}
 		})
 	}

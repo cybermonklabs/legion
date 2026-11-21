@@ -718,11 +718,8 @@ func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projec
 // (approval.Page.decide) whatever order its checks are in, and adds no refusal code to the address
 // it sends them to, which would say the record exists.
 func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decider, pre rowFacts, set *policy.Set) (projectFacts, error) {
-	if who.isJudge() {
-		bounded, cancel := JudgeDispatch(ctx)
-		defer cancel()
-		ctx = projectaccess.Fresh(bounded)
-	}
+	ctx, cancel := decisionReads(ctx, who)
+	defer cancel()
 	type decided struct {
 		facts projectFacts
 		may   bool
@@ -755,6 +752,19 @@ func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decide
 		return projectFacts{}, fmt.Errorf("%w: the request now belongs to a private project, which the model judge leaves to a person", record.ErrNotApprover)
 	}
 	return projectFacts{}, pgx.ErrNoRows
+}
+
+// decisionReads is the context a decision reads Dispatch on before its transaction: for the model
+// judge, under JudgeDispatch's one bound and asked afresh (projectaccess.Fresh), since its run's
+// own check filled the cache well inside projectaccess.CacheTTL; for a person, ctx itself. A
+// context already under JudgeDispatch keeps its bound (JudgeDispatch), so applyDecisionAttempt's
+// reads and decisionFacts' share one.
+func decisionReads(ctx context.Context, who decider) (context.Context, context.CancelFunc) {
+	if !who.isJudge() {
+		return ctx, func() {}
+	}
+	bounded, cancel := JudgeDispatch(ctx)
+	return projectaccess.Fresh(bounded), cancel
 }
 
 // maySeeRecord is the person rule over a record or a grant for login: every private project among

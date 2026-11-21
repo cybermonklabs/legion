@@ -19,12 +19,16 @@
  * environment Oh My Pi's shell is built from. Their reports are part of its own.
  */
 import { roleTopic } from "@legion/contracts";
-import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { PiApi } from "@legion/pi-shared/pi-types";
 import { logger } from "@oh-my-pi/pi-utils";
 import envoyExtension, { setNatsConnectForTests } from "../extensions/envoy";
 import { REPORT_MARKER, type Report, runSessionPod } from "./session-pod-report";
-import { createStandInHost, type EventHandler } from "./stand-in-host";
+import {
+  createStandInHost,
+  type EventHandler,
+  processSessionContext,
+  standInListenerFetch,
+} from "./stand-in-host";
 
 const [sessionID = "", mode] = process.argv.slice(2);
 if (sessionID === "")
@@ -93,55 +97,19 @@ setNatsConnectForTests((async () => quietConnection()) as unknown as Parameters<
 >[0]);
 
 const claims: { role: string; session_id: string }[] = [];
-globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-  const { pathname } = new URL(input instanceof Request ? input.url : input.toString());
-  const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
-  if (pathname === "/v1/interests/subscribe") {
-    return Response.json({
-      session_id: body.session_id,
-      machine_id: "test",
-      dir: body.dir,
-      topics: body.topics,
-      delivery: consumerDelivery(body.session_id),
-    });
-  }
-  if (pathname === "/v1/roles/set") {
-    claims.push({ role: body.role, session_id: body.session_id });
-    return Response.json({
-      session_id: body.session_id,
-      machine_id: "test",
-      dir: "/tmp/session-pod-process",
-      topics: [roleTopic(body.role)],
-    });
-  }
-  if (pathname.startsWith("/v1/roles/")) {
-    return Response.json({ error: "no holder" }, { status: 404 });
-  }
-  return Response.json({});
-}) as typeof fetch;
+globalThis.fetch = standInListenerFetch((pathname, body) => {
+  if (pathname !== "/v1/roles/set") return undefined;
+  claims.push({ role: String(body.role), session_id: String(body.session_id) });
+  return Response.json({
+    session_id: body.session_id,
+    machine_id: "test",
+    dir: "/tmp/session-pod-process",
+    topics: [roleTopic(String(body.role))],
+  });
+});
 
 const { entries, handlers, pi } = createStandInHost();
-const context = {
-  cwd: "/tmp/session-pod-process",
-  hasUI: true,
-  agent: { kind: "main" as const },
-  sessionManager: {
-    getSessionId: () => sessionID,
-    getSessionName: () => undefined,
-    getBranch: (): readonly unknown[] => entries,
-    getEntries: (): readonly unknown[] => entries,
-    getSessionFile: () => undefined,
-    ensureOnDisk: async (): Promise<void> => undefined,
-  },
-  isIdle: () => true,
-  setInterval: () => undefined,
-  setTimeout: () => undefined,
-  ui: {
-    notify: () => undefined,
-    onTerminalInput: () => () => undefined,
-    getEditorText: () => "",
-  },
-};
+const context = processSessionContext({ sessionID, cwd: "/tmp/session-pod-process", entries });
 
 // The stand-in host is a subset of the real `PiApi`: the extension reads only what the suite's
 // host supplies, and the cast is that same narrowing.

@@ -103,6 +103,14 @@ type fakeBroker struct {
 	lastProofURL           string // the exact URL that Proof header was signed for
 
 	enrollHeldFor string
+	// enrollRestricted answers every enroll 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, as the broker
+	// answers an enrollment under a machine login whose person Dispatch calls a restricted member
+	// (enroll.ErrRestrictedMember).
+	enrollRestricted bool
+	// enrollUncheckable answers every enroll 503 MEMBER_KIND_UNCHECKABLE, as the broker answers an
+	// enrollment while it cannot learn whether Dispatch calls the login's person a restricted
+	// member (projectaccess.MemberKindUncheckable), having written nothing.
+	enrollUncheckable bool
 
 	lastLoginRequest   string // the compact request object the most recent device authorization carried
 	pendingThumbprint  string // the embedded key's thumbprint from that request object
@@ -205,6 +213,16 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		if f.enrollHeldFor != "" {
 			writeJSON(w, 403, map[string]string{"code": "MEMBERSHIP_HELD",
 				"error": f.enrollHeldFor + "'s credentials are held by Dispatch; they work again when " + f.enrollHeldFor + " signs in to Dispatch, or when Dispatch can confirm " + f.enrollHeldFor + " with Google again"})
+			return
+		}
+		if f.enrollRestricted {
+			writeJSON(w, 403, map[string]string{"code": "RESTRICTED_MEMBER_ENROLLS_NOTHING",
+				"error": "a restricted member's machine login enrolls no session, and the broker releases no secret to that person's agents: ada@example.com is a restricted member"})
+			return
+		}
+		if f.enrollUncheckable {
+			writeJSON(w, 503, map[string]string{"code": "MEMBER_KIND_UNCHECKABLE",
+				"error": "whether Dispatch calls ada@example.com a restricted member cannot be read: the broker could not ask Dispatch"})
 			return
 		}
 		if f.failFirst > 0 {
