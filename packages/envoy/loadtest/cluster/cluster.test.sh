@@ -72,9 +72,10 @@
 # error line with no number when its exec fails, and a numeric line when it reads; (h)
 # render-nats.sh refuses its vendored chart archive with one byte changed, naming it and both
 # sha256s, before it runs go or writes a render, and, when go is on PATH, re-renders nats.yaml from
-# the unchanged archive on a PATH with no curl and no jq, equal to the committed file (else it
-# says it skipped that). That render runs helm through `go run`, so it needs go's module proxy, or
-# offline GOPROXY=file://$(go env GOMODCACHE)/cache/download with helm in the module cache; it
+# the unchanged archive on a PATH with no curl and no jq, with no call that bash's search of that
+# PATH could not find, equal to the committed file (else it says it skipped that). That render
+# runs helm through `go run`, so it needs go's module proxy, or offline
+# GOPROXY=file://$(go env GOMODCACHE)/cache/download with helm in the module cache; it
 # fails rather than skips without one, so that a helm pin go cannot fetch fails CI; (i) the run's
 # residual notes are replay-residual.md's lines, then the seed
 # check's anchors by placement rule (with the share on the nearest surviving block) and its
@@ -2321,8 +2322,9 @@ pass "render-nats.sh refuses its vendored chart with one byte changed, naming it
 # registry, so it needs neither, and it fetches nothing but helm, which go fetches itself through
 # its module proxy. Each directory of the real PATH that holds curl or jq gives way, in its place,
 # to one that links each of its other entries, and every other directory stays as it is, so a
-# wrapper that runs the next command of its name on PATH still finds it. A call of curl or jq then
-# fails with "command not found".
+# wrapper that runs the next command of its name on PATH still finds it. The render's bash, and
+# each bash it starts, runs a command_not_found_handle that logs each command its PATH search
+# could not find, whatever that call's output was sent to, and the log must stay empty.
 # shellcheck disable=SC2031 # (e) to (g) source cluster.sh in subshells; its here and tmp stay there
 if PATH=$real_path command -v go >/dev/null; then
   (
@@ -2345,12 +2347,25 @@ if PATH=$real_path command -v go >/dev/null; then
       fi
       path+=${path:+:}$dir
     done
-    reachable=$(PATH=$path command -v curl jq || true)
-    [ -z "$reachable" ] || fail "the PATH built for the render still finds $reachable"
+    PATH=$path command -v curl jq >"$tmp/out" || true
+    [ ! -s "$tmp/out" ] || fail "the PATH built for the render still finds curl or jq"
+    export RENDER_MISSING=$tmp/render-missing.log
+    : >"$RENDER_MISSING"
+    # Bash runs this, in a child of the shell that searched PATH, in place of its own "command not
+    # found" error. It logs the command whatever the call sent its error output to, and each bash
+    # that inherits it from the environment runs it too.
+    # shellcheck disable=SC2329 # bash itself calls command_not_found_handle
+    command_not_found_handle() {
+      printf '%s\n' "$1" >>"$RENDER_MISSING"
+      printf '%s: command not found\n' "$1" >&2
+      return 127
+    }
+    export -f command_not_found_handle
     status=0
     PATH=$path bash "$here/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/nats.yaml" 2>"$tmp/out" ||
       status=$?
-    ! grep -qE '(curl|jq): command not found$' "$tmp/out" || fail "render-nats.sh --pin-from ran curl or jq, which read a registry"
+    [ ! -s "$RENDER_MISSING" ] ||
+      fail "render-nats.sh --pin-from ran $(sort -u -- "$RENDER_MISSING" | paste -sd, -), which its PATH does not hold; curl and jq read a registry"
     [ "$status" = 0 ] ||
       fail "render-nats.sh --pin-from failed on a PATH with no curl and no jq; if go could not fetch helm with no network, run with GOPROXY=file://$(PATH=$real_path go env GOMODCACHE)/cache/download"
     diff -u "$here/manifests/nats.yaml" "$tmp/nats.yaml" >"$tmp/out" ||
