@@ -336,13 +336,13 @@ func intakeTestClient(t *testing.T) *bus.Client {
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
 // test that means to publish into a bound consumer does not race the bind. Its one bound is what
-// the test binary's deadline leaves less boundDurableSpare (testwait.Remaining): a bind that is
+// the test binary's deadline leaves less rowDeadlineMargin (untilTheBinaryDeadline): a bind that is
 // merely slow on a loaded machine still passes, and one that never comes fails the row with time
 // left for its cleanups.
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
 	var state string
-	waitFor(t, testwait.Remaining(t, boundDurableSpare), func() bool {
+	waitFor(t, untilTheBinaryDeadline(t), func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil {
 			state = err.Error()
@@ -354,11 +354,6 @@ func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", intakeMaxAckPending, state)
 	})
 }
-
-// boundDurableSpare is what awaitBoundDurable leaves of the test binary's deadline for a failed
-// row's cleanups: stopping its intakes, which wait out their stop's deadline, and dropping its
-// database.
-const boundDurableSpare = time.Minute
 
 // awaitRuns waits for the intake to have stored want delivery_runs rows, and fails with the
 // stream's message count and the consumer's whole state when it does not -- the numbers that say
