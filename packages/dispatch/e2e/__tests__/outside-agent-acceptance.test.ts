@@ -781,7 +781,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         const refusals = [
           `UNKNOWN: SWEEP_FILLS_FILE was made from another route index: its routes.txt's SHA-256 is ${"a".repeat(64)}, and this run's is ${"c".repeat(64)}`,
           "UNKNOWN: SWEEP_FILLS_FILE was made at another deployment: the member's own projects were created at other times there (fills bbbbbbbbbbbb, here dddddddddddd)",
-          "UNKNOWN: SWEEP_LIVE_SECONDS must be at least 30 on a runner, whose live window leaves the writer's 15 s delivery bound before its feed closes: 20",
+          "UNKNOWN: SWEEP_LIVE_SECONDS must be at least 45 on a runner, whose live window leaves the writer's 15 s delivery bound before its feed closes and holds two of its writes at 15 s: 20",
         ];
         const runs = await runStandIns(
           ...refusals.map((verdict) => ({ ...passingControls, sweep: { verdict, exit: 2 } })),

@@ -17,11 +17,11 @@
 # rows (a `can_fail` line for each read that can fail) only with the full member's browser session,
 # since the proxy reads no token, so the sweep needs OUTSIDE_FULL_COOKIE_FILE.
 #
-# The contract this file reads is #4608's at 88cd37d95d, fills version 4: `routes`, the SHA-256 of
+# The contract this file reads is #4608's at 1ff6527e4f, fills version 4: `routes`, the SHA-256 of
 # the routes.txt the fills were made from, `deployment`, of the member's own projects' keys and
 # creation times, and `origin_sha256`, of the origin they were made at. A runner refuses fills of
 # another version, of another routes.txt than its own checkout's, or of another deployment, and
-# refuses a SWEEP_LIVE_SECONDS below 30; each such refusal is its UNKNOWN, and the sweep row's. So
+# refuses a SWEEP_LIVE_SECONDS below 45; each such refusal is its UNKNOWN, and the sweep row's. So
 # the workflow's checkout must hold this checkout's routes.txt, and this box sends the fills only
 # when they are version 4.
 

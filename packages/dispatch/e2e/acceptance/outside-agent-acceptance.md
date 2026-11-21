@@ -149,14 +149,14 @@ The tailnet leg does these steps, in this order:
    them. A line whose stamps are not of the form `date -u +%Y-%m-%dT%H:%M:%SZ` prints, or that
    began after it ended, reads UNKNOWN too. No full member's credential goes to the runner: the
    fills file holds none, and is at most 40 KiB so that it fits one input. Its contract is #4608's at
-   `88cd37d95d`, fills version 4 (`restricted-sweep-fills<TAB>4`), which name the SHA-256 of the
+   `1ff6527e4f`, fills version 4 (`restricted-sweep-fills<TAB>4`), which name the SHA-256 of the
    origin they were made at (`origin_sha256`), of the `routes.txt` they were made from (`routes`)
    and of the member's own projects' keys and creation times (`deployment`). Fills mode writes no
    file that lacks a fill,
    nor one where the member's project list gives a project no creation time, and the leg sends no
    fills of another version (each, the sweep row UNKNOWN on the box). A runner refuses, before its
    first request, fills of another `routes.txt` than its own checkout's, of another deployment, or
-   older than 55 minutes, and a `SWEEP_LIVE_SECONDS` below 30; so the workflow's checkout must hold
+   older than 55 minutes, and a `SWEEP_LIVE_SECONDS` below 45; so the workflow's checkout must hold
    this checkout's `routes.txt`, the workflow sets no shorter window, and the leg starts the public
    leg right after the fills.
    Each refusal is the runner's UNKNOWN, and the sweep row's. The runner's own control of the
