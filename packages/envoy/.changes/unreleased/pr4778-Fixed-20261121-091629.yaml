@@ -1,11 +1,12 @@
 kind: Fixed
 body: |-
   The pre-merge check of edited migrations (`envoy-go-checks`) now fails an edit of a migration
-  whose `-- replaces:` lines do not begin with the lines the base's file has, in the base's order.
-  Before, it held only the first line and the base's own text, so a third edit of one file could
-  drop the line naming an earlier edit and pass, and a database that release created from empty,
-  which the release before boots on, would then stop the next start. The refusal names the
-  migration and the dropped or moved line, and gives the lines the file must begin with.
+  whose `-- replaces:` lines do not begin with the lines the base's file has, in the base's order,
+  then one naming the base's file itself, each by its file name and checksum. Before, it held
+  only the first line and the base's own text, by checksum alone, so a third edit of one file
+  could drop the line naming an earlier edit, or name the base's text under another file name,
+  and pass; a database the release before boots on would then stop the next start. The refusal
+  names the migration and the line, and gives the lines the file must begin with.
 time: 2026-11-21T09:16:29Z
 custom:
     Issue: pr4778
