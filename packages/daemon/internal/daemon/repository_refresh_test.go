@@ -21,6 +21,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -108,7 +109,9 @@ func bootingRepositoryRig(t *testing.T, installs *installations, opts ...func(*w
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, HearRepository: w.hearRecorded,
 		Steps: config.DesignGateOff.Steps()}, quietLogger())
 	w.engine, w.admission = engine, admit.New(w.records, engine, 3, "LEGION", quietLogger())
-	w.handlers = []intake.Handler{w.engine, w.admission}
+	// The daemon's handlers, in its order (workflowRuntime's boot): the copy of Dispatch's issues
+	// first, so each event applied writes its row before the engine and admission read it.
+	w.handlers = []intake.Handler{blockers.NewMirror(w.records, "LEGION"), w.engine, w.admission}
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		for _, anchor := range []record.Issue{anchorOn(anchorWidgets, "acme/widgets"), anchorOn(anchorTools, "zeta/tools")} {
 			if err := records.Store.PutIssue(ctx, tx, anchor); err != nil {

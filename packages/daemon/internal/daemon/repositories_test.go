@@ -124,13 +124,14 @@ func (i *installations) asks() []string {
 }
 
 // repositoryDispatch is a Dispatch whose project listing is listed (counted in listings, its next
-// listFailures reads failing), whose issue detail is issues' entry for a key it names, failing's
-// error for a key it names, and the embedded issue for any other, each key it is asked recorded in
-// detailAsked, and whose webhook App check answers not installed for each repository
-// webhookMissing names, by its "<owner>/<name>" without case, and installed for every other (the
-// embedded Dispatch's answer). webhookAsked is each repository it was asked the check for: the
-// name each preparation read a repository under, in GitHub's spelling (prepareName), and each
-// repository a read of the live records added (refreshLive).
+// listFailures reads failing, and the next one holdListing names kept unanswered until released),
+// whose issue detail is issues' entry for a key it names, failing's error for a key it names, and
+// the embedded issue for any other, each key it is asked recorded in detailAsked, and whose webhook
+// App check answers not installed for each repository webhookMissing names, by its "<owner>/<name>"
+// without case, and installed for every other (the embedded Dispatch's answer). webhookAsked is
+// each repository it was asked the check for: the name each preparation read a repository under,
+// in GitHub's spelling (prepareName), and each repository a read of the live records added
+// (refreshLive).
 type repositoryDispatch struct {
 	outboxDispatch
 	mu             sync.Mutex
@@ -142,6 +143,10 @@ type repositoryDispatch struct {
 	detailAsked    []string
 	webhookMissing map[string]bool
 	webhookAsked   []string
+	// hold is what the next listing waits on once it has read what it lists, nil for none
+	// (holdListing), and heldListings is how many listings waited on a hold.
+	hold         chan struct{}
+	heldListings int
 }
 
 func (d *repositoryDispatch) WebhookAppInstalled(_ context.Context, repo string) (bool, error) {
@@ -160,15 +165,48 @@ func (d *repositoryDispatch) webhookChecks() []string {
 	return asked
 }
 
-func (d *repositoryDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
+func (d *repositoryDispatch) ListIssues(ctx context.Context, _ string, _ []string) ([]dispatch.IssueSummary, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.listings++
 	if d.listFailures > 0 {
 		d.listFailures--
+		d.mu.Unlock()
 		return nil, &dispatch.TransientError{Err: errors.New("Dispatch answered 502 to the listing")}
 	}
-	return append([]dispatch.IssueSummary{}, d.listed...), nil
+	listed := append([]dispatch.IssueSummary{}, d.listed...)
+	hold := d.hold
+	if hold != nil {
+		d.hold = nil
+		d.heldListings++
+	}
+	d.mu.Unlock()
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return listed, nil
+}
+
+// holdListing makes the next listing read what Dispatch shows at that moment, then keep its answer
+// until release is called, as a slow Dispatch would, and answer what it read. release may be
+// called more than once.
+func (d *repositoryDispatch) holdListing() (release func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	hold := make(chan struct{})
+	d.hold = hold
+	var once sync.Once
+	return func() { once.Do(func() { close(hold) }) }
+}
+
+// heldListingCount is how many listings waited on a hold.
+func (d *repositoryDispatch) heldListingCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.heldListings
 }
 
 // listingCount is how many project listings were asked of d.
