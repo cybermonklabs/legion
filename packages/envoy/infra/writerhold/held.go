@@ -12,10 +12,13 @@ import (
 	"github.com/sjawhar/envoy/internal/holdrecord"
 )
 
-// HeldCommand is a command that changes the hub's protected streams inside a hold of its own
-// workflow: `envoy-infra buckets create`, `recreate` and `restore`, each its workflow's one
-// command (holdrecord's table, "buckets create" final in buckets-create).
+// HeldCommand is a command that changes the hub's protected streams inside a hold: `envoy-infra
+// buckets create`, `recreate` and `restore`, and `envoy-infra streams update` and `census`, each
+// admitted by the workflow's row of holdrecord's table.
 type HeldCommand struct {
+	// Workflow is the workflow it runs in, and the one RunHeld prepares when HoldID is empty.
+	// Empty with a HoldID, it runs in that hold's own workflow, the table admitting it or not (a
+	// census runs in a streams-census, cutover or hub-restore hold).
 	Workflow holdrecord.Workflow
 	// Command is its name in the workflow's table.
 	Command string
@@ -30,10 +33,10 @@ type HeldCommand struct {
 	Absent []string
 	// Inputs are its intent's inputs.
 	Inputs map[string]string
-	// Change makes the change on nc, the operator's connection under the held grant, and says what
-	// it did to each protected stream it changed (a stream it does not name is kept, unwritten) and
-	// its done entry's outputs.
-	Change func(ctx context.Context, nc *nats.Conn) (map[string]Change, map[string]string, error)
+	// Change makes the change on nc, the operator's connection under the held grant, in the hold
+	// holdID, and says what it did to each protected stream it changed (a stream it does not name
+	// is kept, unwritten) and its done entry's outputs.
+	Change func(ctx context.Context, nc *nats.Conn, holdID string) (map[string]Change, map[string]string, error)
 }
 
 // RunHeld runs c inside its hold and returns the hold's id. With no HoldID it checks the minter
@@ -48,6 +51,9 @@ type HeldCommand struct {
 func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c HeldCommand, now func() time.Time, stdout io.Writer) (string, error) {
 	op.ExpectedAbsent = c.Absent
 	id := c.HoldID
+	if id == "" && c.Workflow == "" {
+		return "", refusef(StepPreflight, "%s names no hold and no workflow to set one of", c.Command)
+	}
 	if id == "" {
 		if err := PreflightMinters(ctx, op.Hub.Client, c.MintersReport, now); err != nil {
 			return "", err
@@ -62,7 +68,7 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 	if err != nil {
 		return id, err
 	}
-	if d.Workflow != c.Workflow {
+	if c.Workflow != "" && d.Workflow != c.Workflow {
 		return id, refusef(StepPreflight, "hold %s is a %s hold: %s runs only in a %s hold", id, d.Workflow, c.Command, c.Workflow)
 	}
 	if latestState(d, holdrecord.CommandSet) != "done" {
@@ -84,7 +90,7 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 	// A Stoppable command's failure after its intent writes a stop entry; any other leaves its
 	// intent pending, and the table admits its rerun (holdrecord.Stoppable).
 	stop := func(cause error) error {
-		if !holdrecord.Stoppable(c.Workflow, c.Command) {
+		if !holdrecord.Stoppable(d.Workflow, c.Command) {
 			return cause
 		}
 		if err := records.AppendStop(ctx, id, c.Command, cause.Error()); err != nil {
@@ -96,7 +102,7 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 	if err != nil {
 		return id, stop(err)
 	}
-	changes, outputs, err := c.Change(ctx, nc)
+	changes, outputs, err := c.Change(ctx, nc, id)
 	if err != nil {
 		return id, stop(err)
 	}

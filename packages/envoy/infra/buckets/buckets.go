@@ -408,12 +408,12 @@ func run(ctx context.Context, o options, stdout io.Writer, e env) error {
 			}
 		}
 		c.Workflow, c.Command = holdrecord.WorkflowBucketsCreate, CommandCreate
-		c.Change = func(ctx context.Context, nc *nats.Conn) (map[string]writerhold.Change, map[string]string, error) {
+		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]writerhold.Change, map[string]string, error) {
 			return createMissing(ctx, nc, stdout, o.buckets, o.replicas)
 		}
 	case "recreate":
 		c.Workflow, c.Command = holdrecord.WorkflowBucketsRecreate, CommandRecreate
-		c.Change = func(ctx context.Context, nc *nats.Conn) (map[string]writerhold.Change, map[string]string, error) {
+		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]writerhold.Change, map[string]string, error) {
 			return recreate(ctx, nc, stdout, o.buckets, o.replicas)
 		}
 	case "restore":
@@ -421,7 +421,7 @@ func run(ctx context.Context, o options, stdout io.Writer, e env) error {
 		for _, bucket := range o.buckets {
 			c.Inputs["sha256."+bucket] = manifest.Buckets[bucket].SHA256
 		}
-		c.Change = func(ctx context.Context, nc *nats.Conn) (map[string]writerhold.Change, map[string]string, error) {
+		c.Change = func(ctx context.Context, nc *nats.Conn, _ string) (map[string]writerhold.Change, map[string]string, error) {
 			return restoreAll(ctx, nc, stdout, o.from, manifest, o.buckets, e.restoreRuns)
 		}
 	}

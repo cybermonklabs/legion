@@ -27,6 +27,8 @@ import (
 const (
 	OperatorAccount = holdrecordtest.OperatorAccount
 	ProbeAccount    = "system:serviceaccount:envoy-operator:envoy-hold-probe"
+	// MeasureAccount is the measurement job's, which runs `envoy-infra streams check`.
+	MeasureAccount = "system:serviceaccount:envoy:envoy-measure"
 	// ListenerMachines are the machine ids of the listener entries the stack lists; a test
 	// connects a listener of each through ConnectListener.
 	listenerAccountPrefix = "system:serviceaccount:holdtest:listener-"
@@ -79,8 +81,16 @@ func (tt *tokenTable) verify(_ context.Context, raw string) (string, bool, time.
 	return account, false, issued, issued.Add(tt.life), nil
 }
 
-// The raw tokens of the stack's probe and listeners. The operator's is holdrecordtest's.
-const probeToken = "holdtest-probe-token"
+// The raw tokens of the stack's probe, measurement job and listeners. The operator's is
+// holdrecordtest's.
+const (
+	probeToken   = "holdtest-probe-token"
+	measureToken = "holdtest-measure-token"
+)
+
+// MeasureToken is the measurement job's platform token, which `envoy-infra streams check` presents
+// as user `service`.
+const MeasureToken = measureToken
 
 func listenerToken(machine string) string { return "holdtest-listener-" + machine + "-token" }
 
@@ -109,8 +119,9 @@ func StartWith(t testing.TB, opts Options) *Stack {
 	tokens := &tokenTable{accounts: map[string]string{
 		holdrecordtest.OperatorToken: OperatorAccount,
 		probeToken:                   ProbeAccount,
+		measureToken:                 MeasureAccount,
 	}, life: 50 * time.Minute}
-	entries := []string{"operator/-/*=" + OperatorAccount, "probe/-/*=" + ProbeAccount}
+	entries := []string{"operator/-/*=" + OperatorAccount, "probe/-/*=" + ProbeAccount, "measure/-/*=" + MeasureAccount}
 	for _, machine := range ListenerMachines {
 		account := listenerAccountPrefix + machine
 		tokens.accounts[listenerToken(machine)] = account

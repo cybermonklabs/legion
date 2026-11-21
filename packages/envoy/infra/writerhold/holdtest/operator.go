@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/internal/streamset"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -137,9 +138,11 @@ func (s *Stack) Release(t testing.TB, id string) {
 	}
 }
 
-// SeedProtectedStreams makes the notification stream and every protected bucket, three copies
-// each, as the hub holds them: the operator makes them under a hold of its own (the held grant is
-// the one that creates a protected stream), which is then released with nothing else changed.
+// SeedProtectedStreams makes every stream the build declares protected, with the build's own
+// configuration at three copies (streamset.EnsureStreams, as `envoy-infra streams update` makes
+// them), and each other protected bucket the declared set does not name, as the hub holds them:
+// the operator makes them under a hold of its own (the held grant is the one that creates a
+// protected stream), which is then released with nothing else changed.
 func (s *Stack) SeedProtectedStreams(t testing.TB) {
 	t.Helper()
 	ctx := context.Background()
@@ -154,19 +157,29 @@ func (s *Stack) SeedProtectedStreams(t testing.TB) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Each create's own minute: an R3 create on a loaded box can take past jetstream's 5 s default.
-	create := func() (context.Context, context.CancelFunc) { return context.WithTimeout(ctx, time.Minute) }
-	createCtx, cancel := create()
-	_, err = js.CreateStream(createCtx, jetstream.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}, Replicas: 3})
-	cancel()
+	// The whole seed's own minutes: an R3 create on a loaded box can take past jetstream's 5 s
+	// default.
+	seedCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	// The copied buckets first, with their own configuration, as `envoy-infra buckets create`
+	// makes them: streamset.EnsureStreams makes no copied bucket.
+	legacy, err := nc.JetStream(nats.MaxWait(time.Minute))
 	if err != nil {
-		t.Fatalf("holdtest: create %s: %v", bus.Stream, err)
+		t.Fatal(err)
+	}
+	for _, bucket := range bus.CopiedBuckets() {
+		if _, err := bus.CreateCopiedBucket(seedCtx, nc, legacy, bucket, 3); err != nil {
+			t.Fatalf("holdtest: create copied bucket %s: %v", bucket, err)
+		}
+	}
+	if err := streamset.EnsureStreams(seedCtx, nc, streamset.Settings{Replicas: 3}); err != nil {
+		t.Fatalf("holdtest: make the declared streams: %v", err)
 	}
 	for _, bucket := range ProtectedBuckets() {
-		createCtx, cancel := create()
-		_, err := js.CreateKeyValue(createCtx, jetstream.KeyValueConfig{Bucket: bucket, Replicas: 3})
-		cancel()
-		if err != nil {
+		if _, err := js.Stream(seedCtx, "KV_"+bucket); err == nil {
+			continue
+		}
+		if _, err := js.CreateKeyValue(seedCtx, jetstream.KeyValueConfig{Bucket: bucket, Replicas: 3}); err != nil {
 			t.Fatalf("holdtest: create bucket %s: %v", bucket, err)
 		}
 	}

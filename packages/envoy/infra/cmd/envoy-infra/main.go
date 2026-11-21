@@ -52,6 +52,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores se
 	if len(args) > 0 && args[0] == "hold" {
 		return writerhold.Command(ctx, args[1:], stdout, stderr)
 	}
+	// The writer hold's two stream commands run inside a hold (package writerhold); streams.Command
+	// takes only check and ensure. The census's reader of the recorded session consumers is
+	// envoy-infra consumer-names' (t-7), which this build does not carry, so its census is UNKNOWN.
+	if len(args) > 1 && args[0] == "streams" && (args[1] == "update" || args[1] == "census") {
+		return writerhold.StreamsCommand(ctx, args[1:], stdout, stderr, nil)
+	}
 	if len(args) > 0 && args[0] == "streams" {
 		return streams.Command(ctx, args[1:], stdout, stderr)
 	}
