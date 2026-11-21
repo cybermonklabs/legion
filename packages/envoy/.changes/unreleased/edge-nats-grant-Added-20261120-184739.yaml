@@ -38,7 +38,7 @@ body: |-
   `envoy_dpop_proofs` at its start, whether or not it takes broker tokens, so a full listener of
   this build starts before an edge listener and makes the bucket the edge's start needs. No edge
   pod serves a session until the edge mode that holds a session to its token's projects (#4810) and
-  the relay socket and its receipts (#4658) are in its build.
+  the relay socket and its receipts (#4819) are in its build.
 time: 2026-11-20T18:47:39Z
 custom:
     Issue: edge-nats-grant

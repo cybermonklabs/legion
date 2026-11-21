@@ -16,12 +16,14 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nuid"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // The headers of a relay frame, the core message the listener publishes on a session's relay
@@ -216,9 +218,10 @@ type sessionRelays struct {
 	sessions  *session.SessionRegistry
 	machineID string
 	logger    *logging.Logger
-	// inbox is the listener's reply inbox, and replyPrefix it and a dot: a frame's reply subject is
-	// replyPrefix<session id>.<token> (bus.SessionReplySubject), and one subscription to the
-	// inbox's wildcard hears every reply.
+	// inbox is the listener's reply inbox, or an edge listener's receipt subject under its
+	// machine's family (natsgrant.EdgeRelayReplyPrefix; startSessionRelays), and replyPrefix it and
+	// a dot: a frame's reply subject is replyPrefix<session id>.<token> (bus.SessionReplySubject),
+	// and one subscription to the inbox's wildcard hears every reply.
 	inbox       string
 	replyPrefix string
 	// pauseFirst and pauseMax are the bounds of a paused relay's backoff, relayPauseFirst and
@@ -531,10 +534,30 @@ type relayFrame struct {
 	answered bool
 }
 
+// relayEdgeInFlight is how many of a session's frames an edge listener's relay holds in flight,
+// awaiting done or nak: its session consumers' MaxAckPending (bus.SessionConsumers.SetMaxAckPending),
+// in place of bus.SessionConsumerMaxAckPending. A relay socket buffers what a client has not read
+// yet (relaySocketPendingMsgs, relaySocketPendingBytes), so a restart at the ack floor sends a
+// prompt client no more than its socket holds, however large the session's backlog.
+const relayEdgeInFlight = 16
+
 // startSessionRelays starts the relay of delivery's session consumers and makes it delivery's
 // relay (sessionDelivery.relay). It relays nothing until setOwned(true).
+//
+// An edge listener's relay (cfg.edge set) takes its receipts under its own machine's receipt
+// family (natsgrant.EdgeRelayReplyPrefix) and a nuid of its own rather than under a reply inbox:
+// the session of an edge listener answers its frames over its relay socket, whose replica may be
+// another machine's, and the edge's grant publishes every machine's receipts and subscribes only
+// its own machine's, and no reply inbox (natsgrant.Edge). So the replica serving the socket
+// publishes the client's receipt on the owner's subject, which the owner alone reads. Its
+// consumers hold at most relayEdgeInFlight frames in flight; it is started before /v1 opens, so
+// before any consumer is created.
 func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerConfig) (*sessionRelays, error) {
 	inbox := delivery.consumers.NewInbox()
+	if cfg.edge != nil {
+		inbox = natsgrant.EdgeRelayReplyPrefix(cfg.machineID) + "." + nuid.Next()
+		delivery.consumers.SetMaxAckPending(relayEdgeInFlight)
+	}
 	m := &sessionRelays{
 		delivery:    delivery,
 		cfg:         cfg,

@@ -98,6 +98,9 @@ type listenerDeps struct {
 	// (resolveListenerDispatchPrincipal): the one caller whose send may carry a role mark
 	// (sendHandler). Empty names nobody, and every send carrying one is refused.
 	dispatchPrincipal string
+	// relaySockets is an edge listener's relay sockets (relay_socket.go), nil on every other
+	// listener, which answers the socket's path 404 (relaySocketRoute).
+	relaySockets *relaySockets
 	// repositories is the edge listener's reader of the repositories its projects' issues
 	// resolve to (the broker's GET /v1/project-repositories, edge_repositories.go), nil on every
 	// listener but an edge one.
@@ -1598,13 +1601,30 @@ func main() {
 		os.Exit(1)
 	}
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
-	// machine's durable binding (below).
+	// machine's durable binding (below). An edge listener's relay takes its receipts under its
+	// machine's receipt family (natsgrant.EdgeRelayReplyPrefix), on which the replica serving the
+	// session's relay socket publishes them.
 	relays, err := startSessionRelays(delivery, deliveryConfig)
 	if err != nil {
 		logger.Error("session relay reply subscription failed: no relayed frame could be answered", slog.String("error", err.Error()))
 		delivery.close()
 		client.Conn.Close()
 		os.Exit(1)
+	}
+	// An edge listener serves its sessions' relay sockets on a NATS connection of the sockets'
+	// own, as the main client's but for its name, whose slow consumers stay off the main
+	// connection's last error (confirmPublished reads it); every other listener serves none.
+	var sockets *relaySockets
+	if edge != nil {
+		socketsClient, err := bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection())...)
+		if err != nil {
+			logger.Error("relay socket connection failed: an edge listener serves its sessions' sockets on it", slog.String("error", err.Error()))
+			relays.stop(context.Background())
+			delivery.close()
+			client.Conn.Close()
+			os.Exit(1)
+		}
+		sockets = newRelaySockets(socketsClient, brokerTokenAuth, logger)
 	}
 	// An edge listener reads the repositories its projects' issues resolve to from the broker's
 	// GET /v1/project-repositories, with its own broker account, and its relay holds every GitHub
@@ -1623,6 +1643,7 @@ func main() {
 		lane:      lane,
 		delivery:  delivery,
 		relays:    relays,
+		sockets:   sockets,
 		caches:    caches,
 		known:     known,
 		stopWakes: stopWakeReports,
@@ -1658,6 +1679,7 @@ func main() {
 		sendsToUnresponsive: sendsToUnresponsive,
 		senderLimit:         senderMessageLimit,
 		dispatchPrincipal:   dispatchPrincipal,
+		relaySockets:        sockets,
 		repositories:        repositories,
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
@@ -1934,14 +1956,15 @@ type listenerLoops struct {
 
 // listenerParts are the parts of a started listener that shut down: server is the /v1 HTTP server,
 // client the main bus connection, lane the role lane, delivery the session-consumer connection,
-// relays the relay of its consumers (nil when it does not run), and caches the KV caches whose
-// watchers are retired last.
+// relays the relay of its consumers (nil when it does not run), sockets an edge listener's relay
+// sockets (nil on every other listener), and caches the KV caches whose watchers are retired last.
 type listenerParts struct {
 	server   *http.Server
 	client   *bus.Client
 	lane     roleLane
 	delivery *sessionDelivery
 	relays   *sessionRelays
+	sockets  *relaySockets
 	caches   []listenerCache
 	// known is the known-session store, whose watcher is retired with the caches' but which is
 	// none of them (listenerDeps.known); nil on a listener with no store, which retires nothing.
@@ -1956,12 +1979,13 @@ type listenerParts struct {
 // has to cover stopBudget, and a pod of this listener grants listenerGraceMargin above it;
 // TestListenerPodGracesCoverTheStopBudget holds the rendered pods to both.
 const (
-	// stopHTTPGrace bounds the first part of the stop: six waits run under the one context it
-	// opens, in this order - the relays' stop, the HTTP server's shutdown, the consumer deletes
-	// still in flight, the session-consumer drain, the wait for a self-health rebuild still
-	// running (loops.monitorDone) and the wait for each KV bucket pass still running
-	// (loops.kvLoopsDone). The last two are the ones that most plausibly spend it on a loaded
-	// node, so whoever sizes this number reads them too.
+	// stopHTTPGrace bounds the first part of the stop: seven waits run under the one context it
+	// opens, in this order - an edge listener's relay sockets' close frames (relaySockets.stop,
+	// every socket at once, each write bounded at relaySocketCloseGrace), the relays' stop, the
+	// HTTP server's shutdown, the consumer deletes still in flight, the session-consumer drain,
+	// the wait for a self-health rebuild still running (loops.monitorDone) and the wait for each
+	// KV bucket pass still running (loops.kvLoopsDone). The last two are the ones that most
+	// plausibly spend it on a loaded node, so whoever sizes this number reads them too.
 	stopHTTPGrace = 10 * time.Second
 	// stopLaneDrain is what roleLane.drain is given for the role lane's own client.
 	stopLaneDrain = 3 * time.Second
@@ -2002,12 +2026,16 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	}
 
 	// Ordered shutdown:
-	// 1. Session relays — publish no frame and ack nothing more; each one pulling returns the
+	// 1. Relay sockets — an edge listener closes each with 1012, on which its client opens it
+	//    again at once on another replica, and refuses every upgrade after it. The HTTP server's
+	//    shutdown below does not wait for a hijacked connection, so nothing else would close them.
+	// 2. Session relays — publish no frame and ack nothing more; each one pulling returns the
 	//    messages it holds to the server with a nak (sessionRelays.release), so they are
 	//    delivered again at once rather than after their ack wait.
-	// 2. HTTP server — stop accepting new requests, drain in-flight.
+	// 3. HTTP server — stop accepting new requests, drain in-flight.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), stopHTTPGrace)
 	defer cancel()
+	parts.sockets.stop()
 	parts.relays.stop(shutdownCtx)
 	if err := parts.server.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("http shutdown error", slog.String("error", err.Error()))

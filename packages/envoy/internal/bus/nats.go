@@ -245,8 +245,8 @@ func WithInboxPrefix(prefix string) DialOption {
 // natsgrant.Edge), whose grant holds no direct get: the stream itself publishes a direct get's
 // answer, the stored value, on whatever reply subject the request names, and a value aimed at
 // $JS.API. is taken by the JetStream API as a request of the account's.
-func WithStreamMessageReads() DialOption {
-	return func(o *connectOpts) { o.streamMessageReads = true }
+func WithStreamMessageReads() ConnectOption {
+	return clientOption(func(o *connectOpts) { o.streamMessageReads = true })
 }
 
 type subscriptionTransport uint8

@@ -157,10 +157,11 @@ func DeliverSubject(sessionID string) string {
 // (relayreply.<machine>.<nuid>.<session id>.<token>; natsgrant.EdgeRelayReplyPrefix).
 // Its grant subscribes only its own machine's and publishes every machine's, since the listener
 // serving a session's relay socket answers on the family of the machine holding the session's
-// consumer (natsgrant.Edge). The relay socket of #4658 is the first to use it; at this head no
-// program names a receipt here, and the edge's session relay takes its receipts under its
-// connection's inbox. No stream subject captures it (StreamCaptures), so a receipt travels over
-// core NATS, as the frame does, and the stream stores none.
+// consumer (natsgrant.Edge). The edge's session relay names its frames' receipts here, and the
+// relay socket publishes each receipt its client sends on the subject the frame named
+// (cmd/listener's startSessionRelays and relay_socket.go). No stream subject captures it
+// (StreamCaptures), so a receipt travels over core NATS, as the frame does, and the stream stores
+// none.
 const RelayReplyPrefix = NotificationTopicPrefix + "envoy.relayreply."
 
 // SessionReplySubject is the reply subject of one request made of session sessionID,

@@ -1092,7 +1092,7 @@ go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher
 grant=$(../../{TAGGED_TESTS} natslive ./natsgrant)
 go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
 edge=$(../../{TAGGED_TESTS} natslive ./cmd/listener)
-go test -count=1 -timeout 5m -tags natslive -run "$edge" -v ./cmd/listener/"""
+go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked.
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"

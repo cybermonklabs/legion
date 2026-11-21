@@ -139,6 +139,7 @@ the repository root show how CI runs each.
 `internal/dispatch/pmdoc` tests compare with the browser editor through bun scripts in
 `pmdoc/gen`: they need `bun` and a `bun install` at the repository root. Without `bun` they
 skip, except where `CI` is set, where they fail.
+
 ## The edge listener
 
 `ENVOY_EDGE_PROJECTS` makes a listener the edge listener, the one an outside person's agents reach Envoy through.
@@ -212,6 +213,46 @@ A free-form role under a project (`PRIV.lead-reviewer`) is that project's own cl
 every other name keeps its bare role name as its key.
 `POST /v1/roles/set` refuses with `400`, naming both projects, a Legion role under any project but the one its own name gives, and the edge's role and publish rules read a role's project by that function too.
 A role message on a lane in the form that names a project, for a Legion role of another project (`notifications.role.PRIV.legion-infra-reviewer`), reaches no holder: the role lane drops it with the delivery exception `no_holder` on the lane's exception twin, as for any role message that reaches no holder, and `POST /v1/messages/publish` refuses it with `400` naming the role's own project (`roleLaneProjectError`).
+
+## The relay socket
+
+`GET /v1/sessions/{session}/relay` is a WebSocket that only the edge listener serves (`cmd/listener/relay_socket.go`).
+A session that holds no NATS connection of its own, such as an outside person's agent, receives its relay frames on it and answers them over HTTPS.
+Every other listener answers the path `404`, an upgrade included, so no shared listener's grant has to cover it.
+
+- **The upgrade**: the subprotocol `envoy-relay.v1`, `Authorization: DPoP <token>` and a `DPoP` proof for `ENVOY_PUBLIC_URL` plus the path, which `apiAuth` checks first, as it checks every `/v1` request, the edge's admission included.
+  Then a `{session}` that is not one NATS subject token (it holds a `.`, `*`, `>`, white space or a control character) gets `400` before the upgrade, since its relay subject would be a wildcard or reach under another session's.
+  A token of another session gets `403`; an upgrade without `envoy-relay.v1` gets `400`; an `Origin` of another host gets `403` (a client outside a browser sends none); a session's fifth socket on one replica, or a person's seventeenth on one replica, over all of their sessions (`relaySocketMaxPerCaller`; a token that names no person counts against its service), gets `429`; an upgrade past the replica's 256 sockets, or while the listener stops, gets `503`, on which the client opens it on another replica.
+
+- **Frames**: text frames of JSON.
+  `{"op":"sub","sid":<int>,"subject":<s>}` subscribes the session's own relay subject (`bus.DeliverSubject`) on the sockets' own NATS connection; any other subject gets `{"op":"err","sid":<int>,"code":"subject_not_granted"}`, and a second `sub` gets `subscription_limit`, since a socket has one subject to subscribe.
+  `{"op":"unsub","sid":<int>}` ends a subscription.
+  `{"op":"pub","subject":<s>,"data":<base64>}` publishes a receipt, whose subject must be the `reply` of a frame the socket forwarded in the last 10 minutes and whose data one of the relay's reply words (`received`, `progress`, `done`, `nak`), else `publish_not_granted`.
+  The server's `{"op":"msg","sid":…,"subject":…,"reply":…,"headers":{…},"data":<base64>}` is one relay frame; `headers` is always present, each name to every one of its values in order.
+  A frame the socket cannot read gets `{"op":"err","code":"bad_frame"}` and a close `1008`; a frame over 1 MiB closes the socket `1009`, and a binary frame `1003 text_frames_only`.
+
+- **Order**: the socket handles each frame whole, a `sub`'s subscribe and the flush that makes the server hold it included, before it reads the next one.
+  The client's `flush()` is a WebSocket ping, so its pong comes only after every frame sent before it is handled.
+
+- **What it carries**: a frame's receipt subject is the owning machine's, under `notifications.envoy.relayreply.<machine id>.` (`natsgrant.EdgeRelayReplyPrefix`), since the edge's grant publishes no reply inbox and the socket may be on another machine (`startSessionRelays`): the edge's grant publishes every machine's receipts and subscribes only its own, so the socket's replica publishes the client's receipt on the owner's subject, which the owner alone reads.
+  The owning replica holds at most 16 of a session's frames in flight, awaiting `done` or `nak` (its session consumers' MaxAckPending, `relayEdgeInFlight`), so a client that reads promptly takes any backlog with its socket open.
+  The connection probe is never forwarded or answered, and a message on the relay subject whose reply is no receipt of the session's own frame (the receipt family, a machine id, a relay's nuid, the session and a token: `relayReceiptOf`) is not forwarded either, so a client is handed no other session's receipt to publish.
+
+- **While it is open**: every 20 seconds, and once at its token's expiry, the socket asks the broker about its token again, from a copy of the upgrade request, spending nothing of the source address's introspection budget (`Verifier.LiveUntil`); every 20 seconds it also pings its client.
+  It closes `4401 credential_expired` at the token's expiry, also while the broker still answers it live with that `exp` for up to a second after it, `4403 credential_refused` when the broker no longer holds the token live (a revoke of the token or of the device login it was traded from) or its answer names another caller, and `1013 broker_unavailable` when the broker cannot be asked.
+  It closes `1013 nats_unavailable` when its subscription is lost, and `1013 slow_consumer` when its client reads its frames slower than they come: past 32 frames or 16 MiB that the socket holds for it, past 64 MiB that one person's sockets on the replica hold together (`relaySocketCallerPendingBytes`, a quarter of the replica's budget), or past 256 MiB that all of the replica's sockets hold together, whoever opened them (`relaySocketReplicaPendingBytes`, a quarter of the listener container's default 1Gi).
+  Each socket holds its frames in a queue of its own, which one writer drains in order, so the replica's count of what its sockets' queues hold is exact, a frame blocked on a client that reads nothing included; a frame still in the NATS client's own buffer ahead of a queue is not in the count.
+  The listener's stop closes every socket `1012 listener_stopping`.
+  A close takes at most one second (`relaySocketCloseGrace`), also for a client that reads nothing: no close or check waits for a data frame blocked on such a client, and a write that fails drops the connection at once.
+  A frame unanswered at a close, or held by a socket that closed `slow_consumer`, is sent again by the owning relay, so a reopen loses nothing.
+  So is a frame the NATS client drops past its own pending limits ahead of the queue (the socket's 32 frames and 16 MiB): the socket stays open, and the frame comes again after the owning relay's ack wait.
+
+- **Tests**: `cmd/listener/relay_socket_test.go` and `cmd/listener/relay_socket_caller_test.go` run the socket in one process with a stand-in broker, on the rig of `relay_socket_fixture_test.go`.
+  `cmd/listener/relay_socket_live_test.go` (build tag `natslive`) runs two edge listeners under `natsgrant.Edge` on the hub's NATS image, with the real broker of `internal/cipher/ciphertest` and 30-second tokens; its binary checks every second (`-ldflags "-X main.relaySocketCheckBuild=1s"`).
+
+- **Rollout**: the socket forwards every relay frame of its session, and holds no frame to the projects of the token that opened it.
+  A session's relay subject can carry a frame of a project the token does not list: a role message of another project's role, another project's subject in the session's consumer filter, a GitHub event judged against the session's stored projects, a message any user that publishes `notifications.>` puts on the subject, or a frame of a project the person has since lost, from an earlier registration.
+  So no edge pod serves relay sockets until the hold of each frame to its token's projects is in its build: `edgeFrameVerdict`, which the change that holds the edge relay's frames to a session's projects adds, called from the socket's `forward` before a frame is held.
 
 ## Local end-to-end
 
