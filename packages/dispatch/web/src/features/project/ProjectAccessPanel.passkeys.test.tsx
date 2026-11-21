@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
 import type { ProjectAccess } from "../../api/types";
@@ -274,6 +275,47 @@ test("Reset asks first, then the person's passkeys are gone from the row", async
     expect(
       within(personRow(ana)).queryByRole("button", { name: `Reset ${ana}` })
     ).not.toBeInTheDocument();
+  } finally {
+    panel.restore();
+    confirm.mockRestore();
+    reset.mockRestore();
+  }
+});
+
+// A Retry of a Reset Dispatch refused is a new Reset under a new key, which deletes the person's
+// passkeys and signs them out as the first would have: it asks first, as the row's Reset does.
+test("Retry of a refused Reset asks first, and sends nothing until the owner confirms", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: withPasskeys() });
+  const confirm = spyOn(window, "confirm")
+    .mockReturnValueOnce(true)
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true);
+  const reset = spyOn(api, "resetProjectAccessPerson")
+    .mockRejectedValueOnce(
+      new ApiError(409, { code: "PERSON_NOT_LISTED", error: "the list no longer names them" })
+    )
+    .mockImplementation(panel.lands(withPasskeys({ passkeys: [] })));
+  try {
+    await user.click(await screen.findByRole("button", { name: `Reset ${ana}` }));
+    const retry = await within(await screen.findByRole("alert")).findByRole("button", {
+      name: "Retry",
+    });
+    expect(reset).toHaveBeenCalledTimes(1);
+
+    await user.click(retry);
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(confirm).toHaveBeenLastCalledWith(
+      `Reset ${ana}? Dispatch deletes their passkeys and their unused links of every project, signs them out, and revokes their personal tokens and the device logins they approved. They sign in again only through a new link.`
+    );
+    await settle();
+    expect(reset).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(within(personRow(ana)).queryByTestId("access-passkey")).not.toBeInTheDocument()
+    );
+    expect(reset).toHaveBeenCalledTimes(2);
   } finally {
     panel.restore();
     confirm.mockRestore();

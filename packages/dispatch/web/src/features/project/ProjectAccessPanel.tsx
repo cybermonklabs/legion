@@ -37,7 +37,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { dropSettledWrites } from "../writes/settled-writes";
 import { type KeyedPress, useKeyedWrite } from "../writes/useKeyedWrite";
-import { AccessPersonRow } from "./AccessPersonRow";
+import { AccessPersonRow, confirmReset } from "./AccessPersonRow";
 
 /** One change of a project's access, as the owner presses it: the project given to another
  *  owner, made public or private, one person or group named on its access list or taken off it,
@@ -303,10 +303,15 @@ function useAccessWrite(
       }
       // A press this mount made and the reader stopped is made again as that press, under its key
       // where its method sends one; a refusal Dispatch decided, or a press of a mount made before
-      // this one, is retried as a new save.
-      if (!mutation.again(press)) {
-        mutation.mutate(press.variables);
+      // this one, is retried as a new save. A new save of a Reset is a new Reset, so it asks the
+      // owner first, as the row's Reset does.
+      if (mutation.again(press)) {
+        return;
       }
+      if (press.variables.kind === "reset-person" && !confirmReset(press.variables.email)) {
+        return;
+      }
+      mutation.mutate(press.variables);
     },
     save: (change) => mutation.mutate(change),
   };

@@ -53,6 +53,15 @@ function invitationRefusal(email: string, error: Error): string {
   }
 }
 
+/** Whether the owner, asked what a Reset of `email` does, confirms it. The row's Reset asks
+ *  before its first send, and the panel's Retry of a refused Reset asks again, since that Retry
+ *  is a new Reset under a new key. */
+export function confirmReset(email: string): boolean {
+  return window.confirm(
+    `Reset ${email}? Dispatch deletes their passkeys and their unused links of every project, signs them out, and revokes their personal tokens and the device logins they approved. They sign in again only through a new link.`
+  );
+}
+
 const rowClass = `flex min-h-11 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b px-4 py-2 last:border-0 ${borderDefault}`;
 const linkFieldClass = `min-h-11 w-full min-w-0 rounded-md px-3 py-2 font-mono text-xs md:min-h-9 ${inputClasses(false)} ${textPrimaryOnSurface}`;
 
@@ -124,11 +133,7 @@ export function AccessPersonRow({
     write: (_none, bounds) => api.createProjectInvitation(project, email, bounds),
   });
   const reset = () => {
-    if (
-      !window.confirm(
-        `Reset ${email}? Dispatch deletes their passkeys and their unused links of every project, signs them out, and revokes their personal tokens and the device logins they approved. They sign in again only through a new link.`
-      )
-    ) {
+    if (!confirmReset(email)) {
       return;
     }
     // Reset deletes the person's unused links with their passkeys, so the link an earlier Invite
