@@ -347,7 +347,7 @@ jobs:
         working-directory: packages/dispatch
       - name: Browser-test outside sign-in at a second origin
         # why: .github/ci-notes/dispatch-browser.md#what-the-outside-sign-in-step-runs
-        # 14 s x 1.15 = 17 s -> the two-minute floor.
+        # 31 s x 1.15 = 36 s -> the two-minute floor.
         timeout-minutes: 2
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11

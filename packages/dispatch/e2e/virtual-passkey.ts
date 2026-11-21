@@ -13,8 +13,7 @@ export interface VirtualPasskey {
  * no prompt (`automaticPresenceSimulation`, `isUserVerified`), which is what Dispatch's
  * ceremonies ask for (a discoverable credential, user verification required). Chromium alone has
  * the WebAuthn domain. The authenticator lives as long as the page does, so a ceremony in another
- * page of the same context needs one of its own. `outside-passkey.e2e.ts` and the outside
- * acceptance driver (`acceptance/outside-edge.ts`) both stand on it.
+ * page of the same context needs one of its own. `outside-passkey.e2e.ts` stands on it.
  */
 export async function addVirtualPasskey(page: Page): Promise<VirtualPasskey> {
   const cdp = await page.context().newCDPSession(page);

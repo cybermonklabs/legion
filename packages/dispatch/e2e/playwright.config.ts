@@ -288,9 +288,10 @@ const multiprocessProjects = [
   },
 ];
 
-// DISPATCH_E2E_SIGNIN=google's one project, with one server process or two: its one spec, in
-// Chromium. `retries: 0` for the multiprocess project's reason above: the job that runs it is the
-// same multiprocess job, which writes no blob report.
+// DISPATCH_E2E_SIGNIN=google's one project, with one server process or two: its two specs,
+// outside-sign-in.e2e.ts and outside-passkey.e2e.ts, in Chromium. `retries: 0` for the
+// multiprocess project's reason above: the job that runs it is the same multiprocess job, which
+// writes no blob report.
 const outsideSignInProjects = [
   {
     name: "chromium",
