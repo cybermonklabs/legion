@@ -162,9 +162,15 @@ case "${DISPATCH_E2E_SIGNIN:-}" in
         : "${DISPATCH_E2E_SIGNIN_OUTSIDE_HOST:?DISPATCH_E2E_SIGNIN_OUTSIDE_HOST must name the host of the second origin the server answers at}"
         # The second origin has the dashboard origin's scheme and port: the round-robin proxy's
         # port in two-process mode, or `{port}` on a held one, which held-port.py writes in.
+        # Passkey sign-in needs DISPATCH_TRUSTED_PROXY_RANGES, the front doors whose
+        # X-Forwarded-For its begins' bound reads. The harness has none: each page talks to the
+        # server from loopback, or through the round-robin proxy, which writes no X-Forwarded-For.
+        # So the range is TEST-NET-1 (RFC 5737), where no peer of the harness is, and each begin
+        # is bounded by its connection's own address.
         signin_env+=(
           DISPATCH_SIGNIN_DOMAIN="$DISPATCH_E2E_SIGNIN_DOMAIN"
           DISPATCH_SIGNIN_PASSKEY=1
+          DISPATCH_TRUSTED_PROXY_RANGES=192.0.2.0/24
           DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1
           DISPATCH_OUTSIDE_ORIGIN="${server_origin%%://*}://$DISPATCH_E2E_SIGNIN_OUTSIDE_HOST:${server_origin##*:}"
         )
