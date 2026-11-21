@@ -2879,6 +2879,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/dispatch/api/route_xid_window_issues_test.go'
   - '!packages/envoy/internal/dispatch/api/route_xid_window_messages_test.go'
   - '!packages/envoy/internal/dispatch/api/route_xid_window_test.go'
+  - '!packages/envoy/internal/dispatch/api/spec_writer_route_guard_test.go'
   - '!packages/envoy/internal/dispatch/api/xid_window_test.go'
   - '!packages/envoy/internal/dispatch/architecture/**/*_test.go'
   - '!packages/envoy/internal/dispatch/auth/**/*_test.go'

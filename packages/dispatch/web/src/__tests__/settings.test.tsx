@@ -103,6 +103,7 @@ test("human users manage repository project mappings from the settings route", a
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   const putRepoProject = spyOn(api, "putRepoProject").mockImplementation(async (repo, input) =>
@@ -232,6 +233,7 @@ test("a delayed mapping response does not undo a newer default the page has read
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   // The server saves the pick at once; its answer reaches the page only when the test says.
@@ -313,6 +315,7 @@ test("repository settings retries a failed mapping query", async () => {
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -357,6 +360,7 @@ test("a human creates a project from Settings and it appears in the mappings sel
     name: "Core",
     open_asks: 0,
     gated_steps: [],
+    proven_sessions: false,
   };
   const listed: Project = {
     created_at: "2026-09-10T00:00:00Z",
@@ -364,6 +368,7 @@ test("a human creates a project from Settings and it appears in the mappings sel
     name: "Quality",
     open_asks: 0,
     gated_steps: [],
+    proven_sessions: false,
   };
   // The create answers the project with its default; the project list carries none.
   const created: CreatedProject = { ...listed, default_assignee: "alice" };
@@ -459,6 +464,7 @@ test("creating a project with a taken key shows the server's error inline", asyn
     name: "Core",
     open_asks: 0,
     gated_steps: [],
+    proven_sessions: false,
   };
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
@@ -579,6 +585,7 @@ function renderSettings(projects: string[]): {
         name: key,
         open_asks: 0,
         gated_steps: [],
+        proven_sessions: false,
       }))
     ),
   ];

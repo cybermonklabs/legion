@@ -59,7 +59,8 @@ type IssueDescendant struct {
 
 // IssueDescendants is the keys of every issue below the issue key on `child_of`, at any status:
 // IssueDescendantRows' keys, in its order. An issue with no child, an issue no row has, and the
-// empty key answer []. api's coverage read is this query.
+// empty key answer []. api's coverage read and the check of a move's subtree (api's
+// refuseSpecWriterOfMovedSubtree, spec_writer.go) are this query.
 func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, error) {
 	rows, err := IssueDescendantRows(ctx, q, key)
 	if err != nil {
@@ -76,12 +77,13 @@ func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, err
 // through q: its children, their children, and so on, bounded by IssueDepthCap like the ancestor
 // walk above, so the query terminates even if a raced reparent ever commits a cycle. Each row
 // holds the issue's parent, its status and its depth. The rows are in the order of their depth,
-// and at one depth in the order of their numbers. The key itself is not in the answer. An issue
-// with no child, an issue no row has, and the empty key answer []. This is the server's one
-// recursive descendant walk over whole subtrees: api's coverage read (IssueDescendants) and the
-// plan of a status change (api's planStatusChange) are this query. api's issueChildrenStatement is
-// a different read - one row per direct child, with a rollup over that child's own subtree - and
-// stays its own.
+// nearest first, and at one depth in the order of their projects and numbers. The key itself is
+// not in the answer. An issue with no child, an issue no row has, and the empty key answer [].
+// This is the server's one recursive descendant walk over whole subtrees: api's coverage read
+// and the check of a move's subtree (api's refuseSpecWriterOfMovedSubtree, spec_writer.go), which
+// read the keys (IssueDescendants), and the plan of a status change (api's planStatusChange) are
+// this query. api's issueChildrenStatement is a different read - one row per direct child, with a
+// rollup over that child's own subtree - and stays its own.
 //
 // The walk carries each issue's project and number, which its order needs, from the row it reads
 // already, rather than join its keys back to issues: the planner has no estimate of a recursive

@@ -75,9 +75,10 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *htt
 
 func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.Project, error) {
 	var project model.Project
-	if err := q.QueryRow(ctx, `select key, name, created_at from projects where key = $1`, key).Scan(
+	if err := q.QueryRow(ctx, `select key, name, proven_sessions, created_at from projects where key = $1`, key).Scan(
 		&project.Key,
 		&project.Name,
+		&project.ProvenSessions,
 		&project.CreatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

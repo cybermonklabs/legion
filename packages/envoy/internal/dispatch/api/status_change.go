@@ -432,6 +432,16 @@ func (s *server) planStatusChangeUnderLocks(
 	if err != nil {
 		return statusChangePlan{}, nil, err
 	}
+	// The check of who writes an issue Legion runs (spec_writer.go), for every step of the plan
+	// under the plan's locks and before any step writes, so a call whose later step the check
+	// refuses writes no earlier step either. Each step's writeIssue checks again under its own
+	// locks.
+	specWriter := writer.specWriter()
+	for _, step := range writes.steps {
+		if err := refuseSpecWriterOfIssueWrite(ctx, tx, specWriter, step); err != nil {
+			return statusChangePlan{}, nil, err
+		}
+	}
 	return statusChangePlan{named: named, steps: steps, conflict: conflict}, nil, nil
 }
 

@@ -372,6 +372,7 @@ async function renderMappings(server: MappingServer): Promise<{
       key,
       name: key,
       open_asks: 0,
+      proven_sessions: false,
     }))
   );
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
@@ -591,6 +592,7 @@ test("a mapping removal the reader stopped says Retry makes it again, not that i
       key: "CORE",
       name: "Core",
       open_asks: 0,
+      proven_sessions: false,
     },
   ]);
   unrelated.listRepoProjects.mockResolvedValue([
@@ -648,6 +650,7 @@ test("a mapping save the reader stopped says Retry sends it again, not that it f
       key: "CORE",
       name: "Core",
       open_asks: 0,
+      proven_sessions: false,
     },
   ]);
   unrelated.listRepoProjects.mockResolvedValue([

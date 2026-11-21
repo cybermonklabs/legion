@@ -21,6 +21,7 @@ const core: Project = {
   name: "Core",
   open_asks: 0,
   gated_steps: [],
+  proven_sessions: false,
 };
 
 // Dispatch made the project and lost its answer (`409 KEY_COMMITTED`): the form lets go of the key

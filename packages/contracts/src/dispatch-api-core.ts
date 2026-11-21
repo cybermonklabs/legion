@@ -254,6 +254,11 @@ export const ProjectSchema = z
      *  gates nothing and one that has not published yet alike: neither holds a step waiting for
      *  a person. */
     gated_steps: z.array(z.enum(GATED_STEPS)).optional(),
+    /** Whether the project needs a credential that proves the session: when it is on, an
+     *  architect's write of an issue's spec or Verification document passes only on a credential
+     *  that proves the architect's session, and a role-holder publication only on one that proves
+     *  `legion-daemon:<project>`. Off by default. Dispatch always answers it. */
+    proven_sessions: z.boolean(),
     created_at: z.string(),
   })
   .readonly();

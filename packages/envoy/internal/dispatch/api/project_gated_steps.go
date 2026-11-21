@@ -110,11 +110,13 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The update returns the setting too, read under the owner lock, so the event carries the
+	// row as this write left it and not as loadProject read it before the lock.
 	if err := tx.QueryRow(r.Context(), `
 		update projects set gated_steps = $2
 		where key = $1 and gated_steps is distinct from $2
-		returning gated_steps
-	`, project.Key, steps).Scan(&project.GatedSteps); err != nil {
+		returning gated_steps, proven_sessions
+	`, project.Key, steps).Scan(&project.GatedSteps, &project.ProvenSessions); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// The deployment published the list the row already holds. Nothing changed, so
 			// nothing is written and no event is appended; the answer is still the stored row.

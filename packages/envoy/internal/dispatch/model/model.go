@@ -278,8 +278,15 @@ type Project struct {
 	// person must approve before the tree's work runs. The empty list is a deployment that
 	// gates nothing and a deployment that has not published yet alike: neither holds a step
 	// waiting for a person, so a reader need not tell them apart.
-	GatedSteps []string  `json:"gated_steps"`
-	CreatedAt  time.Time `json:"created_at"`
+	GatedSteps []string `json:"gated_steps"`
+	// ProvenSessions is the project's setting that a session's credential must prove the
+	// session: when it is on, an architect's write of an issue's spec or Verification document
+	// passes only on a credential that proves the architect's session, and a role-holder
+	// publication only on one that proves legion-daemon:<project>
+	// (PUT and DELETE /api/v1/projects/{key}/proven-sessions). Off by default, and always
+	// present, so a reader never has to tell an absent setting from one that is off.
+	ProvenSessions bool      `json:"proven_sessions"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // GatedStepDecisions, GatedStepCriteria and GatedStepSpec are the three design-gate steps
