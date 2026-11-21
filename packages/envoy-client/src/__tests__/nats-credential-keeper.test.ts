@@ -13,9 +13,10 @@ import { brokerCredential } from "../broker-credential";
 import {
   type BrokerNatsCredential,
   brokerNatsCredential,
+  brokerTokenRefusals,
   followNatsCredential,
   keepNatsCredential,
-  natsAdmissions,
+  type NatsAdmissions,
 } from "../nats-credential";
 import { natsBrokerStandIns } from "./broker-stand-ins";
 
@@ -93,7 +94,8 @@ function readerAtRest(fake: { readonly drained: () => boolean }): Promise<void> 
 /** `credential` with the time of each renewal the keeper asks of it kept in `asked`, and of each
  *  drop in `dropped`: what the keeper decides, apart from how long the trade and the reconnect
  *  after it take. Each is kept as the keeper calls it, so once a timer of the keeper's has run,
- *  what it asked is there. */
+ *  what it asked is there. A drop is the credential's own count's (`refused`), so it is read off
+ *  what `refused` answers. */
 function askedOf(credential: BrokerNatsCredential): {
   readonly credential: BrokerNatsCredential;
   readonly asked: number[];
@@ -110,11 +112,30 @@ function askedOf(credential: BrokerNatsCredential): {
         asked.push(Date.now());
         return credential.renew(signal, waitForReady);
       },
-      drop: () => {
-        dropped.push(Date.now());
-        credential.drop();
+      refused: (code) => {
+        const refusal = credential.refused(code);
+        if (refusal?.dropped === true) dropped.push(Date.now());
+        return refusal;
       },
     },
+  };
+}
+
+/** A stand-in credential that counts refusals as a credential does: its own count
+ *  (`brokerTokenRefusals`), started over at each admission. */
+function standIn(
+  parts: Omit<BrokerNatsCredential, "refused" | "admitted" | "admissions">
+): BrokerNatsCredential {
+  const count = brokerTokenRefusals(parts);
+  let admissions: NatsAdmissions = { count: 0, dialedAt: undefined };
+  return {
+    ...parts,
+    refused: count.refused,
+    admitted: (dialedAt) => {
+      admissions = { count: admissions.count + 1, dialedAt };
+      count.reset();
+    },
+    admissions: () => admissions,
   };
 }
 
@@ -343,7 +364,7 @@ describe("keepNatsCredential with a refused live token", () => {
     let generation = 0;
     let expiresAt = Date.now() + 10 * 3_600_000;
     const drops: number[] = [];
-    const credential: BrokerNatsCredential = {
+    const credential = standIn({
       ready: async () => {},
       renew: async () => {
         generation += 1;
@@ -357,7 +378,7 @@ describe("keepNatsCredential with a refused live token", () => {
       },
       tokenGeneration: () => generation,
       tokenSession: () => "ses_stand_in",
-    };
+    });
     const fake = fakeConnection(() => {});
     const warnings: string[] = [];
     const stop = keepNatsCredential(fake.connection, credential, (text) => warnings.push(text));
@@ -393,7 +414,7 @@ describe("keepNatsCredential with a refused live token", () => {
     let moving = false;
     const drops: number[] = [];
     const renewals: number[] = [];
-    const credential: BrokerNatsCredential = {
+    const credential = standIn({
       ready: async () => {},
       renew: async () => {
         renewals.push(Date.now());
@@ -406,7 +427,7 @@ describe("keepNatsCredential with a refused live token", () => {
       },
       tokenGeneration: () => drops.length,
       tokenSession: () => "ses_stand_in",
-    };
+    });
     const fake = fakeConnection(() => {});
     const warnings: string[] = [];
     const stop = keepNatsCredential(fake.connection, credential, (text) => warnings.push(text));
@@ -450,7 +471,7 @@ describe("keepNatsCredential with a refused live token", () => {
   function heldRenewals(expiresAt: number) {
     const state = { expiresAt, renewals: 0, drops: 0, generation: 0 };
     const pending: (() => void)[] = [];
-    const credential: BrokerNatsCredential = {
+    const credential = standIn({
       ready: async () => {},
       renew: () => {
         state.renewals += 1;
@@ -470,7 +491,7 @@ describe("keepNatsCredential with a refused live token", () => {
       },
       tokenGeneration: () => state.generation,
       tokenSession: () => "ses_stand_in",
-    };
+    });
     return { state, credential, land: () => pending.shift()?.() };
   }
 
@@ -645,12 +666,12 @@ describe("keepNatsCredential with a refused live token", () => {
       // The control: back, and refused twice again, is a new outage, with its one drop. The
       // keeper notes the admission, which the session's redial handler reads too
       // (`brokerRedialDelays`).
-      expect(natsAdmissions(credential).count).toBe(0);
+      expect(credential.admissions().count).toBe(0);
       fake.push("reconnect");
       fake.push("error", "AUTHORIZATION_VIOLATION");
       fake.push("error", "AUTHORIZATION_VIOLATION");
       await readerAtRest(fake);
-      expect(natsAdmissions(credential).count).toBe(1);
+      expect(credential.admissions().count).toBe(1);
       expect(dropped.length).toBe(2);
     } finally {
       stop();
@@ -747,4 +768,30 @@ describe("followNatsCredential within a bound", () => {
     expect(fake.reconnects.length).toBe(1);
     expect(fake.readerStopped()).toBe(true);
   }, 15_000);
+});
+
+// The credential owns its one count, which its keeper and every dial that opens its connection
+// read through `refused`, so a refusal the keeper read and one a dial read are two refusals of one
+// token, and a session refused pass after pass drops one token for the outage.
+describe("a broker credential's own count of refusals", () => {
+  test("drops the token at its second refusal once for the session, and again only after an admission", async () => {
+    const broker = stubBroker(600);
+    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_count");
+    await credential.ready();
+    const refused = () => credential.refused("AUTHORIZATION_VIOLATION");
+    expect(refused()).toEqual({ droppedBefore: false, dropped: false });
+    expect(refused()).toEqual({ droppedBefore: false, dropped: true });
+    // The trade the drop asks for lands the next token, which the hub refuses as it did the first:
+    // twice, and kept.
+    await credential.renew();
+    expect(refused()).toEqual({ droppedBefore: true, dropped: false });
+    expect(refused()).toEqual({ droppedBefore: true, dropped: false });
+    expect(broker.state.minted.length).toBe(2);
+    // A connection is admitted: the count starts over, and the redial handler reads the admission.
+    expect(credential.admissions()).toEqual({ count: 0, dialedAt: undefined });
+    credential.admitted(1_234);
+    expect(credential.admissions()).toEqual({ count: 1, dialedAt: 1_234 });
+    expect(refused()).toEqual({ droppedBefore: false, dropped: false });
+    expect(refused()).toEqual({ droppedBefore: false, dropped: true });
+  });
 });

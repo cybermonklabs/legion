@@ -29,7 +29,7 @@ import {
   type BrokerNatsCredential,
   brokerNatsCredential,
   followNatsCredential,
-  noteNatsAdmission,
+  type NatsAdmissions,
 } from "../nats-credential";
 import { natsBrokerStandIns } from "./broker-stand-ins";
 import { type AuthHub, startAuthHub } from "./fake-nats-server";
@@ -44,10 +44,12 @@ function handled(draw: () => number) {
   let generation = 0;
   let session = "ses_a";
   let presented = true;
+  let admissions: NatsAdmissions = { count: 0, dialedAt: undefined };
   const credential: RedialCredential = {
     needsReconnect: () => !presented,
     tokenGeneration: () => generation,
     tokenSession: () => session,
+    admissions: () => admissions,
   };
   const handler = brokerRedialDelays(credential, draw, () => at);
   return {
@@ -67,10 +69,13 @@ function handled(draw: () => number) {
       session = forSession;
       presented = false;
     },
-    /** A connection presenting the token is admitted (`noteNatsAdmission`): by the keeper at a
-     *  reconnect, or by `connectNats` at the dial `dialedMs` in. */
+    /** A connection presenting the token is admitted (`BrokerNatsCredential.admitted`): by the
+     *  keeper at a reconnect, or by `connectNats` at the dial `dialedMs` in. */
     admit(dialedMs?: number) {
-      noteNatsAdmission(credential, dialedMs === undefined ? undefined : 1_000_000 + dialedMs);
+      admissions = {
+        count: admissions.count + 1,
+        dialedAt: dialedMs === undefined ? undefined : 1_000_000 + dialedMs,
+      };
     },
   };
 }
@@ -259,7 +264,7 @@ describe("brokerRedialDelays", () => {
     // The first dial: the next is due 2 s on.
     expect(clock.ask(0)).toBe(0);
     // connectNats dials again a second on: a new nats.js connection, which dials whatever the
-    // answer, and that dial is admitted (`noteNatsAdmission`, with the dial's time).
+    // answer, and that dial is admitted (`BrokerNatsCredential.admitted`, with the dial's time).
     expect(clock.ask(1_000)).toBe(2_000);
     clock.admit(1_000);
     // Lost half a second later: the answer counts from that dial, as nats.js does from its own
@@ -301,6 +306,7 @@ const untraded = {
     needsReconnect: () => false,
     tokenGeneration: () => 0,
     tokenSession: () => "ses_a",
+    admissions: () => ({ count: 0, dialedAt: undefined }),
   } as unknown as BrokerNatsCredential,
 } as const;
 
@@ -385,9 +391,10 @@ interface OutageFixture {
 /**
  * The outage every row of the describe below reads, run once: nine clients on one hub, each
  * presenting its own broker token, are refused until the hub has refused each one that keeps
- * redialing three times (about 12 s) and then admitted, and six of them switch
- * sessions. Real time, on purpose: what is under test is nats.js's own redial loop, which sleeps
- * on the platform's timers between the handler's answers. Every draw is fixed. The handler's
+ * redialing three times (about 12 s) and then admitted, and six of them switch sessions. Real
+ * time, on purpose: what is under test is nats.js's own redial loop, which sleeps on the
+ * platform's timers between the handler's answers. Every draw of this change's handlers is fixed;
+ * the flat control keeps nats.js's own 0-100 ms jitter, which its row does not read. The handler's
  * clock is moved past the outage gap at the drop, so the drop starts an outage as one does after a
  * connection that lived a while, without the run waiting a minute. The hub and each connection go
  * into `fixture` as each opens, for the teardown, which owns them.
@@ -432,7 +439,7 @@ async function runOutage(fixture: OutageFixture): Promise<Outage> {
         reconnected.push(Date.now());
         // As the keeper does at each reconnect; the keeper itself is not run, since its drop of a
         // token refused twice would move each client's token while the hub refuses.
-        noteNatsAdmission(credential);
+        credential.admitted();
       }
     })();
     const closed = connection.closed().then((error) => ({ at: Date.now(), error }));
@@ -464,16 +471,31 @@ async function runOutage(fixture: OutageFixture): Promise<Outage> {
     reconnectDelayHandler: brokerRedialDelays(credential, () => 0, clock),
   }));
   // A switch once the session is back, and its control, a handler that never sees the switch's
-  // token: at the lowest waits both redial at once, at 2 s, 6 s and 14 s, the last admitted, and
-  // the next is due 10 s after it, past the 8 s the switch gives the connection to come back.
+  // token. Both draw the lowest waits until they are back, so both redial at once, at 2 s, 6 s and
+  // 14 s, the last admitted. The switching session's next is due 10 s after it; the control's
+  // draws its highest from there, so its next is 20 s on, about 12 s after its switch gives up at
+  // 8 s, which no slow trade or poll can close.
   const switching = await dial("redial-switch", (options, credential) => ({
     ...options,
     reconnectDelayHandler: brokerRedialDelays(credential, () => 0, clock),
   }));
-  const blind = { needsReconnect: () => false, tokenGeneration: () => 0, tokenSession: () => "" };
+  const blind: RedialCredential = {
+    needsReconnect: () => false,
+    tokenGeneration: () => 0,
+    tokenSession: () => "",
+    admissions: () => ({ count: 0, dialedAt: undefined }),
+  };
   const switchingBlind = await dial("redial-switch-blind", (options) => ({
     ...options,
-    reconnectDelayHandler: brokerRedialDelays(blind, () => 0, clock),
+    // The lowest draw for its first three waits, then the highest.
+    reconnectDelayHandler: brokerRedialDelays(
+      blind,
+      (() => {
+        let draws = 0;
+        return () => (++draws <= 3 ? 0 : 1 - 1e-12);
+      })(),
+      clock
+    ),
   }));
   // Switches while the session waits: at the highest waits each redials at once, at 4 s and at
   // 12 s, and the next is due at 28 s. R switches 200 ms after the hub admits again, and once
@@ -492,13 +514,14 @@ async function runOutage(fixture: OutageFixture): Promise<Outage> {
   }));
   const rUnseen = await dial("redial-mid-wait-unseen", (options, credential) => ({
     ...options,
-    // Another object than the credential the admissions are noted for, and one session for every
-    // token.
+    // Its own admissions, which nobody notes (the keeper's and `connectNats`' go to the
+    // credential), and one session for every token.
     reconnectDelayHandler: brokerRedialDelays(
       {
         needsReconnect: () => credential.needsReconnect(),
         tokenGeneration: () => credential.tokenGeneration(),
         tokenSession: () => "",
+        admissions: () => ({ count: 0, dialedAt: undefined }),
       },
       highest,
       clock
@@ -700,11 +723,10 @@ describe("a broker-token session's first dials refused by its hub", () => {
     await credential.ready();
     const presenting = { kind: "broker", broker: credential } as const;
     /** One pass's `connectNats`, on the channel server's plan (no budget), ended by its caller once
-     *  `dials` dials began. Its waits are recorded, not slept: the next dial waits only for a live
-     *  token, which the trade a drop started brings. */
+     *  `dials` dials began. Its waits are not slept, and `nats-dial-retry.test.ts` holds them: the
+     *  next dial waits only for a live token, which the trade a drop started brings. */
     const pass = async (dials: number) => {
       let began = 0;
-      const delays: number[] = [];
       const error = await connectNats(
         (options) => {
           began += 1;
@@ -717,26 +739,22 @@ describe("a broker-token session's first dials refused by its hub", () => {
           random: () => 0,
           delay: () => credential.ready(),
           stopped: () => began >= dials,
-          onRetry: (_error, delayMs) => delays.push(delayMs),
         }
       ).then(
         () => undefined,
         (failed: unknown) => failed
       );
-      return { code: (error as { code?: unknown } | undefined)?.code, delays };
+      return (error as { code?: unknown } | undefined)?.code;
     };
     try {
       const first = await pass(5);
       const second = await pass(3);
       const trace = JSON.stringify(hub.answered);
-      expect(first, trace).toEqual({
-        code: "AUTHORIZATION_VIOLATION",
-        delays: [2_000, 4_000, 8_000, 10_000],
-      });
-      expect(second, trace).toEqual({ code: "AUTHORIZATION_VIOLATION", delays: [2_000, 4_000] });
+      expect(first, trace).toBe("AUTHORIZATION_VIOLATION");
+      expect(second, trace).toBe("AUTHORIZATION_VIOLATION");
       // The first token is refused twice, dropped and traded again at once, so the third dial
-      // presents the next; that one is refused twice in the first pass and three times in the
-      // second, and kept: one drop for the session until a dial is admitted.
+      // presents the next; that one is refused three times in each pass, and kept: one drop for
+      // the session until a dial is admitted.
       expect(
         hub.answered.map((one) => one.token),
         trace

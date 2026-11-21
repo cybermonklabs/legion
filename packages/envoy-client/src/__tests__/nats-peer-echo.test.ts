@@ -65,6 +65,9 @@ describe("a peer that is no nats-server", () => {
       drop: () => {},
       tokenGeneration: () => 0,
       tokenSession: () => undefined,
+      refused: () => undefined,
+      admitted: () => {},
+      admissions: () => ({ count: 0, dialedAt: undefined }),
       authenticator: () => ({ auth_token: token, sig: "the-proof" }),
     };
     capture();

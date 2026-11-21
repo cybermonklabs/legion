@@ -115,6 +115,9 @@ describe("natsAuthOptions", () => {
       drop: () => {},
       tokenGeneration: () => 0,
       tokenSession: () => undefined,
+      refused: () => undefined,
+      admitted: () => {},
+      admissions: () => ({ count: 0, dialedAt: undefined }),
       authenticator: (nonce?: string) => {
         asked.push(nonce);
         return { auth_token: presented, sig: "the-proof" };
