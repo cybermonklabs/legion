@@ -141,13 +141,14 @@ unmatched_selects=$(with_verdicts "$selects" \
 # the environment is the ci-ok job's own, pointed at the stand-in above: the head its check runs
 # are on, the run they must belong to, and gh-read.sh's retry delay turned off. GITHUB_STEP_SUMMARY
 # is a fresh file of each case, never the summary of the job running this harness, and
-# step_summary is what ci-ok.sh wrote to it.
+# step_summary is what ci-ok.sh wrote to it. PARTIAL is `partial` when a case sets it, and
+# otherwise the empty list ci.yaml's ci-ok job hands a labelled pull request and every other event.
 run_ci_ok() {
   : > "$work/step-summary"
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
     GH_RETRY_SECONDS=0 HEAD_SHA=abc123 NEEDS=$1 EVENT=${2:-pull_request} SELECTED_BY=$selected_by \
-    PULL_REQUEST_ONLY=$pull_request_only ALWAYS_RUN=${3:-$always_run} \
+    PULL_REQUEST_ONLY=$pull_request_only ALWAYS_RUN=${3:-$always_run} PARTIAL=${partial:-[]} \
     GITHUB_STEP_SUMMARY="$work/step-summary" "$script_dir/ci-ok.sh" 2>&1)
   status=$?
   set -e
@@ -246,6 +247,7 @@ check "the job summary names docs as not run at this head" \
   "$(contains "$step_summary" "^- $not_run_docs\$")"
 check "the job summary lists the jobs that ran and passed apart from it" \
   "$(contains "$step_summary" '^\*\*Ran and passed at this head:\*\* changes, lint, typecheck, worker-image$')"
+check "the job summary's headline says the verdict passed" "$(contains "$step_summary" '^### ci-ok: success, ')"
 
 echo "case: docs held back by the label beside a selected job that failed"
 # A red ci-ok sends its reader to the failure, and the not-run line still says docs did not run,
@@ -256,6 +258,31 @@ check "still names docs as not run at this head" "$(contains "$out" "^$not_run_d
 check "and so does the job summary" "$(contains "$step_summary" "^- $not_run_docs\$")"
 check "which leaves the failed job out of the jobs that ran and passed" \
   "$(contains "$step_summary" '^\*\*Ran and passed at this head:\*\* changes, lint, worker-image$')"
+check "the job summary's headline says the verdict failed" "$(contains "$step_summary" '^### ci-ok: failure, ')"
+
+echo "case: a job that ran only part of itself without the label, which PARTIAL names"
+# dispatch-browser runs only its two-project pull-request lane on a pull request without full-ci
+# and its full lane in the merge queue, so its success is no more the full lane's pass than a
+# skip is. ci.yaml's ci-ok job hands such jobs in PARTIAL; typecheck stands for one here.
+partial='["typecheck"]'
+run_ci_ok "$(needs success "$selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
+partial=
+ran_in_part='ran in part at this head: typecheck (selected by paths, its full lane gated by full-ci; runs in the merge queue)'
+check "passes" "$(is "$status" 0)"
+check "names it after the pass line as run in part" \
+  "$(contains "$(sed -n '/^changes and lint succeeded/,$p' <<<"$out")" "^$ran_in_part\$")"
+check "the job summary names it as run in part" "$(contains "$step_summary" "^- $ran_in_part\$")"
+check "and leaves it out of the jobs that ran and passed" \
+  "$(contains "$step_summary" '^\*\*Ran and passed at this head:\*\* changes, lint, worker-image$')"
+check "names no job as not run at this head" "$(is "$(contains "$out" 'not run at this head')" false)"
+
+echo "case: a job PARTIAL names that did not run is not named as run in part"
+partial='["envoy-client"]'
+run_ci_ok "$(needs success "$selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
+partial=
+check "passes" "$(is "$status" 0)"
+check "names no job as run in part" "$(is "$(contains "$out" 'ran in part at this head')" false)"
+check "writes no job summary" "$(is "$step_summary" "")"
 
 echo "case: docs' paths did not match on a pull request, where the label would have changed nothing"
 run_ci_ok "$(needs success "$unmatched_selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"

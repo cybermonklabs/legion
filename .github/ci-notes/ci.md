@@ -1368,8 +1368,13 @@ A job the label held back did not run at this head, and ci-ok passes over its sk
 ci-ok.sh names it once more after its verdict, pass or fail, on a line of its own:
 `not run at this head: <job> (selected by paths, gated by full-ci; runs in the merge queue)`.
 The same lines go to the ci-ok job's summary, apart from the jobs that ran and passed, so a
-green ci-ok on a pull request without the label is not read as those jobs passing. A run
-in which the label held nothing back writes no summary.
+green ci-ok on a pull request without the label is not read as those jobs passing.
+dispatch-browser runs there too, but only its two-project pull-request lane
+(.github/ci-notes/ci.md#what-the-lane-input-reads), so the ci-ok job hands ci-ok.sh its name
+in PARTIAL, built from the same label term as its `lane:` input, and a success of it is named
+`ran in part at this head: dispatch-browser (selected by paths, its full lane gated by full-ci;
+runs in the merge queue)` and left out of the jobs that ran and passed. A run in which the
+label held nothing back and trimmed nothing writes no summary.
 
 ## On pull_request dorny/paths-filter reads the file list from the API and reads
 
