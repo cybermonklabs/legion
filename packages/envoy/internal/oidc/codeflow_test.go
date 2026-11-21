@@ -301,6 +301,30 @@ func TestCodeFlowExchangeReadsAnAnswerThatIsNoRefusalAsTheIssuerUnavailable(t *t
 	}
 }
 
+// A code exchange whose own context ends before the token endpoint answers - the browser left the
+// callback - fails with that context's error, not ErrIssuerUnavailable: the issuer was not shown
+// unable to answer, so a caller writes no outage for it. The flow has discovered its issuer, so the
+// context ends only the token request.
+func TestCodeFlowExchangeTheCallerLeftIsNoIssuerOutage(t *testing.T) {
+	issuer, flow := newCodeFlowForDomain(t, flowDomain)
+	if err := flow.Discover(context.Background()); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := flow.Exchange(ctx, flowRedirect, "a-code", "a-nonce")
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrIssuerUnavailable) {
+		t.Fatalf("Exchange whose context ended: err = %v, want context.Canceled and not ErrIssuerUnavailable", err)
+	}
+	_, err = flow.OnlineExchange(ctx, flowRedirect, "a-code", onlineSignIn("a-nonce"))
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrIssuerUnavailable) {
+		t.Fatalf("OnlineExchange whose context ended: err = %v, want context.Canceled and not ErrIssuerUnavailable", err)
+	}
+	if got := issuer.TokenRequests(); len(got) != 0 {
+		t.Fatalf("the token endpoint received %q, want nothing: the context had ended", got)
+	}
+}
+
 func TestCodeFlowRefreshReadsThePersonsCurrentClaims(t *testing.T) {
 	issuer, flow := newCodeFlowFor(t)
 	issuer.SignInAs(personClaims("dispatch-members"))
