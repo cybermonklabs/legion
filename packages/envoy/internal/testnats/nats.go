@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -739,44 +740,57 @@ func (b waitEnd) pause() { time.Sleep(b.step(retryInterval)) }
 // String is the end, as a wait's failure names it.
 func (b waitEnd) String() string { return b.end.Format(time.RFC3339Nano) }
 
-// dial is the options of one connect of the wait: each server's handshake bounded by dialTimeout
-// cut to what is left (step), and, when the wait has an end, every server's dial and handshake
-// ending by it. nats.go bounds each server's handshake by its Timeout alone and tries each server
-// of a comma-separated URL in turn, so a URL of three servers that accept and say nothing would
-// otherwise spend what is left three times over.
-func (b waitEnd) dial() []natsgo.Option {
-	options := []natsgo.Option{natsgo.Timeout(b.step(dialTimeout)), natsgo.NoReconnect()}
-	if b.bounded {
-		options = append(options, natsgo.SetCustomDialer(endDialer{end: b.end}))
+// dial is the options of one connect of the wait, and what its caller runs once the connect has
+// returned a connection (retire). Each server's handshake is bounded by dialTimeout cut to what
+// is left (step), and, when the wait has an end, every server's dial and handshake end by it:
+// nats.go bounds each server's handshake by its Timeout alone and tries each server of a
+// comma-separated URL in turn, so a URL of three servers that accept and say nothing would
+// otherwise spend what is left three times over. retire lifts the end from the connections the
+// connect made: the wait's end bounds the connect, not the connection the test goes on to use.
+func (b waitEnd) dial() (options []natsgo.Option, retire func()) {
+	options = []natsgo.Option{natsgo.Timeout(b.step(dialTimeout)), natsgo.NoReconnect()}
+	if !b.bounded {
+		return options, func() {}
 	}
-	return options
+	dialer := &endDialer{end: b.end}
+	return append(options, natsgo.SetCustomDialer(dialer)), func() { dialer.retired.Store(true) }
 }
 
-// endDialer dials a server of a connect by end, and gives the connection back with every deadline
-// nats.go sets on it during the handshake capped at end (endConn).
-type endDialer struct{ end time.Time }
+// endDialer dials a server of a connect by end, and gives the connection back with a deadline of
+// end already set on it, and with every deadline nats.go sets on it capped at end (endConn) until
+// the connect has returned (retired). The deadline set at the dial bounds what nats.go does before
+// it sets one of its own: a wss:// URL's TLS handshake, which it runs before its handshake's
+// deadline. nats.go clears its deadline, and with it that one, once its handshake is done.
+type endDialer struct {
+	end     time.Time
+	retired atomic.Bool
+}
 
-func (d endDialer) Dial(network, address string) (net.Conn, error) {
+func (d *endDialer) Dial(network, address string) (net.Conn, error) {
 	conn, err := (&net.Dialer{Timeout: dialTimeout, Deadline: d.end}).Dial(network, address)
 	if err != nil {
 		return nil, err
 	}
-	return endConn{Conn: conn, end: d.end}, nil
+	if err := conn.SetDeadline(d.end); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return endConn{Conn: conn, dialer: d}, nil
 }
 
-// endConn is a connection whose deadlines are capped at end. nats.go sets its handshake's deadline
-// (Timeout from now) and clears it, with the zero time, once the handshake is done; a cleared
-// deadline stays cleared, so a connection that connected is not cut at end.
+// endConn is a connection whose deadlines are capped at its dialer's end until the connect that
+// made it has returned. A zero deadline, a cleared one, stays cleared. After the connect, nats.go
+// sets a write deadline at each write of the connection the test uses, and those stand as set.
 type endConn struct {
 	net.Conn
-	end time.Time
+	dialer *endDialer
 }
 
 func (c endConn) capped(t time.Time) time.Time {
-	if t.IsZero() || t.Before(c.end) {
+	if t.IsZero() || c.dialer.retired.Load() || t.Before(c.dialer.end) {
 		return t
 	}
-	return c.end
+	return c.dialer.end
 }
 
 func (c endConn) SetDeadline(t time.Time) error     { return c.Conn.SetDeadline(c.capped(t)) }
@@ -1048,9 +1062,11 @@ func awaitAuth(t testing.TB, uri string, admit bool) {
 	t.Helper()
 	bound := boundOf(t)
 	for {
-		conn, err := dialNATS(uri, bound.dial()...)
+		options, retire := bound.dial()
+		conn, err := dialNATS(uri, options...)
 		switch {
 		case err == nil:
+			retire()
 			conn.Close()
 			if admit {
 				return
@@ -1115,8 +1131,10 @@ func Connect(t testing.TB, uri string) *natsgo.Conn {
 	var conn *natsgo.Conn
 	for {
 		var err error
-		conn, err = dialNATS(uri, bound.dial()...)
+		options, retire := bound.dial()
+		conn, err = dialNATS(uri, options...)
 		if err == nil {
+			retire()
 			break
 		}
 		if bound.over() {

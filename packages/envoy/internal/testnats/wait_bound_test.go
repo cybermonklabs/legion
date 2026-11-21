@@ -27,14 +27,20 @@ func (s shortTB) Deadline() (time.Time, bool) { return s.end, true }
 // heldWait runs wait on its own goroutine with a t whose deadline is twice window away, so the
 // wait's own end is window away, and returns that t once wait has returned or failed.
 func heldWait(t *testing.T, window time.Duration, wait func(testing.TB)) shortTB {
+	tb, done := startHeldWait(t, window, wait)
+	<-done
+	return tb
+}
+
+// startHeldWait is heldWait's start: the t and a channel closed once wait has returned or failed.
+func startHeldWait(t *testing.T, window time.Duration, wait func(testing.TB)) (shortTB, <-chan struct{}) {
 	tb := shortTB{fatalRecorder: &fatalRecorder{TB: t}, end: time.Now().Add(2 * window)}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		wait(tb)
 	}()
-	<-done
-	return tb
+	return tb, done
 }
 
 // probes is a server that never becomes ready, keeping each time it was asked to wait for.
@@ -168,6 +174,54 @@ func TestAConnectToSilentServersEndsWithTheWait(t *testing.T) {
 	}
 	if took >= 2*window {
 		t.Errorf("the connect to three silent servers failed after %s, past the test's deadline %s after it began", took, 2*window)
+	}
+}
+
+// A connect to a wss:// URL whose server accepts and sends nothing ends with the wait too: nats.go
+// runs a wss:// URL's TLS handshake before it sets its handshake's deadline, so only the deadline
+// the dial sets bounds it. The row gives the wait twice its window again before it calls the wait
+// lost, so a regression fails the row by name rather than hanging it to the binary's timeout; the
+// listener's cleanup then closes the held connection.
+func TestAConnectToASilentWebSocketServerEndsWithTheWait(t *testing.T) {
+	const window = 600 * time.Millisecond
+	url := strings.Replace(silentServers(t, 1), "nats://", "wss://", 1)
+	begun := time.Now()
+	tb, done := startHeldWait(t, window, func(tb testing.TB) { Connect(tb, url) })
+	select {
+	case <-done:
+	case <-time.After(4 * window):
+		t.Fatalf("a connect to a silent wss:// server was still running %s after it began, past the test's deadline %s after it began", 4*window, 2*window)
+	}
+	took := time.Since(begun)
+	if !strings.Contains(tb.message, "short of the test's deadline") {
+		t.Fatalf("a connect to a silent wss:// server failed with %q, want it to name the test's deadline", tb.message)
+	}
+	if took >= 2*window {
+		t.Errorf("the connect to a silent wss:// server failed after %s, past the test's deadline %s after it began", took, 2*window)
+	}
+}
+
+// A connection a wait made keeps working once the wait's end has passed: the end bounds the
+// connect, not the connection the test goes on to use. nats.go sets a write deadline at each write
+// of the connection, and a cap at the wait's end still in force past it would make every write
+// past the end time out. The row connects with 1 s left, then publishes and flushes 1.2 s after it
+// began, past the wait's end and short of the test's deadline.
+func TestAConnectionAWaitMadeKeepsWorkingPastTheWaitsEnd(t *testing.T) {
+	const window = time.Second
+	server := start(t, "", []string{"-js"})
+	begun := time.Now()
+	var conn *natsgo.Conn
+	tb := heldWait(t, window, func(tb testing.TB) { conn = Connect(tb, server.URL()) })
+	if tb.message != "" {
+		t.Fatalf("the connect failed: %s", tb.message)
+	}
+	defer conn.Close()
+	time.Sleep(time.Until(begun.Add(window + window/5)))
+	if err := conn.Publish("past.the.end", []byte("x")); err != nil {
+		t.Fatalf("publish past the wait's end: %v", err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush past the wait's end, %s after the connect began: %v", time.Since(begun).Round(time.Millisecond), err)
 	}
 }
 
