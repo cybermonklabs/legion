@@ -35,9 +35,8 @@ import (
 // So the rig takes an execution trace of the operation (runtime/trace) and reads, for the
 // goroutine that sends a window's statements, the time of each gap it spent runnable but not
 // running - waiting for the runtime to run it again - the time it spent waiting on something it
-// asked for (a sleep, a lock, a channel, the network) and the time it spent in a system call; and
-// how much of its runnable time its thread spent woken but waiting on the kernel's run queue,
-// which the thread's own clocks count as well (xidGoStates.Handoff).
+// asked for (a sleep, a lock, a channel, the network) and the time it spent in a system call
+// (XidGap.Made).
 
 // xidTrace is an execution trace Measure is taking, and the moment it started on both the
 // process's clock and the system's monotonic clock, which the trace's own clock is tied to.
@@ -167,18 +166,12 @@ type xidThreadRun struct {
 	g  exptrace.GoID
 }
 
-// xidProcStart is a P starting to run on a thread, and when the P last stopped before it.
-type xidProcStart struct {
-	at, stopped exptrace.Time
-}
-
 // xidTraceReading is the execution trace read back: each goroutine's state changes in time order,
-// each thread's goroutines in the order they started running on it, each thread's starts of a P,
-// and the tie between the trace's clock and the process's.
+// each thread's goroutines in the order they started running on it, and the tie between the
+// trace's clock and the process's.
 type xidTraceReading struct {
 	changes  map[exptrace.GoID][]xidGoStateChange
 	runs     map[int][]xidThreadRun
-	starts   map[int][]xidProcStart
 	baseTime time.Time
 	baseMono int64
 	snapshot exptrace.ClockSnapshot
@@ -209,11 +202,9 @@ func (x *xidTrace) read() (*xidTraceReading, error) {
 	reading := &xidTraceReading{
 		changes:  map[exptrace.GoID][]xidGoStateChange{},
 		runs:     map[int][]xidThreadRun{},
-		starts:   map[int][]xidProcStart{},
 		baseTime: x.baseTime,
 		baseMono: x.baseMono,
 	}
-	stopped := map[exptrace.ProcID]exptrace.Time{}
 	snapped := false
 	for {
 		event, err := reader.ReadEvent()
@@ -231,7 +222,7 @@ func (x *xidTrace) read() (*xidTraceReading, error) {
 				snapped = true
 			}
 		case exptrace.EventStateTransition:
-			reading.transition(event.StateTransition(), event.Time(), event.Thread(), stopped)
+			reading.transition(event.StateTransition(), event.Time(), event.Thread())
 		}
 	}
 	if !snapped {
@@ -241,39 +232,21 @@ func (x *xidTrace) read() (*xidTraceReading, error) {
 }
 
 // transition records one state transition of the trace, at, on thread: a goroutine's new state,
-// and its start on thread when it starts running there; a P's stop, kept in stopped, and its
-// start on thread, with the moment it last stopped. A transition from a state to that same state
-// changes nothing and is passed over: at each generation's start the trace writes every
-// goroutine's and every P's status as a transition from the state it was already in (x/exp/trace's
-// order.go), so an idle P's status there would otherwise read as a new stop, and a handoff that
-// spans a generation's start would read its run-queue wait (Handoff) from that moment rather than
-// from the P's real stop, and the gap would take that wait out twice.
-func (r *xidTraceReading) transition(change exptrace.StateTransition, at exptrace.Time, thread exptrace.ThreadID, stopped map[exptrace.ProcID]exptrace.Time) {
-	switch change.Resource.Kind {
-	case exptrace.ResourceGoroutine:
-		g := change.Resource.Goroutine()
-		from, to := change.Goroutine()
-		if from == to {
-			return
-		}
-		r.changes[g] = append(r.changes[g], xidGoStateChange{at: at, state: to})
-		if to == exptrace.GoRunning && thread != exptrace.NoThread {
-			r.runs[int(thread)] = append(r.runs[int(thread)], xidThreadRun{at: at, g: g})
-		}
-	case exptrace.ResourceProc:
-		p := change.Resource.Proc()
-		from, to := change.Proc()
-		if from == to {
-			return
-		}
-		switch to {
-		case exptrace.ProcIdle:
-			stopped[p] = at
-		case exptrace.ProcRunning:
-			if last, ok := stopped[p]; ok && thread != exptrace.NoThread {
-				r.starts[int(thread)] = append(r.starts[int(thread)], xidProcStart{at: at, stopped: last})
-			}
-		}
+// and its start on thread when it starts running there. A transition from a state to that same
+// state changes nothing and is passed over: at each generation's start the trace writes every
+// goroutine's status as a transition from the state it was already in (x/exp/trace's order.go).
+func (r *xidTraceReading) transition(change exptrace.StateTransition, at exptrace.Time, thread exptrace.ThreadID) {
+	if change.Resource.Kind != exptrace.ResourceGoroutine {
+		return
+	}
+	g := change.Resource.Goroutine()
+	from, to := change.Goroutine()
+	if from == to {
+		return
+	}
+	r.changes[g] = append(r.changes[g], xidGoStateChange{at: at, state: to})
+	if to == exptrace.GoRunning && thread != exptrace.NoThread {
+		r.runs[int(thread)] = append(r.runs[int(thread)], xidThreadRun{at: at, g: g})
 	}
 }
 
@@ -297,13 +270,6 @@ func (r *xidTraceReading) traceTime(moment time.Time) exptrace.Time {
 
 // goStates are the states of the goroutine running on thread at from, over from to to (xidGoStates).
 // ok is false when the trace shows no goroutine running on thread by from.
-//
-// Handoff is read off the thread's starts of a P. A goroutine locked to a thread is run again only
-// by that thread, after another thread hands it a P (runtime.startlockedm), which stops the P and
-// wakes the thread; the thread starts the P once the kernel gives it a CPU. So the time from that
-// P's stop to the thread's start of it, while the goroutine was runnable, is the thread waiting to
-// be run after the handoff: inside the goroutine's runnable time, and on the kernel's run queue,
-// where the thread's own clocks count it too.
 func (r *xidTraceReading) goStates(thread int, from, to time.Time) (xidGoStates, bool) {
 	start, end := r.traceTime(from), r.traceTime(to)
 	runs := r.runs[thread]
@@ -328,11 +294,6 @@ func (r *xidTraceReading) goStates(thread int, from, to time.Time) (xidGoStates,
 		switch change.state {
 		case exptrace.GoRunnable:
 			states.Runnable += segmentEnd.Sub(segmentStart)
-			for _, started := range r.starts[thread] {
-				if started.at > segmentStart && started.at <= segmentEnd {
-					states.Handoff += started.at.Sub(max(started.stopped, segmentStart))
-				}
-			}
 		case exptrace.GoWaiting:
 			states.Waiting += segmentEnd.Sub(segmentStart)
 		case exptrace.GoSyscall:

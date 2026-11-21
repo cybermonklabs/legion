@@ -238,29 +238,40 @@ func runRigTransaction(t *testing.T, database *store.Store, gap time.Duration) {
 // sleep: what the transaction does in Go while it holds its transaction id.
 func runRigTransactionDoing(t *testing.T, database *store.Store, between func()) {
 	t.Helper()
+	if err := rigTransactionDoing(database, func() error { between(); return nil }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// rigTransactionDoing is runRigTransactionDoing answering its failure, for a goroutine other than
+// the test's, which may not stop the test; between's error fails it too.
+func rigTransactionDoing(database *store.Store, between func() error) error {
 	ctx := storetest.MarkXid(context.Background())
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin: %v", err)
+		return fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	var count int
 	if err := tx.QueryRow(ctx, `select count(*) from projects`).Scan(&count); err != nil {
-		t.Fatalf("read before the write: %v", err)
+		return fmt.Errorf("read before the write: %w", err)
 	}
 	time.Sleep(20 * time.Millisecond)
 	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('RIG', 'Rig', 'alice')`); err != nil {
-		t.Fatalf("write: %v", err)
+		return fmt.Errorf("write: %w", err)
 	}
-	between()
+	if err := between(); err != nil {
+		return err
+	}
 	for range 2 {
 		if err := tx.QueryRow(ctx, `select count(*) from projects`).Scan(&count); err != nil {
-			t.Fatalf("read after the write: %v", err)
+			return fmt.Errorf("read after the write: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit: %v", err)
+		return fmt.Errorf("commit: %w", err)
 	}
+	return nil
 }
 
 // Settlement versions a document a person edited live: it renders the room, refreshes every open

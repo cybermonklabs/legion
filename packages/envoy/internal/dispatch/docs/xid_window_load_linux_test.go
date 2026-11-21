@@ -190,14 +190,22 @@ func (crowded *crowdedCPU) pin(t *testing.T) (unpin func()) {
 	if err := unix.SchedGetaffinity(0, &own); err != nil {
 		t.Fatalf("read this thread's CPUs: %v", err)
 	}
-	if err := unix.SchedSetaffinity(0, &crowded.cpu); err != nil {
-		t.Fatalf("pin this thread to the crowded CPU: %v", err)
+	if err := crowded.pinThread(); err != nil {
+		t.Fatal(err)
 	}
 	return func() {
 		if err := unix.SchedSetaffinity(0, &own); err != nil {
 			t.Errorf("give this thread back its CPUs: %v", err)
 		}
 	}
+}
+
+// pinThread pins this thread to the crowded CPU for good, for a goroutine other than the test's.
+func (crowded *crowdedCPU) pinThread() error {
+	if err := unix.SchedSetaffinity(0, &crowded.cpu); err != nil {
+		return fmt.Errorf("pin this thread to the crowded CPU: %w", err)
+	}
+	return nil
 }
 
 // hold locks the calling goroutine to its thread and pins the thread to the crowded CPU, and
@@ -296,47 +304,53 @@ func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
 const xidPlantedSleep = 8 * time.Millisecond
 
 // xidHandoffNice is the niceness the window's thread takes beside the crowding processes in
-// TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes, the lowest weight a thread may take without
-// privilege: woken, it cannot take the CPU from them, so it waits its turn on the run queue.
+// TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes: a weight low enough that, woken, it cannot
+// take the CPU from them, so it waits its turn on the run queue. SCHED_IDLE is lower still, and
+// needs no privilege either; niceness 19 is enough, its handoffs waiting 622 to 1,206 ms in 20 of 20
+// runs (2026-11-21).
 const xidHandoffNice = 19
 
 // A system call the code makes after the runtime hands its goroutine back is the code's time, and
-// the run-queue wait of that handoff is counted once. With one P, the window's goroutine yields
-// behind a spinning goroutine while its thread is pinned to a CPU other processes crowd, so when
-// the runtime hands the goroutine back the woken thread waits its turn on that CPU: a wait its
-// scheduler clocks count (Runnable) and the trace counts as the goroutine's runnable time
-// (GoRunnable), the same time twice. Then the goroutine sleeps 8 ms in a system call (nanosleep).
-// The gap must read at least the 8 ms made, and break D6. The formula before Overlap took the
-// handoff's run-queue wait out twice and left the system call out of its floor, and read such a
-// gap at 3.1 to 6.6 ms made. The thread runs at niceness 19 beside the crowding processes, so
-// woken it cannot take the CPU from them and its handoff waits on the run queue every time: one
-// run, which fails if the handoff waited under 1 ms, as a run that planted no wait proves
-// nothing. The window runs on a goroutine of its own that ends locked to its thread, so the
-// runtime ends that thread and none of the process's later work runs at that niceness.
+// no wait for a CPU around it is taken out of it. With one P, the window's goroutine yields behind
+// a spinning goroutine while its thread is pinned to a CPU other processes crowd, so when the
+// runtime hands the goroutine back the woken thread waits its turn on that CPU, at niceness 19
+// for a second, all of it runnable on the runtime too; then the goroutine sleeps 8 ms in a system
+// call (nanosleep). The gap must read at least the 8 ms made, and break D6. A formula that took a
+// run-queue wait out of the gap wherever the clocks put it read one such gap at 0.225 ms made (a
+// tester's run, 2026-11-21), a D6 break unseen: the wait the trace tied to no handoff came out of
+// the system call. Made takes no wait for a CPU out of the thread's sleep (storetest.XidGap.Made).
+// One run, which fails if the thread and the runtime did not both wait 1 ms in the gap, as a run
+// that planted no wait proves nothing. The window runs on a goroutine of its own that ends locked
+// to its thread, so the runtime ends that thread and none of the process's later work runs at that
+// niceness; that goroutine reports its failures to the test's, which alone may stop the test.
 func TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	_, database, tracer := xidService(t)
 	crowded := crowdACPU(t)
 	report := tracer.Measure(t, database.Pool, func() {
-		done := make(chan struct{})
+		failed := make(chan error, 1)
 		go func() {
-			defer close(done)
 			// Never unlocked: the goroutine ends locked, and the runtime ends its thread with it.
 			runtime.LockOSThread()
-			runRigTransactionDoing(t, database, func() {
-				crowded.pin(t)
+			failed <- rigTransactionDoing(database, func() error {
+				if err := crowded.pinThread(); err != nil {
+					return err
+				}
 				if err := unix.Setpriority(unix.PRIO_PROCESS, 0, xidHandoffNice); err != nil {
-					t.Errorf("lower this thread to niceness %d: %v", xidHandoffNice, err)
+					return fmt.Errorf("lower this thread to niceness %d: %w", xidHandoffNice, err)
 				}
 				yieldBehindASpinner()
 				sleep := unix.NsecToTimespec(int64(xidPlantedSleep))
 				if err := unix.Nanosleep(&sleep, nil); err != nil {
-					t.Errorf("sleep %s: %v", xidPlantedSleep, err)
+					return fmt.Errorf("sleep %s: %w", xidPlantedSleep, err)
 				}
+				return nil
 			})
 		}()
-		<-done
+		if err := <-failed; err != nil {
+			t.Fatal(err)
+		}
 	})
 	crowded.stop()
 	if len(report.Problems) > 0 || len(report.Windows) != 1 {
@@ -344,9 +358,9 @@ func TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes(t *testing.T) {
 	}
 	window := report.Windows[0]
 	gap := window.Gaps[0]
-	if gap.Overlap < time.Millisecond {
-		t.Fatalf("the handoff waited %s on the crowded CPU, not 1 ms: the plant did not make the wait both clocks count, so this run proves nothing\n%s",
-			storetest.XidMillis(gap.Overlap), window.Detail())
+	if queued := min(gap.GoRunnable, gap.Runnable); queued < time.Millisecond {
+		t.Fatalf("the thread waited %s for a CPU and its goroutine %s for the runtime, not 1 ms each: the plant made no long runtime queue, so this run proves nothing\n%s",
+			storetest.XidMillis(gap.Runnable), storetest.XidMillis(gap.GoRunnable), window.Detail())
 	}
 	if made := gap.Made(); made < xidPlantedSleep {
 		t.Fatalf("a %s sleep after a handoff read %s made, want at least the sleep\n%s", xidPlantedSleep, storetest.XidMillis(made), window.Detail())
@@ -355,7 +369,7 @@ func TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes(t *testing.T) {
 		!strings.Contains(err.Error(), "follows statement 0: insert into projects") {
 		t.Fatalf("a %s sleep after a handoff: verdict %v, want a D6 violation after the insert\n%s", xidPlantedSleep, err, window.Detail())
 	}
-	t.Logf("the handoff waited %s on the crowded CPU\n%s\n%s", storetest.XidMillis(gap.Overlap), window.Summary(), window.Detail())
+	t.Logf("%s\n%s", window.Summary(), window.Detail())
 }
 
 // yieldBehindASpinner starts a goroutine that spins until told to stop and yields to it until it

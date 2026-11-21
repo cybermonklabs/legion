@@ -11,9 +11,7 @@ import (
 
 // A gap's goroutine states are read off the trace for the goroutine that was running on the
 // gap's thread when the gap began: its time runnable, waiting and in a system call, clipped to the
-// gap, and the part of its runnable time its thread spent between a P's stop and its own start of
-// that P - the run queue after a handoff. Another goroutine's states, the states before or after
-// the gap, and a start of a P while the goroutine was not runnable are not the gap's.
+// gap. Another goroutine's states, and the states before or after the gap, are not the gap's.
 func TestAGapsGoroutineStatesAreReadForItsThreadAndItsSpan(t *testing.T) {
 	base := time.Now()
 	at := func(ms float64) exptrace.Time { return exptrace.Time(ms * float64(time.Millisecond)) }
@@ -24,13 +22,6 @@ func TestAGapsGoroutineStatesAreReadForItsThreadAndItsSpan(t *testing.T) {
 		runs: map[int][]xidThreadRun{
 			7: {{at: at(0), g: 1}},
 			8: {{at: at(0), g: 2}},
-		},
-		starts: map[int][]xidProcStart{
-			7: {
-				{at: at(4.5), stopped: at(1)},   // handed back 2.5 ms into the first runnable stretch
-				{at: at(10), stopped: at(9.5)},  // handed back 0.5 ms after the P stopped
-				{at: at(11.6), stopped: at(11)}, // while it ran: not a handoff of the gap
-			},
 		},
 		changes: map[exptrace.GoID][]xidGoStateChange{
 			1: {
@@ -63,7 +54,6 @@ func TestAGapsGoroutineStatesAreReadForItsThreadAndItsSpan(t *testing.T) {
 		{"runnable", states.Runnable, 4 * time.Millisecond, "2 to 5 ms preempted and 9 to 10 ms woken"},
 		{"waiting", states.Waiting, 3 * time.Millisecond, "6 to 9 ms asleep"},
 		{"in a system call", states.Syscall, 500 * time.Microsecond, "11 to 11.5 ms"},
-		{"on the run queue after a handoff", states.Handoff, 3 * time.Millisecond, "2 to 4.5 ms and 9.5 to 10 ms"},
 	} {
 		if want.got != want.want {
 			t.Errorf("%s %s, want %s (%s)", want.name, want.got, want.want, want.why)
@@ -77,13 +67,10 @@ func TestAGapsGoroutineStatesAreReadForItsThreadAndItsSpan(t *testing.T) {
 	}
 }
 
-// A handoff whose wait spans a generation's start reads its run-queue wait from the P's real
-// stop. At each generation's start the trace writes every P's and every goroutine's status as a
-// transition from the state it is already in (x/exp/trace's order.go); here P 2 stops at 1 ms, its
-// idle status comes at 5 ms, and thread 7 starts it at 6 ms while goroutine 1 is runnable from
-// 1 ms, its runnable status also coming at 5 ms. The wait is 1 to 6 ms: 5 ms. A reader that took
-// the idle status for a stop read it from 5 ms, 1 ms, and a gap that took that wait out of the
-// goroutine's runnable time and the thread's run-queue time took the other 4 ms out twice.
+// At each generation's start the trace writes every goroutine's status as a transition from the
+// state it is already in (x/exp/trace's order.go). That is no change of state: here goroutine 1
+// is runnable from 1 ms, its runnable status comes again at 5 ms, and it runs at 6 ms, so it was
+// runnable 5 ms in one stretch, which a reader that took the status for a change would split.
 func TestAGenerationsStatusEventsAreNoStateChange(t *testing.T) {
 	base := time.Now()
 	at := func(ms float64) exptrace.Time { return exptrace.Time(ms * float64(time.Millisecond)) }
@@ -92,24 +79,19 @@ func TestAGenerationsStatusEventsAreNoStateChange(t *testing.T) {
 		snapshot: exptrace.ClockSnapshot{Trace: 0, Mono: 0},
 		changes:  map[exptrace.GoID][]xidGoStateChange{},
 		runs:     map[int][]xidThreadRun{},
-		starts:   map[int][]xidProcStart{},
 	}
-	stopped := map[exptrace.ProcID]exptrace.Time{}
 	for _, event := range []struct {
 		change exptrace.StateTransition
 		at     float64
 		thread exptrace.ThreadID
 	}{
 		{exptrace.MakeGoStateTransition(1, exptrace.GoUndetermined, exptrace.GoRunning), 0, 7},
-		{exptrace.MakeProcStateTransition(2, exptrace.ProcUndetermined, exptrace.ProcRunning), 0, 7},
 		{exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoRunnable), 1, 7},
-		{exptrace.MakeProcStateTransition(2, exptrace.ProcRunning, exptrace.ProcIdle), 1, 7},
 		{exptrace.MakeGoStateTransition(1, exptrace.GoRunnable, exptrace.GoRunnable), 5, exptrace.NoThread},
 		{exptrace.MakeProcStateTransition(2, exptrace.ProcIdle, exptrace.ProcIdle), 5, exptrace.NoThread},
-		{exptrace.MakeProcStateTransition(2, exptrace.ProcIdle, exptrace.ProcRunning), 6, 7},
 		{exptrace.MakeGoStateTransition(1, exptrace.GoRunnable, exptrace.GoRunning), 6, 7},
 	} {
-		reading.transition(event.change, at(event.at), event.thread, stopped)
+		reading.transition(event.change, at(event.at), event.thread)
 	}
 	if got := len(reading.changes[1]); got != 3 {
 		t.Errorf("goroutine 1 changed state %d times, want 3: its status at the generation's start is no change (%+v)", got, reading.changes[1])
@@ -118,32 +100,35 @@ func TestAGenerationsStatusEventsAreNoStateChange(t *testing.T) {
 	if !ok {
 		t.Fatal("the trace shows no goroutine on thread 7 by the gap's start")
 	}
-	if want := 5 * time.Millisecond; states.Runnable != want || states.Handoff != want {
-		t.Errorf("runnable %s and on the run queue after the handoff %s, want %s each: P 2 stopped at 1 ms and thread 7 started it at 6 ms",
-			states.Runnable, states.Handoff, want)
+	if want := 5 * time.Millisecond; states.Runnable != want {
+		t.Errorf("runnable %s, want %s", states.Runnable, want)
 	}
 }
 
-// Made counts the CPU the thread ran, the waits the goroutine asked for and its system calls
-// whatever the machine does, takes out what the machine did - the thread's wait for a CPU and the
-// goroutine's wait for the runtime to run it again - counting once the run-queue wait after a
-// handoff that both hold (Overlap), and never reads more than the gap's own time on the clock.
-// The handoff row is the one the formula before Overlap read short: it took the handoff's 3 ms
-// on the run queue out twice and left the system call out of its floor, so an 8 ms nanosleep read
-// 6 ms made.
+// Made is the lesser of the gap less the runtime's wait and the thread's CPU and sleep with the
+// goroutine's own waits, so that no sleep or wait of the code's is ever taken out, wherever in the
+// goroutine's states the thread's clocks put it; and it never reads more than the gap's own time on
+// the clock. The first row is a tester's run of the handoff self-test at niceness 19 (2026-11-21):
+// the goroutine preempted on its way into the runtime's handoff, its thread queued while the
+// runtime held it, and then an 8 ms nanosleep of the code's, with the thread queued again after
+// it. The formula before took the run-queue wait the trace tied to no handoff out of the system
+// call and read that gap at 0.225 ms made, a D6 break unseen; here it reads 8.284 ms.
 func TestAGapIsTheCodesTimeLessTheMachinesWaits(t *testing.T) {
 	ms := func(n float64) time.Duration { return time.Duration(n * float64(time.Millisecond)) }
+	us := func(n int64) time.Duration { return time.Duration(n) * time.Microsecond }
 	for _, test := range []struct {
 		name string
 		gap  XidGap
 		want time.Duration
 	}{
-		{"a preemption the runtime took 7 ms to undo", XidGap{Clock: ms(10), Ran: ms(1), Runnable: ms(2), GoRunnable: ms(7), Read: true, Traced: true}, ms(1)},
-		{"an 8 ms nanosleep after a handoff whose thread waited 3 ms to run", XidGap{Clock: ms(18), Ran: ms(1), Runnable: ms(5), GoRunnable: ms(7), GoSyscall: ms(8), Overlap: ms(3), Read: true, Traced: true}, ms(9)},
+		{"an 8 ms nanosleep after a 1,014 ms runtime wait spent queued", XidGap{Clock: us(1034020), Ran: us(225), Runnable: us(1025736), GoRunnable: us(1014255), GoSyscall: us(17883), Read: true, Traced: true}, us(8284)},
+		{"a preemption the runtime took 7 ms to undo, the thread asleep", XidGap{Clock: ms(10), Ran: ms(1), GoRunnable: ms(7), Read: true, Traced: true}, ms(3)},
+		{"a preemption the runtime took 7 ms to undo, 2 ms of it queued", XidGap{Clock: ms(10), Ran: ms(1), Runnable: ms(2), GoRunnable: ms(7), Read: true, Traced: true}, ms(3)},
+		{"a handoff whose thread then waited 28 ms for a CPU", XidGap{Clock: ms(30), Ran: ms(1), Runnable: ms(28), GoRunnable: ms(10), Read: true, Traced: true}, ms(2)},
+		{"an 8 ms nanosleep after a runtime wait", XidGap{Clock: ms(18), Ran: ms(1), Runnable: ms(5), GoRunnable: ms(7), GoSyscall: ms(8), Read: true, Traced: true}, ms(11)},
 		{"a sleep the code asked for", XidGap{Clock: ms(21), Ran: ms(0.2), GoRunnable: ms(0.5), GoWaiting: ms(20), Read: true, Traced: true}, ms(20.5)},
 		{"a blocking system call", XidGap{Clock: ms(8), Ran: ms(0.5), GoSyscall: ms(7.5), Read: true, Traced: true}, ms(8)},
-		{"a system call whose return waited 6 ms for a CPU", XidGap{Clock: ms(10), Runnable: ms(6), GoSyscall: ms(10), Read: true, Traced: true}, ms(4)},
-		{"a handoff whose thread then waited for a CPU", XidGap{Clock: ms(30), Ran: ms(1), Runnable: ms(28), GoRunnable: ms(10), Overlap: ms(9), Read: true, Traced: true}, ms(1)},
+		{"a system call whose return waited 6 ms for a CPU, a CFS quota's throttling included", XidGap{Clock: ms(10), Runnable: ms(6), GoSyscall: ms(10), Read: true, Traced: true}, ms(4)},
 		{"a gap whose clocks read more CPU than its clock", XidGap{Clock: ms(0.016), Ran: ms(0.025), Read: true, Traced: true}, ms(0.016)},
 		{"a gap whose clocks were not read", XidGap{Clock: ms(9)}, ms(9)},
 	} {

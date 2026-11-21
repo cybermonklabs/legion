@@ -34,11 +34,12 @@ const (
 
 // A gap the code slept past the bound is the code's whatever its CPU ran meanwhile: a gap's
 // softirqs may hold only CPU time its thread ran. Here the gap's CPU runs network receives for the
-// sends before the sleep, and the window still breaks D6. The rig judges it as on a kernel that
+// sends before the sleep, and the gap still breaks rule 1. The rig judges it as on a kernel that
 // charges interrupt time to the thread it lands on (storetest.XidChargeInterruptTime), so the
-// hold is in play on every kernel. With the hold not held to the thread's CPU time, the window
-// passes. With the softirq read planted to read nothing, the gap counts no receive and the run
-// stops as one that proves nothing.
+// hold is in play on every kernel. With the hold not held to the thread's CPU time, the gap keeps
+// rule 1 under the 7.4 ms bound the gap's cap (storetest.XidSoftirqGapHold) sets, only rule 2
+// breaks, and the test fails. With the softirq read planted to read nothing, the gap counts no
+// receive and the run stops as one that proves nothing.
 func TestXidWindowRigNeverExcusesASleepForSoftirqs(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
 	storetest.XidChargeInterruptTime(t)
@@ -67,11 +68,11 @@ func TestXidWindowRigNeverExcusesASleepForSoftirqs(t *testing.T) {
 // However many device softirqs a gap's CPU runs, they hold no more than
 // storetest.XidSoftirqGapHold of it. Here the gap is the code's own network sends, hundreds of
 // them, each counted as a NET_RX on the gap's CPU, for 1.6 ms of CPU past the bound and that cap:
-// the window breaks D6, over the 7.4 ms bound the cap sets. The rig judges it as on a kernel that
+// the gap breaks rule 1, over the 7.4 ms bound the cap sets. The rig judges it as on a kernel that
 // charges interrupt time to the thread it lands on (storetest.XidChargeInterruptTime), so the cap
-// is in play on every kernel. With the cap planted out, the counts hold all the CPU the gap ran
-// and the window passes. With the softirq read planted to read nothing, the gap counts no receive
-// and the run stops as one that proves nothing.
+// is in play on every kernel. With the gap's cap planted out, its counts hold all the CPU it ran,
+// its bound passes 7.4 ms, and the test fails at its check of the bound. With the softirq read
+// planted to read nothing, the gap counts no receive and the run stops as one that proves nothing.
 func TestXidWindowRigHoldsAGapsSoftirqsToTheirCap(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
 	storetest.XidChargeInterruptTime(t)
@@ -89,7 +90,7 @@ func TestXidWindowRigHoldsAGapsSoftirqsToTheirCap(t *testing.T) {
 			storetest.XidMillis(gap.Ran), gap.Softirqs, gap.Counted, storetest.XidMillis(xidOwnSendsGap), window.Detail())
 	}
 	if want := storetest.XidMaxGap + storetest.XidSoftirqGapHold; gap.Bound() != want {
-		t.Fatalf("the gap's bound is %s, want %s: its counts did not hold the cap, so this run proves nothing\n%s",
+		t.Fatalf("the gap's bound is %s, want %s: its device softirqs held more than the gap's cap, storetest.XidSoftirqGapHold\n%s",
 			storetest.XidMillis(gap.Bound()), storetest.XidMillis(want), window.Detail())
 	}
 	if err := report.Err(); err == nil || !strings.Contains(err.Error(), "follows statement 0: insert into projects") ||

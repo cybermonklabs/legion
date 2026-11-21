@@ -538,9 +538,9 @@ func (w XidWindow) Detail() string {
 			}
 			read := "its thread's clocks unread"
 			if gap.Read {
-				read = fmt.Sprintf("ran %s, off a CPU %s, waiting for one %s; its goroutine waited %s on the runtime (%s of it on the run queue after a handoff), %s on what it asked for and %s in system calls",
-					XidMillis(gap.Ran), XidMillis(max(gap.Clock-gap.Runnable-gap.Ran, 0)), XidMillis(gap.Runnable),
-					XidMillis(gap.GoRunnable), XidMillis(gap.Overlap), XidMillis(gap.GoWaiting), XidMillis(gap.GoSyscall))
+				read = fmt.Sprintf("ran %s, off a CPU %s, waiting for one %s; its goroutine waited %s on the runtime, %s on what it asked for and %s in system calls",
+					XidMillis(gap.Ran), XidMillis(gap.Asleep()), XidMillis(gap.Runnable),
+					XidMillis(gap.GoRunnable), XidMillis(gap.GoWaiting), XidMillis(gap.GoSyscall))
 			}
 			softirqs := "; its CPU's softirqs uncounted"
 			if gap.Counted {

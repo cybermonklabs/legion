@@ -7,13 +7,12 @@ import "time"
 // the thread that sent it (XidTracer.lockTransaction) - the CPU time it ran meanwhile (Ran) and the
 // time it waited runnable on a run queue for a CPU (Runnable) - and off the execution trace of the
 // goroutine that sent it: the time the Go runtime kept it runnable but not running (GoRunnable),
-// the time it waited on something it asked for (GoWaiting), the time it spent in a system call
-// (GoSyscall), and how much of its runnable time its thread spent woken but on the run queue after
-// another thread handed it a P (Overlap, counted in both Runnable and GoRunnable). Read is false
-// when the rig could not read the thread's clocks at both ends on the thread its transaction's
-// goroutine was locked to, and Traced is false when the trace does not show that goroutine.
-// Softirqs are how many times each softirq ran on SoftirqCPU, the CPU the thread is pinned to,
-// over the gap, and Counted is false where the rig could not count them (xidwindow_softirq.go).
+// the time it waited on something it asked for (GoWaiting), and the time it spent in a system call
+// (GoSyscall). Read is false when the rig could not read the thread's clocks at both ends on the
+// thread its transaction's goroutine was locked to, and Traced is false when the trace does not
+// show that goroutine. Softirqs are how many times each softirq ran on SoftirqCPU, the CPU the
+// thread is pinned to, over the gap, and Counted is false where the rig could not count them
+// (xidwindow_softirq.go).
 type XidGap struct {
 	Clock      time.Duration
 	Ran        time.Duration
@@ -21,7 +20,6 @@ type XidGap struct {
 	GoRunnable time.Duration
 	GoWaiting  time.Duration
 	GoSyscall  time.Duration
-	Overlap    time.Duration
 	Read       bool
 	Traced     bool
 	Softirqs   XidSoftirqs
@@ -30,29 +28,37 @@ type XidGap struct {
 }
 
 // xidGoStates is the time a goroutine spent over a stretch of the trace in each state the rig
-// reads, and the part of its runnable time its locked thread spent on the run queue after a
-// handoff (xidTraceReading.goStates).
+// reads (xidTraceReading.goStates).
 type xidGoStates struct {
-	Runnable, Waiting, Syscall, Handoff time.Duration
+	Runnable, Waiting, Syscall time.Duration
 }
 
-// Made is the time the code made in the gap. The machine's part of a gap is the time its thread
-// waited runnable for a CPU (Runnable) and the time the Go runtime kept its goroutine from running
-// (GoRunnable: a preemption, a stop of the world, a syscall that lost its P), counted once where
-// they overlap: a goroutine handed back to its locked thread stays runnable until that thread,
-// woken, gets a CPU, and that wait is in both (Overlap). The rest is the code's: the time the
-// thread ran, and the time it was off a CPU of its own accord - asleep, in a system call, or
-// waiting on a lock, a channel or the network. Made never reads less than the CPU the thread ran
-// and the waits the goroutine asked for (GoWaiting), nor less than its waits and its system calls
-// beyond the run queue's part of them - the code's whatever the machine does - and never more than
-// the gap's own time on the clock. A gap whose clocks were not read (Read) is its time on the
-// clock.
+// Asleep is the time the gap's thread was off a CPU: neither running nor waiting for one.
+func (g XidGap) Asleep() time.Duration { return max(g.Clock-g.Ran-g.Runnable, 0) }
+
+// Made is the time the code made in the gap, read so that no time the code made is ever left out.
+// The machine's part of a gap is the time its thread waited for a CPU outside the Go runtime's own
+// waits - the kernel's run queue, CFS bandwidth throttling included, which the thread's run_delay
+// counts - and the time the runtime kept its goroutine from running (GoRunnable: a preemption, a
+// stop of the world, a system call that lost its P). The code's part is the rest: the time the
+// thread ran or slept while its goroutine ran or was in a system call, and the time the goroutine
+// waited on what it asked for - a lock, a channel, the network - whatever its thread did meanwhile.
+//
+// The two clocks are read only at the gap's ends, so they do not say where in the goroutine's
+// states the thread's wait for a CPU and its sleep fell. Each of two readings holds whatever they
+// did: the gap less the runtime's wait (Clock - GoRunnable), which counts any wait for a CPU outside
+// it as the code's; and the thread's CPU and sleep with the goroutine's own waits (Ran + Asleep +
+// GoWaiting), which counts any sleep inside the runtime's wait as the code's. Made is the lesser,
+// so no sleep or wait the code made is ever taken out: where the thread slept through the runtime's
+// wait and also waited for a CPU outside it, Made reads the lesser of those two as the code's too.
+// A thread stopped by a debugger, a stop signal or a freezer is asleep to its clocks, and reads as
+// the code's. Made never reads more than the gap's own time on the clock. A gap whose clocks were
+// not read (Read) is its time on the clock.
 func (g XidGap) Made() time.Duration {
 	if !g.Read {
 		return g.Clock
 	}
-	queued := g.Runnable - g.Overlap
-	return min(g.Clock, max(g.Clock-g.GoRunnable-queued, g.Ran+g.GoWaiting, g.GoWaiting+g.GoSyscall-queued))
+	return min(g.Clock, max(min(g.Clock-g.GoRunnable, g.Ran+g.Asleep()+g.GoWaiting), 0))
 }
 
 // xidStretch reads the stretch from to to off thread's clocks, from's reading and to's, where both
@@ -68,7 +74,6 @@ func xidStretch(from, to time.Time, fromClock, toClock xidThreadClock, thread in
 			var states xidGoStates
 			states, span.Traced = reading.goStates(thread, from, to)
 			span.GoRunnable, span.GoWaiting, span.GoSyscall = states.Runnable, states.Waiting, states.Syscall
-			span.Overlap = min(states.Handoff, span.Runnable, span.GoRunnable)
 		}
 	}
 	return span

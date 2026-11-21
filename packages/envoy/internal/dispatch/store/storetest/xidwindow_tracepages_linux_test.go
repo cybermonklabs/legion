@@ -62,11 +62,13 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 			t.Fatalf("start the execution tracer: %v", err)
 		}
 		defer traced.stop()
-		// One call site writes every event, so the first puts the burst's category and stack in
-		// the trace's tables before the hold, as a window's statements before a gap do.
+		// The burst starts right after a generation begins, and one call site writes every event,
+		// so the first event, written after the wait and in that generation, puts the burst's
+		// category and stack in the generation's tables before the hold, as a window's statements
+		// before a gap do.
+		waited = xidAwaitGeneration(t, traced)
 		for i := range xidBurstLogs + 1 {
 			if i == 1 {
-				waited = xidAwaitGeneration(t, traced)
 				xidHoldMemory()
 				mapped = xidTracerMappings(t)
 				absent = xidAbsentPages(mapped)
