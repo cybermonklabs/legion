@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 // role_config_files reaches the runtime that launches each role, under either runtime, as the file
@@ -26,7 +27,7 @@ func TestRoleConfigFilesReachEitherRuntime(t *testing.T) {
 	}
 	k := kubernetesConfig(t, "https://127.0.0.1:1")
 	k.RoleConfigFiles = files
-	opts, err := sandboxOptions(k, *k.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(k, *k.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}

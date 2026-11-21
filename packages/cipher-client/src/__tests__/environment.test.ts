@@ -3,19 +3,23 @@
 // What a deployment's variables name, and what a deployment that names half of one is told.
 
 import { expect, test } from "bun:test";
+import { createPublicKey, generateKeyPairSync } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { calculateJwkThumbprint, type JWK } from "jose";
 import {
   BROKER_URL_VAR,
   brokerTokenClient,
   IDENTITY_VAR,
+  KEY_DIR_VAR,
   MACHINE_AUDIENCE_VAR,
   MACHINE_TOKEN_FILE_VAR,
   MAX_PROJECTS,
   machineIdentity,
   PROJECTS_VAR,
+  ROLE_KEY_FILE,
   tradeProjects,
   tradeSession,
 } from "../environment";
@@ -24,6 +28,7 @@ import {
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
   FORM_PROJECTS,
 } from "../wire";
+import { accepted, refusalOf, stubBroker } from "./stub";
 
 const makeDirectory = temporaryDirectories("broker-environment");
 
@@ -161,6 +166,58 @@ test("a machine's client this factory builds asks the broker for no launcher cre
     expect(forms[0]?.has(FORM_PROJECTS)).toBe(false);
   } finally {
     broker.stop(true);
+  }
+});
+
+/** A role's environment in a pod whose agent-secrets directory is `keyDir`: the kubernetes
+ *  identity, a projected token file, and nobody signed in. */
+async function podRole(brokerUrl: string, keyDir: string): Promise<Record<string, string>> {
+  const token = join(makeDirectory(), "token");
+  await writeFile(token, `${fixtureSecret("role")}\n`);
+  return {
+    [BROKER_URL_VAR]: brokerUrl,
+    [IDENTITY_VAR]: "kubernetes",
+    [MACHINE_TOKEN_FILE_VAR]: token,
+    [KEY_DIR_VAR]: keyDir,
+    AGENT_SECRETS_SESSION: "implementer-g1",
+    AGENT_SECRETS_SIGNIN_DIR: join(makeDirectory(), "signins"),
+  };
+}
+
+test("a pod role trades with its own agent-secrets key", async () => {
+  // The key `agent-secrets keygen` writes: P-256, PKCS#8 PEM, 0600. The broker holds the pod
+  // session's exchange to this key's thumbprint, which the role's registration names.
+  const keyDir = makeDirectory();
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+  await writeFile(join(keyDir, ROLE_KEY_FILE), pem, { mode: 0o600 });
+  const { kty, crv, x, y } = createPublicKey(pem).export({ format: "jwk" });
+  const broker = stubBroker(() => ({ body: accepted("role-access-token", 600) }));
+  try {
+    const made = await brokerTokenClient(await podRole(broker.url, keyDir));
+    await made?.client.token();
+    expect(broker.trades).toHaveLength(1);
+    const proved = await calculateJwkThumbprint(broker.trades[0]?.proofHeader.jwk as JWK);
+    expect(proved).toBe(await calculateJwkThumbprint({ kty, crv, x, y } as JWK));
+  } finally {
+    broker.stop();
+  }
+});
+
+test("an unreadable role key refuses the trade, naming the path", async () => {
+  // A role's directory with no key.pem: the trade refuses rather than proving a fresh key, which
+  // the broker would refuse in words that name neither the file nor the key.
+  const keyDir = makeDirectory();
+  const broker = stubBroker(() => ({ body: accepted("role-access-token", 600) }));
+  try {
+    const env = await podRole(broker.url, keyDir);
+    const refusal = await refusalOf(() => brokerTokenClient(env));
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal?.message).toContain(join(keyDir, ROLE_KEY_FILE));
+    expect(refusal?.message).toContain("this role's agent-secrets key");
+    expect(broker.trades).toHaveLength(0);
+  } finally {
+    broker.stop();
   }
 });
 

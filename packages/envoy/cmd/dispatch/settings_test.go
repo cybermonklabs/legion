@@ -1509,6 +1509,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 			})
 		},
+		"DISPATCH_PROOF_ORIGINS": func(t *testing.T) {
+			const public, inCluster = "https://dispatch.example", "http://dispatch.internal.example:8766"
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": " " + public + " , " + inCluster + " "}); !slices.Equal(boot.ProofOrigins, []string{public, inCluster}) {
+				t.Errorf("ProofOrigins = %q, want each entry trimmed", boot.ProofOrigins)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": " "}); boot.ProofOrigins != nil {
+				t.Errorf("a blank value: ProofOrigins = %q, want none", boot.ProofOrigins)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": public + ",," + inCluster}, "DISPATCH_PROOF_ORIGINS entry 2 of 3 is empty")
+			refusedWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": public + "/"}, `DISPATCH_PROOF_ORIGINS entry 1 of 1 is "`+public+`/"`)
+			// What the verifier main builds takes from it is TestDispatchReadsItsProofOrigins'.
+		},
 		"DISPATCH_EMBEDDER": func(t *testing.T) {
 			if boot := resolveWith(t, nil); boot.Embedder.Place != embed.PlaceBedrock {
 				t.Errorf("unset: Embedder.Place = %q, want bedrock", boot.Embedder.Place)

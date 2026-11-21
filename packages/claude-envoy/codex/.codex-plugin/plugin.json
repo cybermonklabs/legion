@@ -17,6 +17,7 @@
       "cwd": "./",
       "env_vars": [
         "AGENTBOX_HOST",
+        "AGENT_SECRETS_KEY_DIR",
         "AGENT_SECRETS_MACHINE_AUDIENCE",
         "AGENT_SECRETS_MACHINE_IDENTITY",
         "AGENT_SECRETS_MACHINE_TOKEN_FILE",

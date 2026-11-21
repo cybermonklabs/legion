@@ -202,9 +202,9 @@ export interface BrokerTokenClientOptions {
    * TypeScript clients want a Dispatch access token and nothing else, and none of them reads
    * `credentialId`. Each trade that asks writes a `launcher_credentials` row keyed by the
    * machine and the key it proved and a `launcher_credential.token_login` audit row, and this
-   * client makes a key per process and per session, so asking would put a row on an operator's
-   * machine-logins list for every `dispatch` call, every hook run and every session of a
-   * long-lived process — rows nothing removes.
+   * client proves a key of one process, or a pod role's own agent-secrets key, so asking would
+   * put a row on an operator's machine-logins list for every `dispatch` call, every hook run and
+   * every session of a long-lived process — rows nothing removes.
    *
    * A person's client leaves it unset, because the broker refuses a person's trade that declines
    * with `400 invalid_request` (`personDeclinesNothing`,

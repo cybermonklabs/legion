@@ -431,6 +431,23 @@ type Claim struct {
 	// it with the process it is about, and the claim written there records no process for a
 	// later report to be about.
 	DeathCharged bool
+	// AwaitsPod is the live pod this claim's launch waits on, and nil for none: the claim's last
+	// launch try was refused because that pod waits for its update round
+	// (runtime.AwaitingPodRound), and the claim records no process (Locator is nil) until a later
+	// try starts one. It is memory only, as ProcessGone is: Machine.Claim and View report it, the
+	// daemon's pod-update sweep reads it off the machine of each claim that records no process
+	// (Machine.AwaitsPod), and the store never writes or reads it. A daemon restart forgets it.
+	// The claim's next refusal records it again (startWaitsForPodRound), but only when the
+	// restarted daemon starts that launch again: after the boot's orphan reconciliation, and at the
+	// turn the wake pacing gives it (internal/daemon's relaunchUnfinished). In a restart of many
+	// pods that can be more than a minute later, and a sweep before then does not see the pod.
+	//
+	// It is what the daemon's update round has of such a claim, which may be the issue's only
+	// one: the round opens over this pod as over a pod a process runs in, waits on no answer and
+	// no turn of the claim, and replaces the pod through this locator where no claim records a
+	// process there. Three functions of internal/daemon read it: podLocator, awaitsRoundPod and
+	// podProcess. The doc of awaitsRoundPod says what the round does with such a claim.
+	AwaitsPod *runtime.Locator
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
 	// registration records Session/SessionFile/CapabilityHash (register, reregister).
@@ -1549,6 +1566,21 @@ type Machine struct {
 	cancelStart    context.CancelFunc
 	startStopped   bool
 	storeFaultTold time.Time
+	// podRoundWaiting is whether the retry relaunchLater has armed is one of a start the runtime
+	// refused for want of its pod's update round (startWaitsForPodRound): the wait is logged once,
+	// at the refusal that begins it, and not at each minute's retry of it. letGo clears it, so
+	// every other way out of that wait — a start that succeeds or fails otherwise, a suspension, a
+	// retirement — makes the next such refusal a new wait that logs again. Memory only, as
+	// relaunch is: a restarted daemon's first refusal logs.
+	podRoundWaiting bool
+	// awaitsPod is the live pod that wait is for, as the runtime's refusal named it
+	// (runtime.AwaitingPodRound), and nil for none or for a refusal that named no pod. It is what
+	// Claim.AwaitsPod reports (current), which the daemon's update round reads. It is set where
+	// the wait begins and at each refusal of its retries (startWaitsForPodRound). letGo clears it
+	// with podRoundWaiting, except that every launch keeps it through its own try, whatever raised
+	// the launch, so a sweep that reads the claim while that try runs still finds the pod; that
+	// try's outcome then settles it (launchNow). Memory only, as podRoundWaiting is.
+	awaitsPod *runtime.Locator
 	// wake is the launch the wake pacing holds until its turn (reserveWake), run when TimerWake
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
@@ -2240,6 +2272,15 @@ func (m *Machine) WaitingWake() *WaitingWake {
 	return &WaitingWake{Claim: v.Token, Issue: v.Issue, Role: v.Role, Kind: v.WakeWaiting.Kind, At: v.WakeWaiting.At}
 }
 
+// AwaitsPod is the live pod the claim's launch waits on as the machine last published it
+// (Claim.AwaitsPod), nil for none. It never waits on the decision in flight, as View does not, and
+// it copies the locator alone rather than the whole claim, since the daemon's pod-update sweep
+// reads it of every claim it groups that records no process (internal/daemon's
+// reconcilePodUpdates): publish stores a view built fresh and mutates no stored one.
+func (m *Machine) AwaitsPod() *runtime.Locator {
+	return cloneLocator(m.view.Load().AwaitsPod)
+}
+
 // Deciding is the event the decision in flight handles (Handle), or nil when the machine decides
 // nothing. It never waits on the decision.
 func (m *Machine) Deciding() Event {
@@ -2275,6 +2316,7 @@ func (m *Machine) current() Claim {
 	}
 	c.Compacting = m.compacting != nil
 	c.ProcessGone = m.processGone
+	c.AwaitsPod = cloneLocator(m.awaitsPod)
 	return c
 }
 
@@ -2675,7 +2717,8 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // budget runs out; only a start that succeeds forgets it. A system prompt past the start frame
 // (runtime.PromptTooLarge, promptRefused) is no launch failure: the claim fails at once, charged
 // nothing, and a start the session store could not answer is charged nothing and tried again
-// (startWaitsForStore). A launch that fails stops the process it
+// (startWaitsForStore), as is one the runtime refused for want of its pod's update round
+// (startWaitsForPodRound). A launch that fails stops the process it
 // let go (stopPrevious), whichever step failed. A launch the tree lifecycle refuses (checkLaunch)
 // starts nothing and is charged nothing (relaunchRefused), and so is one whose context ended under
 // it — the daemon's stop. A runtime waits out a cluster that answers a launch's requests overloaded
@@ -2758,8 +2801,9 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause s
 // It is also where the process a relaunch replaces is let go, for cause, and what that process
 // ended is recorded before the first try's write moves the generation and clears the process's
 // activity report (letGo, recordEnd, the store's putClaim). The retries this launch arms — a
-// failed write's here, a session store's that could not answer (startWaitsForStore) — launch a
-// claim that records no process any more, so they pass noEnd.
+// failed write's here, a session store's that could not answer (startWaitsForStore), a pod
+// round's (startWaitsForPodRound) — launch a claim that records no process any more, so they
+// pass noEnd.
 func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause string) error {
 	// The intent is read before it is committed rather than taken, because committing takes it
 	// off the machine (commitPluginRelaunch, takePluginRelaunch) and the retry a failed write
@@ -2767,7 +2811,14 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 	// wake gate does for the kind it reads off it (reserveWake).
 	intent := m.pluginRelaunch
 	m.commitPluginRelaunch()
+	// Read before letGo clears it: this launch may be the retry of a wait for a pod's round, whose
+	// next refusal is the same wait and logs nothing more (startWaitsForPodRound). The pod that
+	// wait is for stays the one the claim waits on through this launch's try, which is what the
+	// update round reads of a claim that records no process (Claim.AwaitsPod): a sweep that reads
+	// the claim while the try runs finds the pod, and the try's outcome settles it below.
+	waiting, awaits := m.podRoundWaiting, m.awaitsPod
 	m.letGo(ctx, cause)
+	m.awaitsPod = awaits
 	// The roll edge's mark names the process an earlier release started, which this launch has
 	// let go; the process the launch starts is this release's own (refusedEarlierRelease).
 	m.refusedEarlierRelease = 0
@@ -2800,6 +2851,12 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			}
 		}
 		loc, way, err := m.start(starting, token)
+		// The try settles the wait for a pod's round that this launch may retry: a refusal for
+		// that round names the pod again (startWaitsForPodRound), and any other outcome ends the
+		// wait, whether it started a process or failed otherwise.
+		if !errors.Is(err, runtime.ErrAwaitingPodRound) {
+			m.awaitsPod = nil
+		}
 		// A start cut short by its own context was refused by nothing, so it records no cause. The
 		// cause is a launcher's sentence, which can come from the pod, so the claim keeps it as the
 		// daemon keeps a far side's text (storetext.FarSideText, the rule leakguard.Cause applies):
@@ -2852,6 +2909,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, charged, exempt)
 		}
+		if errors.Is(err, runtime.ErrAwaitingPodRound) {
+			return m.startWaitsForPodRound(starting, err, charged, exempt, waiting)
+		}
 		var tooLarge *runtime.PromptTooLarge
 		if errors.As(err, &tooLarge) {
 			return m.promptRefused(ctx, starting, err)
@@ -2864,6 +2924,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			return m.failLaunch(ctx, err, fmt.Sprintf("launch failures ran out: %v", err))
 		}
 		charged = true
+		// A charged failure ends whatever wait this launch retried: a refusal on the next try is
+		// a new one.
+		waiting = false
 	}
 }
 
@@ -2965,6 +3028,47 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 		err, "generation", m.claim.Generation, "retry", sessionStoreRetry)
 	m.tellStoreFault(cause)
 	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })
+	return errors.Join(err, m.persist(ctx))
+}
+
+// podRoundRetry is how long a start refused for want of its pod's update round waits before
+// trying again (startWaitsForPodRound): the round replaces the pod once every role in it has
+// answered, or at its bound (pod_update_grace_minutes), and the first try after that finds the
+// pod the round brought.
+const podRoundRetry = time.Minute
+
+// podRoundWaitLine is the one line a claim's wait for its pod's update round logs, at the refusal
+// that begins the wait (startWaitsForPodRound).
+const podRoundWaitLine = "supervise: this start waits for its pod's update round; trying it again every minute, charging nothing"
+
+// startWaitsForPodRound is a start the runtime refused because the live pod it would keep carries
+// no exchange identity, under dispatch_token_broker, and the deployment names no transition token
+// for such a pod (runtime.ErrAwaitingPodRound). That is the pod's state, not the claim's failing:
+// charging it would fail a claim whose agent is fine for a pod that only its round replaces, so
+// the same launch is started again every minute (relaunchLater) until the pod it finds carries the
+// identity. A round can take hours, so the wait logs one line, with the runtime's refusal, which
+// names the pod, at the refusal that begins it; waiting is whether this refusal is a retry of a
+// wait already logged (podRoundWaiting). The process the launch let go is let go already, so the
+// retry lets none go (noEnd).
+//
+// The claim records no process while it waits, and it may be its issue's only claim, so it keeps
+// the pod the refusal names (awaitsPod, Claim.AwaitsPod): that is what the daemon's update round
+// opens over and replaces the pod through, where no claim records a process in it. Without it no
+// round would come, and this wait would never end. The write below publishes it, before the
+// retry is due.
+func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charged, exempt, waiting bool) error {
+	err := errors.Join(cause, m.stopPrevious(ctx))
+	if !waiting {
+		m.log.Warn(podRoundWaitLine, "generation", m.claim.Generation, "retry", podRoundRetry, "error", err)
+	}
+	m.relaunchLater(podRoundRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })
+	m.podRoundWaiting = true
+	m.awaitsPod = nil
+	var refusal *runtime.AwaitingPodRound
+	if errors.As(cause, &refusal) {
+		pod := refusal.Pod
+		m.awaitsPod = &pod
+	}
 	return errors.Join(err, m.persist(ctx))
 }
 
@@ -3091,12 +3195,14 @@ const (
 //
 // A resume runs under every name its record gives the session, so each is held to the claim
 // before anything starts (holdRecorded, plan E's t-e-54): an Oh My Pi launch continues the
-// recorded file (`--resume=<file>`), the tmux runtime one of the file's name or id where that path
-// is missing (sessionFileOf), and a Claude Code launch the session the transcript's name gives
-// (claudelaunch.ResumeSession), any of which a claim recorded before the hold could name for
-// another claim's session. A resume by the id runs under the id and under the id the file it finds
-// is named for (holdByID). One another claim holds is refused here, as a launch failure the caller
-// charges, and nothing starts under it.
+// recorded file (`--resume=<file>`), or, in a pod that trades an exchange identity, the session
+// by its id (`--resume <id>`: the claim's recorded session, which the resume's spec carries as
+// ResumeSessionID, else the id the file's name gives), the tmux runtime one of the file's name or
+// id where that path is missing (sessionFileOf), and a Claude Code launch the session the
+// transcript's name gives (claudelaunch.ResumeSession), any of which a claim recorded before the
+// hold could name for another claim's session. A resume by the id runs under the id and under the
+// id the file it finds is named for (holdByID). One another claim holds is refused here, as a
+// launch failure the caller charges, and nothing starts under it.
 func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, resumeWay, error) {
 	spec, err := m.spawnSpec(ctx, token, false)
 	if err != nil {
@@ -3114,7 +3220,7 @@ func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, res
 	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
 		return runtime.Locator{}, wayFile, err
 	}
-	spec.ResumeSessionFile = m.claim.SessionFile
+	spec.ResumeSessionFile, spec.ResumeSessionID = m.claim.SessionFile, m.claim.Session
 	loc, err := m.deps.Runtime.Resume(ctx, m.previous, spec)
 	if !errors.Is(err, runtime.ErrSessionFileMissing) {
 		return loc, wayFile, err
@@ -3178,7 +3284,8 @@ func (m *Machine) resumeByID(ctx context.Context, token string, spec runtime.Spa
 
 // spawnSpec is the launch's spec: what the daemon builds for this claim, with what only the
 // machine knows — who the claim is, the generation and the boot token this try mints. A resume
-// adds its session file or its session id; a spawn carries neither.
+// adds its session file and the session id recorded beside it, or its session id alone; a spawn
+// carries neither.
 //
 // Two things about this launch are not the claim's own state, and each is set on the copy handed
 // to the builder and never on the claim the machine keeps, which is the claim it persists.
@@ -3202,7 +3309,8 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 	}
 	spec.Claim, spec.Project, spec.Tree, spec.Issue, spec.Role = m.claim.Token, m.claim.Project, m.claim.Tree, m.claim.Issue, m.claim.Role
 	spec.Generation, spec.BootToken = m.claim.Generation, token
-	spec.ResumeSessionFile, spec.ResumeSession, spec.ResumeByAgent = "", "", false
+	spec.ResumeSessionFile, spec.ResumeSessionID = "", ""
+	spec.ResumeSession, spec.ResumeByAgent = "", false
 	return spec, nil
 }
 
@@ -3782,11 +3890,14 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 
 // letGo ends what the machine had with the claim's process: no timer watches it — the ladder's
 // wait after a provider error among them (providererror.go) — no relaunch waits on one
-// (relaunchLater), no wake of the pacing waits its turn (reserveWake) — the launch it was to
-// make is the one this end replaces, and the credit of the refresh gate a refresh of the
-// stale-plugin lane held for that wake goes back at the end of this decision, which is where a
-// credit whose wake is gone goes back wherever that wake went (endRefreshLane,
-// dispatch://INFRA-2712 R1) — no send talks to it, no prompt of the pending task waits on a
+// (relaunchLater), no wait for a pod's update round stands, nor the pod it was for
+// (podRoundWaiting, awaitsPod: a suspension, a retirement or a failure of the waiting claim ends
+// that wait, and every launch, whatever raised it, keeps the pod through its own try, launchNow),
+// no wake of the pacing waits its turn (reserveWake) — the launch it was to make is the one this
+// end replaces, and the credit of the refresh gate a refresh of the stale-plugin lane held for that
+// wake goes back at the end of this decision, which is where a credit whose wake is gone goes
+// back wherever that wake went (endRefreshLane, dispatch://INFRA-2712 R1) — no send talks to it,
+// no prompt of the pending task waits on a
 // result from it (Machine.outstanding: the process that would answer is gone, and the next one
 // is sent the task anew), no suspension is held for its turn,
 // no stale-plugin relaunch waits for that turn either (refreshPlugin) — the process it was to
@@ -3818,7 +3929,7 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.recordEnd(ctx, cause)
 	m.disarmAll()
-	m.relaunch = nil
+	m.relaunch, m.podRoundWaiting, m.awaitsPod = nil, false, nil
 	m.wake = nil
 	m.forgetSend()
 	m.outstanding = nil
@@ -4397,10 +4508,8 @@ func claimOf(ev Event) claim.Token {
 }
 
 func copyClaim(c Claim) Claim {
-	if c.Locator != nil {
-		loc := *c.Locator
-		c.Locator = &loc
-	}
+	c.Locator = cloneLocator(c.Locator)
+	c.AwaitsPod = cloneLocator(c.AwaitsPod)
 	if c.Enrollment != nil {
 		e := *c.Enrollment
 		c.Enrollment = &e
@@ -4414,4 +4523,14 @@ func copyClaim(c Claim) Claim {
 	c.TurnOutcomes = slices.Clone(c.TurnOutcomes)
 	c.EndedWork.Kinds = slices.Clone(c.EndedWork.Kinds)
 	return c
+}
+
+// cloneLocator is a new pointer to a copy of the locator loc points to, and nil for nil, so a
+// claim handed out of the machine shares no Locator value with the one the machine holds.
+func cloneLocator(loc *runtime.Locator) *runtime.Locator {
+	if loc == nil {
+		return nil
+	}
+	copied := *loc
+	return &copied
 }

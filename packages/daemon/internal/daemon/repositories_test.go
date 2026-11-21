@@ -431,7 +431,7 @@ func newWebhookDispatch(t *testing.T, route bool, installed map[string]bool) *we
 
 // serve is the rig option that has the runtime read Dispatch from d, through the real client.
 func (d *webhookDispatch) serve(w *workflowRuntime) {
-	w.dispatch = dispatch.New(d.url, "dispatch-test-token")
+	w.dispatch = dispatch.New(d.url, dispatch.BearerTransport("dispatch-test-token", nil))
 }
 
 // install has the check answer that Dispatch's GitHub App is installed on repo.
@@ -865,11 +865,11 @@ func TestEveryReaderOfARepositoryTakesItsAnswerFromOneLookup(t *testing.T) {
 // A recovery's pass counts a repository as recovered, and tells its release waits, only where
 // GitHub answered for it, has not failed for it again, and no issue fell silent for it while the
 // pass ran. It lets a repository GitHub does not answer for go only where no preparation will
-// read GitHub for it again: no unrecorded todo issue is left on it, or an entry records issues on
-// it by now, and no issue fell silent for it since the pass began, with why it did. What a release
-// left to that repository's recovery leaves with its marker, for the architects to be told once
-// (tellLetGoWaits), and stays exactly while the marker does. Every listed repository counted as
-// recovered before, and nothing but an answered read ever let one go.
+// read GitHub for it again: no issue fell silent for it since the pass began, a todo issue on it
+// that the pass deferred among them, since the deferral notes it silent (deferUnreadIssues). What
+// a release left to that repository's recovery leaves with its marker, for the architects to be
+// told once (tellLetGoWaits), and stays exactly while the marker does. Every listed repository
+// counted as recovered before, and nothing but an answered read ever let one go.
 //
 // Nothing is settled for a repository a preparation marked while the pass ran, a marker held
 // already or not. An issue a person moves to todo after the pass read the listing is prepared,
@@ -882,34 +882,26 @@ func TestARecoverySettlesOnlyTheRepositoriesGitHubAnsweredFor(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// unread and recovering are how the repository stands once the pass's listing has
-		// applied; silent is whether an issue fell silent for it since the pass began, todo
-		// whether the listing holds an unrecorded todo issue on it, and recorded whether an entry
-		// records issues on it by now. failed and answeredNow are what a preparation that ran
-		// while the pass did found: GitHub failing (leaveUnread), or GitHub answering
-		// (readAnswered), after the pass took its set.
-		unread, recovering, silent, todo, recorded, failed, answeredNow bool
+		// applied, and silent is whether an issue fell silent for it since the pass began: the
+		// pass's own deferral of a todo issue on it, or an event's. failed and answeredNow are
+		// what a preparation that ran while the pass did found: GitHub failing (leaveUnread), or
+		// GitHub answering (readAnswered), after the pass took its set.
+		unread, recovering, silent, failed, answeredNow bool
 		// answered is whether the pass recovered it, which is when its release waits are told,
 		// kept whether it is still left unread after the pass, and gone whether the pass took
-		// the release wait on it out with its marker, to tell, for why.
+		// the release wait on it out with its marker, to tell.
 		answered, kept, gone bool
-		why                  letGoWhy
 	}{
 		{name: "GitHub answered and the pass left nothing silent", recovering: true, answered: true},
 		{name: "GitHub answered after an issue of the pass fell silent", recovering: true, silent: true},
-		{name: "GitHub answered once and fails again", recovering: true, unread: true, todo: true, kept: true},
-		{name: "GitHub does not answer for its todo issue", unread: true, todo: true, kept: true},
-		{name: "GitHub does not answer and no todo issue is left on it", unread: true, gone: true, why: letGoNoTodo},
-		{name: "GitHub does not answer and an issue fell silent after the listing", unread: true, silent: true, kept: true},
-		{name: "GitHub does not answer and an entry records issues on it by now", unread: true, todo: true, recorded: true, gone: true, why: letGoAnsweredElsewhere},
-		{name: "GitHub does not answer and an entry records issues on it with no todo issue left", unread: true, recorded: true, gone: true, why: letGoNoTodo},
+		{name: "GitHub answered once and fails again for the todo issue the pass deferred", recovering: true, unread: true, silent: true, kept: true},
+		{name: "GitHub does not answer and no todo issue is left on it", unread: true, gone: true},
+		{name: "GitHub does not answer and an issue fell silent for it: the todo issue the pass deferred, or an event's after the listing", unread: true, silent: true, kept: true},
 		{name: "an issue moved to todo after the listing finds GitHub failing", unread: true, failed: true, kept: true},
 		{name: "GitHub answers an issue of its own while the pass runs", unread: true, answeredNow: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
-			if tc.recorded {
-				w.repositories.fill(ghrepo.MustParse("Stranger/Tools"))
-			}
 			if tc.unread {
 				w.unread = map[string]string{repo: "GitHub answered 502"}
 			}
@@ -928,7 +920,7 @@ func TestARecoverySettlesOnlyTheRepositoriesGitHubAnsweredFor(t *testing.T) {
 			if tc.answeredNow {
 				w.readAnswered(ghrepo.MustParse(repo))
 			}
-			answered, told, dropped := w.settleRecovery([]string{repo}, waits, map[string]bool{repo: tc.todo}, marks)
+			answered, told, dropped := w.settleRecovery([]string{repo}, waits, marks)
 			if got := slices.Contains(answered, repo); got != tc.answered || (len(told) != 0) != tc.answered {
 				t.Fatalf("the pass recovered %v and tells %v, want %s recovered: %v, with its release wait told exactly then", answered, told, repo, tc.answered)
 			}
@@ -939,9 +931,6 @@ func TestARecoverySettlesOnlyTheRepositoriesGitHubAnsweredFor(t *testing.T) {
 			if taken != tc.gone {
 				t.Fatalf("the pass took %v out to tell, leaving %d waits on %s; want its release wait taken out with its marker: %v",
 					dropped, len(w.releaseWaits[repo]), repo, tc.gone)
-			}
-			if tc.gone && dropped[0].why != tc.why {
-				t.Fatalf("%s was let go for %d, want %d: its architects are told why", repo, dropped[0].why, tc.why)
 			}
 		})
 	}

@@ -1,0 +1,15 @@
+kind: Changed
+custom:
+  Issue: pr4392
+body: |-
+  With `runtime.kubernetes.agent_secrets.exchange_audience` set, the daemon chooses the session id
+  of an Oh My Pi role in a pod that carries the exchange identity, as it does for a Claude Code
+  role. It starts a new role with `--session-id <id>` and a resumed role with `--resume <id>`, but
+  a role whose claim records its session with no file keeps the one word `--resume=<id>`. It
+  registers that id with the secrets broker at the role's shim hello, before the agent
+  registers. A role in a live pod built before that identity keeps the argv it had. This is daemon
+  API contract 207, so the boot gate and `legion probe-image` refuse a worker image built from an
+  earlier contract. `legion config reference` now says to set `exchange_audience` only once the
+  daemon, its worker image and the secrets broker all run this release or a later one, only once
+  the worker image's Oh My Pi takes `--session-id`, and only once the broker's
+  `BROKER_POD_REGISTRARS` is set.

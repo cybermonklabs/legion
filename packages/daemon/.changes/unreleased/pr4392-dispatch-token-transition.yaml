@@ -1,0 +1,27 @@
+kind: Added
+custom:
+  Issue: pr4392
+body: |-
+  Under `dispatch_token_broker`, a launch into a pod that carries the exchange identity carries no
+  Dispatch token: not in its Secret, not in its launcher's start command, and not in the
+  environment of a role or of the daemon-launched controller. The role is told
+  `DISPATCH_TOKEN_BROKER=1` and no `DISPATCH_TOKEN_FILE`. Its `legion worker-shim` refuses to
+  start, naming the key and its file, when its `--provider-env-dir` holds `DISPATCH_TOKEN` or
+  `DISPATCH_TOKEN_FILE`.
+
+  `dispatch_token_transition_file`, which the loader takes only beside the setting, names a file
+  that holds the shared Dispatch token. The daemon never calls Dispatch with it. A launch into a
+  live pod built before the setting, which carries no exchange identity, gets that token as every
+  launch got it before. With no such file named, that launch is refused, naming the pod and the
+  update round that replaces it. The claim is charged nothing, and the launch is tried again every
+  minute. The update round opens over that pod even when no process of the issue runs in it, and
+  it waits on no answer of the refused claim. Where no claim runs a process in the pod, the daemon
+  replaces the pod through that claim, and the next try starts in the new pod. The replacement's
+  log line (`waitingOnThePodNotWaitedFor`) names a refused claim with a session that had not
+  answered, whether or not it records the round, as having lost its unpushed work, and a gone
+  pod's message on the issue names such a claim that records the round.
+  Each launch that carries the transition token is logged at Warn. `legion state --json`
+  gains `dispatchCredential` under the setting: the daemon's session, the launches since the boot
+  that carried the transition token with the time of the last one, and
+  `liveLaunchesWithDispatchToken`. Remove `dispatch_token_transition_file` when that last count is
+  0, and keep `dispatch_token_broker: true`.

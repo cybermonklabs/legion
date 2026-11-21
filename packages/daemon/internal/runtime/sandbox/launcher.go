@@ -920,7 +920,8 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // launcherCommand is the start command a role's launcher receives for one generation: the shim's
 // argv (its flags, then `--`, then the agent's own argv), the generation's plain environment, the
 // launch credentials and files it writes into its private directory, and the session a resume
-// continues: its file (ResumeFile), or for a claim that records no file the session's id
+// continues: its file (ResumeFile), which the launcher looks the session up by whether or not the
+// agent's argv resumes it by id (agentArgv), or for a claim that records no file the session's id
 // (ResumeSession), which the launcher looks up in the session table and resumes the file it finds
 // in place of the agent argv's one `--resume=<id>` (agentArgv). A launch that has the agent's own
 // command resolve the id (ResumeByAgent), which supervise makes after relaunch refused to name the

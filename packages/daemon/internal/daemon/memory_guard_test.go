@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -193,7 +194,7 @@ func TestMemoryGuardTheIssuePodsSettingsReachTheSandboxRuntime(t *testing.T) {
 			Enabled: true, ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250,
 		}},
 	}
-	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, k, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -203,7 +204,7 @@ func TestMemoryGuardTheIssuePodsSettingsReachTheSandboxRuntime(t *testing.T) {
 	}
 
 	k.MemoryGuard.IssuePods.Enabled = false
-	opts, err = sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	opts, err = sandboxOptions(cfg, k, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions with the guard off: %v", err)
 	}

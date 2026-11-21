@@ -113,6 +113,10 @@ export interface DispatchServiceErrorShape {
   readonly candidates?: TargetCandidate[] | DuplicateCandidate[] | IDCandidate[];
   readonly current?: EditPreconditionCurrent;
   readonly mismatches?: EditPreconditionMismatch[];
+  /** Where to look next, which Dispatch adds to one refusal only: its answer to a path no route
+   *  serves (`404 NOT_FOUND`, "no route for …", the router's `staticHandler`), which says that
+   *  `GET /api/v1` lists every route. */
+  readonly hint?: string;
 }
 
 /** How the message of a Dispatch process's `404 NOT_FOUND` starts when the process has no route for

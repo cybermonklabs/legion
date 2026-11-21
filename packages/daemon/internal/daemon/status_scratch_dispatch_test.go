@@ -56,7 +56,7 @@ func TestTheBootsStatusWriteLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t
 
 	// A person leaves a comment while the row is between its read and its write; the status is
 	// untouched, but Dispatch has moved the issue's sequence on.
-	client := &interleaving{Client: dispatch.New(baseURL, token), act: func() {
+	client := &interleaving{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)), act: func() {
 		dispatchCall(t, baseURL, http.MethodPost, "/api/v1/issues/"+issue+"/messages", map[string]any{"body": "any news?"}, nil)
 	}}
 	runner := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine},
@@ -97,7 +97,7 @@ func TestABootStatusWriteDoesNotLandOverACloseScratchDispatchTookAfterItsRead(t 
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
 	bootQueuesTheWrite(t, pool, issue, engine)
 
-	client := &interleaving{Client: dispatch.New(baseURL, token), act: func() {
+	client := &interleaving{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)), act: func() {
 		setDispatchStatus(t, baseURL, issue, "done")
 	}}
 	runner := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine},
@@ -133,7 +133,7 @@ func TestABootStatusWriteDoesNotLandOverAPersonsMoveWithinTheWorkflow(t *testing
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
 	bootQueuesTheWrite(t, pool, issue, engine)
 
-	client := &interleaving{Client: dispatch.New(baseURL, token), act: func() {
+	client := &interleaving{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)), act: func() {
 		setDispatchStatus(t, baseURL, issue, "needs_review")
 	}}
 	runner := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine},
@@ -200,7 +200,7 @@ func bootQueuesTheWrite(t *testing.T, pool *store.Pool, issue string, engine *wo
 // dispatchStatusOf is the status Dispatch itself shows for key.
 func dispatchStatusOf(t *testing.T, baseURL, token, key string) string {
 	t.Helper()
-	issue, err := dispatch.New(baseURL, token).GetIssue(context.Background(), key)
+	issue, err := dispatch.New(baseURL, dispatch.BearerTransport(token, nil)).GetIssue(context.Background(), key)
 	if err != nil {
 		t.Fatalf("read %s from Dispatch: %v", key, err)
 	}

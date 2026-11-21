@@ -46,9 +46,10 @@ func operatorRouteFixture(t *testing.T) Pod {
 // launch sets, or one that places Oh My Pi's sessions; a volume Legion names; a mount at, under, or
 // above a path Legion mounts, the image owns, a tool runs from, or the state home Legion reserves
 // in the image's home directory; a provider key naming any variable already set in the agent's
-// environment, or whose pointer is; and a provider key reading a providers secret's key, which
-// would export that secret into Oh My Pi's environment. It passes the Go live harnesses' operator
-// pod, and an operator's own settings overlay and a baseline variable it may override.
+// environment, or whose pointer is; a provider key reading a providers secret's key, which would
+// export that secret into Oh My Pi's environment; and, under dispatch_token_broker, a provider key
+// named for a Dispatch credential. It passes the Go live harnesses' operator pod, and an
+// operator's own settings overlay and a baseline variable it may override.
 func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 	mountAt := func(path string) Pod {
 		return Pod{
@@ -77,6 +78,9 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 	keyPointer := func(name, who string) string {
 		return "provider_keys names " + name + ", whose pointer " + name + "_FILE " + who + ": the shim skips a key whose pointer the pod sets"
 	}
+	sharedDispatchToken := func(name string) string {
+		return "provider_keys names " + name + ", a Dispatch credential, under dispatch_token_broker: each role trades its pod's identity for its own Dispatch token, so the providers Secret may hold no shared one; remove the key"
+	}
 	const (
 		byRuntime    = "Legion's runtime sets in every pod"
 		byImage      = "the worker image sets (packages/daemon/docker/worker.Dockerfile ENV)"
@@ -88,6 +92,7 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		byOperator   = "runtime.kubernetes.pod.env sets"
 		byController = "Legion's runtime sets for the controller it launches, from the project's slack_channels alone"
 		byClaude     = "Legion's runtime sets for a role it launches on Claude Code (worker_backends)"
+		byBroker     = "Legion's runtime sets in every pod that carries an exchange identity under dispatch_token_broker"
 		byResume     = "Legion's runtime sets on every launch that resumes a recorded Oh My Pi session, to hold it to that session"
 	)
 	fixture := operatorRouteFixture(t)
@@ -95,7 +100,11 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		name string
 		pod  Pod
 		keys map[string]string
-		want string
+		// exchange is what the deployment's pods trade, NoExchange unless the case names it:
+		// dispatch_token_broker is ExchangeAndBroker, since configure takes the setting only
+		// beside an exchange audience.
+		exchange PodExchange
+		want     string
 	}{
 		{name: "a variable the runtime sets", pod: env("LEGION_TREE", "LEGSMOKE-1"), want: envSets("LEGION_TREE", byRuntime)},
 		{name: "the pod's PATH", pod: env("PATH", "/usr/bin"), want: envSets("PATH", byRuntime)},
@@ -137,6 +146,29 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		{name: "the controller's Slack channels", pod: env("LEGION_SLACK_CHANNELS", "C00000001"), want: envSets("LEGION_SLACK_CHANNELS", byController)},
 		{name: "a provider key for the controller's Slack channels", keys: map[string]string{"LEGION_SLACK_CHANNELS": "channels"},
 			want: keyNames("LEGION_SLACK_CHANNELS", byController)},
+		// DISPATCH_TOKEN_BROKER is Legion's word to a role only under dispatch_token_broker: a
+		// deployment without the setting tells no role it, so it stays the operator's to set, as it
+		// was before the setting existed.
+		{name: "the Dispatch broker's word under dispatch_token_broker", pod: env("DISPATCH_TOKEN_BROKER", "1"), exchange: ExchangeAndBroker,
+			want: envSets("DISPATCH_TOKEN_BROKER", byBroker)},
+		{name: "a provider key for the Dispatch broker's word under dispatch_token_broker", keys: map[string]string{"DISPATCH_TOKEN_BROKER": "broker"},
+			exchange: ExchangeAndBroker, want: keyNames("DISPATCH_TOKEN_BROKER", byBroker)},
+		{name: "the Dispatch broker's word without dispatch_token_broker", pod: env("DISPATCH_TOKEN_BROKER", "1")},
+		// Under dispatch_token_broker each role trades its pod's identity for its own Dispatch
+		// token, so a provider key named for either Dispatch credential is refused for that reason
+		// here, before any pod starts, and not only by the shim at each start. Without the broker,
+		// this refusal does not apply: each key is refused as before, since the runtime sets
+		// DISPATCH_TOKEN_FILE in every pod.
+		{name: "a provider key for the Dispatch token under dispatch_token_broker", keys: map[string]string{"DISPATCH_TOKEN": "dispatch"},
+			exchange: ExchangeAndBroker, want: sharedDispatchToken("DISPATCH_TOKEN")},
+		{name: "a provider key for the Dispatch token's pointer under dispatch_token_broker", keys: map[string]string{"DISPATCH_TOKEN_FILE": "dispatch"},
+			exchange: ExchangeAndBroker, want: sharedDispatchToken("DISPATCH_TOKEN_FILE")},
+		{name: "a provider key for the Dispatch token with the exchange and no broker", keys: map[string]string{"DISPATCH_TOKEN": "dispatch"},
+			exchange: ExchangeIdentity, want: keyPointer("DISPATCH_TOKEN", byRuntime)},
+		{name: "a provider key for the Dispatch token's pointer with the exchange and no broker", keys: map[string]string{"DISPATCH_TOKEN_FILE": "dispatch"},
+			exchange: ExchangeIdentity, want: keyNames("DISPATCH_TOKEN_FILE", byRuntime)},
+		{name: "a provider key for the Dispatch token's pointer with no exchange", keys: map[string]string{"DISPATCH_TOKEN_FILE": "dispatch"},
+			want: keyNames("DISPATCH_TOKEN_FILE", byRuntime)},
 		{name: "a volume Legion names", pod: Pod{Volumes: []corev1.Volume{
 			{Name: "creds", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "legion-creds"}}},
 			{Name: "launcher-tester", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "a"}}},
@@ -230,7 +262,7 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 			want: `runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to "ftp://dispatch.example.org", which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := CheckPod(tc.pod, tc.keys, testOptions().Tools, []string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore, false)
+			err := CheckPod(tc.pod, tc.keys, testOptions().Tools, []string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore, tc.exchange)
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("CheckPod = %v, want no refusal", err)
@@ -257,7 +289,7 @@ func TestCheckPodHoldsDispatchPublicURLToTheAgentsRule(t *testing.T) {
 	}
 	check := func(value string) error {
 		return CheckPod(Pod{Env: map[string]string{"DISPATCH_PUBLIC_URL": value}}, nil, testOptions().Tools,
-			[]string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore, false)
+			[]string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore, NoExchange)
 	}
 	for _, value := range fixture.Valid {
 		if err := check(value); err != nil {

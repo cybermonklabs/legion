@@ -1,0 +1,20 @@
+kind: Added
+custom:
+  Issue: pr4392
+body: |-
+  `dispatch_token_broker: true` gives the daemon a Dispatch credential of its own in place of
+  `dispatch_token_file`. The daemon trades its own pod identity at the secrets broker for a token
+  of the session `legion-daemon:<PROJECT>`, and each Dispatch call it makes carries
+  `Authorization: DPoP <token>` and a proof of the call's URL. It trades a new token before the
+  old one expires, with no restart. Only `runtime: kubernetes` takes the setting, beside
+  `dispatch_url` and `runtime.kubernetes.agent_secrets.exchange_audience`, and the loader refuses
+  it beside `dispatch_token_file`. Each refusal names the setting.
+
+  The daemon reads its identity from `AGENT_SECRETS_URL`,
+  `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE`. It refuses
+  to boot when one of them is missing, when the broker refuses the trade for good, and when
+  `GET /api/v1/whoami` answers another session, another project or no owner for the token.
+  `legion config check` needs none of these variables. The boot logs one line,
+  `legion daemon's Dispatch credential`, which names the credential (`credential=broker` and the
+  session, or `credential=file` and the file) and no token. Without the setting the daemon sends
+  the bearer from `dispatch_token_file`, byte for byte as before.

@@ -71,7 +71,7 @@ func TestABrokerThatIsDownIsWaitedOut(t *testing.T) {
 	}
 
 	// The held token is still live, so the caller keeps writing while the broker is down.
-	client.held.Expiry = time.Now().Add(30 * time.Second)
+	client.held.Load().Expiry = time.Now().Add(30 * time.Second)
 	held, err := client.Token(ctx)
 	if err != nil || held.AccessToken != first.AccessToken {
 		t.Fatalf("Token while the broker is down = %v, %v; want the token in hand, which is still live", held, err)
@@ -79,7 +79,7 @@ func TestABrokerThatIsDownIsWaitedOut(t *testing.T) {
 
 	// Once it has run out there is no identity to write with, and the client says so rather
 	// than handing its caller a token the broker will refuse.
-	client.held.Expiry = time.Now().Add(-time.Second)
+	client.held.Load().Expiry = time.Now().Add(-time.Second)
 	if token, err := client.Token(ctx); err == nil {
 		t.Fatalf("Token with nothing live left = %+v, want the failure", token)
 	}
@@ -116,7 +116,7 @@ func TestABusyBrokerIsAskedAgainRatherThanEndingTheLoop(t *testing.T) {
 	}
 
 	// A 429 while the token in hand is live is no reason to stop writing with it.
-	client.held.Expiry = time.Now().Add(30 * time.Second)
+	client.held.Load().Expiry = time.Now().Add(30 * time.Second)
 	held, err := client.Token(ctx)
 	if err != nil || held.AccessToken != first.AccessToken {
 		t.Fatalf("Token while the broker is busy = %v, %v; want the token in hand, which is still live", held, err)
@@ -254,7 +254,7 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 				broker.server.Close()
 			}
 
-			client.held.Expiry = time.Now().Add(30 * time.Second)
+			client.held.Load().Expiry = time.Now().Add(30 * time.Second)
 			if held, err := client.Token(ctx); err != nil || held.AccessToken != mintedToken(1)["access_token"] {
 				t.Fatalf("Token = %+v, %v; want the token in hand, which is still live", held, err)
 			}

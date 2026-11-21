@@ -1164,9 +1164,9 @@ func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 	const opened = "The pod that ran this issue's roles is gone. The daemon opened an update round over that pod (" + podUpdateRound + "). " +
 		"The reasons were: " + podUpdateDrift + ". The pod went before the round was over.\n\n"
 	const restarted = "\n\nThe daemon starts each role again, in the same session, on a new pod. Each role must read its issue branch at origin to see the work that it pushed."
-	const lost = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
+	const lost = opened + "These roles did not answer the update round before the pod went: implementer (ready). " +
 		"The pod's disk went with the pod. Work that these roles did not push is lost." + restarted
-	const stays = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
+	const stays = opened + "These roles did not answer the update round before the pod went: implementer (ready). " +
 		"The pod's disk is a kept volume, and the volume is still there. Work that these roles did not push is on that volume. " +
 		"The next pod of this issue mounts the volume." + restarted
 	for _, tc := range []struct {

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 // leakCheckTag is the tag these tests read the check at, spelled as the worker image pins one.
@@ -400,7 +401,7 @@ func TestTheLeakCheckSettingReachesEitherRuntime(t *testing.T) {
 	}
 	k := kubernetesConfig(t, "https://127.0.0.1:1")
 	k.LeakCheck = leakCheckSetting
-	opts, err := sandboxOptions(k, *k.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(k, *k.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}

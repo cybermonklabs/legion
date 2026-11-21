@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -106,7 +107,7 @@ func newRig(t *testing.T, options ...func(*ciphertoken.Options)) *rig {
 	opts := ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
 		Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-		Origin:    dispatchOrigin,
+		Origins:   []string{dispatchOrigin},
 		Replay:    store.NewDPoPProofs(database.Pool),
 		Address:   sourceAddress,
 		Now:       tick.now,
@@ -714,6 +715,49 @@ func TestTheProofIsCheckedAgainstDispatchsOwnOriginNotAForwardedHeader(t *testin
 	}
 }
 
+// TestAProofForAnOriginDispatchNamesIsAccepted: Dispatch is reached at more than one origin — its
+// public one, DISPATCH_SERVER_URL, and the in-cluster address pods and daemons call — and a client
+// signs the URL it calls, so a proof whose 'htu' is any origin Dispatch names plus the request's
+// path is accepted. The controls: a proof naming an origin no setting names is refused for its
+// 'htu', as a wrong target always was, and one proof presented once at each of the two origins
+// is refused the second time, by the one replay store, whichever origin it names.
+func TestAProofForAnOriginDispatchNamesIsAccepted(t *testing.T) {
+	const inClusterOrigin = "http://dispatch.internal.example:8766"
+	rig := newRig(t, func(o *ciphertoken.Options) { o.Origins = []string{dispatchOrigin, inClusterOrigin} })
+	caller := newSigner(t)
+	const token = "a-token-presented-inside-the-cluster"
+	rig.broker.Says(token, liveToken(caller.jkt, time.Hour))
+
+	decided, err := rig.verifier.Verify(t.Context(), caller.request(inClusterOrigin+resourcePath, token))
+	if err != nil {
+		t.Fatalf("a proof naming the second origin Dispatch names was refused: %v", err)
+	}
+	if decided.Session != "ses_a1b2c3" || decided.Person != "sjawhar" {
+		t.Fatalf("Verify = %+v, want the session and the person the token names", decided)
+	}
+
+	elsewhere := caller.request("https://dispatch.elsewhere.example"+resourcePath, token)
+	if _, err := rig.verifier.Verify(t.Context(), elsewhere); !errors.Is(err, ciphertoken.ErrProofInvalid) || !strings.Contains(err.Error(), "'htu'") {
+		t.Fatalf("a proof naming an origin no setting names answered %v, want ErrProofInvalid for its 'htu'", err)
+	}
+
+	for signedFor, presentedAt := range map[string]string{dispatchOrigin: inClusterOrigin, inClusterOrigin: dispatchOrigin} {
+		first := caller.request(signedFor+resourcePath, token)
+		if _, err := rig.verifier.Verify(t.Context(), first); err != nil {
+			t.Fatalf("a proof for %s, presented there first: %v", signedFor, err)
+		}
+		other, err := url.Parse(presentedAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second := first.Clone(t.Context())
+		second.URL.Scheme, second.URL.Host, second.Host = other.Scheme, other.Host, other.Host
+		if _, err := rig.verifier.Verify(t.Context(), second); !errors.Is(err, ciphertoken.ErrProofInvalid) || !strings.Contains(err.Error(), "already been used") {
+			t.Fatalf("the proof for %s, presented again at %s, answered %v, want ErrProofInvalid as a replay", signedFor, presentedAt, err)
+		}
+	}
+}
+
 // TestAFloodOfDistinctUnknownTokensFromOneAddressIsBoundedBeforeTheBroker: the address bucket is
 // what stops a stranger spending the budget a person's approval needs (INFRA-228), so K requests
 // bearing K tokens the broker has never issued cost fewer than K introspections. With the bound
@@ -862,26 +906,28 @@ func TestARequestPresentingNoDPoPTokenIsNotThisCredential(t *testing.T) {
 }
 
 // TestNewRefusesAnOriginItCannotCheckAProofAgainst: an origin that is not an absolute http(s)
-// origin is a deployment error, and it fails the build of the verifier rather than every
-// request.
+// origin is a deployment error, wherever it stands in the list, and so is no origin at all; each
+// fails the build of the verifier rather than every request.
 func TestNewRefusesAnOriginItCannotCheckAProofAgainst(t *testing.T) {
 	database := storetest.Open(t)
-	for name, origin := range map[string]string{
-		"empty":       "",
-		"no scheme":   "dispatch.test",
-		"not http":    "ftp://dispatch.test",
-		"with a path": "https://dispatch.test/dispatch",
+	for name, origins := range map[string][]string{
+		"none":                 nil,
+		"empty":                {""},
+		"no scheme":            {"dispatch.test"},
+		"not http":             {"ftp://dispatch.test"},
+		"with a path":          {"https://dispatch.test/dispatch"},
+		"a second with a path": {dispatchOrigin, "http://dispatch.internal.example:8766/dispatch"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ciphertoken.New(ciphertoken.Options{
 				BrokerURL: "https://broker.test",
 				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-				Origin:    origin,
+				Origins:   origins,
 				Replay:    store.NewDPoPProofs(database.Pool),
 				Address:   sourceAddress,
 			})
 			if err == nil {
-				t.Fatalf("New accepted the origin %q", origin)
+				t.Fatalf("New accepted the origins %q", origins)
 			}
 		})
 	}
@@ -897,7 +943,7 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 		return ciphertoken.Options{
 			BrokerURL: "https://broker.test",
 			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-			Origin:    dispatchOrigin,
+			Origins:   []string{dispatchOrigin},
 			Replay:    store.NewDPoPProofs(database.Pool),
 		}
 	}
