@@ -290,15 +290,18 @@ route retries, because a holder that stopped answering keeps its claim and there
 a second read to see past. `store.Registry` bounds that claim read by the caller's context itself
 (`RoleClaim`), since nats.go's KV calls take none.
 
-A send and a publish stamp the envelope's `sender` from the sender's interest record (`senderStamp`,
-`cmd/listener/api.go`), which a cache miss reads through to the bucket within one second of the
-same budget (`senderStampReadTimeout`; `store.Registry.Get` bounds the bucket read alone, so a
-cache hit answers in the caller's goroutine). The stamp is only enrichment: a read that does not
-answer leaves it the session id and the title this listener's cache holds, and the publish that
-follows meets the same silent bus and answers the 503 above inside the caller's attempt. The
-stamp's `roles` are the roles whose claims name the sender, from the claims view the session routes
-read; a view that is not complete (`store.ErrRoleViewNotReady`) leaves them out, and the send goes
-on.
+A send and a publish stamp the envelope's `sender` from the sender's interest record and session
+entry (`senderStamp`, `cmd/listener/api.go`), whose cache misses are read through to their buckets
+within one second of the same budget (`senderStampReadTimeout`; `store.Registry.Get` bounds the
+bucket read alone, so a cache hit answers in the caller's goroutine). The `machine` and `cwd` are
+the interest record's, and the session entry's where that record is not found or not read, since
+each registration writes both; a sender whose entry is not read either, from this listener's cache
+or from the bucket within the same window, gets neither. The stamp is only enrichment: a read that
+does not answer leaves it the session id and what this listener's session cache holds, and the
+publish that follows meets the same silent bus and answers the 503 above inside the caller's
+attempt. The stamp's `roles` are the roles whose claims name the sender, from the claims view the
+session routes read; a view that is not complete (`store.ErrRoleViewNotReady`) leaves them out,
+and the send goes on.
 
 A publish whose caller's context has already ended puts nothing on the wire; on these two routes it
 is answered the 503 above. A role send's forward, published as a core message whose reply carries

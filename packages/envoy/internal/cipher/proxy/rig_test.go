@@ -576,7 +576,11 @@ func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 	if o.Rules.Secrets == nil {
 		o.Rules = testRules()
 	}
-	o.Grants = r.grants
+	// A row that puts the broker's own request machine behind the proxy gives it here
+	// (slack_test.go's newSlackBroker); every other row reads the fake.
+	if o.Grants == nil {
+		o.Grants = r.grants
+	}
 	o.CA = r.authority
 	o.Log = slog.New(r.logs)
 	o.Dial = r.dial
