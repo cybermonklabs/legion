@@ -228,10 +228,10 @@ type ConsumerSpec struct {
 	// the fact to apply: the workflow performs no I/O, and decides from Dispatch's view of the issue
 	// and its event log whether a person's approval of a parked labelled root's primary document
 	// queues that root, so the view is read here, for a person's approval that is not a carried
-	// one, and the log for such an approval that the view shows can queue its root
-	// (DispatchArtifact.MayQueueHandover). A failed preparation is retried after the nak delay
-	// (nakDelay) rather than applied without it. No preparer (a test) applies the fact as decoded,
-	// with no view, which queues nothing.
+	// one, and the log for such an approval that the view shows can queue its root and that a
+	// sequence places (DispatchArtifact.NeedsEventLog). A failed preparation is retried after the
+	// nak delay (nakDelay) rather than applied without it. No preparer (a test) applies the fact
+	// as decoded, with no view, which queues nothing.
 	PrepareArtifact func(ctx context.Context, artifact DispatchArtifact) (DispatchArtifact, error)
 }
 

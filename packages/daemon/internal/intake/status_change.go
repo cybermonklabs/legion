@@ -1,49 +1,56 @@
 package intake
 
-import (
-	"encoding/json"
-	"fmt"
-)
+import "encoding/json"
 
-// StatusChangedAfter is the sequence of the first issue event after seq, in an issue's Dispatch
+// NeedsEventLog says whether the fact's preparation reads the issue's Dispatch event log: a
+// person's approval that may queue its parked root (MayQueueHandover) and that carries a sequence
+// to place it by in that log (Mark.Seq). A review from a read that carries no sequence cannot be
+// placed, and reads no log. The daemon's preparation reads the log for such a fact and sets what it
+// shows (WithStatusChange), and so does a test that builds a fact as the preparation builds it, so
+// this method is the one rule for which approvals read the log.
+func (a DispatchArtifact) NeedsEventLog() bool {
+	return a.MayQueueHandover() && a.Mark.Seq > 0
+}
+
+// WithStatusChange is the fact with StatusChangedSeq set from events, the issue's Dispatch event
+// log as dispatch.Client.EventsAfter serves it from sequence 0, oldest first: the sequence of the
+// first issue event after the approval (Mark.Seq) that changed the issue's status, 0 when none did
+// (statusChangedAfter). It is for a fact that needs the log (NeedsEventLog), whose Mark.Seq places
+// the approval in it. A log the daemon cannot decode is an error, with the fact unchanged.
+func (a DispatchArtifact) WithStatusChange(events []json.RawMessage) (DispatchArtifact, error) {
+	changed, err := statusChangedAfter(events, a.Mark.Seq)
+	if err != nil {
+		return a, err
+	}
+	a.StatusChangedSeq = changed
+	return a, nil
+}
+
+// statusChangedAfter is the sequence of the first issue event after seq, in an issue's Dispatch
 // event log as dispatch.Client.EventsAfter serves it from sequence 0, oldest first, that changed
-// the issue's status; 0 when no event after seq changed it. The issue events are the three the
-// decoder reads an issue from (issue.created, issue.updated and issue.closed), and each carries
-// the issue's status as the event leaves it; every other event (a comment, a claim, a review) is
-// passed over. The status at seq is the status of the last issue event at or before it, and an
-// issue event after seq changes the status when it carries another status than the issue event
-// before it. When no issue event stands at or before seq, the first one after it sets the status
-// the later ones are compared with, and is no change itself. A seq of 0 or less, a review from a
-// read that carries no sequence, cannot be placed, and is 0. An event that does not decode as a
-// Dispatch event, or an issue event whose payload does not decode, is an error naming its
-// position, since a log the daemon cannot read cannot say the status stayed.
+// the issue's status; 0 when no event after seq changed it. The issue events are the ones
+// walkIssueEvents gives, each carrying the issue's status as the event leaves it; every other
+// event (a comment, a claim, a review) is passed over. The status at seq is the status of the
+// last issue event at or before it, and an issue event after seq changes the status when it
+// carries another status than the issue event before it. When no issue event stands at or before
+// seq, the first one after it sets the status the later ones are compared with, and is no change
+// itself. An event that does not decode as a Dispatch event, or an issue event with no payload
+// field or with a payload that does not decode, is an error naming its position, since a log the
+// daemon cannot read cannot say the status stayed.
 //
 // The walk reads the log from sequence 0 because an event carries the status it leaves, not the
 // one it found: no event after seq says what the status was at seq, so only the events at or
 // before it tell a rename, which carries the same status, from a change.
-func StatusChangedAfter(events []json.RawMessage, seq int64) (int64, error) {
-	if seq <= 0 {
-		return 0, nil
-	}
+func statusChangedAfter(events []json.RawMessage, seq int64) (int64, error) {
 	status, known := "", false
-	for i, raw := range events {
-		var event dispatchEvent
-		if err := json.Unmarshal(raw, &event); err != nil {
-			return 0, fmt.Errorf("decode Dispatch event %d of %d: %w", i+1, len(events), err)
+	for event, err := range walkIssueEvents(events) {
+		if err != nil {
+			return 0, err
 		}
-		if event.Type != "issue.created" && event.Type != "issue.updated" && event.Type != "issue.closed" {
-			continue
-		}
-		var issue struct {
-			Status string `json:"status"`
-		}
-		if err := json.Unmarshal(event.Payload, &issue); err != nil {
-			return 0, fmt.Errorf("decode Dispatch issue payload of event %d of %d: %w", i+1, len(events), err)
-		}
-		if event.Seq > seq && known && issue.Status != status {
+		if event.Seq > seq && known && event.Status != status {
 			return event.Seq, nil
 		}
-		status, known = issue.Status, true
+		status, known = event.Status, true
 	}
 	return 0, nil
 }

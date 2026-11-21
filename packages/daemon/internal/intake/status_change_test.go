@@ -20,10 +20,10 @@ func approvalLogEvent(seq int) json.RawMessage {
 
 // The status changed after an approval at seq when an issue event after it (issue.created,
 // issue.updated or issue.closed) carries another status than the issue event before it, and
-// StatusChangedAfter is the first such event's sequence. A rename keeps the status, so it is no
+// statusChangedAfter is the first such event's sequence. A rename keeps the status, so it is no
 // change, and a todo and a park again after the approval is a change at the todo, though the
 // status ends where it stood. Events of other kinds count for nothing. With no issue event at or
-// before seq, only a change between the later ones counts, and a seq of 0 places nothing.
+// before seq, only a change between the later ones counts.
 func TestStatusChangedAfterIsTheFirstLaterIssueEventOfAnotherStatus(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -96,31 +96,23 @@ func TestStatusChangedAfterIsTheFirstLaterIssueEventOfAnotherStatus(t *testing.T
 			seq:  9,
 			want: 11,
 		},
-		{
-			name: "a seq of 0",
-			events: []json.RawMessage{
-				statusLogEvent(1, "issue.created", "triage", "root"),
-				statusLogEvent(5, "issue.updated", "icebox", "root"),
-				statusLogEvent(10, "issue.updated", "todo", "root"),
-			},
-		},
 		{name: "an empty log", seq: 9},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := StatusChangedAfter(tc.events, tc.seq)
+			got, err := statusChangedAfter(tc.events, tc.seq)
 			if err != nil {
-				t.Fatalf("StatusChangedAfter: %v", err)
+				t.Fatalf("statusChangedAfter: %v", err)
 			}
 			if got != tc.want {
-				t.Fatalf("StatusChangedAfter(%d) = %d, want %d", tc.seq, got, tc.want)
+				t.Fatalf("statusChangedAfter(%d) = %d, want %d", tc.seq, got, tc.want)
 			}
 		})
 	}
 }
 
-// A log the daemon cannot read cannot say the status stayed: an event that does not decode is an
-// error naming its position, so the preparation fails and the approval is delivered again rather
-// than applied as though nothing changed.
+// A log the daemon cannot read cannot say the status stayed: an event that does not decode, or an
+// issue event with no payload, is an error naming its position, so the preparation fails and the
+// approval is delivered again rather than applied as though nothing changed.
 func TestStatusChangedAfterRefusesAnEventItCannotDecode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -137,11 +129,16 @@ func TestStatusChangedAfterRefusesAnEventItCannotDecode(t *testing.T) {
 			events: []json.RawMessage{approvalLogEvent(9), logEvent(10, "issue.updated", "user", `"a string"`)},
 			want:   "decode Dispatch issue payload of event 2 of 2",
 		},
+		{
+			name:   "an issue event with no payload",
+			events: []json.RawMessage{approvalLogEvent(9), payloadlessLogEvent(10, "issue.updated")},
+			want:   "decode Dispatch issue payload of event 2 of 2",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := StatusChangedAfter(tc.events, 9)
+			_, err := statusChangedAfter(tc.events, 9)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("StatusChangedAfter error = %v, want one containing %q", err, tc.want)
+				t.Fatalf("statusChangedAfter error = %v, want one containing %q", err, tc.want)
 			}
 		})
 	}

@@ -289,8 +289,8 @@ type DispatchArtifact struct {
 	Issue *dispatch.Issue
 	// StatusChangedSeq is the sequence of the first issue event of the issue's Dispatch event log
 	// after the approval (Mark.Seq) that carries another status than the issue event before it
-	// (StatusChangedAfter), set when the daemon prepares a person's approval that can queue its
-	// root (MayQueueHandover). It is 0 when no later event changed the status, and for every fact
+	// (WithStatusChange), set when the daemon prepares a person's approval that needs the log
+	// (NeedsEventLog). It is 0 when no later event changed the status, and for every fact
 	// nothing read the log for.
 	StatusChangedSeq int64
 }
@@ -328,8 +328,8 @@ func (a DispatchArtifact) PersonApproval() bool {
 // document of a root that Dispatch's view (Issue) shows parked: no parent, the legion label, status
 // backlog or icebox. Such an approval queues the root as the person's handover unless the root's
 // tree is live or its status changed after the approval (StatusChangedSeq), which the workflow
-// decides. The daemon reads the issue's event log for it when it prepares the fact, and the
-// workflow decides from it, so the read side and the deciding side test one predicate.
+// decides. The daemon reads the issue's event log for it when it prepares the fact (NeedsEventLog),
+// and the workflow decides from it, so the read side and the deciding side test one predicate.
 func (a DispatchArtifact) MayQueueHandover() bool {
 	if a.Issue == nil || !a.PersonApproval() {
 		return false

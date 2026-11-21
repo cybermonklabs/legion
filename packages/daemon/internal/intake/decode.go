@@ -336,11 +336,21 @@ func DecodeDispatchEvent(project, key string, event []byte) (Fact, []string, err
 	return decodeDispatchIssueEvent(key, project, string(event))
 }
 
+// isIssueEvent says whether a Dispatch event of type typ is an issue event: one that carries the
+// issue as the event leaves it. decodeDispatchEvent reads a DispatchIssue from each such event,
+// and walkIssueEvents gives each such event of an issue's event log, so the two read one list.
+func isIssueEvent(typ string) bool {
+	switch typ {
+	case "issue.created", "issue.updated", "issue.closed":
+		return true
+	}
+	return false
+}
+
 // decodeDispatchEvent decodes a checked Dispatch event of the daemon's project by its type, adding
 // to unread each field it took as unknown.
 func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
-	switch event.Type {
-	case "issue.created", "issue.updated", "issue.closed":
+	if isIssueEvent(event.Type) {
 		var issue struct {
 			Key          string          `json:"key"`
 			Status       string          `json:"status"`
@@ -390,6 +400,8 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
 			HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels, ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
 			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
+	}
+	switch event.Type {
 	case "artifact.approved", "artifact.changes_requested":
 		var artifact struct {
 			ArtifactID string `json:"artifact_id"`

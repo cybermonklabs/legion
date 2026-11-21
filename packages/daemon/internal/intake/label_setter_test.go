@@ -15,6 +15,12 @@ func logEvent(seq int, typ, kind string, payload string) json.RawMessage {
 		seq, seq, typ, kind, kind, seq, payload))
 }
 
+// payloadlessLogEvent is an event of type typ at seq, written by a person, with no payload field.
+func payloadlessLogEvent(seq int, typ string) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"id":%d,"issue_key":"LEGION-755","seq":%d,"type":%q,"actor":{"kind":"user","id":"user-1"},"notify":true,"created_at":"2026-10-14T17:00:%02dZ"}`,
+		seq, seq, typ, seq))
+}
+
 // issueLogEvent is an issue.created or issue.updated event whose issue carries labels.
 func issueLogEvent(seq int, typ, kind string, labels ...string) json.RawMessage {
 	quoted := make([]string, len(labels))
@@ -130,9 +136,9 @@ func TestLabelSetterIsTheActorOfTheEventThatAddedTheLabel(t *testing.T) {
 	}
 }
 
-// A log the daemon cannot read names no setter it can act on: an event that does not decode is
-// an error naming its position, so the consumer delivers the fact again rather than treating the
-// label as nobody's.
+// A log the daemon cannot read names no setter it can act on: an event that does not decode, or
+// an issue event with no payload, is an error naming its position, so the consumer delivers the
+// fact again rather than treating the label as nobody's.
 func TestLabelSetterRefusesAnEventItCannotDecode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -148,6 +154,11 @@ func TestLabelSetterRefusesAnEventItCannotDecode(t *testing.T) {
 			name:   "an issue event whose payload is not an issue",
 			events: []json.RawMessage{logEvent(1, "issue.created", "user", `"a string"`)},
 			want:   "decode Dispatch issue payload of event 1 of 1",
+		},
+		{
+			name:   "an issue event with no payload",
+			events: []json.RawMessage{issueLogEvent(1, "issue.created", "user", "legion"), payloadlessLogEvent(2, "issue.updated")},
+			want:   "decode Dispatch issue payload of event 2 of 2",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

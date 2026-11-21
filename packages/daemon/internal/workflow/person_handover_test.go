@@ -363,18 +363,19 @@ func rootApprovalEvent() json.RawMessage {
 }
 
 // preparedApprovalOf is askPerson's approval at 9 as the daemon's preparation builds it: view is
-// what it read of the issue, and for an approval that may queue its root it sets the first change
-// of the root's status after the approval that log, LEGION-208's Dispatch event log, shows
-// (intake.StatusChangedAfter).
+// what it read of the issue, and for an approval that needs the issue's event log
+// (intake.DispatchArtifact.NeedsEventLog) it sets the first change of the root's status after the
+// approval that log, LEGION-208's Dispatch event log, shows
+// (intake.DispatchArtifact.WithStatusChange).
 func preparedApprovalOf(t *testing.T, view *dispatch.Issue, log []json.RawMessage) intake.DispatchArtifact {
 	t.Helper()
 	fact := approvalOf(askPerson, view)
-	if fact.MayQueueHandover() {
-		changed, err := intake.StatusChangedAfter(log, fact.Mark.Seq)
+	if fact.NeedsEventLog() {
+		prepared, err := fact.WithStatusChange(log)
 		if err != nil {
 			t.Fatalf("read the status changes of LEGION-208's log: %v", err)
 		}
-		fact.StatusChangedSeq = changed
+		fact = prepared
 	}
 	return fact
 }

@@ -3039,15 +3039,16 @@ func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, 
 // decoded, with no view, which queues nothing.
 //
 // The view is the issue as it is now, so it cannot say whether the status changed after the
-// approval. For an approval that can queue its root by that view (MayQueueHandover) and carries a
-// sequence to place it by, a second read takes the issue's whole Dispatch event log, and the
-// first change of the issue's status after the approval is set on the fact (StatusChangedSeq, by
-// intake.StatusChangedAfter), so the workflow refuses an approval after which the person parked
-// the root again, however late it is applied or replayed. That read is one paged read of the
-// issue's whole log, the same read labelSetter makes for an unrecorded issue's admission event,
-// made under the same AckWait bound the intake puts on the whole preparation, the issue read's
-// included. A failed read, or a log the daemon cannot decode, fails the preparation with an error
-// naming the key, so the event is delivered again, as a failed issue read is.
+// approval. For an approval that needs the issue's whole Dispatch event log
+// (intake.DispatchArtifact.NeedsEventLog: one that can queue its root by that view and carries a
+// sequence to place it by), a second read takes that log, and the first change of the issue's
+// status after the approval is set on the fact (StatusChangedSeq, by
+// intake.DispatchArtifact.WithStatusChange), so the workflow refuses an approval after which the
+// person parked the root again, however late it is applied or replayed. That read is one paged
+// read of the issue's whole log, the same read labelSetter makes for an unrecorded issue's
+// admission event, made under the same AckWait bound the intake puts on the whole preparation, the
+// issue read's included. A failed read, or a log the daemon cannot decode, fails the preparation
+// with an error naming the key, so the event is delivered again, as a failed issue read is.
 func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.DispatchArtifact) (intake.DispatchArtifact, error) {
 	if !fact.PersonApproval() {
 		return fact, nil
@@ -3057,14 +3058,14 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 		return fact, fmt.Errorf("read %s from Dispatch before applying a person's approval of its document %s: %w", fact.Key, fact.ArtifactID, err)
 	}
 	fact.Issue = &issue
-	if !fact.MayQueueHandover() || fact.Mark.Seq <= 0 {
+	if !fact.NeedsEventLog() {
 		return fact, nil
 	}
 	events, err := w.dispatch.EventsAfter(ctx, fact.Key, 0)
 	if err != nil {
 		return fact, fmt.Errorf("read the event log of %s from Dispatch for a change of its status after the approval at %d: %w", fact.Key, fact.Mark.Seq, err)
 	}
-	if fact.StatusChangedSeq, err = intake.StatusChangedAfter(events, fact.Mark.Seq); err != nil {
+	if fact, err = fact.WithStatusChange(events); err != nil {
 		return fact, fmt.Errorf("read a change of the status of %s after the approval at %d from its event log: %w", fact.Key, fact.Mark.Seq, err)
 	}
 	return fact, nil
