@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A resend that reaches a clustered stream while its earlier attempt is still being stored is now
+  answered with that attempt's copy. Before, `POST /v1/messages/publish` to a team or captured
+  topic and `POST /v1/messages/send` answered such a resend `503` with `bus_unavailable`, "the
+  message bus did not answer: a publish under the same message id is still in process", so a
+  sender that retried during a hub failover was told its message was not taken while its first
+  attempt was being stored. Each route now publishes again every 50 ms within its request budget
+  until the stream answers with the earlier attempt's copy, as the listener's role keep already
+  did. A budget that ends while the earlier attempt is still in process is still answered `503`.
+time: 2026-11-21T15:55:34Z
+custom:
+    Issue: pr4861
