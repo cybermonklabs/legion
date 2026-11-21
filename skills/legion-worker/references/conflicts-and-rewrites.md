@@ -4,11 +4,11 @@ Read it when GitHub reports the pull request `CONFLICTING`, the daemon's merge-f
 
 ## Reintegrating the base
 
-The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the daemon's merge-forward message asks it (*The daemon's ask*, below), the controller asks because of a conflict, the architect's backward move names a parent's last round (its `Reason:` starts `Last round:`: the parent's full test round once its children merged, `skill://legion-architect/references/acceptance.md`, "The last round"), the change needs something only the base has, or the pull request was retargeted. Never to refresh CI or pick up the default branch: each merge is a new head that reruns CI and can void a review. Never with `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
+The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the daemon's merge-forward message asks it (*The daemon's ask*, below), the controller asks because of a conflict, the architect's backward move names a parent's last round (its `Reason:` starts `Last round:`: the parent's full test round once its children merged, `skill://legion-architect/references/acceptance.md`, "The last round"), the change needs something only the base has, or the pull request was retargeted. Never to refresh CI or pick up the default branch: each merge is a new head that reruns CI and can void a review. Never by rebasing the branch, which rewrites pushed commits (*A wrong pushed commit*, below); the one rebase is of `@` in step 1, which is never pushed.
 
 A tree is a root issue and the issues beneath it. When another tree's open pull request changes files yours changes, the two race: the second to merge meets a conflict. Before you race it, `envoy_publish` to its implementer's role topic, ask when its next push lands, and merge once, after it.
 
-1. Merge the bookmark, never `@`, with the base, in one new commit, and put `@` on top of it. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
+1. Commit your own edits first, so `@` holds none of yours. Then merge the bookmark, never `@`, with the base, in one new commit, and put `@` on top of it. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
 
    ```bash
    base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
