@@ -31,9 +31,10 @@ const PoolPing = "-- ping"
 // the server says it ran it: an Execute of a portal on its CommandComplete, EmptyQueryResponse or
 // PortalSuspended, with the SQL and values the portal was bound with; each statement of a simple
 // query on its CommandComplete or EmptyQueryResponse; a function call on its result. A statement
-// the server answers with an error is recorded as Failed; the messages the server then discards,
-// up to the next Sync, have no effect. A Bind that no Execute follows runs nothing and records
-// nothing.
+// the server answers with an error is recorded as Failed, once; the messages the server then
+// discards, up to the next Sync, have no effect. A FATAL or PANIC error ends the connection: the
+// server answers nothing after it, and nothing after it is read. A Bind that no Execute follows
+// runs nothing and records nothing.
 //
 // Its boundary is the store's own connections: those of its pool, the lease and listener
 // connections opened from its configuration, and any connection opened from a copy of that
@@ -187,6 +188,10 @@ type sent struct {
 	values  [][]byte
 	// function is a function call's object id.
 	function uint32
+	// refused is whether the server refused a simple query or a function call, which then waits
+	// for its ReadyForQuery: an error after it, such as the FATAL that ends the connection, records
+	// it no second time.
+	refused bool
 }
 
 // sendingConn is a connection whose writes and reads its SentStatements reads. written and
@@ -196,7 +201,8 @@ type sent struct {
 // between. copying is set while the server is in copy-in, from its CopyInResponse until the
 // client's CopyDone or CopyFail, since the server ignores a Sync or a Flush sent then. prepared
 // holds the connection's prepared statements and portals its portals, by name, each as the server
-// last acknowledged it.
+// last acknowledged it. lost is set once the recorder reads no more of the connection: one it
+// could not read (lose), or one the server ended with a FATAL error (refused).
 type sendingConn struct {
 	net.Conn
 	recorder   *SentStatements
@@ -322,8 +328,9 @@ func (c *sendingConn) lose(what string) {
 // order, until their answers come. A Flush, a Terminate, a CopyData and the authentication
 // messages get no answer of their own. While the server discards what follows a refusal,
 // everything before the next Sync has no effect. In copy-in the server ignores a Sync and a Flush,
-// and a CopyDone or a CopyFail ends it; a CopyDone or a CopyFail sent before the server's
-// CopyInResponse is read is kept as the mark where copy-in will end (copyIn).
+// and a CopyDone or a CopyFail ends it; any other message ends the copy and the connection
+// (refused). A CopyDone or a CopyFail sent before the server's CopyInResponse is read is kept as
+// the mark where copy-in will end (copyIn).
 func (c *sendingConn) sentMessage(kind byte, body []byte) {
 	if c.discarding {
 		if kind != 'S' {
@@ -339,10 +346,9 @@ func (c *sendingConn) sentMessage(kind byte, body []byte) {
 			c.copying = false
 			return
 		}
-		// Any other message ends copy-in with an error the server answers the copy with, and the
-		// server takes it as that end, not as a message of its own.
-		c.copying = false
-		return
+		// Since PostgreSQL 14 the server checks the type of any other message before it reads
+		// the body: it refuses the copy with 08P01 and ends the connection with a FATAL 08P01. The
+		// message is kept as any other, and that FATAL drops it with everything else waiting.
 	}
 	switch kind {
 	case 'c', 'f':
@@ -425,6 +431,9 @@ func (c *sendingConn) answer(kind byte, body []byte) {
 	switch kind {
 	case 'N', 'S', 'A':
 		return
+	case 'E':
+		c.refused(body)
+		return
 	}
 	if len(c.waiting) == 0 {
 		c.lose(fmt.Sprintf("a %q message from the server, which nothing the connection sent waits for", kind))
@@ -432,8 +441,6 @@ func (c *sendingConn) answer(kind byte, body []byte) {
 	}
 	head := &c.waiting[0]
 	switch {
-	case kind == 'E':
-		c.refused(body)
 	case kind == 'Z':
 		c.readyForQuery(body)
 	case kind == '1' && head.kind == 'P':
@@ -487,7 +494,7 @@ func (c *sendingConn) done() {
 // until the client's CopyDone or CopyFail, and ignores every Sync the client sends before it. The
 // Syncs already waiting, up to a CopyDone or CopyFail already sent, are dropped; if none was sent
 // yet, the Syncs to come are dropped as they are sent (copying). Any other message waiting ends
-// copy-in with an error the server answers the copy with, after which a Sync counts again.
+// the copy and the connection (refused).
 func (c *sendingConn) copyIn() {
 	for index := 1; index < len(c.waiting); {
 		switch c.waiting[index].kind {
@@ -503,17 +510,36 @@ func (c *sendingConn) copyIn() {
 	c.copying = true
 }
 
-// refused reads the server's ErrorResponse to the oldest message waiting. An Execute, a simple
-// query or a function call it refuses is recorded as Failed. A refusal ends any copy-in, and with
-// it the marks of a CopyDone or CopyFail sent before a CopyInResponse that will not come now
-// (copyEnd), up to the next Sync. In an extended query the server then discards every message up
-// to the next Sync, so none of them has any effect, and those sent after this answer are
-// discarded as they come (discarding). A simple query, a function call or a Sync it refuses still
-// waits for its ReadyForQuery.
+// refused reads an ErrorResponse from the server. An Execute, a simple query or a function call
+// waiting for an answer that it refuses is recorded as Failed, once: a simple query or a function
+// call it refused waits for its ReadyForQuery, and an error after the refusal records it no second
+// time. A refusal ends any copy-in, and with it the marks of a CopyDone or CopyFail sent before a
+// CopyInResponse that will not come now (copyEnd), up to the next Sync.
+//
+// A FATAL or PANIC error ends the connection: the server closes it and answers nothing more, so
+// nothing after it is read and nothing still waiting ran. It ends a statement the server was
+// running, such as one a second connection terminates, and it follows the refusal of a message
+// the server cannot read, such as one sent in copy-in that is not the copy's own. With nothing
+// waiting it is no answer the recorder failed to pair; any other error with nothing waiting is
+// (lose).
+//
+// After any other refusal in an extended query the server discards every message up to the next
+// Sync, so none of them has any effect, and those sent after this answer are discarded as they
+// come (discarding). A simple query, a function call or a Sync it refuses still waits for its
+// ReadyForQuery.
 func (c *sendingConn) refused(body []byte) {
 	var refusal pgproto3.ErrorResponse
 	if err := refusal.Decode(body); err != nil {
 		c.lose(fmt.Sprintf("an ErrorResponse that does not decode: %v", err))
+		return
+	}
+	severity := refusal.SeverityUnlocalized
+	if severity == "" {
+		severity = refusal.Severity
+	}
+	ends := severity == "FATAL" || severity == "PANIC"
+	if len(c.waiting) == 0 && !ends {
+		c.lose("an ErrorResponse from the server, which nothing the connection sent waits for")
 		return
 	}
 	c.copying = false
@@ -524,23 +550,32 @@ func (c *sendingConn) refused(body []byte) {
 		}
 		index++
 	}
-	head := c.waiting[0]
-	switch head.kind {
-	case 'Q':
-		c.recorder.record(SentStatement{SQL: head.query, Failed: true, Code: refusal.Code})
-		return
-	case 'F':
-		c.recorder.record(SentStatement{SQL: fmt.Sprintf("a call of the function with object id %d", head.function), Failed: true, Code: refusal.Code})
-		return
-	case 'S':
-		return
-	case 'E':
-		statement, bound := c.portals[head.name]
-		if !bound {
-			statement = SentStatement{SQL: fmt.Sprintf("the portal %q, which the server never acknowledged binding", head.name)}
+	if len(c.waiting) > 0 && !c.waiting[0].refused {
+		head := &c.waiting[0]
+		switch head.kind {
+		case 'Q':
+			c.recorder.record(SentStatement{SQL: head.query, Failed: true, Code: refusal.Code})
+			head.refused = true
+		case 'F':
+			c.recorder.record(SentStatement{SQL: fmt.Sprintf("a call of the function with object id %d", head.function), Failed: true, Code: refusal.Code})
+			head.refused = true
+		case 'E':
+			statement, bound := c.portals[head.name]
+			if !bound {
+				statement = SentStatement{SQL: fmt.Sprintf("the portal %q, which the server never acknowledged binding", head.name)}
+			}
+			statement.Failed, statement.Code = true, refusal.Code
+			c.recorder.record(statement)
 		}
-		statement.Failed, statement.Code = true, refusal.Code
-		c.recorder.record(statement)
+	}
+	if ends {
+		c.lost = true
+		c.written, c.answered, c.waiting = nil, nil, nil
+		return
+	}
+	switch c.waiting[0].kind {
+	case 'Q', 'F', 'S':
+		return
 	}
 	for len(c.waiting) > 0 && c.waiting[0].kind != 'S' {
 		c.done()
