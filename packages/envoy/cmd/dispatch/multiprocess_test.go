@@ -8657,7 +8657,10 @@ func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T)
 // A process killed while it catches up a log of 20,000 events leaves its cursor where its last
 // batch committed, and the process that starts after it continues from that cursor: its first batch
 // starts past it, the rows the killed process wrote are left as they are, and at the end every
-// event has exactly its row, none written twice and none missed.
+// event has exactly its row, none written twice and none missed. The cursor the killed process left
+// is read once its last batch has ended on the database (keywordFillCursorOnceItsBatchEnds): the
+// kill returns once the process has exited, and a batch whose COMMIT it sent before then still
+// commits on its backend.
 func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
@@ -8673,7 +8676,7 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 		return textversionstest.Cursor(t, database) >= ids[1999]
 	})
 	first.kill(t)
-	left := textversionstest.Cursor(t, database)
+	left := keywordFillCursorOnceItsBatchEnds(t, database)
 	if left >= last {
 		t.Fatalf("the first process was killed at cursor %d, past the last event %d: it had caught up already", left, last)
 	}
@@ -8844,6 +8847,27 @@ func requireKeywordFillWritersInTurn(t *testing.T, recorded []keywordFillWrite, 
 	if turn != second {
 		t.Fatalf("the cursor row was never written by %s, which took the hold: %+v", second, recorded)
 	}
+}
+
+// keywordFillCursorOnceItsBatchEnds answers the fill's cursor once no batch of a holder that is
+// gone can still move it: each batch locks the cursor row first (textversions' lockCursorQuery) and
+// holds that lock until it commits or rolls back, so a lock of the row taken here waits for a batch
+// whose backend is still committing a COMMIT its killed process sent, or rolling back one its
+// process left unfinished, and then reads the cursor that batch left. The caller has made sure no
+// holder is left to begin another.
+func keywordFillCursorOnceItsBatchEnds(t *testing.T, database *store.Store) int64 {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the read of the keyword fill's cursor: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var cursor int64
+	if err := tx.QueryRow(ctx, `select event_id from search_text_versions_fill where id = 1 for update`).Scan(&cursor); err != nil {
+		t.Fatalf("read the keyword fill's cursor under its lock: %v", err)
+	}
+	return cursor
 }
 
 // keywordRowsThrough is what tells the keyword table's rows of the events through cursor apart
