@@ -99,10 +99,11 @@ func TestTokensIsBoundedForAHostileTextOrToken(t *testing.T) {
 }
 
 // requestTokens is every value a request carries under a name no wire contract declares public:
-// each such header's value whole and after its scheme, a Basic pair's user and password as sent
-// and unescaped, its URL's user and password, each such value of its query, and each such value of
-// its form, the form read again through GetBody. A value under a name nobody listed ("request") is
-// a credential; a value under a public name (scope, Content-Type) is not.
+// each such header's value whole and after its scheme (an Authorization's only after its scheme,
+// TestTheSchemeOfAnAuthorizationIsNoCredential), a Basic pair's user and password as sent and
+// unescaped, its URL's user and password, each such value of its query, and each such value of its
+// form, the form read again through GetBody. A value under a name nobody listed ("request") is a
+// credential; a value under a public name (scope, Content-Type) is not.
 func TestRequestTokensReadsEveryCredentialARequestCarries(t *testing.T) {
 	form := url.Values{"client_secret": {"form-secret-RDX-1a2b"}, "refresh_token": {"form-refresh-RDX-3c4d"},
 		"request": {"form-request-RDX-6e7f"}, "scope": {"openid"}}
