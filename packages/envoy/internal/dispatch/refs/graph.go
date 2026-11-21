@@ -113,21 +113,34 @@ func blockKindList(kinds ...string) string {
 // type the pointer does not allow (block_ref_listed). An item the block index has not reached
 // holds no block link, so its own edge stays; an ask's question part holds the links its row
 // holds, so the row's edge is the one hidden.
-func heldByABlock(alias string) string {
-	holders := []string{blockHolds(alias, "artifact", "block_refs", "artifact_id")}
+//
+// documentUUID is how the probe of block_refs names the source document. Empty, the probe compares
+// artifact_id as text with alias.from_id, the text every read of graph_edges and BacklinkCounts
+// sends, which block_refs_to_source keys by its third column. Else it is a SQL expression of the
+// source document's uuid, for a statement that already holds that uuid, and the probe compares
+// artifact_id with it, which block_refs' primary key keys by its first column with no cast. The
+// probes of the item tables are the same in both forms: each item table's index of targets keys
+// the item's id as text.
+func heldByABlock(alias, documentUUID string) string {
+	document := `b.artifact_id::text = ` + alias + `.from_id`
+	if documentUUID != "" {
+		document = `b.artifact_id = ` + documentUUID
+	}
+	holders := []string{blockHolds(alias, "artifact", "block_refs", document)}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
-		holders = append(holders, blockHolds(alias, string(item), tables.refs, tables.item))
+		holders = append(holders, blockHolds(alias, string(item), tables.refs, `b.`+tables.item+`::text = `+alias+`.from_id`))
 	}
 	return `(` + alias + `.kind = 'mentions' and (` + strings.Join(holders, " or ") + `))`
 }
 
 // blockHolds is true of a graph_edges row alias written by an item of fromKind when one of the
-// item's blocks holds a link of any kind to its target in table, whose column keys the item.
-func blockHolds(alias, fromKind, table, column string) string {
+// item's blocks holds a link of any kind to its target in table, aliased b, where source is the
+// condition that a row of b is the item's.
+func blockHolds(alias, fromKind, table, source string) string {
 	return `(` + alias + `.from_kind = '` + fromKind + `' and exists (
 		select 1 from ` + table + ` b where b.to_kind = ` + alias + `.to_kind and b.to_id = ` + alias + `.to_id
-		and b.` + column + `::text = ` + alias + `.from_id))`
+		and ` + source + `))`
 }
 
 // documentBlockIDs is the node id of every current block of the document whose ref_key is the
@@ -368,7 +381,7 @@ func readEdgeRows(ctx context.Context, q Queryer, query Query) ([]edgeRow, error
 	var arms string
 	switch {
 	case query.Direction == "in":
-		source := `not ` + heldByABlock("g")
+		source := `not ` + heldByABlock("g", "")
 		if document && query.WholeDocuments {
 			// The document's citers, each by its own edges: a document's, an ask's, a comment's
 			// or a message's blocks are listed by their item.
@@ -401,14 +414,14 @@ func readEdgeRows(ctx context.Context, q Queryer, query Query) ([]edgeRow, error
 		// The document's id again, bound as the uuid block_refs keys its rows by.
 		args = append(args, query.ID)
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.from_kind = $1 and g.from_id = $2 and not ` + heldByABlock("g") + `
+			from graph_edges g where g.from_kind = $1 and g.from_id = $2 and not ` + heldByABlock("g", "") + `
 			union all
 			select b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq, b.from_node
 			from block_refs b where b.artifact_id = $3::uuid and (b.to_types is null or block_ref_listed(b.to_types, b.to_id))`
 	case query.Direction == "out" && itemBlocks:
 		tables, _ := item.tables()
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.from_kind = $1 and g.from_id = $2 and not ` + heldByABlock("g") + `
+			from graph_edges g where g.from_kind = $1 and g.from_id = $2 and not ` + heldByABlock("g", "") + `
 			union all
 			select r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq, r.from_node
 			from ` + itemBlockLinks(item) + `
@@ -691,12 +704,23 @@ func loadArtifactNodes(ctx context.Context, q Queryer, _ string, byRefKey bool, 
 // id again. A block is made by the authors of the version that first held it, when Dispatch knows
 // that version (blockFirstVersion); its last change is its changed version, by that version's
 // authors. It belongs to its document at its changed version.
+//
+// Each join to artifacts and artifact_versions is a lateral probe by key that stops at its first
+// row, so however many ids a read passes, the planner cannot hash-join a sequential read of a
+// whole table, as it did for a plain join to issues from about 80 ids with 12,000 issues.
 func loadBlockNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select d.node_id, d.block_id, d.excerpt, d.changed_version, d.changed_at, changed.authors,
 		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`
-		from document_blocks d join artifacts a on a.id = d.artifact_id
-		left join artifact_versions changed on changed.artifact_id = d.artifact_id and changed.number = d.changed_version
+		from document_blocks d
+		cross join lateral (
+			select a.id, a.issue_key, a.project_key, a.session_id, a.slug, a.kind, a.is_primary
+			from artifacts a where a.id = d.artifact_id limit 1
+		) a
+		left join lateral (
+			select changed.authors from artifact_versions changed
+			where changed.artifact_id = d.artifact_id and changed.number = d.changed_version limit 1
+		) changed on true
 		`+blockFirstVersion("first", "d.artifact_id", "d.block_id")+`
 		where d.node_id = any($1)`, ids)
 	if err != nil {
@@ -773,6 +797,10 @@ func anchorVersion(alias string) string {
 //
 // The edit lookup repeats events_ask_payload_id's type list (migration 0030), so the planner can
 // prove the partial index serves it.
+//
+// Each join to issues and artifacts is a lateral probe by key that stops at its first row, so
+// however many ids a read passes, the planner cannot hash-join a sequential read of a whole table,
+// as it did for a plain join to issues from about 80 ids with 12,000 issues.
 func loadAskNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	anchorArtifact := store.CastableUUID(`k.anchor->>'artifact_id'`)
 	rows, err := q.Query(ctx, `
@@ -784,14 +812,18 @@ func loadAskNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string
 		         else k.written_version
 		       end
 		from asks k
-		left join issues i on i.key = k.issue_key
-		left join artifacts a on a.id = k.artifact_id
-		left join artifacts doc on doc.id = case
-		  when `+anchorArtifact+` is not null then `+anchorArtifact+`
-		  when k.block_artifact_id is not null then k.block_artifact_id
-		  when k.kind = 'approval' then (k.approval->>'artifact_id')::uuid
-		  else k.artifact_id
-		end
+		left join lateral (select i.project_key from issues i where i.key = k.issue_key limit 1) i on true
+		left join lateral (select a.project_key, a.slug from artifacts a where a.id = k.artifact_id limit 1) a on true
+		left join lateral (
+			select doc.id, doc.issue_key, doc.project_key, doc.session_id, doc.slug, doc.kind, doc.is_primary
+			from artifacts doc where doc.id = case
+			  when `+anchorArtifact+` is not null then `+anchorArtifact+`
+			  when k.block_artifact_id is not null then k.block_artifact_id
+			  when k.kind = 'approval' then (k.approval->>'artifact_id')::uuid
+			  else k.artifact_id
+			end
+			limit 1
+		) doc on true
 		left join lateral (
 			select e.payload->'edited_by' as edited_by from events e
 			where e.type in ('ask.opened', 'ask.answered', 'ask.resolved', 'ask.edited') and e.type = 'ask.edited'
@@ -837,15 +869,22 @@ func loadAskNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string
 // at the version current when it was written (written_version). A comment written on no document
 // belongs to its issue. A reply shares its head's owner, and so the owner its reference, and the
 // reference of the block it names, are written under.
+//
+// Each join to issues and artifacts is a lateral probe by key that stops at its first row, so
+// however many ids a read passes, the planner cannot hash-join a sequential read of a whole table,
+// as it did for a plain join to issues from about 80 ids with 12,000 issues.
 func loadCommentNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select c.id::text, c.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), c.body,
 		       c.author, c.created_at, c.edited_at, c.reply_to::text, c.replies_to_block, c.ask_id::text, `+documentColumns("doc")+`,
 		       case when c.anchor->>'artifact_id' is not null then `+anchorVersion("c")+` else c.written_version end
 		from comments c
-		left join issues i on i.key = c.issue_key
-		left join artifacts a on a.id = c.artifact_id
-		left join artifacts doc on doc.id = coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id)
+		left join lateral (select i.project_key from issues i where i.key = c.issue_key limit 1) i on true
+		left join lateral (select a.project_key, a.slug from artifacts a where a.id = c.artifact_id limit 1) a on true
+		left join lateral (
+			select doc.id, doc.issue_key, doc.project_key, doc.session_id, doc.slug, doc.kind, doc.is_primary
+			from artifacts doc where doc.id = coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id) limit 1
+		) doc on true
 		where c.id::text = any($1)`, ids)
 	if err != nil {
 		return fmt.Errorf("load comment nodes: %w", err)
@@ -888,11 +927,15 @@ func loadCommentNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []st
 // it. A reply that names a block it answers belongs to that block, another reply to the message
 // it answers, which shares its issue, and another message to its issue; a direct message belongs
 // to no node.
+//
+// The join to issues is a lateral probe by key that stops at its first row, so however many ids
+// a read passes, the planner cannot hash-join a sequential read of every issue, as it did for a
+// plain join from about 80 ids with 12,000 issues.
 func loadMessageNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body, m.author, m.created_at, m.in_reply_to::text, m.replies_to_block
 		from messages m
-		left join issues i on i.key = m.issue_key
+		left join lateral (select i.project_key from issues i where i.key = m.issue_key limit 1) i on true
 		where m.id::text = any($1)`, ids)
 	if err != nil {
 		return fmt.Errorf("load message nodes: %w", err)
