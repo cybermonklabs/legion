@@ -16,6 +16,7 @@ import { rmSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { chmod, mkdir, readdir, stat } from "node:fs/promises";
 import { createServer } from "node:net";
+import * as os from "node:os";
 import { basename, dirname, join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
@@ -527,19 +528,161 @@ test("a link on the way whose readlink keeps failing as replaced stops at the bo
   expect(reads).toBe(40);
 });
 
-test("a directory on the way that its group may write is refused too", async () => {
-  // Every member of the group can replace what is in it, as anyone can in a 0777 one.
+/**
+ * The users and groups files (`/etc/passwd`, `/etc/group`) of a machine where `gid` is this
+ * user's private group: this user, `me`, has it as their primary group, and no one else is in it.
+ * Another user, `other`, has a private group of their own. `more` adds lines to each file.
+ */
+function usersAndGroups(gid: number, more: { passwd?: string; group?: string } = {}) {
+  const me = process.getuid?.() ?? 0;
+  return {
+    "/etc/passwd": `me:x:${me}:${gid}::/home/me:/bin/sh\nother:x:${me + 4242}:${gid + 4243}::/home/other:/bin/sh\n${more.passwd ?? ""}`,
+    "/etc/group": `me:x:${gid}:\nother:x:${gid + 4243}:\n${more.group ?? ""}`,
+  };
+}
+
+test("a directory on the way that this user's private group may write, as a Legion pod's /legion is, is no refusal", async () => {
+  // A pod's /legion is 2775, of group legion, which has no member but the pod's user: the user
+  // private group of Debian's OpenSSH (its user-group-modes patch). No other user can write to it.
   const stub = broker();
   const { shared, settings } = await throughADirectoryLink(stub.url);
-  await chmod(shared, 0o770);
-  for (const setting of settings) {
-    const refused = await readDeviceLogin(setting).then(
-      () => null,
-      (error: unknown) => error as Error
-    );
-    expect(refused?.message, setting).toContain("mode 0770");
-    expect(refused?.message, setting).toContain("on the way to");
+  await chmod(shared, 0o2775);
+  const { gid } = await stat(shared);
+  const files = readsSystemFiles(usersAndGroups(gid));
+  try {
+    for (const setting of settings) {
+      expect((await readDeviceLogin(setting)).credentialId).toBe(STAND_IN_CREDENTIAL);
+    }
+  } finally {
+    files.restore();
   }
+  // Control: the walk read the users and groups to take it.
+  expect(files.reads()).toBeGreaterThan(0);
+});
+
+/**
+ * Reads each setting with the users and groups files `files` holds and `shared` (from
+ * {@link throughADirectoryLink}) reading as of group `gid`, and answers each setting's refusal, or
+ * null where it was read.
+ */
+async function readWithGroup(
+  settings: readonly string[],
+  shared: string,
+  gid: number,
+  files: Readonly<Record<string, string | null>>
+): Promise<(string | null)[]> {
+  const groups = lstatReports({ gid }, [await fs.realpath(shared)]);
+  const reads = readsSystemFiles(files);
+  try {
+    const refusals: (string | null)[] = [];
+    for (const setting of settings) {
+      refusals.push(
+        await readDeviceLogin(setting).then(
+          () => null,
+          (error: unknown) => (error as Error).message
+        )
+      );
+    }
+    return refusals;
+  } finally {
+    groups.restore();
+    reads.restore();
+  }
+}
+
+test("a directory on the way that its group may write is refused where the group lists a member other than this user", async () => {
+  // That member can replace what is in it, as anyone can in a 0777 one.
+  const stub = broker();
+  const { shared, settings } = await throughADirectoryLink(stub.url);
+  await chmod(shared, 0o775);
+  const { gid } = await stat(shared);
+  const team = gid + 4244;
+  for (const refusal of await readWithGroup(
+    settings,
+    shared,
+    team,
+    usersAndGroups(gid, { group: `team:x:${team}:me,other\n` })
+  )) {
+    expect(refusal).toContain(`mode 0775, and its group, gid ${team}`);
+    expect(refusal).toContain("on the way to");
+  }
+  // Control: with this user its only member, the same group's directory is read.
+  expect(
+    await readWithGroup(
+      settings,
+      shared,
+      team,
+      usersAndGroups(gid, { group: `team:x:${team}:me\n` })
+    )
+  ).toEqual([null, null]);
+});
+
+test("a directory on the way that its group may write is refused where the group is another user's primary group", async () => {
+  // /etc/group lists no member by a primary group: /etc/passwd names it as that user's.
+  const stub = broker();
+  const { shared, settings } = await throughADirectoryLink(stub.url);
+  await chmod(shared, 0o775);
+  const { gid } = await stat(shared);
+  const team = gid + 4244;
+  const intruder = (process.getuid?.() ?? 0) + 4245;
+  for (const refusal of await readWithGroup(
+    settings,
+    shared,
+    team,
+    usersAndGroups(gid, {
+      passwd: `intruder:x:${intruder}:${team}::/home/intruder:/bin/sh\n`,
+      group: `team:x:${team}:me\n`,
+    })
+  )) {
+    expect(refusal).toContain(`mode 0775, and its group, gid ${team}`);
+    expect(refusal).toContain("on the way to");
+  }
+  // Control: with that user's primary group another, the same group's directory is read.
+  expect(
+    await readWithGroup(
+      settings,
+      shared,
+      team,
+      usersAndGroups(gid, {
+        passwd: `intruder:x:${intruder}:${intruder}::/home/intruder:/bin/sh\n`,
+        group: `team:x:${team}:me\n`,
+      })
+    )
+  ).toEqual([null, null]);
+});
+
+test("a directory on the way that its group may write is refused where the users or groups cannot be read, or its group is unknown or has no member", async () => {
+  // What cannot be read cannot show the group is this user's alone, so the walk fails closed. A
+  // group with no member at all is not this user's either (a setgid program's, say).
+  const stub = broker();
+  const { shared, settings } = await throughADirectoryLink(stub.url);
+  await chmod(shared, 0o2775);
+  const { gid } = await stat(shared);
+  const team = gid + 4244;
+  const known = usersAndGroups(gid, { group: `team:x:${team}:me\n` });
+  const nis = (process.getuid?.() ?? 0) + 4246;
+  for (const [files, why] of [
+    [{ ...known, "/etc/group": null }, "/etc/group refused"],
+    [{ ...known, "/etc/passwd": null }, "/etc/passwd refused"],
+    [
+      { ...usersAndGroups(team), "/etc/group": usersAndGroups(gid)["/etc/group"] },
+      "team, this user's primary group, not in /etc/group",
+    ],
+    [usersAndGroups(gid, { group: `team:x:${team}:\n` }), "team has no member"],
+    [
+      usersAndGroups(gid, { passwd: `+:x:${nis}:${nis}:::\n`, group: `team:x:${team}:me\n` }),
+      "a NIS line in /etc/passwd",
+    ],
+  ] as const) {
+    for (const refusal of await readWithGroup(settings, shared, team, files)) {
+      // Where a file cannot be read, a group-writable directory above `shared`, as a Legion pod's
+      // /legion is, is refused first, so the gid named is not always `team`.
+      expect(refusal, why).toMatch(/mode 2775, and its group, gid \d+, is not one/);
+      expect(refusal, why).toContain("on the way to");
+    }
+  }
+  // Control: with both read and the group named, the same directory is read.
+  expect(await readWithGroup(settings, shared, team, known)).toEqual([null, null]);
 });
 
 test("a directory others may write inside an absolute link's target is refused", async () => {
@@ -596,34 +739,66 @@ test("a link on the way that root owns is no refusal", async () => {
   expect(lookedAt).toBeGreaterThan(0);
 });
 
-/** Makes `lstat` report `uid` as the owner of each path in `owned`, until `restore`. */
-function lstatReportsOwner(uid: number, owned: readonly string[]) {
+/** Makes `lstat` report `reports`' owner uid and group gid, where it names them, for each path in
+ *  `at`, until `restore`. */
+function lstatReports(
+  reports: { readonly uid?: number; readonly gid?: number },
+  at: readonly string[]
+) {
   const realLstat = fs.lstat;
   const lstats = spyOn(fs, "lstat").mockImplementation((async (
     ...args: Parameters<typeof fs.lstat>
   ) => {
     const info = await realLstat(...args);
-    if (!owned.includes(String(args[0]))) return info;
+    if (!at.includes(String(args[0]))) return info;
     return new Proxy(info, {
-      get: (seen, key) => (key === "uid" ? uid : Reflect.get(seen, key)),
+      get: (seen, key) =>
+        key === "uid" && reports.uid !== undefined
+          ? reports.uid
+          : key === "gid" && reports.gid !== undefined
+            ? reports.gid
+            : Reflect.get(seen, key),
     });
   }) as typeof fs.lstat);
   return { restore: () => lstats.mockRestore() };
 }
 
-/** Makes this process read `uidMap` as its `/proc/self/uid_map`, and 65534 as the overflow uid,
- *  until `restore`. */
-function readsUidMap(uidMap: string) {
+/** Makes this process read each file `files` names as the text it gives, or as refused (`EACCES`)
+ *  where it gives null, until `restore`; `reads` answers how many reads of them there were. */
+function readsSystemFiles(files: Readonly<Record<string, string | null>>) {
   const realReadFile = fs.readFile;
-  const reads = spyOn(fs, "readFile").mockImplementation((async (
+  let reads = 0;
+  const spy = spyOn(fs, "readFile").mockImplementation((async (
     ...args: Parameters<typeof fs.readFile>
   ) => {
     const at = String(args[0]);
-    if (at === "/proc/self/uid_map") return uidMap;
-    if (at === "/proc/sys/kernel/overflowuid") return "65534\n";
-    return await realReadFile(...args);
+    if (!Object.hasOwn(files, at)) return await realReadFile(...args);
+    reads += 1;
+    const text = files[at];
+    if (text === null || text === undefined) {
+      throw Object.assign(new Error("refused"), { code: "EACCES" });
+    }
+    return text;
   }) as typeof fs.readFile);
-  return { restore: () => reads.mockRestore() };
+  return { reads: () => reads, restore: () => spy.mockRestore() };
+}
+
+/** Makes this process read `uidMap` as its `/proc/self/uid_map`, and 65534 as the overflow uid,
+ *  until `restore`. */
+function readsUidMap(uidMap: string) {
+  return readsSystemFiles({
+    "/proc/self/uid_map": uidMap,
+    "/proc/sys/kernel/overflowuid": "65534\n",
+  });
+}
+
+/** Makes `os.userInfo()` answer `home` as this user's home directory, until `restore`. */
+function homeIs(home: string) {
+  const realUserInfo = os.userInfo;
+  const spy = spyOn(os, "userInfo").mockImplementation(((
+    ...args: Parameters<typeof os.userInfo>
+  ) => ({ ...realUserInfo(...args), homedir: home })) as typeof os.userInfo);
+  return { restore: () => spy.mockRestore() };
 }
 
 test("in a user namespace other than the first, a directory on the way the overflow uid owns is root's", async () => {
@@ -631,7 +806,7 @@ test("in a user namespace other than the first, a directory on the way the overf
   const stub = broker();
   const { shared, settings } = await throughADirectoryLink(stub.url);
   await chmod(shared, 0o755);
-  const owners = lstatReportsOwner(65534, [await fs.realpath(shared)]);
+  const owners = lstatReports({ uid: 65534 }, [await fs.realpath(shared)]);
   const namespace = readsUidMap("         0       1000          1\n");
   try {
     for (const setting of settings) {
@@ -648,7 +823,7 @@ test("in the first user namespace, a directory on the way the overflow uid owns 
   const stub = broker();
   const { shared, settings } = await throughADirectoryLink(stub.url);
   await chmod(shared, 0o755);
-  const owners = lstatReportsOwner(65534, [await fs.realpath(shared)]);
+  const owners = lstatReports({ uid: 65534 }, [await fs.realpath(shared)]);
   const namespace = readsUidMap("         0          0 4294967295\n");
   try {
     for (const setting of settings) {
@@ -666,29 +841,64 @@ test("in the first user namespace, a directory on the way the overflow uid owns 
 
 test("a login under the home directory is read whoever owns the directories above it", async () => {
   // They hold the home directory itself: as OpenSSH does, the walk checks the home directory and
-  // what is below it, and nothing above it, which in a container can be any owner's.
+  // what is below it, and nothing above it, which in a container can be any owner's. The home
+  // directory is the user's (`os.userInfo().homedir`), not the HOME the environment names now.
   const stub = broker();
   const base = makeDirectory();
   const home = join(base, "home");
   const path = join(home, ".config", "legion", "device-login.json");
   await writeDeviceLoginFile(path, stub.url);
   const other = (process.getuid?.() ?? 0) + 4242;
-  const owners = lstatReportsOwner(other, [await fs.realpath(base)]);
+  const owners = lstatReports({ uid: other }, [await fs.realpath(base)]);
   const saved = process.env.HOME;
   try {
-    process.env.HOME = home;
-    expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
-    // Control: with the home directory elsewhere, the same directory is on the way, and refused.
     process.env.HOME = join(base, "elsewhere");
-    const refused = await readDeviceLogin(path).then(
-      () => null,
-      (error: unknown) => error as Error
-    );
-    expect(refused?.message).toContain(`owned by uid ${other}, neither this user`);
+    const user = homeIs(home);
+    try {
+      expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
+    } finally {
+      user.restore();
+    }
+    // Control: with the user's home directory elsewhere, the same directory is on the way, and
+    // refused, whatever HOME names.
+    process.env.HOME = home;
+    const elsewhere = homeIs(join(base, "elsewhere"));
+    try {
+      const refused = await readDeviceLogin(path).then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+      expect(refused?.message).toContain(`owned by uid ${other}, neither this user`);
+    } finally {
+      elsewhere.restore();
+    }
   } finally {
     owners.restore();
     if (saved === undefined) delete process.env.HOME;
     else process.env.HOME = saved;
+  }
+});
+
+test("the home directory itself is on the way to a login under it", async () => {
+  // Others who may write to it could replace ~/.config, and with it the login.
+  const stub = broker();
+  const home = join(makeDirectory(), "home");
+  const path = join(home, ".config", "legion", "device-login.json");
+  await writeDeviceLoginFile(path, stub.url);
+  const user = homeIs(await fs.realpath(home));
+  try {
+    await chmod(home, 0o777);
+    const refused = await readDeviceLogin(path).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refused?.message).toContain("mode 0777");
+    expect(refused?.message).toContain("on the way to");
+    // Control: with the home directory 0755, the same login is read.
+    await chmod(home, 0o755);
+    expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
+  } finally {
+    user.restore();
   }
 });
 

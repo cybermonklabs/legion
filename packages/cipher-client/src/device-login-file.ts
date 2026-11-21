@@ -31,6 +31,7 @@ import {
   rm,
   stat,
 } from "node:fs/promises";
+import { userInfo } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { holdSecret } from "@legion/contracts/held-secrets";
 import {
@@ -150,19 +151,88 @@ async function safeOwner(uid: number, mine: number): Promise<boolean> {
 }
 
 /**
+ * The records of `file`, a users or groups file in /etc/passwd's form, each split at its `:`, or
+ * null where it cannot be read or holds a line this code cannot read: one of fewer than `fields`
+ * fields, one whose field at an index of `numbers` is no number, or a NIS `+` or `-` line, which
+ * hands the rest to a database this code does not read. Blank lines and `#` lines are skipped.
+ */
+async function records(
+  file: string,
+  fields: number,
+  numbers: readonly number[]
+): Promise<string[][] | null> {
+  const text = await readFile(file, "utf8").catch(() => null);
+  if (text === null) return null;
+  const read: string[][] = [];
+  for (const line of text.split("\n")) {
+    if (line.trim() === "" || line.startsWith("#")) continue;
+    const record = line.split(":");
+    if (record.length < fields || /^[+-]/.test(line)) return null;
+    if (numbers.some((at) => !/^\d+$/.test(record[at] ?? ""))) return null;
+    read.push(record);
+  }
+  return read;
+}
+
+/**
+ * Whether `gid`, the group of a directory on the way, is the private group of `mine`, this user's
+ * uid, as /etc/passwd and /etc/group name the users and groups: no user but this one has it as
+ * their primary group, /etc/group lists no member but this user, and this user is in it one way or
+ * the other. This is the rule of Debian's OpenSSH (its `user-group-modes` patch), which takes such
+ * a group's write as this user's own. Where either file cannot be read ({@link records}), or
+ * /etc/group does not name `gid`, the answer is no. A user or member that only a directory service
+ * (LDAP, sssd) names is not seen; a group that only one names is unknown, and so refused.
+ */
+async function privateGroup(gid: number, mine: number): Promise<boolean> {
+  const [users, groups] = await Promise.all([
+    records("/etc/passwd", 7, [2, 3]),
+    records("/etc/group", 4, [2]),
+  ]);
+  if (users === null || groups === null) return false;
+  const named = groups.filter((group) => Number(group[2]) === gid);
+  if (named.length === 0) return false;
+  const myNames = new Set(users.filter((user) => Number(user[2]) === mine).map((user) => user[0]));
+  let members = 0;
+  for (const user of users) {
+    if (Number(user[3]) !== gid) continue;
+    if (Number(user[2]) !== mine) return false;
+    members += 1;
+  }
+  for (const group of named) {
+    for (const name of (group[3] ?? "").split(",")) {
+      if (name.trim() === "") continue;
+      if (!myNames.has(name.trim())) return false;
+      members += 1;
+    }
+  }
+  return members > 0;
+}
+
+/**
  * Refuses `info`, a directory the system looks a name up in on the way to `what`, where another
- * user could replace what is in it: one its group or anyone else may write to without the sticky
- * bit, or whose owner is not {@link safeOwner}'s.
+ * user could replace what is in it: one anyone else may write to without the sticky bit, one its
+ * group may write to without it where that group is not this user's private group
+ * ({@link privateGroup}), or one whose owner is not {@link safeOwner}'s.
  */
 async function checkOnTheWay(info: Stats, what: string): Promise<void> {
   const onTheWay = `a directory on the way to ${what}`;
   const mode = info.mode & 0o7777;
-  if ((mode & 0o022) !== 0 && (mode & STICKY) === 0) {
+  const shown = mode.toString(8).padStart(4, "0");
+  const uid = process.getuid?.();
+  if ((mode & STICKY) === 0 && (mode & 0o002) !== 0) {
     throw new Error(
-      `${onTheWay} is mode ${mode.toString(8).padStart(4, "0")}, which lets others replace what is in it; remove their write access (chmod go-w) or set its sticky bit (chmod +t), or keep the login elsewhere`
+      `${onTheWay} is mode ${shown}, which lets others replace what is in it; remove their write access (chmod go-w) or set its sticky bit (chmod +t), or keep the login elsewhere`
     );
   }
-  const uid = process.getuid?.();
+  if (
+    (mode & STICKY) === 0 &&
+    (mode & 0o020) !== 0 &&
+    (uid === undefined || !(await privateGroup(info.gid, uid)))
+  ) {
+    throw new Error(
+      `${onTheWay} is mode ${shown}, and its group, gid ${info.gid}, is not one that /etc/passwd and /etc/group show this user alone is in, so another member may replace what is in it; remove the group's write access (chmod g-w) or set its sticky bit (chmod +t), or keep the login elsewhere`
+    );
+  }
   if (uid !== undefined && !(await safeOwner(info.uid, uid))) {
     throw new Error(
       `${onTheWay} is owned by uid ${info.uid}, neither this user (uid ${uid}) nor root; keep the login under directories of this user's own`
@@ -258,10 +328,20 @@ async function walkTheWay(path: string, what: string, meet?: OnTheWay): Promise<
   return info === null ? null : reached;
 }
 
-/** The home directory, `HOME`, by the path a walk reaches it by ({@link walkTheWay}), or null
- *  where `HOME` names no absolute path, or none that a walk reaches. */
+/**
+ * The home directory, by the path a walk reaches it by ({@link walkTheWay}), or null where it is
+ * no absolute path, or none that a walk reaches. It is `os.userInfo().homedir`: Node reads it from
+ * the password database, as OpenSSH does; Bun answers the `HOME` this process started with, and
+ * the password database's only where that is unset.
+ */
 async function homeReached(): Promise<string | null> {
-  const home = process.env["HOME"] ?? "";
+  let home: string;
+  try {
+    home = userInfo().homedir;
+  } catch {
+    // Node refuses a user the password database has no home directory for.
+    return null;
+  }
   if (!isAbsolute(home)) return null;
   return await walkTheWay(home, "the home directory").catch(() => null);
 }
@@ -271,17 +351,22 @@ async function homeReached(): Promise<string | null> {
  * reach it fails {@link checkOnTheWay}, or a link on the way fails {@link checkLinkOnTheWay}: each
  * directory from `/` down, the working directory's own where `dir` is relative, and the one each
  * link on the way is in, since another user who replaces that link picks where the way goes
- * ({@link walkTheWay}). The directories above the home directory are taken unchecked, and the
- * links in them: they hold the home directory, so a machine where they are not safe is unsafe for
- * everything its user keeps; in a container they can be any owner's. A name that is not there
- * ends the walk, which the caller's own look at `dir` refuses.
+ * ({@link walkTheWay}). The directories above the home directory ({@link homeReached}) are taken
+ * unchecked, and the links in them: they hold the home directory, so a machine where they are not
+ * safe is unsafe for everything its user keeps; in a container they can be any owner's. The home
+ * directory itself is checked. A name that is not there ends the walk, which the caller's own look
+ * at `dir` refuses.
  *
- * OpenSSH's StrictModes check of the path to a key also refuses a directory that neither its user
- * nor root owns, and stops at the home directory. The rest is this code's own choice: OpenSSH
- * takes the path's `realpath` and checks no link, checks no directory a link is in, refuses every
- * directory its group or others may write to, a sticky one included, and takes a private group's
- * 0775 directory; this code takes a sticky directory, refuses any group write, and takes the
- * overflow uid in a user namespace ({@link safeOwner}).
+ * The walk stops at the home directory as OpenSSH's StrictModes check of the path to a key does,
+ * and OpenSSH reads that directory from the password database. OpenSSH refuses a directory that
+ * neither its user nor root owns too. Upstream OpenSSH refuses every directory its group or others
+ * may write to; Debian's OpenSSH (its `user-group-modes` patch, which Debian and Ubuntu ship) takes
+ * one whose group is the user's private group, and this code takes that patch's rule
+ * ({@link privateGroup}). The rest is this code's own choice: OpenSSH takes the path's `realpath`,
+ * checks no link and no directory a link is in, and refuses a sticky directory others may write
+ * to; this code checks each link on the way and the directory each is in, takes a sticky
+ * directory, and in a user namespace other than the first takes the overflow uid as root's
+ * ({@link safeOwner}), so there every owner the namespace does not map passes.
  */
 async function checkDirectoriesOnTheWay(dir: string, what: string): Promise<void> {
   const home = await homeReached();
@@ -299,12 +384,14 @@ async function checkDirectoriesOnTheWay(dir: string, what: string): Promise<void
 
 /**
  * Refuses `dir`, the login's directory, where another user could replace the login or its lock
- * in it: a directory whose mode lets its group or anyone else write to it, or that this user does
- * not own. A directory others may only read and enter is taken, as `mkdir -p` leaves the
- * `~/.config/legion` that envoy.json lives in: the login's file is 0600 itself, and its name is
- * no secret. Each directory on the way to it is checked too ({@link checkDirectoriesOnTheWay}).
- * Each refusal names the directory as `what` does, by the file's setting, and the fix. `absent`,
- * where it is given, is the refusal of a directory that is not there.
+ * in it: a directory whose mode lets its group or anyone else write to it, a private group
+ * included, unlike a directory on the way ({@link privateGroup}): this code makes it 0700, and
+ * the refusal names the fix. A directory that this user does not own is refused too. A directory
+ * others may only read and enter is taken, as `mkdir -p` leaves the `~/.config/legion` that
+ * envoy.json lives in: the login's file is 0600 itself, and its name is no secret. Each directory
+ * on the way to it is checked too ({@link checkDirectoriesOnTheWay}). Each refusal names the
+ * directory as `what` does, by the file's setting, and the fix. `absent`, where it is given, is the
+ * refusal of a directory that is not there.
  */
 async function checkLoginDirectory(
   dir: string,
