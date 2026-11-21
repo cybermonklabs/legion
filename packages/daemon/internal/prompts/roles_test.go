@@ -38,8 +38,8 @@ var (
 		"Inspect", "inspect_ai", "inspect_", "Hawk", "middleman", "Taiga",
 		// The runbook a deployment sends a heavy run to, and the bucket it keeps one's output in.
 		// A deployment's own names are not listed here: this repository is public, so a test of it
-		// cannot hold them. check-private-names refuses them in every file, role parts included,
-		// from the deployment's own term list.
+		// cannot hold them. check-private-names refuses those the deployment's own term list holds,
+		// in every file it reads, role parts included.
 		"running-heavy-jobs", "gs://",
 	}
 )
@@ -80,8 +80,8 @@ func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 // out in the architect parts, which this test read nothing of before.
 //
 // Each part is held to two checks: the generic names of repoSpecific, and the rules leakguard
-// ports from .github/scripts/check-private-names.sh's built-in rules. A deployment's own names
-// are check-private-names's job, in every file.
+// ports from .github/scripts/check-private-names.sh's built-in rules. Of a deployment's own names,
+// check-private-names refuses those the deployment's own term list holds, in every file it reads.
 func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
 	// leakguard's rules are embedded in it (private-names.toml) and read no input, so this check
 	// runs the same wherever the test runs.
