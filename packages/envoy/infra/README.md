@@ -215,7 +215,7 @@ pod starts on them.
 | `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. |
 | `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. It always requires a credential of its callers: `oidcIssuer`, `oidcAudience` and `oidcAccounts` are required and `allowedHosts` is refused, and its `image` must be `legion-envoy-v30.32.0` or later, the first listener that reads `ENVOY_OIDC_ACCOUNTS`: an older one admits every subject the issuer signs for the audience. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders what the same listener renders as `tailnet.listener` but for the listener container's token check; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener, and beside `authCallout`, as `tailnet` is. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to, unless the hub's own `listener` declares it. |
-| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). |
+| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). Two more prepare a replacement under the writer hold: `consumerNames`, `fixed` or `fresh`, and `replaceUnderHold`, `false` by default ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). |
 | `tailnetAuthKey` | required with `tailnet` | A secret: the Tailscale auth key the tailnet hosts join with, which [Before the first deployment](#before-the-first-deployment) says how to make. Refused without `tailnet`. May come from another resource or stack. |
 
 Only `kubeconfig` and `tailnetAuthKey` may come from another resource's output. Every other input
@@ -262,8 +262,9 @@ input:
   `[-._a-zA-Z0-9]+`, no `clientNamespaces` without `tailnet` and an entry that is not a DNS label
   or repeats an earlier one, an `allowedHosts` entry refused as `gcp:NatsHub`'s
   `listener.allowedHosts` entries are, a `senderMessagesPerMinute` outside 1 to 60000, a
-  `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, and a `cpu` or `memory` at
-  which Autopilot would not run the listener pod as rendered (see [Sizing](#sizing)); of a listener
+  `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a `consumerNames` other than
+  `fixed` or `fresh`, and a `cpu` or `memory` at which Autopilot would not run the listener pod as
+  rendered (see [Sizing](#sizing)); of a listener
   that requires a credential (the hub's own `listener`, or a `tailnet.listener` with
   `clientNamespaces`): no `oidcIssuer`, `oidcAudience` or `oidcAccounts`, an `oidcIssuer` that is
   not an https URL with a host and no user, query or fragment, an `oidcAudience` holding whitespace
@@ -362,6 +363,10 @@ pod's 33 seconds, its 5-second preStop wait and its 28-second stop, and what has
 new pod's own 135-second bind deadline, counted from its `/v1` open. A new pod that never becomes
 Ready leaves the old one serving while the new one restarts on its bind deadline.
 
+With `<l>.replaceUnderHold` the Deployment is recreated instead, so the old pod stops before the
+new one starts, and the apply does not wait for the new pod
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)).
+
 Three more objects carry that pod:
 
 - the Service `<n>-listener`, port 9020 to the pod's port 9020, which each tailnet host's serve
@@ -381,8 +386,10 @@ to NATS at `serviceUrl` with `ENVOY_ALLOW_REMOTE_NATS=1`.
 `streamMaxBytes` are. `ENVOY_SENDER_MESSAGES_PER_MINUTE` and `ENVOY_SENDER_MESSAGE_BURST` are set
 exactly when `<l>.senderMessagesPerMinute` and `<l>.senderMessageBurst`
 are ([The listener's sender limit](#the-listeners-sender-limit)). Setting, changing or removing
-either changes the pod's environment, so the update rolls the pod as above. `NATS_NKEY_SEED_FILE`
-names the mounted seed. There is no `ENVOY_API_TOKEN`.
+either changes the pod's environment, so the update rolls the pod as above. `ENVOY_CONSUMER_NAMES`
+is set exactly when `<l>.consumerNames` is, and a change to it rolls the pod the same way
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)).
+`NATS_NKEY_SEED_FILE` names the mounted seed. There is no `ENVOY_API_TOKEN`.
 
 How `/v1` admits a caller depends on who reaches the listener:
 
@@ -1313,6 +1320,15 @@ session whose requests reach more than one pod can send more than the rate in al
 refuses a rate outside 1 to 60000, a burst below 1 and a burst with no rate, each by name, before
 it registers a resource, and `clusterOnly` refuses both inputs by name.
 
+`consumerNames` and `replaceUnderHold` prepare a replacement under the writer hold
+([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)):
+`consumerNames`, `fixed` or `fresh`, is `ENVOY_CONSUMER_NAMES` on the app's `envoy-dispatch` and
+the listener's `envoy-listener`, the two containers that create JetStream consumers, rendered only
+when it is set. `replaceUnderHold`, `false` by default, recreates the app's and the listener's
+Deployments at any replica count and lets the apply finish without waiting for them; the front door
+keeps its own strategy. The component refuses a `consumerNames` other than `fixed` or `fresh` by
+name before it registers a resource, and `clusterOnly` refuses both inputs by name.
+
 `signingKeyGenerations`, `[0]` by default, is the ordered key set `DISPATCH_SIGNING_KEY` holds:
 the first generation in the list signs every new session cookie and seals every new refresh
 token, and every generation in it verifies a cookie and opens a seal. A generation names one
@@ -1574,8 +1590,9 @@ namespaces, allowed namespaces, an `appCpu`, `appMemory`, `proxyCpu`, `proxyMemo
 Autopilot's bounds for the app pod (above), a `pprofPort` outside 1-65535 or on a port the app pod
 already binds (above), a `replicas`, `frontDoorReplicas` or `listenerReplicas` below 1, a
 `natsReplicas` outside 1 to 5 or a `streamMaxBytes` below 1, a `senderMessagesPerMinute` outside
-1 to 60000, a `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a
-`priorityClassName` that is empty, not a DNS subdomain or a `system-` class, an
+1 to 60000, a `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a `consumerNames`
+other than `fixed` or `fresh`, a `priorityClassName` that is empty, not a DNS subdomain or a
+`system-` class, an
 `appPdbMinAvailable`, `frontDoorPdbMinAvailable` or `listenerPdbMinAvailable` outside 1 to its
 Deployment's replica count, a `databaseAvailabilityType` other than `ZONAL` or `REGIONAL`, a
 negative `signingKeyGenerations` entry, which names no resource, or a repeated one, which would
@@ -3297,6 +3314,46 @@ echo, repeat or `403` costs nothing only while the send has made no forward, sin
 forward may have stored the message. A repeat that finds the count at 0 is refused as a new
 message is. The listener's own two settings are on the documentation site's
 [Envoy page](https://cybermonklabs.github.io/legion/dispatch/envoy/#the-sender-limit).
+
+## The consumer-name mode and the writer hold's update rule
+
+Two optional inputs prepare a deployment for a replacement under the writer hold, which refuses
+every NATS client but the operator's. `gcp:ClusteredNatsHub` takes them under `listener` or
+`tailnet.listener`, and `gcp:Dispatch` takes them as its own inputs. The components that take
+them render something only where an input is set, so a deployment that sets neither renders
+exactly what it rendered before.
+
+`consumerNames` is how each consumer creator names the JetStream consumers it creates: `fixed`,
+one name for each consumer, or `fresh`, a new physical name at each creation behind a selection
+record. The component renders it as `ENVOY_CONSUMER_NAMES` on each creator: the hub's listener
+container, and Dispatch's `envoy-dispatch` and `envoy-listener` containers. Dispatch's front door
+creates no consumer and gets nothing. Unset, the component renders nothing, and a creator runs
+`fixed`. A creator reads the setting only at its start, so a change rolls its pod; a creator built
+before the setting existed reads no such variable and runs as it always did. The component refuses
+any other value before it registers anything, with an error that names the input and quotes the
+value, as `tailnet.listener.consumerNames "Fresh" must be "fixed" or "fresh"
+(ENVOY_CONSUMER_NAMES); leave it unset for fixed`. Case and surrounding whitespace count.
+
+`replaceUnderHold`, `false` by default, is the update rule of each creator's Deployment for that
+replacement. Under the hold a new pod cannot connect to NATS, so it does not become ready: the hub
+listener's startup probe passes only once its `/v1` serves, and a rolling update keeps the old pod
+beside a new pod that never becomes ready. With `true`:
+
+- each creator's Deployment uses `strategy: {type: Recreate}`, with no `rollingUpdate` block, at
+  any replica count, so every old pod stops before a new one starts;
+- each creator's Deployment carries the annotation `pulumi.com/skipAwait: "true"` on its own
+  metadata, so the apply does not wait for its rollout. A check of the running pods, not the
+  apply, shows the replacement.
+
+The creators are the hub's listener, `<n>-listener`, and Dispatch's app, `<hostname>`, and
+listener, `<hostname>-listener`. The pod template does not change, so the rule by itself rolls no
+pod. Dispatch's front door keeps the strategy its replica count gives it. With `false` every
+Deployment renders exactly as before: the hub's listener rolls with `maxSurge: 1` and
+`maxUnavailable: 0`, and each Dispatch Deployment is recreated at one replica and rolls with those
+bounds above one. Each of those rolling strategies writes its bounds itself, so the component's
+field manager owns `rollingUpdate`, and server-side apply removes it when `true` stops rendering
+it. Set `replaceUnderHold` back to `false` once the hold is released: under Recreate every later
+release stops the only pod before its replacement serves.
 
 ## NATS seeds
 
