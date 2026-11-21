@@ -33,6 +33,7 @@ import {
   presetToggles,
   presetToolbar,
 } from "./issue-page";
+import { expectOpeningLanded } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
 import { expect, type Locator, type Page, type Route, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
@@ -1002,7 +1003,7 @@ test("from an address that names a node, a press on Spec, on Decisions and on Ve
     // back from what holds the outline until the reader acts, so the opening is
     // waited out and the reader acts first - a Shift, which no key of the page binds - or the
     // page would take the focus from the project link below.
-    await expect(page.locator("[data-node-row]:focus"), "the page focused no row").toHaveCount(1);
+    await expectOpeningLanded(page);
     await page.keyboard.press("Shift");
     const holder = iconRail(page).getByRole("link", { exact: true, name: key.split("-")[0] });
     await holder.focus();

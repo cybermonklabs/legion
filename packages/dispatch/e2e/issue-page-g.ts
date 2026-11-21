@@ -181,15 +181,16 @@ export async function focusRow(page: Page, id: string): Promise<Locator> {
 }
 
 /**
- * Waits until the page's opening has put the focus on a row of the outline, as every load of the
- * outline does (`IssueTree.tsx`'s `opening`): on the first open question that waits on the
- * reader, else on the first row. A row that leaves the focus for the page after a load
- * (`focusThePage`) waits for this first. The opening waits until every read its rows come from
- * has answered (`readsSettled`), which can be after the issue's own read that `gotoIssue` and
- * `openIssue` wait for, and until it lands it takes a focus nobody holds as its own to place: a
- * blur made before the landing is undone by it, which leaves the row holding the focus. That is
- * how dispatch-browser job 136853210753 failed: the opening's frame came between the blur and the
- * check.
+ * Waits until the page has put the focus on a row of its own after a load: the outline's opening
+ * (`IssueTree.tsx`'s `opening`) puts it on the first open question that waits on the reader, else
+ * on the first row, and an address that names a node puts it on that node's row, in the outline
+ * or a view's tree. A row that leaves the focus for the page after a load (`focusThePage`), or
+ * reads which row the load focused, waits for this first. The opening waits until every read its
+ * rows come from has answered (`readsSettled`), which can be after the issue's own read that
+ * `gotoIssue` and `openIssue` wait for, and until it lands it takes a focus nobody holds as its
+ * own to place: a blur made before the landing is undone by it, which leaves the row holding the
+ * focus. That is how dispatch-browser job 136853210753 failed: the opening's frame came between
+ * the blur and the check.
  *
  * It has no clock of its own, since how long the reads take is the machine's and not the row's.
  * Playwright reads a `timeout` of 0 as no deadline of the poll's own, so the row's own timeout
@@ -204,7 +205,7 @@ export async function expectOpeningLanded(page: Page): Promise<void> {
           (nodeRow) => (document.activeElement?.closest(nodeRow) ?? null) !== null,
           SELECTORS.nodeRow
         ),
-      { message: "the page opened with the focus on no row of the outline", timeout: 0 }
+      { message: "the page opened with the focus on no row of its own", timeout: 0 }
     )
     .toBe(true);
 }
