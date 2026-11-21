@@ -1,6 +1,6 @@
 package routes_test
 
-// A regression lock from the independent test of the route check at 7c7131eece: it passes at that
+// A regression lock from the independent test of the route check at 5fcd79511e: it passes at that
 // head, and fails when the log rule's window opens at a later "Reloaded: cluster" line than the
 // first, which no other test of the change notices.
 
