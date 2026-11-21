@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1141,7 +1142,15 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "session_store postgres with a key no Secret can hold",
 			body: kubernetesWith("    session_dsn_secret: SESSION_DSN\n", "    session_dsn_secret: sessions/dsn\n"),
-			want: `runtime.kubernetes.session_dsn_secret "sessions/dsn" is not a Secret data key ([-._a-zA-Z0-9]+)`,
+			want: `runtime.kubernetes.session_dsn_secret is not a Secret data key ([-._a-zA-Z0-9]+)`,
+		},
+		{
+			// A DSN pasted where the key's name goes, its made-up password among it: the refusal
+			// names the key alone and quotes none of the value.
+			name: "session_store postgres with a DSN where its key goes",
+			body: kubernetesWith("    session_dsn_secret: SESSION_DSN\n",
+				"    session_dsn_secret: \""+(&url.URL{Scheme: "postgres", User: url.UserPassword("legion", "madeUpSessionPassword"), Host: "db.internal.example:5432", Path: "/sessions"}).String()+"\"\n"),
+			want: `runtime.kubernetes.session_dsn_secret is not a Secret data key ([-._a-zA-Z0-9]+)`,
 		},
 		{
 			name: "session_database with the postgres store",
@@ -1285,6 +1294,18 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			body: kubernetesWith("nats_urls: [nats://nats.internal.example:4222]", "nats_urls: [nats://nats.internal.example:4222, nats://127.0.0.2:4222]"),
 			want: "nats_urls nats://127.0.0.2:4222 names a loopback host, which in a pod is the pod itself; name the host pods reach it at when runtime is kubernetes",
 		},
+		// The refusal names the URL by its scheme and host: its userinfo is where these keys take a
+		// credential, and `legion stop` prints this error as it is.
+		{
+			name: "a nats_urls entry on loopback with a password",
+			body: kubernetesWith("nats_urls: [nats://nats.internal.example:4222]\n", withNATSPassword("madeUpNatsPassword", "127.0.0.2:4222")),
+			want: "nats_urls nats://127.0.0.2:4222 names a loopback host, which in a pod is the pod itself; name the host pods reach it at when runtime is kubernetes",
+		},
+		{
+			name: "envoy_url on loopback with a token as its user",
+			body: kubernetesWith("envoy_url: http://envoy-listener.internal.example:9020", "envoy_url: http://madeUpEnvoyToken@127.0.0.1:9020"),
+			want: "envoy_url http://127.0.0.1:9020 names a loopback host, which in a pod is the pod itself; name the host pods reach it at when runtime is kubernetes",
+		},
 		{
 			name: "dispatch_url on loopback",
 			body: kubernetesWith("dispatch_url: https://dispatch.internal.example", "dispatch_url: http://127.0.0.1:8080"),
@@ -1421,17 +1442,31 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "a pod variable that is no variable name",
 			body: kubernetesFile + "    pod:\n      env: {1PASSWORD: vault}\n",
-			want: `runtime.kubernetes.pod.env key "1PASSWORD" must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+			want: `runtime.kubernetes.pod.env entry 1: its key must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+		},
+		{
+			// A credential pasted where a variable name goes, a made-up one: the refusal names the
+			// entry by its position and quotes none of it.
+			name: "a pod variable that is a credential pasted as its name",
+			body: kubernetesFile + "    pod:\n      env: {OPENAI_BASE_URL: https://api.example, \"madeUp-pod-credential-0123456789\": x}\n",
+			want: `runtime.kubernetes.pod.env entry 2: its key must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
 		},
 		{
 			name: "a pod variable whose value is no string",
 			body: kubernetesFile + "    pod:\n      env: {OPENAI_BASE_URL: {host: x}}\n",
-			want: "runtime.kubernetes.pod.env value for OPENAI_BASE_URL must be a string",
+			want: "runtime.kubernetes.pod.env entry 1: its value must be a string",
+		},
+		{
+			// A credential made only of letters, digits and underscores passes the name rule; with
+			// a list value the refusal names the entry by position and quotes none of it.
+			name: "a pod variable with a token-shaped name and a list value",
+			body: kubernetesFile + "    pod:\n      env: {OPENAI_BASE_URL: https://api.example, madeUp_pod_credential_0123456789: [x]}\n",
+			want: "runtime.kubernetes.pod.env entry 2: its value must be a string",
 		},
 		{
 			name: "a credential-shaped pod variable",
 			body: kubernetesFile + "    pod:\n      env: {ANTHROPIC_API_KEY: sk-ant}\n",
-			want: "runtime.kubernetes.pod.env sets ANTHROPIC_API_KEY, a credential-shaped name: a credential comes from a Secret, so mount one with runtime.kubernetes.pod.volumes or name its key in provider_keys",
+			want: "runtime.kubernetes.pod.env entry 1 sets a credential-shaped variable: a credential comes from a Secret, so mount one with runtime.kubernetes.pod.volumes or name its key in provider_keys",
 		},
 		{
 			name: "pod volumes are not a sequence",
@@ -2159,6 +2194,44 @@ func TestPluginsBlockRefusals(t *testing.T) {
 				t.Fatalf("err %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A plugin source that carries a credential is refused naming the key alone: no refusal quotes
+// it. A source with userinfo and no http(s) scheme, one with a signed query and no host, a
+// scheme-relative one with userinfo, an http(s) one whose user is a token holding a "/" (so the
+// "@" lands in the path), and one with an "@" in its query or fragment each carry a made-up
+// credential here. A bare token in the version slot is quoted no more either, nor is a dist-tag.
+// A registry tarball URL whose path opens a segment with "@", a scoped package's, still loads.
+func TestAPluginSourceRefusalQuotesNoCredential(t *testing.T) {
+	const madeUp = "madeUpPluginCredential0123"
+	for name, source := range map[string]string{
+		"userinfo with another scheme":       "s3://legion:" + madeUp + "@bucket/pi-legion.tgz",
+		"a signed query with no host":        "https:///pi-legion.tgz?signature=" + madeUp,
+		"a scheme-relative source with user": "//legion:" + madeUp + "@cache/pi-legion.tgz",
+		"a token holding a / as the user":    "https://" + madeUp + "/rest@cache.example/pi-legion.tgz",
+		"an @ in the query":                  "https://cache.example/pi-legion.tgz?by=" + madeUp + "@x",
+		"an @ in the fragment":               "https://cache.example/pi-legion.tgz#" + madeUp + "@x",
+		"a bare token in the version slot":   madeUp,
+		"a dist-tag":                         "latest",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: \""+source+"\"\n      pi_envoy: 9.6.1\n"), noEnv)
+			if err == nil || !strings.Contains(err.Error(), "runtime.kubernetes.plugins.pi_legion") {
+				t.Fatalf("err %v, want a refusal naming runtime.kubernetes.plugins.pi_legion", err)
+			}
+			if strings.Contains(err.Error(), source) || strings.Contains(err.Error(), madeUp) || strings.Contains(err.Error(), "got") {
+				t.Fatalf("the refusal quotes the source: %v", err)
+			}
+		})
+	}
+	scoped := "https://registry.example/@sjawhar/pi-legion/-/pi-legion-9.6.1.tgz"
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: \""+scoped+"\"\n      pi_envoy: 9.6.1\n"), noEnv)
+	if err != nil {
+		t.Fatalf("a scoped package's registry tarball URL was refused: %v", err)
+	}
+	if got := cfg.Runtime.Kubernetes.Plugins.PiLegion; got != scoped {
+		t.Fatalf("PiLegion = %q, want %q", got, scoped)
 	}
 }
 

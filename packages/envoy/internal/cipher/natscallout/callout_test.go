@@ -349,3 +349,32 @@ func TestReadyNeedsNoDeadline(t *testing.T) {
 	service := startService(t, url, keys, Deps{}, Decide)
 	require.NoError(t, service.Ready(context.Background()))
 }
+
+// The service's connect error names the hub's URLs by their count, and quotes none of them: the
+// broker prints it as it is, and its loader refuses a URL with user info, a query or a fragment,
+// but start takes its settings from any caller. Here a URL with a made-up user name and password
+// that does not parse, which the bus refuses by its position (bus.checkedNATSURLs) before any
+// dial, so the error it wraps holds none of the URL either.
+func TestTheConnectErrorNamesTheHubsByCount(t *testing.T) {
+	const credential = "madeUpHubUser0123:madeUpHubPassword0123"
+	keys := testnats.NewCalloutKeys(t)
+	dir := t.TempDir()
+	write := func(name, seed string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(seed+"\n"), 0o600))
+		return path
+	}
+	_, err := start(t.Context(), Settings{
+		URLs:           []string{"nats://hub-a:4222", "nats://" + credential + "@hub-b:4222/%zz"},
+		SeedFile:       write("service.seed", keys.ServiceSeed),
+		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
+		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
+		Services:       exampleServices,
+	}, Deps{}, Decide)
+	require.Error(t, err)
+	require.True(t, strings.HasPrefix(err.Error(), "natscallout: connect to the hub's 2 BROKER_NATS_URLS entries: "), "the error does not name the hubs by count: %v", err)
+	for i := 0; i+10 <= len(credential); i++ {
+		require.NotContains(t, err.Error(), credential[i:i+10], "the connect error quotes the hub URL's credential")
+	}
+	require.NotContains(t, err.Error(), "hub-b", "the connect error quotes the hub URL")
+}

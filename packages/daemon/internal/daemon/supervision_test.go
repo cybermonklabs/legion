@@ -109,7 +109,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 		{"a provider key that cannot be resolved", func(c *config.Config, o *overrides) {
 			c.ProviderKeys = []config.ProviderKey{{Env: "ABSENT_ENV", Secret: "ABSENT_KEY"}}
 			o.environ = []string{"PATH=" + t.TempDir()}
-		}, "provider_keys.ABSENT_ENV: the secrets command is not on PATH, so ABSENT_KEY cannot be read"},
+		}, "provider_keys.ABSENT_ENV: the secrets command is not on PATH, so the secretsd key it names cannot be read"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			cfg := testConfig(t)

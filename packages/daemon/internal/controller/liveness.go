@@ -54,19 +54,29 @@ type ProberOptions struct {
 // (`ENVOY_SESSION_LIVE_WINDOW`), and names the holder's state in the 404 it answers for any
 // other, so the daemon keeps no staleness window of its own to drift from it.
 type Prober struct {
+	// lookup is the role lookup's URL without envoy_url's userinfo, the one URL the request and
+	// every log line use, so no line can name the listener's credential; user is that userinfo,
+	// sent as Basic auth when no bearer token is (as the HTTP client sends a URL's own).
 	lookup string
+	user   *url.Userinfo
 	token  string
 	log    *slog.Logger
 	client *http.Client
 }
 
-// NewProber is a Prober over opts.
+// NewProber is a Prober over opts. An envoy_url that does not parse, which the loader refuses
+// (config.validURL), leaves no lookup, and every probe of it is Unknown. Its client follows no
+// redirect: the lookup carries its credential in an explicit Authorization header, which Go's
+// client copies to a redirect's target on the same host or a subdomain, and the listener answers
+// the lookup itself, so a redirect is an answer the probe reads as Unknown.
 func NewProber(opts ProberOptions) *Prober {
-	p := &Prober{
-		lookup: strings.TrimRight(opts.EnvoyURL, "/") + "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project))),
-		token:  opts.EnvoyToken,
-		log:    opts.Log,
-		client: &http.Client{Timeout: probeTimeout},
+	p := &Prober{token: opts.EnvoyToken, log: opts.Log, client: &http.Client{
+		Timeout:       probeTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
+	if parsed, err := url.Parse(strings.TrimRight(opts.EnvoyURL, "/")); err == nil {
+		p.user, parsed.User = parsed.User, nil
+		p.lookup = parsed.String() + "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project)))
 	}
 	if p.log == nil {
 		p.log = slog.Default()
@@ -88,6 +98,10 @@ func NewProber(opts ProberOptions) *Prober {
 // alive: Gone and Unknown each log why, naming the listener and, where the listener named them,
 // both sessions or the holder's state.
 func (p *Prober) Probe(ctx context.Context, session string) Liveness {
+	if p.lookup == "" {
+		p.log.Warn("controller liveness: envoy_url does not parse as a URL, so the controller role lookup cannot be sent")
+		return Unknown
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.lookup, nil)
 	if err != nil {
 		p.log.Warn("controller liveness: build the role lookup", "url", p.lookup, "error", err)
@@ -95,6 +109,9 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	}
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
+	} else if p.user != nil {
+		password, _ := p.user.Password()
+		request.SetBasicAuth(p.user.Username(), password)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {

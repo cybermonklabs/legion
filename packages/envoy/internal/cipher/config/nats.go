@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/natsurl"
 )
 
 // loadNATSCallout reads the NATS auth service's settings (Config.NATS). BROKER_NATS_SERVICES is
@@ -17,8 +19,8 @@ import (
 // GET /v1/project-repositories whether or not it answers a hub; any other set needs
 // BROKER_NATS_URLS and the three seed files, each holding a seed of its own kind;
 // BROKER_NATS_K8S_AUDIENCE needs k8sIssuer, BROKER_K8S_OIDC_ISSUER. A hub URL carrying user info,
-// or one that is no URL, is refused by its place in the list (hubURLRefusal). No refusal carries
-// a seed or a URL.
+// an "@" after its host, a query or a fragment, or one that is no URL, is refused by its place in
+// the list (hubURLRefusal). No refusal carries a seed or a URL.
 func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout, error) {
 	services, err := ParseNATSServices(getenv(NATSServicesVariable))
 	if err != nil {
@@ -95,10 +97,13 @@ func (n NATSCallout) edgeListenerEntries() (kubernetes, google string) {
 
 // hubURLRefusal is why entry, one of BROKER_NATS_URLS, cannot name the hub, or "" when it can. The
 // service connects as the user its seed names, so user info in a URL is a credential it never
-// uses, and the broker writes the URLs into its start line and the service's connect error. An
-// entry with no scheme is read as nats.go dials it, as nats://<entry> (nats.go, parseServerURL),
-// and one that does not parse is refused too: nats.go could not dial it, and the parse error
-// quotes it whole. The reason names neither the entry nor its user info.
+// uses, and the broker writes the URLs into its start line and the service's connect error; a
+// query or a fragment is where a person can put a token too, and nats.go needs neither to dial a
+// hub. An entry with no scheme is read as nats.go dials it, as nats://<entry> (nats.go,
+// parseServerURL), and one that does not parse is refused too: nats.go could not dial it, and the
+// parse error quotes it whole. An "@" after the host is refused as user info: a token holding a
+// "/" written as the user parses with its head as the host and the "@" in the path. The reason
+// names neither the entry nor its user info.
 func hubURLRefusal(entry string) string {
 	if !strings.Contains(entry, "://") {
 		entry = "nats://" + entry
@@ -107,8 +112,10 @@ func hubURLRefusal(entry string) string {
 	switch {
 	case err != nil:
 		return "is not a URL nats.go can dial"
-	case parsed.User != nil:
+	case parsed.User != nil || natsurl.UserinfoPastHost(parsed):
 		return "carries user info: the NATS auth service connects as the user BROKER_NATS_SEED_FILE names, so name the hub by its address alone"
+	case parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(entry, "#"):
+		return "carries a query or a fragment: the NATS auth service needs neither to dial the hub, so name the hub by its address alone"
 	}
 	return ""
 }

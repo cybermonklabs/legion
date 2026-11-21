@@ -1219,7 +1219,7 @@ A Claude Code start into such a pod is admitted: the launcher matches no agent's
 `postgres` holds the whole connection URL, password and all, in one providers-Secret key.
 The daemon never holds the connection string:
 put it in the providers Secret (`legion-<project>-providers`) under the key `session_dsn_secret` names, as one `postgres://…` URL.
-Every issue pod, the controller's pod and the image probe mount that key read-only at `/var/run/legion/providers/OMP_SESSION_SQL_DSN`, whatever the key is called, so a Secret without it refuses boot at the image probe, naming the Secret and its keys (`internal/runtime/sandbox/manifest.go`, `providers`).
+Every issue pod, the controller's pod and the image probe mount that key read-only at `/var/run/legion/providers/OMP_SESSION_SQL_DSN`, whatever the key is called, so a Secret without it refuses boot at the image probe, naming the Secret and the settings whose keys every pod mounts (`runtime.kubernetes.session_dsn_secret` among them), never a key of the Secret (`internal/runtime/sandbox/probe.go`, `providersMountFault`).
 
 With the store settled, every generation a launcher starts gets two variables in its start command (`mainEnvironment`):
 `OMP_SESSION_STORAGE=sql` and `OMP_SESSION_SQL_DSN_FILE=/var/run/legion/providers/OMP_SESSION_SQL_DSN`.
@@ -3763,7 +3763,7 @@ A phase worker `worker_backends` puts on `claude` runs Claude Code in its pod, a
 Legion adds no key and no settings file for it.
 The credential goes in `provider_keys` (`ANTHROPIC_API_KEY: <the providers Secret's key>`), which the shim exports into the agent's environment and nowhere else;
 the other two, which are not credentials, go in `runtime.kubernetes.pod.env`.
-The split is `pod.env`'s own rule: it refuses a credential-shaped name outright (`sets ANTHROPIC_API_KEY, a credential-shaped name: a credential comes from a
+The split is `pod.env`'s own rule: it refuses a credential-shaped name outright (`entry <n> sets a credential-shaped variable: a credential comes from a
 Secret, …`), which is why the key takes the `provider_keys` route.
 A provider key reaches every role's child under this runtime, Oh My Pi's included
 — that is this runtime's standing rule for every provider key, not something a Claude Code role changes:
@@ -3848,6 +3848,12 @@ Every address a pod is handed must be one a pod can reach, so `daemon_url`, `env
 This is a breaking configuration change for a file that names a host in Unicode; write it in its `xn--` form.
 `envoy_url` and each `nats_urls` entry are endpoints, not request URLs: they refuse a query string or fragment.
 This is a breaking configuration change for a file that has either; put credentials in URL userinfo or in a Secret, never in a query.
+`envoy_url`, `dispatch_url`, `daemon_url` and each `nats_urls` entry also refuse an `@` after the host, which is how a token or password holding an unescaped `/`, `?` or `#` written in the userinfo parses; write such a credential percent-encoded (`%2F`, `%3F`, `%23`).
+The refusal names the key, or a `nats_urls` entry by its position, and quotes none of the URL.
+A `nats_urls` entry with an `@` after its host, or holding a comma, is refused too, and so is one that does not parse, and a websocket entry whose path or host stops parsing once the NATS client's handshake decodes it.
+The NATS client reads a comma as the end of a server URL, so list each server as its own entry.
+A user name or password holding an unescaped `/`, `?`, `#`, space or comma ends the URL's host part early or splits it into two servers, so write such a credential percent-encoded (`%2F`, `%3F`, `%23`, `%20`, `%2C`).
+Each refusal names the entry by its position alone (`nats_urls entry 2 …`), never by any of its text.
 `advertise_host` is an IP address or an ASCII DNS name, the host alone, and only `runtime: kubernetes` accepts it.
 A pod's own IP changes on every restart, so a daemon running inside the cluster binds `0.0.0.0` and lets `advertise_host` name the Service DNS name that reaches whichever pod is live.
 Pods dial it at the port the worker stream listens on, so the Service exposes `worker_stream_port` as that same port number.
@@ -8598,8 +8604,9 @@ each issue's pod (every role of it alike) and the image probe's.
   The one other key a pod mounts is `NATS_NKEY_SEED`, when the daemon has a NATS nkey seed:
   the operator puts the `legion-pane` seed there, and every pod reads it through `NATS_NKEY_SEED_FILE`, which the shim does not export ([Configuration](#configuration)).
   (The TypeScript daemon's [providers Secret](#the-providers-secret) mounts every key; the Go runtime does not.)
-  A Secret or key the kubelet cannot mount is refused at boot by the image probe, naming the Secret and keys.
+  A Secret or key the kubelet cannot mount is refused at boot by the image probe, naming the Secret, the settings whose keys every pod mounts (`provider_keys.<VAR>`, `runtime.kubernetes.session_dsn_secret`) and the setting whose key is missing, never a key of the Secret.
   A `provider_keys` variable that anything else in the pod sets is refused at load.
+  A `provider_keys` variable must be upper case (upper-case letters, digits and underscores, not starting with a digit), as every provider's variable is; one with a lowercase letter is refused at load as `provider_keys entry <n>: its key (the variable OMP reads) must be an upper-case environment variable name …`.
 
 - **Settings order.**
   Oh My Pi reads `PI_CONFIG_FILES` in order, each overlay outranking the ones before it and all of them outranking a repository's `.omp/config.yml`.

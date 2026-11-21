@@ -1402,17 +1402,24 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 
 // `legion config check`'s plugins line names the pair runtime.kubernetes.plugins sets, "from
 // legion.yaml", or, absent that, this binary's linked pair, "from the binary"; absent both, the
-// gap (TestConfigCheckReportsTheConfigurationsCapabilityGaps's pluginsGap). When
-// worker_backends runs any role on Claude Code, the line gains one sentence naming those roles,
-// whose plugin is the worker image's and never an install.
+// gap (TestConfigCheckReportsTheConfigurationsCapabilityGaps's pluginsGap). A source in URL form is
+// printed as the state shows it: a made-up user name, password and signature in a private
+// tarball URL's userinfo and query are not. When worker_backends runs any role on Claude Code, the
+// line gains one sentence naming those roles, whose plugin is the worker image's and never an
+// install.
 func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	legionState(t)
 	const claudeSentence = ". Claude Code runs implementer, tester, whose plugin is the worker image's: " +
 		"a plugin-contract change for such a role is answered by a new image, not by an install."
 	const claudeRoles = "worker_backends: {implementer: claude, tester: claude}\n"
+	// Built from its parts, so that no source line holds a URL with a password.
+	const pluginCredential = "madeUpPluginUser0123:madeUpPluginPassword0123"
+	const privateURL = "https://" + pluginCredential + "@cache.example/pi-legion.tgz?X-Amz-Signature=madeUpSignature0123"
 	for _, tc := range []struct{ name, extra, legion, envoy, want string }{
 		{"the file's own pair", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n", "", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
+		{"a private tarball URL, printed without its credential", "    plugins: {pi_legion: \"" + privateURL + "\", pi_envoy: 9.6.1}\n", "", "",
+			"plugins: @sjawhar/pi-legion https://xxxxx@cache.example/pi-legion.tgz @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
 		{"the binary's linked pair, the file setting none", "", "9.7.0", "9.6.1",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from the binary)\n"},
 		{"the file's pair wins over the binary's", "    plugins: {pi_legion: 9.7.1, pi_envoy: 9.6.2}\n", "9.7.0", "9.6.1",
@@ -1574,6 +1581,26 @@ func TestStopRunsNoPrivateKeyCommand(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+	}
+}
+
+// `legion stop` prints the loader's refusal as `legion start` does (printRefusal), through the URL
+// rule: a URL pasted where a key goes, made-up user name and password in its userinfo, is refused
+// as an unknown key, and the refusal names the key without its userinfo.
+func TestStopPrintsTheLoadersRefusalWithoutURLUserinfo(t *testing.T) {
+	legionState(t)
+	const credential = "madeUpStopUser0123:madeUpStopPassword0123"
+	config, _ := workflowConfig(t, 13370, "https://"+credential+"@cache.example: 1\n")
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "stop", "--config", config}, &out, &errb)
+	if want := "legion stop: unknown key https://cache.example\n"; code != 1 || errb.String() != want {
+		t.Fatalf("legion stop = %d, stderr %q, want 1 and %q", code, errb.String(), want)
+	}
+	for i := 0; i+10 <= len(credential); i++ {
+		if strings.Contains(errb.String(), credential[i:i+10]) {
+			t.Fatalf("stderr %q holds %q of the URL's userinfo", errb.String(), credential[i:i+10])
+		}
 	}
 }
 

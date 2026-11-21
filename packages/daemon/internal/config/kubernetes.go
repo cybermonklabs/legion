@@ -20,6 +20,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	"github.com/sjawhar/envoy/natsurl"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -560,7 +562,7 @@ func readPluginSource(value *yaml.Node, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	noHost := fmt.Errorf("%s names no host bun can fetch a tarball from: got %q", key, source)
+	noHost := fmt.Errorf("%s names no host bun can fetch a tarball from", key)
 	if strings.HasPrefix(source, "//") {
 		return "", noHost
 	}
@@ -571,12 +573,36 @@ func readPluginSource(value *yaml.Node, key string) (string, error) {
 		if u.Host == "" {
 			return "", noHost
 		}
+		if pluginUserinfoPastHost(u) {
+			return "", fmt.Errorf("%s cannot be read: %s", key, natsurl.UserinfoPastHostReason)
+		}
 		return u.String(), nil
 	}
 	if !pluginVersion.MatchString(source) {
-		return "", fmt.Errorf("%s must be an exact version (N.N.N), an absolute tarball path, or an http(s) URL — never an npm dist-tag or a range: the pair must be one release's exact versions; got %q", key, source)
+		// It quotes nothing of the source: a bare token pasted into the version slot is a word with
+		// none of "/", ":", "@", "?" or "#", and `legion stop` prints this refusal as it is.
+		return "", fmt.Errorf("%s must be an exact version (N.N.N), an absolute tarball path, or an http(s) URL — never an npm dist-tag or a range: the pair must be one release's exact versions", key)
 	}
 	return source, nil
+}
+
+// pluginUserinfoPastHost reports whether u, a plugin source's http(s) URL, holds an "@" after its
+// host: in its query, its fragment, or a path segment anywhere but at its first character. That is
+// where a token holding a "/" written as the user lands (`https://<head>/<tail>@cache/x.tgz` parses
+// with <head> as the host), which the daemon's boot log and the state's settings print. An "@" that
+// opens a segment is a scoped package's, as a registry tarball URL holds it
+// (`/@sjawhar/pi-legion/-/pi-legion-9.6.1.tgz`), and is kept; natsurl.UserinfoPastHost, which
+// refuses any "@" in the path, is for URLs that name a server, never a package.
+func pluginUserinfoPastHost(u *url.URL) bool {
+	if strings.Contains(u.RawQuery, "@") || strings.Contains(u.Fragment, "@") {
+		return true
+	}
+	for _, segment := range strings.Split(u.Path, "/") {
+		if len(segment) > 1 && strings.Contains(segment[1:], "@") {
+			return true
+		}
+	}
+	return false
 }
 
 // isLoopbackHost is localhost, with or without the root's trailing dot, or a loopback IP address.
@@ -1378,19 +1404,22 @@ func readPodEnv(value *yaml.Node) (map[string]string, error) {
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		nameNode, entry := value.Content[i], value.Content[i+1]
 		name := nameNode.Value
+		// The refusals below name the entry by its position, never its name, as envNameRefusal
+		// does: a credential made only of letters, digits and underscores passes envVarName, and
+		// these refusals are printed as they are.
 		if nameNode.Kind != yaml.ScalarNode || !envVarName.MatchString(name) {
-			return nil, fmt.Errorf("%s key %q %s", key, name, envNameRule)
+			return nil, envNameRefusal(key, i/2+1)
 		}
 		var text string
 		if entry.Kind != yaml.ScalarNode || entry.Tag == "!!null" || entry.Decode(&text) != nil {
-			return nil, fmt.Errorf("%s value for %s must be a string", key, name)
+			return nil, fmt.Errorf("%s entry %d: its value must be a string", key, i/2+1)
 		}
 		switch _, twice := env[name]; {
 		case twice:
-			return nil, fmt.Errorf("%s names %s twice", key, name)
+			return nil, fmt.Errorf("%s entry %d names a variable an earlier entry names", key, i/2+1)
 		case runtime.HoldsSecretValue(name):
-			return nil, fmt.Errorf("%s sets %s, a credential-shaped name: a credential comes from a Secret, so mount one with %s.volumes or name its key in provider_keys",
-				key, name, podKey)
+			return nil, fmt.Errorf("%s entry %d sets a credential-shaped variable: a credential comes from a Secret, so mount one with %s.volumes or name its key in provider_keys",
+				key, i/2+1, podKey)
 		}
 		if name == runtime.SpendAttributesVariable {
 			if why := runtime.SpendAttributesRefusal(text); why != "" {
@@ -1968,7 +1997,9 @@ func readSessionStore(store, dsnSecret, database *yaml.Node) (ompsessions.Store,
 			return ompsessions.Store{}, err
 		}
 		if !secretDataKey.MatchString(settled.DSNSecret) {
-			return ompsessions.Store{}, fmt.Errorf("%s %q is not a Secret data key ([-._a-zA-Z0-9]+)", sessionDSNKey, settled.DSNSecret)
+			// By the key alone, never its value: a DSN pasted where the key's name goes is the
+			// postgres URL itself, its password included, and `legion stop` prints this as it is.
+			return ompsessions.Store{}, fmt.Errorf("%s is not a Secret data key ([-._a-zA-Z0-9]+)", sessionDSNKey)
 		}
 	case ompsessions.StoreCloudSQLIAM:
 		if settled.Database, err = readSessionDatabase(database); err != nil {
@@ -2342,7 +2373,10 @@ func checkPodReachable(cfg Config) error {
 		default:
 			continue
 		}
-		return fmt.Errorf("%s %s %s; name the host pods reach it at when runtime is kubernetes", address.key, address.value, why)
+		// By its scheme and host alone: the refusal is about the host, and the URL's userinfo is
+		// where these keys take a credential, which `legion stop` prints this error with.
+		named := (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host}).String()
+		return fmt.Errorf("%s %s %s; name the host pods reach it at when runtime is kubernetes", address.key, named, why)
 	}
 	return nil
 }

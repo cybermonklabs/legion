@@ -774,8 +774,9 @@ type Config struct {
 	// (internal/cipher/natscallout), which the Envoy hub sends the authorization of every
 	// connection its configuration lists no static user for, and which answers each with a NATS
 	// user of that connection's own. BROKER_NATS_URLS is the hub's servers, comma separated, each
-	// refused at start, by its place in the list and never its text, when it carries user info or
-	// is no URL: the service connects as its seed's user, and the URLs are written to its log;
+	// refused at start, by its place in the list and never its text, when it carries user info, an
+	// "@" after its host, a query or a fragment, or is no URL: the service connects as its seed's
+	// user, and the URLs are written to its log;
 	// BROKER_NATS_SEED_FILE the service's own NATS user seed, a user the hub lists as an auth
 	// user; BROKER_NATS_ISSUER_SEED_FILE the account seed the hub names as its auth_callout
 	// issuer, which signs every user the service admits; BROKER_NATS_XKEY_SEED_FILE the curve

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -207,4 +208,38 @@ func TestAnUnreachableHubIsNoRefusal(t *testing.T) {
 	require.Equal(t, exitFailed, exit, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
 	require.Empty(t, stdout.String(), "the probe reported an answer of a hub it never reached")
 	require.Contains(t, stderr.String(), "natsprobe: connect: ")
+}
+
+// A --servers URL nats.go would read other than as written is refused before any dial, naming the
+// URL by its position and printing none of it: here a made-up password holding a "/", which
+// nats.go's URL parse reads as a port and quotes. The control is the same probe without the check,
+// whose `natsprobe: connect:` line quotes the password's head.
+func TestTheProbeRefusesAServerURLItCannotReadPrintingNoneOfIt(t *testing.T) {
+	const madeUp = "madeUpProbePassword"
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{"--servers", "nats://127.0.0.1:4222,nats://legion:" + madeUp + "/rest@127.0.0.1:1", "--wait", "1s", "--no-credential",
+		"--subscribe", "notifications.envoy.deliver.ses_a"}, func(string) string { return "" }, &stdout, &stderr)
+	require.Equal(t, exitUsage, exit, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "natsprobe: --servers: NATS server URL 2 of 2 cannot be read")
+	require.NotContains(t, stderr.String(), madeUp, "the refusal quotes the password")
+}
+
+// A --servers list that begins with an empty entry, then a ws:// URL, then a URL with no scheme
+// whose path stops parsing once decoded and whose query holds a made-up token: nats.go drops the
+// empty entry, makes the pool ws from the ws:// URL and dials the later URL as ws, whose handshake
+// error quotes it, query and all. The probe refuses it by its position in --servers, the empty
+// entry counted, before any dial. With the pool read from the first entry, empty or not, the probe
+// dialled it and printed the token in most runs.
+func TestTheProbeRefusesAWebsocketListsLaterURLAfterAnEmptyEntry(t *testing.T) {
+	const madeUp = "madeUpProbeQueryToken0123"
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{"--servers", ",ws://127.0.0.1:1," + listener.Addr().String() + "/%25zz?token=" + madeUp, "--wait", "1s", "--no-credential",
+		"--subscribe", "notifications.envoy.deliver.ses_a"}, func(string) string { return "" }, &stdout, &stderr)
+	require.Equal(t, exitUsage, exit, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	require.Contains(t, stderr.String(), "natsprobe: --servers: NATS server URL 3 of 3 cannot be read: its path does not parse once decoded")
+	require.NotContains(t, stderr.String(), madeUp, "the refusal quotes the token")
 }

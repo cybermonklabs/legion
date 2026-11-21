@@ -83,9 +83,12 @@ func TestTheTmuxBlockTakesOverKubernetesOnlyWhenTheKeySaysSo(t *testing.T) {
 // A take_over naming anything but kubernetes is refused at load, naming the key and the value; so
 // is a pane variable that places the session a resume reads, one the runtime sets on a Claude Code
 // pane or on a resumed Oh My Pi pane, a launch secret's pointer, and a value that is a URL carrying
-// a password — each named with why, never with its value.
+// a password — each named by the entry's position with why, never with its name or its value: a
+// credential made only of letters, digits and underscores passes the name rule, as the made-up one
+// of the last row does.
 func TestTheTmuxBlockRefusesWhatTheRuntimeOwnsOrWhatHoldsAPassword(t *testing.T) {
 	const password = "hunter2-load"
+	const credentialName = "madeUp_pane_credential_0123456789"
 	for _, tc := range []struct {
 		name, body, want string
 	}{
@@ -93,19 +96,21 @@ func TestTheTmuxBlockRefusesWhatTheRuntimeOwnsOrWhatHoldsAPassword(t *testing.T)
 			`runtime.tmux.take_over is "tmux": the one runtime whose claims the tmux runtime takes over is kubernetes`},
 		{"take_over not a string", "runtime: {tmux: {take_over: [kubernetes]}}\n", "runtime.tmux.take_over must be a string"},
 		{"Oh My Pi's session store", "runtime: {tmux: {pane_env: {OMP_SESSION_STORAGE: sql}}}\n",
-			"runtime.tmux.pane_env names OMP_SESSION_STORAGE: it decides where Oh My Pi keeps the session a resume reads, which the runtime places itself"},
+			"runtime.tmux.pane_env entry 1: it decides where Oh My Pi keeps the session a resume reads, which the runtime places itself"},
 		{"Oh My Pi's session database", "runtime: {tmux: {pane_env: {OMP_SESSION_SQL_DSN_FILE: /etc/acme/dsn}}}\n",
-			"runtime.tmux.pane_env names OMP_SESSION_SQL_DSN_FILE: it decides where Oh My Pi keeps the session a resume reads, which the runtime places itself"},
+			"runtime.tmux.pane_env entry 1: it decides where Oh My Pi keeps the session a resume reads, which the runtime places itself"},
 		{"Oh My Pi's agent directory", "runtime: {tmux: {pane_env: {PI_CODING_AGENT_DIR: /srv/agent}}}\n",
-			"runtime.tmux.pane_env names PI_CODING_AGENT_DIR: it decides where Oh My Pi keeps the session a resume reads, which the runtime places itself"},
+			"runtime.tmux.pane_env entry 1: it decides where Oh My Pi keeps the session a resume reads, which the runtime places itself"},
 		{"Claude Code's directory", "runtime: {tmux: {pane_env: {CLAUDE_CONFIG_DIR: /srv/claude}}}\n",
-			"runtime.tmux.pane_env names CLAUDE_CONFIG_DIR: the runtime sets it on every Claude Code pane itself, after the operator's variables"},
+			"runtime.tmux.pane_env entry 1: the runtime sets it on every Claude Code pane itself, after the operator's variables"},
 		{"what holds a resumed Oh My Pi to its session", "runtime: {tmux: {pane_env: {OMP_SESSION_EXCLUSIVE: \"0\"}}}\n",
-			"runtime.tmux.pane_env names OMP_SESSION_EXCLUSIVE: the runtime sets it on every resumed Oh My Pi pane itself, after the operator's variables"},
+			"runtime.tmux.pane_env entry 1: the runtime sets it on every resumed Oh My Pi pane itself, after the operator's variables"},
 		{"the Envoy bearer's pointer", "runtime: {tmux: {pane_env: {ENVOY_TOKEN_FILE: /etc/acme/envoy}}}\n",
-			"runtime.tmux.pane_env names ENVOY_TOKEN_FILE: it points at the launch secret ENVOY_TOKEN, which the runtime hands every launch as a file of the launch's own"},
+			"runtime.tmux.pane_env entry 1: it points at the launch secret ENVOY_TOKEN, which the runtime hands every launch as a file of the launch's own"},
 		{"a URL with a password", "runtime: {tmux: {pane_env: {WIDGETS_DATABASE_URL: \"postgres://acme:" + password + "@db.internal.example/widgets\"}}}\n",
-			"runtime.tmux.pane_env names WIDGETS_DATABASE_URL: its value is a URL carrying a password: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line"},
+			"runtime.tmux.pane_env entry 1: its value is a URL carrying a password: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line"},
+		{"a URL with a password under a token-shaped name", "runtime: {tmux: {pane_env: {ELAN_HOME: /opt/elan, " + credentialName + ": \"postgres://acme:" + password + "@db.internal.example/widgets\"}}}\n",
+			"runtime.tmux.pane_env entry 2: its value is a URL carrying a password: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, minimalFile+tc.body), noEnv)
@@ -114,6 +119,11 @@ func TestTheTmuxBlockRefusesWhatTheRuntimeOwnsOrWhatHoldsAPassword(t *testing.T)
 			}
 			if strings.Contains(err.Error(), password) {
 				t.Errorf("the refusal %q holds the value's password", err)
+			}
+			for i := 0; i+10 <= len(credentialName); i++ {
+				if strings.Contains(err.Error(), credentialName[i:i+10]) {
+					t.Errorf("the refusal %q holds %q of the token-shaped name", err, credentialName[i:i+10])
+				}
 			}
 		})
 	}

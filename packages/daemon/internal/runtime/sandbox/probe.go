@@ -691,11 +691,13 @@ func (r *Runtime) stuck(ctx context.Context, pod *corev1.Pod, name, digest strin
 	}
 	// A pod that mounts the providers Secret (mountsProviders), the probe's included, cannot start
 	// without it, so a Secret or key the kubelet cannot mount refuses the boot here. A pod that needs
-	// none mounts no providers volume, and no event names one.
+	// none mounts no providers volume, and no event names one. The refusal names the settings by
+	// providersEntries and the missing key by the setting that names it, never the kubelet's message,
+	// which quotes the key of the Secret, a provider_keys value that can be a pasted key.
 	secret := ProvidersSecretName(r.project)
 	if failure := providersMountFailure(events, secret); failure != "" {
 		refused := bootprobe.Outcome{Refusal: fmt.Errorf("the probe pod %s cannot mount the providers Secret %s, whose keys every pod mounts (%s): %s",
-			name, secret, strings.Join(r.providersKeys(), ", "), failure)}
+			name, secret, strings.Join(r.providersEntries(), ", "), r.providersMountFault(failure))}
 		return &refused
 	}
 	if volume, message := missingVolume(events); message != "" {
@@ -720,11 +722,30 @@ func providersMountFailure(events []corev1.Event, secret string) string {
 			continue
 		}
 		if strings.Contains(event.Message, `secret "`+secret+`" not found`) || strings.Contains(event.Message, `secrets "`+secret+`" not found`) ||
-			strings.Contains(event.Message, "references non-existent secret key: ") {
+			strings.Contains(event.Message, missingSecretKey) {
 			return event.Message
 		}
 	}
 	return ""
+}
+
+// missingSecretKey is the kubelet's wording for a key of a Secret volume that the Secret does not
+// hold (pkg/volume/secret).
+const missingSecretKey = "references non-existent secret key: "
+
+// providersMountFault is failure, the kubelet's message that providersMountFailure found, in the
+// refusal's own words: the Secret missing, or a key it names missing, named by the setting that
+// names that key (providersEntryOf). Neither quotes the message, whose key can be a provider's key
+// pasted where a provider_keys value goes.
+func (r *Runtime) providersMountFault(failure string) string {
+	_, key, missingKey := strings.Cut(failure, missingSecretKey)
+	if !missingKey {
+		return "the kubelet reports the Secret is not there"
+	}
+	if entry := r.providersEntryOf(strings.TrimSpace(key)); entry != "" {
+		return "the kubelet reports the Secret holds no key for " + entry
+	}
+	return "the kubelet reports the Secret lacks a key the pod mounts, one no setting names"
 }
 
 // mountedVolume is the volume a kubelet FailedMount event names, `MountVolume.SetUp failed for

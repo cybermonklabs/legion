@@ -64,7 +64,7 @@ func credential(lookup func(string) (string, bool)) (nats.Option, error) {
 		if strings.TrimSpace(audience) == "" {
 			return nil, fmt.Errorf("%s is set but empty", ServiceGoogleAudienceEnvVar)
 		}
-		return keptService(natscred.ServiceGoogle(strings.TrimSpace(audience))), nil
+		return keptService(natscred.ServiceGoogle(strings.TrimSpace(audience), ServiceGoogleAudienceEnvVar)), nil
 	}
 	return nkeyCredential(lookup)
 }

@@ -1303,6 +1303,44 @@ func TestControllerStartUnreachableDaemonIsNamedAndNoOtherAddressTried(t *testin
 	c.wantNothingLaunchedOrWritten(c.defaultDir)
 }
 
+// A daemon_url with a made-up user name and password in its userinfo: the starting line names the
+// daemon without them, and so does the refusal when the daemon cannot be reached (printRefusal), whose
+// *url.Error masks only the password.
+func TestControllerStartNamesTheDaemonWithoutItsUserinfo(t *testing.T) {
+	const credential = "madeUpDaemonUser0123:madeUpDaemonPassword0123"
+	holdsNone := func(t *testing.T, errb string) {
+		t.Helper()
+		for i := 0; i+10 <= len(credential); i++ {
+			if strings.Contains(errb, credential[i:i+10]) {
+				t.Fatalf("stderr %q holds %q of daemon_url's userinfo", errb, credential[i:i+10])
+			}
+		}
+	}
+	t.Run("the starting line", func(t *testing.T) {
+		d := newControllerDaemon(t)
+		c := newControllerStart(t, d, controllerOptions{lines: []string{
+			"project: demo", "daemon_url: " + strings.Replace(d.url, "http://", "http://"+credential+"@", 1),
+			"operator_token_file: ./operator-token", "envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
+		}})
+		code, _, errb := c.run()
+		if want := "[legion] starting the controller for demo against " + d.url + "; state in "; code != 0 || !strings.Contains(errb, want) {
+			t.Fatalf("legion controller start = %d, stderr %q; want 0 and %q", code, errb, want)
+		}
+		holdsNone(t, errb)
+	})
+	t.Run("an unreachable daemon's refusal", func(t *testing.T) {
+		c := newControllerStart(t, newControllerDaemon(t), controllerOptions{lines: []string{
+			"project: demo", "daemon_url: http://" + credential + "@127.0.0.1:1",
+			"operator_token_file: ./operator-token", "envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
+		}})
+		code, _, errb := c.run()
+		if want := "could not reach the Legion daemon at http://127.0.0.1:1: "; code != 1 || !strings.Contains(errb, want) {
+			t.Fatalf("legion controller start = %d, stderr %q; want 1 and %q", code, errb, want)
+		}
+		holdsNone(t, errb)
+	})
+}
+
 // Every refusal the operator's machine can find on its own comes before the one request: the
 // daemon revokes the incumbent controller's capability on every mint, so a local failure must
 // never cut it off for nothing.
