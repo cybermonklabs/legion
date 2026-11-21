@@ -17,6 +17,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { until } from "@legion/test-fixtures/wait";
 import { connect, headers, StringCodec } from "nats";
 import { z } from "zod";
 
@@ -71,19 +72,6 @@ const BOOT_TOKEN = fixtureSecret("boot");
  * (packages/daemon/internal/shimwire `Prompt`). */
 const TASK = "Legion task: implement INFRA-1573 and report.";
 
-/**
- * How long after the spawn a wait may last: Oh My Pi's startup, which loads both extensions
- * before it reads any RPC command, took about 27 s of wall time in a slow but normal pod, so the
- * waits that span it get this much from the spawn.
- */
-const STARTUP_DEADLINE_MS = 150_000;
-
-/** How long one wait for something the started session owes a case may last once startup is over. */
-const STEP_DEADLINE_MS = 30_000;
-
-/** A case's own timeout: its startup, each of its waits and the cleanup of its processes. */
-const CASE_TIMEOUT_MS = 600_000;
-
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
@@ -104,6 +92,20 @@ const CardEntrySchema = z.object({
   customType: z.literal("envoy-message"),
   details: z.object({ handOver: z.string() }),
 });
+
+/** The role claim's transcript entry, which pi-envoy writes once the listener granted the name
+ *  (`ROLE_CLAIM_ENTRY`), with the timestamp the host stamped it with. */
+const RoleClaimEntrySchema = z.object({
+  customType: z.literal("envoy-role-claim"),
+  timestamp: z.string(),
+});
+
+/** The claim boot's own record of its deferred step (`ClaimStep`, written to
+ *  LEGION_CLAIM_RECORD_FILE): the bound armed, and the path that took the name. */
+const ClaimStepSchema = z.union([
+  z.object({ armed: z.number(), boundMs: z.number() }),
+  z.object({ claimedBy: z.enum(["bound", "first-turn"]), at: z.number() }),
+]);
 
 /** A running worker session, the stand-in it runs against, and the message kept for its role. */
 interface Worker {
@@ -127,8 +129,9 @@ interface Worker {
   /** Resolves once the session has taken that message: the word it answers the relay frame with
    * (`sendRelayFrame`, which refuses a `nak` by name, so this resolves on a take alone). */
   handedOver(what: string): Promise<void>;
-  /** How long after the stand-in answered `claims/ready` the role claim reached the listener. */
-  claimedAfterReadyMs(): number;
+  /** The boot's two daemon-facing events in the order the stand-in took them: the boot's own
+   * `claims/ready` ("ready") and the role claim reaching the listener ("claim"). */
+  bootOrder(): readonly string[];
   /** How many runs of this session have ended: a message read inside a turn that is already
    * running arrives with none of them over. */
   runsEnded(): number;
@@ -139,6 +142,10 @@ interface Worker {
    * starting (`CardHandOver`, packages/pi-envoy/src/card-wake.ts).
    */
   handOverOf(summary: string): Promise<string>;
+  /** The claim boot's own record of its deferred step, in the order it wrote it. */
+  claimSteps(): Promise<z.infer<typeof ClaimStepSchema>[]>;
+  /** When the host stamped the role claim's transcript entry, in `Date.now()` time. */
+  roleClaimedAt(): Promise<number>;
 }
 
 /**
@@ -156,6 +163,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
   );
   const state = path.join(root, "state");
   await mkdir(state, { recursive: true, mode: 0o700 });
+  const claimRecord = path.join(state, "claim-record.jsonl");
   // The daemon's golden registration answer (packages/daemon/internal/api), so a field the daemon
   // adds to it reaches this stand-in's `claims/register` too.
   const registered: Record<string, unknown> = JSON.parse(
@@ -206,8 +214,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
   };
 
   const turns: Turn[] = [];
-  let readyAt = 0;
-  let claimAt = 0;
+  const bootOrder: string[] = [];
   let roleHolder = "";
   let grants = 0;
   const { base } = serveStandin(cleanup, async (url, body) => {
@@ -238,7 +245,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
     if (url.pathname === "/legion/v1/claims/ready") {
       // The boot's own, which the deferred claim's bound is armed after; a capability report
       // later in the session's life is a ready of its own and moves nothing.
-      if (readyAt === 0) readyAt = Date.now();
+      if (!bootOrder.includes("ready")) bootOrder.push("ready");
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/legion/v1/grants") {
@@ -263,7 +270,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
     const sid = typeof body.session_id === "string" ? body.session_id : "";
     if (url.pathname === "/v1/roles/set") {
       if (body.role === CLAIM_TOKEN && roleHolder === "") {
-        claimAt = Date.now();
+        bootOrder.push("claim");
         // The next turn of the stand-in's event loop, so the grant goes out before the lane it
         // hands over, as the listener grants a claim and then forwards what it kept.
         setImmediate(() => handOver(sid));
@@ -293,7 +300,6 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
   const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
   let runsEnded = 0;
-  const spawnedAt = Date.now();
   const rpc = spawnRpc(
     binary,
     {
@@ -311,6 +317,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
         LEGION_STATE_DIR: state,
         LEGION_WORKSPACE: workspace,
         LEGION_CLAIM_FIRST_TURN_BOUND_MS: String(options.boundMs),
+        LEGION_CLAIM_RECORD_FILE: claimRecord,
         ENVOY_URL: base,
         ENVOY_NATS_URL: nats,
       },
@@ -333,21 +340,19 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
     closed.error = error;
   });
 
-  const until = async <T>(
+  /** Waits through the shared wait until `probe` answers, and fails at once with the error the RPC
+   * stream closed on. What the cases wait on — a request reaching the stand-in, a frame omp
+   * prints — has no event of its own to await. */
+  const waitFor = async <T>(
     what: string,
     probe: () => T | undefined | Promise<T | undefined>
   ): Promise<T> => {
-    // The first wait spans Oh My Pi's startup, which no case can shorten.
-    const deadline = Math.max(Date.now() + STEP_DEADLINE_MS, spawnedAt + STARTUP_DEADLINE_MS);
-    for (;;) {
+    const answered = await until(what, async () => {
       if (closed.error !== undefined) throw closed.error;
       const value = await probe();
-      if (value !== undefined) return value;
-      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-      // What the cases wait on — a request reaching the stand-in, a frame omp prints — has no
-      // event of its own to await.
-      await Bun.sleep(25);
-    }
+      return value === undefined ? undefined : { value };
+    });
+    return answered.value;
   };
 
   let taken = 0;
@@ -355,7 +360,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
   return {
     turns,
     async nextTurn(what) {
-      const turn = await until(what, () => turns[taken]);
+      const turn = await waitFor(what, () => turns[taken]);
       taken += 1;
       return turn;
     },
@@ -372,10 +377,10 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
       prompt === undefined || prompt.success === true ? undefined : JSON.stringify(prompt),
     kept,
     async handedOver(what) {
-      const sent = await until(what, () => receipt);
+      const sent = await waitFor(what, () => receipt);
       await sent;
     },
-    claimedAfterReadyMs: () => claimAt - readyAt,
+    bootOrder: () => bootOrder,
     runsEnded: () => runsEnded,
     async handOverOf(summary) {
       const files = (await readdir(sessions, { recursive: true })).filter((file) =>
@@ -387,6 +392,26 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
         .filter((line) => line.includes('"envoy-message"') && line.includes(summary));
       if (written.length !== 1) throw new Error(`want one card carrying ${summary}: ${written}`);
       return CardEntrySchema.parse(JSON.parse(written[0] ?? "")).details.handOver;
+    },
+    async claimSteps() {
+      return (await readFile(claimRecord, "utf8"))
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => ClaimStepSchema.parse(JSON.parse(line)));
+    },
+    async roleClaimedAt() {
+      // pi-envoy writes the entry once the listener granted the claim, which can follow the
+      // relay frame the listener hands over then.
+      const entry = await waitFor("the role claim's transcript entry", async () => {
+        const files = (await readdir(sessions, { recursive: true })).filter((file) =>
+          file.endsWith(".jsonl")
+        );
+        if (files.length !== 1) return undefined;
+        return (await readFile(path.join(sessions, files[0] ?? ""), "utf8"))
+          .split("\n")
+          .find((line) => line.includes('"envoy-role-claim"'));
+      });
+      return Date.parse(RoleClaimEntrySchema.parse(JSON.parse(entry)).timestamp);
     },
   };
 }
@@ -447,9 +472,12 @@ test.skipIf(skip)(
     // host wrote the card as one taken while a run was active.
     expect(worker.runsEnded()).toBe(0);
     expect(await worker.handOverOf(worker.kept)).toBe("run-active");
+    // The boot's own record: the first turn took the name, not the bound.
+    expect(
+      (await worker.claimSteps()).flatMap((step) => ("claimedBy" in step ? [step.claimedBy] : []))
+    ).toEqual(["first-turn"]);
     read.reply("Read the task and the message.");
-  },
-  CASE_TIMEOUT_MS
+  }
 );
 
 // The second state: the stand-in daemon sends no task at all, which is a role brought back with
@@ -458,8 +486,9 @@ test.skipIf(skip)(
 // — a worker that is only brought back still hears what waited for it.
 //
 // At the commit before this change the name is taken during the boot, before `claims/ready`, so
-// the first assertion — the claim reached the listener no sooner than the bound after the ready
-// — fails there with a negative measurement (−4 ms at 0c803aaa9 on 2026-11-09).
+// the first assertion — the claim reached the listener after the ready, in the order the
+// stand-in took the two — fails there (the claim came 4 ms before the ready at 0c803aaa9 on
+// 2026-11-09).
 test.skipIf(skip)(
   "a role brought back with no task takes its name at the bound, and the message kept for it starts its turn",
   async () => {
@@ -467,11 +496,24 @@ test.skipIf(skip)(
     const worker = await startWorker({ boundMs });
 
     const woken = await worker.nextTurn("the turn the kept message started");
-    expect(worker.claimedAfterReadyMs()).toBeGreaterThanOrEqual(boundMs);
+    expect(worker.bootOrder()).toEqual(["ready", "claim"]);
+    // At the bound, by the program's own records of when it acted, never the test's clock: the
+    // boot recorded the moment it armed the bound and that the bound's timer took the name, and
+    // the host stamped the role claim's transcript entry once the listener granted it. A timer
+    // fires no sooner than its delay, and both moments are the pane's own clock, so no load can
+    // bring the two closer than `boundMs`; load only pushes the claim later.
+    const steps = await worker.claimSteps();
+    const armed = steps.flatMap((step) => ("armed" in step ? [step] : []));
+    expect(armed).toEqual([{ armed: expect.any(Number), boundMs }]);
+    expect(steps.flatMap((step) => ("claimedBy" in step ? [step.claimedBy] : []))).toEqual([
+      "bound",
+    ]);
+    expect((await worker.roleClaimedAt()) - (armed[0]?.armed ?? Number.NaN)).toBeGreaterThanOrEqual(
+      boundMs
+    );
     expect(conversation(woken.request)).toContain(worker.kept);
     // This session was sent nothing, so the turn it ran is the kept message's own.
     expect(worker.turns).toHaveLength(1);
     woken.reply("Read the message.");
-  },
-  CASE_TIMEOUT_MS
+  }
 );

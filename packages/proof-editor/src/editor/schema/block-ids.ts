@@ -389,11 +389,25 @@ function holderAfter(
   };
 }
 
+/**
+ * The nodes `withBlockIds` has visited in this process, so a test holds the walk every headless
+ * parse ends with to the size of the document rather than to the time it took
+ * (tests/parse-work.ts): ProseMirror compares node types by identity, so no counting Proxy can
+ * stand in for the document, and the walk counts itself.
+ */
+let blockIdNodesVisited = 0;
+
+/** How many nodes `withBlockIds` has visited in this process so far. */
+export function blockIdWalkSteps(): number {
+  return blockIdNodesVisited;
+}
+
 /** A copy of `doc` with every block identified; the input is returned unchanged when nothing is missing. */
 export function withBlockIds(doc: ProseMirrorNode, mint: BlockIdGenerator = mintBlockId): ProseMirrorNode {
   const seen = new Set<string>();
   let changed = false;
   const visit = (node: ProseMirrorNode): ProseMirrorNode => {
+    blockIdNodesVisited++;
     let attrs = node.attrs;
     if (isIdentifiedBlock(node)) {
       const id = blockIdOf(node);

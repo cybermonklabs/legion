@@ -22,12 +22,17 @@
     "dist",
     "bin"
   ],
+  "//": [
+    "test: each command's --timeout is at least twice the slowest row or hook it ran under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job).",
+    "The first, 90000: every task agent the staged skills dispatch is one this plugin ships or Oh My Pi bundles, 7,790.49 ms (the slowest hook, prepack.test.ts's beforeAll, 3,809.51 ms); envoy.test.ts's NATS path freezes row runs only with LEGION_E2E_ENVOY_STACK=1, and there it took 30,499.69 ms (its beforeAll 16,397.25 ms) under the same load. Read again at 6ca1a534 with #4437's fourth merge (two runs in builds Job d8-pe-first-8): main's #4140 row a broker that answers no trade, whose trade waits out its own deadlines, took 40,220.52 ms, and the session pod row, which no longer sets a bound of its own, 3,687.45 ms. Read again at the round-3 class-search tree (main 46c275dcba with #4437's head e9d8f5075f and its uncommitted fixes), the whole command under the same load (two runs in builds Job d2-c9-pe, 2026-11-19): envoy OMP extension > a broker that answers no trade, 40,023.38 and 40,184.50 ms, which 90000 holds 2.24 times; Bun prints no hook times, so no hook is read there. Read again at #4437's round-4 tree 24b2e96b28, with the new src/card-wake-start-hold.test.ts and src/card-wake.test.ts as rewritten, the whole command under the same load (three runs in builds Job g4b-pe-first, legion-load-run-pzqt2, 2026-11-21, with Oh My Pi and a NATS server, each hook timed by a preload the Job's patch added): that broker row, 40,187.37 ms, the slowest (40,104.53 and 40,181.16 ms in the other runs), which 90000 holds 2.24 times; the slowest hook, prepack.test.ts's beforeAll at its line 116, 3,587.31 ms; card-wake-start-hold.test.ts's slowest row 2.71 ms and card-wake.test.ts's 82.04 ms, neither file having a hook.",
+    "The second, 250000, read again at INFRA-3149's head 84270ff1 (two runs in builds Job gf-bun-pi-envoy, under the same load): (f) an answers route that never answers holds no request for a second, 120,876.39 ms (83,215.04 ms in the second run; 57,811.06 ms on CI), which the 240000 it had before held only 1.99 times. Read again there, with session-answers-omp.test.ts's 19 rows as rounds 1 to 3 rewrote them (the same Job and load): its (f) case, 68,799.52 ms, the slowest row, which 250000 holds 3.63 times."
+  ],
   "scripts": {
     "build": "bun build extensions/envoy.ts --outdir dist --target bun --format esm --external @oh-my-pi/pi-ai --external @oh-my-pi/pi-coding-agent --external @oh-my-pi/pi-tui --external @oh-my-pi/pi-utils && ../envoy-client/scripts/build-dispatch-cli.sh dist",
     "prepack": "../../scripts/pi-plugin-prepack.sh",
     "postpack": "rm -rf dist/skills",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 90000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns='**/*-omp.test.ts' && bun test --timeout 250000 --preload @legion/test-fixtures/row-deadline omp.test.ts",
     "lint": "bunx biome lint extensions/ src/"
   },
   "devDependencies": {

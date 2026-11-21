@@ -82,10 +82,10 @@ describe.skipIf(!dispatchStackEnabled)(
     beforeAll(async () => {
       stack = await startDispatchStack({ work: directories.stack });
       await asPerson("POST", "/api/v1/projects", { key: PROJECT, name: `${PROJECT} project` });
-    }, 600_000);
+    });
     afterAll(async () => {
       await stack?.stop();
-    }, 60_000);
+    });
 
     test("--mention records one delivery attempt for its target", async () => {
       const issue = await createIssue(PROJECT, "Hand the design to its architect");
@@ -103,6 +103,6 @@ describe.skipIf(!dispatchStackEnabled)(
       expect(read.comment.mentions?.map((mention) => mention.target)).toEqual([TARGET]);
       expect(attempts).toHaveLength(1);
       expect(attempts[0]).toMatchObject({ comment_id: id, target: TARGET, attempt: 1 });
-    }, 120_000);
+    });
   }
 );

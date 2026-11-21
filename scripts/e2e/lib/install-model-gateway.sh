@@ -16,7 +16,8 @@
 #   <dir>/hawk-token      the key command the profile names: hawk-token, run with the caller's
 #                         HOME, session bus address and XDG base directories for that one command
 #   <dir>/hawk-token.log  one line per invocation, one per mint, one per call that got no key and
-#                         why, and hawk-token's own stderr
+#                         why, one per timeout a call arms (the lock wait's and the mint's, with
+#                         the time the call had left when it armed it), and hawk-token's own stderr
 #   <dir>/hawk-token.calls   one line per call and its outcome, read by lib/model-gateway-unserved.sh
 #   <cache-dir>/hawk-token.key   the minted key, 0600, kept until shortly before it expires
 #   <cache-dir>/hawk-token.key.lock   the lock one call holds while it mints
@@ -241,6 +242,12 @@ serve_kept() {
   printf '%s\n' "$key"
   exit 0
 }
+# armed WHAT SECONDS logs a timeout this call arms and the time it had left when it armed it, both
+# read the moment it did: a test holds every timeout a call arms to the time it had left.
+armed() {
+  TZ=UTC printf "%(%FT%TZ)T pid %s armed the %s for %s s with %s ms of the call's %s ms left\n" \
+    -1 "$PPID" "$1" "$2" "$left" "$deadline_ms" >>"$log"
+}
 # no_key OUTCOME DETAIL records, logs and says on stderr why this call gets no key, and ends it.
 no_key() {
   record "$1" "$2"
@@ -256,6 +263,7 @@ else
   left_ms
   [ "$left" -gt 0 ] || no_key timeout "reached the lock after $((deadline_ms - left)) ms, past the call's $deadline_ms ms"
   printf -v wait_s '%d.%03d' $((left / 1000)) $((left % 1000))
+  armed "lock wait" "$wait_s"
   lock_status=0
   "$flock" -w "$wait_s" "$lock" || lock_status=$?
   if [ "$lock_status" = 1 ]; then
@@ -276,6 +284,7 @@ else
   left_ms
   [ "$left" -ge "$min_mint_ms" ] || no_key timeout "waited $((deadline_ms - left)) ms for another call's mint and took the lock with $left ms of the call's $deadline_ms ms left, under the $min_mint_ms ms a mint needs"
   printf -v mint_s '%d.%03d' $((left / 1000)) $((left % 1000))
+  armed mint "$mint_s"
   key=$("$timeout" --kill-after=0.2 "$mint_s" /usr/bin/env "${command[@]}" 2>"$err" {lock}>&-) || status=$?
 fi
 mapfile -t errlines <"$err"

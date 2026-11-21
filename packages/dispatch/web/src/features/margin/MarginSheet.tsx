@@ -69,6 +69,10 @@ export interface MarginSheetModel {
   items: {
     actionFailure: CommentActionFailure | undefined;
     answeredAsksPending: boolean;
+    /** The margin has not yet arrived on the open document (`useMarginSheet`): its threads are
+     *  not in, or it has not yet shown again what it holds there, a compose that comes back with
+     *  the arrival included. The margin is `aria-busy` until then. */
+    arriving: boolean;
     asksPending: boolean;
     commentsError: boolean;
     commentsPending: boolean;
@@ -166,6 +170,7 @@ export function MarginSheet({
     items: {
       actionFailure,
       answeredAsksPending,
+      arriving,
       asksPending,
       commentsError,
       commentsPending,
@@ -236,6 +241,7 @@ export function MarginSheet({
       ) : null}
       {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: aria-modal only applies while the compact review sheet is an open dialog */}
       <aside
+        aria-busy={arriving || undefined}
         aria-label={compactSheet ? "Review panel" : "Review margin"}
         aria-modal={sheet.expanded && compactSheet ? true : undefined}
         className={

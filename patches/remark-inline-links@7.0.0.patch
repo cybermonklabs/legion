@@ -1,0 +1,49 @@
+diff --git a/lib/index.js b/lib/index.js
+index 3ac53bc3aac00b6f6b3bdb0594d2601e58bc939c..2199245c81ef0a8e5ef76085e9a530ae90f15688 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1,4 +1,5 @@
+ /**
++ * @typedef {import('mdast').Parents} Parents
+  * @typedef {import('mdast').Root} Root
+  */
+ 
+@@ -22,6 +23,8 @@ export default function remarkInlineLinks() {
+    */
+   return function (tree) {
+     const definition = definitions(tree)
++    /** @type {Set<Parents>} */
++    const withDefinitions = new Set()
+ 
+     visit(tree, function (node, index, parent) {
+       if (
+@@ -29,8 +32,8 @@ export default function remarkInlineLinks() {
+         parent !== undefined &&
+         typeof index === 'number'
+       ) {
+-        parent.children.splice(index, 1)
+-        return [SKIP, index]
++        withDefinitions.add(parent)
++        return SKIP
+       }
+ 
+       if (node.type === 'imageReference' || node.type === 'linkReference') {
+@@ -50,5 +53,18 @@ export default function remarkInlineLinks() {
+         }
+       }
+     })
++
++    // Each parent’s definitions are removed in one pass once the walk is done:
++    // a splice for each would shift every later sibling each time, which costs
++    // the square of the definitions a parent holds.
++    for (const parent of withDefinitions) {
++      let kept = 0
++
++      for (const child of parent.children) {
++        if (child.type !== 'definition') parent.children[kept++] = child
++      }
++
++      parent.children.length = kept
++    }
+   }
+ }

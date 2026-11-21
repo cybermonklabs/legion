@@ -16,7 +16,9 @@
  * rule turns on (R5, R6 of the role takeover's spec).
  *
  * Its input ending is the host going away: the extension's `session_shutdown` runs (it deregisters
- * the session and drains NATS), bounded at 10 s, and the process exits, writing its notices.
+ * the session and drains NATS), waited for through @legion/test-fixtures/wait, which ends at the
+ * proof's deadline (LEGION_PROOF_DEADLINE_MS, which the driver hands it), and the process exits,
+ * writing its notices.
  *
  * Run it as `bun --preload <dir>/host-stub.ts <dir>/omp-client.ts`: the preload supplies the host
  * package the extension imports.
@@ -41,6 +43,7 @@
  */
 import { appendFileSync } from "node:fs";
 import type { PiApi } from "@legion/pi-shared/pi-types";
+import { settled } from "@legion/test-fixtures/wait";
 import envoyExtension from "../../extensions/envoy";
 import { createStandInHost, type EventHandler } from "../../test/stand-in-host";
 
@@ -215,7 +218,8 @@ for await (const line of console) {
     answer({ id, ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }
-await Promise.race([handlerFor("session_shutdown")({}, context), Bun.sleep(10_000)]).catch(
-  () => undefined
+await settled(
+  "the extension's session_shutdown once the host's input ended",
+  handlerFor("session_shutdown")({}, context).catch(() => undefined)
 );
 process.exit(0);

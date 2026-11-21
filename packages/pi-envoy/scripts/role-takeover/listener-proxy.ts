@@ -9,7 +9,11 @@
  * ship. Each request and its answer is appended to `--log` as one JSON line:
  *
  *   {"seq":1,"label":"omp-a","at":1761,"method":"POST","path":"/v1/roles/set","status":409,
- *    "request":{...},"response":{...},"ms":3}
+ *    "request":{...},"response":{...},"ms":3,"date":1761}
+ *
+ * `date` is the listener's own clock at its answer: the Date header it sent, in epoch seconds
+ * (whole seconds, as the header carries it), or null where it sent none. A row that holds the
+ * listener to a window it keeps reads that window on this clock, never on the proxy's `at`.
  *
  * Usage: bun listener-proxy.ts --port <n> --upstream <url> --log <file> --label <name>
  */
@@ -95,7 +99,14 @@ const server = Bun.serve({
       return Response.json({ error: "the listener did not answer the proxy" }, { status: 502 });
     }
     const text = await answer.text();
-    record({ ...entry, status: answer.status, response: logBody(text), ms: Date.now() - started });
+    const sent = Date.parse(answer.headers.get("date") ?? "");
+    record({
+      ...entry,
+      status: answer.status,
+      response: logBody(text),
+      ms: Date.now() - started,
+      date: Number.isNaN(sent) ? null : sent / 1000,
+    });
     const answerHeaders = new Headers(answer.headers);
     answerHeaders.delete("content-encoding");
     answerHeaders.delete("content-length");

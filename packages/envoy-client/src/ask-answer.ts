@@ -1,11 +1,16 @@
 /** Head length, in UTF-16 units, for one-line summaries of event text. */
 const HEAD_LENGTH = 120;
 
+/** A run of whitespace, which `textHead` folds to one space. An excerpt of text a gateway chose
+ *  ends in `textHead`, so this pattern is one of its passes (excerpt.ts's `EXCERPT_PATTERNS`), and
+ *  recheck holds it linear there. */
+export const WHITESPACE_RUN = /\s+/g;
+
 /** The first `length` units of `text` on one line (whitespace collapsed), with an ellipsis when
  *  cut. `length` defaults to the event summaries' `HEAD_LENGTH`; a surface whose line is shorter,
  *  such as `dispatch inbox`'s rows, names its own. */
 export function textHead(text: string, length: number = HEAD_LENGTH): string {
-  const flat = text.replace(/\s+/g, " ").trim();
+  const flat = text.replace(WHITESPACE_RUN, " ").trim();
   return flat.length > length ? `${flat.slice(0, length)}…` : flat;
 }
 

@@ -1,4 +1,7 @@
+import { existsSync, readFileSync, watch } from "node:fs";
+import { basename, dirname } from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
+import { jsonLineRecord } from "@legion/envoy-client/json-line-record";
 import {
   type FallbackChainContext,
   type FallbackChainLog,
@@ -80,6 +83,88 @@ export interface ModelFallbackDeps {
    * session the pane is on, or undefined when it is on none, or on one that is no Legion role's.
    * The runner itself checks that it is the session whose fallback state it holds. */
   readonly paneContext: () => Promise<ModelFallbackContext | undefined>;
+  /** Tests only: told of each check of a refusal's arming, whichever trigger of the return made
+   *  it (`ModelFallback.maybeRestore`: a run's `before_agent_start`, a request's `context`, the
+   *  timer on an idle pane), with the moment it read (`now`), the due time it read it against and
+   *  whether that made it due, so a test reads the program's own record of the checks that waited
+   *  and the one that came back (`fallbackCheckRecord`). Unset in production. */
+  readonly recordRestoreCheck?: ((check: RestoreCheck) => void) | undefined;
+}
+
+/** One check of a refusal's arming, for `ModelFallbackDeps.recordRestoreCheck`. */
+export interface RestoreCheck {
+  readonly at: number;
+  readonly dueAt: number;
+  readonly due: boolean;
+}
+
+/** Tests only: the file `fallbackCheckRecord` appends each `RestoreCheck` to, one JSON line each.
+ *  Unset, as every deployment runs, nothing is written. */
+export const FALLBACK_CHECK_RECORD_FILE = "LEGION_FALLBACK_CHECK_RECORD_FILE";
+
+/** The `recordRestoreCheck` the file `env` names takes, or undefined where it names none. */
+export function fallbackCheckRecord(
+  env: Record<string, string | undefined>
+): ((check: RestoreCheck) => void) | undefined {
+  return jsonLineRecord<RestoreCheck>(env, FALLBACK_CHECK_RECORD_FILE);
+}
+
+/** Tests only: the file whose reading, epoch ms, is the model fallback's clock where it names one
+ *  (`fallbackClock`). Unset, as every deployment runs, the fallback reads `Date.now()` and arms
+ *  the pane's own host timer. */
+export const FALLBACK_CLOCK_FILE = "LEGION_FALLBACK_CLOCK_FILE";
+
+/** A clock a test holds from outside the pane's process (`fallbackClock`). */
+export interface FallbackClock {
+  /** The clock's reading now. */
+  readonly now: () => number;
+  /** Runs `due` once the reading is `delayMs` past the reading now: at once where that is now, and
+   *  otherwise at the test's write that reaches it. */
+  readonly arm: (due: () => void, delayMs: number) => void;
+}
+
+/**
+ * The fallback clock the file `env` names, or undefined where it names none. Its reading is the
+ * file's content, epoch ms, and it holds until the test that owns the file writes another, as a
+ * new file renamed over it, so that no read meets half a reading; each such write runs every timer
+ * the new reading has reached. So the test, and not the time a loaded machine takes, decides when
+ * a return's wait is over (`ModelFallbackDeps.now` and `armTimer`). The watch on the file's
+ * directory holds no process open, and ends once the test has removed the file.
+ */
+export function fallbackClock(env: Record<string, string | undefined>): FallbackClock | undefined {
+  const file = env[FALLBACK_CLOCK_FILE];
+  if (file === undefined || file === "") return undefined;
+  const now = (): number => {
+    const reading = Number(readFileSync(file, "utf8").trim());
+    if (!Number.isFinite(reading)) throw new Error(`${file} holds no clock reading`);
+    return reading;
+  };
+  const armed = new Set<{ readonly at: number; readonly due: () => void }>();
+  const runReached = (reading: number): void => {
+    for (const timer of [...armed]) {
+      if (timer.at > reading) continue;
+      armed.delete(timer);
+      timer.due();
+    }
+  };
+  const name = basename(file);
+  const watcher = watch(dirname(file), (_event, changed) => {
+    if (changed !== name) return;
+    if (!existsSync(file)) {
+      watcher.close();
+      return;
+    }
+    runReached(now());
+  });
+  watcher.unref();
+  return {
+    now,
+    arm: (due, delayMs) => {
+      const reading = now();
+      armed.add({ at: reading + delayMs, due });
+      runReached(reading);
+    },
+  };
 }
 
 export interface ModelFallback {
@@ -514,7 +599,12 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
     // wait that is. The `superseded` and `restored` bookkeeping skipped while an arming waits
     // moves no model: it is read again at the first request after the wait is over.
     const suppressed = () => ctx.modelRegistry?.isSelectorSuppressed?.(arming.restoreTo) === true;
-    if (restoreDue(state, deps.now(), suppressed) === undefined) return;
+    const now = deps.now();
+    const due = restoreDue(state, now, suppressed);
+    if (arming.cause === "refusal") {
+      deps.recordRestoreCheck?.({ at: now, dueAt: arming.dueAt, due: due !== undefined });
+    }
+    if (due === undefined) return;
     const newest = newestModelChange(ctx);
     // Any model change since the fallback — the operator's `/model`, the host's own restore,
     // another session resumed in this process — is not this arming's to undo.

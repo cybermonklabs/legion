@@ -72,11 +72,12 @@ jobs:
     # and jj itself (mise's own download on the healthy half, the jj copy on the faulted half), so
     # the four healthy and four faulted installs make ten: 10 × 124 s, 21 minutes (21). The four
     # probes, each two requests bounded at 15 s (2). The rest of these cases as measured, the
-    # readings, the stand-in and the removals, 25 s in all in run 44073112404 (1). That is 24,
-    # and with the Bun halves' 15 it is 39, so the limit is the next minute up, 40. A limit any
-    # lower is reached during that outage by a run that would pass, and a job its own limit cuts
-    # off reports `cancelled`, which ci-ok fails on exactly the day the copies are doing their
-    # work.
+    # readings, the stand-in and the removals, 25 s in all in run 44073112404 (1). The fault's
+    # start waits for the proxy's port through scripts/e2e/lib/proof-wait.sh under its own guard,
+    # 60 s (1). That is 25, and with the Bun halves' 15 it is 40, so the limit is the next minute
+    # up, 41. A limit any lower is reached during that outage by a run that would pass, and a job
+    # its own limit cuts off reports `cancelled`, which ci-ok fails on exactly the day the copies
+    # are doing their work.
     # Measured, this job sits far inside that budget: in run 44073112404 (2026-11-17) the whole
     # job took 76 s, 11:31:39Z to 11:32:55Z, the new cases 25 s of it and the two Bun halves 2 s
     # and 33 s, as before them.
@@ -86,11 +87,14 @@ jobs:
     # `continue-on-error`, so a held install here is loud by itself: the bound fails the job at
     # about 11.5 minutes, the steps after it are skipped, and the job uploads its log. The last
     # install of the job started 72 s into that measured run, so its bound ends near 12.7 minutes
-    # in, and the limit of 40 is reached first only when the steps before an install take more
+    # in, and the limit of 41 is reached first only when the steps before an install take more
     # than about 28 minutes, which is a run already near the worst case above. The reading either
-    # way is a job with a log, which is what the twenty-four installs of tool-fallback cannot give
-    # and why their clock exists.
-    timeout-minutes: 40
+    # way is a job with a log, which is what the twenty-four installs of tool-fallback cannot give:
+    # there, `report` in .github/scripts/ci-tools-proof.sh reads the end record each install of
+    # the sixteen corrupted cases writes (.github/scripts/ci-tools.sh:265-270), and only the
+    # negative control's eight installs with nowhere to go, which run the merge base's actions and
+    # so write none, read the clock.
+    timeout-minutes: 41
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

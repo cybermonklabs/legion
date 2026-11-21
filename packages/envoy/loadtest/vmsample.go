@@ -24,7 +24,7 @@ import (
 
 // vmSampleScript is vm/sample.sh, the script every sampled VM runs. The collector sends it on
 // ssh's standard input (sh -s), as cluster.sh sends SAMPLE_SCRIPT through kubectl exec
-// (cluster/cluster.sh:1046-1056), so a VM needs nothing installed and the script a run samples
+// (cluster/cluster.sh:1113-1121), so a VM needs nothing installed and the script a run samples
 // with is the one in this tree.
 //
 //go:embed vm/sample.sh
@@ -32,7 +32,7 @@ var vmSampleScript string
 
 // vmSampleSilence is how long a VM's ssh may print nothing before the collector takes the stream
 // for dead and starts another: six sampling intervals at the 5 s default, the same 30 s that
-// cluster.sh's parse_samples waits (cluster/cluster.sh:1111).
+// cluster.sh's parse_samples waits (cluster/cluster.sh:1176).
 const vmSampleSilence = 30 * time.Second
 
 // vmSampleStderr is how much of a failed ssh's standard error the error reading carries, as
@@ -226,7 +226,7 @@ func (s *vmSampler) write(sample cgroupSample) {
 }
 
 // vmErrorSample is a failed read: the error, and no number, in the shape cluster.sh's emit_error
-// writes (cluster/cluster.sh:1097-1105).
+// writes (cluster/cluster.sh:1161-1169).
 func vmErrorSample(at time.Time, role, pod, container, msg string) cgroupSample {
 	return cgroupSample{At: at, Role: role, Pod: pod, Container: container, Error: vmOneLine(msg)}
 }
@@ -280,7 +280,7 @@ func vmNumber(p *int64) string {
 
 // vmCPUMaxOK is true for a cgroup v2 cpu.max, "<quota> <period>" or "max <period>", which the
 // cluster sampler checks the same way before it writes a good line
-// (cluster/cluster.sh:1116-1117): a container with no CPU limit reads "max", and that is a read
+// (cluster/cluster.sh:1185-1186): a container with no CPU limit reads "max", and that is a read
 // that worked, not a failed one.
 func vmCPUMaxOK(text string) bool {
 	quota, period, ok := strings.Cut(text, " ")

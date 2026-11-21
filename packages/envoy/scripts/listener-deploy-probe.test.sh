@@ -18,6 +18,19 @@ readonly server="${temporary_dir}/listener.py"
 readonly dispatch_server="${temporary_dir}/dispatch.py"
 mkdir -p "$fake_bin_dir"
 
+# The test's one guard and its one wait, scripts/e2e/lib/proof-wait.sh's proof_guard and wait_for,
+# which ends at once where its fact can no longer come and otherwise 30 s before the guard, naming
+# the fact, through this test's fail (below), and keeps its last poll in work. Guard 230 s: at least
+# twice this test's longest run beside 8 busy loops on 2 CPUs in a builds Job, 99 s (d4-final2, two
+# runs, 2026-11-20), plus the wait's 30 s margin; on CI, this test's longest green run was 36 s (run
+# 44607131679), over the 20 newest green merge-group runs of ci.yaml that ran its step up to
+# 2026-11-19 (runs 44508510162 to 44607131679).
+work=$temporary_dir
+note() { echo "$*"; }
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "${project_root}/scripts/e2e/lib/proof-wait.sh"
+proof_guard 230
+
 server_pids=()
 stop_servers() {
   local pid
@@ -201,20 +214,19 @@ os.rename(port_file + ".tmp", port_file)
 threading.Event().wait()
 EOF
 
-# wait_file FILE PID WHAT waits until FILE is written while the process PID, named WHAT, runs: a
-# fake's port, which the fake writes once its sockets are ready, or a mark a signal case waits for.
+# file_written FILE PID WHAT: whether FILE is written, for wait_for; once the process PID, named
+# WHAT, has exited, it never will be.
+file_written() {
+  [[ ! -s "$1" ]] || return 0
+  kill -0 "$2" 2>/dev/null || wait_impossible="$3 exited before ${1##*/} was written"
+  return 1
+}
+
+# wait_file FILE PID WHAT waits, through the test's one wait, until FILE is written while the
+# process PID, named WHAT, runs: a fake's port, which the fake writes once its sockets are ready,
+# or a mark a signal case waits for.
 wait_file() {
-  local file="$1" pid="$2" what="$3"
-  for _ in $(seq 100); do
-    [[ ! -s "$file" ]] || return 0
-    if ! kill -0 "$pid" 2>/dev/null; then
-      printf 'FAIL: %s exited before %s was written\n' "$what" "${file##*/}" >&2
-      exit 1
-    fi
-    sleep 0.1
-  done
-  printf 'FAIL: %s was never written while %s ran\n' "${file##*/}" "$what" >&2
-  exit 1
+  wait_for "${1##*/} to be written while $3 runs" file_written "$@"
 }
 
 port=""
@@ -468,14 +480,22 @@ printf 'PASS: a task whose /v1 answers too late fails the run (exit 1)\n'
 # timeout -s TERM send one, also reaches the child the probe is running at that moment, its sleep
 # between ticks or a request in flight. The run still ends in the summary and the verdict, over
 # every target recorded before the signal; a target whose request it cut short is not recorded.
-#
+
+# probe_exited PID: whether the probe PID has exited, for wait_for; while it still runs, it says so
+# for the wait's failure line.
+probe_exited() {
+  kill -0 "$1" 2>/dev/null || return 0
+  echo "the probe (pid $1) still runs"
+  return 1
+}
+
 # run_signal_case FIRST_MODE SECOND_MODE SIGNAL MOMENT runs the probe until it is stopped, against
 # tasks in those modes, and sends SIGNAL to its process group at MOMENT: sleep once the probe is in
 # its first sleep between ticks, request once the second task holds a /v1 request. It fails the
-# case when the probe still runs 10 s after the signal. Job control gives the probe a process group
-# of its own, which it leads, and leaves SIGINT as the probe's own trap takes it, where a
-# background job started without job control ignores SIGINT; a test started with SIGINT ignored
-# hands that on to the probe, and case (n) then fails on that bound.
+# case, through the test's one wait, when the probe has not exited by the time that wait gives up.
+# Job control gives the probe a process group of its own, which it leads, and leaves SIGINT as the
+# probe's own trap takes it, where a background job started without job control ignores SIGINT; a
+# test started with SIGINT ignored hands that on to the probe, and case (n) then fails on that wait.
 run_signal_case() {
   local first="$1" second="$2" signal="$3" moment="$4" mark
   stop_servers
@@ -492,16 +512,7 @@ run_signal_case() {
   set +m
   wait_file "$mark" "$probe_pid" "the probe"
   kill -s "$signal" -- "-${probe_pid}"
-  for _ in $(seq 100); do
-    kill -0 "$probe_pid" 2>/dev/null || break
-    sleep 0.1
-  done
-  if kill -0 "$probe_pid" 2>/dev/null; then
-    kill -s KILL -- "-${probe_pid}"
-    wait "$probe_pid" || true
-    probe_pid=""
-    fail "${signal} to the probe's process group at its ${moment}: the probe still ran 10 s later"
-  fi
+  wait_for "the probe to exit after ${signal} to its process group at its ${moment}" probe_exited "$probe_pid"
   wait "$probe_pid" || status=$?
   probe_pid=""
 }

@@ -40,6 +40,7 @@ import { mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { udp } from "bun";
@@ -457,12 +458,14 @@ export function reachFixtures() {
   });
 
   /** The environment every run of the script starts with, whether `drive` or `driveEach` starts
-   *  it: HOME `home`, PATH the host's with the curl stand-in first unless `path` names another,
-   *  TMPDIR this process's, the flag that lets the script take the harness's http origin, and
-   *  `originSeconds` for the two reads of the origin. A change to how a run is started goes here,
-   *  so the two helpers cannot drift apart. */
+   *  it: Bun's transpiler cache off (`bunCacheOff`, since the HOME is the run's own), HOME `home`,
+   *  PATH the host's with the curl stand-in first unless `path` names another, TMPDIR this
+   *  process's, the flag that lets the script take the harness's http origin, and `originSeconds`
+   *  for the two reads of the origin. A change to how a run is started goes here, so the two
+   *  helpers cannot drift apart. */
   function runEnvironment(home: string, path: string | undefined): Record<string, string> {
     return {
+      ...bunCacheOff,
       HOME: home,
       PATH: path ?? `${standIns}:${process.env.PATH ?? ""}`,
       TMPDIR: tmpdir(),

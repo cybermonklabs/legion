@@ -189,9 +189,9 @@
 #   install-bound
 #       The seconds no timed install may reach, printed and nothing else.
 #       INSTALL_BOUND below is the one place that number is written, and the `tool-fallback`
-#       job's control over its eight installs with nowhere to go reads it through this verb, so
-#       the bound the rig holds the sixteen corrupted cases to and the bound that step holds
-#       those eight installs to cannot drift apart.
+#       job's control over its eight installs with nowhere to go reads it through this verb.
+#       Those installs run the merge base's actions, whose ci-tools.sh writes no end record, so
+#       the clock is what that control still has; `report` reads the record instead.
 #
 #   report <case> --outcome <the step's outcome> --row <row>
 #          [--expect-source <name>] [--expect-untried <name>]
@@ -202,11 +202,13 @@
 #       stopping at the first install that refuses.
 #       Every case of this job is a refusal, so the outcome it holds the step to is `failure`;
 #       the row the case is about is given rather than worked out of the case's name.
-#       It fails when the step did not fail, when the install took INSTALL_BOUND seconds or more
-#       — the reading that tells a step the runner ended at its `timeout-minutes` from a step
-#       that refused the payload, since both leave `outcome=failure` behind them — when
-#       `--expect-source` names a source this case's reading does not, and when
-#       `--expect-untried` names a source the origin served for this case's row after all.
+#       It fails when the step did not fail, when the install left no end record — the record
+#       each shell of the install that sources .github/scripts/ci-tools.sh writes as its last act
+#       to the file CI_TOOLS_PROOF_ENDED names, $work/<case>.ended on every case's install step,
+#       which a step the runner ends at its `timeout-minutes` does not write, and which is what
+#       tells that step from one that refused the payload, since both leave `outcome=failure`
+#       behind them — when `--expect-source` names a source this case's reading does not, and
+#       when `--expect-untried` names a source the origin served for this case's row after all.
 #
 #   ladder-report
 #       Every fetch the stand-in above measured, printed as the host, the decision, curl's
@@ -327,9 +329,9 @@ LADDER_CEILING=150
 # .github/workflows/ci-job-tool-fallback.yaml, the head's install-crane step, so one install
 # keeps the pinned ladder. That one install makes four fetches through the stand-in: the
 # release asset behind the fault, which ci_tools__fetch_release reads
-# (.github/scripts/ci-tools.sh:1152), and then the pull token, the blob request to the package
+# (.github/scripts/ci-tools.sh:1169), and then the pull token, the blob request to the package
 # and the read of the store that request's redirect points at, which ci_tools__fetch_ghcr makes
-# one after the other (.github/scripts/ci-tools.sh:758, 922-923, 940). ghcr.io answers a blob's GET
+# one after the other (.github/scripts/ci-tools.sh:775, 939-940, 957). ghcr.io answers a blob's GET
 # with a 307 to pkg-containers.githubusercontent.com (measured 2026-11-17), and a request that
 # carries the bearer follows no redirect, so that store is read in a curl call of its own.
 # Merge_group run 42975857631, job 130374882879 (`tool-fallback`, success, head 9300f28b1c), read
@@ -360,27 +362,26 @@ RESERVED_SUFFIX=".invalid"
 # all, which is the reading the probe refuses the job for.
 PROBE_BOUND=15
 
-# The seconds no timed install may reach, read by `report` over the mark `corrupt` wrote. The
-# twenty-four installs whose control accepts a failure are the timed ones; the head's own eight,
-# which no control lets fail, are not checked against it.
-# Every install of a case carries `continue-on-error: true` and `timeout-minutes: 11`, and a
-# step the runner ends at that bound leaves `outcome=failure` behind it, which is the outcome
-# `report` holds a case to, so a hung install would otherwise pass as a refusal.
+# The seconds no timed install may reach, which the `tool-fallback` job's control over its eight
+# installs with nowhere to go reads through the `install-bound` verb rather than writing a second
+# number that nothing keeps equal to this one. Each of those installs carries
+# `continue-on-error: true` and `timeout-minutes: 11`, and a step the runner ends at that bound
+# leaves `outcome=failure` behind it, which is the outcome that control accepts, so a hung install
+# would otherwise pass as a refusal. Those installs run the merge base's actions, whose
+# ci-tools.sh writes no end record, which is why that control reads the clock; the sixteen cases
+# `report` decides run this tree's actions, and it reads their end records instead.
 # A step held to its bound takes about 660 to 672 s. The longest single install measured over
 # 2422 executions between 2026-11-09T19:38Z and 2026-11-10T10:51Z, before the ladders stopped
 # sleeping (dispatch://INFRA-2621), is 326 s (`install-jj` on slow runs), so this leaves 274 s
 # over the slowest healthy install there has been and at least 60 s under the fastest a held
-# step can be, and it reads no ladder's length. Since the ladders stopped sleeping, the slowest
-# timed install is far shorter: 42 s, the Bun second-source case, in job 130289341628.
-# It is the one wall-clock bound `report` and the control step judge an install by, and this line
-# is the one place it is written. Two other bounds are not it: `timeout-minutes: 11`, which the
-# runner enforces on the step rather than reading after it, and `PROBE_BOUND` above, which
-# bounds the probe's two requests. The `tool-fallback` job holds its eight
-# installs with nowhere to go to the same seconds, and its control step reads them from here
-# through the `install-bound` verb rather than writing a second number that nothing keeps equal
-# to this one.
+# step can be, and it reads no ladder's length. Two other bounds are not it:
+# `timeout-minutes: 11`, which the runner enforces on the step rather than reading after it, and
+# `PROBE_BOUND` above, which bounds the probe's two requests.
 INSTALL_BOUND=600
 
+# The rig is no install, so it never writes an install's end record (ci-tools.sh,
+# CI_TOOLS_PROOF_ENDED), whatever its environment holds.
+unset CI_TOOLS_PROOF_ENDED
 # shellcheck source=.github/scripts/ci-tools.sh
 . "$root/.github/scripts/ci-tools.sh"
 
@@ -393,15 +394,23 @@ note() {
   printf 'ci-tools-proof: %s\n' "$*"
 }
 
-# wait_for_file <file> <what it is>: the port file a server writes by rename, waited for rather
-# than raced. Thirty seconds, in tenths, which is longer than either server takes to bind.
-wait_for_file() {
-  local file=$1 what=$2 waited=0
-  while [ ! -s "$file" ]; do
-    sleep 0.1
-    waited=$((waited + 1))
-    [ "$waited" -lt 300 ] || die "$what reported no port in 30 s"
-  done
+# fail <message>: how scripts/e2e/lib/proof-wait.sh, sourced below, refuses a guard or ends a
+# wait that did not hold: the rig's own refusal.
+fail() { die "$@"; }
+
+# The rig's one wait: proof-wait.sh's wait_for, which ends at once where the fact can no longer
+# come and otherwise 30 s before the guard. The two verbs that start a server and wait for its
+# port, origin-start and start-fault, each set that guard with proof_guard at their head, since
+# each verb is a process of its own, one step of a job. It writes its last poll to $work.
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+. "$root/scripts/e2e/lib/proof-wait.sh"
+
+# server_listening <port file> <pid> <what it is>: whether the server, process pid, has written
+# its port file, which it writes by rename, for wait_for; a server that exited never will.
+server_listening() {
+  [ -s "$1" ] && return 0
+  kill -0 "$2" 2>/dev/null || wait_impossible="$3 exited before it reported a port"
+  return 1
 }
 
 # ---------------------------------------------------------------- origin-start
@@ -644,6 +653,10 @@ PY
 
 origin_start() {
   [ "$#" -eq 0 ] || die "origin-start takes no argument, and this call gave $#"
+  # Guard 60 s: at least twice this verb's step's longest green run, 1 s (run 44575705732), over
+  # the 20 newest green merge-group runs of ci.yaml that ran it up to 2026-11-19 (runs
+  # 44430694686 to 44575705732), and above the wait's 30 s margin.
+  proof_guard 60
   mkdir -p "$payload"
   : > "$control"
   write_origin
@@ -651,7 +664,7 @@ origin_start() {
   rm -f "$port_file"
   python3 "$work/origin.py" "$root/.github/ci-tools.yaml" "$payload" "$control" "$origin_log" "$port_file" \
     > "$work/origin.stderr" 2>&1 &
-  wait_for_file "$port_file" "the origin"
+  wait_for "the origin's port" server_listening "$port_file" "$!" "the origin"
   local base
   base="http://127.0.0.1:$(cat "$port_file")"
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -1066,13 +1079,17 @@ fault_env() {
 # --expect-refused` reads the log of the same one.
 start_fault() {
   [ "$#" -eq 0 ] || die "start-fault takes no argument, and this call gave $#"
+  # Guard 60 s: at least twice this verb's steps' longest green run, 1 s in each of the two jobs
+  # (runs 44533687876 and 44575629067), over the 20 newest green merge-group runs of ci.yaml that
+  # ran them up to 2026-11-19 (runs 44430694686 to 44575705732), and above the wait's 30 s margin.
+  proof_guard 60
   mkdir -p "$work"
   local port_file="$work/fault.port"
   rm -f "$port_file" "$fault_log"
   : > "$fault_log"
   python3 "$root/.github/scripts/ci-fault-proxy.py" --mode fail --hosts "$FAULT_HOSTS" \
     --port 0 --port-file "$port_file" > "$fault_log" 2>&1 &
-  wait_for_file "$port_file" "the fault proxy"
+  wait_for "the fault proxy's port" server_listening "$port_file" "$!" "the fault proxy"
   local proxy
   proxy="http://127.0.0.1:$(cat "$port_file")"
   echo "proxy=$proxy" > "$fault_state"
@@ -1119,16 +1136,13 @@ through_proxy() {
 
 # proxy_line_after <line count>: the line the proxy wrote for the request just made, or nothing
 # where it wrote none.
-# The line lands a moment after the answer it belongs to, so it is waited for rather than missed;
-# a request that never reached the proxy leaves none however long this waits.
+# It is read once, after the answer, with no wait: the proxy writes and flushes a request's line
+# before it answers that request, on every path it answers by (ci-fault-proxy.py's `injected`
+# and `connect_upstream` call `log`, which flushes, before `answer` or the pipe), and its stderr
+# is the fault log itself (start_fault). So once curl has the answer, the line is in the file,
+# and a request that never reached the proxy has none.
 proxy_line_after() {
-  local skip=$1 waited=0 line=""
-  while [ -z "$line" ] && [ "$waited" -lt 50 ]; do
-    line=$(awk -v skip="$skip" 'NR > skip { print; exit }' "$fault_log")
-    [ -n "$line" ] || sleep 0.1
-    waited=$((waited + 1))
-  done
-  printf '%s\n' "$line"
+  awk -v skip="$1" 'NR > skip { print; exit }' "$fault_log"
 }
 
 # what_it_read <status> <seconds>: one reading, in the words a person reading the run counts it in.
@@ -1424,12 +1438,10 @@ corrupt() {
   done
   printf '%s\n' "$*" > "$control"
   # Where both logs stand now, so the `report` of this case prints its own lines and no earlier
-  # case's, and when this case began, so that `report` reads how long its install took.
-  # Every case calls this verb, so every case has a mark of its own.
+  # case's. Every case calls this verb, so every case has a mark of its own.
   {
     printf 'origin=%s\n' "$([ -f "$origin_log" ] && wc -l < "$origin_log" || echo 0)"
     printf 'fault=%s\n' "$([ -f "$fault_log" ] && wc -l < "$fault_log" || echo 0)"
-    printf 'started=%s\n' "$(date +%s)"
   } > "$mark"
   if [ "$#" -eq 0 ]; then
     note "the origin now serves every row whole"
@@ -1603,19 +1615,19 @@ report() {
   # Every case of this job is a refusal, so this is the one outcome a case is held to.
   local wanted=failure problems=0
 
-  # How long this case's install took, read from the mark its own `corrupt` wrote immediately
-  # before it. The time is read here rather than given as an argument, so that the reading can
-  # never drift away from the step it measures.
-  # A mark whose started= line is missing or unreadable stops the rig: a case read with no clock
-  # is exactly the case this clock exists to catch, so it may not pass quietly.
-  local started elapsed
-  started=$(sed -n 's/^started=//p' "$mark")
-  case $started in
-    '' | *[!0-9]*)
-      die "report: the mark of case '$name' holds '${started:-no started= line}', so this rig cannot read how long that install took, and that reading is the one thing that tells an install the runner ended at its timeout-minutes from an install that refused the payload"
-      ;;
+  # Whether this case's install ended on its own, read from the record it left: the case's
+  # install step names $work/<case>.ended in CI_TOOLS_PROOF_ENDED, and each shell of the install
+  # that sources .github/scripts/ci-tools.sh writes there, as its last act, the status it exits
+  # with. A step the runner ends at its timeout-minutes leaves none, since the runner's signal
+  # clears that shell's EXIT trap and its kill runs no trap at all, and it leaves outcome=failure
+  # behind it as a refusal does, so the record is what tells the two apart. A record that holds
+  # no status stops the rig: a case read with no record is exactly the case it exists to catch.
+  local ended_file="$work/$name.ended" ended=""
+  [ ! -f "$ended_file" ] || ended=$(cat "$ended_file")
+  case $ended in
+    '' | [0-9] | [1-9][0-9] | [1-2][0-9][0-9]) ;;
+    *) die "report: the end record of case '$name', $ended_file, holds '$ended', which is no exit status, so this rig cannot read whether that install ended on its own" ;;
   esac
-  elapsed=$(($(date +%s) - started))
 
   local served asked
   served=$(case_lines "$origin_log" origin)
@@ -1633,14 +1645,18 @@ report() {
   else
     echo "    nothing: this case asked no faulted host"
   fi
-  echo "  the install of this case took ${elapsed}s, against the ${INSTALL_BOUND}s no timed install may reach"
+  if [ -n "$ended" ]; then
+    echo "  the install of this case ended on its own, with status $ended ($ended_file)"
+  else
+    echo "  the install of this case left no end record at $ended_file"
+  fi
 
   if [ "$outcome" != "$wanted" ]; then
     echo "::error::ci-tools-proof: case $name: the install step's outcome is $outcome, and this case is the proof that the install reaches $wanted: read the step's own log above for what it did instead." >&2
     problems=$((problems + 1))
   fi
-  if [ "$elapsed" -ge "$INSTALL_BOUND" ]; then
-    echo "::error::ci-tools-proof: case $name: the install took ${elapsed}s, which reaches the ${INSTALL_BOUND}s no timed install may, so the runner ended that step at its own timeout-minutes rather than the step refusing the payload: a step the runner ends leaves outcome=failure behind it, which the reading above accepts, so the wall time is the only reading that tells the two apart; read this job's step record (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to its bound, and that step's log for 'The action has timed out.'" >&2
+  if [ -z "$ended" ]; then
+    echo "::error::ci-tools-proof: case $name: the install left no end record at $ended_file, so the runner ended that step at its own timeout-minutes, or killed it, rather than the step refusing the payload: a step the runner ends leaves outcome=failure behind it, which the reading above accepts, so the record is the one reading that tells the two apart; read this job's step record (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to its bound, and that step's log for 'The action has timed out.'" >&2
     problems=$((problems + 1))
   fi
   if [ -n "$expect_source" ]; then

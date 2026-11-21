@@ -1,0 +1,187 @@
+diff --git a/src/formats/remark-proof-marks.ts b/src/formats/remark-proof-marks.ts
+index fde9d6346654ec78244903c0a453676ad7f4ec57..9a542404294ecddf5baca0f3ff92a9d6cfd87ee5 100644
+--- a/src/formats/remark-proof-marks.ts
++++ b/src/formats/remark-proof-marks.ts
+@@ -204,13 +204,27 @@ function parseProofSpanToken(value: string): ProofSpanToken | null {
+   };
+ }
+ 
++/**
++ * Writes `kept` over `children`, each once, in place, so the list stays the one its parent holds.
++ */
++function writeBack(children: MdastNode[], kept: readonly MdastNode[]): void {
++  for (let i = 0; i < kept.length; i++) children[i] = kept[i];
++  children.length = kept.length;
++}
++
++/**
++ * Moves each child that stands between an open `<span data-proof>` and its close into the span it
++ * stands in. Each child is read once and the children are written back once: a splice per moved
++ * child would shift every later child each time, about the square of the children for a paragraph
++ * of spans.
++ */
+ function normalizeSplitProofSpans(parent: MdastParent): void {
+   const { children } = parent;
++  const kept: MdastNode[] = [];
+   const stack: ProofMarkNode[] = [];
+-  let i = 0;
+ 
+-  while (i < children.length) {
+-    const child = children[i];
++  for (const child of children) {
++    const current = stack[stack.length - 1];
+     if (child.type === 'html' && typeof child.value === 'string') {
+       const token = parseProofSpanToken(child.value);
+       if (token?.type === 'open') {
+@@ -220,60 +234,73 @@ function normalizeSplitProofSpans(parent: MdastParent): void {
+           attrs: token.attrs,
+           children: [],
+         };
+-
+-        const current = stack[stack.length - 1];
+         if (current) {
+           current.children = current.children ?? [];
+           current.children.push(proofNode as MdastNode);
+-          children.splice(i, 1);
+         } else {
+-          children.splice(i, 1, proofNode as MdastNode);
+-          i += 1;
++          kept.push(proofNode as MdastNode);
+         }
+-
+         stack.push(proofNode);
+         continue;
+       }
+ 
+-      if (token?.type === 'close') {
+-        if (stack.length > 0) {
+-          stack.pop();
+-          children.splice(i, 1);
+-          continue;
+-        }
++      if (token?.type === 'close' && current) {
++        stack.pop();
++        continue;
+       }
+     }
+ 
+-    if (stack.length > 0) {
+-      const current = stack[stack.length - 1];
++    if (current) {
+       current.children = current.children ?? [];
+       current.children.push(child);
+-      children.splice(i, 1);
+       continue;
+     }
+-    i += 1;
++    kept.push(child);
+   }
++  writeBack(children, kept);
+ }
+ 
+ /**
+- * Post-process proofMark children to convert legacy HTML formatting nodes
++ * Post-process the proofMark children of `node` to convert legacy HTML formatting nodes
+  * (e.g. <code>...</code>, <strong>...</strong>) into proper mdast nodes.
+  * This provides backwards compatibility with files serialized before the
+- * markdown-output fix.
++ * markdown-output fix. Only `node`'s own children are read: `visit` reaches every
++ * node, so a proofMark deeper down is converted where its parent is visited, and
++ * no subtree is read again at each level above it.
+  */
+ function normalizeHtmlFormattingInProofMarks(node: MdastNode): void {
+   if (!node.children) return;
+   for (const child of node.children) {
+     if (child.type === 'proofMark' && child.children) {
+       child.children = convertHtmlFormatting(child.children);
+-      normalizeHtmlFormattingInProofMarks(child);
+-    } else {
+-      normalizeHtmlFormattingInProofMarks(child);
+     }
+   }
+ }
+ 
++/** The tag names of the legacy HTML formatting `convertHtmlFormatting` converts. */
++const LEGACY_FORMATTING_TAGS = ['code', 'strong', 'em', 'del'];
++
++/**
++ * For each legacy formatting tag name, the place of the first of `children` at or after each
++ * place that closes it (`</code>` and the like), or `children.length` where none does: one pass
++ * from the end, so an opening tag finds its closer without reading the children up to it, and a
++ * tag that nothing closes costs no read of the children after it.
++ */
++function nextClosingTags(children: MdastNode[]): Map<string, Int32Array> {
++  const next = new Map<string, Int32Array>();
++  for (const name of LEGACY_FORMATTING_TAGS) {
++    next.set(name, new Int32Array(children.length + 1).fill(children.length));
++  }
++  for (let k = children.length - 1; k >= 0; k--) {
++    const c = children[k];
++    const value = c.type === 'html' && typeof c.value === 'string' ? c.value.trim().toLowerCase() : '';
++    for (const [name, places] of next) places[k] = value === `</${name}>` ? k : places[k + 1];
++  }
++  return next;
++}
++
+ function convertHtmlFormatting(children: MdastNode[]): MdastNode[] {
++  const closers = nextClosingTags(children);
+   const result: MdastNode[] = [];
+   let i = 0;
+   while (i < children.length) {
+@@ -285,21 +312,11 @@ function convertHtmlFormatting(children: MdastNode[]): MdastNode[] {
+       const openMatch = tag.match(/^<(code|strong|em|del)>$/i);
+       if (openMatch) {
+         const tagName = openMatch[1].toLowerCase();
+-        const closeTag = `</${tagName}>`;
+-        // Collect content until closing tag
+-        const inner: MdastNode[] = [];
+-        let j = i + 1;
+-        let found = false;
+-        while (j < children.length) {
+-          const c = children[j];
+-          if (c.type === 'html' && typeof c.value === 'string' && c.value.trim().toLowerCase() === closeTag) {
+-            found = true;
+-            break;
+-          }
+-          inner.push(c);
+-          j++;
+-        }
+-        if (found) {
++        // The first child after this one that closes it, as a scan forward finds it.
++        const j = closers.get(tagName)?.[i + 1] ?? children.length;
++        if (j < children.length) {
++          // The content up to the closing tag
++          const inner = children.slice(i + 1, j);
+           if (tagName === 'code') {
+             // Combine inner text into a single inlineCode node
+             const text = inner.map(n => n.value ?? '').join('');
+@@ -325,14 +342,17 @@ function visit(node: MdastNode): void {
+   normalizeSplitProofSpans(node as MdastParent);
+   normalizeHtmlFormattingInProofMarks(node);
+   const children = node.children;
++  let rebuilt: MdastNode[] | undefined;
+ 
+   for (let i = 0; i < children.length; i++) {
+     const child = children[i];
+     if (child.type === 'html' && typeof child.value === 'string' && isProofHtml(child.value)) {
+       const parsed = parseProofHtml(child.value);
+       if (parsed) {
+-        children.splice(i, 1, ...parsed);
+-        i += parsed.length - 1;
++        // The nodes go in the block's place once, the children written back once,
++        // rather than a splice that shifts every later child.
++        rebuilt ??= children.slice(0, i);
++        for (const read of parsed) rebuilt.push(read);
+         continue;
+       }
+     }
+@@ -340,7 +360,9 @@ function visit(node: MdastNode): void {
+     if (child.children) {
+       visit(child);
+     }
++    rebuilt?.push(child);
+   }
++  if (rebuilt) writeBack(children, rebuilt);
+ }
+ 
+ export function remarkProofMarks() {

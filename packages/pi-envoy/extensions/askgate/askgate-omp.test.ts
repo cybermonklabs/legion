@@ -11,7 +11,9 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { settled } from "@legion/test-fixtures/wait";
 
 // AskGate on the real Oh My Pi: the loader resolves the gate's string-literal imports of the host's
 // own modules (pi-ai, the session context, the settings, the fallback chains) only inside the
@@ -86,13 +88,15 @@ async function runSession(options: {
   if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
   const { root, home, workspace, sessions } = await ompRoot(omp, "askgate-omp-", cleanup);
 
-  // The `dispatch` the session calls by its literal path.
+  // The `dispatch` the session calls by its literal path. The real one sets the transpiler-cache
+  // key itself: an eval cell's kernel passes its child only the names it allows, and HOME is one
+  // of them, so the key the harness gives omp does not reach the CLI that way.
   const dispatch = path.join(root, "bin", "dispatch");
   await mkdir(path.dirname(dispatch));
   await writeFile(
     dispatch,
     options.cli === "real"
-      ? `#!/bin/sh\nexec "${process.execPath}" "${CLI_ENTRY}" "$@"\n`
+      ? `#!/bin/sh\nexport BUN_RUNTIME_TRANSPILER_CACHE_PATH=${bunCacheOff.BUN_RUNTIME_TRANSPILER_CACHE_PATH}\nexec "${process.execPath}" "${CLI_ENTRY}" "$@"\n`
       : [
           "#!/bin/sh",
           'case " $* " in',
@@ -153,7 +157,7 @@ async function runSession(options: {
   });
   await writeStandinProfile(home, base, options.config ?? []);
 
-  let settled = Promise.withResolvers<void>();
+  let runEnded = Promise.withResolvers<void>();
   const rpc = spawnRpc(
     omp,
     {
@@ -174,14 +178,14 @@ async function runSession(options: {
           frame.type === "agent_end" &&
           !("isTerminal" in frame && frame.isTerminal === false)
         )
-          settled.resolve();
+          runEnded.resolve();
       },
     },
     cleanup
   );
-  settled = Promise.withResolvers<void>();
+  runEnded = Promise.withResolvers<void>();
   rpc.send({ type: "prompt", message: "Ask whether to ship." });
-  await Promise.race([settled.promise, rpc.closed]);
+  await settled("the prompt's run to end", Promise.race([runEnded.promise, rpc.closed]));
   await rpc.end();
   return { requests, sessions };
 }
@@ -247,8 +251,7 @@ test.skipIf(omp === undefined && !onActions)(
         target: "dispatch_ask issue=DSP-1",
       },
     ]);
-  },
-  180_000
+  }
 );
 
 // A write an eval cell makes reaches the gate through the tool bridge, which calls the tool with no
@@ -290,8 +293,7 @@ for (const [language, code] of [
       expect(await gateEntries(sessions)).toMatchObject([
         { tool: "dispatch_ask", outcome: "no-verdict", decision: "allow" },
       ]);
-    },
-    180_000
+    }
   );
 
 // AskGate's enforcement at the CLI, on the real binary with the real CLI and a fake Dispatch: the
@@ -335,8 +337,7 @@ test.skipIf(omp === undefined && !onActions)(
     expect(await gateEntries(sessions)).toMatchObject([
       { tool: "dispatch_ask", outcome: "verdict", decision: "allow" },
     ]);
-  },
-  180_000
+  }
 );
 
 // The review of the marker design at cf3f1e021, C1: the gate bound an upload's marker to its own
@@ -392,8 +393,7 @@ test.skipIf(omp === undefined && !onActions)(
     expect(await gateEntries(sessions)).toMatchObject([
       { tool: "dispatch_artifact", outcome: "verdict", decision: "allow" },
     ]);
-  },
-  180_000
+  }
 );
 
 for (const [form, firstTurn, config] of [
@@ -447,8 +447,7 @@ for (const [form, firstTurn, config] of [
       expect(await gateEntries(sessions)).toMatchObject([
         { tool: "dispatch_ask", outcome: "unmarked", decision: "revise", verdictMode: "block" },
       ]);
-    },
-    180_000
+    }
   );
 
 // The CLI's checks default to warn: in a session that chose no mode, a gated write with no marker
@@ -471,8 +470,7 @@ test.skipIf(omp === undefined && !onActions)(
     expect(await gateEntries(sessions)).toMatchObject([
       { tool: "dispatch_ask", outcome: "unmarked", decision: "allow", verdictMode: "warn" },
     ]);
-  },
-  180_000
+  }
 );
 
 test.skipIf(omp === undefined && !onActions)(
@@ -491,6 +489,5 @@ test.skipIf(omp === undefined && !onActions)(
     expect(asksPosted(requests)).toBe(1);
     expect(lastTurn(requests)).not.toContain(REFUSED);
     expect(await gateEntries(sessions)).toEqual([]);
-  },
-  180_000
+  }
 );

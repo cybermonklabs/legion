@@ -8,8 +8,15 @@
 //
 // Each case prints `== <case>`, what it read, then `ok <case>` or `FAIL <case>: <why>`; every case
 // runs, a summary line follows, and the exit status is 1 when any case failed. A step outside the
-// cases that fails (the sign-in, the project, the fake listener's seed) exits 2 naming it.
+// cases that fails (the sign-in, the project, the fake listener's seed) exits 2 naming it. Every
+// wait goes through @legion/test-fixtures/wait, which ends at the proof's deadline:
+// LEGION_PROOF_DEADLINE_MS, which dispatch-claimant-delivery.sh's proof_guard sets.
+import { span, until } from "@legion/test-fixtures/wait";
 import { connect, StringCodec } from "nats";
+// Each exit waits until what the driver wrote has reached the pipe (`exitProcess`):
+// dispatch-claimant-delivery.sh, which runs it, reads its output as it comes, and what stops a
+// reader that takes nothing is the limit of the e2e job that runs the proof.
+import { exitProcess } from "../../packages/envoy-client/src/process-exit";
 
 const [dispatchUrl, natsUrl, envoyUrl] = process.argv.slice(2);
 const agentToken = process.env.CLAIMANT_E2E_AGENT_TOKEN ?? "";
@@ -17,30 +24,32 @@ if (dispatchUrl === undefined || natsUrl === undefined || envoyUrl === undefined
   process.stderr.write(
     "usage: CLAIMANT_E2E_AGENT_TOKEN=<token> bun dispatch-claimant-delivery.ts <dispatch-url> <nats-url> <fake-envoy-url>\n"
   );
-  process.exit(2);
+  await exitProcess(2);
 }
 const origin = new URL(dispatchUrl).origin;
 
-/** How long an event may take to reach its issue's topic once written, and how long after that
- *  the run keeps listening for the rest of its destinations. The outbox publishes an event's
- *  destinations one after another on one connection, its issue's topic first, so a destination
- *  missing from the settle window is one this binary did not publish. A new comment's copy for a
- *  session its mention resolved to is the exception: while the mention's send is still pending the
- *  outbox holds that copy back, defers the event two seconds and re-checks it on its next
- *  five-second tick, so the mention cases listen `mentionWaitMs` instead: one take-over window
- *  (`mentionSettleMs`, below) before the attempt settles, then that defer and tick. */
-const publishWaitMs = 10_000;
+/** How long after an event reaches its issue's topic the run reads which agent topics carried
+ *  it. The outbox publishes an event's destinations one after another on one connection, its
+ *  issue's topic first, so a destination missing from that span is one this binary did not
+ *  publish. A new comment's copy for a session its mention resolved to is the exception: while the
+ *  mention's send is still pending the outbox holds that copy back, defers the event two seconds
+ *  and re-checks it on its next five-second tick, so the mention cases hold `mentionSpanMs`
+ *  instead, whether the copy must be missing (the send landed) or present (it failed): one
+ *  listener take-over window (`listenerTakeoverWindow`, 12 s, packages/envoy/internal/dispatch/
+ *  api/envoy_resolve.go) with the listener client's five, then that defer and tick. */
 const settleMs = 2_000;
-const mentionWaitMs = 35_000;
-/** How long a mention's delivery row may stay `pending` after the comment's 201. The comment
- *  answers every mention attempt pending, and its sender sends after the response. A send the
- *  listener answers "no live session", as the refused cases below make it, is a listener
- *  take-over's answer: the sender tries again inside `listenerTakeoverWindow` (12 s,
- *  packages/envoy/internal/dispatch/api/envoy_resolve.go) and settles with the last try's
- *  outcome, so the row settles about one window after the 201 rather than one listener call
- *  after it. Twenty seconds is that window, the listener client's five, and margin; a row still
- *  pending past it is a send this binary never settled. */
-const mentionSettleMs = 20_000;
+const mentionSpanMs = 35_000;
+/** Why the agent topics are read off a span, both where a case is about a topic that must carry
+ *  the event and where it is about one that must not: nothing the run reads says an event's
+ *  publish is done. The outbox records what it published in its own table, which no route
+ *  answers, and it defers and holds back events past their owners' windows, so a later event's
+ *  arrival does not follow an earlier event's last destination. A wait for the topic itself would
+ *  wait out the proof's deadline on a binary that never publishes there, and fail every case after
+ *  it on that deadline rather than on its own verdict. */
+const spanWhy =
+  "no route says which destinations the outbox published for an event, and a later event's " +
+  "arrival does not follow an earlier one's last destination, since the outbox defers and holds " +
+  "events back";
 
 const person = "alice";
 const sessionP = "claimant-e2e-p";
@@ -126,9 +135,9 @@ function asPerson(method: string, path: string, body?: Json): Promise<unknown> {
   return call(method, path, { Cookie: personCookie, Origin: origin }, body);
 }
 
-function setupFailed(step: string, error: unknown): never {
+function setupFailed(step: string, error: unknown): Promise<never> {
   process.stderr.write(`setup ${step} failed: ${error instanceof Error ? error.message : error}\n`);
-  process.exit(2);
+  return exitProcess(2);
 }
 
 function issuePath(key: string, rest = ""): string {
@@ -159,37 +168,19 @@ async function eventOf(
   return event;
 }
 
-/** The agent topics `dispatch-<id>` reached, once it reached its issue's topic and `windowMs` more
- *  passed, or sooner once `enough` holds of them. Throws when the outbox never published it. */
-async function agentTopicsOf(
-  event: DispatchEvent,
-  windowMs = settleMs,
-  enough?: (topics: string[]) => boolean
-): Promise<string[]> {
+/** The agent topics `dispatch-<id>` reached, once it reached its issue's topic, which the outbox
+ *  publishes first, and `spanMs` more passed: what every case reads, sorted. */
+async function agentTopicsOf(event: DispatchEvent, spanMs = settleMs): Promise<string[]> {
   const envelopeId = `dispatch-${event.id}`;
-  const deadline = Date.now() + publishWaitMs;
-  const subjects = () => [...(seen.get(envelopeId) ?? [])];
-  const published = () =>
-    subjects().some((subject) => subject.startsWith("notifications.dispatch."));
-  while (!published()) {
-    if (Date.now() > deadline) {
-      throw new Error(
-        `${envelopeId} (${event.type}) reached no notifications.dispatch topic within ${publishWaitMs / 1000}s`
-      );
-    }
-    await Bun.sleep(100);
-  }
-  const agentTopics = () =>
-    subjects()
-      .filter((subject) => subject.startsWith(agentPrefix))
-      .sort();
-  if (enough === undefined) {
-    await Bun.sleep(windowMs);
-    return agentTopics();
-  }
-  const windowEnd = Date.now() + windowMs;
-  while (!enough(agentTopics()) && Date.now() < windowEnd) await Bun.sleep(100);
-  return agentTopics();
+  await until(`${envelopeId} (${event.type}) to reach its notifications.dispatch topic`, () =>
+    [...(seen.get(envelopeId) ?? [])].some((subject) =>
+      subject.startsWith("notifications.dispatch.")
+    )
+  );
+  await span(spanMs, spanWhy);
+  return [...(seen.get(envelopeId) ?? [])]
+    .filter((subject) => subject.startsWith(agentPrefix))
+    .sort();
 }
 
 function note(line: string): void {
@@ -279,21 +270,18 @@ async function personMentions(
 }
 
 /** The delivery rows `GET /api/v1/comments/{id}` reads once none is `pending`: the comment's 201
- *  answers its mention attempts pending and the sender settles them after the response. Throws
- *  when a row is still pending `mentionSettleMs` after the comment was created. */
+ *  answers its mention attempts pending and the sender settles them after the response. A send
+ *  the listener answers "no live session", as the refused cases below make it, is a listener
+ *  take-over's answer: the sender tries again inside `listenerTakeoverWindow` (12 s,
+ *  packages/envoy/internal/dispatch/api/envoy_resolve.go) and settles with the last try's
+ *  outcome, so the row settles about one window after the 201 rather than one listener call
+ *  after it. */
 async function settledDeliveries(commentId: string): Promise<Json[]> {
-  const deadline = Date.now() + mentionSettleMs;
-  for (;;) {
+  return until(`comment ${commentId}'s mention delivery rows to settle`, async () => {
     const rows = (((await asAgent(`/api/v1/comments/${commentId}`)) as Json).comment as Json)
       .deliveries as Json[];
-    if (!rows.some((row) => row.state === "pending")) return rows;
-    if (Date.now() > deadline) {
-      throw new Error(
-        `comment ${commentId}'s mention delivery row was still pending ${mentionSettleMs / 1000}s after its 201`
-      );
-    }
-    await Bun.sleep(100);
-  }
+    return !rows.some((row) => row.state === "pending") && rows;
+  });
 }
 
 const results: { name: string; ok: boolean }[] = [];
@@ -328,7 +316,7 @@ const seeded = await fetch(new URL("/__fixture/sessions", envoyUrl), {
   headers: { "Content-Type": "application/json" },
   method: "PUT",
 }).catch((error: unknown) => setupFailed("fake Envoy seed", error));
-if (!seeded.ok) setupFailed("fake Envoy seed", `${seeded.status} ${await seeded.text()}`);
+if (!seeded.ok) await setupFailed("fake Envoy seed", `${seeded.status} ${await seeded.text()}`);
 
 await asPerson("POST", "/api/v1/projects", { key: "CLM", name: "Claimant delivery" }).catch(
   (error: unknown) => setupFailed("project", error)
@@ -352,10 +340,10 @@ console.log(
   `setup: person ${person}; sessions P=${sessionP} C=${sessionC} Q=${sessionQ}; issue ${claimedKey} claim=${JSON.stringify(holder)} route=${JSON.stringify(claimedIssue.route ?? null)}`
 );
 if (holder?.kind !== "session" || holder.id !== sessionP) {
-  setupFailed("claim", `${claimedKey} is not held by ${sessionP}`);
+  await setupFailed("claim", `${claimedKey} is not held by ${sessionP}`);
 }
 if (claimedIssue.route !== null && claimedIssue.route !== undefined) {
-  setupFailed("route", `${claimedKey} has a route; the cases need none`);
+  await setupFailed("route", `${claimedKey} has a route; the cases need none`);
 }
 
 // --- cases -------------------------------------------------------------------------------------
@@ -477,7 +465,7 @@ await runCase("mention-delivered-claimant", async () => {
     sessionP,
     "P, the retry order is settled."
   );
-  const topics = await agentTopicsOf(event, mentionWaitMs);
+  const topics = await agentTopicsOf(event, mentionSpanMs);
   note(topicsLine(event, topics));
   if (state !== "sent") return `expected the mention's delivery row sent, read ${state}`;
   return topics.includes(topic(sessionP))
@@ -494,14 +482,11 @@ await runCase("mention-failed-claimant", async () => {
       sessionP,
       "P, did the retry order change?"
     );
-    const topics = await agentTopicsOf(event, mentionWaitMs, (seen) =>
-      seen.includes(topic(sessionP))
-    );
-    note(topicsLine(event, topics));
     if (state !== "failed") return `expected the mention's delivery row failed, read ${state}`;
-    return topics.includes(topic(sessionP))
-      ? undefined
-      : `expected ${topic(sessionP)} within ${mentionWaitMs / 1000}s`;
+    // A failed send publishes the session's own copy as if the mention had not named it.
+    const topics = await agentTopicsOf(event, mentionSpanMs);
+    note(topicsLine(event, topics));
+    return topics.includes(topic(sessionP)) ? undefined : `expected ${topic(sessionP)} among them`;
   } finally {
     await setSendStatus(sessionP, 200);
   }
@@ -529,14 +514,10 @@ await runCase("mention-failed-follower", async () => {
     const { event, state } = await personMentions(key, sessionC, "C, keep the current order.", {
       ask_id: askId,
     });
-    const topics = await agentTopicsOf(event, mentionWaitMs, (seen) =>
-      seen.includes(topic(sessionC))
-    );
-    note(topicsLine(event, topics));
     if (state !== "failed") return `expected the mention's delivery row failed, read ${state}`;
-    return topics.includes(topic(sessionC))
-      ? undefined
-      : `expected ${topic(sessionC)} within ${mentionWaitMs / 1000}s`;
+    const topics = await agentTopicsOf(event, mentionSpanMs);
+    note(topicsLine(event, topics));
+    return topics.includes(topic(sessionC)) ? undefined : `expected ${topic(sessionC)} among them`;
   } finally {
     await setSendStatus(sessionC, 200);
   }
@@ -548,4 +529,4 @@ console.log(
 );
 subscription.unsubscribe();
 await nats.close();
-process.exit(failed.length === 0 ? 0 : 1);
+await exitProcess(failed.length === 0 ? 0 : 1);

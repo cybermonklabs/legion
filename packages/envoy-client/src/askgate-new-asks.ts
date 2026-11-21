@@ -895,10 +895,42 @@ function runOf(text: string, index: number, char: string): number {
   return end - index;
 }
 
-/** directive.go's `fenceColons`: the colons `text` holds when they are all it holds but spaces. */
+/**
+ * How many characters `fenceColons` has read in this process, so a test holds the scan of a typed
+ * block's lines to their length rather than to the time it took. It is a loop and runs no regular
+ * expression: the end-anchored `/[ \t]+$/` it once trimmed with read, from every start in a run
+ * of spaces or tabs followed by any other character, the rest of the run (recheck's `2nd degree
+ * polynomial`), and JavaScriptCore counts no step a regular expression takes.
+ */
+let fenceCharactersRead = 0;
+
+/** How many characters `fenceColons` has read in this process. */
+export function fenceColonsReads(): number {
+  return fenceCharactersRead;
+}
+
+/** directive.go's `fenceColons`: the colons `text` holds when they are all it holds but spaces
+ *  and tabs. Each loop stops at the first character it does not skip, so no character is read
+ *  more than twice. */
 function fenceColons(text: string): number {
-  const trimmed = text.replace(/^[ \t]+|[ \t]+$/g, "");
-  return /^:+$/.test(trimmed) ? trimmed.length : 0;
+  let read = 0;
+  let start = 0;
+  for (; start < text.length; start++) {
+    read++;
+    if (text[start] !== " " && text[start] !== "\t") break;
+  }
+  let end = text.length;
+  for (; end > start; end--) {
+    read++;
+    if (text[end - 1] !== " " && text[end - 1] !== "\t") break;
+  }
+  let colons = start;
+  for (; colons < end; colons++) {
+    read++;
+    if (text[colons] !== ":") break;
+  }
+  fenceCharactersRead += read;
+  return colons === end && end > start ? end - start : 0;
 }
 
 /** directive.go's `directiveNameByte`. */

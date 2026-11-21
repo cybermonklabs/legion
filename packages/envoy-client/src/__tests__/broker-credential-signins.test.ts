@@ -28,6 +28,7 @@ import {
   SUBJECT_TOKEN_TYPE_PERSON,
 } from "@legion/cipher-client/wire";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { span } from "@legion/test-fixtures/wait";
 import { forgetBrokerClients } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
 import { DispatchClient, DispatchWriteUnsettledError } from "../dispatch-http";
@@ -410,7 +411,7 @@ test("a write whose person signs out between two attempts ends unsettled, presen
     [SUBJECT_TOKEN_TYPE_KUBERNETES, broker.trades[2]?.thumbprint],
   ]);
   expect(asked[0]?.authorization).toBe(`DPoP ${broker.trades[1]?.token}`);
-}, 30_000);
+});
 
 test("a new sign-in closes the client it replaces, so a client whose trades were failing trades no more", async () => {
   // A client's retry loop trades again for as long as the process runs. The credential replaces
@@ -438,10 +439,15 @@ test("a new sign-in closes the client it replaces, so a client whose trades were
     broker.trades.filter((trade) => trade.thumbprint === thumbprint);
   expect(tradesOf(working.thumbprint)).toHaveLength(1);
   expect(tradesOf(failing.thumbprint)).toHaveLength(1);
-  // Past the failing client's next slot, 15 s at its longest: it trades no more.
-  await Bun.sleep(16_000);
+  // Past the failing client's next slot, 15 s at its longest: it trades no more. The client the
+  // credential closed leaves no state to read, its slot is a timer of its own over a real socket,
+  // and no later action's effect is ordered after a trade it would make: a span it is.
+  await span(
+    16_000,
+    "a closed client leaves no state to read, and its next trade is its own timer's: one slot of 15 s at its longest runs in it"
+  );
   expect(tradesOf(failing.thumbprint)).toHaveLength(1);
-}, 40_000);
+});
 
 test("a sign-in the issuer has ended is remembered too: no trade at the broker, and no second refresh", async () => {
   const broker = signInBroker();

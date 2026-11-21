@@ -296,8 +296,8 @@ done
 
 [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
   refuse "LEGION_TEST_PG_DSN is required: a loopback Postgres with pgvector (postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable). The run starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md starts one without root."
-# The DSN itself is read by libpq alone, further down: run_database_url reads which host it
-# names, and rebuilds it to name this run's own database.
+# The DSN itself is read by libpq alone, further down: require_run_database reads which host it
+# names, and checks that it can be rebuilt to name this run's own database.
 [ -r "$model_key_file" ] ||
   refuse "the model key file $model_key_file is not readable: both sessions run their turns on it (SESSION_DELIVERY_MODEL_KEY_FILE names another)"
 # Read into a shell variable that is never exported: isolated_exec hands it to the two sessions'
@@ -332,13 +332,13 @@ done
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 readonly repo_root
 readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
-# lib/loopback-dsn.sh for run_database_url, the helper a proof that writes a PostgreSQL server
-# reads its caller's DSN with, and lib/port-file.sh for read_port_file, which this proof's own
-# await_port_file waits with. Neither file reads a variable of this shell. This proof sources no
-# rig: its await_port_file and keep_port, written for the pid map below, are its own, and
-# lib/rig.sh defines both of those names and a start_held that calls its own await_port_file, so
-# sourcing it for that one DSN helper would leave which await_port_file runs to the order of the
-# two files.
+# lib/loopback-dsn.sh for require_run_database and exec_run_database, the helpers a proof that
+# writes a PostgreSQL server reads its caller's DSN with, and lib/port-file.sh for read_port_file,
+# which this proof's own await_port_file waits with. Neither file reads a variable of this shell.
+# This proof sources no rig: its await_port_file and keep_port, written for the pid map below, are
+# its own, and lib/rig.sh defines both of those names and a start_held that calls its own
+# await_port_file, so sourcing it for those DSN helpers would leave which await_port_file runs to
+# the order of the two files.
 # shellcheck source-path=SCRIPTDIR source=lib/loopback-dsn.sh
 . "$repo_root/scripts/e2e/lib/loopback-dsn.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
@@ -346,11 +346,16 @@ readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 [ -f "$repo_root/node_modules/nats/package.json" ] || refuse "$repo_root/node_modules has no nats package: run bun install in the checkout"
 # The database's name is only this shell's pid and random bytes, so the run has it here, and the
 # one read of the DSN runs before the builds, the services and the `create database` further
-# down: the rewrite refuses every DSN the loopback guard refuses, and a DSN whose values the
-# connection string cannot carry as well. Its answer is the connection string the run keeps, and
-# its refusal is the line this script prints.
+# down: the checks refuse every DSN the loopback guard refuses, a DSN whose values Dispatch
+# cannot be handed, and a DSN whose values psql cannot be handed in libpq's own variables, the
+# form server_psql makes and drops the database in (--libpq-env, on the server's `postgres`
+# database), which refuses a keyword libpq reads from no variable, such as `keepalives`. Their
+# refusal is the line this script prints. Dispatch is handed the run's own database by
+# exec_run_database (start_dispatch), and no variable of this shell holds its connection string.
 database="session_delivery_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
-run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "this run creates and force-drops a database there" || refuse "$database_url"
+require_run_database refusal LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "this run creates and force-drops a database there" || refuse "$refusal"
+require_run_database refusal LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" postgres \
+  "this run creates and force-drops a database there" --libpq-env || refuse "$refusal"
 work=${SESSION_DELIVERY_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")}
 mkdir -p "$work/logs" "$work/bin" "$work/sessions" "$work/ports"
 work=$(cd -- "$work" && pwd -P)
@@ -400,6 +405,17 @@ close_fd() {
   [[ -z "$f" ]] || exec {f}>&-
   unset "fd[$1]"
 }
+
+# server_psql ARGS… runs psql on LEGION_TEST_PG_DSN's server, connected to its `postgres`
+# database, to make and drop the run's own database. lib/loopback-dsn.sh's exec_run_database hands
+# psql the connection in libpq's own variables (--libpq-env), PGPASSWORD among them, so no argument
+# list holds the password, as stage1-skeleton.sh's server_psql does. It runs in a subshell of its
+# own, which the exec replaces.
+server_psql() {
+  (exec_run_database LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" postgres \
+    "this run creates and force-drops a database there" --libpq-env -- psql -X "$@")
+}
+
 cleanup() {
   local status=$? label
   trap - EXIT
@@ -411,7 +427,7 @@ cleanup() {
     stop_label "$label"
   done
   if [[ -n "$database_created" ]]; then
-    psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
+    server_psql -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
       printf '%s: could not drop database %s\n' "$me" "$database" >&2
   fi
   printf '%s: evidence kept in %s\n' "$me" "$work"
@@ -425,6 +441,8 @@ trap 'exit 143' TERM
 # variable of this shell but PATH, the names KEEP lists and the assignments, which are exported
 # (never put on a command line, which /proc shows every local user). It closes every session's
 # stdin fifo first, so no child holds another session's input. Run it as `(isolated_exec ...) &`.
+# COMMAND may be a function of this shell that replaces the subshell itself, as
+# lib/loopback-dsn.sh's exec_run_database does, which `exec` could not run.
 isolated_exec() {
   local keep=" PATH $1 " name f
   shift
@@ -434,6 +452,10 @@ isolated_exec() {
   done
   while [[ "$1" != "--" ]]; do export "${1?}"; shift; done
   shift
+  if [[ $(type -t "$1") == function ]]; then
+    "$@"
+    exit
+  fi
   exec "$@"
 }
 
@@ -717,18 +739,24 @@ start_proxy() {
 start_proxy proxy-pi
 start_proxy proxy-cc
 
-psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
+server_psql -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1
 agent_token=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
 signing_key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
 mkdir -p "$web_dist"
 dispatch_ready() { curl -fsS --max-time 2 "${dispatch_url}/healthz" | jq -e '.ok and .nats'; }
+# start_dispatch: Dispatch on a copy of the socket keep-dispatch holds. DATABASE_URL is the run's
+# own database, which exec_run_database sets in Dispatch's environment, so it is in no variable of
+# this shell and no argument list; LEGION_TEST_PG_DSN reaches the helper alone, which leaves it
+# out of what it hands on.
 start_dispatch() {
   (isolated_exec "" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
-    DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$agent_token" DISPATCH_IDENTITY=header:X-Dispatch-User \
+    DISPATCH_AGENT_TOKEN="$agent_token" DISPATCH_IDENTITY=header:X-Dispatch-User \
     DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
     DISPATCH_SERVER_URL="$dispatch_url" DISPATCH_SIGNING_KEY="$signing_key" DISPATCH_WEB_DIST="$web_dist" \
     ENVOY_URL="$(listener_url dispatch)" NATS_URLS="nats://127.0.0.1:${proxy_port[proxy-dispatch]}" -- \
+    exec_run_database LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" \
+    "this run creates and force-drops a database there" --env DATABASE_URL -- \
     python3 "$held_port" exec --from "$work/ports/keep-dispatch.sock" --fd-env DISPATCH_LISTEN_FD -- "$work/bin/envoy-dispatch") \
     >>"$work/logs/dispatch.log" 2>&1 &
   pid[dispatch]=$!

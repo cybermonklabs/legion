@@ -21,6 +21,9 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_REPLAYED_HEADER,
 } from "../../../packages/contracts/src/dispatch-api";
+// The exit comes once what the check printed has reached the pipe (`exitProcess`): a person reads
+// it as it comes and dispatch-keyed-comment.test.ts reads it whole, so nothing bounds the flush.
+import { exitProcess } from "../../../packages/envoy-client/src/process-exit";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-keyed-comment.ts --url <dispatch> --bearer-file <file> --issue <KEY> [--session <id>] [--cli]";
@@ -227,6 +230,10 @@ async function postThroughCli(options: Options, body: string): Promise<void> {
       [process.execPath, CLI, "comment", "--issue", options.issue, "--body", body],
       {
         env: {
+          // HOME is a directory this check made, where Bun would write its runtime transpiler cache
+          // for every large module the command loads, only for the check to remove it: "0" turns
+          // that cache off.
+          BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
           DISPATCH_HOST: "omp",
           DISPATCH_SESSION_ID: options.session,
           DISPATCH_TOKEN: options.bearer,
@@ -312,4 +319,4 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-process.exit(await main(Bun.argv.slice(2)));
+await exitProcess(await main(Bun.argv.slice(2)));

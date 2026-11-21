@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // Shared fixtures for the multi-repository acceptance observer's tests:
 // scripts/e2e/multi-repo-acceptance.sh reads only structured sources — the daemon's state JSON (a
@@ -39,7 +39,11 @@ export let tokenFile = "";
  * nothing is there until the hook has run.
  */
 export function useScratchDirectory(): void {
-  dir = temporaryDirectory("multi-repo-acceptance-test");
+  // On the memory root (memoryRoot): a file's fixtures leave 1,869 entries here for the one
+  // `afterAll` to remove, which timed out against Bun's 5 s when each entry on the dev box's shared
+  // disk cost 4 ms (dispatch://INFRA-4311). memoryRoot refuses a noexec /dev/shm, since the fake
+  // binaries written here are run from here.
+  dir = temporaryDirectory("multi-repo-acceptance-test", { root: memoryRoot() });
   tokenFile = join(dir, "dispatch-token");
   beforeAll(() => {
     writeFileSync(tokenFile, "dispatch-bearer\n");
@@ -391,7 +395,7 @@ export function dispatchStub(
 }
 
 // daemonActorEvent is one event with the daemon's own exact actor identity
-// (legion-daemon:<PROJECT>, internal/dispatch/client.go:287-289), a seq, and a message.created
+// (legion-daemon:<PROJECT>, internal/dispatch/client.go:584-587), a seq, and a message.created
 // body.
 export function daemonActorEvent(
   project: string,

@@ -150,9 +150,12 @@
       "bun": "./test/skills-guard.ts"
     }
   },
+  "//": [
+    "test: --timeout 45000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs, rounded up to 5,000 ms. At 61b66deb (two runs in a builds Job): the row against a real jj workspace, the implementer's report refuses an @- the branch does not carry, 4,607.91 ms (the slowest hook, skills-partition.test.ts's beforeAll, 824.79 ms). At INFRA-3149's merge of main 66ee7eb910 (three runs in an issue pod, whose output gives row times only): that row, 21,775.64 ms, and the row #4012 added with a timeout of its own, 60,000 ms, which the merge removed, exportJjSessionAttribution > the overlay's three templates give each jj command the running pair, 20,573.36 ms."
+  ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 45000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/ test/"
   },
   "devDependencies": {
@@ -164,6 +167,7 @@
     "@oh-my-pi/pi-utils": "^18.1.15",
     "@types/bun": "latest",
     "@xterm/headless": "^6.0.0",
+    "recheck": "4.6.2",
     "typescript": "^5.3.0",
     "zod": "4.3.6"
   }

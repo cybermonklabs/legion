@@ -6,7 +6,7 @@ import {
   paneAttributionOptions,
   sessionIdFromTranscript,
 } from "@legion/pi-shared/jj-attribution";
-import { bootLegionClaim } from "@legion/pi-shared/legion-claim-core";
+import { bootLegionClaim, claimStepRecord } from "@legion/pi-shared/legion-claim-core";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
@@ -131,6 +131,9 @@ export function createClaimSession(deps: {
       // The pane's own bound, read from its environment as both watches of this entry read
       // theirs (`stallLimits` in `extensions/legion.ts`).
       firstTurnBoundMs: claimFirstTurnBoundMs(process.env, logger),
+      // The tests' record of when the bound was armed and which path took the name, written only
+      // where LEGION_CLAIM_RECORD_FILE names a file.
+      recordClaimStep: claimStepRecord(process.env),
       onRoleRegained: onEnvoyRoleRegained,
       log: (line) => console.error(`[legion] ${line}`),
       stopping: "exiting so the daemon launches it again",

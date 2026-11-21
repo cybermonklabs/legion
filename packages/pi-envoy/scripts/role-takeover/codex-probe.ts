@@ -22,80 +22,90 @@
  * resolve no NATS connection there.
  */
 import { readFileSync } from "node:fs";
+// Each exit comes once what this process printed has reached the pipe (`exitProcess`): the proof
+// reads the whole output (nats-callout-sessions.sh's `probe`), under its own guard.
+import { exitProcess } from "@legion/envoy-client/process-exit";
 import { sessionConfigFile, sessionSettings } from "@legion/envoy-client/session-settings";
 
-function usage(why: string): never {
+/** Writes why the probe cannot run, then exits 2. */
+function usage(why: string): Promise<never> {
   process.stderr.write(`codex-probe: ${why}\n`);
-  process.exit(2);
+  return exitProcess(2);
 }
 
-const separator = process.argv.indexOf("--");
-if (separator === -1) usage("expected -- <natsprobe> <args...>");
-const options = new Map<string, string>();
-const named = process.argv.slice(2, separator);
-for (let index = 0; index < named.length; index += 2) {
-  const name = named[index];
-  const value = named[index + 1];
-  if (name === undefined || !name.startsWith("--") || value === undefined) {
-    usage(`expected --name value pairs, got ${named.join(" ")}`);
+async function main(): Promise<never> {
+  const separator = process.argv.indexOf("--");
+  if (separator === -1) return usage("expected -- <natsprobe> <args...>");
+  const options = new Map<string, string>();
+  const named = process.argv.slice(2, separator);
+  for (let index = 0; index < named.length; index += 2) {
+    const name = named[index];
+    const value = named[index + 1];
+    if (name === undefined || !name.startsWith("--") || value === undefined) {
+      return usage(`expected --name value pairs, got ${named.join(" ")}`);
+    }
+    options.set(name.slice(2), value);
   }
-  options.set(name.slice(2), value);
-}
-const environFile = options.get("environ");
-const session = options.get("session");
-const cwd = options.get("cwd");
-const command = process.argv.slice(separator + 1);
-if (
-  environFile === undefined ||
-  session === undefined ||
-  cwd === undefined ||
-  command.length === 0
-) {
-  usage("--environ, --session, --cwd and a natsprobe command are required");
-}
+  const environFile = options.get("environ");
+  const session = options.get("session");
+  const cwd = options.get("cwd");
+  const command = process.argv.slice(separator + 1);
+  if (
+    environFile === undefined ||
+    session === undefined ||
+    cwd === undefined ||
+    command.length === 0
+  ) {
+    return usage("--environ, --session, --cwd and a natsprobe command are required");
+  }
 
-let environ: string;
-try {
-  environ = readFileSync(environFile, "utf8");
-} catch (error) {
-  usage(`the plugin server's environment cannot be read from ${environFile}: ${String(error)}`);
-}
-const env: Record<string, string> = {};
-for (const entry of environ.split("\0")) {
-  const equals = entry.indexOf("=");
-  if (equals > 0) env[entry.slice(0, equals)] = entry.slice(equals + 1);
-}
-if (Object.keys(env).length === 0) usage(`${environFile} holds no environment`);
+  let environ: string;
+  try {
+    environ = readFileSync(environFile, "utf8");
+  } catch (error) {
+    return usage(
+      `the plugin server's environment cannot be read from ${environFile}: ${String(error)}`
+    );
+  }
+  const env: Record<string, string> = {};
+  for (const entry of environ.split("\0")) {
+    const equals = entry.indexOf("=");
+    if (equals > 0) env[entry.slice(0, equals)] = entry.slice(equals + 1);
+  }
+  if (Object.keys(env).length === 0) return usage(`${environFile} holds no environment`);
 
-const { envoy } = sessionSettings(sessionConfigFile("codex", env), env, {
-  cwd,
-  session: () => session,
-});
-if (!envoy.enabled)
-  usage(`the plugin's settings turn Envoy off there: ${envoy.error ?? envoy.notice}`);
-if ("off" in envoy.inbound) {
-  usage(`the plugin's settings take no inbound messages there: ${envoy.inbound.off}`);
-}
-if (!("natsCredential" in envoy.inbound)) {
-  usage(
-    `the plugin's settings take inbound messages through the listener's relay socket there (${envoy.inbound.relaySetting} is listener), and natsprobe probes NATS`
+  const { envoy } = sessionSettings(sessionConfigFile("codex", env), env, {
+    cwd,
+    session: () => session,
+  });
+  if (!envoy.enabled)
+    return usage(`the plugin's settings turn Envoy off there: ${envoy.error ?? envoy.notice}`);
+  if ("off" in envoy.inbound) {
+    return usage(`the plugin's settings take no inbound messages there: ${envoy.inbound.off}`);
+  }
+  if (!("natsCredential" in envoy.inbound)) {
+    return usage(
+      `the plugin's settings take inbound messages through the listener's relay socket there (${envoy.inbound.relaySetting} is listener), and natsprobe probes NATS`
+    );
+  }
+  const kind = envoy.inbound.natsCredential.kind;
+  const said =
+    kind === "broker"
+      ? "the session's broker token"
+      : kind === "seed"
+        ? "an nkey seed"
+        : "no credential (neither NATS_AUTH in its environment nor natsAuth in its envoy.json names one)";
+  process.stdout.write(
+    `codex-probe: the plugin's settings present ${said} in its server's environment\n`
   );
-}
-const kind = envoy.inbound.natsCredential.kind;
-const said =
-  kind === "broker"
-    ? "the session's broker token"
-    : kind === "seed"
-      ? "an nkey seed"
-      : "no credential (neither NATS_AUTH in its environment nor natsAuth in its envoy.json names one)";
-process.stdout.write(
-  `codex-probe: the plugin's settings present ${said} in its server's environment\n`
-);
-if (kind === "seed") usage("an nkey seed is no credential natsprobe presents");
+  if (kind === "seed") return usage("an nkey seed is no credential natsprobe presents");
 
-const probe = Bun.spawnSync(kind === "broker" ? command : [...command, "--no-credential"], {
-  env: { ...env, AGENT_SECRETS_SESSION: session },
-  stdout: "inherit",
-  stderr: "inherit",
-});
-process.exit(probe.exitCode ?? 2);
+  const probe = Bun.spawnSync(kind === "broker" ? command : [...command, "--no-credential"], {
+    env: { ...env, AGENT_SECRETS_SESSION: session },
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  return exitProcess(probe.exitCode ?? 2);
+}
+
+await main();

@@ -4,11 +4,11 @@
  * refuses it naming its line, as the document service refuses a 33rd nested typed block. Bodies
  * that nest `:::` thousands deep, which froze a reader's tab for about a minute, are read here
  * for what they produce and what they cost: the read-only engine's parse for its text, the
- * default mode's for the line its refusal names, and both for their cost, within
- * `parseCpuBudgetMs` of CPU time and growing no faster than their growing dimension does. A row
- * reads each body at its full size and at an eighth of that dimension, in CPU time rather than
- * wall time (tests/cpu-time.ts), because a busy machine stretches wall time without the parse
- * doing any more work.
+ * default mode's for the line its refusal names, and both for their cost, in a number of steps in
+ * proportion to the body's length and growing no faster than its openers do, read at the full size
+ * and at an eighth of its openers (tests/parse-work.ts). The steps are the ones the parse counts
+ * itself - micromark's tokenizer and the scans that read events - so a busy machine does not move
+ * them.
  */
 
 import { expect, test } from "bun:test";
@@ -17,12 +17,11 @@ import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import type { BlockSchema } from "../src/block-schema.js";
 import { createHeadlessProof } from "../src/lib-headless.js";
 import {
-  type CostShape,
-  measuredRowCeilingMs,
-  parsedWithinCostBounds,
-  plainRowCeilingMs,
-  refusalWithinCostBounds,
-} from "./cpu-time";
+  countParseStages,
+  parsedWithinWorkBounds,
+  refusalWithinWorkBounds,
+  type WorkShape,
+} from "./parse-work";
 
 /** The document service's own block schema: its callout takes `block+`, so callouts nest. */
 const serverBlockSchema: BlockSchema = JSON.parse(
@@ -35,16 +34,15 @@ const serverBlockSchema: BlockSchema = JSON.parse(
 const maxNesting = 32;
 
 /**
- * A body that nests `:::` deeply, as a reader was sent it and as a row measures it: `CostShape`
- * of tests/cpu-time.ts, with what the row reads on the parse.
- *
- * `CostShape.grow` builds the body at a size of the dimension whose growth costs, which is the
- * openers of both bodies. tests/heavy-bodies.test.ts's `HeavyShape` extends the same type.
+ * A body that nests `:::` deeply, as a reader was sent it and as a row grows it: `WorkShape` of
+ * tests/parse-work.ts, with what the row reads on the parse. `grow` builds the body at a size of
+ * the dimension whose growth costs, which is the openers of both bodies.
+ * tests/heavy-bodies.test.ts's `HeavyShape` extends the same type.
  */
-type DirectiveBody = CostShape & {
+type DirectiveBody = WorkShape & {
   /** What a parse of the full body produces in the read-only engine. */
   expectDoc: (doc: ProseMirrorNode) => void;
-  /** What the default mode refuses the full body with. */
+  /** What the default mode refuses the body with, at either size. */
   refusedInDefaultMode: RegExp;
 };
 
@@ -57,6 +55,10 @@ const bodies: DirectiveBody[] = [
     name: "2,000 nested unclosed openers then a long line",
     grow: (size) => ":::a\n".repeat(size) + "x".repeat(Math.round(size * lineCharsPerOpener)),
     full: 2_000,
+    opensContainers: true,
+    opensDirectives: true,
+    // Under the bound every opener nests, and the openers past it, which grow the body, are none.
+    smallest: maxNesting + 1,
     expectDoc: (doc) => {
       // The openers past the bound, and the long line, are the text of the 32 paragraphs the
       // bound allows and of the one that holds the rest.
@@ -69,6 +71,9 @@ const bodies: DirectiveBody[] = [
     name: "1,000 nested openers then 1,000 closing lines",
     grow: (size) => ":::a\n".repeat(size) + ":::\n".repeat(size),
     full: 1_000,
+    opensContainers: true,
+    opensDirectives: true,
+    smallest: maxNesting + 1,
     expectDoc: (doc) => {
       expect(doc.childCount).toBe(35);
       expect(doc.textContent.length).toBe(8_965);
@@ -113,105 +118,86 @@ function innermostCallout(node: ProseMirrorNode): ProseMirrorNode | undefined {
   return found;
 }
 
+// Each hands its parsers to tests/parse-work.ts, whose rows count each stage of a parse they read.
 async function readOnlyProof() {
-  return createHeadlessProof({ blockSchema: serverBlockSchema, readOnly: true });
+  return createHeadlessProof({
+    blockSchema: serverBlockSchema,
+    readOnly: true,
+    observeParser: countParseStages,
+  });
 }
 
 async function defaultProof() {
-  return createHeadlessProof({ blockSchema: serverBlockSchema });
+  return createHeadlessProof({ blockSchema: serverBlockSchema, observeParser: countParseStages });
 }
 
-test(
-  "read-only draws the 33rd nested opener and every line after it as text",
-  async () => {
-    // Each level's opener is followed by a line of its own, so every line drawn as text can be
-    // found by its words; the openers past the bound are left unclosed, as the reported body's were.
-    const lines: string[] = [];
-    for (let level = 1; level <= maxNesting + 1; level++) {
-      lines.push(":::callout{}", `level ${level} words`, "");
-    }
-    lines.push("after the openers", "", "the last line");
-    const doc = (await readOnlyProof()).parseMarkdown(lines.join("\n"));
+test("read-only draws the 33rd nested opener and every line after it as text", async () => {
+  // Each level's opener is followed by a line of its own, so every line drawn as text can be
+  // found by its words; the openers past the bound are left unclosed, as the reported body's were.
+  const lines: string[] = [];
+  for (let level = 1; level <= maxNesting + 1; level++) {
+    lines.push(":::callout{}", `level ${level} words`, "");
+  }
+  lines.push("after the openers", "", "the last line");
+  const doc = (await readOnlyProof()).parseMarkdown(lines.join("\n"));
 
-    expect(calloutDepth(doc)).toBe(maxNesting);
-    const innermost = innermostCallout(doc);
-    expect(innermost).toBeDefined();
-    innermost?.forEach((child) => {
-      expect(child.type.name).toBe("paragraph");
-    });
-    // The 33rd opener, its line, and every line after it stand in the innermost callout as text.
-    for (const line of lines.slice(maxNesting * 3).filter((line) => line !== "")) {
-      expect(innermost?.textContent).toContain(line);
-    }
-    for (let level = 1; level <= maxNesting + 1; level++) {
-      expect(doc.textContent).toContain(`level ${level} words`);
-    }
-  },
-  plainRowCeilingMs
-);
+  expect(calloutDepth(doc)).toBe(maxNesting);
+  const innermost = innermostCallout(doc);
+  expect(innermost).toBeDefined();
+  innermost?.forEach((child) => {
+    expect(child.type.name).toBe("paragraph");
+  });
+  // The 33rd opener, its line, and every line after it stand in the innermost callout as text.
+  for (const line of lines.slice(maxNesting * 3).filter((line) => line !== "")) {
+    expect(innermost?.textContent).toContain(line);
+  }
+  for (let level = 1; level <= maxNesting + 1; level++) {
+    expect(doc.textContent).toContain(`level ${level} words`);
+  }
+});
 
-test(
-  "read-only nests 32 callouts as 32 typed blocks",
-  async () => {
-    const doc = (await readOnlyProof()).parseMarkdown(nestedCallouts(maxNesting));
-    expect(calloutDepth(doc)).toBe(maxNesting);
-    expect(innermostCallout(doc)?.textContent).toBe("a");
-    expect(doc.textContent).not.toContain(":::");
-  },
-  plainRowCeilingMs
-);
+test("read-only nests 32 callouts as 32 typed blocks", async () => {
+  const doc = (await readOnlyProof()).parseMarkdown(nestedCallouts(maxNesting));
+  expect(calloutDepth(doc)).toBe(maxNesting);
+  expect(innermostCallout(doc)?.textContent).toBe("a");
+  expect(doc.textContent).not.toContain(":::");
+});
 
-test(
-  "the default mode nests 32 callouts as 32 typed blocks",
-  async () => {
-    const doc = (await defaultProof()).parseMarkdown(nestedCallouts(maxNesting));
-    expect(calloutDepth(doc)).toBe(maxNesting);
-    expect(innermostCallout(doc)?.textContent).toBe("a");
-    expect(doc.textContent).not.toContain(":::");
-  },
-  plainRowCeilingMs
-);
+test("the default mode nests 32 callouts as 32 typed blocks", async () => {
+  const doc = (await defaultProof()).parseMarkdown(nestedCallouts(maxNesting));
+  expect(calloutDepth(doc)).toBe(maxNesting);
+  expect(innermostCallout(doc)?.textContent).toBe("a");
+  expect(doc.textContent).not.toContain(":::");
+});
 
-test(
-  "the default mode refuses a 33rd nested callout, naming its line",
-  async () => {
-    const proof = await defaultProof();
-    const markdown = nestedCallouts(maxNesting + 1);
-    const parse = () => {
-      proof.parseMarkdown(markdown);
-    };
-    expect(parse).toThrow(/line 33\b/);
-    expect(parse).toThrow(/32/);
-  },
-  plainRowCeilingMs
-);
+test("the default mode refuses a 33rd nested callout, naming its line", async () => {
+  const proof = await defaultProof();
+  const markdown = nestedCallouts(maxNesting + 1);
+  const parse = () => {
+    proof.parseMarkdown(markdown);
+  };
+  expect(parse).toThrow(/line 33\b/);
+  expect(parse).toThrow(/32/);
+});
 
 for (const body of bodies) {
-  test(
-    `read-only parses ${body.name} at a cost proportional to its length`,
-    async () => {
-      const proof = await readOnlyProof();
-      const doc = parsedWithinCostBounds(
-        `the read-only engine's parse of ${body.name}`,
-        body,
-        (input) => proof.parseMarkdown(input)
-      );
-      body.expectDoc(doc);
-    },
-    measuredRowCeilingMs
-  );
+  test(`read-only parses ${body.name} at a cost proportional to its length`, async () => {
+    const proof = await readOnlyProof();
+    const doc = parsedWithinWorkBounds(
+      `the read-only engine's parse of ${body.name}`,
+      body,
+      (input) => proof.parseMarkdown(input)
+    );
+    body.expectDoc(doc);
+  });
 
-  test(
-    `the default mode refuses ${body.name} at a cost proportional to its length`,
-    async () => {
-      const proof = await defaultProof();
-      refusalWithinCostBounds(
-        `the default mode's refusal of ${body.name}`,
-        body,
-        (input) => proof.parseMarkdown(input),
-        body.refusedInDefaultMode
-      );
-    },
-    measuredRowCeilingMs
-  );
+  test(`the default mode refuses ${body.name} at a cost proportional to its length`, async () => {
+    const proof = await defaultProof();
+    refusalWithinWorkBounds(
+      `the default mode's refusal of ${body.name}`,
+      body,
+      (input) => proof.parseMarkdown(input),
+      body.refusedInDefaultMode
+    );
+  });
 }

@@ -73,7 +73,7 @@ project_access_run_cases() {
     fail "the --project-access run did not build dev-airlock-stands: $(cat "$go_calls_access")"
   assert_project_access 'the --project-access run' "$log1" true
   kill -INT "${instance_pid[1]}"
-  wait_for_exit 1 15 'the --project-access run'
+  wait_for_exit 1 'the --project-access run'
   [[ "$exited_status" -eq 130 ]] || fail "the --project-access run exited $exited_status on INT, not 130"
   assert_everything_stopped 'the --project-access run'
   assert_databases_dropped 'the --project-access run' "$psql_calls1" "$run_suffix"
@@ -84,7 +84,7 @@ project_access_run_cases() {
   # rather than print an address nothing serves, so here the broker reports another port and the
   # run is expected to fail, naming both.
   DEV_STACK_TEST_AIRLOCK_BOUND="127.0.0.1:65000" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --project-access
-  wait_for_exit 1 15 'a --project-access run whose proxy bound another port'
+  wait_for_exit 1 'a --project-access run whose proxy bound another port'
   [[ "$exited_status" -ne 0 ]] || fail "a --project-access run whose proxy bound another port reported success"
   if grep -q 'dev-stack: ready\.' "$log1"; then
     fail "a --project-access run whose proxy bound another port reported ready"
@@ -121,7 +121,7 @@ project_access_binaries_cases() {
       fail "the --project-access --binaries run's own $binary is not the prebuilt one it was given"
   done
   kill -INT "${instance_pid[1]}"
-  wait_for_exit 1 15 'the --project-access --binaries run'
+  wait_for_exit 1 'the --project-access --binaries run'
   [[ "$exited_status" -eq 130 ]] || fail "the --project-access --binaries run exited $exited_status on INT, not 130"
   assert_everything_stopped 'the --project-access --binaries run'
   assert_databases_dropped 'the --project-access --binaries run' "$psql_calls1" "$run_suffix"
@@ -148,7 +148,7 @@ project_access_binaries_cases() {
   DEV_STACK_TEST_PATH="$no_docker_bin" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --binaries "$with_stands"
   assert_instance_ready 'the run without docker or --project-access' "$log1" "$psql_calls1" "$curl_calls1"
   kill -INT "${instance_pid[1]}"
-  wait_for_exit 1 15 'the run without docker or --project-access'
+  wait_for_exit 1 'the run without docker or --project-access'
   [[ "$exited_status" -eq 130 ]] || fail "the run without docker or --project-access exited $exited_status on INT, not 130"
   assert_everything_stopped 'the run without docker or --project-access'
   assert_databases_dropped 'the run without docker or --project-access' "$psql_calls1" "$run_suffix"

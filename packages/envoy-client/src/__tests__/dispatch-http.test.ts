@@ -18,6 +18,7 @@ import {
   DispatchWriteUnsettledError,
   type SearchOptions,
 } from "../dispatch-http";
+import { bearerRedactionMatches, EXCERPT_SCAN_LIMIT, excerptPatternCharacters } from "../excerpt";
 import { fakeSearchResponse } from "./fake-search-response";
 
 interface RecordedRequest {
@@ -968,6 +969,37 @@ describe("DispatchClient", () => {
     }
   });
 
+  /** The most of a body an excerpt reads. */
+  const SCAN_LIMIT = EXCERPT_SCAN_LIMIT;
+  /** The pattern passes an excerpt makes over what it read: scripts and styles, tags, the
+   *  Authorization or DPoP value, the Bearer or DPoP value, a JWS, and `textHead`'s whitespace
+   *  runs (excerpt.ts's `excerpt`). */
+  const PATTERN_PASSES = 6;
+
+  /**
+   * The work `call` made the excerpt do, read from the excerpt module's own counters, held to what
+   * one excerpt of a body may cost: at most one redaction match per character it scans for the one
+   * token a bearer client presents (no two distinct pieces of a token match at one position), and
+   * each pattern pass handed at most the 64 KiB it reads. `what` names the body in the failure,
+   * which says each count read and allowed.
+   */
+  async function expectExcerptWorkBounded(what: string, call: () => Promise<unknown>) {
+    const matchesBefore = bearerRedactionMatches();
+    const charactersBefore = excerptPatternCharacters();
+    await call();
+    const matches = bearerRedactionMatches() - matchesBefore;
+    const characters = excerptPatternCharacters() - charactersBefore;
+    const allowedCharacters = PATTERN_PASSES * SCAN_LIMIT;
+    expect(
+      matches,
+      `the excerpt of ${what} visited ${matches} bearer matches, where at most ${SCAN_LIMIT} (one a character it scans) are allowed`
+    ).toBeLessThanOrEqual(SCAN_LIMIT);
+    expect(
+      characters,
+      `the excerpt of ${what} handed its patterns ${characters} characters, where at most ${allowedCharacters} (${PATTERN_PASSES} passes over the ${SCAN_LIMIT} it reads) are allowed`
+    ).toBeLessThanOrEqual(allowedCharacters);
+  }
+
   // M4 (the review of 99b1e438db): a DPoP token after `Authorization: DPoP` or `DPoP` is redacted
   // as a bearer's is, and so is the token the request was sent with when the credential names
   // another by the time the answer comes (a renewal between the two): the excerpt redacts every
@@ -1105,15 +1137,13 @@ describe("DispatchClient", () => {
   // Whatever answers at the Dispatch URL (a repository's own `.envoy/envoy.json` can name it)
   // controls the body, and the excerpt is built synchronously on the host's event loop, before the
   // 120-character cut. Each pass over the body must stay linear and the scan bounded, or a page of
-  // unclosed tags freezes the session: a quadratic pass takes seconds on tens of kilobytes. The
-  // row's own 5 s limit is that bound, and nothing here reads a clock. It sits between the row and
-  // the defect it catches, so an idle machine catches it as well as a busy one: measured in a
-  // 2-CPU pod, dropping tags one at a time over the whole body costs this row 33.0 to 36.1 s with
-  // no load at all and 153 to 225 s under 16 busy loops (8 x nproc), where the row itself costs
-  // 0.03 s idle and 0.60 s at most under those loops. The limit is a bound on work, not a hang
-  // guard, and it stays on the row rather than taking the suite's 30 s default, which the
-  // defect's idle cost would pass.
-  test("builds the excerpt of a megabyte of unclosed tags in bounded time", async () => {
+  // unclosed tags freezes the session: a quadratic pass takes seconds on tens of kilobytes. The row
+  // holds the excerpt's own count of its work to the 64 KiB it reads: dropping tags one at a time,
+  // a pass for each, or passing over the whole megabyte, each counts far past it. A pattern made
+  // to backtrack quadratically within one pass is caught instead by recheck's reading of each of
+  // `excerpt`'s patterns (`excerpt-patterns.test.ts`), because JavaScriptCore counts no step a
+  // regular expression takes.
+  test("builds the excerpt of a megabyte of unclosed tags in work bounded by what it reads", async () => {
     const megabyte = 1 << 20;
     // The last three hold the client's bearer, "secret", everywhere, or almost everywhere.
     for (const unit of [
@@ -1136,16 +1166,19 @@ describe("DispatchClient", () => {
         bearerCredential("secret"),
         fetchImpl
       );
-      const message = await client.getIssue("DSP-1").then(
-        () => "",
-        (error: Error) => error.message
-      );
+      let message = "";
+      await expectExcerptWorkBounded(`a megabyte of ${JSON.stringify(unit)}`, async () => {
+        message = await client.getIssue("DSP-1").then(
+          () => "",
+          (error: Error) => error.message
+        );
+      });
 
       expect(message).toStartWith(
         "GET http://dispatch.test/api/v1/issues/DSP-1 answered 502 with "
       );
     }
-  }, 5_000);
+  });
 
   // The excerpt reads at most the first 64 KiB of the body, so what it costs has a bound however
   // large the body is. Redacting the bearer shortens the text, so it runs on that slice: redacting
@@ -1246,14 +1279,10 @@ describe("DispatchClient", () => {
   // Nothing checks a bearer's length or its characters on load, and the excerpt is built on the
   // host's event loop. A bearer of one character repeated is thousands of pieces that are all the
   // same, and searching the 64 KiB slice once for each of them marks every position again per
-  // piece. Each distinct piece is searched once, and the row's own 2 s limit is what says so
-  // without reading a clock. It sits between the row and the defect it catches, so an idle machine
-  // catches it as well as a busy one: measured in a 2-CPU pod, a search per piece costs this row
-  // 8.82 s with no load at all and 75 to 151 s under 16 busy loops (8 x nproc), where the row
-  // itself costs 0.01 s idle and 0.19 s at most under those loops. The limit is a bound on work,
-  // not a hang guard, and it stays on the row rather than taking the suite's 30 s default, which
-  // the defect's idle cost would pass.
-  test("redacts a bearer of one character repeated from a 64 KiB body in bounded time", async () => {
+  // piece. Each distinct piece is searched once, and the excerpt's own count of the matches its
+  // scans visit is what says so: a search per piece visits each position of the slice once per
+  // piece, 2,041 times the slice here, where one search visits it once.
+  test("redacts a bearer of one character repeated from a 64 KiB body in work bounded by the body", async () => {
     const { fetchImpl } = fakeFetch([
       new Response("x".repeat(64 * 1024), {
         status: 502,
@@ -1266,14 +1295,17 @@ describe("DispatchClient", () => {
       fetchImpl
     );
 
-    const message = await client.getIssue("DSP-1").then(
-      () => "",
-      (error: Error) => error.message
-    );
+    let message = "";
+    await expectExcerptWorkBounded("64 KiB of the bearer's one character", async () => {
+      message = await client.getIssue("DSP-1").then(
+        () => "",
+        (error: Error) => error.message
+      );
+    });
 
     expect(message).toContain('("[redacted]")');
     expect(message).not.toContain("xxxxxxxx");
-  }, 2_000);
+  });
 
   // A body of nothing but markup is not empty, and an agent told it was would look for a gateway
   // that sent nothing. The answer gives the body's size in bytes and says none of it reads as

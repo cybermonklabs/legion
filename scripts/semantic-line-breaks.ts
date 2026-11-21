@@ -41,6 +41,7 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { exitProcess } from "../packages/envoy-client/src/process-exit.ts";
 
 const PARSER_MISSING =
   "semantic-line-breaks.ts: --write needs its Markdown parser (mdast-util-from-markdown, mdast-util-gfm, micromark-extension-gfm, mdast-util-frontmatter, micromark-extension-frontmatter); run `bun install` in the repository root";
@@ -1335,12 +1336,18 @@ async function writeFiles(paths: readonly string[]): Promise<number> {
 // exit code. A path that cannot be read is named on stderr and makes the exit 2 in both modes; the
 // files after it are still checked or written.
 if (import.meta.main) {
+  // How long the exit gives stdout and stderr to take the findings and the refusals before it
+  // exits whatever is still queued (`exitProcess`): a person reads them as they come, and the rows
+  // that run this script read its output whole (`Bun.spawnSync`) inside a row deadline of 5 s
+  // (`semantic-line-breaks.test.ts`'s step in ci-job-test.yaml), so only a reader that takes
+  // nothing keeps it this long, a fifth of that deadline.
+  const exitFlushMs = 1_000;
   const args = process.argv.slice(2);
   const write = args[0] === "--write";
   const paths = write ? args.slice(1) : args;
   if (paths.length === 0 || paths.some((path) => path.startsWith("-"))) {
     process.stderr.write(USAGE);
-    process.exit(2);
+    await exitProcess(2, exitFlushMs);
   }
-  process.exit(write ? await writeFiles(paths) : await checkFiles(paths));
+  await exitProcess(write ? await writeFiles(paths) : await checkFiles(paths), exitFlushMs);
 }

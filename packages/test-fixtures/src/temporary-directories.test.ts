@@ -162,7 +162,12 @@ test("names /dev/shm where it is a writable tmpfs that allows exec", () => {
       at,
     }),
     withRoom: memoryRoot({ need: 1, mountinfo: mountinfo(mountAt(at, "rw")), at }),
-  }).toEqual({ alone: at, overNoexec: at, withRoom: at });
+    // A mount with no optional fields before the separator.
+    noOptionalFields: memoryRoot({
+      mountinfo: mountinfo(`32 28 0:26 / ${at} rw,relatime - tmpfs tmpfs rw`),
+      at,
+    }),
+  }).toEqual({ alone: at, overNoexec: at, withRoom: at, noOptionalFields: at });
 });
 
 test("names tmpdir() where /dev/shm is noexec, read-only, not a tmpfs or not mounted", () => {
@@ -277,7 +282,7 @@ describe("a pathological prefix", () => {
     const made = trimmed();
     expect(basename(made)).toStartWith("prefix-");
     expect(basename(made)).not.toContain("--");
-  }, 5_000);
+  });
 });
 
 /**

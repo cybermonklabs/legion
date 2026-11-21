@@ -1,8 +1,9 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import { ownGroup } from "./own-group";
 import { scriptFunctions } from "./script-functions";
 
@@ -27,12 +28,13 @@ const guards = [
   .join("\n");
 
 const dir = temporaryDirectory("claude-backend-guards-test");
-// The stand-in processes are copies of two real programs, and sh runs one wrapper, so a host
-// without any of the three has nothing to start and every row here is skipped, as on a host without
-// perl, which starts every harness in a group of its own (ownGroup, lib/own-group.ts).
+// The stand-in processes are copies of bash, bash and sh run the wrapper scripts, and the stand-ins
+// keep alive and wait for their gates with the host's sleep, so a host without any of the three has
+// nothing to start and every row here is skipped, as on a host without perl, which starts every
+// harness in a group of its own (ownGroup, lib/own-group.ts).
 // The gate is given every name: it walks each one and names the missing ones in its warning.
-// `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
-const found = new Map(["bash", "sleep", "sh"].map((name) => [name, hostTool(name)] as const));
+// `found` is the run's own walk, whose real binaries the copies of bash and the wrappers' `#!` are.
+const found = new Map(["bash", "sh"].map((name) => [name, hostTool(name)] as const));
 const skip = skipWithout("bash", "sleep", "sh", "perl");
 // Only the unreadable-environment case needs an interpreter.
 const withoutPython = skipWithout("python3");
@@ -41,21 +43,28 @@ function tool(name: string): string {
   if (path === null) throw new Error(`${name} is not on PATH`);
   return path;
 }
-// The run's legion is a copy of bash, so a process can carry it as its executable (/proc/<pid>/exe)
-// with `claude-bridge` as its first argument: bash runs the script of that name from its working
+// Every process a guard or await_child judges by its executable (/proc/<pid>/exe) as Claude Code or
+// Oh My Pi is a copy of bash, as the run's legion is, running `keep.sh`, which keeps it alive as
+// itself until the run stops it. None is a copy of sleep: a multi-call binary (busybox, or the
+// uutils coreutils that Ubuntu 25.10 installs as /usr/bin/sleep) chooses what to run by the name it
+// is called by, so a copy of sleep called claude runs nothing and exits. Nor is one a copy of Bun,
+// which runs threads: gVisor lists each thread of a process among its parent's children
+// (/proc/<pid>/task/*/children), so a bridge whose child is a Bun reads as having three children.
+// The run's legion is a copy of bash, so a process can carry it as its executable with
+// `claude-bridge` as its first argument: bash runs the script of that name from its working
 // directory, which starts its second argument as its child and waits on it, as the bridge waits on
 // Claude Code, under the name CLAUDE_ARGV0 gives it when that is set (`exec -a`, as a wrapper or
-// another argv[0] gives the real Claude Code), or after holding its own fork a second when
-// CLAUDE_FORK_HOLD is set, as the real bridge's child is the bridge until it execs. `pane-shim` runs
-// the rest of its arguments, after its `--`, as its child, as a pane's `legion worker-shim` runs the
-// bridge.
+// another argv[0] gives the real Claude Code), or after holding its own fork when CLAUDE_FORK_HOLD
+// is set, as the real bridge's child is the bridge until it execs, until the row opens that stage's
+// gate. `pane-shim` runs the rest of its arguments, after its `--`, as its child, as a pane's
+// `legion worker-shim` runs the bridge.
 const work = join(dir, "work");
-// The run's claude is a copy of sleep, under a directory whose name holds a space. Beside it: a
+// The run's claude is a copy of bash, under a directory whose name holds a space. Beside it: a
 // chain of two wrapper scripts, as a devbox's dotfiles shim is one, the first run by bash and the
-// second by sh, each running two seconds as only itself before it execs the next, the last a copy
-// of sleep elsewhere; a Claude Code that is a copy of bash, which runs the cwd's script `600` (the
-// bridge hands it that argument) and so runs an Oh My Pi tool below itself; and that Oh My Pi, a
-// copy of sleep.
+// second by sh, each running as only itself until the row opens its gate (a file under
+// $CLAUDE_GATES, written once a poll has seen that stage) before it execs the next, the last a copy
+// of bash elsewhere; a Claude Code that is a copy of bash, which `keep.sh` has run an Oh My Pi tool
+// below itself; and that Oh My Pi, a copy of bash.
 const claudeDir = join(dir, "bin with space");
 const claude = join(claudeDir, "claude");
 const wrapper = join(claudeDir, "claude-wrapper");
@@ -64,42 +73,61 @@ const wrapped = join(dir, "real", "claude");
 const claudeWithTool = join(claudeDir, "claude-with-tool");
 const ompTool = join(dir, "real", "omp");
 const cwd = join(dir, "cwd");
+// The script every copy of bash above runs, which the bridge hands its child (as `keep.sh`, in the
+// bridge's working directory): it keeps the process alive as itself until the run stops it, and the
+// Claude Code that runs a tool below itself first starts the Oh My Pi copy, running this same script.
+const keep = (
+  withTool: string
+) => `[ "$(readlink /proc/$$/exe)" != ${JSON.stringify(withTool)} ] || ${JSON.stringify(ompTool)} keep.sh &
+while :; do sleep 600; done
+`;
 beforeAll(() => {
   if (skip) return;
   mkdirSync(work);
   copyFileSync(tool("bash"), join(work, "legion"));
   mkdirSync(claudeDir);
-  copyFileSync(tool("sleep"), claude);
+  copyFileSync(tool("bash"), claude);
   mkdirSync(join(dir, "real"));
-  copyFileSync(tool("sleep"), wrapped);
-  copyFileSync(tool("sleep"), ompTool);
+  copyFileSync(tool("bash"), wrapped);
+  copyFileSync(tool("bash"), ompTool);
   copyFileSync(tool("bash"), claudeWithTool);
-  writeFileSync(wrapper, `#!${tool("bash")}\nsleep 2\nexec ${JSON.stringify(wrapper2)} "$@"\n`, {
-    mode: 0o755,
-  });
-  writeFileSync(wrapper2, `#!${tool("sh")}\nsleep 2\nexec ${JSON.stringify(wrapped)} "$@"\n`, {
-    mode: 0o755,
-  });
+  // A gate is a file the row writes under $CLAUDE_GATES: a stage that waits on it stays itself until
+  // a poll has seen it, however long the poll takes to come round.
+  const gate = (name: string) => `until [ -e "$CLAUDE_GATES/${name}" ]; do sleep 0.05; done`;
+  writeFileSync(
+    wrapper,
+    `#!${tool("bash")}\n${gate("first")}\nexec ${JSON.stringify(wrapper2)} "$@"\n`,
+    { mode: 0o755 }
+  );
+  writeFileSync(
+    wrapper2,
+    `#!${tool("sh")}\n${gate("second")}\nexec ${JSON.stringify(wrapped)} "$@"\n`,
+    { mode: 0o755 }
+  );
   mkdirSync(cwd);
-  writeFileSync(join(cwd, "worker-shim"), '"$2" 600\n:\n');
+  writeFileSync(join(cwd, "keep.sh"), keep(realpathSync(claudeWithTool)));
+  writeFileSync(join(cwd, "worker-shim"), '"$2" keep.sh\n:\n');
   writeFileSync(
     join(cwd, "claude-bridge"),
-    'if [ -n "$CLAUDE_FORK_HOLD" ]; then (sleep 1; exec "$2" 600)\n' +
-      'elif [ -n "$CLAUDE_ARGV0" ]; then (exec -a "$CLAUDE_ARGV0" "$2" 600)\n' +
-      'else "$2" 600; fi\n:\n'
+    `if [ -n "$CLAUDE_FORK_HOLD" ]; then (${gate("fork")}; exec "$2" keep.sh)\n` +
+      'elif [ -n "$CLAUDE_ARGV0" ]; then (exec -a "$CLAUDE_ARGV0" "$2" keep.sh)\n' +
+      'else "$2" keep.sh; fi\n:\n'
   );
   writeFileSync(join(cwd, "pane-shim"), 'shift\n"$@"\n:\n');
-  writeFileSync(join(cwd, "600"), `${JSON.stringify(ompTool)} 600\n:\n`);
 });
 
 // run runs BODY after lib/rig.sh and the guards, with the rig's globals set, a scratch directory of
-// its own in $scratch, and two helpers. spawn ARGS… starts ARGS in the background, its output away
-// from the test's pipes, and sets pid to its process. await_child EXE sets child to pid's first child
-// once that child is running EXE (its /proc/<pid>/exe), not merely once it exists: a forked child
-// carries its parent's command line until it execs, and a guard asked about it then answers for the
-// parent. Every process spawn started goes, with everything below it, when BODY ends (stop_tree,
-// lib/process-tree.sh, which signals a process only while its parent is the one it was started
-// under).
+// its own in $scratch, and four helpers. spawn ARGS… starts ARGS
+// in the background, its output away from the test's pipes, and sets pid to its process.
+// await_child EXE sets child to pid's first child once that child is running EXE (its
+// /proc/<pid>/exe), not merely once it exists: a forked child carries its parent's command line
+// until it execs, and a guard asked about it then answers for the parent. await_below EXE does the
+// same for any process below pid. before_deadline succeeds while the row's deadline is ahead: the
+// run is handed that deadline as LEGION_PROOF_DEADLINE_MS (epoch milliseconds, from
+// @legion/test-fixtures/wait), so each wait of BODY asks again until then and no longer, and its
+// own failure prints before the row's guard. Every process spawn started goes, with everything
+// below it, when BODY ends (stop_tree, lib/process-tree.sh, which signals a process only while its
+// parent is the one it was started under).
 function run(body: string, vars: Record<string, string> = {}) {
   const prelude = `set -Eeuo pipefail
 root=${JSON.stringify(root)} evidence=$SCRATCH timeout_hook=
@@ -117,30 +145,35 @@ spawn() {
   pid=$!
   started+=("$pid")
 }
+before_deadline() {
+  local now=\${EPOCHREALTIME/[.,]/}
+  ((10#$now / 1000 < LEGION_PROOF_DEADLINE_MS))
+}
 await_child() {
-  local want seen= i
+  local want seen=
   want=$(realpath -e -- "$1")
   child=
-  for i in $(seq 1 200); do
+  while :; do
     child=$(cat "/proc/$pid/task/$pid/children" 2>/dev/null) || true
     child=\${child%% *}
     if [ -n "$child" ]; then
       seen=$(readlink "/proc/$child/exe" 2>/dev/null) || seen=
       [ "$seen" != "$want" ] || break
     fi
+    before_deadline || break
     sleep 0.05
   done
   [ -z "$child" ] || started+=("$child")
   [ -n "$child" ] && [ "$seen" = "$want" ] ||
-    { echo "no child of $pid running $want within 10 s (child \${child:-none}, running \${seen:-nothing})" >&2; exit 1; }
+    { echo "no child of $pid running $want by the row's deadline (child \${child:-none}, running \${seen:-nothing})" >&2; exit 1; }
 }
 # await_below EXE sets below to the process anywhere below pid that runs EXE once one does, read
 # through every process's children and the kernel's record of what each runs, never a name.
 await_below() {
-  local want i p queue
+  local want p queue
   want=$(realpath -e -- "$1")
   below=
-  for i in $(seq 1 200); do
+  while :; do
     queue=("$pid")
     while [ "\${#queue[@]}" -gt 0 ] && [ -z "$below" ]; do
       for p in $(cat /proc/"\${queue[0]}"/task/*/children 2>/dev/null || :); do
@@ -149,9 +182,10 @@ await_below() {
       queue=("\${queue[@]:1}")
     done
     [ -z "$below" ] || return 0
+    before_deadline || break
     sleep 0.05
   done
-  echo "no process below $pid running $want within 10 s" >&2
+  echo "no process below $pid running $want by the row's deadline" >&2
   exit 1
 }
 `;
@@ -160,18 +194,21 @@ await_below() {
   // hangs the runner up where that group is orphaned, as in a Legion pod.
   const result = Bun.spawnSync(ownGroup(["bash", "-c", `${prelude}\n${body}`]), {
     cwd,
-    env: { PATH: process.env.PATH ?? "", WORK: work, CLAUDE: claude, SCRATCH: dir, ...vars },
+    env: {
+      PATH: process.env.PATH ?? "",
+      WORK: work,
+      CLAUDE: claude,
+      SCRATCH: dir,
+      LEGION_PROOF_DEADLINE_MS: String(Math.floor(Date.now() + timeLeft())),
+      ...vars,
+    },
   });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
 }
 
-const slow = 60_000;
-
 describe.skipIf(skip)("bridged", () => {
-  test(
-    "accepts the run's legion claude-bridge -- <claude> every time, with a pane-sized multi-line argument",
-    () => {
-      const r = run(`
+  test("accepts the run's legion claude-bridge -- <claude> every time, with a pane-sized multi-line argument", () => {
+    const r = run(`
 big=$(for i in $(seq 1 3600); do printf 'line %05d of a system prompt\\n' "$i"; done)
 spawn "$work/legion" claude-bridge -- "$claude_bin" "$big"
 await_child "$claude_bin"
@@ -180,44 +217,44 @@ ok=0
 for i in $(seq 1 20); do if bridged "$child"; then ok=$((ok + 1)); fi; done
 printf 'accepted %s of 20\\n' "$ok"
 `);
-      expect(r.err).toBe("");
-      expect(r.out).toMatch(/^argv bytes 1\d{5}$/m);
-      expect(r.out).toContain("accepted 20 of 20");
-    },
-    slow
-  );
+    expect(r.err).toBe("");
+    expect(r.out).toMatch(/^argv bytes 1\d{5}$/m);
+    expect(r.out).toContain("accepted 20 of 20");
+  });
 
-  test(
-    "refuses a parent that is not the run's legion, whose argument only mentions the bridge",
-    () => {
-      const r = run(`
+  test("refuses a parent that is not the run's legion, whose argument only mentions the bridge", () => {
+    const r = run(`
 spawn bash -c 'sleep 600; :' prompt "your parent is $work/legion claude-bridge -- $claude_bin"
 await_child "$(command -v sleep)"
 if bridged "$child"; then echo accepted; else echo refused; fi
 `);
-      expect(r.err).toBe("");
-      expect(r.out.trim()).toBe("refused");
-    },
-    slow
-  );
+    expect(r.err).toBe("");
+    expect(r.out.trim()).toBe("refused");
+  });
 
-  test(
-    "refuses the run's legion when claude-bridge is not its subcommand, or the child is not the run's claude",
-    () => {
-      const r = run(`
+  test("refuses a parent with the bridge's own arguments whose executable is not the run's legion", () => {
+    const r = run(`
+spawn bash claude-bridge -- "$claude_bin"
+await_child "$claude_bin"
+if bridged "$child"; then echo accepted; else echo refused; fi
+`);
+    expect(r.err).toBe("");
+    expect(r.out.trim()).toBe("refused");
+  });
+
+  test("refuses the run's legion when claude-bridge is not its subcommand, or the child is not the run's claude", () => {
+    const r = run(`
 spawn "$work/legion" worker-shim -- "$claude_bin" claude-bridge -- "$claude_bin"
 await_child "$claude_bin"
 if bridged "$child"; then echo "worker-shim: accepted"; else echo "worker-shim: refused"; fi
-spawn "$work/legion" claude-bridge -- "$(command -v sleep)"
-await_child "$(command -v sleep)"
+spawn "$work/legion" claude-bridge -- "$(command -v bash)"
+await_child "$(command -v bash)"
 if bridged "$child"; then echo "other claude: accepted"; else echo "other claude: refused"; fi
 `);
-      expect(r.err).toBe("");
-      expect(r.out).toContain("worker-shim: refused");
-      expect(r.out).toContain("other claude: refused");
-    },
-    slow
-  );
+    expect(r.err).toBe("");
+    expect(r.out).toContain("worker-shim: refused");
+    expect(r.out).toContain("other claude: refused");
+  });
 });
 
 describe.skipIf(skip)("claude_pid", () => {
@@ -230,63 +267,63 @@ found=$(claude_pid "$pid") || found=none
 if [ "$found" = "$below" ]; then echo "found the bridge's child"; else echo "found $found, want $below"; fi
 printf 'argv[0] %s\\n' "$(tr '\\0' '\\n' <"/proc/$below/cmdline" | sed -n 1p)"`;
 
-  test(
-    "finds Claude Code under the pane's bridge when its executable's path holds a space",
-    () => {
-      const r = run(pane);
-      expect(r.err).toBe("");
-      expect(r.out).toBe(`found the bridge's child\nargv[0] ${claude}\n`);
-    },
-    slow
-  );
+  test("finds Claude Code under the pane's bridge when its executable's path holds a space", () => {
+    const r = run(pane);
+    expect(r.err).toBe("");
+    expect(r.out).toBe(`found the bridge's child\nargv[0] ${claude}\n`);
+  });
 
-  test(
-    "finds Claude Code under the pane's bridge when it runs under another name, as a wrapper or exec -a gives it",
-    () => {
-      const r = run(`export CLAUDE_ARGV0=not-claude\n${pane}`);
-      expect(r.err).toBe("");
-      expect(r.out).toBe("found the bridge's child\nargv[0] not-claude\n");
-    },
-    slow
-  );
-  test(
-    "answers no process until the bridge's child runs Claude Code itself, past the bridge's fork and a chain of two wrapper scripts",
-    () => {
-      // Each poll before the last exec must answer nothing: the child is first the bridge's own fork,
-      // then the first wrapper's bash, then the second wrapper's sh, and none of them is Claude Code.
-      const r = run(`export CLAUDE_FORK_HOLD=1
+  test("finds Claude Code under the pane's bridge when it runs under another name, as a wrapper or exec -a gives it", () => {
+    const r = run(`export CLAUDE_ARGV0=not-claude\n${pane}`);
+    expect(r.err).toBe("");
+    expect(r.out).toBe("found the bridge's child\nargv[0] not-claude\n");
+  });
+  test("answers no process until the bridge's child runs Claude Code itself, past the bridge's fork and a chain of two wrapper scripts", () => {
+    // Each poll before the last exec must answer nothing: the child is first the bridge's own fork,
+    // then the first wrapper's bash, then the second wrapper's sh, and none of them is Claude Code.
+    // Each stage execs the next only once a poll has seen it: the row opens that stage's gate as it
+    // reads it, so no stage can pass between two polls however loaded the machine is.
+    const r = run(`export CLAUDE_FORK_HOLD=1 CLAUDE_GATES=$scratch/gates
+mkdir "$CLAUDE_GATES"
 claude_bin=${JSON.stringify(wrapper)} claude_exe=$(realpath -e -- ${JSON.stringify(wrapped)})
+fork_exe=$(realpath -e -- "$work/legion") first_exe=$(realpath -e -- "$(command -v bash)") second_exe=$(realpath -e -- "$(command -v sh)")
 spawn bash -c '"$@"; :' pane "$work/legion" pane-shim -- "$work/legion" claude-bridge -- "$claude_bin"
 : >"$scratch/stages"
 found=
-SECONDS=0
-while [ "$SECONDS" -lt 60 ]; do
+while :; do
   if found=$(claude_pid "$pid"); then break; fi
-  case $found in *"does not run Claude Code yet: it runs "*) printf '%s\\n' "\${found##*it runs }" >>"$scratch/stages" ;; esac
+  case $found in
+    *"does not run Claude Code yet: it runs "*)
+      running=\${found##*it runs }
+      printf '%s\\n' "$running" >>"$scratch/stages"
+      case $running in
+        "$fork_exe") : >"$CLAUDE_GATES/fork" ;;
+        "$first_exe") : >"$CLAUDE_GATES/first" ;;
+        "$second_exe") : >"$CLAUDE_GATES/second" ;;
+      esac
+      ;;
+  esac
   found=
+  before_deadline || break
   sleep 0.02
 done
-[ -n "$found" ] || { echo "no Claude Code within 60 s" >&2; exit 1; }
+[ -n "$found" ] || { echo "no Claude Code by the row's deadline (stages seen: $(tr '\\n' ' ' <"$scratch/stages"))" >&2; exit 1; }
 [ "$(readlink "/proc/$found/exe")" = "$claude_exe" ] && echo "first answer: the program the chain ends in" || echo "first answer: $found, running $(readlink "/proc/$found/exe")"
-for stage in "the bridge's fork:$(realpath -e -- "$work/legion")" "the first wrapper:$(realpath -e -- "$(command -v bash)")" "the second wrapper:$(realpath -e -- "$(command -v sh)")"; do
+for stage in "the bridge's fork:$fork_exe" "the first wrapper:$first_exe" "the second wrapper:$second_exe"; do
   if grep -qxF -- "\${stage#*:}" "$scratch/stages"; then echo "refused while it was \${stage%%:*}"; else echo "never saw \${stage%%:*}"; fi
 done`);
-      expect(r.err).toBe("");
-      expect(r.out).toBe(
-        "first answer: the program the chain ends in\n" +
-          "refused while it was the bridge's fork\n" +
-          "refused while it was the first wrapper\n" +
-          "refused while it was the second wrapper\n"
-      );
-    },
-    slow
-  );
+    expect(r.err).toBe("");
+    expect(r.out).toBe(
+      "first answer: the program the chain ends in\n" +
+        "refused while it was the bridge's fork\n" +
+        "refused while it was the first wrapper\n" +
+        "refused while it was the second wrapper\n"
+    );
+  });
 
-  test(
-    "takes the pane's Claude Code for its agent, not an Oh My Pi Claude Code runs below itself",
-    () => {
-      const r =
-        run(`claude_bin=${JSON.stringify(claudeWithTool)} claude_exe=$(realpath -e -- ${JSON.stringify(claudeWithTool)}) omp_exe=${JSON.stringify(ompTool)}
+  test("takes the pane's Claude Code for its agent, not an Oh My Pi Claude Code runs below itself", () => {
+    const r =
+      run(`claude_bin=${JSON.stringify(claudeWithTool)} claude_exe=$(realpath -e -- ${JSON.stringify(claudeWithTool)}) omp_exe=${JSON.stringify(ompTool)}
 spawn bash -c '"$@"; :' pane "$work/legion" pane-shim -- "$work/legion" claude-bridge -- "$claude_bin"
 await_below "$omp_exe"
 found=$(agent_descendant "$pid") || found=none
@@ -295,11 +332,9 @@ case $(readlink "/proc/$found/exe" 2>/dev/null) in
   "$(realpath "$omp_exe")") echo "the agent: the Oh My Pi below Claude Code" ;;
   *) echo "the agent: $found" ;;
 esac`);
-      expect(r.err).toBe("");
-      expect(r.out).toBe("the agent: Claude Code\n");
-    },
-    slow
-  );
+    expect(r.err).toBe("");
+    expect(r.out).toBe("the agent: Claude Code\n");
+  });
 });
 
 describe.skipIf(skip)("endpoint_mismatch", () => {
@@ -310,40 +345,32 @@ describe.skipIf(skip)("endpoint_mismatch", () => {
     "ENVOY_NATS_URL=nats://127.0.0.1:3",
   ];
   // agent ENV… starts an agent stand-in, sleep under env -i with exactly ENV, and checks it once its
-  // environment is the one it was given, failing the run when it never is.
+  // environment is the one it was given, failing the run when it is not by the row's deadline.
   const agent = (env: string[]) => `
 spawn env -i ${env.join(" ")} "$(command -v sleep)" 600
 ready=
-for i in $(seq 1 200); do grep -qz '^ENVOY_NATS_URL=' "/proc/$pid/environ" 2>/dev/null && { ready=1; break; }; sleep 0.05; done
-[ -n "$ready" ] || { echo "the agent stand-in $pid never carried its environment" >&2; exit 1; }
+while :; do grep -qz '^ENVOY_NATS_URL=' "/proc/$pid/environ" 2>/dev/null && { ready=1; break; }; before_deadline || break; sleep 0.05; done
+[ -n "$ready" ] || { echo "the agent stand-in $pid did not carry its environment by the row's deadline" >&2; exit 1; }
 ${check}`;
   const check = `status=0
 found=$(endpoint_mismatch "$pid") || status=$?
 printf 'status %s: %s\\n' "$status" "$found"`;
 
-  test(
-    "is clean for an agent with the rig's endpoints and no credential variable",
-    () => {
-      expect(run(agent(rig)).out.trim()).toBe("status 1:");
-    },
-    slow
-  );
+  test("is clean for an agent with the rig's endpoints and no credential variable", () => {
+    expect(run(agent(rig)).out.trim()).toBe("status 1:");
+  });
 
-  test(
-    "reports a credential variable or a wrong endpoint as a mismatch",
-    () => {
-      expect(run(agent([...rig, "CLAUDE_CODE_OAUTH_TOKEN=dummy"])).out.trim()).toBe(
-        "status 0: CLAUDE_CODE_OAUTH_TOKEN set, want unset"
-      );
-      const wrong = rig.map((pair) =>
-        pair.startsWith("ENVOY_URL=") ? "ENVOY_URL=http://127.0.0.1:9" : pair
-      );
-      expect(run(agent(wrong)).out.trim()).toBe(
-        "status 0: ENVOY_URL=http://127.0.0.1:9, want http://127.0.0.1:2"
-      );
-    },
-    slow
-  );
+  test("reports a credential variable or a wrong endpoint as a mismatch", () => {
+    expect(run(agent([...rig, "CLAUDE_CODE_OAUTH_TOKEN=dummy"])).out.trim()).toBe(
+      "status 0: CLAUDE_CODE_OAUTH_TOKEN set, want unset"
+    );
+    const wrong = rig.map((pair) =>
+      pair.startsWith("ENVOY_URL=") ? "ENVOY_URL=http://127.0.0.1:9" : pair
+    );
+    expect(run(agent(wrong)).out.trim()).toBe(
+      "status 0: ENVOY_URL=http://127.0.0.1:9, want http://127.0.0.1:2"
+    );
+  });
 
   test.skipIf(withoutPython)(
     "reports an environment it cannot read as not checked, never clean, while the agent still runs with a credential variable in it",
@@ -380,9 +407,10 @@ time.sleep(600)
 pid=$!
 started+=("$pid")
 state() { local s; s=$(cat "/proc/$1/stat" 2>/dev/null) || { echo gone; return; }; s=\${s##*) }; echo "\${s%% *}"; }
-for i in $(seq 1 200); do
+while :; do
   [ ! -s "$ready" ] || break
   case $(state "$pid") in Z | X | gone) break ;; esac
+  before_deadline || break
   sleep 0.05
 done
 [ -s "$ready" ] || { echo "the stand-in $pid did not start (state $(state "$pid")): $(cat "$err")" >&2; exit 1; }
@@ -404,18 +432,13 @@ printf 'stderr: [%s]\\n' "$(cat "$err")"`,
       );
       expect(lines[4]).toMatch(/^after: [RSD]$/);
       expect(lines[5]).toBe("stderr: []");
-    },
-    slow
+    }
   );
 
-  test(
-    "reports an agent that has exited as not checked",
-    () => {
-      const r = run(`true &\npid=$!\nwait "$pid"\n${check}`);
-      expect(r.out.trim()).toMatch(
-        /^status 2: its environment could not be read \(\/proc\/\d+\/environ\)$/
-      );
-    },
-    slow
-  );
+  test("reports an agent that has exited as not checked", () => {
+    const r = run(`true &\npid=$!\nwait "$pid"\n${check}`);
+    expect(r.out.trim()).toMatch(
+      /^status 2: its environment could not be read \(\/proc\/\d+\/environ\)$/
+    );
+  });
 });

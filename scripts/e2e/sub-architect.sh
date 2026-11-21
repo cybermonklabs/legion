@@ -41,5 +41,12 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+# Twice the longest green run on record of its siblings, whose run makes this same run around
+# another driver, rounded up to the minute, since this proof has no green e2e.yaml job on record
+# yet (main's #4203 added it on 2026-11-17): merge-wait-readable.sh's proof step, 346 s (run
+# 43872759148). In a builds Job at cd11e286 on 2 CPUs (gf-e2e-sub-architect) the proof passed
+# twice, in 176.4 s from a cold Go cache and 12.1 s warm. lib/live-daemon-proof.sh refuses an
+# entry script that sets no guard.
+proof_guard 720
 live_daemon_proof 'sub architect' sub-architect TestEveryChildThatStartsRunsUnderItsOwnArchitectLive \
   "${SUB_ARCHITECT_EVIDENCE_DIR:-}"

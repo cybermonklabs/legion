@@ -1,13 +1,19 @@
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 
 import { holdSection } from "./pane-placement";
 
-/** Short enough that no row waits for the real numbers, long enough that a slow machine is not
- *  read as a settled drawing. */
+// The hold's two clocks are timers of the test's own process, so every row runs them on Bun's
+// fake clock and moves it to the millisecond a clock should end the hold, and to the one
+// before: no row waits real time, and no load can make a slow machine read as a settled drawing.
+beforeEach(() => {
+  jest.useFakeTimers();
+});
+afterEach(() => {
+  jest.useRealTimers();
+});
+
 const QUIET_MS = 150;
 const BOUNDS = { limitMs: 2_000, quietMs: QUIET_MS };
-/** Past the quiet, whatever the machine was doing in between. */
-const AFTER_QUIET_MS = QUIET_MS * 3;
 
 /** A column with something drawn in it, which is where a reader's press lands. */
 function column(): { box: HTMLElement; inside: HTMLElement } {
@@ -18,7 +24,7 @@ function column(): { box: HTMLElement; inside: HTMLElement } {
   return { box, inside };
 }
 
-test("a column nobody has touched is written while it draws, and is let go at the bound", async () => {
+test("a column nobody has touched is written while it draws, and is let go at the bound", () => {
   const { box } = column();
   const hold = holdSection(box, BOUNDS);
   try {
@@ -26,7 +32,9 @@ test("a column nobody has touched is written while it draws, and is let go at th
     // every block that lands above the heading, which is the defect this hold exists for.
     hold.drawing();
     expect(hold.writes()).toBe(true);
-    await Bun.sleep(AFTER_QUIET_MS);
+    jest.advanceTimersByTime(QUIET_MS - 1);
+    expect(hold.writes()).toBe(true);
+    jest.advanceTimersByTime(1);
     expect(hold.writes()).toBe(false);
   } finally {
     hold.release();
@@ -34,13 +42,15 @@ test("a column nobody has touched is written while it draws, and is let go at th
   }
 });
 
-test("a hold nothing has drawn in writes on, however long it waits", async () => {
+test("a hold nothing has drawn in writes on, however long it waits", () => {
   const { box } = column();
   const hold = holdSection(box, { limitMs: QUIET_MS, quietMs: QUIET_MS });
   try {
-    // No drawing pass has started the clocks, so neither can end the hold: the pane writes the
-    // column only from the pass that tells the hold, and its own cleanup releases it.
-    await Bun.sleep(AFTER_QUIET_MS);
+    // No drawing pass has started the clocks, so neither can end the hold: none is armed, and
+    // the pane writes the column only from the pass that tells the hold, and its own cleanup
+    // releases it.
+    expect(jest.getTimerCount()).toBe(0);
+    jest.advanceTimersByTime(QUIET_MS * 10);
     expect(hold.writes()).toBe(true);
   } finally {
     hold.release();
@@ -48,14 +58,16 @@ test("a hold nothing has drawn in writes on, however long it waits", async () =>
   }
 });
 
-test("a hold is let go once the drawing has been quiet", async () => {
+test("a hold is let go once the drawing has been quiet", () => {
   const { box } = column();
   const hold = holdSection(box, BOUNDS);
   try {
     hold.drawing();
     hold.drawing();
     expect(hold.writes()).toBe(true);
-    await Bun.sleep(AFTER_QUIET_MS);
+    jest.advanceTimersByTime(QUIET_MS - 1);
+    expect(hold.writes()).toBe(true);
+    jest.advanceTimersByTime(1);
     expect(hold.writes()).toBe(false);
   } finally {
     hold.release();
@@ -63,30 +75,37 @@ test("a hold is let go once the drawing has been quiet", async () => {
   }
 });
 
-test("a drawing pass inside the quiet keeps the hold", async () => {
+test("a drawing pass inside the quiet keeps the hold", () => {
   const { box } = column();
   const hold = holdSection(box, BOUNDS);
   try {
     hold.drawing();
-    await Bun.sleep(5);
+    jest.advanceTimersByTime(QUIET_MS - 1);
     hold.drawing();
-    await Bun.sleep(5);
+    // The second pass started the quiet again: the hold outlives the moment the first pass's
+    // quiet would have ended, and ends a whole quiet after the second.
+    jest.advanceTimersByTime(QUIET_MS - 1);
     expect(hold.writes()).toBe(true);
+    jest.advanceTimersByTime(1);
+    expect(hold.writes()).toBe(false);
   } finally {
     hold.release();
     box.remove();
   }
 });
 
-test("a document that keeps drawing is let go at the limit", async () => {
+test("a document that keeps drawing is let go at the limit", () => {
   const { box } = column();
-  // A quiet longer than this row takes: the limit is the only clock that can end this hold.
+  // A quiet longer than this row takes: the limit is the only clock that can end this hold, and
+  // it counts from the first pass, whatever passes come after it.
   const hold = holdSection(box, { limitMs: 100, quietMs: 2_000 });
   try {
-    for (let pass = 0; pass < 10; pass += 1) {
-      hold.drawing();
-      await Bun.sleep(20);
-    }
+    hold.drawing();
+    jest.advanceTimersByTime(50);
+    hold.drawing();
+    jest.advanceTimersByTime(49);
+    expect(hold.writes()).toBe(true);
+    jest.advanceTimersByTime(1);
     expect(hold.writes()).toBe(false);
   } finally {
     hold.release();
@@ -94,12 +113,12 @@ test("a document that keeps drawing is let go at the limit", async () => {
   }
 });
 
-test("a reader action inside the quiet lets the column go at once", async () => {
+test("a reader action inside the quiet lets the column go at once", () => {
   const { box, inside } = column();
   const hold = holdSection(box, BOUNDS);
   try {
     hold.drawing();
-    await Bun.sleep(5);
+    jest.advanceTimersByTime(QUIET_MS - 1);
     inside.dispatchEvent(new Event("pointerdown", { bubbles: true }));
     expect(hold.writes()).toBe(false);
   } finally {
@@ -139,7 +158,7 @@ test("a press outside the column leaves it held", () => {
   }
 });
 
-test("an event of another kind leaves the column written until the bound", async () => {
+test("an event of another kind leaves the column written until the bound", () => {
   const { box, inside } = column();
   const hold = holdSection(box, BOUNDS);
   try {
@@ -147,7 +166,9 @@ test("an event of another kind leaves the column written until the bound", async
     inside.dispatchEvent(new Event("scroll", { bubbles: true }));
     inside.dispatchEvent(new Event("pointermove", { bubbles: true }));
     expect(hold.writes()).toBe(true);
-    await Bun.sleep(AFTER_QUIET_MS);
+    jest.advanceTimersByTime(QUIET_MS - 1);
+    expect(hold.writes()).toBe(true);
+    jest.advanceTimersByTime(1);
     expect(hold.writes()).toBe(false);
   } finally {
     hold.release();

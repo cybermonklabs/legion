@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A session's deregistration at shutdown that fails, or that is still pending when the shutdown's
+  1 s deadline comes, is logged at warn with the session id and the error. Before, its failure was
+  swallowed and a DELETE given up at the deadline said nothing, so a session left registered read
+  live to its peers until the listener's live window passed, with no line saying why.

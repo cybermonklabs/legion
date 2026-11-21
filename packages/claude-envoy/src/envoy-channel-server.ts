@@ -88,7 +88,7 @@ import { findPushedBranchHead, paneHandoffReport } from "@legion/pi-shared/hando
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
-import { connect } from "nats"
+import { type ConnectionOptions, connect, type NatsConnection } from "nats"
 import { z } from "zod"
 import type { ModContentBlock, ModEvent } from "../hooks/mod-protocol"
 import { name as packageName, version as packageVersion } from "../package.json" with {
@@ -105,6 +105,7 @@ import {
   START_STOPPING,
   sessionAdmission,
 } from "./channel-connection"
+import { channelRecord } from "./channel-record"
 import {
   type ChannelConnection,
   type ChannelTopicSubscription,
@@ -788,6 +789,8 @@ async function flushThroughRedials(
  */
 export async function startChannelSession(options: ChannelSessionOptions): Promise<ChannelSession> {
   const { identity } = options
+  /** The tests' record of this server's steps (`./channel-record`); unset in production. */
+  const record = channelRecord(process.env)
   let directSubject = legacyAgentSubject(identity.id)
   /** The NATS connection the session holds now, and the credential move that goes with it: the
    *  start's, until it closes for good and `options.reopen` opens another (`connectionClosed`). */
@@ -1248,13 +1251,22 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   }
 
   /**
-   * What a registration's answer says of consumer delivery, for the id it registered and the
-   * relay it asked for. An answer for an id this process has left, or for a relay since closed,
-   * changes nothing.
+   * What a registration's answer says of consumer delivery, for the id it registered, the relay
+   * it asked for and the epoch its request named. An answer for an id this process has left, or
+   * for a relay since closed, changes nothing.
    */
-  const takeDeliveryAnswer = (sessionID: string, asked: Relay, result: SubscribeResult): void => {
+  const takeDeliveryAnswer = (
+    sessionID: string,
+    asked: Relay,
+    epoch: string,
+    result: SubscribeResult,
+  ): void => {
     if (sessionID !== identity.id || relay !== asked) return
     asked.delivery.answered(result.delivery)
+    // The tests' record, unset in production: the epoch the answered registration named, which
+    // the listener restarts the relay on. A reconnect can begin another epoch while that
+    // registration is on the wire (`renewRelayEpoch`), so the relay's epoch now may be a later one.
+    record?.({ registered: epoch })
   }
 
   // Nothing is subscribed per topic: this holds the followed set a registration carries, and
@@ -1421,6 +1433,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
           ? undefined
           : natsFailureReason(stopped.error)
     const asking = relayMissing === undefined && relay?.sessionID === sessionID ? relay : undefined
+    /** The epoch this registration's request names, which its answer is for. */
+    let askedEpoch: string | undefined
     await registerWithRelay({
       relay: asking?.delivery,
       ...(relayMissing === undefined ? {} : { relayMissing }),
@@ -1429,6 +1443,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       roles: heldRole === undefined ? [] : [heldRole],
       outage: inboundOutage,
       send: (topics, deliveryRequest) => {
+        askedEpoch = deliveryRequest.epoch
         const registering = options.client.subscribe({
           sessionID,
           directory: identity.directory,
@@ -1458,7 +1473,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // lists, leaves the session with no consumer at all, as every other failed registration
       // does: the session is told once and the heartbeat asks again.
       answered: (result) => {
-        if (asking !== undefined) takeDeliveryAnswer(sessionID, asking, result)
+        if (asking !== undefined && askedEpoch !== undefined) {
+          takeDeliveryAnswer(sessionID, asking, askedEpoch, result)
+        }
       },
       // An edge listener refused these topics for the projects of the session's token: they stop
       // being followed, here and in the ledger, so no later registration carries them and a
@@ -2689,15 +2706,16 @@ export async function runEnvoyChannelServer(): Promise<void> {
       })
     },
   }
-  const notifier: ChannelNotifier =
-    phaseHook === undefined
-      ? writer
-      : {
-          notification: async (notification) => {
-            phaseHook.deliveryWritten(notification.content)
-            await writer.notification(notification)
-          },
-        }
+  // The tests' record (`./channel-record`), unset in production: each Envoy event the session was
+  // shown, once its write was made, in the order the server took them.
+  const serverRecord = channelRecord(process.env)
+  const notifier: ChannelNotifier = {
+    notification: async (notification) => {
+      phaseHook?.deliveryWritten(notification.content)
+      await writer.notification(notification)
+      if (notification.eventId !== undefined) serverRecord?.({ shown: notification.eventId })
+    },
+  }
   const capabilities = (): readonly DeliveryCapability[] =>
     sessionCapabilities({ pane: inboxSocket !== undefined, mod: modLink?.connected() === true })
   const booting = new AbortController()
@@ -2810,6 +2828,27 @@ export async function runEnvoyChannelServer(): Promise<void> {
             ? "it waits for this session's broker token, and its stderr says what each trade came to"
             : "it connects to NATS"
       const natsName = `claude-envoy-channel-${identity.id}`
+      // The tests' record (`./channel-record`), unset in production: the settings the first dial
+      // chose, which pace its recovery from a path that froze, and each status event nats.js
+      // reports on it, which show the steps a recovery took.
+      const dial =
+        serverRecord === undefined
+          ? connect
+          : async (options: ConnectionOptions): Promise<NatsConnection> => {
+              const nats = await connect(options)
+              const { pingInterval, maxPingOut, timeout, reconnectTimeWait, reconnectJitter } =
+                options
+              serverRecord({
+                dial: { pingInterval, maxPingOut, timeout, reconnectTimeWait, reconnectJitter },
+              })
+              const statuses = nats.status()
+              void (async () => {
+                for await (const status of statuses) {
+                  serverRecord({ status: status.type, data: status.data })
+                }
+              })()
+              return nats
+            }
       const dialled = await dialChannelInbound(
         inbound,
         envoy.url,
@@ -2821,7 +2860,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
           if (dialError !== undefined) starting = text
           process.stderr.write(`envoy-channel: ${text}\n`)
         },
-        connect,
+        dial,
         booting.signal,
       ).catch((error: unknown) => {
         // A stop asked for while the token or the dial was awaited, as in the start below.

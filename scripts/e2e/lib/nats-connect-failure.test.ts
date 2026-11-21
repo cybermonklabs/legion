@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import { nkeys } from "nats";
 
 // The operator's NATS helpers given a server URL that holds a credential, and a connect that
@@ -44,16 +45,23 @@ const cases = [
   ],
 ] as const;
 
+/** Runs `bun <script> <args>` to its exit, bounded by the row's deadline: a script still running
+ *  there fails the row, naming the script and what it wrote, before Bun's own timeout cuts the
+ *  row with no name. spawnSync takes whole milliseconds, and reads 0 as no bound at all. */
 function run(script: string, ...args: string[]) {
   const result = Bun.spawnSync(["bun", join(import.meta.dir, script), ...args], {
     stdout: "pipe",
     stderr: "pipe",
-    timeout: 30_000,
+    timeout: Math.max(1, Math.floor(timeLeft())),
   });
-  return {
-    exitCode: result.exitCode,
-    output: `${result.stdout.toString()}${result.stderr.toString()}`,
-  };
+  const output = `${result.stdout.toString()}${result.stderr.toString()}`;
+  // The arguments stay out of the message: the URL among them holds the row's credential.
+  if (result.exitedDueToTimeout === true) {
+    throw new Error(
+      `bun ${script} ran past the row's deadline and was ended there; its output: ${output}`
+    );
+  }
+  return { exitCode: result.exitCode, output };
 }
 
 describe.each(cases)("a failed NATS connect at %s", (_, url, named, secret) => {

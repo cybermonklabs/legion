@@ -52,6 +52,9 @@
   },
   "main": "dist/index.js",
   "types": "src/index.ts",
+  "//": [
+    "test: the first command's --timeout, 20000, is at least twice the slowest row or hook it ran under 8 busy loops on 2 CPUs. At 61b66deb (two runs in a builds Job) its slowest row, gen-api > the committed client types are what the generator emits, took 5,478.95 ms, under the 15000 it had then. Read again at #4437's round-4 tree 24b2e96b28, with src/envoy-session.test.ts in it, under the same load (three runs in builds Job g4b-co-first, legion-load-run-8zsvp, 2026-11-21, each hook timed by a preload the Job's patch added, since Bun prints no hook times, and a node on PATH for Biome's launcher, as CI's runner has): gen-api > a hand-edit of packages/contracts/src/dispatch-api.generated.ts makes --check fail, naming it, 9,109.10 ms, the slowest (7,910.25 and 7,706.92 ms the slowest of the other runs), whose twice, 18,218.20 ms, 15000 did not hold, so the guard is 20000, which holds it 2.20 times; the slowest hook, the row-deadline preload's afterEach, 78.17 ms; envoy-session.test.ts's one row at most 0.18 ms. The second command, 2000, runs src/build-entries.test.ts alone (main's #4538, whose two build rows carried 60,000 ms of their own, which went), and is at least twice its slowest row under 8 busy loops on 2 CPUs at 1c711353dc (three runs in builds Job r4b-contracts-8): package.json's entry points > build writes each default condition and main where package.json names it, and nothing else, 291.52 ms (twice: 583.04 ms); the whole file took at most 0.9 s."
+  ],
   "scripts": {
     "gen:go": "bun run scripts/gen-go.ts",
     "check:go": "bun run scripts/gen-go.ts --check",
@@ -60,7 +63,7 @@
     "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/go-blank.ts src/legion-api.ts src/trailing-slash.ts src/log-text.ts src/held-secrets.ts --root src --outdir dist --target bun --format esm",
     "build:dispatch": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts --root src --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 20000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns='src/build-entries.test.ts' && bun test --timeout 2000 --preload @legion/test-fixtures/row-deadline ./src/build-entries.test.ts",
     "lint": "bunx biome check src/ schemas/"
   },
   "dependencies": {

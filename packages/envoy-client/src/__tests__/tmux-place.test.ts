@@ -118,7 +118,8 @@ function fakeExec(script: Record<string, string>): { exec: ExecFn; calls: string
 
 /** A tmux stand-in, run under fake timers, that answers after `answerAfterMs` or never (null).
  *  It never heeds its abort signal, as a tmux client waiting to connect to a busy server catches
- *  the SIGTERM a plain execFile timeout sends and keeps waiting. */
+ *  the SIGTERM a plain execFile timeout sends and keeps waiting. Its delay is fake time and copies
+ *  no production setting: the rows set it past TMUX_PANE_LOOKUP_MS (`PANE_BOUND_MS`). */
 function slowTmux(answerAfterMs: number | null, stdout: string = answer()) {
   const seen: { calls: string[]; signal?: AbortSignal } = { calls: [] };
   const exec: ExecFn = (file, args, options) => {

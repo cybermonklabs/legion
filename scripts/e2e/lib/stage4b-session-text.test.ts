@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // session_psql, session_text and session_byte_len, taken from lib/session-db.sh by name, and
@@ -30,7 +30,10 @@ const fn = scriptFunctions(join(import.meta.dir, "..", "stage4b-sandbox-tree.sh"
 // The teardown's last check, which the script takes from lib/github-apps.sh rather than writing
 // itself: that library's own function, by name, as the functions above are the script's own.
 const appsFn = scriptFunctions(join(import.meta.dir, "github-apps.sh"));
-const dir = temporaryDirectory("stage4b-session-text-test");
+// On the memory root (memoryRoot): the rows leave 870 entries here for the one `afterAll` to
+// remove, which timed out against Bun's 5 s when each entry on the dev box's shared disk cost 4 ms
+// (dispatch://INFRA-4311).
+const dir = temporaryDirectory("stage4b-session-text-test", { root: memoryRoot() });
 
 const sessions = "/home/legion/.omp/profiles/legion/agent/sessions";
 const key = `${sessions}/-legion-workspaces-sjawhar-legion-smoke-legsmoke-1/2026-10-25_4242.jsonl`;

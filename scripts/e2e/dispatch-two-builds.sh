@@ -209,7 +209,7 @@ pass
 # unactionable.
 report_drain() {
   note "the last read of $target_key's references: $(printf '%s' "${references_found:-}" | tr '\n' ' ')"
-  note "rows still owed this build's grammar: $(psql "$database_url" -X -tAc \
+  note "rows still owed this build's grammar: $(two_builds_psql -tAc \
     'select count(*) from refs_grammar_owed' 2>&1 | tr -d '\n')"
 }
 

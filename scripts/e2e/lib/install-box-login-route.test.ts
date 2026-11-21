@@ -11,7 +11,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { until } from "@legion/test-fixtures/wait";
 
 // The box-login route's own installer, against a fake operator home in a temp directory: never the
 // real ~/.omp. Its one outside call is `mise ls --global --json`, faked here by a `mise` first on
@@ -83,7 +85,7 @@ function install({
       "--operator-home",
       operatorHome,
     ],
-    { env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: callerHome } }
+    { env: { ...bunCacheOff, PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: callerHome } }
   );
   return {
     agent,
@@ -236,7 +238,7 @@ describe("the box-login model route installer", () => {
     "--operator-home",
   ])("refuses %s with no value as an argument error (exit 2), not an unbound variable", (flag) => {
     const result = Bun.spawnSync(["bash", join(lib, "install-box-login-route.sh"), flag], {
-      env: { PATH: process.env.PATH ?? "", HOME: callerHome },
+      env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: callerHome },
     });
     expect(result.exitCode).toBe(2);
     expect(result.stderr.toString()).toContain(`${flag} needs a value`);
@@ -271,14 +273,22 @@ describe("the box-login lock", () => {
     try {
       const first = await holder.stdout.getReader().read();
       expect(new TextDecoder().decode(first.value)).toBe("locked\n");
+      // The holder's shell has taken the lock and recorded its own command line; it then becomes
+      // `sleep 60`. The refusal must name what the holder runs now, not what the lock file
+      // recorded, so the row waits until the holder runs `sleep 60`. That exec is another
+      // process's and sends no event, so the wait reads the holder's one command line again
+      // (a holder that died throws there, and ends the wait at once).
+      await until(
+        "the lock's holder to run sleep 60",
+        () => readFileSync(`/proc/${holder.pid}/cmdline`, "utf8") === "sleep\u000060\u0000"
+      );
       const second = Bun.spawnSync(["bash", "-c", helpers(file, "take_box_login_lock")], {
         env: { PATH: process.env.PATH ?? "", XDG_RUNTIME_DIR: join(dir, "xdg-b") },
       });
       expect(second.exitCode).toBe(1);
-      expect(second.stderr.toString()).toContain(
-        `another box-login proof holds ${file}: pid ${holder.pid} (`
+      expect(second.stderr.toString()).toBe(
+        `take_box_login_lock: another box-login proof holds ${file}: pid ${holder.pid} (sleep 60); one box-login proof runs at a time\n`
       );
-      expect(second.stderr.toString()).toContain("one box-login proof runs at a time");
     } finally {
       holder.kill();
       await holder.exited;
@@ -312,6 +322,7 @@ describe("a box-login stage proof refused at its first lines", () => {
     const evidence = join(dir, `evidence-${script}-${Object.keys(env).join("-")}`);
     const child = Bun.spawnSync(["bash", join(e2e, script)], {
       env: {
+        ...bunCacheOff,
         PATH: process.env.PATH ?? "",
         HOME: callerHome,
         LEGION_E2E_MODEL_ROUTE: "box-login",
@@ -331,7 +342,7 @@ describe("a box-login stage proof refused at its first lines", () => {
   test.each(scripts)("%s takes the lock before it makes any run state", async (script) => {
     const holder = Bun.spawn(
       ["bash", "-c", helpers(lockFile, "take_box_login_lock && echo ready && exec sleep 60")],
-      { stdout: "pipe", env: { PATH: process.env.PATH ?? "", HOME: callerHome } }
+      { stdout: "pipe", env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: callerHome } }
     );
     try {
       await holder.stdout.getReader().read();

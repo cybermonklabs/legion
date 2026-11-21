@@ -8,7 +8,17 @@ import {
   PICTURE_PLACEHOLDER,
 } from "@legion/contracts";
 
-import { AgentStreamPublisher, type AgentStreamSettingsState } from "./agent-stream";
+import {
+  type AgentStreamContextTiming,
+  AgentStreamPublisher,
+  type AgentStreamSettingsState,
+} from "./agent-stream";
+
+/** The caller's record of a reading in its `interval`th interval: read a millisecond before it
+ *  went out, a second of the caller's clock to each interval. */
+function timed(interval: number): AgentStreamContextTiming {
+  return { interval, at: interval * 1_000, readAt: interval * 1_000 - 1 };
+}
 
 const SUBJECT = "agentstream.s1.frames";
 
@@ -569,20 +579,47 @@ describe("the session's context usage", () => {
 
   test("reaches a viewer as the newest reading, and an unwatched session sends none", () => {
     const { published, publisher } = harness();
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 5, tokens: 10_000 });
+    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 5, tokens: 10_000 }, timed(1));
     expect(published).toEqual([]);
 
     publisher.noteViewer();
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 20, tokens: 40_000 });
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 31.5, tokens: 63_000 });
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: 20, tokens: 40_000 },
+      timed(2)
+    );
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: 31.5, tokens: 63_000 },
+      timed(3)
+    );
     expect(published).toEqual([
-      { contextWindow: 200_000, kind: "context", seq: SEQ_START + 2, tokens: 40_000, v: 1 },
-      { contextWindow: 200_000, kind: "context", seq: SEQ_START + 3, tokens: 63_000, v: 1 },
+      {
+        contextWindow: 200_000,
+        ...timed(2),
+        kind: "context",
+        seq: SEQ_START + 2,
+        tokens: 40_000,
+        v: 1,
+      },
+      {
+        contextWindow: 200_000,
+        ...timed(3),
+        kind: "context",
+        seq: SEQ_START + 3,
+        tokens: 63_000,
+        v: 1,
+      },
     ]);
     // The window moves with the model the session switched to, and the frame follows it.
-    publisher.setContext(SUBJECT, { contextWindow: 1_000_000, percent: 6.3, tokens: 63_000 });
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 1_000_000, percent: 6.3, tokens: 63_000 },
+      timed(5)
+    );
     expect(published.at(-1)).toEqual({
       contextWindow: 1_000_000,
+      ...timed(5),
       kind: "context",
       seq: SEQ_START + 4,
       tokens: 63_000,
@@ -591,22 +628,46 @@ describe("the session's context usage", () => {
     expect(publisher.replay("s1").frames).toEqual([published.at(-1) as AgentStreamFrame]);
   });
 
+  // The interval number is when a reading went out, not what it says: the same figures in a later
+  // interval are no news, send nothing, and keep the number they went out with.
+  test("keeps the interval an unchanged reading went out in", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const usage = { contextWindow: 200_000, percent: 25, tokens: 50_000 };
+    publisher.setContext(SUBJECT, usage, timed(1));
+    publisher.setContext(SUBJECT, usage, timed(2));
+
+    expect(published.map((frame) => (frame.kind === "context" ? frame.interval : 0))).toEqual([1]);
+    expect(publisher.replay("s1").frames).toEqual([published[0] as AgentStreamFrame]);
+  });
+
   // An older pinned build's status-line startup wiring answered
   // `{tokens: 0, contextWindow, percent: null}`. Sending it draws a ring at nought per cent over a
   // conversation that is well underway, and it does report a window, so it clears nothing either.
   test("is not sent for a reading a viewer would draw a false ring from", () => {
     const { published, publisher } = harness();
     publisher.noteViewer();
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: null, tokens: 0 });
+    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: null, tokens: 0 }, timed(2));
     expect(published).toEqual([]);
     expect(publisher.replay("s1").frames).toEqual([]);
 
     // A reading the session did send stands: the same answer after it neither replaces it nor
     // clears it.
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 25, tokens: 50_000 });
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: null, tokens: 0 });
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: 25, tokens: 50_000 },
+      timed(4)
+    );
+    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: null, tokens: 0 }, timed(5));
     expect(published).toEqual([
-      { contextWindow: 200_000, kind: "context", seq: SEQ_START + 1, tokens: 50_000, v: 1 },
+      {
+        contextWindow: 200_000,
+        ...timed(4),
+        kind: "context",
+        seq: SEQ_START + 1,
+        tokens: 50_000,
+        v: 1,
+      },
     ]);
     expect(publisher.replay("s1").frames).toEqual([published[0] as AgentStreamFrame]);
   });
@@ -620,12 +681,25 @@ describe("the session's context usage", () => {
     test(`is cleared when the host answers ${answer}`, () => {
       const { published, publisher } = harness();
       publisher.noteViewer();
-      publisher.setContext(SUBJECT, { contextWindow: 32_768, percent: 25, tokens: 8_192 });
-      publisher.setContext(SUBJECT, usage);
+      publisher.setContext(
+        SUBJECT,
+        { contextWindow: 32_768, percent: 25, tokens: 8_192 },
+        timed(1)
+      );
+      publisher.setContext(SUBJECT, usage, timed(2));
 
+      // The clearing frame carries the caller's record of the answer of no window, as a reading
+      // does.
       expect(published).toEqual([
-        { contextWindow: 32_768, kind: "context", seq: SEQ_START + 1, tokens: 8_192, v: 1 },
-        { kind: "context-cleared", seq: SEQ_START + 2, v: 1 },
+        {
+          contextWindow: 32_768,
+          ...timed(1),
+          kind: "context",
+          seq: SEQ_START + 1,
+          tokens: 8_192,
+          v: 1,
+        },
+        { ...timed(2), kind: "context-cleared", seq: SEQ_START + 2, v: 1 },
       ]);
       // The replay holds the clearing frame in the reading's place, and the reading no more.
       expect(publisher.replay("s1").frames).toEqual([published.at(-1) as AgentStreamFrame]);
@@ -635,14 +709,16 @@ describe("the session's context usage", () => {
   test("is cleared once, however many answers of no window follow", () => {
     const { published, publisher } = harness();
     publisher.noteViewer();
-    publisher.setContext(SUBJECT, { contextWindow: 32_768, percent: 25, tokens: 8_192 });
-    publisher.setContext(SUBJECT, { contextWindow: 0, percent: 0, tokens: 8_192 });
-    publisher.setContext(SUBJECT, undefined);
+    publisher.setContext(SUBJECT, { contextWindow: 32_768, percent: 25, tokens: 8_192 }, timed(1));
+    publisher.setContext(SUBJECT, { contextWindow: 0, percent: 0, tokens: 8_192 }, timed(2));
+    publisher.setContext(SUBJECT, undefined, timed(3));
     expect(published.map((frame) => frame.kind)).toEqual(["context", "context-cleared"]);
+    // The clear kept is the first, with the record it went out with.
     expect(publisher.replay("s1").frames).toEqual([published.at(-1) as AgentStreamFrame]);
+    expect(published.at(-1)).toMatchObject(timed(2));
 
     // The second clear took no sequence number either: the next reading is the one after it.
-    publisher.setContext(SUBJECT, { contextWindow: 32_768, percent: 50, tokens: 16_384 });
+    publisher.setContext(SUBJECT, { contextWindow: 32_768, percent: 50, tokens: 16_384 }, timed(4));
     expect(published.at(-1)).toMatchObject({ kind: "context", seq: SEQ_START + 3 });
   });
 
@@ -652,14 +728,28 @@ describe("the session's context usage", () => {
     const { published, publisher } = harness();
     const usage = { contextWindow: 32_768, percent: 25, tokens: 8_192 };
     publisher.noteViewer();
-    publisher.setContext(SUBJECT, usage);
-    publisher.setContext(SUBJECT, { contextWindow: 0, percent: 0, tokens: 8_192 });
-    publisher.setContext(SUBJECT, usage);
+    publisher.setContext(SUBJECT, usage, timed(1));
+    publisher.setContext(SUBJECT, { contextWindow: 0, percent: 0, tokens: 8_192 }, timed(2));
+    publisher.setContext(SUBJECT, usage, timed(3));
 
     expect(published).toEqual([
-      { contextWindow: 32_768, kind: "context", seq: SEQ_START + 1, tokens: 8_192, v: 1 },
-      { kind: "context-cleared", seq: SEQ_START + 2, v: 1 },
-      { contextWindow: 32_768, kind: "context", seq: SEQ_START + 3, tokens: 8_192, v: 1 },
+      {
+        contextWindow: 32_768,
+        ...timed(1),
+        kind: "context",
+        seq: SEQ_START + 1,
+        tokens: 8_192,
+        v: 1,
+      },
+      { ...timed(2), kind: "context-cleared", seq: SEQ_START + 2, v: 1 },
+      {
+        contextWindow: 32_768,
+        ...timed(3),
+        kind: "context",
+        seq: SEQ_START + 3,
+        tokens: 8_192,
+        v: 1,
+      },
     ]);
     expect(publisher.replay("s1").frames).toEqual([published.at(-1) as AgentStreamFrame]);
   });
@@ -669,9 +759,9 @@ describe("the session's context usage", () => {
   test("is cleared before any reading, since a page may still draw an earlier process's ring", () => {
     const { published, publisher } = harness();
     publisher.noteViewer();
-    publisher.setContext(SUBJECT, { contextWindow: 0, percent: 0, tokens: 0 });
+    publisher.setContext(SUBJECT, { contextWindow: 0, percent: 0, tokens: 0 }, timed(1));
 
-    expect(published).toEqual([{ kind: "context-cleared", seq: SEQ_START + 1, v: 1 }]);
+    expect(published).toEqual([{ ...timed(1), kind: "context-cleared", seq: SEQ_START + 1, v: 1 }]);
     expect(publisher.replay("s1").frames).toEqual([published[0] as AgentStreamFrame]);
   });
 
@@ -680,10 +770,21 @@ describe("the session's context usage", () => {
   test("is sent for tokens the host reports without a percentage", () => {
     const { published, publisher } = harness();
     publisher.noteViewer();
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: null, tokens: 50_000 });
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: null, tokens: 50_000 },
+      timed(1)
+    );
 
     expect(published).toEqual([
-      { contextWindow: 200_000, kind: "context", seq: SEQ_START + 1, tokens: 50_000, v: 1 },
+      {
+        contextWindow: 200_000,
+        ...timed(1),
+        kind: "context",
+        seq: SEQ_START + 1,
+        tokens: 50_000,
+        v: 1,
+      },
     ]);
   });
 
@@ -695,7 +796,11 @@ describe("the session's context usage", () => {
     }
     publisher.setCommands(SUBJECT, [{ name: "compact", source: "builtin" }]);
     publisher.setSettings(SUBJECT, settings);
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 25, tokens: 50_000 });
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: 25, tokens: 50_000 },
+      timed(1)
+    );
     publisher.noteViewer();
 
     const { frames } = publisher.replay("s1");
@@ -705,7 +810,7 @@ describe("the session's context usage", () => {
       "context",
       "commands",
     ]);
-    expect(frames.at(-2)).toMatchObject({ contextWindow: 200_000, tokens: 50_000 });
+    expect(frames.at(-2)).toMatchObject({ contextWindow: 200_000, tokens: 50_000, ...timed(1) });
     expect(new TextEncoder().encode(JSON.stringify(frames)).length).toBeLessThanOrEqual(
       AGENT_STREAM_LIMITS.historyBytes
     );
@@ -716,7 +821,11 @@ describe("the session's context usage", () => {
   test("as kept unwatched, goes to a viewer once it is attached", () => {
     const { published, publisher } = harness();
     publisher.setSettings(SUBJECT, settings);
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 25, tokens: 50_000 });
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: 25, tokens: 50_000 },
+      timed(1)
+    );
     publisher.setCommands(SUBJECT, [{ name: "compact", source: "builtin" }]);
     publisher.publishState(SUBJECT);
     expect(published).toEqual([]);
@@ -730,8 +839,12 @@ describe("the session's context usage", () => {
   test("as cleared unwatched, goes to a viewer once it is attached, in the reading's place", () => {
     const { published, publisher } = harness();
     publisher.setSettings(SUBJECT, settings);
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 25, tokens: 50_000 });
-    publisher.setContext(SUBJECT, undefined);
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: 25, tokens: 50_000 },
+      timed(1)
+    );
+    publisher.setContext(SUBJECT, undefined, timed(2));
     publisher.setCommands(SUBJECT, [{ name: "compact", source: "builtin" }]);
     publisher.publishState(SUBJECT);
     expect(published).toEqual([]);
@@ -774,7 +887,11 @@ describe("the session's context usage", () => {
   test("takes its room from the command list, not from the replay's budget", () => {
     const withoutContext = crowded();
     const publisher = crowded();
-    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 25, tokens: 50_000 });
+    publisher.setContext(
+      SUBJECT,
+      { contextWindow: 200_000, percent: 25, tokens: 50_000 },
+      timed(1)
+    );
 
     const { frames } = publisher.replay("s1");
     expect(frames.map((frame) => frame.kind)).toEqual(["settings", "context", "commands"]);
@@ -791,7 +908,7 @@ describe("the session's context usage", () => {
   test("takes the clearing frame's room from the command list too", () => {
     const withoutContext = crowded();
     const publisher = crowded();
-    publisher.setContext(SUBJECT, undefined);
+    publisher.setContext(SUBJECT, undefined, timed(1));
 
     const { frames } = publisher.replay("s1");
     expect(frames.map((frame) => frame.kind)).toEqual(["settings", "context-cleared", "commands"]);
@@ -806,13 +923,13 @@ describe("the session's context usage", () => {
     const { published, publisher } = harness();
     const usage = { contextWindow: 200_000, percent: 25, tokens: 50_000 };
     publisher.noteViewer();
-    publisher.setContext(SUBJECT, usage);
+    publisher.setContext(SUBJECT, usage, timed(1));
     publisher.reset();
     publisher.noteViewer();
     expect(publisher.replay("s2").frames).toEqual([]);
 
     // The next session's first reading is news to its viewer, even when it reads the same.
-    publisher.setContext(SUBJECT, usage);
+    publisher.setContext(SUBJECT, usage, timed(2));
     expect(published.map((frame) => frame.kind)).toEqual(["context", "context"]);
     expect(publisher.replay("s2").frames).toEqual([published.at(-1) as AgentStreamFrame]);
   });
@@ -820,14 +937,14 @@ describe("the session's context usage", () => {
   test("a clear goes with the conversation when the session is replaced", () => {
     const { published, publisher } = harness();
     publisher.noteViewer();
-    publisher.setContext(SUBJECT, { contextWindow: 32_768, percent: 25, tokens: 8_192 });
-    publisher.setContext(SUBJECT, undefined);
+    publisher.setContext(SUBJECT, { contextWindow: 32_768, percent: 25, tokens: 8_192 }, timed(1));
+    publisher.setContext(SUBJECT, undefined, timed(2));
     publisher.reset();
     publisher.noteViewer();
     expect(publisher.replay("s2").frames).toEqual([]);
 
     // The next session's first answer is news to its viewer, even when it is another clear.
-    publisher.setContext(SUBJECT, undefined);
+    publisher.setContext(SUBJECT, undefined, timed(3));
     expect(published.map((frame) => frame.kind)).toEqual([
       "context",
       "context-cleared",

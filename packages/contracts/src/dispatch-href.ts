@@ -10,9 +10,15 @@ export interface DispatchHrefItem {
   kind: "ask" | "comment";
 }
 
+const controlCharacter = /\p{Cc}/u;
+
+/** The patterns of this module, by name, for a test that reads each the way a backtracking engine
+ *  runs it: every reader of a Dispatch reference in text runs them on what an author wrote. */
+export const DISPATCH_HREF_PATTERNS: Readonly<Record<string, RegExp>> = { controlCharacter };
+
 /** Whether a decoded Dispatch path or query segment holds a control character. */
 export function hasControlCharacter(value: string): boolean {
-  return /\p{Cc}/u.test(value);
+  return controlCharacter.test(value);
 }
 
 /**

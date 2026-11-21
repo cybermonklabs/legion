@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  Dispatch's editor parses three more shapes of body in time linear in its length, to the same
+  document:
+  - Asks nested inside one another, each holding a block, open the marks of the asks around them
+    again only where a node then holds those marks. With an empty code block or an image after
+    each inner ask, asks nested 100 deep opened 5,050 marks for the 100 the document holds.
+  - Many reference-style links among many definitions: each label was looked up by searching the
+    list of definitions (micromark-core-commonmark, through the patch the package already carries),
+    and `remark-inline-links` removed each definition from its parent with a splice that shifted
+    every later sibling; the lookup reads a set kept beside the list now, and the definitions go
+    in one pass, through a new patch of `remark-inline-links` 7.0.0.
+  - A proof span holding many `<code>`, `<strong>`, `<em>` or `<del>` tags that nothing closes:
+    each was searched forward to the span's end for its closer; each closer is now found in one
+    pass, through the patch the package already carries on the proof-sdk tarball.

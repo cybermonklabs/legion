@@ -1,4 +1,11 @@
+// The NATS stall rows of claude-envoy, which run only with LEGION_E2E_ENVOY_STACK=1 (CI's
+// envoy-session-stall job), whose step's --timeout bounds every wait. The real channel server
+// registers against a listener built from packages/envoy, and the proxy freezes its NATS path;
+// the freeze and what it checks are `runFreezeScenario`, which pi-envoy's stall row runs too, and
+// the settings that keep that recovery inside the spec's minute are held by envoy-client's
+// src/__tests__/nats-stall.test.ts. A session whose first redial hung still exits on SIGTERM.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { existsSync, readFileSync } from "node:fs"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {
@@ -8,12 +15,40 @@ import {
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack"
 import { type StallProxy, startStallProxy } from "@legion/envoy-client/test/stall-proxy"
-import { RECOVERY_BOUND_MS, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario"
+import {
+  expectRecoveredByPingOut,
+  type NatsDial,
+  RECOVERY_BOUND_MS,
+  recoveryBoundMs,
+  runFreezeScenario,
+  type SessionStep,
+} from "@legion/envoy-client/test/stall-scenario"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
+import {
+  TIMER_RECORD_FILE,
+  TIMER_RECORD_ROOTS,
+  type TimerStep,
+} from "@legion/test-fixtures/timer-record"
+import { completeLines } from "@legion/test-fixtures/transcript-lines"
+import { settled, until } from "@legion/test-fixtures/wait"
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
+import { CHANNEL_RECORD_FILE, type ChannelRecordLine } from "../src/channel-record"
 import { startFakeMod } from "./fake-mod"
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
+/** The preload that records the timers the server's own code arms, into the server's record. */
+const timerRecordPreload = Bun.resolveSync(
+  "@legion/test-fixtures/timer-record-preload",
+  import.meta.dir,
+)
+/** The server's own code: this package's and the envoy-client and pi-shared sources it runs. */
+const serverRoots = [
+  resolve(import.meta.dir, "..", "src"),
+  resolve(import.meta.dir, "..", "bin"),
+  resolve(import.meta.dir, "..", "..", "envoy-client", "src"),
+  resolve(import.meta.dir, "..", "..", "pi-shared", "src"),
+]
 
 /** Where the socket homes are made. A mod socket is `<home>/claude-envoy/ce-<hash>.sock`, and that
  *  whole path has 100 bytes to fit in (`MOD_SOCKET_PATH_MAX_BYTES`): under `tmpdir()` a deep
@@ -36,14 +71,49 @@ interface ChannelServer {
   readonly home: string
   /** The channel messages Claude Code would be shown, in the order the server sent them. */
   readonly channel: readonly string[]
-  /** Resolves once `condition` holds; throws when the server exits or `deadline` passes first. */
-  waitFor(
-    condition: () => boolean | Promise<boolean>,
-    deadline: number,
-    what: string,
-  ): Promise<void>
-  /** Stops the server (SIGTERM, then SIGKILL after 10 s), closes the proxy, removes its home. */
+  /** What the server wrote to its record so far, in its order (`../src/channel-record`), with
+   *  the timers its own code armed and fired between (`@legion/test-fixtures/timer-record`). */
+  record(): readonly (ChannelRecordLine | TimerStep)[]
+  /** The server's own record of its way back from a freeze, in its order, each message it showed
+   *  given by its text, which the record holds by its Envoy event only. */
+  sessionRecord(): readonly SessionStep[]
+  /** The server's NATS connection as its record gives it: the settings it dialled with and each
+   *  status event since; undefined before it dialled. */
+  natsDial(): NatsDial | undefined
+  /** What the server wrote to stderr so far. */
+  stderr(): string
+  /** Resolves once `condition` holds; throws when the server exits first, or at the row's
+   *  deadline, naming `what` and what the server wrote to stderr. */
+  waitFor(condition: () => boolean | Promise<boolean>, what: string): Promise<void>
+  /** Stops the server (SIGTERM, and SIGKILL when it has not exited by the row's deadline), closes
+   *  the proxy, removes its home. */
   stop(): Promise<void>
+}
+
+/**
+ * Runs `body` against a channel server started for it, then stops the server. A failure of the
+ * body is the row's own, named by the wait or the assertion that failed: a body that failed at
+ * the row's deadline leaves the stop's own wait no time, and that wait's give-up is reported only
+ * when the body passed.
+ */
+async function withChannelServer(
+  stack: EnvoyStack,
+  sessionPrefix: string,
+  body: (server: ChannelServer) => Promise<void>,
+): Promise<void> {
+  const server = await startChannelServer(stack, sessionPrefix)
+  let failure: { readonly error: unknown } | undefined
+  try {
+    await body(server)
+  } catch (error) {
+    failure = { error }
+  }
+  try {
+    await server.stop()
+  } catch (error) {
+    if (failure === undefined) throw error
+  }
+  if (failure !== undefined) throw failure.error
 }
 
 /**
@@ -64,9 +134,11 @@ async function startChannelServer(
     JSON.stringify({ envoy: { enabled: true, url: stack.envoyUrl, natsUrls: [proxy.url] } }),
   )
   const sessionID = `${sessionPrefix}_${crypto.randomUUID().replaceAll("-", "")}`
-  const server = Bun.spawn(["bun", channelEntry], {
+  const recordFile = join(home, "channel-record.jsonl")
+  const server = Bun.spawn(["bun", "--preload", timerRecordPreload, channelEntry], {
     cwd: home,
     env: {
+      ...bunCacheOff,
       PATH: process.env["PATH"] ?? "",
       HOME: home,
       CLAUDE_CONFIG_DIR: configDirectory,
@@ -77,6 +149,12 @@ async function startChannelServer(
       // No heartbeat registration runs in the test's window: the reconnect's registration, on a
       // new epoch, is the only one that restarts the relay.
       ENVOY_HEARTBEAT_MS: "240000",
+      // The server's own record of its dial and its steps
+      // (`../src/channel-record`), and into the same file, so one order holds both, each timer
+      // its own code arms and fires (`@legion/test-fixtures/timer-record`).
+      [CHANNEL_RECORD_FILE]: recordFile,
+      [TIMER_RECORD_FILE]: recordFile,
+      [TIMER_RECORD_ROOTS]: serverRoots.join(":"),
     },
     stdin: "pipe",
     stdout: "pipe",
@@ -88,11 +166,14 @@ async function startChannelServer(
   // prompt of a new turn while the session is idle, which this one is throughout (`show` in
   // `../src/mod-session`) - so the mod is this test's view of what the session was shown.
   const channel: string[] = []
+  /** The Envoy event each shown message was handed to the mod under, beside its text. */
+  const shownEvents: { readonly text: string; readonly eventId: string | undefined }[] = []
   const mod = await startFakeMod(socketPath, {
     sessionId: sessionID,
     answers: {
       "session.message": (args) => {
         channel.push(shownText(args))
+        shownEvents.push({ text: shownText(args), eventId: args.eventId })
         // The prompt an idle session took, which is what answers the frame: a prompt carries
         // no row of its own (`../hooks/mod-protocol.ts`, `ModCallResults["session.message"]`).
         return { as: "prompt" }
@@ -116,33 +197,74 @@ async function startChannelServer(
     })}\n`,
   )
   server.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`)
+  const record = (): (ChannelRecordLine | TimerStep)[] =>
+    existsSync(recordFile)
+      ? completeLines(readFileSync(recordFile, "utf8")).map(
+          (line) => JSON.parse(line) as ChannelRecordLine | TimerStep,
+        )
+      : []
   return {
     server,
     proxy,
     sessionID,
     home,
     channel,
-    // The server runs on nats.js's real ping and dial timers and a real listener, so each wait
-    // polls the real clock until its condition holds or its deadline passes.
-    async waitFor(condition, deadline, what) {
-      while (!(await condition())) {
-        if (server.exitCode !== null) {
-          throw new Error(
-            `the channel server exited ${server.exitCode} waiting for ${what}: ${stderr}`,
-          )
+    record,
+    sessionRecord() {
+      return record().flatMap((line): SessionStep[] => {
+        if ("status" in line) return [{ status: line.status }]
+        if ("registered" in line) return [{ registered: line.registered }]
+        if ("shown" in line) {
+          const text = shownEvents.find((shown) => shown.eventId === line.shown)?.text
+          return text === undefined ? [] : [{ shown: text }]
         }
-        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}: ${stderr}`)
-        await Bun.sleep(100)
+        if ("timer" in line || "fired" in line) return [line]
+        return []
+      })
+    },
+    stderr: () => stderr,
+    natsDial() {
+      const lines = record()
+      const dial = lines.find((line) => "dial" in line)
+      if (dial === undefined || !("dial" in dial)) return undefined
+      return {
+        options: dial.dial,
+        statuses: lines.flatMap((line) =>
+          "status" in line ? [{ type: line.status, data: line.data }] : [],
+        ),
+      }
+    },
+    // The server runs on nats.js's real ping and dial timers and a real listener, so each wait
+    // asks again through the shared wait until its condition holds; a server that exits first
+    // ends the wait at once, and so does the row's deadline.
+    async waitFor(condition, what) {
+      try {
+        await until(what, async () => {
+          if (server.exitCode !== null) {
+            throw new Error(`the channel server exited ${server.exitCode} waiting for ${what}`)
+          }
+          return await condition()
+        })
+      } catch (error) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}; its stderr: ${stderr}`,
+          { cause: error },
+        )
       }
     },
     async stop() {
       await mod.stop()
       server.kill("SIGTERM")
-      const killer = setTimeout(() => server.kill("SIGKILL"), 10_000)
-      await server.exited
-      clearTimeout(killer)
-      await proxy.close()
-      await rm(home, { recursive: true, force: true })
+      try {
+        await settled("the channel server's exit on SIGTERM", server.exited)
+      } finally {
+        // A server still running when the row's deadline passed goes too, rather than outliving
+        // the run (a no-op for one that exited).
+        server.kill("SIGKILL")
+        await server.exited
+        await proxy.close()
+        await rm(home, { recursive: true, force: true })
+      }
     },
   }
 }
@@ -160,23 +282,19 @@ describe.skipIf(!envoyStackEnabled)(
     let stack: EnvoyStack | undefined
     beforeAll(async () => {
       stack = await startEnvoyStack({ work: stackDirectory })
-    }, 120_000)
+    })
     afterAll(async () => {
       await stack?.stop()
-    }, 60_000)
+    })
 
     test("a session whose NATS path freezes subscribes its relay subject again on the new connection within 60 s, registers a new epoch, and shows each message once", async () => {
       if (stack === undefined) throw new Error("the Envoy stack did not start")
-      const { envoyUrl } = stack
-      const { proxy, sessionID, channel, waitFor, stop } = await startChannelServer(
-        stack,
-        "ses_stall",
-      )
-      try {
-        const started = Date.now()
+      const running = stack
+      const { envoyUrl } = running
+      await withChannelServer(running, "ses_stall", async (channelServer) => {
+        const { proxy, sessionID, channel, waitFor, natsDial, sessionRecord } = channelServer
         await waitFor(
           async () => (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok,
-          started + 30_000,
           "the session's registration",
         )
         // The bundle runs from this checkout, outside Claude Code's plugin cache.
@@ -193,31 +311,26 @@ describe.skipIf(!envoyStackEnabled)(
         )
         await runFreezeScenario({
           label: "claude-envoy stall",
-          stack,
+          stack: running,
           sessionID,
           proxy,
           shown: (marker) => channel.filter((content) => content.includes(marker)),
+          sessionRecord,
+          natsDial,
           waitFor,
         })
-      } finally {
-        await stop()
-      }
-    }, 120_000)
+      })
+    })
 
     test("a session whose redial once hung still exits on SIGTERM", async () => {
       if (stack === undefined) throw new Error("the Envoy stack did not start")
       const { envoyUrl } = stack
-      const { server, proxy, sessionID, waitFor, stop } = await startChannelServer(
-        stack,
-        "ses_stall_exit",
-      )
-      try {
-        const started = Date.now()
+      await withChannelServer(stack, "ses_stall_exit", async (channelServer) => {
+        const { server, proxy, sessionID, waitFor, natsDial } = channelServer
         await waitFor(
           async () =>
             (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok &&
             proxy.connections[0]?.subscribedAt !== undefined,
-          started + 30_000,
           "the session's registration and first subscription",
         )
         // The first redial after the freeze hangs (accepted, never answered); the next forwards.
@@ -228,9 +341,20 @@ describe.skipIf(!envoyStackEnabled)(
             proxy.connections.some(
               (opened) => opened.acceptedAt >= frozenAt && opened.subscribedAt !== undefined,
             ),
-          frozenAt + RECOVERY_BOUND_MS,
           "the session to subscribe again after the hung redial",
         )
+        // Past the hung redial within the minute, by the server's own record of its dial.
+        await waitFor(
+          () => natsDial()?.statuses.some((status) => status.type === "reconnect") ?? false,
+          "the server's NATS client to report its reconnect",
+        )
+        const dial = natsDial()
+        if (dial === undefined) throw new Error("the server recorded no NATS dial")
+        expect(recoveryBoundMs(dial.options, 1)).toBeLessThan(RECOVERY_BOUND_MS)
+        expectRecoveredByPingOut(dial, 1)
+        // Main's own check of the exit on SIGTERM, on the real clock: this server writes no record
+        // of its way out to read the exit bound from, so the check stays until the claude-envoy
+        // pull request's bounded way out replaces it with that record.
         const signalledAt = Date.now()
         server.kill("SIGTERM")
         const outcome = await Promise.race([
@@ -241,9 +365,7 @@ describe.skipIf(!envoyStackEnabled)(
           `claude-envoy stall exit: SIGTERM -> ${outcome} after ${((Date.now() - signalledAt) / 1000).toFixed(1)} s`,
         )
         expect(outcome).toBe("exited")
-      } finally {
-        await stop()
-      }
-    }, 120_000)
+      })
+    })
   },
 )

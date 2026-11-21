@@ -715,12 +715,16 @@ export interface PiApi {
    * Sends a user prompt, exactly as Enter at the terminal does: idle, it starts a turn; streaming,
    * it steers. `deliverAs: "aside"` lands it at the next step without interrupting the running
    * tool batch; `deliverAs: "followUp"` queues it behind the running turn without starting one.
-   * The host queues the send, so the prompt's `message_start` comes after this returns.
+   * The host queues the send, so the prompt's `message_start` comes after this returns. The
+   * promise it returns rejects when the send fails, as a prompt the host drops before dispatch
+   * (`PromptDroppedError`) or refuses (no model, no API key) does (`agent-session.ts`
+   * `sendUserMessage`, `runtime-init.ts`'s `sendUserMessage` action, Oh My Pi
+   * v18.18.6-sami.20261117-013345).
    */
   readonly sendUserMessage: (
     content: string | readonly ContentBlock[],
     options?: { readonly deliverAs: "aside" | "followUp" }
-  ) => void;
+  ) => Promise<void>;
   /**
    * Runs text as if typed at the session's own terminal: a built-in its host can run headless, an
    * extension or custom command, a file command or prompt template, and `/skill:<name>`; any other

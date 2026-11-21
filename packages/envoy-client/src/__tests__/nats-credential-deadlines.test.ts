@@ -14,6 +14,8 @@
 
 import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
+import { holdDeadlines } from "@legion/test-fixtures/held-deadlines";
+import { settled, until } from "@legion/test-fixtures/wait";
 import {
   type BrokerNatsCredential,
   brokerNatsCredential,
@@ -28,6 +30,40 @@ const { podEnvironment, servers, stubBroker } = natsBrokerStandIns("nats-credent
 afterEach(() => {
   jest.useRealTimers();
 });
+
+/**
+ * What `ready` answers, read through the deadline the code itself armed: every deadline of `ms`
+ * the code arms is held (`holdDeadlines`) until ready has armed one and has not answered while it
+ * is held, and, where `first` names a fact, until that fact holds too; then it ends, and ready's
+ * answer is returned. A ready that armed its deadline at another length - the trade's own, say -
+ * arms none the hold sees, and the wait for it fails at the row's deadline, naming it; one that
+ * answered with the deadline still held fails the check.
+ */
+async function answerAtHeldDeadline(
+  ms: number,
+  ready: () => Promise<void>,
+  first?: readonly [what: string, holds: () => boolean]
+): Promise<string> {
+  const deadline = holdDeadlines(ms);
+  try {
+    let answered = false;
+    const answer = ready()
+      .then(
+        () => "ready",
+        (error: unknown) => (error instanceof Error ? error.message : String(error))
+      )
+      .finally(() => {
+        answered = true;
+      });
+    await until(`ready's ${ms} ms deadline armed`, () => deadline.held.length > 0);
+    if (first !== undefined) await until(first[0], first[1]);
+    expect(answered, `ready answered with its ${ms} ms deadline still held`).toBe(false);
+    deadline.end();
+    return await settled(`ready's answer once its ${ms} ms deadline ended`, answer);
+  } finally {
+    deadline.restore();
+  }
+}
 
 describe("ready", () => {
   test("a broker that never answers the trade fails it, named, at the deadline", async () => {
@@ -46,16 +82,13 @@ describe("ready", () => {
       "NATS_AUTH",
       300
     );
-    const started = Date.now();
-    const outcome = await credential.ready().then(
-      () => "ready",
-      (error: unknown) => (error instanceof Error ? error.message : String(error))
-    );
+    // The deadline ends the wait, and it is the one the setting gives: a ready that waited on the
+    // broker, or on a deadline of another length, would not end while the setting's is held.
+    const outcome = await answerAtHeldDeadline(300, () => credential.ready());
     expect(outcome).toBe(
       "NATS_AUTH is broker, but the secrets broker did not answer the trade for the session's token within 0.3 s"
     );
-    expect(Date.now() - started).toBeLessThan(5_000);
-  }, 15_000);
+  });
 
   test("a startup's bound shorter than the trade deadline ends its wait first, naming the broker's silence", async () => {
     // A start whose pass deadline is shorter than the default bounds its wait by that deadline
@@ -73,16 +106,14 @@ describe("ready", () => {
       "NATS_AUTH",
       10_000
     );
-    const started = Date.now();
-    const outcome = await credential.ready({ waitForReady: true, boundMs: 400 }).then(
-      () => "ready",
-      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    // The bound the start asked for, not the trade's 10 s, is the deadline the wait arms.
+    const outcome = await answerAtHeldDeadline(400, () =>
+      credential.ready({ waitForReady: true, boundMs: 400 })
     );
     expect(outcome).toBe(
       "NATS_AUTH is broker, but the secrets broker did not answer the trade for the session's token within 0.4 s"
     );
-    expect(Date.now() - started).toBeLessThan(3_000);
-  }, 20_000);
+  });
 
   test("a pod session the broker holds no registration for fails it at the deadline, naming the session", async () => {
     // The token client waits out a missing registration for as long as its caller waits (#4153),
@@ -96,16 +127,25 @@ describe("ready", () => {
       "NATS_AUTH",
       300
     );
-    const started = Date.now();
-    const outcome = await credential.ready().then(
-      () => "ready",
-      (error: unknown) => (error instanceof Error ? error.message : String(error))
-    );
+    // The deadline ends once the token client has had the broker's refusal, which it says on
+    // stderr: what ready answers then is that refusal's, read at the deadline the setting gives.
+    const warned: string[] = [];
+    const warn = spyOn(console, "warn").mockImplementation((line: unknown) => {
+      warned.push(String(line));
+    });
+    let outcome: string;
+    try {
+      outcome = await answerAtHeldDeadline(300, () => credential.ready(), [
+        "the token client's word that the trade waits on the registration",
+        () => warned.some((line) => line.includes("ses_pending")),
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
     expect(outcome).toBe(
       "NATS_AUTH is broker, and the session's token waits on its registration: the secrets broker has no registration for this pod's session ses_pending yet, and the trade is being retried in the background until it lands (pod_session_not_registered: No registration says this pod may write under the session name 'ses_pending'. A pod writes under a session name its deployment registered for it.)"
     );
-    expect(Date.now() - started).toBeLessThan(5_000);
-  }, 15_000);
+  });
 });
 
 describe("renew", () => {
@@ -147,9 +187,9 @@ describe("renew", () => {
     // first, so every trade past it is one a CONNECT made. A round trip to the broker after each
     // CONNECT gives a trade one of them started the time to reach it.
     jest.useFakeTimers();
-    const refused = Promise.withResolvers<void>();
+    let refused = false;
     const warn = spyOn(console, "warn").mockImplementation((line: unknown) => {
-      if (String(line).includes("session ses_unregistered yet")) refused.resolve();
+      if (String(line).includes("session ses_unregistered yet")) refused = true;
     });
     try {
       const broker = stubBroker(600);
@@ -157,7 +197,7 @@ describe("renew", () => {
       const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_unregistered");
       expect(credential.authenticator("nonce")).toBeUndefined();
       // The first trade is refused, and the loop waits out its first slot, at least 1 s.
-      await refused.promise;
+      await turnsUntil("the first trade refused", () => refused);
       for (let connect = 2; connect <= 18; connect++) {
         jest.advanceTimersByTime(50);
         expect(credential.authenticator("nonce")).toBeUndefined();
@@ -170,7 +210,7 @@ describe("renew", () => {
     } finally {
       warn.mockRestore();
     }
-  }, 15_000);
+  });
 
   test("a CONNECT with no live token presents nothing, trades, and presents the token next", async () => {
     // No ready(), renew() or keeper: the authenticator's own trade is what the next reconnect
@@ -179,14 +219,12 @@ describe("renew", () => {
     const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_self");
     expect(credential.authenticator("nonce-1")).toBeUndefined();
     const traded = () => broker.state.minted.length > 0;
-    const deadline = Date.now() + 5_000;
-    while (!traded() && Date.now() < deadline) await Bun.sleep(20);
+    await until("the authenticator's own trade landed", traded);
     // The trade has landed once the authenticator presents its token.
-    let auth: { auth_token?: string } | undefined;
-    while (auth === undefined && Date.now() < deadline) {
-      auth = credential.authenticator("nonce-2") as { auth_token?: string } | undefined;
-      if (auth === undefined) await Bun.sleep(20);
-    }
+    const auth = await until(
+      "the authenticator presenting the traded token",
+      () => credential.authenticator("nonce-2") as { auth_token?: string } | undefined
+    );
     expect(auth?.auth_token).toBe(broker.state.minted[0]?.value ?? "no token minted");
     expect(broker.state.minted.map((one) => one.session)).toEqual(["ses_self"]);
   });
@@ -194,11 +232,15 @@ describe("renew", () => {
 
 describe("followNatsCredential", () => {
   /** A connection whose reconnect asks the authenticator again and reports the statuses the
-   *  caller pushes, and which the caller closes. */
+   *  caller pushes, and which the caller closes. `drained` says the follow's status reader has
+   *  taken every status pushed and waits for the next; `reconnects`, how often it was asked to
+   *  come back. */
   function controlledConnection(credential: BrokerNatsCredential) {
     const pushed: { type: string }[] = [];
     let wake = () => {};
     let stopped = false;
+    let waiting = false;
+    let reconnects = 0;
     const ended = Promise.withResolvers<void>();
     const statuses = {
       stop: () => {
@@ -212,9 +254,11 @@ describe("followNatsCredential", () => {
             yield next;
             continue;
           }
+          waiting = true;
           await new Promise<void>((resolve) => {
             wake = resolve;
           });
+          waiting = false;
         }
       },
     };
@@ -225,8 +269,11 @@ describe("followNatsCredential", () => {
       },
       close: () => ended.resolve(),
       stoppedReader: () => stopped,
+      drained: () => waiting && pushed.length === 0,
+      reconnects: () => reconnects,
       connection: {
         reconnect: async () => {
+          reconnects += 1;
           credential.authenticator("nonce-again");
         },
         status: () => statuses,
@@ -249,9 +296,10 @@ describe("followNatsCredential", () => {
     const credential = await switched();
     const rig = controlledConnection(credential);
     const following = followNatsCredential(rig.connection, credential);
-    // A status that is not the reconnect ends nothing.
+    // A status that is not the reconnect ends nothing: the reader takes it, and the close after
+    // it is what ends the follow.
     rig.push("disconnect");
-    await Bun.sleep(50);
+    await until("the follow's reader at rest after the disconnect", rig.drained);
     rig.close();
     await expect(following).rejects.toThrow(
       "the NATS connection closed before it came back as the new session"
@@ -279,18 +327,18 @@ describe("followNatsCredential", () => {
         outcome = error;
       }
     );
-    await turnsUntil(() => reconnecting, "asked to reconnect with the new session's token");
+    await turnsUntil("asked to reconnect with the new session's token", () => reconnecting);
     jest.advanceTimersByTime(7_999);
     await turn();
     expect(outcome).toBeUndefined();
     expect(rig.stoppedReader()).toBe(false);
     jest.advanceTimersByTime(1);
-    await turnsUntil(() => outcome !== undefined, "the follow's end at 8 s");
+    await turnsUntil("the follow's end at 8 s", () => outcome !== undefined);
     expect(String(outcome)).toContain(
       "the NATS connection did not come back as the new session within 8 s"
     );
     expect(rig.stoppedReader()).toBe(true);
-  }, 30_000);
+  });
 
   test("a switch to a session with no registration yet stops waiting for its token at 20 s, naming why", async () => {
     // The case the token client's wait exists for: a pod's host moves to a session whose
@@ -307,9 +355,9 @@ describe("followNatsCredential", () => {
     // The follow's bound is the clock's: once the first trade for ses_to is refused, only timers
     // are left to happen, and the follow ends at its bound to the millisecond.
     jest.useFakeTimers();
-    const refused = Promise.withResolvers<void>();
+    let refused = false;
     const warn = spyOn(console, "warn").mockImplementation((line: unknown) => {
-      if (String(line).includes("session ses_to yet")) refused.resolve();
+      if (String(line).includes("session ses_to yet")) refused = true;
     });
     try {
       let ended: string | undefined;
@@ -321,7 +369,7 @@ describe("followNatsCredential", () => {
           ended = error instanceof Error ? error.message : String(error);
         }
       );
-      await refused.promise;
+      await turnsUntil("the first trade for ses_to refused", () => refused);
       jest.advanceTimersByTime(TRADE_DEADLINE_MS - 1);
       await turn();
       expect(ended).toBeUndefined();
@@ -333,7 +381,7 @@ describe("followNatsCredential", () => {
     } finally {
       warn.mockRestore();
     }
-  }, 40_000);
+  });
 
   test("a switch whose first trade answers 503 waits for ready and takes the token the next trade grants", async () => {
     // A switch has nothing to do until it holds the new session's token, so its trade waits for
@@ -350,22 +398,27 @@ describe("followNatsCredential", () => {
     const rig = controlledConnection(credential);
     const before = broker.state.trades;
     const following = followNatsCredential(rig.connection, credential);
-    while (broker.state.trades === before) await Bun.sleep(20);
+    await until("the first trade for the new session", () => broker.state.trades > before);
     // The first trade for the new session was answered 503; the broker is back for the next.
     broker.state.down = false;
-    while (broker.state.minted.length < 2) await Bun.sleep(50);
-    await Bun.sleep(50);
+    await until(
+      "the follow asking the connection back with the token the next trade granted",
+      () => broker.state.minted.length >= 2 && rig.reconnects() > 0 && rig.drained()
+    );
     rig.push("reconnect");
     await following;
     expect(credential.needsReconnect()).toBe(false);
     expect(broker.state.minted.at(-1)?.session).toBe("ses_to");
-  }, 40_000);
+  });
 
   test("a reconnect returns once its CONNECT presented the new session's token", async () => {
     const credential = await switched();
     const rig = controlledConnection(credential);
     const following = followNatsCredential(rig.connection, credential);
-    await Bun.sleep(50);
+    await until(
+      "the follow asking the connection back with the new session's token",
+      () => rig.reconnects() > 0 && rig.drained()
+    );
     rig.push("reconnect");
     await following;
     expect(credential.needsReconnect()).toBe(false);
@@ -380,10 +433,10 @@ describe("followNatsCredential", () => {
     const credential = await switched();
     const rig = controlledConnection(credential);
     const asked: string[] = [];
-    const redialling = Promise.withResolvers<void>();
+    let redialling = false;
     (rig.connection as { reconnect: () => Promise<void> }).reconnect = async () => {
       if (asked.push("reconnect") === 1) {
-        redialling.resolve();
+        redialling = true;
         return;
       }
       credential.authenticator("nonce-again");
@@ -393,7 +446,7 @@ describe("followNatsCredential", () => {
     // turn of the event loop, where a follow that waited on a timer to ask again would not.
     jest.useFakeTimers();
     const following = followNatsCredential(rig.connection, credential);
-    await redialling.promise;
+    await turnsUntil("the follow's first reconnect, met by a redial in flight", () => redialling);
     // The in-flight redial comes back, admitted as the old session.
     rig.push("reconnect");
     await turn();
@@ -401,5 +454,5 @@ describe("followNatsCredential", () => {
     await following;
     expect(credential.needsReconnect()).toBe(false);
     expect(rig.stoppedReader()).toBe(true);
-  }, 30_000);
+  });
 });

@@ -81,7 +81,7 @@ const compactKeepRecentTokens = 1
 
 // compactSummaryMarker is how a stand-in tells a compaction's summary request from a turn's: the
 // summarization system prompt Oh My Pi sends such a request under, which the plugins' own pane
-// harness recognises the same way (packages/pi-shared/test/omp-harness.ts:586-592,
+// harness recognises the same way (packages/pi-shared/test/omp-harness.ts:833-837,
 // `isSummarization`). A release that rewords that prompt makes a summary request look like a
 // turn, which this proof's first compaction then fails on rather than passing quietly.
 const compactSummaryMarker = "Summarize user"
@@ -1465,7 +1465,7 @@ func (e compactionEntry) preserveKeys() []string {
 // answers the newest, holding that it is a text summary rather than snapcompact's images. The
 // transcript is the session file the claim records, one JSON entry per line, which is how the
 // plugins' own pane harness reads a session back too
-// (packages/pi-shared/test/omp-harness.ts:915-926).
+// (packages/pi-shared/test/omp-harness.ts:1232-1243).
 func (r *claimCompactionLive) awaitCompactionEntry(path string, count int) compactionEntry {
 	t := r.t
 	t.Helper()
@@ -1809,7 +1809,7 @@ func (s *paneStandin) turnsHolding(marker string) int {
 
 // isSideQuestion is whether a Messages request is the plugin's own side question rather than a
 // turn of the task: its last message carries the `<btw>` tag, which is how the plugins' own pane
-// harness tells the two apart (packages/pi-shared/test/omp-harness.ts:528-531, `isSelfCheck`).
+// harness tells the two apart (packages/pi-shared/test/omp-harness.ts:773-776, `isSelfCheck`).
 // Such a question rides beside the task's turns, so a proof that counts how often a task was put
 // in front of the agent counts turns and not requests.
 func isSideQuestion(body string) bool {

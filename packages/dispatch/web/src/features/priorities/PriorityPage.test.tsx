@@ -177,9 +177,7 @@ test("the description is a disclosure that closes, and the work stays below it",
   );
   expect(screen.getByRole("button", { name: "Description, closed" })).toBeDefined();
   // The work fills the page with the description closed.
-  expect(
-    await screen.findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 })
-  ).toBeDefined();
+  expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
 });
 
 test("the description reads rendered, opens on a click on its text and is saved as it is written, with no Save button", async () => {
@@ -195,7 +193,7 @@ test("the description reads rendered, opens on a click on its text and is saved 
   const field = await screen.findByRole("textbox", { name: "Description of P2" });
   expect(document.activeElement).toBe(field);
   await user.type(field, " More.");
-  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1), { timeout: 3000 });
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.[0]).toBe("rocq-lean");
   expect(patch.mock.calls[0]?.[1]).toEqual({
     description: "# Rocq and Lean speed work restarted\n\nSpeedruns run again. More.",
@@ -296,9 +294,7 @@ test("one link out leaves the scope, naming the issues and why", async () => {
 test("the work under the priority is the issues table, scoped and under its own prefix", async () => {
   const { listing } = page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("OPS-2")]);
   const work = await screen.findByRole("region", { name: "Work advancing this priority" });
-  expect(
-    await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 })
-  ).toBeDefined();
+  expect(await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   expect(within(work).queryByRole("row", { name: "OPS-2 Work OPS-2" })).toBeNull();
   expect(listing).toHaveBeenCalledWith({ advances: ["rocq-lean"], open: true });
 });

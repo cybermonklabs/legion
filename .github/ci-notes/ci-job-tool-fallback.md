@@ -49,8 +49,10 @@ ladder: the kept case's own fetch at 63 s, the probe's reserved control name, an
 honest fetches of the package, npm, PyPI, get.pulumi.com and the local origin, none of
 which took more than a second (1), the bytes the installs and the sixteen cases move, over
 npm, PyPI, get.pulumi.com and loopback, the two 107 MB Bun tarballs among them (3), and the
-readings, the `ladder-report` step, the stop-fault step and the report (1).
-That is 12, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
+readings, the `ladder-report` step, the stop-fault step and the report (1). The origin's
+and the fault's starts each wait for their server's port through
+scripts/e2e/lib/proof-wait.sh under a guard of their own, 60 s each (2).
+That is 14, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
 limit carries ten minutes over the sum.
 This budget replaces 65 minutes with a limit of 75, and 45 of those 65 were the twenty-one
 steps whose primary the fault holds, allowed at 126 s each. That 126 s is what a negative
@@ -72,11 +74,17 @@ itself is a sampler beside the job rather than a step of it, so those two steps 
 whole cost to this budget (dispatch://INFRA-2605).
 
 EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`,
-and the twenty-four installs whose control accepts a failure are timed as well, against
-the seconds .github/scripts/ci-tools-proof.sh holds every timed install to: a step the
-runner ends at its own bound leaves `outcome=failure` behind it, which those controls
-accept, so the wall time is the only reading that tells a hang from the refusal the case
-expects.
+and each of the twenty-four installs whose control accepts a failure is also read for
+whether it ended on its own: a step the runner ends at its own bound leaves
+`outcome=failure` behind it, which those controls accept.
+The sixteen corrupted cases run this tree's actions, and `report` in
+.github/scripts/ci-tools-proof.sh reads the end record each of their installs writes as its
+last act (.github/scripts/ci-tools.sh:265-270): a status is an install that ended on its
+own, and no record is one the runner ended.
+Only the negative control's eight installs with nowhere to go read the clock, against the
+seconds ci-tools-proof.sh holds every timed install to
+(.github/scripts/tool-fallback-nowhere-controls.sh): they run the merge base's actions,
+whose ci-tools.sh writes no end record.
 The eleven minutes is derived from the installs as they ran before the ladders stopped
 sleeping: over the green runs of these two jobs between 2026-11-09T19:38Z and
 2026-11-10T10:51Z, 2422 install steps — the sixteen-install shape this job carried for

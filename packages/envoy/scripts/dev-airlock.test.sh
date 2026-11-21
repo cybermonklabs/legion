@@ -45,6 +45,26 @@ readonly fake_bin_dir="${temporary_dir}/bin"
 readonly run_tmpdir="${temporary_dir}/tmp"
 mkdir -p "$fake_bin_dir" "$run_tmpdir"
 
+# The test's one guard and its one wait, scripts/e2e/lib/proof-wait.sh's proof_guard and wait_for,
+# which ends at once where its fact can no longer come and otherwise 30 s before the guard, naming
+# the fact, and keeps its last poll in work. Guard 120 s: at least twice this test's longest run
+# beside 8 busy loops on 2 CPUs in a builds Job, 41 s (d4-final2, two runs, 2026-11-20), plus the
+# wait's 30 s margin; on CI, this test's longest green run was 8 s (run 44598907697), over the 20
+# newest green merge-group runs of ci.yaml that ran its step up to 2026-11-19 (runs 44508510162 to
+# 44607131679).
+work=$temporary_dir
+note() { echo "$*"; }
+# fail <message>: how a wait that did not hold ends the test (proof-wait.sh's wait_for calls it):
+# the run's log, then the message.
+fail() {
+  [ ! -s "${log:-}" ] || cat "$log" >&2
+  echo "FAIL: $*" >&2
+  exit 1
+}
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "${project_root}/scripts/e2e/lib/proof-wait.sh"
+proof_guard 120
+
 driver_pid=""
 cleanup() {
   if [[ -n "$driver_pid" ]] && kill -0 "$driver_pid" 2>/dev/null; then
@@ -286,15 +306,15 @@ run_stack() {
   driver_pid=$!
 }
 
+# driver_ready: whether the run printed its ready line, for wait_for; a run that exited never will.
+driver_ready() {
+  grep -q '^dev-airlock: ready\.$' "$log" 2>/dev/null && return 0
+  kill -0 "$driver_pid" 2>/dev/null || wait_impossible="dev-airlock.sh exited before it was ready"
+  return 1
+}
+
 wait_for_ready() {
-  for _ in $(seq 1 300); do
-    grep -q '^dev-airlock: ready\.$' "$log" 2>/dev/null && return 0
-    kill -0 "$driver_pid" 2>/dev/null || break
-    sleep 0.1
-  done
-  cat "$log" >&2
-  echo "FAIL: dev-airlock.sh never reached ready" >&2
-  exit 1
+  wait_for "dev-airlock.sh to reach ready" driver_ready
 }
 
 # stop_stack sends the run the signal a Ctrl-C sends it and waits for it to go.

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 // namespace-clean holds the run to its own objects: those labelled with its project, and those
@@ -35,6 +36,7 @@ function clean(label: string, before: Listing, after: Listing, failListing = fal
   ].join("\n");
   const result = Bun.spawnSync(["bash", "-c", script], {
     env: {
+      ...bunCacheOff,
       PATH: process.env.PATH ?? "",
       HOME: evidence,
       BEFORE_UNLABELLED: lines(before.unlabelled),

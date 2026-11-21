@@ -39,6 +39,11 @@ export function runDispatch(
   const child = spawn("bun", [dispatchEntry, ...args], {
     cwd: home,
     env: {
+      // @legion/test-fixtures/bun-child-environment's bunCacheOff, written out: Playwright loads
+      // this file under Node, which resolves none of that package's exports, since each names
+      // only a `bun` condition. HOME is the row's own directory, where the child's Bun would keep
+      // its runtime transpiler cache (docs/testing.md, "Bun tests"): "0" turns that cache off.
+      BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
       PATH: process.env.PATH ?? "",
       HOME: home,
       DISPATCH_STATE_DIR: home,

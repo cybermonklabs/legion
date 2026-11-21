@@ -439,7 +439,7 @@ function runCase({ clipboard, copyCells, hardBreaks, rows, spec, stored, target 
 }
 
 for (const pasteCase of pasteCases) {
-  test(pasteCase.name, () => runCase(pasteCase), pasteCase.timeoutMs);
+  test(pasteCase.name, () => runCase(pasteCase));
 }
 
 test("the matrix moved out of the browser runs whole", () => {

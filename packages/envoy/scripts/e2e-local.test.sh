@@ -12,6 +12,26 @@ readonly first_output_file="${temporary_dir}/first-output"
 greeter_pid=""
 first_pid=""
 
+# The test's one guard and its one wait, scripts/e2e/lib/proof-wait.sh's proof_guard and wait_for,
+# which ends at once where its fact can no longer come and otherwise 30 s before the guard, naming
+# the fact, and keeps its last poll in work. Guard 310 s: at least twice this test's longest run
+# beside 8 busy loops on 2 CPUs in a builds Job, 137 s (d4-final2, two runs, 2026-11-20), plus the
+# wait's 30 s margin; on CI, this test's longest green run was 36 s (run 44607131679), over the 20
+# newest green merge-group runs of ci.yaml that ran its step up to 2026-11-19 (runs 44473367235 to
+# 44607131679). Each run of the driver below sets a guard of its own.
+work=$temporary_dir
+note() { echo "$*"; }
+# wait_log is the output of the run a wait reads, which fail prints before its message.
+wait_log=""
+fail() {
+  [[ -z "$wait_log" ]] || cat "$wait_log" >&2
+  printf 'FAIL: %s\n' "$*" >&2
+  exit 1
+}
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "${project_root}/scripts/e2e/lib/proof-wait.sh"
+proof_guard 310
+
 cleanup() {
   for pid in "$greeter_pid" "$first_pid"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
@@ -19,7 +39,7 @@ cleanup() {
       wait "$pid" 2>/dev/null || true
     fi
   done
-  rm -f "$output_file" "$first_output_file" "${temporary_dir}/greeter.port"
+  rm -f "$output_file" "$first_output_file" "${temporary_dir}/greeter.port" "${temporary_dir}/wait-for.out"
   rmdir "$temporary_dir"
 }
 trap cleanup EXIT
@@ -83,14 +103,12 @@ GREETER_PORT_FILE="$greeter_port_file" bun -e '
   setInterval(() => {}, 1 << 30);
 ' &
 greeter_pid=$!
-for _ in $(seq 1 100); do
-  [[ -s "$greeter_port_file" ]] && break
-  sleep 0.1
-done
-[[ -s "$greeter_port_file" ]] || {
-  printf 'the stand-in NATS greeter never reported its port\n' >&2
-  exit 1
+greeter_listening() {
+  [[ -s "$greeter_port_file" ]] && return 0
+  kill -0 "$greeter_pid" 2>/dev/null || wait_impossible="the stand-in NATS greeter exited before it reported its port"
+  return 1
 }
+wait_for "the stand-in NATS greeter's port" greeter_listening
 greeter_port="$(<"$greeter_port_file")"
 readonly greeter_port
 
@@ -127,20 +145,17 @@ bash "$driver" >"$first_output_file" 2>&1 &
 first_pid=$!
 # The driver prints its build line only once it holds out/e2e and has cleared it. Its output file is
 # this test's own, so nothing a finished run left behind can be mistaken for it.
-deadline=$((SECONDS + 60))
-until grep -q '^building listener and NATS server$' "$first_output_file"; do
-  if ! kill -0 "$first_pid" 2>/dev/null; then
-    cat "$first_output_file" >&2
-    printf 'FAIL: the first run ended before it held out/e2e\n' >&2
-    exit 1
-  fi
-  if ((SECONDS >= deadline)); then
-    cat "$first_output_file" >&2
-    printf 'FAIL: the first run did not hold out/e2e within 60 seconds\n' >&2
-    exit 1
-  fi
-  sleep 0.1
-done
+# first_printed LINE WHY: whether the first run printed a line matching LINE, for wait_for; once it
+# has ended it never will, and WHY says what that means.
+first_printed() {
+  grep -q "$1" "$first_output_file" && return 0
+  kill -0 "$first_pid" 2>/dev/null || wait_impossible=$2
+  return 1
+}
+wait_log=$first_output_file
+wait_for "the first run to hold out/e2e" first_printed '^building listener and NATS server$' \
+  'the first run ended before it held out/e2e'
+wait_log=""
 if bash "$driver" >"$output_file" 2>&1; then
   cat "$output_file" >&2
   printf 'FAIL: a second run in the same checkout passed while the first was still using out/e2e\n' >&2
@@ -170,15 +185,10 @@ printf 'PASS: refuses a second run in the same checkout, and the first finishes 
 : >"$first_output_file"
 bash "$driver" >"$first_output_file" 2>&1 &
 first_pid=$!
-deadline=$((SECONDS + 60))
-until grep -q '^waiting for listener health$' "$first_output_file"; do
-  if ! kill -0 "$first_pid" 2>/dev/null || ((SECONDS >= deadline)); then
-    cat "$first_output_file" >&2
-    printf 'FAIL: the run to be stopped never reached its listener-health wait\n' >&2
-    exit 1
-  fi
-  sleep 0.1
-done
+wait_log=$first_output_file
+wait_for "the run to be stopped to reach its listener-health wait" first_printed '^waiting for listener health$' \
+  'the run to be stopped ended before its listener-health wait'
+wait_log=""
 kill -TERM "$first_pid"
 stopped_rc=0
 wait "$first_pid" || stopped_rc=$?

@@ -6,7 +6,7 @@
 # /proc. A reading is "key value" lines ended by a line "end". `loadgen vm-sample` (vmsample.go)
 # holds one long-lived ssh per VM that runs this script and turns every reading into a line of
 # the cgroup.jsonl that `loadgen cgroup-merge` already merges. cluster.sh's SAMPLE_SCRIPT
-# (cluster/cluster.sh:1046-1056) is the model: the deployment runs its containers on plain
+# (cluster/cluster.sh:1113-1121) is the model: the deployment runs its containers on plain
 # virtual machines, so only the transport changes, from kubectl exec to ssh.
 #
 # usage: sample.sh [-i SECONDS] [-n ROUNDS] [-m MACHINE ROLE] [-c CGROUP ROOT] [-p PROC]

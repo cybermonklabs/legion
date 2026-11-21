@@ -48,5 +48,5 @@ describe("a broker refusal", () => {
     } finally {
       broker.stop(true);
     }
-  }, 20_000);
+  });
 });

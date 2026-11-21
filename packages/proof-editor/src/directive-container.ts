@@ -60,6 +60,25 @@ import {
 } from "./block-nesting.js";
 import { factoryAttributes, factoryLabel, factoryName } from "./directive-factories.js";
 
+/**
+ * Events this module's scans read, in every parse since it loaded: the count `directiveScanSteps`
+ * answers. Each loop below that walks events outside a tokenizer's states - the resolver's
+ * (`resolveDirectiveContainers`) and the tokenize-time looks back - adds one for each event it
+ * reads, and one for each exit of a run it places.
+ */
+let directiveScanned = 0;
+
+/**
+ * How many events this module's scans have read, over every parse since it loaded. The micromark
+ * tokenizer's own count (the `tokenizer` count of `workCounts()`, patches/micromark@4.0.2.patch)
+ * holds the construct's states; these walks read events rather than codes, so tests/parse-work.ts
+ * reads this count beside that one, and a walk put back to reading every event again for each
+ * container grows it with the square of the body.
+ */
+export function directiveScanSteps(): number {
+  return directiveScanned;
+}
+
 declare module "micromark-util-types" {
   interface TokenTypeMap {
     directiveContainer: "directiveContainer";
@@ -242,13 +261,16 @@ function resolveDirectiveContainers(events: Event[], context: TokenizeContext): 
 function resolveFenceLineEndings(events: Event[]): void {
   const fenceEnds = new Set<number>();
   for (const [kind, token] of events) {
+    directiveScanned++;
     if (kind === "exit" && token.type === "directiveContainerFence")
       fenceEnds.add(token.end.offset);
   }
   for (const [kind, token] of events) {
+    directiveScanned++;
     if (kind !== "enter" || token._tokenizer === undefined || token.previous !== undefined)
       continue;
     for (const [flowKind, flowToken] of token._tokenizer.events) {
+      directiveScanned++;
       if (
         flowKind === "enter" &&
         flowToken.type === "lineEndingBlank" &&
@@ -289,6 +311,7 @@ function resolveContentExits(events: Event[], context: TokenizeContext): void {
   let lastChunk = -1;
   let index = 0;
   while (index < events.length) {
+    directiveScanned++;
     const [kind, token] = events[index];
     if (token.type === "chunkFlow" && kind === "exit") lastChunk = index;
     if (token._container !== true) {
@@ -306,6 +329,7 @@ function resolveContentExits(events: Event[], context: TokenizeContext): void {
     // A run of exits, innermost first. Where each goes is a gap: before the event at that index.
     let end = index;
     while (end < events.length && events[end][0] === "exit" && events[end][1]._container === true) {
+      directiveScanned++;
       end++;
     }
     const remaining = open.length - (end - index);
@@ -337,6 +361,7 @@ function resolveContentExits(events: Event[], context: TokenizeContext): void {
     const settled: Token[] = [];
     // Outermost first, so an inner exit never goes after an outer one.
     for (let at = end - 1; at >= index; at--) {
+      directiveScanned++;
       const position = open.length - 1 - (at - index);
       const exiting = open[position];
       const own = exiting._directive;
@@ -413,6 +438,7 @@ function exitsOfAClosedDirectiveContainer({ events, index }: ExitRun): ExitPlace
     gap > 0 &&
     !(events[gap][0] === "exit" && events[gap][1].type === "directiveContainerFence")
   ) {
+    directiveScanned++;
     gap--;
   }
   return { gap: gap + 1, settled: true };
@@ -463,6 +489,7 @@ function exitsOfAContainerEndedByALine(
   if (start === undefined) return { gap: end, settled: false };
   let gap = lastChunk + 1;
   while (gap < events.length) {
+    directiveScanned++;
     if (gap === index) gap = end;
     if (gap === events.length) break;
     const token = events[gap][1];
@@ -496,7 +523,10 @@ function aLazyLine(
   if (nextLine === -1) return false;
   if (context.parser.lazy[nextLine] === true) return true;
   let after = end;
-  while (after < events.length && events[after][1].type === "linePrefix") after++;
+  while (after < events.length && events[after][1].type === "linePrefix") {
+    directiveScanned++;
+    after++;
+  }
   return (
     after < events.length &&
     events[after][0] === "enter" &&
@@ -521,6 +551,7 @@ function placeExits(
   // An exit moves back over prefixes and content only, never over another container's event.
   let valid = true;
   for (let at = Math.min(gaps[0], index); at < index && valid; at++) {
+    directiveScanned++;
     valid = events[at][1]._container !== true && events[at][1]._directive === undefined;
   }
   let windowEnd = end;
@@ -534,7 +565,9 @@ function placeExits(
     const placed: Event[] = [];
     let next = 0;
     for (let at = windowStart; at <= windowEnd; at++) {
+      directiveScanned++;
       while (next < gaps.length && gaps[next] === at) {
+        directiveScanned++;
         const exit = events[index + next];
         if (at < index) exit[1].end = { ...events[at - 1][1].end };
         placed.push(exit);
@@ -542,11 +575,16 @@ function placeExits(
       }
       if (at < windowEnd && (at < index || at >= end)) placed.push(events[at]);
     }
-    for (let at = 0; at < placed.length; at++) events[windowStart + at] = placed[at];
+    for (let at = 0; at < placed.length; at++) {
+      directiveScanned++;
+      events[windowStart + at] = placed[at];
+    }
     if (lastChunk >= windowStart) {
       lastChunk = windowEnd - 1;
-      while (!(events[lastChunk][0] === "exit" && events[lastChunk][1].type === "chunkFlow"))
+      while (!(events[lastChunk][0] === "exit" && events[lastChunk][1].type === "chunkFlow")) {
+        directiveScanned++;
         lastChunk--;
+      }
     }
   }
   return { lastChunk, windowEnd };
@@ -560,6 +598,7 @@ function placeExits(
 function contentEnd(events: Event[], block: DirectiveBlock, from: number): number {
   let gap = from;
   while (gap > 0) {
+    directiveScanned++;
     const token = events[gap - 1][1];
     if (
       token._container === true ||
@@ -586,6 +625,7 @@ function contentEnd(events: Event[], block: DirectiveBlock, from: number): numbe
 function flowTokenEndsIn(chunk: Token): boolean {
   const flowEvents = chunk._tokenizer?.events ?? [];
   for (let index = flowEvents.length - 1; index >= 0; index--) {
+    directiveScanned++;
     const [kind, token] = flowEvents[index];
     if (token.end.offset < chunk.start.offset) return false;
     if (kind === "exit" && token.start.offset < chunk.start.offset)
@@ -695,6 +735,7 @@ function tokenizeDirectiveContainerStart(
 function someContainerEnded(context: TokenizeContext, opener: Token): boolean {
   if (context.interrupt !== undefined) return false;
   for (let index = context.events.length - 1; index >= 0; index--) {
+    directiveScanned++;
     const [kind, token] = context.events[index];
     if (kind === "exit" && token.type === "chunkFlow") return true;
     if (kind !== "enter" || token === opener) continue;
@@ -810,6 +851,7 @@ function exitDirectiveContainer(this: TokenizeContext, effects: Effects): undefi
 function blockQuoteOpenInside(events: Event[], block: DirectiveBlock): boolean {
   let closed = 0;
   for (let index = events.length - 1; index >= 0; index--) {
+    directiveScanned++;
     const [kind, token] = events[index];
     if (token._directive === block) return false;
     if (token._container !== true) continue;

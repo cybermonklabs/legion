@@ -25,23 +25,17 @@ describe("the bridge's failure line names no digit of the upstream's password", 
   test.each([
     ["an IP host with a port", (password: string) => `nats://operator:${password}@127.0.0.1:4222`],
     ["an IP host with no port", (password: string) => `nats://operator:${password}@10.255.255.1`],
-  ])(
-    "%s",
-    async (_, spelling) => {
-      const password = sixDigits();
-      const upstream = spelling(password);
-      const config = bridgeConfigFromEnvironment({
-        SMOKE_REPO: "acme/widgets",
-        SMOKE_RIG_NATS: "nats://127.0.0.1:1",
-        SMOKE_UPSTREAM_NATS: upstream,
-      });
-      const error = await realError(upstream);
-      // The row can fail for the leak: nats.js's own text carries the password.
-      expect(error instanceof Error ? error.message : String(error)).toContain(password);
-      expect(bridgeFailureLine(error, config)).not.toMatch(
-        new RegExp(`(?<!\\d)${password}(?!\\d)`)
-      );
-    },
-    30_000
-  );
+  ])("%s", async (_, spelling) => {
+    const password = sixDigits();
+    const upstream = spelling(password);
+    const config = bridgeConfigFromEnvironment({
+      SMOKE_REPO: "acme/widgets",
+      SMOKE_RIG_NATS: "nats://127.0.0.1:1",
+      SMOKE_UPSTREAM_NATS: upstream,
+    });
+    const error = await realError(upstream);
+    // The row can fail for the leak: nats.js's own text carries the password.
+    expect(error instanceof Error ? error.message : String(error)).toContain(password);
+    expect(bridgeFailureLine(error, config)).not.toMatch(new RegExp(`(?<!\\d)${password}(?!\\d)`));
+  });
 });

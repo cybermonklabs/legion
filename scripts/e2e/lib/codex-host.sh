@@ -11,8 +11,10 @@
 # The caller sets root, work, scratch, evidence, drivers, hosts, heartbeat_ms, broker_env,
 # ENVOY_URL, NATS_URLS, codex_labels, codex_session, codex_tmux_sockets, transcripts and
 # scenario_pids, and with --real-hosts codex_bin, codex_base_url and codex_model; and defines
-# refuse, note, wait_for, isolated, close_held_fifos, register_session, told, withholds and
-# clients.sh's client_fifo, client_ready and send.
+# refuse, note, isolated, close_held_fifos, register_session, told, withholds, clients.sh's
+# client_fifo, client_ready and send, and, through packages/pi-envoy/scripts/local-stack.sh, its
+# `running` and lib/proof-wait.sh's wait_held: every wait here is wait_held, which ends at the
+# proof's guard, or at once where what it waits on can no longer happen, and takes no bound.
 
 declare -A codex_transcript=()
 
@@ -94,18 +96,20 @@ codex_start_standins() {
     client_fifo "$label"
     (close_held_fifos && cd -- "$base/cwd" &&
       exec env -i PATH="$PATH" HOME="$base/home" TMPDIR="$scratch" CODEX_HOME="$base/codex-home" \
-        ENVOY_HEARTBEAT_MS="$heartbeat_ms" "${broker_env[@]}" "${told_env[@]}" \
+        ENVOY_HEARTBEAT_MS="$heartbeat_ms" LEGION_PROOF_DEADLINE_MS="$LEGION_PROOF_DEADLINE_MS" \
+        "${broker_env[@]}" "${told_env[@]}" \
         "$work/codex-bin/codex" --plugin "$installed" --cwd "$base/cwd" \
         --stderr "$work/logs/$label-server.err" --hook-log "$work/logs/$label-hooks.jsonl" "${flags[@]}") \
       <"$work/$label.stdin" >"${client_out[$label]}" 2>"$work/logs/$label.err" &
+    client_pid["$label"]=$!
     scenario_pids+=($!)
   done
   # The session's first prompt: the plugin's SessionStart hook records its id for the server. Its
   # server's environment is kept first, while the server waits for that record: a server that then
   # fails to dial exits, and its environment with it.
   for label in "${codex_labels[@]}"; do
-    wait_for 120 client_ready "$label" ||
-      refuse "the $label Codex client did not start: $(tail -n 10 "$work/logs/$label.err") $(tail -n 10 "$work/logs/$label-server.err" 2>/dev/null)"
+    wait_held "the $label Codex client to start" running "${client_pid[$label]}" "the $label Codex client" client_ready "$label" ||
+      refuse "the $label Codex client did not start (${wait_gave_up}): $(tail -n 10 "$work/logs/$label.err") $(tail -n 10 "$work/logs/$label-server.err" 2>/dev/null)"
     codex_keep_server_env "$label"
     send "$label" "$(jq -cn --arg s "${codex_session[$label]}" '{op: "start", session: $s}')"
   done
@@ -168,8 +172,8 @@ codex_start_real() {
   done
   for label in "${codex_labels[@]}"; do
     sock=$codex_tmux_dir/$label
-    wait_for 120 codex_composer "$sock" ||
-      refuse "Codex showed no prompt for $label: $("$tmux_bin" -S "$sock" capture-pane -p -t codex 2>&1 | tail -n 15)"
+    wait_held "Codex's prompt for $label" codex_composer "$sock" ||
+      refuse "Codex showed no prompt for $label (${wait_gave_up}): $("$tmux_bin" -S "$sock" capture-pane -p -t codex 2>&1 | tail -n 15)"
     # Codex has started the plugin's server, which waits for the record the first prompt writes.
     codex_keep_server_env "$label"
     # One turn of its own first: Codex runs SessionStart at a session's first prompt.
@@ -178,8 +182,8 @@ codex_start_real() {
     "$tmux_bin" -S "$sock" send-keys -t codex Enter
   done
   for label in "${codex_labels[@]}"; do
-    wait_for 120 codex_record "$label" >/dev/null ||
-      refuse "Codex's SessionStart hook recorded no session for $label: $("$tmux_bin" -S "$codex_tmux_dir/$label" capture-pane -p -t codex 2>&1 | tail -n 15)"
+    wait_held "Codex's SessionStart hook to record the session of $label" codex_record "$label" ||
+      refuse "Codex's SessionStart hook recorded no session for $label (${wait_gave_up}): $("$tmux_bin" -S "$codex_tmux_dir/$label" capture-pane -p -t codex 2>&1 | tail -n 15)"
     record=$(codex_record "$label" | head -n 1)
     # shellcheck disable=SC2004 # codex_session is the script's associative array, keyed by label
     codex_session[$label]=$(jq -r '.session_id' "$record")
@@ -250,10 +254,10 @@ codex_server_pid() {
 # codex_keep_server_env LABEL: that session's plugin server's environment, read from its
 # /proc/<pid>/environ while it waits for its session record, kept as $work/<label>.server-environ
 # (0600) for the probe rows: what Codex, or the stand-in, handed the server, so as the manifest's
-# env_vars filtered it. It refuses when no such server runs within 60 s.
+# env_vars filtered it. It refuses when no such server runs by the proof's deadline.
 codex_keep_server_env() {
   local pid=""
-  wait_for 60 codex_server_pid "$1" >/dev/null && pid=$(codex_server_pid "$1")
+  wait_held "the plugin server of the $1 Codex session" codex_server_pid "$1" && pid=$(codex_server_pid "$1")
   if [ -z "$pid" ] || ! (umask 077 && cat "/proc/$pid/environ" >"$work/$1.server-environ"); then
     refuse "no plugin server process of the $1 Codex session was found to read its environment from"
   fi

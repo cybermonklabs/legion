@@ -11,8 +11,8 @@
  *  `DISPATCH_TEST_UNRECORDED_MARK_TTL` and `DISPATCH_TEST_MARK_WAIT` (`e2e/run-server.sh`) in
  *  place of the document service's own 2 s, minute and second. The path is the one a person
  *  meets; only its scale is the harness's, and the constants below are where that scale is
- *  written down. At that scale no row needs a timeout of its own: each fits the suite's 30 s
- *  (`e2e/playwright.config.ts`). */
+ *  written down. At that scale no row needs a timeout of its own: each fits the suite's 60 s
+ *  (`testTimeout`, `e2e/playwright.config.ts`). */
 
 import { createIssue, createProject, editArtifact, listComments } from "./api";
 import {

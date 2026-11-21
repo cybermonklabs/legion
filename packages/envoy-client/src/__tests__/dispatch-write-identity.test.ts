@@ -65,4 +65,4 @@ test("a write whose session switches after an attempt that may have landed ends 
   expect(asked).toHaveLength(1);
   // The broker was asked for the second session's token too; it never reached Dispatch.
   expect(broker.trades).toHaveLength(2);
-}, 20_000);
+});

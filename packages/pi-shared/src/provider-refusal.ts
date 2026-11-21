@@ -79,6 +79,32 @@ const BEDROCK_FILTER_TEXTS = [
  * both a message's own error text and that reason. */
 const REQUEST_FAILED = /^Request failed: /;
 
+/** Every regular expression this module runs on a provider's text, by name: what the analyzer
+ * rows of `provider-refusal.test.ts` hold to linear work, one row a pattern. A pattern added to
+ * this module is listed here too. */
+export const PROVIDER_TEXT_PATTERNS: Readonly<Record<string, RegExp>> = {
+  ANTHROPIC_REFUSAL,
+  GOOGLE_FINISH_REASON,
+  GOOGLE_PROMPT_BLOCKED,
+  GOOGLE_FILTERS_BLOCKED,
+  REQUEST_FAILED,
+};
+
+/**
+ * The characters the passes of Google's two blocked patterns have been handed in this process,
+ * counted where they are spent (`blockedPass`), so a test holds that work to the length of the
+ * text rather than to the time it took. A step a regular expression takes inside one pass is not
+ * counted, because JavaScriptCore counts none: what keeps each pass linear is the bound on every
+ * repetition above, which the analyzer rows of `provider-refusal.test.ts` hold.
+ */
+let blockedPatternCharactersHanded = 0;
+
+/** How many characters the passes of Google's two blocked patterns have been handed in this
+ * process. */
+export function googleBlockedPatternCharacters(): number {
+  return blockedPatternCharactersHanded;
+}
+
 /** How the provider ended the turn that this message settled. */
 export function classifyProviderTurn(message: unknown): ProviderTurnOutcome {
   if (typeof message !== "object" || message === null) return { kind: "clean" };
@@ -167,10 +193,17 @@ function googleFilter(text: string): ProviderTurnOutcome | undefined {
       return undefined;
     return { kind: "content-filter", category: reason };
   }
-  const blocked = GOOGLE_PROMPT_BLOCKED.exec(text) ?? GOOGLE_FILTERS_BLOCKED.exec(text);
+  const blocked =
+    blockedPass(GOOGLE_PROMPT_BLOCKED, text) ?? blockedPass(GOOGLE_FILTERS_BLOCKED, text);
   if (blocked === null) return undefined;
   const reason = blocked[1];
   return reason === undefined || reason.length === 0
     ? { kind: "content-filter" }
     : { kind: "content-filter", category: reason };
+}
+
+/** `pattern`'s first match in `text`, counting the characters the pass is handed. */
+function blockedPass(pattern: RegExp, text: string): RegExpExecArray | null {
+  blockedPatternCharactersHanded += text.length;
+  return pattern.exec(text);
 }

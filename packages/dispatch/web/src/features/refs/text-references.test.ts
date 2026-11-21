@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { DISPATCH_TEXT_REFERENCES, isIdPrefix } from "@legion/contracts";
 
+import { referenceReads, referenceReadsSince } from "./reference-reads";
 import { readTextReferences } from "./text-references";
 
 const origin = "https://dispatch.test";
@@ -77,4 +78,37 @@ test.each([
   ["2a7f1c901f4e4a2b9c3d5e6f70819a2b", false],
 ] as const)("%s is an id prefix: %p", (value, expected) => {
   expect(isIdPrefix(value)).toBe(expected);
+});
+
+// A reading hands each address it finds to `readAddress` as the author wrote it and, when it
+// ends in `_` or `-`, once more without them (`trimmedMention`), and `readAddress` hands it to
+// `referenceRouteFromHref` once: two passes over the addresses of a body at most, counted rather
+// than timed (`reference-reads.ts`). The last address holds a 65,536-character run of `-`
+// before a letter, the text `trimmedMention`'s end-anchored `/[_-]+$/` tried from every position
+// of the run (1.7 s for a run of 32,768 in a 2-CPU pod, four times that for each doubling); its
+// walk back reads only the letter that stops it. The pattern read nothing the count could see,
+// so that version fails the call count below. A reader that handed the body to `readAddress`
+// again for each address reads about the square of it.
+test("a reading hands each address to readAddress at most twice and trims its tail walking back", () => {
+  const trailed = `${origin}/issues/CORE-1?x=${"-".repeat(64)}`;
+  const long = `${origin}/issues/CORE-2?x=${"-".repeat(1 << 16)}y`;
+  const count = 1024;
+  const body = `${Array.from({ length: count }, () => trailed).join(" ")} ${long}`;
+  const before = referenceReads();
+  const { references } = readTextReferences(body, { origin });
+  const read = referenceReadsSince(before);
+  expect(references.map((found) => [found.reference, found.named])).toEqual([
+    ...Array.from({ length: count }, () => ["dispatch://CORE-1", trailed.length - 64]),
+    ["dispatch://CORE-2", undefined],
+  ]);
+  // Each trailed address is read as written and without its run of `-`; the long one, which
+  // ends in a letter, only as written.
+  expect(read.readAddress.calls).toBe(2 * count + 1);
+  expect(read.readAddress.characters).toBeLessThanOrEqual(2 * body.length);
+  expect(read.referenceRouteFromHref.calls).toBe(2 * count + 1);
+  expect(read.referenceRouteFromHref.characters).toBeLessThanOrEqual(2 * body.length);
+  // The walk back reads each trailed address's run and the `=` that stops it, and the long
+  // address's last letter.
+  expect(read.trimmedMention.calls).toBe(count + 1);
+  expect(read.trimmedMention.characters).toBe(count * 65 + 1);
 });

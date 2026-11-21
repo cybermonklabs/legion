@@ -269,14 +269,29 @@ env:
 jobs:
   test:
     runs-on: ubuntu-24.04-arm
-    # No step here carries a -timeout of its own any more: the two go test steps that did, and
-    # the Stage 1 proof beside them, are .github/workflows/ci-job-daemon-go.yaml's now. What is
-    # left is the Bun install, the Claude Code plugin build, the thirty-two shell-script harnesses
-    # and a handful of Bun suites — the 325 s of setup dispatch://INFRA-1052 measured before the
-    # plain Go step started, less the tool installs that went with those steps. Thirty minutes is
-    # about six times that, which leaves a slow runner room and still fails a hung harness inside
-    # the hour.
-    timeout-minutes: 30
+    # Each bare `bun test` step's --timeout must fire before the runner cancels the job, so a hung
+    # row prints what it was waiting on; the two go test steps and the Stage 1 proof that carried
+    # guards here are .github/workflows/ci-job-daemon-go.yaml's now. The limit is at least the
+    # job's sum over its 20 newest green merge-group runs up to 2026-11-18T08:58Z (runs
+    # 44228254232 to 44267237201): the steps that run no guarded command at their longest, 391 s,
+    # 6 s of its clock over them, and the eight bare `bun test` steps' longest, 174 s
+    # (scripts/e2e/lib's 159 s among them), plus their guards, 145 s: 716 s, or 12 minutes. The
+    # scripts/e2e/lib step's guard has since gone from 65 s to 200 s and then to 240 s (its
+    # reading is beside the step), so their guards are 320 s and that sum 891 s, or 15 minutes.
+    # The census step and its strace install below came after that reading, and add their guard,
+    # 5 s, and an apt install to it. So did main's two private-name harnesses and the plan ratings
+    # read test's typecheck, whose longest green times up to 2026-11-19T20:18Z were 8 s, 39 s and
+    # 4 s (runs 44598057379 and 44602677244). Five shell harnesses of this job set a guard of
+    # their own since, each waiting through scripts/e2e/lib/proof-wait.sh and each read beside 8
+    # busy loops in builds Jobs d2-fixed and d3-fixed-a (the reading is beside each guard): the tool
+    # fetch helper's 840 s, the tool copy filler's 400 s, the machine watch's 80 s, the browser
+    # sampler's 60 s and the priorities seed check's 100 s, which counted as steps with no guarded
+    # command before and now add their guards, 1,480 s: with the rest, 891 + 5 + 51 + 1,480 =
+    # 2,427 s, and the strace install's apt run, whose longest in this pull request's three newest
+    # green runs was 11 s (runs 44555685627, 44450080737 and 44408072380: 6 s, 11 s and 7 s).
+    # Forty-one minutes, 2,460 s, leaves 33 s past that sum for the apt run and a slow runner, and
+    # still fails a hung harness inside the hour.
+    timeout-minutes: 41
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -299,8 +314,14 @@ jobs:
 
       # release.yaml's $CLAUDE_ENVOY_VERSION_ARGS covers scripts/build-inputs.txt, so a build input
       # missing from it is one no release bumps a version for.
+      #
+      # Each bare `bun test` step of this job loads the row-deadline preload and sets its one guard,
+      # --timeout, at least twice the slowest row or hook its command ran under 8 busy loops on
+      # 2 CPUs in a builds Job (two runs), except scripts/e2e/lib's, read on main beside the same
+      # load; the reading, and where and at what commit it was read, are beside each. Here
+      # 2,992.78 ms at 61b66deb, "scripts/build-inputs.txt matches every file the build reads".
       - name: Check the Claude Code plugin's build input list covers what the build reads
-        run: bun test tests/build-inputs.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 10000 tests/build-inputs.test.ts
         working-directory: packages/claude-envoy
 
       # release-push.test.sh renders its fold-notes cases with the real changie, and the step
@@ -326,25 +347,43 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.release_bump_test == 'true'
         run: .github/scripts/release-bump.test.sh
 
+      # Guard 5000 ms: the slowest row under 8 loops took 396.72 ms.
       - name: Test third-party notices
-        run: bun test scripts/third-party-notices.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/third-party-notices.test.ts
 
+      # Guard 5000 ms: the slowest row under 8 loops took 806.66 ms.
       - name: Test the semantic line-break checker
-        run: bun test scripts/semantic-line-breaks.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/semantic-line-breaks.test.ts
 
       # The seed that writes the first priorities from the table kept by hand, driven against a
       # fake Dispatch of the test's own: it reaches no network and no deployment.
+      # Guard 5000 ms: the slowest row under 8 loops took 797.60 ms.
       - name: Test the priorities seed
-        run: bun test scripts/priorities-seed.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/priorities-seed.test.ts
+
+      # The Bun transpiler-cache census (scripts/bun-cache-census.ts) runs a command under strace,
+      # and its test skips every row where strace is missing: the runner image's package list has
+      # none (actions/runner-images, images/ubuntu/Ubuntu2404-Readme.md, "Installed apt packages").
+      - name: Install strace
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
+
+      # Guard 5000 ms: the slowest row under 8 busy loops on 2 CPUs in a builds Job at e976062e with
+      # this step's change (two runs, d2-scripts8), "the same child with bunCacheOff is clean",
+      # took 495.48 ms.
+      - name: Test the Bun transpiler-cache census
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/bun-cache-census.test.ts
 
       # The guides' own layout, in this job because it installs Bun's dependencies, which the
       # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:6-8). The
       # step has a filter of its own, guide_layout, naming the five guides the test reads and
       # the checker it spawns: no other step of this job reads one of them, so a run that
-      # changed none of them skips this step.
+      # changed none of them skips this step. Guard 35000 ms: the slowest row under 8 busy loops on
+      # 2 CPUs in a builds Job at the head 84270ff1 (two runs, gf-bun-test-job), "the root guide,
+      # the e2e README and the Kubernetes doc hold no raw HTML block, which the checker skips",
+      # took 15,580.16 ms, past the 15000 ms it had before (read at c8a44f97, 7,111.27 ms).
       - name: Check the guides' semantic line breaks
         if: inputs.changes-result != 'success' || inputs.guide_layout == 'true'
-        run: bun test scripts/semantic-line-breaks.guides.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 35000 scripts/semantic-line-breaks.guides.test.ts
 
       - name: Test the Bun pin check
         if: inputs.changes-result != 'success' || inputs.check_bun_version_test == 'true'
@@ -529,8 +568,10 @@ jobs:
       - name: Typecheck the Dispatch census script
         run: bunx tsc --noEmit -p scripts/dispatch
 
+      # Guard 15000 ms: the slowest row under 8 loops took 5,190.57 ms ("ask census --json >
+      # refuses a value for --json, and keeps every other flag's refusal").
       - name: Test the Dispatch census script
-        run: bun test scripts/dispatch
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 15000 scripts/dispatch
 
       - name: Lint the GitHub App registration script
         run: bunx biome check --error-on-warnings scripts/github-apps
@@ -558,8 +599,9 @@ jobs:
       - name: Typecheck the approval-eval statistics
         run: bunx tsc --noEmit -p scripts/approval-eval
 
+      # Guard 5000 ms: the slowest row under 8 loops took 196.24 ms.
       - name: Test the approval-eval statistics
-        run: bun test scripts/approval-eval
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/approval-eval
 
       # scripts/e2e/lib is no workspace either: its tsconfig.json holds the plan ratings read's
       # test, whose answer is typed to the contract, and the root package pins its TypeScript and
@@ -580,8 +622,24 @@ jobs:
           cache: false
 
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
+      # --timeout bounds each row, and each hook, at 240 s, in place of Bun's default of 5 s. It is
+      # a hang guard only: each row's verdict is its own assertions. Measured with 8 busy loops on
+      # the two CPUs the whole directory ran on (2026-11-20, main d36289cb84), the slowest row that
+      # passed took 98.5 s and 58 rows took more than 5 s; 200 s was about twice the slowest. Read
+      # again at this pull request's copy of the directory (#4437's round-4 tree with its fix
+      # 17d8f97782; three runs in builds Job g4b-e2e-lib, legion-load-run-cbvqf, 2026-11-21, the
+      # same load, each hook timed by a preload the Job's patch added, since Bun prints no hook
+      # times): the slowest hook, held-port.test.ts's beforeAll, which builds the envoy-listener
+      # with go on the Job's empty Go cache as this job, which restores none, builds it,
+      # 115,793.19 ms (8,012.56 and 7,394.42 ms warm in the other runs), whose twice, 231,586.38 ms,
+      # 200 s did not hold, so the guard is 240 s, which holds it 2.07 times; the slowest row,
+      # controller-start-guards.test.ts's controller_omp reads LEGION_STATE_DIR from an
+      # environment with a mebibyte after it, 19,287.25 ms. The shared wait
+      # (@legion/test-fixtures/wait) ends each row's wait 12 s before the row's deadline, the
+      # larger of 1 s and a twentieth of the guard (deadline.ts's deadlineFor), so a wait that
+      # gives up still names what it waited for.
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
-        run: bun test scripts/e2e/lib
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 240000 scripts/e2e/lib
 
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check

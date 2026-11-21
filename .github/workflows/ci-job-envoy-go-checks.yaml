@@ -55,7 +55,16 @@ jobs:
     # same listener build (.github/workflows/ci-caches.yaml fills it on a push to main). Without
     # it the pack step would recompile the set per architecture from nothing on every push, which
     # is the runner time this change exists to cut.
-    timeout-minutes: 30
+    # At least the job's sum under the one-guard rule, over its 20 newest green merge-group runs
+    # up to 2026-11-19 (runs 44508510162 to 44607131679): its steps at their longest, 1,135 s
+    # (cluster.test.sh's 369 s among them), plus the guard each shell test sets
+    # (scripts/e2e/lib/proof-wait.sh's proof_guard): dev-broker.test.sh's 130 s,
+    # dev-airlock.test.sh's 120, dev-stack.test.sh's 400 (read beside 8 busy loops at b472843d51,
+    # 2026-11-21: that script's own comment), listener-deploy-probe.test.sh's 230,
+    # run-step.test.sh's 70, common.test.sh's 480 and cluster.test.sh's 2700; and for
+    # callout-check.test.sh the 190 s its case (g) waits, to 30 s before callout-check.sh's guard,
+    # plus that guard, 220: 5,675 s, or 95 minutes.
+    timeout-minutes: 95
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

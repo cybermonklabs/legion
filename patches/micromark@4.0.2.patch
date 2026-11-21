@@ -1,8 +1,44 @@
+diff --git a/dev/lib/create-tokenizer.js b/dev/lib/create-tokenizer.js
+index abd242f2cdd975ab0081394299b3e9194384ce8e..0cb3d33139f82615b9589a247d0775cba07f9b50 100644
+--- a/dev/lib/create-tokenizer.js
++++ b/dev/lib/create-tokenizer.js
+@@ -39,6 +39,7 @@
+ 
+ import createDebug from 'debug'
+ import {ok as assert} from 'devlop'
++import {countWork} from 'micromark-core-commonmark'
+ import {markdownLineEnding} from 'micromark-util-character'
+ import {push, splice} from 'micromark-util-chunked'
+ import {resolveAll} from 'micromark-util-resolve-all'
+@@ -151,6 +152,7 @@ export function createTokenizer(parser, initialize, from) {
+ 
+     // Otherwise, resolve, and exit.
+     context.events = resolveAll(resolveAllConstructs, context.events, context)
++    countWork('resolvedEvents', context.events.length)
+ 
+     return context.events
+   }
+@@ -234,6 +236,7 @@ export function createTokenizer(parser, initialize, from) {
+    *   Nothing.
+    */
+   function go(code) {
++    countWork('tokenizer', 1)
+     assert(consumed === true, 'expected character to be consumed')
+     consumed = undefined
+     debug('main: passing `%s` to %s', code, state && state.name)
 diff --git a/dev/lib/initialize/document.js b/dev/lib/initialize/document.js
-index bca159ead63c2ccb5910d09076ef63b94c307e90..06a4596f4bb8ae907418adb4a4585ed87ec3ac2f 100644
+index bca159ead63c2ccb5910d09076ef63b94c307e90..08057b492ef2db34774415d9ece51e3809462226 100644
 --- a/dev/lib/initialize/document.js
 +++ b/dev/lib/initialize/document.js
-@@ -46,6 +46,19 @@ function initializeDocument(effects) {
+@@ -18,6 +18,7 @@
+  */
+ 
+ import {ok as assert} from 'devlop'
++import {countWork} from 'micromark-core-commonmark'
+ import {factorySpace} from 'micromark-factory-space'
+ import {markdownLineEnding} from 'micromark-util-character'
+ import {splice} from 'micromark-util-chunked'
+@@ -46,6 +47,19 @@ function initializeDocument(effects) {
    let childToken
    /** @type {number} */
    let lineStartOffset
@@ -22,7 +58,7 @@ index bca159ead63c2ccb5910d09076ef63b94c307e90..06a4596f4bb8ae907418adb4a4585ed8
  
    return start
  
-@@ -236,7 +249,12 @@ function initializeDocument(effects) {
+@@ -236,7 +250,12 @@ function initializeDocument(effects) {
        return
      }
  
@@ -36,7 +72,7 @@ index bca159ead63c2ccb5910d09076ef63b94c307e90..06a4596f4bb8ae907418adb4a4585ed8
      effects.enter(types.chunkFlow, {
        _tokenizer: childFlow,
        contentType: constants.contentTypeFlow,
-@@ -286,6 +304,12 @@ function initializeDocument(effects) {
+@@ -286,6 +305,12 @@ function initializeDocument(effects) {
      childFlow.defineSkip(token.start)
      childFlow.write(stream)
  
@@ -49,7 +85,7 @@ index bca159ead63c2ccb5910d09076ef63b94c307e90..06a4596f4bb8ae907418adb4a4585ed8
      // Alright, so we just added a lazy line:
      //
      // ```markdown
-@@ -320,21 +344,43 @@ function initializeDocument(effects) {
+@@ -320,21 +345,44 @@ function initializeDocument(effects) {
      // whether the lazy line started a new flow block.
      // If it did, we exit the current containers between the two flow blocks.
      if (self.parser.lazy[token.start.line]) {
@@ -84,6 +120,7 @@ index bca159ead63c2ccb5910d09076ef63b94c307e90..06a4596f4bb8ae907418adb4a4585ed8
 +
 +      while (index < childEvents.length) {
 +        const other = childEvents[index][1]
++        countWork('lazyLine', 1)
 +
 +        if (other.end && other.end.offset <= lineStartOffset) {
 +          // Ended before this line: never open across it, on this line or a later one.
@@ -104,11 +141,217 @@ index bca159ead63c2ccb5910d09076ef63b94c307e90..06a4596f4bb8ae907418adb4a4585ed8
        }
  
        // Note: this algorithm for moving events around is similar to the
+diff --git a/dev/lib/initialize/text.js b/dev/lib/initialize/text.js
+index 7192e70a0972e808d779999e57153bf3ed7bfc3a..e34e3e29c895938b9144df90492ec4c463c79c7e 100644
+--- a/dev/lib/initialize/text.js
++++ b/dev/lib/initialize/text.js
+@@ -1,6 +1,7 @@
+ /**
+  * @import {
+  *   Code,
++ *   Event,
+  *   InitialConstruct,
+  *   Initializer,
+  *   Resolver,
+@@ -10,6 +11,7 @@
+  */
+ 
+ import {ok as assert} from 'devlop'
++import {countWork} from 'micromark-core-commonmark'
+ import {codes, constants, types} from 'micromark-util-symbol'
+ 
+ export const resolver = {resolveAll: createResolver()}
+@@ -114,29 +116,41 @@ function createResolver(extraResolver) {
+   /** @type {Resolver} */
+   function resolveAllText(events, context) {
+     let index = -1
++    // Where the next kept event goes.
++    let length = 0
+     /** @type {number | undefined} */
+     let enter
+ 
+     // A rather boring computation (to merge adjacent `data` events) which
+     // improves mm performance by 29%.
+-    while (++index <= events.length) {
+-      if (enter === undefined) {
+-        if (events[index] && events[index][1].type === types.data) {
+-          enter = index
+-          index++
+-        }
+-      } else if (!events[index] || events[index][1].type !== types.data) {
+-        // Don’t do anything if there is one data token.
+-        if (index !== enter + 2) {
+-          events[enter][1].end = events[index - 1][1].end
+-          events.splice(enter + 2, index - enter - 2)
+-          index = enter + 2
++    //
++    // One pass, writing the kept events back into `events`: the first `data`
++    // token of a run is kept and extended to the end of the run, and the
++    // rest of the run is dropped. Splicing each run out instead shifted every
++    // event after it, so a document of many lines that each hold more than
++    // one run of `data` (text broken where a construct could start, as GFM
++    // literal autolinks break it before a letter after punctuation, in `:::a`)
++    // took time quadratic in its events.
++    while (++index < events.length) {
++      countWork('textResolve', 1)
++      const event = events[index]
++
++      if (event[1].type === types.data) {
++        if (enter === undefined) {
++          enter = length
++        } else if (length - enter > 1) {
++          events[enter][1].end = event[1].end
++          continue
+         }
+-
++      } else {
+         enter = undefined
+       }
++
++      events[length++] = event
+     }
+ 
++    events.length = length
++
+     return extraResolver ? extraResolver(events, context) : events
+   }
+ }
+@@ -154,8 +168,17 @@ function createResolver(extraResolver) {
+  */
+ function resolveAllLineSuffixes(events, context) {
+   let eventIndex = 0 // Skip first.
++  // The events with each suffix token put in, built once the first suffix
++  // needs one, and the events before `copied` are in it. Splicing each suffix
++  // in instead shifted every event after it, so a paragraph of many lines that
++  // each end in whitespace took time quadratic in its events; every event is
++  // copied here at most twice.
++  /** @type {Array<Event> | undefined} */
++  let result
++  let copied = 0
+ 
+   while (++eventIndex <= events.length) {
++    countWork('textResolve', 1)
+     if (
+       (eventIndex === events.length ||
+         events[eventIndex][1].type === types.lineEnding) &&
+@@ -170,12 +193,14 @@ function resolveAllLineSuffixes(events, context) {
+       let tabs
+ 
+       while (index--) {
++        countWork('textResolve', 1)
+         const chunk = chunks[index]
+ 
+         if (typeof chunk === 'string') {
+           bufferIndex = chunk.length
+ 
+           while (chunk.charCodeAt(bufferIndex - 1) === codes.space) {
++            countWork('textResolve', 1)
+             size++
+             bufferIndex--
+           }
+@@ -226,13 +251,15 @@ function resolveAllLineSuffixes(events, context) {
+         if (data.start.offset === data.end.offset) {
+           Object.assign(data, token)
+         } else {
+-          events.splice(
+-            eventIndex,
+-            0,
+-            ['enter', token, context],
+-            ['exit', token, context]
+-          )
+-          eventIndex += 2
++          if (!result) result = []
++
++          while (copied < eventIndex) {
++            countWork('textResolve', 1)
++            result.push(events[copied++])
++          }
++
++          countWork('textResolve', 2)
++          result.push(['enter', token, context], ['exit', token, context])
+         }
+       }
+ 
+@@ -240,5 +267,19 @@ function resolveAllLineSuffixes(events, context) {
+     }
+   }
+ 
++  if (result) {
++    while (copied < events.length) {
++      countWork('textResolve', 1)
++      result.push(events[copied++])
++    }
++
++    let index = -1
++
++    while (++index < result.length) {
++      countWork('textResolve', 1)
++      events[index] = result[index]
++    }
++  }
++
+   return events
+ }
+diff --git a/dev/lib/postprocess.js b/dev/lib/postprocess.js
+index 06ee80a49d90324cde0d7647a37348556911b104..26b198ea57584ef095721bfafbc293d62bfa2a8c 100644
+--- a/dev/lib/postprocess.js
++++ b/dev/lib/postprocess.js
+@@ -2,6 +2,7 @@
+  * @import {Event} from 'micromark-util-types'
+  */
+ 
++import {countWork} from 'micromark-core-commonmark'
+ import {subtokenize} from 'micromark-util-subtokenize'
+ 
+ /**
+@@ -15,5 +16,6 @@ export function postprocess(events) {
+     // Empty
+   }
+ 
++  countWork('postprocessedEvents', events.length)
+   return events
+ }
+diff --git a/lib/create-tokenizer.js b/lib/create-tokenizer.js
+index 50aded8a5da95a3a2dad07427ba60b8ffcf836f1..ab8318b892fde8abc5cc88cb332d7d6cb01a7e02 100644
+--- a/lib/create-tokenizer.js
++++ b/lib/create-tokenizer.js
+@@ -37,6 +37,7 @@
+  *   Nothing.
+  */
+ 
++import { countWork } from 'micromark-core-commonmark';
+ import { markdownLineEnding } from 'micromark-util-character';
+ import { push, splice } from 'micromark-util-chunked';
+ import { resolveAll } from 'micromark-util-resolve-all';
+@@ -143,6 +144,7 @@ export function createTokenizer(parser, initialize, from) {
+ 
+     // Otherwise, resolve, and exit.
+     context.events = resolveAll(resolveAllConstructs, context.events, context);
++    countWork('resolvedEvents', context.events.length);
+     return context.events;
+   }
+ 
+@@ -230,6 +232,7 @@ export function createTokenizer(parser, initialize, from) {
+    *   Nothing.
+    */
+   function go(code) {
++    countWork('tokenizer', 1);
+     consumed = undefined;
+     expectedCode = code;
+     state = state(code);
 diff --git a/lib/initialize/document.js b/lib/initialize/document.js
-index 75e47495681f63306f98a1146f15b9ff4682a063..f953f4412592b9403fc649e07ec69b9fef35454b 100644
+index 75e47495681f63306f98a1146f15b9ff4682a063..3e6ad28ea965ed54e20c63a05eae889d37314a2f 100644
 --- a/lib/initialize/document.js
 +++ b/lib/initialize/document.js
-@@ -47,6 +47,19 @@ function initializeDocument(effects) {
+@@ -17,6 +17,7 @@
+  *   Construct and its state.
+  */
+ 
++import { countWork } from 'micromark-core-commonmark';
+ import { factorySpace } from 'micromark-factory-space';
+ import { markdownLineEnding } from 'micromark-util-character';
+ import { splice } from 'micromark-util-chunked';
+@@ -47,6 +48,19 @@ function initializeDocument(effects) {
    let childToken;
    /** @type {number} */
    let lineStartOffset;
@@ -128,7 +371,7 @@ index 75e47495681f63306f98a1146f15b9ff4682a063..f953f4412592b9403fc649e07ec69b9f
    return start;
  
    /** @type {State} */
-@@ -191,7 +204,11 @@ function initializeDocument(effects) {
+@@ -191,7 +205,11 @@ function initializeDocument(effects) {
        effects.consume(code);
        return;
      }
@@ -141,7 +384,7 @@ index 75e47495681f63306f98a1146f15b9ff4682a063..f953f4412592b9403fc649e07ec69b9f
      effects.enter("chunkFlow", {
        _tokenizer: childFlow,
        contentType: "flow",
-@@ -236,6 +253,11 @@ function initializeDocument(effects) {
+@@ -236,6 +254,11 @@ function initializeDocument(effects) {
      childToken = token;
      childFlow.defineSkip(token.start);
      childFlow.write(stream);
@@ -153,7 +396,7 @@ index 75e47495681f63306f98a1146f15b9ff4682a063..f953f4412592b9403fc649e07ec69b9f
  
      // Alright, so we just added a lazy line:
      //
-@@ -271,19 +293,36 @@ function initializeDocument(effects) {
+@@ -271,19 +294,37 @@ function initializeDocument(effects) {
      // whether the lazy line started a new flow block.
      // If it did, we exit the current containers between the two flow blocks.
      if (self.parser.lazy[token.start.line]) {
@@ -181,6 +424,7 @@ index 75e47495681f63306f98a1146f15b9ff4682a063..f953f4412592b9403fc649e07ec69b9f
 +      let dead = true;
 +      while (index < childEvents.length) {
 +        const other = childEvents[index][1];
++        countWork('lazyLine', 1);
 +        if (other.end && other.end.offset <= lineStartOffset) {
 +          // Ended before this line: never open across it, on this line or a later one.
 +          if (dead) {
@@ -199,3 +443,156 @@ index 75e47495681f63306f98a1146f15b9ff4682a063..f953f4412592b9403fc649e07ec69b9f
        }
  
        // Note: this algorithm for moving events around is similar to the
+diff --git a/lib/initialize/text.js b/lib/initialize/text.js
+index b9383cb721b95c68bd0e684da6cbf441ed82b8eb..31073154bb55325bb442e81d60601069f201040c 100644
+--- a/lib/initialize/text.js
++++ b/lib/initialize/text.js
+@@ -1,6 +1,7 @@
+ /**
+  * @import {
+  *   Code,
++ *   Event,
+  *   InitialConstruct,
+  *   Initializer,
+  *   Resolver,
+@@ -9,6 +10,8 @@
+  * } from 'micromark-util-types'
+  */
+ 
++import { countWork } from 'micromark-core-commonmark';
++
+ export const resolver = {
+   resolveAll: createResolver()
+ };
+@@ -105,27 +108,37 @@ function createResolver(extraResolver) {
+   /** @type {Resolver} */
+   function resolveAllText(events, context) {
+     let index = -1;
++    // Where the next kept event goes.
++    let length = 0;
+     /** @type {number | undefined} */
+     let enter;
+ 
+     // A rather boring computation (to merge adjacent `data` events) which
+     // improves mm performance by 29%.
+-    while (++index <= events.length) {
+-      if (enter === undefined) {
+-        if (events[index] && events[index][1].type === "data") {
+-          enter = index;
+-          index++;
+-        }
+-      } else if (!events[index] || events[index][1].type !== "data") {
+-        // Don’t do anything if there is one data token.
+-        if (index !== enter + 2) {
+-          events[enter][1].end = events[index - 1][1].end;
+-          events.splice(enter + 2, index - enter - 2);
+-          index = enter + 2;
++    //
++    // One pass, writing the kept events back into `events`: the first `data`
++    // token of a run is kept and extended to the end of the run, and the
++    // rest of the run is dropped. Splicing each run out instead shifted every
++    // event after it, so a document of many lines that each hold more than
++    // one run of `data` (text broken where a construct could start, as GFM
++    // literal autolinks break it before a letter after punctuation, in `:::a`)
++    // took time quadratic in its events.
++    while (++index < events.length) {
++      countWork('textResolve', 1);
++      const event = events[index];
++      if (event[1].type === "data") {
++        if (enter === undefined) {
++          enter = length;
++        } else if (length - enter > 1) {
++          events[enter][1].end = event[1].end;
++          continue;
+         }
++      } else {
+         enter = undefined;
+       }
++      events[length++] = event;
+     }
++    events.length = length;
+     return extraResolver ? extraResolver(events, context) : events;
+   }
+ }
+@@ -143,8 +156,17 @@ function createResolver(extraResolver) {
+  */
+ function resolveAllLineSuffixes(events, context) {
+   let eventIndex = 0; // Skip first.
++  // The events with each suffix token put in, built once the first suffix
++  // needs one, and the events before `copied` are in it. Splicing each suffix
++  // in instead shifted every event after it, so a paragraph of many lines that
++  // each end in whitespace took time quadratic in its events; every event is
++  // copied here at most twice.
++  /** @type {Array<Event> | undefined} */
++  let result;
++  let copied = 0;
+ 
+   while (++eventIndex <= events.length) {
++    countWork('textResolve', 1);
+     if ((eventIndex === events.length || events[eventIndex][1].type === "lineEnding") && events[eventIndex - 1][1].type === "data") {
+       const data = events[eventIndex - 1][1];
+       const chunks = context.sliceStream(data);
+@@ -154,10 +176,12 @@ function resolveAllLineSuffixes(events, context) {
+       /** @type {boolean | undefined} */
+       let tabs;
+       while (index--) {
++        countWork('textResolve', 1);
+         const chunk = chunks[index];
+         if (typeof chunk === 'string') {
+           bufferIndex = chunk.length;
+           while (chunk.charCodeAt(bufferIndex - 1) === 32) {
++            countWork('textResolve', 1);
+             size++;
+             bufferIndex--;
+           }
+@@ -201,12 +225,28 @@ function resolveAllLineSuffixes(events, context) {
+         if (data.start.offset === data.end.offset) {
+           Object.assign(data, token);
+         } else {
+-          events.splice(eventIndex, 0, ['enter', token, context], ['exit', token, context]);
+-          eventIndex += 2;
++          if (!result) result = [];
++          while (copied < eventIndex) {
++            countWork('textResolve', 1);
++            result.push(events[copied++]);
++          }
++          countWork('textResolve', 2);
++          result.push(['enter', token, context], ['exit', token, context]);
+         }
+       }
+       eventIndex++;
+     }
+   }
++  if (result) {
++    while (copied < events.length) {
++      countWork('textResolve', 1);
++      result.push(events[copied++]);
++    }
++    let index = -1;
++    while (++index < result.length) {
++      countWork('textResolve', 1);
++      events[index] = result[index];
++    }
++  }
+   return events;
+ }
+\ No newline at end of file
+diff --git a/lib/postprocess.js b/lib/postprocess.js
+index a5cdb31e2b5e4d2a045cf733baef659873db7e40..1520c2141c2e86e8e5863c732805c3ff91d3cab5 100644
+--- a/lib/postprocess.js
++++ b/lib/postprocess.js
+@@ -2,6 +2,7 @@
+  * @import {Event} from 'micromark-util-types'
+  */
+ 
++import { countWork } from 'micromark-core-commonmark';
+ import { subtokenize } from 'micromark-util-subtokenize';
+ 
+ /**
+@@ -14,5 +15,6 @@ export function postprocess(events) {
+   while (!subtokenize(events)) {
+     // Empty
+   }
++  countWork('postprocessedEvents', events.length);
+   return events;
+ }

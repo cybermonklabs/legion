@@ -251,6 +251,23 @@
 #
 # .github/scripts/ci-tools.test.sh serves all four sources from a local HTTP origin through
 # those five seams, so every case runs this file's own code and no case reaches the network.
+#
+# THE END RECORD OF A TIMED INSTALL. Where CI_TOOLS_PROOF_ENDED names a file, as the
+# tool-fallback job's env: does on the install step of each case .github/scripts/ci-tools-proof.sh
+# decides, every shell that sources this file removes that file first and, as its last act,
+# writes there the status it exits with, so an install leaves the status of its last shell. A
+# shell the runner stops at its step's timeout-minutes writes none: the runner's interrupt or
+# terminate clears the EXIT trap below before the shell exits, and its kill runs no trap at all.
+# So a missing record is an install the runner ended, and a status is one that ended on its own,
+# 0 where it installed and any other status where it refused, which is what `report` reads,
+# since the runner leaves `outcome=failure` behind both. Unset, as everywhere else, it does
+# nothing.
+if [ -n "${CI_TOOLS_PROOF_ENDED:-}" ]; then
+  rm -f -- "$CI_TOOLS_PROOF_ENDED"
+  trap 'printf "%s\n" "$?" > "$CI_TOOLS_PROOF_ENDED"' EXIT
+  trap 'trap - EXIT; exit 130' INT
+  trap 'trap - EXIT; exit 143' TERM
+fi
 
 # ci_tools__error <sentence>: a refusal, as a GitHub annotation on stderr.
 ci_tools__error() {

@@ -57,6 +57,9 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+# Twice the longest green run on record, rounded up to the minute: 12 green e2e.yaml jobs (3 of
+# them in green runs) up to 2026-11-15, the longest proof step 217 s (run 43017653696).
+proof_guard 480
 require_dispatch_cli
 live_daemon_proof 'handoff records' handoff-records TestHandoffRecordsLive \
   "${HANDOFF_RECORDS_EVIDENCE_DIR:-}"

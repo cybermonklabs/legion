@@ -59,4 +59,4 @@ test("a refusal echoing the subject token, thrown and uncaught, prints none of i
   expect(run.exitCode).not.toBe(0);
   expect(printed).toContain("BrokerRefusedError");
   expect(printed).not.toContain(subject.slice(0, 20));
-}, 20_000);
+});

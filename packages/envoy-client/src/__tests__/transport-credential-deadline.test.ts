@@ -7,20 +7,29 @@
 // credential fails fast where its broker cannot answer, so a listener that asks for no credential
 // keeps its calls (`transport.ts`, `attemptOnce`).
 
-import { expect, test } from "bun:test";
+import { afterEach, expect, mock, test } from "bun:test";
+import { LISTENER_CALL_TIMEOUT_MS } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { holdDeadlines } from "@legion/test-fixtures/held-deadlines";
+import { settled, until } from "@legion/test-fixtures/wait";
 import { brokerCredential } from "../broker-credential";
 import { createEnvoyClient, EnvoySendUnconfirmedError } from "../transport";
 import { brokerStandIns } from "./broker-stand-ins";
 
 const { podEnvironment, servers } = brokerStandIns("transport-credential-deadline");
 
+// A spy a row left, a failed one's included, wraps nothing of the next row.
+afterEach(() => {
+  mock.restore();
+});
+
 /** The session the credential's refusal names. */
 const POD_SESSION = "implementer-g1";
 
-/** Turns of the event loop until `ready()` holds: no timer, so the test runs at the client's pace. */
-async function until(ready: () => boolean): Promise<void> {
-  while (!ready()) await new Promise((resolve) => setImmediate(resolve));
+/** The credential's share of a listener attempt (`credentialDeadline`): the call's 5 s
+ *  (`LISTENER_CALL_TIMEOUT_MS`) less the request's reserve, 1 s or half the deadline. */
+function shareOf(deadlineMs: number): number {
+  return Math.ceil(deadlineMs - Math.min(1_000, deadlineMs / 2));
 }
 
 test("an Envoy call gives its credential the attempt less the request's reserve, and goes without the credential that did not come", async () => {
@@ -56,7 +65,7 @@ test("an Envoy call gives its credential the attempt less the request's reserve,
     },
   });
   const call = client.getRole("implementer");
-  await until(() => given.length === 1);
+  await until("the credential handed its signal", () => given.length === 1);
   expect(given[0], "the call handed its credential no deadline").toBeInstanceOf(AbortSignal);
   // The transport's own deadline timer ends the signal; the transport takes no clock of a test's.
   const waited = given[0] as AbortSignal;
@@ -116,7 +125,7 @@ test("a send the auth gate refused for want of the credential that could not be 
   sent.length = 0;
   answers.push(Response.json({ error: "restarting" }, { status: 503 }));
   expect(await send().catch((error: unknown) => error)).toBeInstanceOf(EnvoySendUnconfirmedError);
-}, 20_000);
+});
 
 test.each([
   ["refuses connections", (): string => "http://127.0.0.1:1"],
@@ -135,7 +144,10 @@ test.each([
 ])("a listener that asks for no credential keeps its calls while the broker %s", async (_, broker) => {
   // A pod with no Envoy bearer presents its broker credential on every listener call. The
   // credential fails fast where the broker cannot answer, so the call goes without it and stands
-  // on the listener's own answer, at once, rather than waiting out its 5 s attempt.
+  // on the listener's own answer, at once, rather than waiting out its 5 s attempt: the row holds
+  // the credential's share of the attempt (`holdDeadlines`) and never ends it, so a call that
+  // waited on its share would never be answered.
+  holdDeadlines(shareOf(LISTENER_CALL_TIMEOUT_MS));
   const fetched: { readonly url: string; readonly authorization: string | null }[] = [];
   const client = createEnvoyClient({
     baseUrl: "http://listener.test",
@@ -154,9 +166,10 @@ test.each([
     },
     credential: brokerCredential(podEnvironment(broker(), "http://dispatch.test"), POD_SESSION),
   });
-  const started = Date.now();
-  await client.getRole("implementer");
-  expect(Date.now() - started).toBeLessThan(2_000);
+  await settled(
+    "the call answered with the credential's share held",
+    client.getRole("implementer")
+  );
   expect(fetched).toHaveLength(1);
   expect(fetched[0]?.authorization).toBeNull();
 });
@@ -193,45 +206,48 @@ test.each([
         )
       ),
   ],
-])(
-  "a listener that asks for no credential keeps its calls while the broker %s",
-  async (_, broker) => {
-    // The credential waits the attempt less the request's reserve (4 s of the listener's 5), then
-    // stops, and the call goes without it in that last second and stands on the listener's own
-    // answer.
-    const fetched: (string | null)[] = [];
-    const client = createEnvoyClient({
-      baseUrl: "http://listener.test",
-      retry: false,
-      fetch: async (_url, init) => {
-        if (init?.signal?.aborted) throw init.signal.reason;
-        fetched.push(new Headers(init?.headers).get("Authorization"));
-        return Response.json({
-          role: "implementer",
-          holder: "ses_holder",
-          last_seen: 1,
-          state: "live",
-        });
-      },
-      credential: brokerCredential(podEnvironment(broker(), "http://dispatch.test"), POD_SESSION),
-    });
-    const started = Date.now();
-    await client.getRole("implementer");
-    expect(Date.now() - started).toBeLessThan(5_000);
-    expect(fetched).toEqual([null]);
-  },
-  20_000
-);
+])("a listener that asks for no credential keeps its calls while the broker %s", async (_, broker) => {
+  // The credential waits the attempt less the request's reserve (4 s of the listener's 5), then
+  // stops, and the call goes without it in that last second and stands on the listener's own
+  // answer. The row holds that share (`holdDeadlines`): until it ends, the call sends nothing.
+  const share = holdDeadlines(shareOf(LISTENER_CALL_TIMEOUT_MS));
+  const fetched: (string | null)[] = [];
+  const client = createEnvoyClient({
+    baseUrl: "http://listener.test",
+    retry: false,
+    fetch: async (_url, init) => {
+      if (init?.signal?.aborted) throw init.signal.reason;
+      fetched.push(new Headers(init?.headers).get("Authorization"));
+      return Response.json({
+        role: "implementer",
+        holder: "ses_holder",
+        last_seen: 1,
+        state: "live",
+      });
+    },
+    credential: brokerCredential(podEnvironment(broker(), "http://dispatch.test"), POD_SESSION),
+  });
+  const call = client.getRole("implementer");
+  await until("the credential's share of the attempt armed", () => share.held.length > 0);
+  expect(fetched, "the call went before its credential's share ended").toEqual([]);
+  share.end();
+  await settled("the call once its credential's share ended", call);
+  expect(fetched).toEqual([null]);
+});
 
-test.each([
-  6_000, 8_000,
-])("a fresh process's first trade that takes %i ms: the call is answered with the token, after one 401", async (tradeMs) => {
+test("a fresh process's first trade that outlasts the first attempt's share: the call is answered with the token, after one 401", async () => {
   // Every hook and command line call is a fresh process, so its first listener call waits on
   // its first trade. Each attempt's credential waits 4 s of the attempt's 5; the first ends
   // without a token, goes without it, and a listener that wants one answers 401, which the
   // call tries again; the next attempt's credential is waiting on the same trade when it lands.
+  // The row holds each share (`holdDeadlines`) and the broker's answer (`release`), and ends the
+  // first share, then answers the trade inside the second: no real time passes between them.
+  const share = holdDeadlines(shareOf(LISTENER_CALL_TIMEOUT_MS));
+  const release = Promise.withResolvers<void>();
+  let trades = 0;
   const broker = brokerAt(async () => {
-    await Bun.sleep(tradeMs);
+    trades += 1;
+    await release.promise;
     return granted();
   });
   const fetched: (string | null)[] = [];
@@ -247,10 +263,21 @@ test.each([
     },
     credential: brokerCredential(podEnvironment(broker, "http://dispatch.test"), POD_SESSION),
   });
-  await client.getRole("implementer");
+  const call = client.getRole("implementer");
+  await until(
+    "the first trade under way and its share armed",
+    () => trades > 0 && share.held.length > 0
+  );
+  share.end();
+  await until(
+    "the second attempt's share armed, after one call without the credential",
+    () => fetched.length === 1 && share.held.length > 1
+  );
+  release.resolve();
+  await settled("the call answered with the token", call);
   expect(fetched.at(-1)).toStartWith("DPoP ");
   expect(fetched.filter((one) => one === null)).toHaveLength(1);
-}, 40_000);
+});
 
 test("inside the renewal window, a broker that hangs leaves the call its live token and the time to send it", async () => {
   // The token in hand is inside its renewal window, so the call waits for the renewal the
@@ -329,22 +356,21 @@ test("an open listener's 403 to a call that went without its credential stands a
   expect(refused).toBeInstanceOf(Error);
   expect((refused as Error).message).toContain("this session may not send to that one");
   expect((refused as Error).message).not.toContain("could not be minted");
-}, 20_000);
+});
 
 test("a deregistration given a shutdown's remaining time goes out in it, without a credential still waiting", async () => {
   // pi-envoy's shutdown has 1 s for its DELETE (`SHUTDOWN_DEADLINE_MS`). Given that time, the
   // call makes one attempt whose credential waits on half of it, so the DELETE goes without the
-  // credential a silent broker holds back, inside the shutdown's second.
-  const deleted: { readonly at: number; readonly authorization: string | null }[] = [];
-  const started = Date.now();
+  // credential a silent broker holds back, inside the shutdown's second. The row holds that share
+  // of the 750 ms it gives (`holdDeadlines`): a credential given any longer share is never held,
+  // and the row's wait for it to be armed fails at its deadline.
+  const share = holdDeadlines(shareOf(750));
+  const deleted: (string | null)[] = [];
   const client = createEnvoyClient({
     baseUrl: "http://listener.test",
     fetch: async (_url, init) => {
       if (init?.signal?.aborted) throw init.signal.reason;
-      deleted.push({
-        at: Date.now() - started,
-        authorization: new Headers(init?.headers).get("Authorization"),
-      });
+      deleted.push(new Headers(init?.headers).get("Authorization"));
       return Response.json({ kept: false });
     },
     credential: brokerCredential(
@@ -355,8 +381,10 @@ test("a deregistration given a shutdown's remaining time goes out in it, without
       POD_SESSION
     ),
   });
-  await client.unregisterSession({ sessionID: POD_SESSION, timeoutMs: 750 });
-  expect(deleted).toHaveLength(1);
-  expect(deleted[0]?.authorization).toBeNull();
-  expect(deleted[0]?.at).toBeLessThan(1_000);
-}, 20_000);
+  const unregistering = client.unregisterSession({ sessionID: POD_SESSION, timeoutMs: 750 });
+  await until("the credential's share of the 750 ms armed", () => share.held.length > 0);
+  expect(deleted, "the DELETE went before the credential's share ended").toEqual([]);
+  share.end();
+  await settled("the DELETE once the credential's share ended", unregistering);
+  expect(deleted).toEqual([null]);
+});

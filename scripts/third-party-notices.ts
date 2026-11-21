@@ -333,6 +333,15 @@ if (import.meta.main) {
   const out = args.pop();
   if (out === undefined || args.length === 0) {
     process.stderr.write("usage: bun scripts/third-party-notices.ts <metafile>... <out>\n");
+    // The exit waits for stderr to take the usage line, as `exitProcess`
+    // (packages/envoy-client/src/process-exit.ts) does, in a copy of its own: the Envoy image's web
+    // stage copies this script alone (packages/envoy/docker/Dockerfile), so it imports no module of
+    // the packages. What runs it is a package build or that image build, each inside a CI job's
+    // timeout of minutes, or a person; 5 s bounds a reader that takes nothing well inside either.
+    const flushed = Promise.withResolvers<void>();
+    process.stderr.once("error", () => flushed.resolve());
+    process.stderr.end(() => flushed.resolve());
+    await Promise.race([flushed.promise, Bun.sleep(5_000)]);
     process.exit(2);
   }
   const inputs: string[] = [];

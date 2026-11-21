@@ -1,4 +1,5 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
+import { until } from "@legion/test-fixtures/wait";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the reader's wheel and the margin's own scroll events, which user-event has no form for
 import { act, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
@@ -129,25 +130,37 @@ function renderCommentLinkLanding(comments: Comment[] = [comment], asks: Ask[] =
   );
 }
 
-/** Longer than the hold's relayout window, so what follows is judged on its own: whatever the
- *  margin is still rendering lands first, then the window's frames run out. */
-async function settled(): Promise<void> {
-  await quiet();
-  for (let frame = 0; frame <= RELAYOUT_SETTLES_FRAMES; frame += 1) {
-    await nextFrame();
+/**
+ * Waits until the margin has held its shape for a whole relayout window: `RELAYOUT_SETTLES_FRAMES`
+ * rendering frames and one more with no change of the kind the hold counts as a relayout
+ * (`useCardHold`'s observer). Frames are the hold's own unit, not milliseconds: a correction it
+ * owes a relayout runs in the first frame after it, and its window closes by the last, so a
+ * scroll it has not made by then it will not make, and every "nothing more moved" below is read
+ * after the frames it could have moved in. Whatever the margin is still rendering restarts the
+ * count, so what follows is judged on its own. It waits through the shared wait, which ends at
+ * the row's deadline naming what it waited for if the margin never stops changing.
+ */
+async function marginSettled(): Promise<void> {
+  let stillFrames = 0;
+  const changes = new MutationObserver(() => {
+    stillFrames = 0;
+  });
+  changes.observe(screen.getByTestId("margin-sheet"), {
+    attributeFilter: ["class", "style"],
+    attributes: true,
+    characterData: true,
+    childList: true,
+    subtree: true,
+  });
+  try {
+    await until("the margin to hold its shape for a whole relayout window", async () => {
+      await nextFrame();
+      stillFrames += 1;
+      return stillFrames > RELAYOUT_SETTLES_FRAMES;
+    });
+  } finally {
+    changes.disconnect();
   }
-}
-
-/** Lets whatever the margin is still doing happen. This one stays on the real clock
- *  (INFRA-1505): the margin corrects a card in an animation frame, and under
- *  `jest.useFakeTimers()` one `tick` runs exactly one frame where 50 ms of real time runs many,
- *  so every "and nothing more moved" below would hold for want of frames rather than because
- *  the margin left the card alone. The fake clock also freezes `performance.now()`, which the
- *  long-task row spins on. */
-async function quiet(): Promise<void> {
-  const settled = Promise.withResolvers<void>();
-  setTimeout(settled.resolve, 50);
-  await settled.promise;
 }
 
 test("a phone comment deep link highlights its card without expanding it or opening the Thread dialog", async () => {
@@ -248,7 +261,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
         await waitFor(() =>
           expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
         );
-        await settled();
+        await marginSettled();
         expect(
           screen.getByTestId(`margin-comment-${comment.id}`).getAttribute("aria-expanded"),
           `${path} expands the comment's thread`
@@ -296,7 +309,7 @@ test("a link to a card beside its document opens Details on it, and a link to a 
         await waitFor(() =>
           expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
         );
-        await settled();
+        await marginSettled();
         const details = screen.getByTestId("desktop-margin-shell");
         expect(
           details.hasAttribute("hidden"),
@@ -304,7 +317,7 @@ test("a link to a card beside its document opens Details on it, and a link to a 
         ).toBe(!opens);
         if (opens) {
           await user.click(screen.getByRole("button", { name: "Close" }));
-          await settled();
+          await marginSettled();
           expect(details.hasAttribute("hidden"), "Details opened again after its Close").toBe(true);
         }
       } finally {
@@ -395,7 +408,7 @@ test("on a phone, a link that keeps Details open leaves the sheet open, and a pl
     view.rerender(tree(details));
     for (const name of ["a turn's time", "a link inside a turn"]) {
       await user.click(screen.getByRole("link", { name }));
-      await settled();
+      await marginSettled();
       expect(
         details.hasAttribute("hidden"),
         `"${name}", which keeps Details open, closed the phone's Details`
@@ -690,7 +703,7 @@ test("the margin holds a linked card in view while the margin is still filling i
       throw new Error("Expected the anchored card to be positioned by its placement wrapper");
     }
     // Unplaced at the top of the margin, the card needs no scroll - and is not settled.
-    await quiet();
+    await marginSettled();
     const beforePlacement = scrollTo.mock.calls.length;
     expect(beforePlacement).toBe(0);
 
@@ -702,10 +715,10 @@ test("the margin holds a linked card in view while the margin is still filling i
     // Inside the scrollport, the margin leaves the card - and the reader's scrolling - alone.
     cardTop = 120;
     act(() => placement.setAttribute("style", "position: absolute; top: 120px;"));
-    await quiet();
+    await marginSettled();
     const settled = scrollTo.mock.calls.length;
     act(() => placement.setAttribute("style", "position: absolute; top: 140px;"));
-    await quiet();
+    await marginSettled();
     expect(scrollTo.mock.calls.length).toBe(settled);
 
     // Cards rendered above push it back out of the scrollport: the margin brings it back.
@@ -738,12 +751,12 @@ test("the margin stops correcting a linked card once the reader scrolls the marg
 
     // user-event has no form for a wheel: `hover` sends a fixed mouse sequence and no wheel.
     fireEvent.wheel(screen.getByTestId("margin-sheet"));
-    await quiet();
+    await marginSettled();
     const afterReader = scrollTo.mock.calls.length;
 
     cardTop = 1200;
     act(() => placement.setAttribute("style", "position: absolute; top: 1200px;"));
-    await quiet();
+    await marginSettled();
     expect(scrollTo.mock.calls.length).toBe(afterReader);
   } finally {
     view.unmount();
@@ -796,16 +809,16 @@ test("a press in the document takes over once the document has reported an empty
     await waitFor(() => expect(scrollTo.mock.calls.length).toBeGreaterThan(0));
 
     await user.click(screen.getByRole("button", { name: "Report layout" }));
-    await quiet();
+    await marginSettled();
     act(() => {
       document.body.dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true }));
     });
-    await quiet();
+    await marginSettled();
     const afterReader = scrollTo.mock.calls.length;
 
     cardTop = 1200;
     act(() => placement.setAttribute("style", "position: absolute; top: 1200px;"));
-    await quiet();
+    await marginSettled();
     expect(scrollTo.mock.calls.length).toBe(afterReader);
   } finally {
     view.unmount();
@@ -836,11 +849,11 @@ test("a press in the document leaves the hold armed while the layout reported is
     await waitFor(() => expect(scrollTo.mock.calls.length).toBeGreaterThan(0));
 
     await user.click(screen.getByRole("button", { name: "Report layout" }));
-    await quiet();
+    await marginSettled();
     act(() => {
       document.body.dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true }));
     });
-    await quiet();
+    await marginSettled();
     const afterPress = scrollTo.mock.calls.length;
 
     cardTop = 1200;
@@ -868,7 +881,7 @@ test("a text update in the margin keeps its anchoring scroll from taking over", 
       throw new Error("Expected the anchored card to be positioned by its placement wrapper");
     }
     await waitFor(() => expect(scrollTo.mock.calls.length).toBeGreaterThan(0));
-    await settled();
+    await marginSettled();
 
     const text = document.createTreeWalker(card, NodeFilter.SHOW_TEXT).nextNode();
     if (!(text instanceof Text)) {
@@ -881,7 +894,7 @@ test("a text update in the margin keeps its anchoring scroll from taking over", 
       // The margin's own scroll event, which user-event has no form for.
       fireEvent.scroll(sheet);
     });
-    await quiet();
+    await marginSettled();
     const afterReference = scrollTo.mock.calls.length;
 
     cardTop = 1400;
@@ -915,17 +928,17 @@ test("a scroll the margin did not perform, with nothing having changed, ends the
 
     // Long enough for the margin's own relayout to have settled, so the scroll below is the
     // reader's and nothing else's.
-    await settled();
+    await marginSettled();
     const sheet = screen.getByTestId("margin-sheet");
     sheet.scrollTop = 404;
     // The reader's scroll with no gesture behind it, which user-event has no form for.
     fireEvent.scroll(sheet);
-    await quiet();
+    await marginSettled();
     const afterReader = scrollTo.mock.calls.length;
 
     cardTop = 1200;
     act(() => placement.setAttribute("style", "position: absolute; top: 1200px;"));
-    await quiet();
+    await marginSettled();
     expect(scrollTo.mock.calls.length).toBe(afterReader);
   } finally {
     view.unmount();
@@ -952,7 +965,7 @@ test("a relayout that scrolls the margin twice leaves the hold alone", async () 
       throw new Error("Expected the anchored card to be positioned by its placement wrapper");
     }
     await waitFor(() => expect(scrollTo.mock.calls.length).toBeGreaterThan(0));
-    await settled();
+    await marginSettled();
 
     const sheet = screen.getByTestId("margin-sheet");
     act(() => placement.setAttribute("style", "position: absolute; top: 950px;"));
@@ -961,7 +974,7 @@ test("a relayout that scrolls the margin twice leaves the hold alone", async () 
     fireEvent.scroll(sheet);
     sheet.scrollTop = 240;
     fireEvent.scroll(sheet);
-    await quiet();
+    await marginSettled();
     const beforeTheNextRelayout = scrollTo.mock.calls.length;
 
     cardTop = 1400;
@@ -992,7 +1005,7 @@ test("a stream of scrolls after one relayout does not slide the window along", a
       throw new Error("Expected the anchored card to be positioned by its placement wrapper");
     }
     await waitFor(() => expect(scrollTo.mock.calls.length).toBeGreaterThan(0));
-    await settled();
+    await marginSettled();
 
     // One relayout, then a stream of scrolls one frame apart, so each lands inside the window the
     // one before it would have extended - a reader dragging a scrollbar the page sees no pointer
@@ -1009,7 +1022,7 @@ test("a stream of scrolls after one relayout does not slide the window along", a
 
     cardTop = 1400;
     act(() => placement.setAttribute("style", "position: absolute; top: 1400px;"));
-    await quiet();
+    await marginSettled();
     expect(scrollTo.mock.calls.length).toBe(afterReader);
   } finally {
     view.unmount();
@@ -1038,26 +1051,33 @@ test("a relayout's own scroll that lands after a long task leaves the hold alone
       throw new Error("Expected the anchored card to be positioned by its placement wrapper");
     }
     await waitFor(() => expect(scrollTo.mock.calls.length).toBeGreaterThan(0));
-    await settled();
+    await marginSettled();
 
     const sheet = screen.getByTestId("margin-sheet");
-    placement.setAttribute("style", "position: absolute; top: 700px;");
-    // The observer's callback is a microtask: it has seen the relayout before the long task.
-    await Promise.resolve();
-    // A real long task, which no fake clock can model: what this row needs is that no rendering
-    // update runs between the relayout and the scroll, and a synchronous loop is the only way to
-    // hold one off. The span stays at 500 ms and no measurement can shorten it: `useCardHold`
-    // counts rendering frames rather than milliseconds, so a loop of any length blocks the same
-    // frames; a shorter span would read as sized by evidence while holding off less, and would
-    // stop defeating a window a later implementation measured in real time.
-    const busyUntil = performance.now() + 500;
-    while (performance.now() < busyUntil) {
-      // The long task: no rendering update runs until it ends.
+    // The relayout, the long task after it and the clamp's scroll all happen on Bun's fake
+    // clock, so whatever clock the page reads at the relayout and at the scroll is that one
+    // clock (its fake `performance.now()` does not carry on from the real one). The long task:
+    // half a second passes on every clock the page reads, and no rendering update runs in it.
+    // The fake clock moves `Date.now()` and `performance.now()` 500 ms in one synchronous call
+    // and runs no frame while it does: happy-dom runs a frame on the `setImmediate` it bound
+    // when it loaded, which the fake clock does not hold, and which only a turn of the event
+    // loop reaches. `useCardHold` counts rendering frames rather than milliseconds, so the
+    // scroll still lands inside its window; a window a later implementation measured in time
+    // reads half a second gone, and the reader.
+    jest.useFakeTimers();
+    try {
+      placement.setAttribute("style", "position: absolute; top: 700px;");
+      // The observer's callback is a microtask: it has seen the relayout before the long task.
+      await Promise.resolve();
+      jest.advanceTimersByTime(500);
+      sheet.scrollTop = 300;
+      // The clamp's own scroll, delivered at the end of that half second, before the real clock
+      // comes back: user-event has no form for it.
+      fireEvent.scroll(sheet);
+    } finally {
+      jest.useRealTimers();
     }
-    sheet.scrollTop = 300;
-    // The clamp's own scroll, delivered after a long task: user-event has no form for it.
-    fireEvent.scroll(sheet);
-    await quiet();
+    await marginSettled();
     const afterClamp = scrollTo.mock.calls.length;
 
     cardTop = 1400;

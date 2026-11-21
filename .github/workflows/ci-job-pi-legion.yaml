@@ -55,14 +55,22 @@ jobs:
     # concluded `success`. A ceiling a little above today's sum is back inside the test step's
     # own spread at the next file that lands: five stall-watchdog files and two model-fallback
     # files took that step from 297 s at 17:49Z on 2026-11-08 to 638 s by 22:16Z.
-    # 28 rather than the next minute up: #2918 (dispatch://INFRA-1545) makes install-jj retry
-    # on a 1057 s ladder and gates a job's ceiling above its slowest retried step, a refusal
-    # that names 18 minutes, and that branch carries 28, so both hold one value on this line.
+    # 28 was set above install-jj's retry ceiling: #2918 (dispatch://INFRA-1545) makes install-jj
+    # retry on a 1057 s ladder and gates a job's ceiling above its slowest retried step, a refusal
+    # that names 18 minutes; the sum below is past both now.
     # Every figure here is a cold-Bun one: off main the setup-bun wrapper passes no-cache, so a
     # pull request's run and a merge group's both download the 34 MB release asset rather than
     # restore it, and that download is the 2 s above.
     # dispatch://INFRA-2125 shortens the suite and is the fix; this line is the stopgap.
-    timeout-minutes: 28
+    # The sum under the one-guard rule, over the job's 20 newest green merge-group runs up to
+    # 2026-11-15: its other steps at their longest, 98 s, 6 s of its clock over them, and its test
+    # step's longest, 709 s, plus the package script's four guards, 15 s, 300 s, 1215 s and 45 s
+    # (the third, daemon-pane.test.ts's own, holds its go run's build on a cold Go cache; the
+    # fourth is score.test.ts's and judge.test.ts's), and the guards of the one hook and the rows
+    # beside it that keep one of their own: the 240 s of rig.test.ts's judge-omp beforeAll, which
+    # pulls the judges' image, and the 90 s of its judge rows (judgeRow), each of which holds its
+    # judge's docker run (package.json's `//` note gives every reading): 2718 s, or 46 minutes.
+    timeout-minutes: 46
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
     services:

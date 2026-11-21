@@ -284,8 +284,8 @@ rm -rf "$nats_store_dir"
 # Every log file is created before the process that writes it, so a wait that reads one cannot
 # race the redirect that creates it: wait_for_listener's jq and wait_for_nats's grep would
 # otherwise read a file that is not there yet — jq exits non-zero on it, which under set -e ends
-# the whole run at "waiting for the listener address". The waits themselves are untouched: each
-# still fails the moment its own process is gone, and still fails on its own deadline.
+# the whole run at "waiting for the listener address". Each wait still ends the moment its own
+# process is gone, and otherwise at the run's one guard (below).
 : >"$nats_log_file"
 : >"$listener_log_file"
 : >"$session_log_file"
@@ -299,6 +299,43 @@ printf 'building listener and NATS server\n'
   go build -o "$listener_binary" ./cmd/listener
   go build -o "$nats_binary" ./internal/testnats/cmd/natsd
 )
+
+# The run's one guard and its one wait: scripts/e2e/lib/proof-wait.sh's proof_guard and
+# wait_held, through wait_or_end below, which ends at once where its fact can no longer come and
+# otherwise 30 s before the guard, and keeps its last poll in out/e2e. The guard is set here,
+# after the build, which is go's own and holds no wait. Guard 150 s: at least twice the longest run
+# of the job's step beside 8 busy loops on 2 CPUs in a builds Job, 60 s with its warm build
+# (d4-final2, two runs, 2026-11-20), plus the wait's 30 s margin; on CI, the longest green run of
+# that step was 25 s with its build (run 44607131679), over the 20 newest green merge-group runs of
+# ci.yaml that ran it up to 2026-11-19 (runs 44473367235 to 44607131679). The Bun driver of
+# wait_for_acks_settled waits to the same deadline, LEGION_PROOF_DEADLINE_MS, which proof_guard
+# exports.
+work=$out_dir
+note() { printf '%s\n' "$*"; }
+fail() {
+  printf 'ERR: %s\n' "$*" >&2
+  exit 1
+}
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "${repo_root}/scripts/e2e/lib/proof-wait.sh"
+proof_guard 150
+
+# wait_or_end WHAT LOG COMMAND...: the run's one wait for COMMAND (proof-wait.sh's wait_held),
+# ending the run where it does not hold as each wait here always has: with the line COMMAND set in
+# wait_impossible where its process is gone, and otherwise with the wait's own line naming WHAT,
+# each followed by LOG where one is named, and exit 1.
+wait_or_end() {
+  local what=$1 log=$2
+  shift 2
+  wait_held "$what" "$@" && return 0
+  if [[ "$wait_ended_by" == impossible ]]; then
+    printf 'ERR: %s\n' "${wait_gave_up#"$what: "}" >&2
+  else
+    printf 'ERR: %s\n' "$wait_gave_up" >&2
+  fi
+  [[ -z "$log" ]] || cat "$log" >&2
+  exit 1
+}
 
 printf 'starting NATS\n'
 "$nats_binary" -p "${E2E_NATS_PORT:--1}" -store_dir "$nats_store_dir" >"$nats_log_file" 2>&1 &
@@ -321,36 +358,27 @@ stop_nats() {
 # exactly as ours would, while ours exits with "address already in use". So the port is read from
 # our own server's log once it says it is ready, and the wait ends the moment our own process is
 # gone.
-wait_for_nats() {
-  local deadline=$((SECONDS + 30))
+nats_answering() {
   local banner port
-  while ((SECONDS < deadline)); do
-    if ! kill -0 "$nats_pid" 2>/dev/null; then
-      printf 'ERR: the NATS server this script started ended before it was ready.\n' >&2
-      cat "$nats_log_file" >&2
-      return 1
-    fi
-    if grep -q 'Server is ready' "$nats_log_file"; then
-      port="$(sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$nats_log_file")"
-      if [[ ! "$port" =~ ^[0-9]+$ ]]; then
-        printf 'ERR: the NATS server this script started is ready but named no client port.\n' >&2
-        cat "$nats_log_file" >&2
-        return 1
-      fi
-      # A NATS server greets every connection it accepts with its INFO line; curl's telnet
-      # scheme reads that greeting, then waits out its own --max-time, so only the text proves
-      # the port answers.
-      banner="$(curl -s --max-time 1 "telnet://127.0.0.1:${port}" </dev/null 2>/dev/null || true)"
-      if [[ "$banner" == 'INFO '* ]]; then
-        nats_port="$port"
-        return 0
-      fi
-    fi
-    sleep 0.25
-  done
-  printf 'ERR: the NATS server this script started did not accept connections within 30 seconds.\n' >&2
-  cat "$nats_log_file" >&2
-  return 1
+  if ! kill -0 "$nats_pid" 2>/dev/null; then
+    wait_impossible='the NATS server this script started ended before it was ready.'
+    return 1
+  fi
+  grep -q 'Server is ready' "$nats_log_file" || return 1
+  port="$(sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$nats_log_file")"
+  if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+    wait_impossible='the NATS server this script started is ready but named no client port.'
+    return 1
+  fi
+  # A NATS server greets every connection it accepts with its INFO line; curl's telnet scheme
+  # reads that greeting, then waits out its own --max-time, so only the text proves the port
+  # answers.
+  banner="$(curl -s --max-time 1 "telnet://127.0.0.1:${port}" </dev/null 2>/dev/null || true)"
+  [[ "$banner" == 'INFO '* ]] || return 1
+  nats_port="$port"
+}
+wait_for_nats() {
+  wait_or_end "the NATS server this script started to accept connections" "$nats_log_file" nats_answering
 }
 
 printf 'waiting for NATS\n'
@@ -374,25 +402,19 @@ listener_pid=$!
 # wait_for_listener returns once the listener this script started logs the address it is bound to,
 # and sets listener_url from it; it fails the moment that process is gone, as it is when E2E_PORT
 # is already in use.
-wait_for_listener() {
-  local deadline=$((SECONDS + 30))
+listener_listening() {
   local addr
-  while ((SECONDS < deadline)); do
-    addr="$(jq -Rnr '[inputs | fromjson? | select(.msg == "envoy-listener listening") | .addr][0] // empty' "$listener_log_file")"
-    if [[ -n "$addr" ]]; then
-      listener_url="http://${addr}"
-      return 0
-    fi
-    if ! kill -0 "$listener_pid" 2>/dev/null; then
-      printf 'ERR: the listener this script started ended before it was listening.\n' >&2
-      cat "$listener_log_file" >&2
-      return 1
-    fi
-    sleep 0.25
-  done
-  printf 'ERR: the listener did not report its address within 30 seconds.\n' >&2
-  cat "$listener_log_file" >&2
+  addr="$(jq -Rnr '[inputs | fromjson? | select(.msg == "envoy-listener listening") | .addr][0] // empty' "$listener_log_file")"
+  if [[ -n "$addr" ]]; then
+    listener_url="http://${addr}"
+    return 0
+  fi
+  kill -0 "$listener_pid" 2>/dev/null ||
+    wait_impossible='the listener this script started ended before it was listening.'
   return 1
+}
+wait_for_listener() {
+  wait_or_end "the listener to report its address" "$listener_log_file" listener_listening
 }
 
 printf 'waiting for the listener address\n'
@@ -400,18 +422,17 @@ wait_for_listener
 readonly listener_url
 printf 'listener: %s\n' "$listener_url"
 
-wait_for_health() {
-  local deadline=$((SECONDS + 30))
+listener_healthy() {
   local body
-  while ((SECONDS < deadline)); do
-    if body="$(curl -fsS "${listener_url}/healthz" 2>/dev/null)" && [[ "$body" == *'"status":"healthy"'* ]]; then
-      return 0
-    fi
-    sleep 0.25
-  done
-  printf 'ERR: listener did not become healthy within 30 seconds.\n' >&2
-  cat "$listener_log_file" >&2
+  if body="$(curl -fsS --max-time 2 "${listener_url}/healthz" 2>/dev/null)" && [[ "$body" == *'"status":"healthy"'* ]]; then
+    return 0
+  fi
+  kill -0 "$listener_pid" 2>/dev/null ||
+    wait_impossible='the listener this script started ended before it was healthy.'
   return 1
+}
+wait_for_health() {
+  wait_or_end "the listener to become healthy" "$listener_log_file" listener_healthy
 }
 
 printf 'waiting for listener health\n'
@@ -672,20 +693,18 @@ post_github() {
   fi
 }
 
-wait_for_topic_count() {
-  local topic=$1
-  local expected=$2
-  local deadline=$((SECONDS + 20))
+# topic_count_reached TOPIC EXPECTED: whether the capture holds EXPECTED envelopes or more on
+# TOPIC, for wait_or_end; once the capture subscriber is gone it writes no more.
+topic_count_reached() {
   local count
-  while ((SECONDS < deadline)); do
-    count="$(jq -rs --arg topic "$topic" '[.[] | select(.topic == $topic)] | length' "$envelopes_file")"
-    if ((count >= expected)); then
-      return 0
-    fi
-    sleep 0.25
-  done
-  printf 'ERR: expected %s captures on %s within 20 seconds.\n' "$expected" "$topic" >&2
+  count="$(jq -rs --arg topic "$1" '[.[] | select(.topic == $topic)] | length' "$envelopes_file")"
+  ((count >= $2)) && return 0
+  kill -0 "$subscriber_pid" 2>/dev/null ||
+    wait_impossible="the capture subscriber ended with $count captures on $1, not $2"
   return 1
+}
+wait_for_topic_count() {
+  wait_or_end "$2 captures on $1" "" topic_count_reached "$1" "$2"
 }
 
 # wait_for_consumer_frame_count returns once a session has taken at least expected frames of its
@@ -693,25 +712,16 @@ wait_for_topic_count() {
 # frame arrives and answers done after it, so this wait says the frames reached the session and
 # says nothing about their acks; wait_for_acks_settled below is what reads those.
 # The file is the run's own session's unless one is named, as the no-cursor window below names its
-# own. The budget is 20 seconds and, under E2E_SESSION_ACK_DELAY_MS, one delay per frame on top: a
-# run that holds each answer back to drive the repeat above the recorded floor (the stand-in)
-# takes that long to reach the same count, and a budget that did not carry it would fail the run
-# on its own injection.
+# own. It takes no budget of its own: under E2E_SESSION_ACK_DELAY_MS a run that holds each answer
+# back takes one delay per frame longer to reach the same count, and the run's one guard holds that
+# too.
+frames_reached() {
+  (($(wc -l <"$2") >= $1))
+}
 wait_for_consumer_frame_count() {
   local expected=$1
   local frames_file=${2:-$session_frames_file}
-  local budget=$((20 + (expected * ack_delay_ms) / 1000))
-  local deadline=$((SECONDS + budget))
-  local count
-  while ((SECONDS < deadline)); do
-    count="$(wc -l <"$frames_file")"
-    if ((count >= expected)); then
-      return 0
-    fi
-    sleep 0.25
-  done
-  printf 'ERR: expected %s consumer frames in %s within %s seconds.\n' "$expected" "$frames_file" "$budget" >&2
-  return 1
+  wait_or_end "$expected consumer frames in $frames_file" "" frames_reached "$expected" "$frames_file"
 }
 
 # wait_for_acks_settled returns once the server says a session consumer has nothing left to ack
@@ -740,9 +750,9 @@ wait_for_consumer_frame_count() {
 # nothing, a connection that drops - so a slow or lost answer under load costs a retry rather than
 # the run; an answer the server did send and this cannot use ends the wait at once instead, a
 # JetStream error such as "consumer not found" and a reply that is no JSON alike, since asking
-# again would meet the same answer. The deadline is read after the connection is made and a
-# request already under way runs its own 2 s out, with a 100 ms pause behind it, so a wait that
-# runs out ends about 17 seconds after it starts, by name rather than by hanging.
+# again would meet the same answer. The wait is @legion/test-fixtures/wait's until, which ends
+# 30 s before this run's guard (LEGION_PROOF_DEADLINE_MS) and names what it waited for and what it
+# read last; a request already under way runs its own 2 s out.
 wait_for_acks_settled() {
   local settle_session_id=$1
   local offers_file=$2
@@ -758,6 +768,7 @@ wait_for_acks_settled() {
   settled="$(
     cd "$repo_root"
     exec env E2E_NATS_URL="$nats_url" E2E_SESSION_ID="$settle_session_id" E2E_TARGET_SEQ="$target" bun -e '
+      import { until } from "@legion/test-fixtures/wait";
       import { connect, StringCodec } from "nats";
 
       const url = process.env.E2E_NATS_URL;
@@ -768,33 +779,33 @@ wait_for_acks_settled() {
       const codec = StringCodec();
       const connection = await connect({ servers: url, name: `envoy-e2e-acks-${sessionID}` });
       const subject = `$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.s-${sessionID}`;
-      const deadline = Date.now() + 15000;
-      let last = "no answer";
-      while (Date.now() < deadline) {
-        let reply;
-        try {
-          reply = await connection.request(subject, codec.encode(""), { timeout: 2000 });
-        } catch (error) {
-          // A request that did not answer is asked again inside this same bound; an answer the
-          // server did send and this cannot use ends the wait below, at once.
-          last = `the consumer info request failed: ${String(error)}`;
-          await Bun.sleep(100);
-          continue;
-        }
-        const answer = JSON.parse(codec.decode(reply.data));
-        if (answer.error) throw new Error(`the server refused the consumer info of ${sessionID}: ${JSON.stringify(answer.error)}`);
-        const pending = answer.num_ack_pending ?? 0;
-        const floor = answer.ack_floor?.stream_seq ?? 0;
-        last = `num_ack_pending ${pending}, ack floor ${floor}, wanted 0 and at least ${target}`;
-        if (pending === 0 && floor >= target) {
-          process.stdout.write(`${floor}\n`);
-          await connection.close();
-          process.exit(0);
-        }
-        await Bun.sleep(100);
+      // What the last answer said, which a wait that gives up names; the probe returns false for
+      // every answer short of the target, since until takes any other value as the fact itself.
+      let last = "no answer yet";
+      try {
+        const floor = await until(`the consumer of ${sessionID} to settle its acks through sequence ${target}`, async () => {
+          let reply;
+          try {
+            reply = await connection.request(subject, codec.encode(""), { timeout: 2000 });
+          } catch (error) {
+            // A request that did not answer is asked again; an answer the server did send and
+            // this cannot use ends the wait below, at once.
+            last = `the consumer info request failed: ${String(error)}`;
+            return false;
+          }
+          const answer = JSON.parse(codec.decode(reply.data));
+          if (answer.error) throw new Error(`the server refused the consumer info of ${sessionID}: ${JSON.stringify(answer.error)}`);
+          const pending = answer.num_ack_pending ?? 0;
+          const floor = answer.ack_floor?.stream_seq ?? 0;
+          last = `num_ack_pending ${pending}, ack floor ${floor}, wanted 0 and at least ${target}`;
+          return pending === 0 && floor >= target && floor;
+        }).catch((error) => {
+          throw new Error(`${error instanceof Error ? error.message : String(error)}; its last answer: ${last}`);
+        });
+        process.stdout.write(`${floor}\n`);
+      } finally {
+        await connection.close();
       }
-      await connection.close();
-      throw new Error(`the consumer of ${sessionID} did not settle its acks within 15 s: ${last}`);
     '
   )" || {
     printf 'ERR: the acks of %s had not settled before %s.\n' "$settle_session_id" "$before" >&2
@@ -901,20 +912,21 @@ count_listener_records() {
 # Each record is written after its response is sent, so the assertion can reach the log a moment
 # before the line lands: wait for the first match rather than racing it, and fail on anything but
 # exactly one, a second line being as wrong as none.
+# record_logged SELECTOR: whether the listener log holds a record SELECTOR matches, for
+# wait_or_end; it sets record_count to the count it read. A listener that is gone logs no more.
+record_count=0
+record_logged() {
+  record_count="$(count_listener_records "$1")"
+  ((record_count != 0)) && return 0
+  kill -0 "$listener_pid" 2>/dev/null || wait_impossible="the listener ended with no such record in its log"
+  return 1
+}
 wait_for_listener_record() {
   local description=$1
   local selector=$2
-  local deadline=$((SECONDS + 10))
-  local count=0
-  while ((SECONDS < deadline)); do
-    count="$(count_listener_records "$selector")"
-    if ((count != 0)); then
-      break
-    fi
-    sleep 0.25
-  done
-  if ((count != 1)); then
-    printf 'ERR: expected exactly one %s record in the listener log; found %s.\n' "$description" "$count" >&2
+  wait_or_end "a $description record in the listener log" "" record_logged "$selector"
+  if ((record_count != 1)); then
+    printf 'ERR: expected exactly one %s record in the listener log; found %s.\n' "$description" "$record_count" >&2
     return 1
   fi
 }
@@ -991,28 +1003,28 @@ count_kept_forwards() {
 # capture of the forward and the session's own frame are written by two processes of their own, so
 # this waits for both to arrive rather than racing either, and then fails on any count but one — a
 # control notice delivered twice is as wrong as one never delivered.
+# kept_arrived EVENT_ID: whether the session took a frame of EVENT_ID and the capture holds the
+# drain's forward of it, for wait_or_end; it sets kept_frames and kept_forwards to the counts.
+kept_frames=0
+kept_forwards=0
+kept_arrived() {
+  kept_frames="$(count_session_frames "$1")"
+  kept_forwards="$(count_kept_forwards "$1")"
+  ((kept_frames != 0 && kept_forwards != 0))
+}
 wait_for_kept_delivery() {
   local window=$1
   local event_id=$2
-  local deadline=$((SECONDS + 20))
-  local frames=0
-  local forwards=0
-  while ((SECONDS < deadline)); do
-    frames="$(count_session_frames "$event_id")"
-    forwards="$(count_kept_forwards "$event_id")"
-    if ((frames != 0 && forwards != 0)); then
-      break
-    fi
-    sleep 0.25
-  done
-  if ((frames != 1)); then
-    printf 'ERR: the %s kept message %s reached the session %s times within 20 seconds, not exactly once.\n' \
-      "$window" "$event_id" "$frames" >&2
+  wait_or_end "the $window kept message $event_id to reach the session and its forward the capture" "" \
+    kept_arrived "$event_id"
+  if ((kept_frames != 1)); then
+    printf 'ERR: the %s kept message %s reached the session %s times, not exactly once.\n' \
+      "$window" "$event_id" "$kept_frames" >&2
     return 1
   fi
-  if ((forwards != 1)); then
-    printf 'ERR: the %s kept message %s was forwarded carrying kept_at %s times within 20 seconds, not exactly once.\n' \
-      "$window" "$event_id" "$forwards" >&2
+  if ((kept_forwards != 1)); then
+    printf 'ERR: the %s kept message %s was forwarded carrying kept_at %s times, not exactly once.\n' \
+      "$window" "$event_id" "$kept_forwards" >&2
     return 1
   fi
   printf '%s: kept message %s reached the session exactly once, carrying kept_at\n' "$window" "$event_id"
@@ -1025,23 +1037,16 @@ wait_for_kept_delivery() {
 # same way (liveSessionEntry, through a cache the delete evicts), so this is the point from which
 # a claim that names that session is a lapsed one rather than a live holder, and the point from
 # which a clean stop has taken the session's consumer with its record.
+# registry_gone SESSION_ID RESPONSE_FILE: whether the listener answers 404 for SESSION_ID's
+# registration, its answer kept in RESPONSE_FILE, for wait_or_end.
+registry_gone() {
+  [[ "$(curl -sS --max-time 2 -o "$2" -w '%{http_code}' "${listener_url}/v1/registry/$1")" == 404 ]]
+}
 wait_for_unregistered() {
   local unregistered_session_id=${1:-$session_id}
   local response_file=${2:-$lapsed_registry_response_file}
-  local deadline=$((SECONDS + 20))
-  local status=""
-  while ((SECONDS < deadline)); do
-    status="$(curl -sS -o "$response_file" -w '%{http_code}' \
-      "${listener_url}/v1/registry/${unregistered_session_id}")"
-    if [[ "$status" == 404 ]]; then
-      return 0
-    fi
-    sleep 0.25
-  done
-  printf 'ERR: the listener still answered HTTP %s for the deleted registration of %s after 20 seconds.\n' \
-    "$status" "$unregistered_session_id" >&2
-  cat "$response_file" >&2
-  return 1
+  wait_or_end "the listener to answer 404 for the deleted registration of $unregistered_session_id" \
+    "$response_file" registry_gone "$unregistered_session_id" "$response_file"
 }
 
 # Window (i): nobody holds the role. The publish is answered 202 with the envelope the listener
@@ -1646,14 +1651,26 @@ if [[ -z "$nocursor_floor" || "$nocursor_start" != "$((nocursor_floor + 1))" ]];
   cat "$nocursor_relaunch_response_file" >&2
   exit 1
 fi
-# 5 seconds of the window's own: a frame offered again would arrive well inside it, since the
-# first took milliseconds, and this window's assertions are the ones that read an absence. Under
-# E2E_SESSION_ACK_DELAY_MS it also covers the delay itself, so the session's own cursor below is
-# the one its ack wrote.
-sleep 5
-if [[ "$(wc -l <"$nocursor_frames_file")" != "1" ]]; then
-  printf 'ERR: %s wrote %s frames after a registration carrying no resume, not the one this window pins: it took a message twice. A session writes a frame once, whatever the transport offers it.\n' \
-    "$nocursor_session_id" "$(wc -l <"$nocursor_frames_file")" >&2
+# The window's absence is read through a later action's effect rather than a span: a marker sent
+# to the same session after the relaunch, and waited for in the session's frames file. The new
+# consumer delivers in stream order, so a frame offered again, whose sequence is below the
+# marker's, reaches the session before the marker does: once the marker's frame is written, every
+# offer of the first message has been made. Under E2E_SESSION_ACK_DELAY_MS the stand-in answers
+# each frame in turn, so the offer of the first message, and its answer, come before the marker.
+nocursor_marker="No-cursor window marker."
+readonly nocursor_marker
+nocursor_marker_body="$(jq -nc \
+  --arg session_id "$nocursor_session_id" \
+  --arg message "$nocursor_marker" \
+  '{source:"agent",source_session:"octocat",target_session:$session_id,message:$message}')"
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/send" -d "$nocursor_marker_body" >/dev/null
+wait_for_consumer_frame_count 2 "$nocursor_frames_file"
+nocursor_message_frames="$(jq -s --arg message "$nocursor_message" \
+  '[.[] | select(.payload_summary == $message)] | length' "$nocursor_frames_file")"
+if [[ "$nocursor_message_frames" != "1" ]]; then
+  printf 'ERR: %s wrote %s frames of its message after a registration carrying no resume, not the one this window pins: it took a message twice. A session writes a frame once, whatever the transport offers it.\n' \
+    "$nocursor_session_id" "$nocursor_message_frames" >&2
   cat "$nocursor_frames_file" >&2
   exit 1
 fi
@@ -1665,9 +1682,10 @@ fi
 # E2E_SESSION_ACK_DELAY_MS the stop lands before the ack, so the floor stands one below and the
 # frame is offered again, exactly once, which is what keeps a session that comes back from losing
 # what it had not acked (dispatch://INFRA-2365); the ledger drops that repeat, which is why the
-# frames file still holds one line.
-nocursor_taken_stream="$(jq -r '.stream_id' "$nocursor_cursor_file")"
-nocursor_taken_seq="$(jq -r '.seq' "$nocursor_cursor_file")"
+# frames file still holds one line of it. The sequence the session took is its first offer, which
+# came before the clean stop.
+nocursor_taken_stream="$(head -n 1 "$nocursor_offers_file" | jq -r '.stream_id')"
+nocursor_taken_seq="$(head -n 1 "$nocursor_offers_file" | jq -r '.seq')"
 nocursor_offers="$(jq -s --arg stream "$nocursor_taken_stream" --argjson seq "$nocursor_taken_seq" \
   'map(select(.stream_id == $stream and .seq == $seq)) | length' "$nocursor_offers_file")"
 if ((ack_delay_ms > 0)); then
@@ -1680,7 +1698,7 @@ else
   nocursor_offer_rule="the session acked its one frame before the clean stop, so the floor stands at that frame and nothing is offered again"
 fi
 if [[ "$nocursor_floor" != "$nocursor_want_floor" ]]; then
-  printf 'ERR: the clean stop of %s recorded floor %s for a session whose own cursor says it took sequence %s of %s; %s, so the floor wanted is %s. A floor that does not follow the acks is the fault this reads.\n' \
+  printf 'ERR: the clean stop of %s recorded floor %s for a session whose first offer was sequence %s of %s; %s, so the floor wanted is %s. A floor that does not follow the acks is the fault this reads.\n' \
     "$nocursor_session_id" "$nocursor_floor" "$nocursor_taken_seq" "$nocursor_taken_stream" \
     "$nocursor_offer_rule" "$nocursor_want_floor" >&2
   cat "$nocursor_cursor_file" "$nocursor_offers_file" >&2
@@ -1693,11 +1711,12 @@ if [[ "$nocursor_offers" != "$nocursor_want_offers" ]]; then
   cat "$nocursor_offers_file" >&2
   exit 1
 fi
-jq -es --arg session_id "$nocursor_session_id" --arg message "$nocursor_message" '
-  length == 1
+jq -es --arg session_id "$nocursor_session_id" --arg message "$nocursor_message" --arg marker "$nocursor_marker" '
+  length == 2
   and (map(select(.topic == ("notifications.agent." + $session_id) and .payload_summary == $message)) | length) == 1
+  and (map(select(.topic == ("notifications.agent." + $session_id) and .payload_summary == $marker)) | length) == 1
 ' "$nocursor_frames_file" >/dev/null || {
-  printf 'ERR: the no-cursor window took frames that are not the one delivery of its message to %s.\n' "$nocursor_session_id" >&2
+  printf 'ERR: the no-cursor window took frames that are not the one delivery of its message and of its marker to %s.\n' "$nocursor_session_id" >&2
   cat "$nocursor_frames_file" >&2
   exit 1
 }

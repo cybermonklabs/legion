@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { settled } from "@legion/test-fixtures/wait";
 import {
   askgateState,
   pidNamespace,
@@ -20,8 +21,8 @@ const WRITERS = 4;
 // writer that drops the others, and more writes only make its cost track the machine's speed.
 const WRITES = 200;
 
-/** The children the writers row below spawns, ended here when its own cleanup was lost to the
- * timeout. Bun runs `afterEach` hooks in the order they are registered and skips the rest once one
+/** The children the writers row below spawns, ended here when its own cleanup was lost to a
+ * failure. Bun runs `afterEach` hooks in the order they are registered and skips the rest once one
  * throws, so this hook is registered before the one that removes the temporary tree: it runs first,
  * and a throw while removing the tree cannot leave a child running. */
 const spawned: Bun.Subprocess[] = [];
@@ -59,7 +60,10 @@ test("processes that bind one session id at the same time each stay an owner of 
   // Each writer says it is ready, waits for the parent's line, binds the session again and again,
   // and after each write reads the record: for its own store, and, once it has read every writer's
   // store there, for a store that went. Each one stays live until its stdin closes, so no owner of
-  // a full record can legitimately go, and a store that went is one a write dropped.
+  // a full record can legitimately go, and a store that went is one a write dropped. A read counts
+  // distinct stores: one listing can name an owner file twice (gVisor's tmpfs lists again a file
+  // renamed into the directory between a readdir's getdents64 calls), and a record of three
+  // writers' stores with one listed twice is not full before the fourth writer's first write.
   const writer = join(root, "writer.ts");
   writeFileSync(
     writer,
@@ -76,9 +80,9 @@ let full = false;
 for (let write = 0; write < ${WRITES}; write += 1) {
   writeAskgateRecord(dir, owner, "warn");
   const state = askgateState(dir);
-  const stores = state.kind === "on" ? state.stores : [];
-  if (!stores.includes(owner.store)) dropped += 1;
-  if (stores.length >= ${WRITERS}) full = true;
+  const stores = new Set(state.kind === "on" ? state.stores : []);
+  if (!stores.has(owner.store)) dropped += 1;
+  if (stores.size >= ${WRITERS}) full = true;
   else if (full) lost += 1;
 }
 console.log(JSON.stringify({ store: owner.store, dropped, lost }));
@@ -91,14 +95,16 @@ while (!(await stdin.read()).done);
   spawned.push(...children);
   try {
     const lines = children.map((child) => lineReader(child.stdout));
-    expect(await Promise.all(lines.map((next) => next()))).toEqual(Array(WRITERS).fill("ready"));
+    expect(
+      await settled("each writer's ready line", Promise.all(lines.map((next) => next())))
+    ).toEqual(Array(WRITERS).fill("ready"));
     for (const child of children) {
       child.stdin.write("go\n");
       child.stdin.flush();
     }
-    const reports = (await Promise.all(lines.map((next) => next()))).map(
-      (line) => JSON.parse(line) as { store: string; dropped: number; lost: number }
-    );
+    const reports = (
+      await settled("each writer's report", Promise.all(lines.map((next) => next())))
+    ).map((line) => JSON.parse(line) as { store: string; dropped: number; lost: number });
     expect(reports.map((report) => report.dropped)).toEqual(Array(WRITERS).fill(0));
     expect(reports.map((report) => report.lost)).toEqual(Array(WRITERS).fill(0));
     const state = askgateState(dir);
@@ -107,13 +113,18 @@ while (!(await stdin.read()).done);
     );
   } finally {
     for (const child of children) child.stdin.end();
-    await Promise.all(children.map((child) => child.exited));
   }
-  // The limit is a hang guard, not a margin for a slow machine: a child that never prints its
-  // line, or a renameSync or readdirSync that never returns. It is three and a half times the
-  // row's worst measured cost: in a 2-CPU pod the row costs 1.47 s idle and, under 16 busy loops
-  // (8 x nproc), 25.67 s at most in a whole-suite run.
-}, 90_000);
+  // Waited only once the row's own reads passed: after a read that failed at the row's deadline
+  // a wait here would start past it and replace that read's failure with its own, and the
+  // `afterEach` above ends the writers then.
+  await settled(
+    "the writers' exits once their stdin closed",
+    Promise.all(children.map((child) => child.exited))
+  );
+  // A child that never prints its line, or a renameSync or readdirSync that never returns, fails
+  // the wait for that line by name. In a 2-CPU pod the row costs 1.47 s idle and, under 16 busy
+  // loops (8 x nproc), 25.67 s at most in a whole-suite run.
+});
 
 // A pid and a start time name a process only in the pid namespace they were read in, and an agent
 // box is a namespace of its own over the host's state directory. The owner carries its namespace in

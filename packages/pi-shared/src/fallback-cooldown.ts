@@ -31,6 +31,10 @@ export interface FallbackArming {
   readonly restoreTo: string;
   /** The `model_change` entry this arming is tied to; a newer model change supersedes it. */
   readonly entryId: string;
+  /** Epoch ms: the moment the wait counts from, the record of when it was armed. `dueAt` is this
+   * and the wait a refusal bought, or this alone for any other fallback. Absent from an arming an
+   * older build recorded; nothing decides on it. */
+  readonly armedAt?: number;
   /** Epoch ms: the earliest time to put the session back. */
   readonly dueAt: number;
   /** Why the session fell back. A refusal waits out the cooldown; anything else waits for the
@@ -92,12 +96,12 @@ export function stepFallbackCooldown(
     case "fallback-applied": {
       const { restoreTo, entryId, cause, now } = input;
       if (cause === "other") {
-        return { ...state, arming: { restoreTo, entryId, dueAt: now, cause } };
+        return { ...state, arming: { restoreTo, entryId, armedAt: now, dueAt: now, cause } };
       }
       const level = levelOf(state, restoreTo);
       const wait = waitMs(limits, level);
       return {
-        arming: { restoreTo, entryId, dueAt: now + wait, cause },
+        arming: { restoreTo, entryId, armedAt: now, dueAt: now + wait, cause },
         levels: { ...state.levels, [restoreTo]: wait < limits.maxMs ? level + 1 : level },
       };
     }
@@ -193,18 +197,22 @@ export function recordedFallbackCooldown(state: FallbackCooldownState): Fallback
 }
 
 /** The arming one record's `arming` field holds, or undefined when it is not one this build can
- * read. */
+ * read. An arming with no `armedAt` is one an older build recorded, and reads without it. */
 function armingFrom(value: unknown): FallbackArming | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const restoreTo = "restoreTo" in value ? value.restoreTo : undefined;
   const entryId = "entryId" in value ? value.entryId : undefined;
+  const armedAt = "armedAt" in value ? value.armedAt : undefined;
   const dueAt = "dueAt" in value ? value.dueAt : undefined;
   const cause = "cause" in value ? value.cause : undefined;
   if (typeof restoreTo !== "string" || restoreTo === "") return undefined;
   if (typeof entryId !== "string" || entryId === "") return undefined;
+  if (armedAt !== undefined && (typeof armedAt !== "number" || !Number.isFinite(armedAt))) {
+    return undefined;
+  }
   if (typeof dueAt !== "number" || !Number.isFinite(dueAt)) return undefined;
   if (cause !== "refusal" && cause !== "other") return undefined;
-  return { restoreTo, entryId, dueAt, cause };
+  return { restoreTo, entryId, ...(armedAt === undefined ? {} : { armedAt }), dueAt, cause };
 }
 
 /** The levels one record's `levels` field holds, or undefined when it holds anything that is not

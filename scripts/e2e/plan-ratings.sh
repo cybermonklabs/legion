@@ -46,5 +46,10 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+# Twice the longest green run on record of its siblings, whose run makes this same run around
+# another driver, rounded up to the minute: no green e2e.yaml job of its own is on record up to
+# 2026-11-19 (main added it in #4488), and the siblings' longest, merge-wait-readable.sh's proof
+# step, took 346 s (run 43872759148). Its own header gives a run one to five minutes.
+proof_guard 720
 require_dispatch_cli
 live_daemon_proof 'plan ratings' plan-ratings TestPlanRatingsLive "${PLAN_RATINGS_EVIDENCE_DIR:-}"

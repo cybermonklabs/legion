@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -40,6 +41,7 @@ function handedBackVersions(events: unknown[]): string {
     {
       cwd: tmpdir(),
       env: {
+        ...bunCacheOff,
         PATH: process.env.PATH ?? "",
         HOME: home,
         root,
@@ -148,6 +150,7 @@ describe("drive_gated_spec's verdict", () => {
         {
           cwd: evidence,
           env: {
+            ...bunCacheOff,
             PATH: process.env.PATH ?? "",
             HOME: home,
             root,

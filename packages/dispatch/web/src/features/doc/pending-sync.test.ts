@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { waitFor } from "@testing-library/react";
 import { createDecoder, readVarString, readVarUint, readVarUint8Array } from "lib0/decoding";
 import * as Y from "yjs";
@@ -507,9 +507,16 @@ test("a later writable admission keeps this tab's own unacknowledged rows", asyn
 test("a restore that parks on a scratch document is dropped, reported, and leaves the live document alone", async () => {
   const artifact = artifactId();
   // The edit was typed against a history the server no longer has: a rebuild reseeded the same
-  // text from a fresh document, so the items the edit sits beside are gone.
-  const before = Date.now();
-  await savedEdit(artifact, serverWith("shared", 100), " saved");
+  // text from a fresh document, so the items the edit sits beside are gone. The clock is held at
+  // a moment of the row's own while the edit is saved, so that moment is the one the report
+  // must name as when the rebuild lost it.
+  const savedAt = Date.UTC(2026, 10, 14, 15, 30, 12, 345);
+  setSystemTime(savedAt);
+  try {
+    await savedEdit(artifact, serverWith("shared", 100), " saved");
+  } finally {
+    setSystemTime();
+  }
   const rebuilt = serverWith("shared", 200);
   const { doc, states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(rebuilt));
   const stateVector = Y.encodeStateVector(doc);
@@ -522,8 +529,7 @@ test("a restore that parks on a scratch document is dropped, reported, and leave
   expect(await rowsOf(artifact)).toEqual([]);
   const reported = states.at(-1);
   expect(reported?.count).toBe(0);
-  expect(reported?.rebuiltAt).toBeGreaterThanOrEqual(before);
-  expect(reported?.rebuiltAt).toBeLessThanOrEqual(Date.now());
+  expect(reported?.rebuiltAt).toBe(savedAt);
 });
 
 test("a restore the server already holds fires no update and drops its rows", async () => {

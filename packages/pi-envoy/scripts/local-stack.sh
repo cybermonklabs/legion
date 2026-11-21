@@ -6,19 +6,34 @@
 # two know about the stack is written once; packages/envoy-client/test/envoy-stack.ts is the same
 # stack for the TypeScript suite.
 #
-# Sourced, never run: it defines functions, sets no trap, starts no process and writes no file.
-# Each caller keeps its own process bookkeeping — how it isolates the environment (`env -i`, bare
-# or under `exec` in a subshell), where each log goes, which pids its trap stops and how long it
-# waits for what — so this hands out an argv and a set of assignments rather than starting
-# anything, and each script's own messages, exit codes and timeouts stay its own.
+# Sourced, never run: it defines functions, sets no trap and starts no process. Each caller keeps
+# its own process bookkeeping — how it isolates the environment (`env -i`, bare or under `exec` in
+# a subshell), where each log goes and which pids its trap stops — so this hands out an argv and
+# a set of assignments rather than starting anything, and each script's own messages and exit
+# codes stay its own.
+#
+# A smoke a workflow runs (smoke-role-takeover.sh, ci.yaml's envoy-session-stall job) sets its
+# guard once, at its head, with proof_guard and the reading beside it, and waits through
+# wait_held alone: scripts/e2e/lib/proof-wait.sh, sourced below, the stage proofs' own guard and
+# wait, whose returning form lets a smoke drive every row past one that did not hold. poll_until
+# is the bounded wait of smoke-registration-stall.sh, which a person runs and which sets no guard;
+# no smoke that sets one calls it.
 #
 # The caller defines
 #   refuse MESSAGE    prints MESSAGE prefixed with the script's name and exits 2; port_range
 #                     reports a kernel with no usable range below its ephemeral one through it
+#   note MESSAGE      prints a line of the run's progress, which a long wait says it is still
+#                     waiting through
+#   fail MESSAGE      what proof-wait.sh refuses a misused guard or wait through: `refuse` in a
+#                     smoke that sets a guard
 # and sets
 #   local_stack_fail  the function pick_port reports an exhausted range through: `refuse` in both
 #                     callers, each of which prints with the script's name and exits 2
+#   work              the run's scratch directory, where each wait keeps its last poll's output
 # and reads, after port_range, ephemeral_low and port_floor.
+
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)/scripts/e2e/lib/proof-wait.sh"
 
 # port_range: the kernel's ephemeral range (ephemeral_low), which every outbound connection
 # autobinds from, and the floor a service binds above (port_floor).
@@ -99,4 +114,22 @@ natsd_serving() {
 # listener_healthy URL: the listener at URL answers /healthz healthy.
 listener_healthy() {
   curl -fsS --max-time 2 "${1}/healthz" | jq -e '.status == "healthy"' >/dev/null 2>&1
+}
+
+# exited PID WHAT: whether the process PID has exited, setting wait_impossible to say that WHAT
+# exited where it has: the failing fact of a wait whose fact only that process brings about.
+exited() {
+  kill -0 "$1" 2>/dev/null && return 1
+  wait_impossible="${2} exited"
+}
+
+# running PID WHAT COMMAND...: COMMAND, for a wait on what the process PID does; where COMMAND
+# does not hold and PID has exited, the wait ends at once naming WHAT (exited), rather than at
+# the guard's deadline.
+running() {
+  local pid=$1 what=$2
+  shift 2
+  "$@" && return 0
+  exited "$pid" "$what" || true
+  return 1
 }

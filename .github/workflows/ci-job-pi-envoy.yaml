@@ -23,7 +23,11 @@ on:
 jobs:
   pi-envoy:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-18T10:20Z
+    # (runs 44085036175 to 44278917020): its other steps at their longest, 81 s, 4 s of its clock
+    # over them, and its test step's longest, 285 s (run 44136692307), plus the package script's
+    # two guards, 90 s and 250 s: 710 s, or 12 minutes.
+    timeout-minutes: 15
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
     # pinned by digest as this file's other service images are.

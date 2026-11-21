@@ -62,9 +62,12 @@
       "bun": "./src/wire.ts"
     }
   },
+  "//": [
+    "test: --timeout 5000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job): the wire corpus holds this client, 110.74 ms. The four files main's #4140 gave rows of 20_000 of their own (broker-code-echo, broker-refusal-echo, refusal-printed and retry-loop.test.ts) read at most 124.34 ms under the same load at 6ca1a534 with #4437's fourth merge (two runs in builds Job d8-bc-moved-8)."
+  ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 5000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/ test/ scripts/"
   },
   "dependencies": {

@@ -1,7 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { settled } from "@legion/test-fixtures/wait";
 
 // The `dispatch` entry is its own process in production, and every omp session reads it through a
 // pipe: Bun's `process.exit` drops what a pipe has not yet taken, so the entry must wait for its
@@ -44,6 +46,7 @@ async function runEntry(): Promise<{ code: number; stdout: Uint8Array; stderr: s
     ["bash", "-c", 'set -o pipefail; "$1" "$0" projects | cat', ENTRY, process.execPath],
     {
       env: {
+        ...bunCacheOff,
         PATH: process.env.PATH,
         HOME: state,
         DISPATCH_STATE_DIR: state,
@@ -56,21 +59,24 @@ async function runEntry(): Promise<{ code: number; stdout: Uint8Array; stderr: s
       stderr: "pipe",
     }
   );
-  const [stdout, stderr, code] = await Promise.all([
-    // Bun 1.3 returns an ArrayBuffer from `.bytes()` for some chunkings, so wrap the buffer.
-    new Response(child.stdout).arrayBuffer().then((buffer) => new Uint8Array(buffer)),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
+  const [stdout, stderr, code] = await settled(
+    "the entry's exit and its whole output",
+    Promise.all([
+      // Bun 1.3 returns an ArrayBuffer from `.bytes()` for some chunkings, so wrap the buffer.
+      new Response(child.stdout).arrayBuffer().then((buffer) => new Uint8Array(buffer)),
+      new Response(child.stderr).text(),
+      child.exited,
+    ])
+  );
   return { code, stdout, stderr };
 }
 
 describe("the dispatch entry", () => {
-  // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process and
-  // reads its whole pipe, and bun's unwritten 5,000 ms per-test default is a limit on that work
-  // rather than on a hang. Measured in a 2-CPU pod: 0.36 s idle; under 16 busy loops (8 x nproc),
-  // 6.71 s at most in a whole-suite run and 6.94 s with this file alone, which passes that
-  // default. It fires only if the child never exits or its pipe never ends.
+  // The row runs the entry as a child process and reads its whole pipe, and bun's unwritten 5,000
+  // ms per-test default is a limit on that work rather than on a hang. Measured in a 2-CPU pod:
+  // 0.36 s idle; under 16 busy loops (8 x nproc), 6.71 s at most in a whole-suite run and 6.94 s
+  // with this file alone, which passes that default. A child that never exits, or a pipe that never
+  // ends, fails the wait for them by name.
   test("writes all of its output to a pipe, however long", async () => {
     const { code, stdout, stderr } = await runEntry();
     expect(stderr).toBe("");
@@ -79,5 +85,5 @@ describe("the dispatch entry", () => {
     expect(stdout.length).toBeGreaterThan(64 * 1024);
     expect(text).toContain(`P${PROJECTS - 1}`);
     expect(text.endsWith("\n")).toBe(true);
-  }, 30_000);
+  });
 });

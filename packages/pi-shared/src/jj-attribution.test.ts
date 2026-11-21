@@ -1,8 +1,11 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, jest } from "bun:test";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LEGION_ROLES } from "@legion/contracts";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
+import { until } from "@legion/test-fixtures/wait";
 import {
   exportJjSessionAttribution,
   JJ_CONFIG_PATH_TIMEOUT_MS,
@@ -534,8 +537,7 @@ describe("exportJjSessionAttribution", () => {
         `the running pair\n\n${pair}`
       );
       expect(await duplicateOf(undefined)).toBe("");
-    },
-    60_000
+    }
   );
 });
 
@@ -604,35 +606,75 @@ describe("userConfigChain", () => {
     return { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir };
   }
   afterEach(async () => {
+    // A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+    // `finally`, so the real clock comes back here too, before the next row.
+    jest.useRealTimers();
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
+  // The wrapper's pidfile and the kernel reaping its child are external OS state, which Bun's
+  // fake timers cannot advance, so each helper reads that state until it holds.
   /** The wrapper's child pid, once it has written it. */
   async function pidFrom(pidFile: string): Promise<number> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
+    return await until(`the jj wrapper to write ${pidFile}`, async () => {
       const pid = await readFile(pidFile, "utf8")
         .then((value) => Number(value.trim()))
         .catch(() => 0);
-      if (Number.isInteger(pid) && pid > 0) return pid;
-      await Bun.sleep(10);
-    }
-    throw new Error(`jj wrapper did not write ${pidFile}`);
+      return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+    });
   }
 
-  // Real-time polling is required here: the wrapper's pidfile and the kernel reaping its child
-  // are external OS state, which Bun's fake timers cannot advance.
-  /** The kernel has reaped the child once signal 0 says it no longer exists. */
+  /** True once signal 0 says the kernel has reaped the child; a child never reaped fails the wait
+   *  at the row's deadline, naming the pid. */
   async function stops(pid: number): Promise<boolean> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
+    return await until(`process ${pid} to be reaped`, () => {
       try {
         process.kill(pid, 0);
+        return false;
       } catch {
         return true;
       }
-      await Bun.sleep(10);
+    });
+  }
+
+  /**
+   * Runs `call` on Bun's fake clock and moves the clock a millisecond a turn until `call` settles,
+   * answering how far it moved; at `capMs` it stops and answers the cap. The call's bound is its
+   * own timer, which only this clock moves, while jj runs in real time beside it, so a call that
+   * waits for jj rather than for its timer reads as the cap however loaded the machine. `ready`,
+   * where given, is waited for on turns of the real event loop before the clock first moves.
+   */
+  async function settlesAfterMs(
+    call: () => Promise<unknown>,
+    capMs: number,
+    ready: () => boolean = () => true
+  ): Promise<number> {
+    jest.useFakeTimers();
+    try {
+      const began = Date.now();
+      let done = false;
+      const end = () => {
+        done = true;
+      };
+      void call().then(end, end);
+      await turnsUntil("the jj wrapper to be ready", ready);
+      await turnsUntil(
+        "the call to settle, or the fake clock to reach its cap",
+        () => done || Date.now() - began >= capMs,
+        { each: () => jest.advanceTimersByTime(1) }
+      );
+      return Date.now() - began;
+    } finally {
+      jest.useRealTimers();
     }
-    return false;
+  }
+
+  /** Whether the wrapper has written its child's pid to `pidFile`. */
+  function pidWritten(pidFile: string): boolean {
+    try {
+      return readFileSync(pidFile, "utf8").trim() !== "";
+    } catch {
+      return false;
+    }
   }
 
   it("chains the user config files jj prints, in order", async () => {
@@ -645,12 +687,17 @@ describe("userConfigChain", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-"));
     dirs.push(dir);
     const exported: NodeJS.ProcessEnv = {};
-    const started = Date.now();
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      env: exported,
-      resolveBase: () => userConfigChain(200, env),
-    });
-    expect(Date.now() - started).toBeLessThan(5_000);
+    // The call ends at its own 200 ms timer, never at jj's 30 s.
+    const tookMs = await settlesAfterMs(
+      () =>
+        exportJjSessionAttribution(ROOT_ID, dir, {
+          env: exported,
+          resolveBase: () => userConfigChain(200, env),
+        }),
+      5_000
+    );
+    expect(tookMs).toBeGreaterThanOrEqual(200);
+    expect(tookMs).toBeLessThan(5_000);
     expect(exported.JJ_CONFIG).toBeUndefined();
   });
 
@@ -658,11 +705,17 @@ describe("userConfigChain", () => {
     const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
     dirs.push(path.dirname(pidFile));
     const env = await withJj(`sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`);
-    const started = Date.now();
-    await userConfigChain(200, env);
+    // The wrapper waits for its child, so the call ends at its own 200 ms timer, which kills the
+    // group; the clock moves only once the wrapper has written the child's pid.
+    const tookMs = await settlesAfterMs(
+      () => userConfigChain(200, env),
+      5_000,
+      () => pidWritten(pidFile)
+    );
     const pid = await pidFrom(pidFile);
     try {
-      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(tookMs).toBeGreaterThanOrEqual(200);
+      expect(tookMs).toBeLessThan(5_000);
       expect(await stops(pid)).toBe(true);
     } finally {
       try {

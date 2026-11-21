@@ -1,11 +1,16 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { EnvoyApiError } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./claim-first-turn-bound";
 import { createLegionDaemonClient } from "./daemon-client";
-import { bootLegionClaim, claimRoleAgainOnBusy, type LegionClaimHost } from "./legion-claim-core";
+import {
+  bootLegionClaim,
+  type ClaimStep,
+  claimRoleAgainOnBusy,
+  type LegionClaimHost,
+} from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 
 /** The contract the build under test speaks, which its client states on every request. */
@@ -393,23 +398,50 @@ test("the name is taken at the host's first-turn callback and not before it", as
   expect(steps.at(-1)).toBe(`claimRole ${claimToken}`);
 });
 
-test("a boot that gets no first turn claims at the bound", async () => {
-  const waiting = claimHost({ overrides: { firstTurnBoundMs: 5 } });
-  const booted = await bootLegionClaim(waiting.host);
-  expect(waiting.steps.some((step) => step.startsWith("claimRole"))).toBe(false);
+// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+// `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
+});
 
-  // Nothing fires the signal: this session was given no task and started no turn, and the bound
-  // is what takes its name anyway, so the lane the listener kept for it is handed over.
-  await booted.claimed;
-  expect(waiting.firstTurn()).toBeDefined();
-  expect(waiting.steps).toEqual([
-    `claims/register ${JSON.stringify(registration)}`,
-    "onFirstTurn",
-    "setCapability",
-    `claims/ready ${readyBody()}`,
-    "onRoleRegained",
-    `claimRole ${claimToken}`,
-  ]);
+test("a boot that gets no first turn claims at the bound", async () => {
+  // The bound is the boot's own timer, so the row holds its clock: a millisecond short of the
+  // bound the name is not taken, and at the bound it is, and the boot's record holds the delay it
+  // armed and that the bound's timer took the name.
+  jest.useFakeTimers();
+  try {
+    const start = Date.now();
+    const record: ClaimStep[] = [];
+    const waiting = claimHost({
+      overrides: { firstTurnBoundMs: 5, recordClaimStep: (step) => record.push(step) },
+    });
+    const booted = await bootLegionClaim(waiting.host);
+    expect(waiting.steps.some((step) => step.startsWith("claimRole"))).toBe(false);
+
+    // Nothing fires the signal: this session was given no task and started no turn, and the bound
+    // is what takes its name anyway, so the lane the listener kept for it is handed over. The
+    // bound's timer asks for the name in the step it fires in.
+    jest.advanceTimersByTime(4);
+    expect(waiting.steps.some((step) => step.startsWith("claimRole"))).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect(waiting.firstTurn()).toBeDefined();
+    expect(waiting.steps).toEqual([
+      `claims/register ${JSON.stringify(registration)}`,
+      "onFirstTurn",
+      "setCapability",
+      `claims/ready ${readyBody()}`,
+      "onRoleRegained",
+      `claimRole ${claimToken}`,
+    ]);
+    // The held clock has not moved but for the row's 5 ms, so the record's moments are exact.
+    expect(record).toEqual([
+      { armed: start, boundMs: 5 },
+      { claimedBy: "bound", at: start + 5 },
+    ]);
+    await booted.claimed;
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test("a first turn that started before the boot registered its signal is not lost, and the name is taken once ready has answered", async () => {

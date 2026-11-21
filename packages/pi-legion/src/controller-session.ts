@@ -249,7 +249,20 @@ export function createControllerSession(deps: {
     startedBy: ClaimStarter
   ): Promise<void> => {
     const supervised = daemonLaunchedController(process.env);
-    if (!supervised) return claimWith(context, false, progress, startedBy);
+    if (!supervised) {
+      // The session the claim reads first, which a refusal before the send leaves unmarked.
+      const claimed = context.sessionManager.getSessionId();
+      try {
+        await claimWith(context, false, progress, startedBy);
+      } catch (error) {
+        // Refused before the send, whichever command or session change ran the claim: the start
+        // `session_start` marked due is not coming from it, so the Envoy entry, which holds the
+        // session's startup cards until the mark goes, is not left holding them for it.
+        if (!startMessageSent) clearStartupTurn(claimed);
+        throw error;
+      }
+      return;
+    }
     try {
       await claimWith(context, true, progress, startedBy);
     } catch (error) {
@@ -363,7 +376,10 @@ export function createControllerSession(deps: {
       } else {
         markStartupTurnSent(sessionID);
         startTurnSession = sessionID;
-        pi.sendUserMessage(startMessage);
+        // A send the host fails (a prompt it drops before dispatch, or refuses) starts no run, so
+        // no `agent_start` clears the mark: it goes here, and the Envoy entry, which holds the
+        // session's startup cards until it does, wakes for them. The host logs the failure itself.
+        pi.sendUserMessage(startMessage).catch(() => clearStartupTurn(sessionID));
       }
       startMessageSent = true;
     }
@@ -483,10 +499,13 @@ export function createControllerSession(deps: {
    * (`markStartupTurnPending`) and claims nothing: the Envoy entry opens the session's agent
    * subject at its own `session_start`, and a card that arrives from here until the start command
    * sends the start finds the mark, so it takes no turn and its wake waits for the start turn
-   * (`packages/pi-envoy/src/card-wake.ts`). The send marks it sent; the session's first
-   * `agent_start` (an operator turn started before the command, after which the start message
-   * goes as a follow-up) and its shutdown clear it, and so does the start command's claim when it
-   * fails before the send or hands over to a new session.
+   * (`packages/pi-envoy/src/card-wake.ts`), for as long as the unsent mark stands. The send marks
+   * it sent, which holds them for at most 30 s more; the session's first `agent_start` (an
+   * operator turn started before the command, after which the start message goes as a follow-up)
+   * and its shutdown clear it, and so does a claim that fails before the send or hands over to a
+   * new session (`claimOnce`). With neither a start nor an operator turn (a claim that never
+   * answers, a start command that never runs), the cards wait for the operator's first turn: the
+   * operator is at this terminal.
    */
   const handleSessionStart = async (context: SessionContext): Promise<void> => {
     if (!daemonLaunchedController(process.env)) {
@@ -544,16 +563,11 @@ export function createControllerSession(deps: {
         );
         return;
       }
-      // The session the claim reads first, which a refusal before the send leaves unmarked.
-      const claimed = context.sessionManager.getSessionId();
       try {
         await claimOnce(context, { registered: false }, "typed");
       } catch (error) {
         const message = messageFor(error);
         logger.error(`[legion] the controller claim failed: ${message}`);
-        // Refused before the send: the start `session_start` marked due is not coming, so the
-        // Envoy entry is not left holding its startup cards for it.
-        if (!startMessageSent) clearStartupTurn(claimed);
         context.ui.notify(
           startMessageSent
             ? `legion: the controller claim failed after the start message was sent: ${message}. The start turn has the controller's registration; run /legion-claim-controller to claim the controller role and its wakes again.`

@@ -1,0 +1,20 @@
+{
+  "//": "Written by `bun run analyze:patterns` in packages/envoy-client (test/analyze-patterns.ts): recheck's reading of each pattern of excerpt.ts's excerpt whose analysis takes more than a moment, which excerpt-patterns.test.ts holds to the pattern's source.",
+  "recheck": "4.6.2",
+  "patterns": {
+    "script-or-style-block": {
+      "source": "<script\\b[^<>]*>(?:[\\s\\S]*?<\\/script\\s*>|[\\s\\S]*)|<style\\b[^<>]*>(?:[\\s\\S]*?<\\/style\\s*>|[\\s\\S]*)",
+      "flags": "gi",
+      "status": "safe",
+      "verdict": "linear",
+      "ms": 56735
+    },
+    "authorization-value": {
+      "source": "(\\b(?:authorization|dpop)[\"']?\\s*[:=]\\s*(?:\\[\\s*)?[\"']?(?:(?:bearer|basic|digest|token|dpop)\\s+)?)[^\\s\"'<>,;\\]]+",
+      "flags": "gi",
+      "status": "safe",
+      "verdict": "linear",
+      "ms": 5153
+    }
+  }
+}

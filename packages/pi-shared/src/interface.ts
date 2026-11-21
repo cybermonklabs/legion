@@ -20,7 +20,7 @@ import type { LegionRoleClaimBridge } from "./role-claim-bridge";
  * `task` subagent, so a per-instance callback stored here would be the last instance's, not the
  * pane's (docs/solutions/envoy/heartbeat-role-reassertion-and-regain-hooks.md).
  */
-export const ENVOY_PLUGIN_INTERFACE_VERSION = 5;
+export const ENVOY_PLUGIN_INTERFACE_VERSION = 6;
 export const ENVOY_PLUGIN_INTERFACE_KEY = Symbol.for("legion.pi-shared.envoy-plugin-interface");
 /** Set by the Legion entry's factory to `{ from: import.meta.url, envoyInterface: <version> }`;
  * the daemon's boot gate reads it from `globalThis` to prove the Legion plugin loaded. */
@@ -52,12 +52,14 @@ export interface EnvoyPluginInterface {
    * it sent right before `claims/ready`, after which the daemon sends its start prompt. A start
    * message queued as a follow-up behind a turn the operator already started marks nothing, since
    * that session's first run has already started and its `agent_start` cleared an unsent mark. It
-   * is cleared once that session's first run starts or the session shuts down, and an unsent mark
-   * once the start command's claim fails before the send or hands over to a new session. The Envoy
-   * entry reads it (`packages/pi-envoy/src/card-wake.ts`): while it names the Envoy entry's own
-   * live session, sent less than 30 s ago, or unsent and first read by that entry less than 30 s
-   * ago, a card that arrived while that session started takes no turn, and its wake waits for the
-   * start turn.
+   * is cleared once that session's first run starts or the session shuts down, an unsent mark once
+   * a controller claim (`/legion-controller-start`'s, `/legion-claim-controller`'s, or a re-claim
+   * after a session change) fails before the send or hands over to a new session, and a sent mark
+   * once its send fails. The Envoy entry reads it (`packages/pi-envoy/src/card-wake.ts`): while it
+   * names the Envoy entry's own live session, unsent however long ago, or sent less than 30 s ago,
+   * a card that arrived while that session started takes no turn, and its wake waits for the start
+   * turn. An unsent mark has no cap there, so every way above that clears one is what ends its
+   * hold.
    */
   startupTurn: { readonly session: string; readonly sentAt: number | undefined } | undefined;
 }

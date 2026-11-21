@@ -1,12 +1,13 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { EDIT_REDRAW_DELAY_MS } from "../src/mermaid-code-block-view";
 import { type MermaidDrawer, type MermaidDrawing, mermaidSvgElement } from "../src/mermaid-svg";
 import { withMarksEditor } from "./marks-editor";
 
 // The view's redraw timer is the happy-dom window's own `setTimeout`, which Bun's fake timers do
-// not drive, so these cases run on real time with short margins: the delay is asserted from the
-// time each request is made, and a sleep only shows that nothing more is asked.
+// not drive, so the cases that edit hold the redraw themselves (`withHeldRedraws`): a case finds
+// the redraw an edit armed with `EDIT_REDRAW_DELAY_MS`, reads that an earlier one was cleared, and
+// fires it when it chooses, rather than waiting real time to see a request come or not come.
 
 const FIRST = "graph TD\n  A --> B";
 const SECOND = "graph TD\n  C --> D";
@@ -15,8 +16,6 @@ const ONE_DIAGRAM = `\`\`\`mermaid\n${FIRST}\n\`\`\`\n`;
 
 interface DrawRequest {
   readonly source: string;
-  /** When the view asked, by `performance.now()`. */
-  readonly at: number;
   cancels: number;
   /** Delivers an answer, unless the request was cancelled: a drawer never calls `draw` after its
    *  cancel, which is what the view relies on to drop an answer to an earlier source. */
@@ -36,7 +35,6 @@ function fakeDrawer(answerAtOnce?: (source: string) => MermaidDrawing | undefine
       answer: (drawing) => {
         if (request.cancels === 0) draw(drawing);
       },
-      at: performance.now(),
       cancels: 0,
       source,
     };
@@ -110,13 +108,77 @@ function languageSetter(view: EditorView): (language: string) => void {
   return (language) => view.dispatch(view.state.tr.setNodeAttribute(pos, "language", language));
 }
 
-/** Waits until `check` holds, for at most a second. */
-async function until(check: () => boolean): Promise<void> {
-  const deadline = performance.now() + 1000;
-  while (!check()) {
-    if (performance.now() > deadline) throw new Error("timed out waiting");
-    await Bun.sleep(5);
+/** A redraw the view armed on the held `window.setTimeout`. */
+interface HeldRedraw {
+  /** Runs the redraw, as the window would once its delay had passed. */
+  readonly fire: () => void;
+  /** Whether the view cleared it. */
+  cleared: boolean;
+  /** Whether the case fired it. */
+  fired: boolean;
+}
+
+/**
+ * Runs `run` with the view's redraws held: a timer armed with `EDIT_REDRAW_DELAY_MS` on the
+ * window is recorded and fires only when the case fires it, and the view's clearing of one marks
+ * it cleared, so a case reads from the timers themselves that nothing more can come. Every other
+ * timer, such as ProseMirror's own 20 ms flush of the DOM changes it observed, is the window's
+ * own and runs as it would. A redraw armed with any other delay is not held, so the case finds no
+ * redraw to fire and says so.
+ */
+async function withHeldRedraws(
+  run: (redraws: HeldRedraw[]) => void | Promise<void>
+): Promise<void> {
+  const redraws: HeldRedraw[] = [];
+  const windowSetTimeout = window.setTimeout.bind(window);
+  const windowClearTimeout = window.clearTimeout.bind(window);
+  const setTimeout = spyOn(window, "setTimeout").mockImplementation(((
+    callback: () => void,
+    delay?: number,
+    ...rest: unknown[]
+  ) => {
+    if (delay !== EDIT_REDRAW_DELAY_MS) return windowSetTimeout(callback, delay, ...rest);
+    const redraw: HeldRedraw = {
+      cleared: false,
+      fire: () => {
+        redraw.fired = true;
+        callback();
+      },
+      fired: false,
+    };
+    redraws.push(redraw);
+    // A held redraw's id is minus its place in `redraws`, from -1, which no id of the window's
+    // own is.
+    return -redraws.length;
+  }) as typeof window.setTimeout);
+  const clearTimeout = spyOn(window, "clearTimeout").mockImplementation(((id?: number) => {
+    if (typeof id !== "number" || id >= 0) return windowClearTimeout(id);
+    const redraw = redraws[-id - 1];
+    if (redraw !== undefined) redraw.cleared = true;
+  }) as typeof window.clearTimeout);
+  try {
+    await run(redraws);
+  } finally {
+    setTimeout.mockRestore();
+    clearTimeout.mockRestore();
   }
+}
+
+/** The redraws armed and neither cleared nor fired. */
+function pending(redraws: readonly HeldRedraw[]): HeldRedraw[] {
+  return redraws.filter((redraw) => !redraw.cleared && !redraw.fired);
+}
+
+/** The one pending redraw, which an edit armed with `EDIT_REDRAW_DELAY_MS`. */
+function pendingRedraw(redraws: readonly HeldRedraw[]): HeldRedraw {
+  const [redraw, ...others] = pending(redraws);
+  if (redraw === undefined || others.length > 0) {
+    throw new Error(
+      `the view holds ${pending(redraws).length} pending redraws armed with ` +
+        `EDIT_REDRAW_DELAY_MS (${EDIT_REDRAW_DELAY_MS} ms), not one`
+    );
+  }
+  return redraw;
 }
 
 function expectSourceShown(block: BlockParts): void {
@@ -189,33 +251,36 @@ test("edits ask nothing until the pause after the last one, then ask once for th
   const { drawMermaid, requests } = fakeDrawer();
   await withMarksEditor(
     ONE_DIAGRAM,
-    async ({ view }) => {
-      const document = view.dom.ownerDocument;
-      requests[0]?.answer(diagram(document, "before"));
-      const [block] = blocks(view);
-      if (!block) throw new Error("the document draws a code block");
+    ({ view }) =>
+      withHeldRedraws((redraws) => {
+        const document = view.dom.ownerDocument;
+        requests[0]?.answer(diagram(document, "before"));
+        const [block] = blocks(view);
+        if (!block) throw new Error("the document draws a code block");
 
-      typeInto(view, 0, "\n  B --> C");
-      await Bun.sleep(50);
-      // Taken before the edit, whose update starts the timer: the time measured is never shorter.
-      const lastEdit = performance.now();
-      typeInto(view, 0, "\n  C --> D");
-      expect(requests).toHaveLength(1);
+        typeInto(view, 0, "\n  B --> C");
+        const afterFirstEdit = pendingRedraw(redraws);
+        typeInto(view, 0, "\n  C --> D");
+        // The last edit puts the redraw off again: the first edit's redraw is cleared and the one
+        // left counts the whole delay from the last edit, and neither has asked. A redraw counted
+        // from the first edit would leave the first one armed, one with no delay would have asked
+        // at once, and one with another delay is not held, so `pendingRedraw` finds none.
+        expect(afterFirstEdit.cleared).toBe(true);
+        const afterLastEdit = pendingRedraw(redraws);
+        expect(requests).toHaveLength(1);
 
-      await until(() => requests.length > 1);
-      // A timer never fires early, so the request comes no sooner than the delay after the last
-      // edit: one counted from the first edit would come 50 ms sooner, one without a delay at once.
-      expect((requests[1]?.at ?? 0) - lastEdit).toBeGreaterThanOrEqual(EDIT_REDRAW_DELAY_MS - 1);
-      expect(requests[1]?.source).toBe(`${FIRST}\n  B --> C\n  C --> D`);
-      expect(requests[0]?.cancels).toBe(1);
-      expect(shownDiagram(block)).toBe("before");
+        afterLastEdit.fire();
+        expect(requests).toHaveLength(2);
+        expect(requests[1]?.source).toBe(`${FIRST}\n  B --> C\n  C --> D`);
+        expect(requests[0]?.cancels).toBe(1);
+        expect(shownDiagram(block)).toBe("before");
 
-      await Bun.sleep(50);
-      expect(requests).toHaveLength(2);
-      requests[1]?.answer(diagram(document, "after"));
-      expect(shownDiagram(block)).toBe("after");
-      expect(requests[1]?.cancels).toBe(0);
-    },
+        // No redraw is left to ask again.
+        expect(pending(redraws)).toEqual([]);
+        requests[1]?.answer(diagram(document, "after"));
+        expect(shownDiagram(block)).toBe("after");
+        expect(requests[1]?.cancels).toBe(0);
+      }),
     { drawMermaid }
   );
 });
@@ -224,40 +289,46 @@ test("destroying the editor cancels the request and the redraw timer", async () 
   const { drawMermaid, requests } = fakeDrawer();
   await withMarksEditor(
     ONE_DIAGRAM,
-    async ({ handle, view }) => {
-      const [block] = blocks(view);
-      if (!block) throw new Error("the document draws a code block");
-      typeInto(view, 0, "\n  B --> C");
+    ({ handle, view }) =>
+      withHeldRedraws(async (redraws) => {
+        const [block] = blocks(view);
+        if (!block) throw new Error("the document draws a code block");
+        typeInto(view, 0, "\n  B --> C");
+        const redraw = pendingRedraw(redraws);
 
-      // `destroy` is idempotent and answers with the editor's own teardown, so the harness may
-      // call it again when this case ends.
-      await handle.destroy();
-      expect(view.isDestroyed).toBe(true);
-      expect(requests).toHaveLength(1);
-      expect(requests[0]?.cancels).toBe(1);
+        // `destroy` is idempotent and answers with the editor's own teardown, so the harness may
+        // call it again when this case ends.
+        await handle.destroy();
+        expect(view.isDestroyed).toBe(true);
+        expect(requests).toHaveLength(1);
+        expect(requests[0]?.cancels).toBe(1);
 
-      await Bun.sleep(EDIT_REDRAW_DELAY_MS + 50);
-      expect(requests).toHaveLength(1);
-      expect(block.preview?.shadowRoot ?? null).toBeNull();
-      expect(block.preview?.hidden).toBe(true);
-    },
+        // The redraw is cleared and none is left, so nothing can ask or draw later.
+        expect(redraw.cleared).toBe(true);
+        expect(pending(redraws)).toEqual([]);
+        expect(block.preview?.shadowRoot ?? null).toBeNull();
+        expect(block.preview?.hidden).toBe(true);
+      }),
     { drawMermaid }
   );
 });
 
 test("with no drawer a mermaid block asks nothing and shows its source", async () => {
-  await withMarksEditor(ONE_DIAGRAM, async ({ view }) => {
-    const [block] = blocks(view);
-    if (!block) throw new Error("the document draws a code block");
-    expectSourceShown(block);
-    typeInto(view, 0, "\n  B --> C");
-    await Bun.sleep(EDIT_REDRAW_DELAY_MS + 50);
-    const [after] = blocks(view);
-    expect(after?.pre).toBe(block.pre);
-    expectSourceShown(block);
-    expect(block.preview?.shadowRoot ?? null).toBeNull();
-    expect(block.code.textContent).toBe(`${FIRST}\n  B --> C`);
-  });
+  await withMarksEditor(ONE_DIAGRAM, ({ view }) =>
+    withHeldRedraws((redraws) => {
+      const [block] = blocks(view);
+      if (!block) throw new Error("the document draws a code block");
+      expectSourceShown(block);
+      typeInto(view, 0, "\n  B --> C");
+      // The pause after the edit ends, and with no drawer there is nothing to ask.
+      pendingRedraw(redraws).fire();
+      const [after] = blocks(view);
+      expect(after?.pre).toBe(block.pre);
+      expectSourceShown(block);
+      expect(block.preview?.shadowRoot ?? null).toBeNull();
+      expect(block.code.textContent).toBe(`${FIRST}\n  B --> C`);
+    })
+  );
 });
 
 test("a code block in another language keeps upstream's plain layout and asks nothing", async () => {
@@ -345,23 +416,25 @@ test("a refusal shows its text in the status line and hides the preview", async 
   const { drawMermaid, requests } = fakeDrawer();
   await withMarksEditor(
     ONE_DIAGRAM,
-    async ({ view }) => {
-      const [block] = blocks(view);
-      if (!block) throw new Error("the document draws a code block");
-      requests[0]?.answer(diagram(view.dom.ownerDocument, "drawn"));
-      expect(shownDiagram(block)).toBe("drawn");
+    ({ view }) =>
+      withHeldRedraws((redraws) => {
+        const [block] = blocks(view);
+        if (!block) throw new Error("the document draws a code block");
+        requests[0]?.answer(diagram(view.dom.ownerDocument, "drawn"));
+        expect(shownDiagram(block)).toBe("drawn");
 
-      typeInto(view, 0, " -->");
-      await until(() => requests.length > 1);
-      const error = "Unable to render Mermaid diagram: Dangling Mermaid edge";
-      requests[1]?.answer({ error });
+        typeInto(view, 0, " -->");
+        pendingRedraw(redraws).fire();
+        expect(requests).toHaveLength(2);
+        const error = "Unable to render Mermaid diagram: Dangling Mermaid edge";
+        requests[1]?.answer({ error });
 
-      expect(block.status?.hidden).toBe(false);
-      expect(block.status?.textContent).toBe(error);
-      expect(block.preview?.hidden).toBe(true);
-      expect(block.preview?.shadowRoot?.childNodes).toHaveLength(0);
-      expect(block.pre.parentElement?.matches("details.proof-mermaid-source[open]")).toBe(true);
-    },
+        expect(block.status?.hidden).toBe(false);
+        expect(block.status?.textContent).toBe(error);
+        expect(block.preview?.hidden).toBe(true);
+        expect(block.preview?.shadowRoot?.childNodes).toHaveLength(0);
+        expect(block.pre.parentElement?.matches("details.proof-mermaid-source[open]")).toBe(true);
+      }),
     { drawMermaid }
   );
 });
@@ -370,23 +443,25 @@ test("an edit answered unavailable (no renderer can draw it) clears the earlier 
   const { drawMermaid, requests } = fakeDrawer();
   await withMarksEditor(
     ONE_DIAGRAM,
-    async ({ view }) => {
-      const [block] = blocks(view);
-      if (!block) throw new Error("the document draws a code block");
-      requests[0]?.answer(diagram(view.dom.ownerDocument, "drawn"));
-      expect(shownDiagram(block)).toBe("drawn");
+    ({ view }) =>
+      withHeldRedraws((redraws) => {
+        const [block] = blocks(view);
+        if (!block) throw new Error("the document draws a code block");
+        requests[0]?.answer(diagram(view.dom.ownerDocument, "drawn"));
+        expect(shownDiagram(block)).toBe("drawn");
 
-      typeInto(view, 0, "\n  B --> C");
-      await until(() => requests.length > 1);
-      requests[1]?.answer({ unavailable: true });
+        typeInto(view, 0, "\n  B --> C");
+        pendingRedraw(redraws).fire();
+        expect(requests).toHaveLength(2);
+        requests[1]?.answer({ unavailable: true });
 
-      expect(block.preview?.hidden).toBe(true);
-      expect(block.preview?.shadowRoot?.childNodes).toHaveLength(0);
-      expect(block.status?.hidden).toBe(true);
-      expect(block.status?.textContent).toBe("");
-      expectSourceShown(block);
-      expect(block.code.textContent).toBe(`${FIRST}\n  B --> C`);
-    },
+        expect(block.preview?.hidden).toBe(true);
+        expect(block.preview?.shadowRoot?.childNodes).toHaveLength(0);
+        expect(block.status?.hidden).toBe(true);
+        expect(block.status?.textContent).toBe("");
+        expectSourceShown(block);
+        expect(block.code.textContent).toBe(`${FIRST}\n  B --> C`);
+      }),
     { drawMermaid }
   );
 });

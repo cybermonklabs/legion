@@ -97,7 +97,7 @@ describe("wait_for_run_processes", () => {
     expect(r.code).not.toBe(0);
     expect(r.calls).toBeGreaterThan(1);
     expect(r.stderr).toContain("7777");
-  }, 15_000);
+  });
 
   test("a call with no arguments waits the production bounds, 600 s and 10 polls", () => {
     // The walk finds nothing at once and exits 1 from its last test, which the wait, failing only

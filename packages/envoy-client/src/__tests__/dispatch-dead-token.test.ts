@@ -10,6 +10,7 @@
 // token traded again for nothing, and the dead one kept for the next call.
 
 import { expect, test } from "bun:test";
+import { settled } from "@legion/test-fixtures/wait";
 import { brokerCredential } from "../broker-credential";
 import { DispatchClient } from "../dispatch-http";
 import { brokerStandIns } from "./broker-stand-ins";
@@ -75,7 +76,12 @@ test.each([
   const warm = (await credential.headers("GET", url)).Authorization;
   session = "ses-one";
 
-  await call(new DispatchClient(dispatch.url, credential, fetch, { deadlineMs: 10_000 }));
+  // The client's own deadline (`DISPATCH_TOOL_DEADLINE_MS`) is past the row's: a call that never
+  // ends fails at the row's deadline, naming it.
+  await settled<unknown>(
+    "the call whose first token is dead",
+    call(new DispatchClient(dispatch.url, credential, fetch))
+  );
 
   // ses-one's token went out first and was dead; the resend went as ses-two, with its live token,
   // which no trade replaced.

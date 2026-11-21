@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  `exitProcess` (`@legion/envoy-client/process-exit`) is a shared way out of a Bun program whose
+  last output must reach its reader: it exits once stdout and stderr have taken what was written,
+  or once the caller's bound has passed for a reader that takes nothing. The `slack_post` poster
+  ends the same way, in a copy of its own, so its answer line is no longer dropped when it exits
+  early on a reply it could not post; it gives stdout up to 5 s, which with Slack's 10 s stays
+  inside the tool's 30 s.

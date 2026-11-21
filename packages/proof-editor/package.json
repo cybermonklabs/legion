@@ -39,12 +39,15 @@
   },
   "main": "src/lib.ts",
   "types": "src/lib.ts",
+  "//": [
+    "test: --timeout 47000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at e976062e with the work-count rows of tests/parse-work.ts (two runs in a builds Job, d2-pe8): upstream/ is what the pinned sources emit, 23,288.77 ms (16,987.78 ms in the other run; 15,902.19 ms at 61b66deb). The slowest of those rows read 13,815.86 ms, the default mode's 49 items nested by indentation then blank lines. Read again with every stage of the parse counted (the Proxy-counted stages and Milkdown's runner calls) and the timing lane deleted, in builds Job d-r3-pe-8 at main 73e417f113 with #4437's round-3 tree (two runs, 2026-11-19): the slowest row 11,801.50 ms (10,992.35 ms in the other run), the default mode's 49 items nested by indentation then blank lines; upstream/ 9,802.33 ms. Read again at #4437's round-4 tree with its fix 17d8f97782, heavy-bodies.test.ts's rows among them, the whole command under the same load (three runs in builds Job g4b-pe-ed, legion-load-run-mqv2s, 2026-11-21, each hook timed by a preload the Job's patch added, since Bun prints no hook times): the slowest row, the read-only engine parses 49 items nested by indentation then blank lines, 13,700.07 ms (13,115.60 and 13,300.48 ms the slowest of the other runs); upstream/ at most 12,487.39 ms; the slowest hook, build-upstream-tarball.test.ts's beforeAll, 94.03 ms. heavy-bodies.test.ts alone, at the same fix, read 13,887.89 ms at its slowest, the read-only engine's 100 items nested by indentation then blank lines (two runs in builds Job r4fix-hb8b, legion-load-run-gvgxn, the same load), which 47000 holds 3.38 times."
+  ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit -p tsconfig.check.json",
     "upstream-declarations": "bun scripts/upstream-declarations.ts",
     "build-upstream-tarball": "bun scripts/build-upstream-tarball.ts",
     "parity-fuzz": "bun scripts/parity-fuzz.ts",
-    "test": "bun test src/tests tests",
+    "test": "bun test --timeout 47000 --preload @legion/test-fixtures/row-deadline src/tests tests",
     "lint": "bunx biome check ."
   },
   "dependencies": {
@@ -88,6 +91,7 @@
     "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
     "happy-dom": "^20.14.0",
+    "micromark": "^4.0.2",
     "typescript": "^5.3.0"
   }
 }

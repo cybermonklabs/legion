@@ -66,11 +66,11 @@ describe("package.json's entry points", () => {
     const written = await build("build");
     expect(written).toEqual(defaults);
     expect(written).toContain(underDist(manifest.main));
-  }, 60_000);
+  });
 
   test("build:dispatch writes each of its entries where package.json names it", async () => {
     const written = await build("build:dispatch");
     expect(written.length).toBeGreaterThan(0);
     expect(written.filter((path) => !defaults.includes(path))).toEqual([]);
-  }, 60_000);
+  });
 });

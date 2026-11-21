@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { LegionState } from "@legion/contracts/legion-api";
@@ -19,6 +19,7 @@ import {
   type StallWatchdogTeller,
 } from "@legion/pi-shared/stall-watchdog";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { until } from "@legion/test-fixtures/wait";
 // The import above is this file's merge-base check: on the merge base there is no
 // `./stall-evidence`, so every test here fails to resolve rather than passing vacuously.
 import type { LegionSessionKind } from "./classify";
@@ -53,14 +54,28 @@ afterEach(() => {
 
 /** One real child of this process, with the environment the case needs, left running until the
  * case ends. `sh -c` is what makes a process of its own: a command Oh My Pi runs in its own shell
- * has none (measured). */
-async function child(environment: Record<string, string>): Promise<number> {
+ * has none (measured). With `startedFile`, the child first writes its own reading of the clock
+ * there (epoch milliseconds), its own record of a moment after it started. */
+async function child(environment: Record<string, string>, startedFile?: string): Promise<number> {
   // `exec`, so the process the case reads is the one `kill` ends: a shell that forks `sleep`
   // leaves it running when the shell is killed, reparented to pid 1 (measured).
-  const running = Bun.spawn(["sh", "-c", "exec sleep 300"], {
-    env: { ...process.env, ...environment },
-    stdio: ["ignore", "ignore", "ignore"],
-  });
+  const running = Bun.spawn(
+    [
+      "sh",
+      "-c",
+      startedFile === undefined
+        ? "exec sleep 300"
+        : 'date +%s%3N > "$STALL_TEST_STARTED_FILE"; exec sleep 300',
+    ],
+    {
+      env: {
+        ...process.env,
+        ...environment,
+        ...(startedFile === undefined ? {} : { STALL_TEST_STARTED_FILE: startedFile }),
+      },
+      stdio: ["ignore", "ignore", "ignore"],
+    }
+  );
   spawned.push(running);
   // The pid is live the moment `spawn` returns, but the kernel carries the process and its
   // environment a moment later. What is awaited is that reading, not a guessed delay: this case
@@ -68,75 +83,89 @@ async function child(environment: Record<string, string>): Promise<number> {
   // `exec` leaves, `sleep 300` exactly: the shell's own line, `sh -c exec sleep 300`, names it
   // too and is read first (252 of 300 spawns, measured), and a reading taken while `exec` runs
   // has no argv at all, so the case would read the process as `[sh]`.
-  await until(async () => {
-    const scan = await readStallProcesses();
-    if (!scan.read) return false;
-    const found = scan.processes.find((candidate) => candidate.pid === running.pid);
-    return (
-      found !== undefined &&
-      found.environment.PI_TOOL_CALL_ID === environment.PI_TOOL_CALL_ID &&
-      found.command === "sleep 300"
-    );
-  });
+  await until(
+    "the child in this process's tree as `sleep 300`, with the case's environment",
+    async () => {
+      const scan = await readStallProcesses();
+      if (!scan.read) return false;
+      const found = scan.processes.find((candidate) => candidate.pid === running.pid);
+      return (
+        found !== undefined &&
+        found.environment.PI_TOOL_CALL_ID === environment.PI_TOOL_CALL_ID &&
+        found.command === "sleep 300"
+      );
+    }
+  );
   return running.pid;
-}
-
-/** Waits for one reading of the machine to come true, up to ten seconds. */
-async function until(ready: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 1_000; attempt += 1) {
-    if (await ready()) return;
-    await Bun.sleep(10);
-  }
-  throw new Error("the machine never reached the state the case needs");
 }
 
 test("the tree names every process of the agent, read from this pod's own /proc", async () => {
   const claimSecret = fixtureSecret("claim");
-  const pid = await child({
-    PI_TOOL_CALL_ID: "toolu_stuck",
-    // A credential of the kind an environment routinely holds: the reader keeps two names and
-    // this is not one of them, so nothing downstream can write it anywhere.
-    LEGION_CLAIM_SECRET: claimSecret,
-  });
+  const scratch = mkdtempSync(path.join(tmpdir(), "stall-started-"));
+  const startedFile = path.join(scratch, "started");
+  try {
+    const pid = await child(
+      {
+        PI_TOOL_CALL_ID: "toolu_stuck",
+        // A credential of the kind an environment routinely holds: the reader keeps two names
+        // and this is not one of them, so nothing downstream can write it anywhere.
+        LEGION_CLAIM_SECRET: claimSecret,
+      },
+      startedFile
+    );
+    const ownRecord = await until("the child's own record of a moment after it started", () => {
+      try {
+        return Number(readFileSync(startedFile, "utf8"));
+      } catch {
+        return 0;
+      }
+    });
 
-  const scan = await readStallProcesses();
-  if (!scan.read) throw new Error(`this pod's /proc could not be read: ${scan.reason}`);
-  const agent = scan.processes[0];
-  expect(agent?.pid).toBe(process.pid);
-  // Measurement 1: the agent's own environment is the one `/proc` will not hand it here, so the
-  // reader reads other pids only.
-  expect(agent?.environment).toEqual({});
+    const scan = await readStallProcesses();
+    if (!scan.read) throw new Error(`this pod's /proc could not be read: ${scan.reason}`);
+    const agent = scan.processes[0];
+    expect(agent?.pid).toBe(process.pid);
+    // Measurement 1: the agent's own environment is the one `/proc` will not hand it here, so the
+    // reader reads other pids only.
+    expect(agent?.environment).toEqual({});
 
-  const found = scan.processes.find((candidate) => candidate.pid === pid);
-  expect(found).toBeDefined();
-  expect(found?.ppid).toBe(process.pid);
-  expect(found?.command).toContain("sleep 300");
-  // The identifier, the start time, the state and the processor time, as the kernel reports them.
-  expect(found?.startedAt).toBeGreaterThan(Date.now() - 60 * SECOND);
-  expect(found?.startedAt).toBeLessThanOrEqual(Date.now());
-  expect(found?.state).toMatch(/^[A-Za-z]$/);
-  expect(found?.cpuMs).toBeGreaterThanOrEqual(0);
-  // The call its environment names, which is exactly the frame's `toolCallId` (measured).
-  expect(found?.toolCallId).toBe("toolu_stuck");
-  // And nothing else of that environment is kept, whatever else the process inherited.
-  expect(
-    Object.keys(found?.environment ?? {}).filter(
-      (name) => !STALL_READ_ENVIRONMENT.some((wanted) => wanted === name)
-    )
-  ).toEqual([]);
+    const found = scan.processes.find((candidate) => candidate.pid === pid);
+    expect(found).toBeDefined();
+    expect(found?.ppid).toBe(process.pid);
+    expect(found?.command).toContain("sleep 300");
+    // The identifier, the start time, the state and the processor time, as the kernel reports
+    // them. The start time is placed by the records of the two processes, not by a clock this
+    // case reads: the child started after this process recorded its own start
+    // (`performance.timeOrigin`), less the second the kernel's boot moment drops (`/proc/stat`'s
+    // `btime` is whole seconds), and no later than the moment the child read the clock itself.
+    expect(found?.startedAt).toBeGreaterThanOrEqual(performance.timeOrigin - SECOND);
+    expect(found?.startedAt).toBeLessThanOrEqual(ownRecord);
+    expect(found?.state).toMatch(/^[A-Za-z]$/);
+    expect(found?.cpuMs).toBeGreaterThanOrEqual(0);
+    // The call its environment names, which is exactly the frame's `toolCallId` (measured).
+    expect(found?.toolCallId).toBe("toolu_stuck");
+    // And nothing else of that environment is kept, whatever else the process inherited.
+    expect(
+      Object.keys(found?.environment ?? {}).filter(
+        (name) => !STALL_READ_ENVIRONMENT.some((wanted) => wanted === name)
+      )
+    ).toEqual([]);
 
-  // What the evidence carries: the same processes, with no environment and no parent.
-  const tree = stallProcessTree(scan);
-  if (!tree.read) throw new Error("the tree was read and then reported unread");
-  expect(JSON.stringify(tree)).not.toContain(claimSecret);
-  expect(tree.processes.find((candidate) => candidate.pid === pid)).toEqual({
-    pid,
-    command: found?.command as string,
-    startedAt: found?.startedAt as number,
-    state: found?.state as string,
-    cpuMs: found?.cpuMs as number,
-    toolCallId: "toolu_stuck",
-  });
+    // What the evidence carries: the same processes, with no environment and no parent.
+    const tree = stallProcessTree(scan);
+    if (!tree.read) throw new Error("the tree was read and then reported unread");
+    expect(JSON.stringify(tree)).not.toContain(claimSecret);
+    expect(tree.processes.find((candidate) => candidate.pid === pid)).toEqual({
+      pid,
+      command: found?.command as string,
+      startedAt: found?.startedAt as number,
+      state: found?.state as string,
+      cpuMs: found?.cpuMs as number,
+      toolCallId: "toolu_stuck",
+    });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });
 
 test("a machine whose /proc cannot be read records that, never an empty tree", async () => {
@@ -578,10 +607,14 @@ function refusal429(body: Record<string, unknown>): EnvoyApiError {
   });
 }
 
-/** Lets the teller's detached resends run to their end. The rig's `sleep` and publish resolve at
- * once, so the resends are microtasks only, and every microtask runs before a timer's callback. */
-function resendsSettled(): Promise<void> {
-  return Bun.sleep(0);
+/** Waits for the line a resend of the teller writes last, the one that holds `ending`: a resend
+ * ends with one line, that the owner was told, that the notice was given up or that it was
+ * refused, written after every send and wait of its own. The rig's `sleep` and publish resolve at
+ * once, so the wait ends as soon as the detached resend has run. */
+function resendEnded(rig: TellerRig, ending: string): Promise<unknown> {
+  return until(`the resend's last line, that ${ending}`, () =>
+    rig.warnings.find((line) => line.message.includes(ending))
+  );
 }
 
 const GIVEN_UP = "it was given up after 4 sends";
@@ -594,7 +627,7 @@ test("a stall notice rate limited by the listener is sent again under its key af
     evidenceWritten: true,
     ownerTold: false,
   });
-  await resendsSettled();
+  await resendEnded(rig, "its owner was told");
 
   expect(rig.waits).toEqual([2 * SECOND]);
   expect(rig.published).toHaveLength(2);
@@ -621,7 +654,7 @@ test("a stall notice rate limited 4 times is sent 4 times and then given up", as
   // Each refusal names its own wait, and each wait is that refusal's.
   rig.nextAnswers = [2, 3, 5, 7].map(senderRateLimited);
   await rig.teller.tellOverdue(evidenceOf());
-  await resendsSettled();
+  await resendEnded(rig, GIVEN_UP);
 
   expect(rig.published).toHaveLength(4);
   for (const input of rig.published) expect(input).toEqual(rig.published[0] as PublishInput);
@@ -647,10 +680,10 @@ test("a 429 rate limited for another reason is not sent again", async () => {
       evidenceWritten: true,
       ownerTold: false,
     });
-    await resendsSettled();
-
-    expect(rig.published).toHaveLength(1);
+    // A resend's first act is its wait, which it takes before `tellOverdue` returns, so a wait
+    // recorded by then is the state that shows a resend started.
     expect(rig.waits).toEqual([]);
+    expect(rig.published).toHaveLength(1);
     expect(rig.warnings.map((line) => line.message)).toContain(
       "legion: the owner was not told about this session's stuck tool call"
     );

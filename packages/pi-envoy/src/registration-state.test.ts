@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
@@ -21,6 +21,13 @@ import {
   taskWasAbandoned,
 } from "./registration-state";
 import type { SessionInbound } from "./session-inbound";
+
+// A row that runs on Bun's fake clock (`jest.useFakeTimers`) gives the real clock back in its own
+// `finally`, and this hook gives it back too, so a row aborted at Bun's own timeout cannot leave
+// the fake clock on for the next.
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 /** The deadline rejection the queue answers with, which the module names through its predicate:
  *  the error class itself is private to it. */
@@ -448,19 +455,28 @@ describe("the serial queues", () => {
       await release.promise;
       return fakeConnection("limited");
     };
-    const started = performance.now();
-    const running = state.passes.run(async (handle) => {
-      handle.actFor("ses_a");
-      await handle.connect().catch(() => undefined);
-      return true;
-    });
-    const limit = await given.promise;
-    if (limit === undefined) throw new Error("the task's dial was given no limit");
-    expect(Math.abs(limit.deadlineAt - (started + 200))).toBeLessThan(100);
-    expect(limit.stopped()).toBe(false);
-    await expectAbandoned(running);
-    expect(limit.stopped()).toBe(true);
-    release.resolve();
+    // On the fake clock from before the run, given back at the row's end: the deadline is read
+    // from it as the task is queued, and nothing moves it until the row does, so the deadline is
+    // the task's 200 ms from the run's call to the millisecond, however loaded the machine.
+    jest.useFakeTimers();
+    try {
+      const started = performance.now();
+      const running = state.passes.run(async (handle) => {
+        handle.actFor("ses_a");
+        await handle.connect().catch(() => undefined);
+        return true;
+      });
+      const limit = await given.promise;
+      if (limit === undefined) throw new Error("the task's dial was given no limit");
+      expect(limit.deadlineAt).toBe(started + 200);
+      expect(limit.stopped()).toBe(false);
+      jest.advanceTimersByTime(200);
+      await expectAbandoned(running);
+      expect(limit.stopped()).toBe(true);
+    } finally {
+      jest.useRealTimers();
+      release.resolve();
+    }
   });
 
   test("a subscribe whose dial its task's session outran closes that dial and opens nothing", async () => {

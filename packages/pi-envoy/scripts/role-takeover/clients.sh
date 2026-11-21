@@ -24,11 +24,11 @@
 #   nats_url               natsd, which each client subscribes through
 #   omp_heartbeat_ms       the Oh My Pi client's heartbeat period
 #   omp_pass_deadline_ms   how long one of its passes may take
-#   client_reply_timeout   how long a client may take to answer one command
-#   listener_wait_timeout  how long a renewal may take to reach the listener
 #   run_id                 this run's id, which renew_claude's topic carries
-# and defines refuse, wait_for, pick_port and port_open, and the scenario_pids and scenario_fds
-# its teardown kills and closes, which every process and descriptor started here is added to.
+# and defines refuse, pick_port and port_open, and the scenario_pids and scenario_fds its teardown
+# kills and closes, which every process and descriptor started here is added to. Every wait here
+# is proof-wait.sh's wait_held (through local-stack.sh), which ends at the guard the smoke set
+# (proof_guard), or at once where the process it waits on has exited (running).
 
 # ---- the clients ---------------------------------------------------------------------------------
 declare -A proxy_url proxy_log client_fd client_out client_pid
@@ -36,17 +36,19 @@ next_command_id=0
 
 # start_proxy LABEL: this client's own HTTP path to the listener, recording every request.
 start_proxy() {
-  local label="$1" port
+  local label="$1" port pid
   pick_port port
   proxy_log["$label"]="${work}/proxies/${label}.jsonl"
   : >"${proxy_log[$label]}"
   (exec env -i PATH="$PATH" HOME="${work}/bun-home" TMPDIR="${TMPDIR:-/tmp}" \
     bun "${drivers}/listener-proxy.ts" --port "$port" --upstream "$envoy_url" \
     --log "${proxy_log[$label]}" --label "$label") >>"${work}/logs/proxy-${label}.log" 2>&1 &
-  scenario_pids+=($!)
+  pid=$!
+  scenario_pids+=("$pid")
   proxy_url["$label"]="http://127.0.0.1:${port}"
-  wait_for 30 port_open "$port" ||
-    refuse "the ${label} proxy did not listen on 127.0.0.1:${port}: $(tail -n 5 "${work}/logs/proxy-${label}.log")"
+  wait_held "the ${label} proxy to listen on 127.0.0.1:${port}" \
+    running "$pid" "the ${label} proxy" port_open "$port" ||
+    refuse "the ${label} proxy did not listen on 127.0.0.1:${port} (${wait_gave_up}): $(tail -n 5 "${work}/logs/proxy-${label}.log")"
 }
 
 # client_fifo LABEL: the stdin this shell holds open for the client, so it never sees end of input.
@@ -81,12 +83,14 @@ start_omp() {
       ENVOY_CONFIG_FILE="${home}/envoy.json" ENVOY_HEARTBEAT_MS="$omp_heartbeat_ms" \
       ENVOY_PASS_DEADLINE_MS="$omp_pass_deadline_ms" ROLE_TAKEOVER_CWD="${home}/cwd" \
       ROLE_TAKEOVER_CLIENT_LOG="${work}/logs/${label}-notices.log" \
+      LEGION_PROOF_DEADLINE_MS="$LEGION_PROOF_DEADLINE_MS" \
       bun --preload "${drivers}/host-stub.ts" "${drivers}/omp-client.ts") \
     <"${work}/${label}.stdin" >"${client_out[$label]}" 2>"${work}/logs/${label}.err" &
   client_pid["$label"]=$!
   scenario_pids+=($!)
-  wait_for 90 client_ready "$label" ||
-    refuse "the ${label} Oh My Pi client did not start: $(tail -n 10 "${work}/logs/${label}.err")"
+  wait_held "the ${label} Oh My Pi client to start" \
+    running "${client_pid[$label]}" "the ${label} Oh My Pi client" client_ready "$label" ||
+    refuse "the ${label} Oh My Pi client did not start (${wait_gave_up}): $(tail -n 10 "${work}/logs/${label}.err")"
 }
 
 # start_claude LABEL SESSION STATE_DIR HEARTBEAT_MS: one `claude` process and the real channel
@@ -102,14 +106,16 @@ start_claude() {
   client_fifo "$label"
   (cd -- "${repo_root}/packages/claude-envoy" &&
     exec env -i PATH="$PATH" HOME="${work}/bun-home" TMPDIR="${TMPDIR:-/tmp}" \
+      LEGION_PROOF_DEADLINE_MS="$LEGION_PROOF_DEADLINE_MS" \
       bun "${drivers}/claude-client.ts" --server "$channel_server" --session "$session" \
       --state-dir "$state" --config-dir "$config" --heartbeat-ms "$heartbeat" \
       --stderr "${work}/logs/${label}-channel.err") \
     <"${work}/${label}.stdin" >"${client_out[$label]}" 2>"${work}/logs/${label}.err" &
   client_pid["$label"]=$!
   scenario_pids+=($!)
-  wait_for 120 client_ready "$label" ||
-    refuse "the ${label} Claude Code channel server did not start: $(tail -n 10 "${work}/logs/${label}.err") $(tail -n 10 "${work}/logs/${label}-channel.err" 2>/dev/null)"
+  wait_held "the ${label} Claude Code channel server to start" \
+    running "${client_pid[$label]}" "the ${label} Claude Code client" client_ready "$label" ||
+    refuse "the ${label} Claude Code channel server did not start (${wait_gave_up}): $(tail -n 10 "${work}/logs/${label}.err") $(tail -n 10 "${work}/logs/${label}-channel.err" 2>/dev/null)"
 }
 
 reply=""
@@ -121,8 +127,9 @@ send() {
   printf '%s\n' "$(jq -c --arg id "$id" '. + {id: $id}' <<<"$body")" >&"${client_fd[$label]}"
   local answered=()
   answered=(grep -q "\"id\":\"${id}\"" "${client_out[$label]}")
-  wait_for "$client_reply_timeout" "${answered[@]}" ||
-    refuse "the ${label} client did not answer ${body} within ${client_reply_timeout}s: $(tail -n 10 "${work}/logs/${label}.err")"
+  wait_held "the ${label} client to answer ${body}" \
+    running "${client_pid[$label]}" "the ${label} client" "${answered[@]}" ||
+    refuse "the ${label} client did not answer ${body} (${wait_gave_up}): $(tail -n 10 "${work}/logs/${label}.err")"
   reply="$(grep -F "\"id\":\"${id}\"" "${client_out[$label]}" | tail -n 1)"
   jq -e '.ok == true' <<<"$reply" >/dev/null ||
     refuse "the ${label} client refused ${body}: ${reply}"
@@ -233,6 +240,33 @@ claim_count() {
     "${proxy_log[$1]}" 2>/dev/null
 }
 
+# claim_date LABEL SESSION PREVIOUS: the listener's own clock at its answer to that client's last
+# such claim (the proxy's `date`, epoch seconds), 0 where it made none or the listener dated none.
+claim_date() {
+  jq -rs --arg sid "$2" --arg previous "$3" \
+    'map(select(.path == "/v1/roles/set" and .request.session_id == $sid
+                and (.request.previous_session_id // "") == $previous))
+     | if length == 0 then 0 else (.[-1].date // 0 | floor) end' \
+    "${proxy_log[$1]}" 2>/dev/null || printf '0'
+}
+
+# late_refusal LABEL SESSION PREVIOUS SINCE: the last such claim of that client the listener
+# answered other than 200 at a moment its own clock dates more than SINCE (epoch seconds of that
+# clock, from the proxy's `date`), as `<status> naming <holder> at <date>`; empty where it
+# answered none so. A row whose claim the listener must grant once a window it keeps is over
+# reads here a claim it refused past that window.
+late_refusal() {
+  jq -rs --arg sid "$2" --arg previous "$3" --argjson since "$4" \
+    'map(select(.path == "/v1/roles/set" and .request.session_id == $sid
+                and (.request.previous_session_id // "") == $previous
+                and .status != 200 and (.date // 0) > $since))
+     | if length == 0 then ""
+       else .[-1]
+         | "\(.status) naming \((.response | if type == "object" then .holder else null end) // "nobody") at \(.date)"
+       end' \
+    "${proxy_log[$1]}" 2>/dev/null
+}
+
 # release_status LABEL SESSION TOPIC: the status the listener answered that client's last
 # hand-back of TOPIC for SESSION (POST /v1/interests/unsubscribe), empty when it made none.
 release_status() {
@@ -268,8 +302,9 @@ renew_omp() {
     [[ "$(registered_at "$label" "$session")" -gt "$before" ]]
   }
   send "$label" '{"op":"heartbeat"}'
-  wait_for "$listener_wait_timeout" registered_again ||
-    refuse "the ${label} client did not re-register ${session} within ${listener_wait_timeout}s"
+  wait_held "the ${label} client to re-register ${session}" \
+    running "${client_pid[$label]}" "the ${label} client" registered_again ||
+    refuse "the ${label} client did not re-register ${session} (${wait_gave_up})"
 }
 
 # renew_claude LABEL: one registration from that channel server, answered once it has landed. The

@@ -33,6 +33,14 @@ const idPrefixPattern = /^[0-9a-f][0-9a-f-]{7,}$/i;
 const wholeIdPattern =
   /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
+/** The patterns of this module, by name, for a test that reads each the way a backtracking engine
+ *  runs it: every reader of a Dispatch reference in text runs them on what an author wrote. */
+export const DISPATCH_TEXT_RULE_PATTERNS: Readonly<Record<string, RegExp>> = {
+  idPrefix: idPrefixPattern,
+  sessionId: sessionIdOnly,
+  wholeId: wholeIdPattern,
+};
+
 /**
  * Whether `value` is an id written short, the one rule every TypeScript caller asks: the
  * dashboard, which resolves such an id against the reference graph before it reads anything

@@ -1,7 +1,16 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { FallbackCooldownState } from "@legion/pi-shared/fallback-cooldown";
 import type { HostModel } from "@legion/pi-shared/pi-types";
-import { createModelFallback, type ModelFallbackContext } from "./model-fallback";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { until } from "@legion/test-fixtures/wait";
+import {
+  createModelFallback,
+  FALLBACK_CLOCK_FILE,
+  fallbackClock,
+  type ModelFallbackContext,
+} from "./model-fallback";
 
 /**
  * The model fallback runner against fake deps and a fake session context: no Oh My Pi, no pane.
@@ -200,6 +209,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: pane.live.now,
       dueAt: pane.live.now,
       cause: "other",
     });
@@ -216,6 +226,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + HOUR,
       cause: "refusal",
     });
@@ -256,6 +267,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: `entry-${entries}`,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + 2 * HOUR,
       cause: "refusal",
     });
@@ -277,6 +289,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: pane.live.now,
       dueAt: pane.live.now,
       cause: "other",
     });
@@ -297,6 +310,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: `entry-${entries}`,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + HOUR,
       cause: "refusal",
     });
@@ -316,6 +330,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + HOUR,
       cause: "refusal",
     });
@@ -334,6 +349,7 @@ describe("a fallback the host applied", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: second,
+      armedAt: pane.live.now,
       dueAt: pane.live.now,
       cause: "other",
     });
@@ -367,6 +383,7 @@ describe("a refusal the host did not walk", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: `entry-${entries}`,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + HOUR,
       cause: "refusal",
     });
@@ -386,6 +403,7 @@ describe("a refusal the host did not walk", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: `entry-${entries}`,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + 2 * HOUR,
       cause: "refusal",
     });
@@ -407,6 +425,7 @@ describe("a refusal the host did not walk", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: GPT,
       entryId: `entry-${entries}`,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + HOUR,
       cause: "refusal",
     });
@@ -854,6 +873,7 @@ describe("a session this runner finds already on a fallback", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: walkedAt,
       dueAt: walkedAt + HOUR,
       cause: "refusal",
     });
@@ -883,6 +903,7 @@ describe("a session this runner finds already on a fallback", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: walkedAt,
       dueAt: walkedAt + HOUR,
       cause: "refusal",
     });
@@ -903,6 +924,7 @@ describe("a session this runner finds already on a fallback", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: entry,
+      armedAt: pane.live.now,
       dueAt: pane.live.now + 4 * HOUR,
       cause: "refusal",
     });
@@ -926,6 +948,7 @@ describe("a session this runner finds already on a fallback", () => {
     expect(pane.last()?.arming).toEqual({
       restoreTo: OPUS,
       entryId: "entry-unstamped",
+      armedAt: pane.live.now,
       dueAt: pane.live.now + HOUR,
       cause: "refusal",
     });
@@ -983,5 +1006,43 @@ describe("a session this runner finds already on a fallback", () => {
     await pane.runner.maybeRestore(switched.ctx);
     expect(switched.setModelCalls).toEqual([]);
     expect(pane.setModelCalls).toEqual([]);
+  });
+});
+
+// The tests' clock of the return (`fallbackClock`), which the real-pane cases hold from outside
+// the pane's process: what they read of when a wait ended is the time this clock gave.
+describe("a clock a test holds (fallbackClock)", () => {
+  const directory = temporaryDirectory("fallback-clock");
+  /** Writes `at` as the clock's reading, a new file renamed over the old one, as a test does. */
+  const set = (file: string, at: number): void => {
+    writeFileSync(`${file}.next`, String(at));
+    renameSync(`${file}.next`, file);
+  };
+
+  test("is absent where no file is named, as in every deployment", () => {
+    expect(fallbackClock({})).toBeUndefined();
+    expect(fallbackClock({ [FALLBACK_CLOCK_FILE]: "" })).toBeUndefined();
+  });
+
+  test("reads its file, runs a timer the reading has reached at once, and a later one at the write that reaches it", async () => {
+    const file = join(directory, "clock");
+    set(file, 1_000);
+    const clock = fallbackClock({ [FALLBACK_CLOCK_FILE]: file });
+    if (clock === undefined) throw new Error("a named file gave no clock");
+    expect(clock.now()).toBe(1_000);
+    const ran: string[] = [];
+    clock.arm(() => ran.push(`now at ${clock.now()}`), 0);
+    expect(ran).toEqual(["now at 1000"]);
+
+    clock.arm(() => ran.push(`499 at ${clock.now()}`), 499);
+    clock.arm(() => ran.push(`500 at ${clock.now()}`), 500);
+    // One reading reaches the first timer and not the second: both are read in the same pass, so
+    // once the first has run the second's absence is decided.
+    set(file, 1_499);
+    await until("the timer the reading 1499 reaches to run", () => ran.length === 2);
+    expect(ran).toEqual(["now at 1000", "499 at 1499"]);
+    set(file, 1_500);
+    await until("the timer the reading 1500 reaches to run", () => ran.length === 3);
+    expect(ran).toEqual(["now at 1000", "499 at 1499", "500 at 1500"]);
   });
 });

@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { check } from "recheck";
 import {
   classifyProviderError,
   classifyProviderTurn,
+  googleBlockedPatternCharacters,
+  PROVIDER_TEXT_PATTERNS,
   type ProviderTurnOutcome,
 } from "./provider-refusal";
 
@@ -216,18 +219,51 @@ describe("an error text a provider chose the length of", () => {
    * behind `Request failed: `. A gateway that answers an error with its own page makes it long,
    * so every pattern this module runs must stay linear in that length. CodeQL reported the two
    * Google patterns as polynomial (`js/polynomial-redos`, two high alerts) at the head before the
-   * patterns were bounded, and reports neither since. */
+   * patterns were bounded, and reports neither since. Two kinds of row hold that here, neither of
+   * them a clock: the module's own count of the characters it hands Google's two blocked
+   * patterns, which an extra pass over the text exceeds, and recheck's reading of each pattern,
+   * which a pattern that backtracks within one pass fails, since JavaScriptCore counts no step a
+   * regular expression takes. */
 
-  test("classifies a long text that almost matches a Google filter in linear time", () => {
+  /** The passes of Google's two blocked patterns over one text: the prompt's, then the filters'
+   *  (`googleFilter` in provider-refusal.ts). */
+  const BLOCKED_PASSES = 2;
+
+  test("classifies a long text that almost matches a Google filter in work bounded by its length", () => {
     for (const prefix of [
       "Request blocked by Google (",
       "Generation was blocked by content filters (",
     ]) {
       const text = prefix.repeat(16_000);
-      const started = performance.now();
+      const before = googleBlockedPatternCharacters();
       expect(classifyProviderError(text)).toEqual({ kind: "provider-error" });
-      const spent = performance.now() - started;
-      expect({ prefix, spent: spent < 1_000 }).toEqual({ prefix, spent: true });
+      const handed = googleBlockedPatternCharacters() - before;
+      const allowed = BLOCKED_PASSES * text.length;
+      expect(
+        handed,
+        `classifying ${JSON.stringify(prefix)} 16,000 times over handed Google's blocked patterns ${handed} characters, where at most ${allowed} (${BLOCKED_PASSES} passes over its ${text.length}) are allowed`
+      ).toBeLessThanOrEqual(allowed);
     }
-  }, 60_000);
+  });
+
+  // recheck's automaton checker decides from a pattern's automaton whether some text costs a
+  // backtracking engine more than linear work in its length, so the verdict holds for every text
+  // and not only the one a row builds. `timeout: null` takes the clock out of the analysis: the
+  // verdict is the same on every machine, however loaded.
+  for (const [name, pattern] of Object.entries(PROVIDER_TEXT_PATTERNS)) {
+    test(`${name} is linear in the text, as recheck's automaton checker reads it`, async () => {
+      const diagnostics = await check(pattern.source, pattern.flags, {
+        checker: "automaton",
+        timeout: null,
+      });
+      const why =
+        diagnostics.status === "vulnerable"
+          ? `${diagnostics.complexity.summary}, attack ${diagnostics.attack.pattern}`
+          : diagnostics.status === "unknown"
+            ? JSON.stringify(diagnostics.error)
+            : diagnostics.complexity.summary;
+      const failure = `${name} ${pattern} is ${diagnostics.status}: ${why}`;
+      expect(diagnostics.status, failure).toBe("safe");
+    });
+  }
 });

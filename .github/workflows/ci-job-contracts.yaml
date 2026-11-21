@@ -23,6 +23,16 @@ on:
 jobs:
   contracts:
     runs-on: ubuntu-24.04-arm
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 43 s, 5 s of its clock over them, and its test step's longest, 6 s,
+    # plus the package script's two guards, 20 s (raised from 15 s by its reading at 24b2e96b28,
+    # builds Job g4b-co-first, which package.json's `//` note gives) and the 2 s of its second
+    # command, which runs main's src/build-entries.test.ts (#4538) alone: 76 s in all. With that
+    # second command in it, the test step took 4 s at acf34b3558 (job 136612737476 of run
+    # 44829908297). Between that tree and 1c711353dc, bun.lock, packages/test-fixtures/package.json
+    # and packages/test-fixtures/src/timer-record.ts changed, and this job reads all three (its
+    # install reads the lockfile and every workspace manifest, and the test-fixtures sources are
+    # its reads); no contracts row loads the timer record, so the reading stands.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -10,17 +10,20 @@
 # in this one.
 #
 # Sourced, never run: it defines functions, starts no process and writes nothing but the answer
-# body each call leaves behind for its reader.
+# body and headers each call leaves behind for its reader.
 #
 # The caller sets
 #   envoy_url      the listener's base URL
-#   work           the scratch directory each answer body is left in (${work}/answer.json)
+#   work           the scratch directory each answer is left in (${work}/answer.json, and its
+#                  headers in ${work}/answer.headers)
 #   curl_max_time  how long one call to the listener may take
 
 # listener_get PATH: one raw read of the listener: the status is printed and the answer left in
-# ${work}/answer.json for the caller to read.
+# ${work}/answer.json for the caller to read, its headers in ${work}/answer.headers.
 listener_get() {
-  curl -sS -o "${work}/answer.json" -w '%{http_code}' --max-time "$curl_max_time" "${envoy_url}$1" 2>/dev/null ||
+  : >"${work}/answer.headers"
+  curl -sS -D "${work}/answer.headers" -o "${work}/answer.json" -w '%{http_code}' \
+    --max-time "$curl_max_time" "${envoy_url}$1" 2>/dev/null ||
     printf '000'
 }
 
@@ -29,9 +32,36 @@ listener_get() {
 # row drives a client older than this change, which has no process of its own to state and which
 # no client in this checkout can be made to impersonate.
 listener_post() {
-  curl -sS -o "${work}/answer.json" -w '%{http_code}' --max-time "$curl_max_time" \
-    -H 'Content-Type: application/json' --data "$2" "${envoy_url}$1" 2>/dev/null ||
+  : >"${work}/answer.headers"
+  curl -sS -D "${work}/answer.headers" -o "${work}/answer.json" -w '%{http_code}' \
+    --max-time "$curl_max_time" -H 'Content-Type: application/json' --data "$2" "${envoy_url}$1" \
+    2>/dev/null ||
     printf '000'
+}
+
+# listener_date: the listener's own clock at its last answer to listener_get or listener_post,
+# the Date header it sent, in epoch seconds; 0 where it sent none.
+listener_date() {
+  local sent
+  sent="$(sed -n 's/^[Dd]ate: *//p' "${work}/answer.headers" 2>/dev/null | tr -d '\r' | tail -n 1)"
+  [[ -n "$sent" ]] || {
+    printf '0'
+    return 0
+  }
+  date -u -d "$sent" +%s 2>/dev/null || printf '0'
+}
+
+# registry_seen SESSION: the listener's own record of SESSION's last registration
+# (GET /v1/registry/<session>'s last_seen), in whole seconds of its clock; 0 where it has none.
+registry_seen() {
+  local seen
+  [[ "$(listener_get "/v1/registry/$1")" == 200 ]] || {
+    printf '0'
+    return 0
+  }
+  seen="$(jq -r '.last_seen // 0' "${work}/answer.json" 2>/dev/null || echo 0)"
+  ((seen < 100000000000)) || seen=$((seen / 1000))
+  printf '%s' "$seen"
 }
 
 # old_register SESSION INSTANCE: one registration sent by curl rather than by a client process.

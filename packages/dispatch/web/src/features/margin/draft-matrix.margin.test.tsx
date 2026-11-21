@@ -541,9 +541,10 @@ for (const held of HELD) {
       await waitFor(() => expect(screen.queryByTestId(`margin-comment-${threadA.id}`)).toBe(null));
       await page.user.click(screen.getByRole("button", { name: "Back to the first issue" }));
       await screen.findByTestId(`margin-comment-${threadA.id}`);
-      // A second for the compose the margin shows on arrival; none on screen reads as absent.
+      // The compose the margin shows on arrival, waited for until the row's deadline (setup.ts's
+      // budget); none on screen by then reads as absent.
       const field = await screen
-        .findByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }, { timeout: 1_000 })
+        .findByRole<HTMLTextAreaElement>("textbox", { name: "Comment" })
         .catch(() => null);
       expect({
         note: field === null ? "none" : noteIn(field.closest("form") ?? field),
@@ -600,14 +601,23 @@ const IN_A_KEPT_LINE = { found: "in a line saying it is kept for its words" } as
  * Where the reader finds, on CORE-1's spec, the draft written for `MARK_ANCHOR`'s words once no
  * compose the reader opened holds it: the compose holding its text, with that compose's words
  * and note; else a line saying it is kept for those words that shows its text (`IN_A_KEPT_LINE`);
- * else nowhere. Waits a second for the compose the margin shows on arrival; none on screen reads
- * as absent.
+ * else nowhere. Read once the margin has arrived on the document, which it says by no longer
+ * being `aria-busy`: by then the arrival (`useMarginSheet`), the only code that brings a compose
+ * back with nothing the reader pressed, has shown the compose it brings back, so a kept line
+ * drawn before that compose cannot be read in its place. Then waits, until the row's deadline
+ * (setup.ts's budget), for either place to hold the text: past the arrival each is where the
+ * draft stays, since a kept line is drawn only while no compose is, and the draft of a compose
+ * that ends with no arrival after it (its issue's closing) reaches its line a commit after the
+ * compose goes. Neither by then reads as nowhere.
  */
 async function foundBack(): Promise<Record<string, string>> {
-  await screen.findByRole("textbox", { name: "Comment" }, { timeout: 1_000 }).catch(() => null);
-  const back = composesOnScreen().find((compose) => compose.text === BODY);
-  if (back !== undefined) return { found: "in a compose", ...back };
-  return keptLineHoldingTheDraft() ? IN_A_KEPT_LINE : { found: "nowhere on screen" };
+  await waitFor(() => expect(screen.getByTestId("margin-sheet")).not.toHaveAttribute("aria-busy"));
+  return await waitFor((): Record<string, string> => {
+    const back = composesOnScreen().find((compose) => compose.text === BODY);
+    if (back !== undefined) return { found: "in a compose", ...back };
+    if (keptLineHoldingTheDraft()) return IN_A_KEPT_LINE;
+    throw new Error("no compose and no kept line on screen holds the draft");
+  }).catch(() => ({ found: "nowhere on screen" }));
 }
 
 /** Where `foundBack` should find the draft when the send that holds it, if any, shows `note`: a
@@ -634,8 +644,9 @@ for (const held of HELD) {
       await screen.findByText(SECOND_DOCUMENT_ANCHOR.quote);
       await page.user.click(screen.getByRole("button", { name: "Back to the first issue" }));
       await screen.findByTestId(`margin-comment-${threadA.id}`);
-      // A second for the compose the margin shows on arrival; none on screen reads as absent.
-      await screen.findByRole("textbox", { name: "Comment" }, { timeout: 1_000 }).catch(() => null);
+      // The compose the margin shows on arrival, waited for until the row's deadline (setup.ts's
+      // budget); none on screen by then reads as absent.
+      await screen.findByRole("textbox", { name: "Comment" }).catch(() => null);
       const back = composeShown();
       await page.user.click(screen.getByRole("button", { name: "Compose on another selection" }));
       await screen.findByText(ANOTHER_ANCHOR.quote);
@@ -821,17 +832,16 @@ for (const { button, field, name } of [
  *  compose's words, text and note. On a phone the margin is a panel over the document
  *  (`MarginSheet`'s compact sheet), and while it is closed the stylesheet hides what is in it.
  *  That stylesheet is not loaded here, so a compose in a closed panel is still in the document,
- *  and only the panel's being open puts the compose in front of the reader. Waits a second for
- *  the panel the margin opens on arrival; none open reads as closed. */
+ *  and only the panel's being open puts the compose in front of the reader. Waits until the
+ *  row's deadline (setup.ts's budget) for the panel the margin opens on arrival; none open by
+ *  then reads as closed. */
 async function composeOnPhone(): Promise<{
   note: Held | "none";
   panel: string;
   quote: string;
   text: string;
 }> {
-  const panel = await screen
-    .findByRole("dialog", { name: "Review panel" }, { timeout: 1_000 })
-    .catch(() => null);
+  const panel = await screen.findByRole("dialog", { name: "Review panel" }).catch(() => null);
   return {
     ...composeShown(),
     panel: panel === null ? "closed, so the reader has to open it" : "open",

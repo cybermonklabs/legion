@@ -91,5 +91,5 @@ describe("a peer that is no nats-server", () => {
     // The row can fail for the leak: the peer was sent the token.
     expect(received.join("\n")).toContain(token);
     expect(printed.join("\n")).not.toContain(token);
-  }, 20_000);
+  });
 });

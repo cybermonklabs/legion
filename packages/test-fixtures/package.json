@@ -5,6 +5,10 @@
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
+    "./bun-child-environment": {
+      "types": "./src/bun-child-environment.ts",
+      "bun": "./src/bun-child-environment.ts"
+    },
     "./environment": {
       "types": "./src/environment.ts",
       "bun": "./src/environment.ts"
@@ -17,9 +21,21 @@
       "types": "./src/fixture-secret.ts",
       "bun": "./src/fixture-secret.ts"
     },
+    "./held-deadlines": {
+      "types": "./src/held-deadlines.ts",
+      "bun": "./src/held-deadlines.ts"
+    },
     "./host-tools": {
       "types": "./src/host-tools.ts",
       "bun": "./src/host-tools.ts"
+    },
+    "./postgres": {
+      "types": "./src/postgres.ts",
+      "bun": "./src/postgres.ts"
+    },
+    "./row-deadline": {
+      "types": "./src/row-deadline.ts",
+      "bun": "./src/row-deadline.ts"
     },
     "./temporary-directories": {
       "types": "./src/temporary-directories.ts",
@@ -29,6 +45,14 @@
       "types": "./src/temporary-tmpdir.ts",
       "bun": "./src/temporary-tmpdir.ts"
     },
+    "./timer-record": {
+      "types": "./src/timer-record.ts",
+      "bun": "./src/timer-record.ts"
+    },
+    "./timer-record-preload": {
+      "types": "./src/timer-record-preload.ts",
+      "bun": "./src/timer-record-preload.ts"
+    },
     "./transcript-lines": {
       "types": "./src/transcript-lines.ts",
       "bun": "./src/transcript-lines.ts"
@@ -36,16 +60,24 @@
     "./version-control-environment": {
       "types": "./src/version-control-environment.ts",
       "bun": "./src/version-control-environment.ts"
+    },
+    "./wait": {
+      "types": "./src/wait.ts",
+      "bun": "./src/wait.ts"
     }
   },
+  "//": [
+    "test: --timeout 10000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job): ownDatabase on the server LEGION_TEST_PG_DSN names > makes a database of its own, which its URL opens and its drop removes, 3,176.79 ms. Read again with src/fake-clock.test.ts's child-process row in the suite (it runs a whole `bun test` of its own), in builds Job d-r3-tf-8b at main 73e417f113 with #4437's round-3 tree (two runs, 2026-11-19): the slowest row 2,599.09 ms (2,519.10 ms in the other run), a wait ends at the deadline of a file's afterEach that follows a row; the child-process row 1,497.44 ms; ownDatabase 1,693.32 ms. Read again at #4437's round-4 tree 24b2e96b28, with the recheck rows 1c711353dc added to src/timer-record.test.ts, under the same load (three runs in builds Job g4b-tf, legion-load-run-6p55q, 2026-11-21, each hook timed by a preload the Job's patch added, since Bun prints no hook times): the slowest row, the same wait at a file's afterEach, 2,696.36 ms (2,598.37 and 2,520.18 ms in the other runs), which 10000 holds 3.71 times; the slowest hook, the row-deadline preload's beforeEach, 81.55 ms; timer-record.test.ts's slowest row 179.37 ms, and its recheck row, the frame pattern tail is linear in the frame, at most 109.46 ms."
+  ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 10000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.14",
     "@types/bun": "1.4.2",
+    "recheck": "4.6.2",
     "typescript": "^5.3.0"
   }
 }

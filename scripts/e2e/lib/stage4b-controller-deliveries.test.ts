@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
@@ -64,7 +65,9 @@ ${fn("controller_deliveries")}
 ${fn("controller_received")}
 ${body}`,
     ],
-    { env: { PATH: process.env.PATH ?? "", HOME: dir, profile_agent: profileAgent } }
+    {
+      env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: dir, profile_agent: profileAgent },
+    }
   );
   expect(result.stderr.toString()).toBe("");
   return { code: result.exitCode, out: result.stdout.toString() };

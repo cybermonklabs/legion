@@ -70,7 +70,7 @@ import {
 import { createClaimSession } from "../src/claim-session";
 import { classifySession, type LegionSessionKind, requiredEnvironment } from "../src/classify";
 import { createControllerSession } from "../src/controller-session";
-import { createModelFallback } from "../src/model-fallback";
+import { createModelFallback, fallbackCheckRecord, fallbackClock } from "../src/model-fallback";
 import { applySessionTitle, legionSessionTitle } from "../src/session-title";
 import { daemonLaunchedController } from "../src/slack-channels";
 import { createStallAborter } from "../src/stall-abort";
@@ -284,23 +284,33 @@ export default function legionExtension(pi: PiApi): void {
   // transcript so a relaunched worker comes back with its due time and its doubling levels.
   // When the return is made is `ModelFallback.maybeRestore`'s to say; its timer runs on the pane's
   // own host timer, as the phase reminder's does, and the runner itself checks that the pane is
-  // still on the session whose state it holds when the timer fires.
+  // still on the session whose state it holds when the timer fires. A test that holds the
+  // fallback's clock (LEGION_FALLBACK_CLOCK_FILE, `fallbackClock`) sets both: the return reads
+  // its reading, and a timer runs on the pane's host timer once a reading of the test's reaches
+  // it. Unset, as every deployment runs, the return reads Date.now() and arms the host timer for
+  // the delay itself.
+  const heldClock = fallbackClock(process.env);
   const modelFallback = createModelFallback({
     setModel: async (model) => (await pi.setModel?.(model)) === true,
     saveState: (state) => pi.appendEntry(LEGION_FALLBACK_ENTRY, recordedFallbackCooldown(state)),
-    now: () => Date.now(),
+    now: heldClock?.now ?? (() => Date.now()),
     limits: fallbackCooldownLimits(process.env, logger),
     nextModel: nextFallbackModel,
     log: logger,
     armTimer: (callback, delayMs) => {
-      if (paneContext === undefined) return false;
-      paneContext.setTimeout(callback, delayMs);
+      const context = paneContext;
+      if (context === undefined) return false;
+      if (heldClock === undefined) context.setTimeout(callback, delayMs);
+      else heldClock.arm(() => context.setTimeout(callback, 0), delayMs);
       return true;
     },
     paneContext: async () =>
       paneContext !== undefined && (await modelFallbackSession(paneContext))
         ? paneContext
         : undefined,
+    // The tests' record of each check of a refusal's arming, written only where
+    // LEGION_FALLBACK_CHECK_RECORD_FILE names a file.
+    recordRestoreCheck: fallbackCheckRecord(process.env),
   });
 
   // The fallback state of whatever session the pane is on: the record this plugin saved

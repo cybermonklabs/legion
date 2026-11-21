@@ -1,4 +1,4 @@
-import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
@@ -25,8 +26,8 @@ import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
 //     Dispatch variables of its environment, and runs `mise x <pin> -- <command>` as the command
 //     (a run names its pin's omp by path).
 // Each run must get a database of its own, a server of its own and a DISPATCH_URL of its own, and
-// must stop its server when it ends.
-setDefaultTimeout(120_000);
+// must stop its server when it ends. Each row runs two rigs end to end, under the command's one
+// guard.
 
 // Every row here runs the rig through ownGroup (scripts/e2e/lib/own-group.ts), a perl that puts it
 // in a process group of its own (`runRig` below says why it must). Read once, so one warning names
@@ -64,6 +65,7 @@ stagings.push(() => {
   copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
   for (const lib of [
     "rig.sh",
+    "proof-wait.sh",
     "process-tree.sh",
     "loopback-dsn.sh",
     "loopback-dsn.py",
@@ -230,6 +232,7 @@ const miseData =
     ? undefined
     : path.join(process.env.XDG_DATA_HOME, "mise"));
 const env = {
+  ...bunCacheOff,
   PATH: `${bin}:${process.env.PATH ?? ""}`,
   HOME: path.join(scratch, "home"),
   USER: process.env.USER ?? "rig",

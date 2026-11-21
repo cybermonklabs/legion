@@ -610,7 +610,10 @@ test("a pause searches by meaning too, and its order re-ranks the list under the
     // The pause asks the same query again, without the flag, and the fused order it answers
     // replaces the list. The highlighted row is still in that list, so it keeps the highlight
     // and Enter still opens the row the reader is looking at. The clock crosses the 500 ms
-    // pause here deliberately: this row is about what firing it does.
+    // pause here deliberately: this row is about what firing it does. The wait's 3 s is of the
+    // held clock, which it moves as it polls, so it is the verdict that the pause has searched
+    // by 3 s of held time past the tick (setup.ts's 10 s would pass a pause regressed to
+    // 4-10 s); no load moves it.
     await tick(500);
     await waitFor(() => expect(search.mock.calls).toHaveLength(2), { timeout: 3000 });
     expect(search.mock.calls[1]?.[0]).toBe("astrolabe");
@@ -640,7 +643,8 @@ test("a re-rank that drops the highlighted hit leaves no row highlighted, and En
 
     // The pause's order drops the row the reader had arrowed to. Nothing takes its place: the
     // head would be a row they never chose, and the next Enter would open it. The clock
-    // crosses the 500 ms pause here deliberately: this row is about what firing it does.
+    // crosses the 500 ms pause here deliberately: this row is about what firing it does. The
+    // wait's 3 s is of the held clock, as in the row above.
     await tick(500);
     await waitFor(() => expect(optionIds()).toEqual([optionId(first)]), { timeout: 3000 });
     expect(input.getAttribute("aria-activedescendant")).toBeNull();

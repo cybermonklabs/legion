@@ -454,6 +454,8 @@ function requestSignal(signal: AbortSignal | undefined, deadlineMs: number): Abo
  * the schedule alone, since each repeat sends its whole body again. No retry of any write starts
  * more than `inFlightWithinMs` after the client was made, since the client's deadline counts from
  * there. `pause` and `now` are the timer and the monotonic clock, which a test replaces.
+ * `armSilence` is an attempt's silence cut, which a test replaces to see each time an attempt's
+ * progress disarms its cut and arms another, and to say itself when the silence has lasted.
  */
 export interface DispatchWriteRetry {
   readonly pausesMs: readonly number[];
@@ -464,6 +466,8 @@ export interface DispatchWriteRetry {
   /** Waits `ms`, or rejects with the signal's reason once it aborts. */
   readonly pause?: (ms: number, signal: AbortSignal) => Promise<void>;
   readonly now?: () => number;
+  /** Runs `cut` once `ms` pass, unless the disarm it returns runs first: a timer by default. */
+  readonly armSilence?: (ms: number, cut: () => void) => () => void;
 }
 
 /**
@@ -505,6 +509,12 @@ function pauseFor(ms: number, signal: AbortSignal): Promise<void> {
   }, ms);
   signal.addEventListener("abort", stop, { once: true });
   return promise;
+}
+
+/** `DispatchWriteRetry.armSilence` where a write sets none: a timer of the process's own. */
+function armTimer(ms: number, cut: () => void): () => void {
+  const timer = setTimeout(cut, ms);
+  return () => clearTimeout(timer);
 }
 
 /** The wait an answer's `Retry-After` asks for, in delta-seconds or as an HTTP date; 0 for none. */
@@ -2496,13 +2506,14 @@ export class DispatchClient {
   ): Promise<Response> {
     const cut = new AbortController();
     const silent = (): void => cut.abort(new WriteAttemptSilent(silenceMs));
-    let timer = setTimeout(silent, silenceMs);
+    const armSilence = this.writeRetry.armSilence ?? armTimer;
+    let disarm = armSilence(silenceMs, silent);
     let answered = false;
     // A stream body read after the answer came (an early refusal) starts no timer of its own.
     const progress = (): void => {
       if (answered) return;
-      clearTimeout(timer);
-      timer = setTimeout(silent, silenceMs);
+      disarm();
+      disarm = armSilence(silenceMs, silent);
     };
     try {
       return await this.#fetch(url, {
@@ -2515,7 +2526,7 @@ export class DispatchClient {
       throw error;
     } finally {
       answered = true;
-      clearTimeout(timer);
+      disarm();
     }
   }
 

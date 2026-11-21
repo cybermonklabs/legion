@@ -210,22 +210,18 @@ describe("a failed dial's line holds no part of the server", () => {
       aName,
     ],
   ];
-  test.each(rows)(
-    "%s",
-    async (_, server, secrets, resolved) => {
-      const error = await realFailure(server);
-      expect(resolverAsked.map((asked) => asked.split(" ")[0]).sort()).toEqual([...resolved]);
-      expect(secrets.some((secret) => carried(error).includes(secret.toLowerCase()))).toBe(true);
-      const reason = natsFailureReason(error);
-      expect(reason).toMatch(CODE_REASON);
-      const line = failureLine(error);
-      expect(line).toBe(
-        `could not connect to NATS at the server ENVOY_NATS_URL names presenting no credential: ${reason}`
-      );
-      for (const secret of secrets) expect(line.toLowerCase()).not.toContain(secret.toLowerCase());
-    },
-    30_000
-  );
+  test.each(rows)("%s", async (_, server, secrets, resolved) => {
+    const error = await realFailure(server);
+    expect(resolverAsked.map((asked) => asked.split(" ")[0]).sort()).toEqual([...resolved]);
+    expect(secrets.some((secret) => carried(error).includes(secret.toLowerCase()))).toBe(true);
+    const reason = natsFailureReason(error);
+    expect(reason).toMatch(CODE_REASON);
+    const line = failureLine(error);
+    expect(line).toBe(
+      `could not connect to NATS at the server ENVOY_NATS_URL names presenting no credential: ${reason}`
+    );
+    for (const secret of secrets) expect(line.toLowerCase()).not.toContain(secret.toLowerCase());
+  });
 });
 
 // A server that takes the connection and never sends its INFO, for a dial that times out.
@@ -281,12 +277,12 @@ describe("a failed dial's line says why it failed", () => {
     expect(failureLine(error)).toBe(
       "could not connect to NATS at the server ENVOY_NATS_URL names presenting no credential: CONNECTION_REFUSED"
     );
-  }, 30_000);
+  });
 
   test("a server that never answers: TIMEOUT", async () => {
     const error = await realFailure(`nats://127.0.0.1:${mute.port}`, 500);
     expect(natsFailureReason(error)).toBe("TIMEOUT");
-  }, 30_000);
+  });
 
   test("a server that does not parse: ERR_INVALID_URL, and its URL is not quoted", async () => {
     const error = await realFailure(`nats://${userinfo("user", "canary-pw")}canary-host:99999`);
@@ -294,12 +290,12 @@ describe("a failed dial's line says why it failed", () => {
     expect(carried(error)).toContain("canary-pw");
     expect(natsFailureReason(error)).toBe("ERR_INVALID_URL");
     expect(failureLine(error)).not.toContain("canary");
-  }, 30_000);
+  });
 
   test("a port the socket refuses: ERR_SOCKET_BAD_PORT, and not its number", async () => {
     const error = await realFailure(`nats://${userinfo("user", sixDigits())}127.0.0.1:4222`);
     expect(natsFailureReason(error)).toMatch(/^(?:[a-z]+ )?ERR_SOCKET_BAD_PORT$/);
-  }, 30_000);
+  });
 
   test("a name the resolver cannot find: getaddrinfo and its code, and not the name", async () => {
     const name = `${canary()}.invalid`;
@@ -307,7 +303,7 @@ describe("a failed dial's line says why it failed", () => {
     expect(resolverAsked).toContain(`getaddrinfo ${name}`);
     expect(carried(error)).toContain(name);
     expect(natsFailureReason(error)).toBe("getaddrinfo ENOTFOUND");
-  }, 30_000);
+  });
 
   test("nats-server's own refusal: its fixed words", async () => {
     for (const fixed of [
@@ -322,7 +318,7 @@ describe("a failed dial's line says why it failed", () => {
     // protocol.js `toError` builds it on an established connection.
     const timedOut = new NatsError("'Authentication Timeout'", ErrorCode.AuthenticationTimeout);
     expect(natsFailureReason(timedOut)).toBe("Authentication Timeout");
-  }, 30_000);
+  });
 
   // S1: a peer that is no nats-server can fill the refusal with the CONNECT it was sent, the
   // broker token included; nats.js keeps any `-ERR` text that holds the refusal's words.
@@ -339,7 +335,7 @@ describe("a failed dial's line says why it failed", () => {
       "the session's broker token"
     );
     expect(line).not.toContain(token);
-  }, 30_000);
+  });
 
   test("any other text a server sent: withheld, under each code nats.js gives it", () => {
     const echoed = canary();

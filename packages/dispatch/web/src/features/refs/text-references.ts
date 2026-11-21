@@ -1,6 +1,7 @@
 import { isIdPrefix } from "@legion/contracts";
 
 import { itemOfBlock } from "./block-reference";
+import { countReferenceRead } from "./reference-reads";
 import { referenceSpans } from "./reference-spans";
 import {
   buildDispatchReference,
@@ -317,10 +318,24 @@ function bareCandidates(text: string, from: number, to: number, found: BareCandi
 /** `written` without the trailing `_` and `-` an emphasis or a sentence leaves on a mention, or
  *  undefined where it has none or is nothing without them. It is the one statement of that
  *  trim: a mention is resolved as written first and this way second, and the characters it
- *  resolved without are the author's own (`TextReference.named`). */
+ *  resolved without are the author's own (`TextReference.named`).
+ *
+ *  It walks back from the end over the run it drops and the character that stops it, so it reads
+ *  at most the mention once (`countReferenceRead`). The end-anchored `/[_-]+$/` it replaced
+ *  tried the run from every position in it when something else followed the run, reading its
+ *  square: a 32,768-character run of `-` before a letter in an address's query took 1.7 s. */
 function trimmedMention(written: string): string | undefined {
-  const trimmed = written.replace(/[_-]+$/, "");
-  return trimmed === written || trimmed === "" ? undefined : trimmed;
+  let end = written.length;
+  let read = 0;
+  for (; end > 0; end -= 1) {
+    read += 1;
+    const char = written.charAt(end - 1);
+    if (char !== "_" && char !== "-") {
+      break;
+    }
+  }
+  countReferenceRead("trimmedMention", read);
+  return end === written.length || end === 0 ? undefined : written.slice(0, end);
 }
 
 /** The ask the question map gives `#id`: the id as written, else the id without the trailing `_`
@@ -502,6 +517,7 @@ function readAddress(
   origin: string,
   items: () => readonly { id: string; kind: ReferenceTargetKind }[]
 ): AddressReading | undefined {
+  countReferenceRead("readAddress", value.length);
   const route = referenceRouteFromHref(value, origin);
   if (route === undefined) {
     return undefined;

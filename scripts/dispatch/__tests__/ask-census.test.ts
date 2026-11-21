@@ -349,33 +349,48 @@ describe("ask census", () => {
   });
 
   test("reads every issue when the whole run outlasts one client's deadline", async () => {
-    // Each client's deadline runs 200 times faster: 60 s becomes 300 ms. No read is slow, an issue's
-    // two take a fifth of a deadline, and six waves of ISSUE_CONCURRENCY issues take longer than one.
-    // The clock is real: the deadline is AbortSignal.timeout, which fake timers do not move, and a
-    // clock the stub moves as it serves runs ahead of the clients still reading its answers.
-    const deadline = DISPATCH_TOOL_DEADLINE_MS / 200;
-    const latency = deadline / 10;
-    const timeoutAfter = AbortSignal.timeout.bind(AbortSignal);
-    const timeout = spyOn(AbortSignal, "timeout").mockImplementation((milliseconds: number) =>
-      timeoutAfter(milliseconds / 200)
-    );
+    // A client arms its one deadline (DISPATCH_TOOL_DEADLINE_MS) as it is made, so a run that
+    // outlasts a deadline still reads every issue when each issue reads through a client made at
+    // its own turn: no deadline then covers more than that issue's two reads, and the six waves of
+    // ISSUE_CONCURRENCY issues here take as long as they take. The row holds that structure, and
+    // no clock decides its verdict: AbortSignal.timeout records each deadline as it is armed, with
+    // the clients alive at that moment, and hands back a signal that never aborts. A client is
+    // alive from its arm until the stub answers its issue's last read. The stub counts the issue
+    // finished before it sends that answer, and a reader makes its next client only after the
+    // answer has reached it, so the count is in before the next arm, whatever order the scheduler
+    // gives the readers' requests. A client made for the whole run is armed once and fails the
+    // count of one deadline per issue. Clients made before their issues' turns are alive more than
+    // ISSUE_CONCURRENCY at once and fail the bound. With both held, each issue's reads use only
+    // the client made at its turn. Each request also arms its credential's share of the client's
+    // deadline (`credentialDeadline`, #4140), a deadline of another length that no client's count
+    // includes, so only the client's own are recorded.
+    const armed: { readonly milliseconds: number; readonly alive: number }[] = [];
+    const finished = new Set<string>();
+    const timeout = spyOn(AbortSignal, "timeout").mockImplementation((milliseconds: number) => {
+      if (milliseconds === DISPATCH_TOOL_DEADLINE_MS) {
+        armed.push({ milliseconds, alive: armed.length + 1 - finished.size });
+      }
+      return new AbortController().signal;
+    });
     const read: string[] = [];
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
-      async fetch(request) {
-        await Bun.sleep(latency);
+      fetch(request) {
         const { pathname } = new URL(request.url);
         read.push(pathname);
         if (pathname.endsWith("/asks")) return Response.json([approvalAsk(1, 1)]);
-        if (pathname.endsWith("/events")) return Response.json([]);
+        if (pathname.endsWith("/events")) {
+          // The issue's last read (`/api/v1/issues/<key>/events`): its client is done.
+          finished.add(pathname.split("/")[4] ?? pathname);
+          return Response.json([]);
+        }
         return new Response("not found", { status: 404 });
       },
     });
     const issues = Array.from({ length: 6 * ISSUE_CONCURRENCY }, (_, index) => `TEST-${index + 1}`);
 
     try {
-      const started = performance.now();
       const census = await censusIssues(
         { url: `http://127.0.0.1:${server.port}`, credential: bearerCredential("token") },
         issues,
@@ -387,7 +402,13 @@ describe("ask census", () => {
         }
       );
 
-      expect(performance.now() - started).toBeGreaterThan(deadline);
+      expect(armed.map((deadline) => deadline.milliseconds)).toEqual(
+        issues.map(() => DISPATCH_TOOL_DEADLINE_MS)
+      );
+      expect(
+        Math.max(...armed.map((deadline) => deadline.alive)),
+        "the clients alive at one deadline's arm"
+      ).toBeLessThanOrEqual(ISSUE_CONCURRENCY);
       expect(census.map((issue) => issue.issueRow?.issue)).toEqual(issues);
       expect(read).toHaveLength(2 * issues.length);
     } finally {

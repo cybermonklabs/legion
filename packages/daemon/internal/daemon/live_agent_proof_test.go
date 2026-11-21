@@ -529,7 +529,7 @@ func anthropicRefusal(message string) string {
 }
 
 // streamAnthropicText answers one Anthropic Messages request with a single text block, in the
-// events the plugins' own pane harness scripts (packages/pi-shared/test/omp-harness.ts:383-448,
+// events the plugins' own pane harness scripts (packages/pi-shared/test/omp-harness.ts:628-693,
 // `messageStream`).
 func streamAnthropicText(w http.ResponseWriter, provider, text string) {
 	streamAnthropicBlock(w, provider, "end_turn", `{"type":"text","text":""}`,

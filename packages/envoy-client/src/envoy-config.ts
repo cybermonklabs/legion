@@ -349,11 +349,36 @@ const FAILURE_KEPT_MS = 60_000;
  * that shape takes a new key (`.v2`), so an older bundle in the same process never misreads an
  * entry a newer one wrote. */
 const COMMAND_OUTCOMES: unique symbol = Symbol.for("legion.envoy-config.commands.v1");
+/** Tests only: the slot `recordCommandSpawnsForTests` sets, which production never does. */
+const COMMAND_SPAWNS: unique symbol = Symbol.for("legion.envoy-config.command-spawns.v1");
 const processGlobal = globalThis as typeof globalThis & {
   [COMMAND_OUTCOMES]?: Map<string, KeptOutcome>;
+  [COMMAND_SPAWNS]?: (spawn: CommandSpawnRecord) => void;
 };
 const commandOutcomes: Map<string, KeptOutcome> = processGlobal[COMMAND_OUTCOMES] ?? new Map();
 processGlobal[COMMAND_OUTCOMES] = commandOutcomes;
+
+/** What one `!` command's spawn was given and how it ended: the timeout it was armed with, whether
+ *  it ran in a process group of its own, and whether the timeout or the shell's own exit ended it. */
+export interface CommandSpawnRecord {
+  readonly timeoutMs: number;
+  readonly detached: boolean;
+  readonly exitedDueToTimeout: boolean;
+  readonly success: boolean;
+}
+
+/**
+ * Tests only: hands `record` each `!` command's spawn as it ends, so a test holds the command to
+ * the timeout the read armed and to what ended it, read from the read's own record rather than
+ * by timing a call that blocks the thread. `undefined` clears it. The slot is process-wide, as
+ * the kept outcomes are, so it reaches every bundle of this module in the process.
+ */
+export function recordCommandSpawnsForTests(
+  record: ((spawn: CommandSpawnRecord) => void) | undefined
+): void {
+  if (record === undefined) delete processGlobal[COMMAND_SPAWNS];
+  else processGlobal[COMMAND_SPAWNS] = record;
+}
 
 function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): CommandOutcome {
   const childEnv: Record<string, string> = {};
@@ -368,16 +393,16 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
     const output = path.join(directory, "stdout");
     const fd = openSync(output, "wx", 0o600);
     let result: SyncSubprocess<number, "ignore">;
+    // Its own process group, so every process the command started is killed with it.
+    const spawn = { timeout: COMMAND_TIMEOUT_MS, detached: true } as const;
     try {
-      // Its own process group, so every process the command started is killed with it.
       result = Bun.spawnSync(["/bin/sh", "-c", command], {
         cwd,
         env: childEnv,
         stdin: "ignore",
         stdout: fd,
         stderr: "ignore",
-        timeout: COMMAND_TIMEOUT_MS,
-        detached: true,
+        ...spawn,
       });
     } catch (error) {
       return { failure: `could not start: ${messageFor(error)}`, timedOut: false };
@@ -390,6 +415,18 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
       process.kill(-result.pid, "SIGKILL");
     } catch {
       // The group is already gone.
+    }
+    // The tests' record of the spawn, once the group is gone: a slot that throws changes neither
+    // the kill above nor the outcome below.
+    try {
+      processGlobal[COMMAND_SPAWNS]?.({
+        timeoutMs: spawn.timeout,
+        detached: spawn.detached,
+        exitedDueToTimeout: result.exitedDueToTimeout === true,
+        success: result.success,
+      });
+    } catch {
+      // The tests' seam only.
     }
     if (result.exitedDueToTimeout) {
       return {

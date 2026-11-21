@@ -30,6 +30,7 @@ describe("the wait a refusal earns", () => {
     expect(state.arming).toEqual({
       restoreTo: OPUS,
       entryId: "e1",
+      armedAt: 1_000,
       dueAt: 1_000 + HOUR,
       cause: "refusal",
     });
@@ -38,10 +39,12 @@ describe("the wait a refusal earns", () => {
 
   test("the second and third refusals of the same model wait two and four hours", () => {
     const second = refused(refused(EMPTY, OPUS, 0), OPUS, 10_000);
+    expect(second.arming?.armedAt).toBe(10_000);
     expect(second.arming?.dueAt).toBe(10_000 + 2 * HOUR);
     expect(second.levels).toEqual({ [OPUS]: 3 });
 
     const third = refused(second, OPUS, 20_000);
+    expect(third.arming?.armedAt).toBe(20_000);
     expect(third.arming?.dueAt).toBe(20_000 + 4 * HOUR);
     expect(third.levels).toEqual({ [OPUS]: 4 });
   });
@@ -102,6 +105,7 @@ describe("when the session goes back", () => {
     expect(state.arming).toEqual({
       restoreTo: OPUS,
       entryId: "e9",
+      armedAt: 5_000,
       dueAt: 5_000,
       cause: "other",
     });
@@ -199,14 +203,34 @@ describe("what a relaunch restores", () => {
       restoreFallbackCooldown([
         entry(good),
         entry({ levels: { [OPUS]: 2 }, arming: { restoreTo: OPUS, entryId: "e1", dueAt: "soon" } }),
+        entry({
+          levels: { [OPUS]: 2 },
+          arming: { restoreTo: OPUS, entryId: "e1", armedAt: "now", dueAt: 1, cause: "refusal" },
+        }),
         entry({ state: "open", count: 2 }),
         entry({ levels: { [OPUS]: "two" } }),
         entry("not an object"),
       ])
     ).toEqual({
-      arming: { restoreTo: OPUS, entryId: "e1", dueAt: 1_000 + HOUR, cause: "refusal" },
+      arming: {
+        restoreTo: OPUS,
+        entryId: "e1",
+        armedAt: 1_000,
+        dueAt: 1_000 + HOUR,
+        cause: "refusal",
+      },
       levels: { [OPUS]: 2 },
     });
+  });
+
+  // A worker relaunched onto a transcript an older build wrote reads its arming all the same: the
+  // moment it was armed is the record this build adds, and nothing decides on it.
+  test("an arming an older build recorded, with no moment it was armed, reads back as it was", () => {
+    const older: FallbackCooldownState = {
+      arming: { restoreTo: OPUS, entryId: "e1", dueAt: 1_000 + HOUR, cause: "refusal" },
+      levels: { [OPUS]: 2 },
+    };
+    expect(restoreFallbackCooldown([entry(older)])).toEqual(older);
   });
 
   test("a branch with no entry of this type restores nothing", () => {

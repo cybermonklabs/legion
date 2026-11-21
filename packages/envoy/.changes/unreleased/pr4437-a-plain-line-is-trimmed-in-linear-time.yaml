@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  Dispatch's page trims the spaces and tabs a plain stored text's lines open and end with in time
+  linear in each line. Its pattern `/^[ \t]+|[ \t]+$/gu` read a run of spaces followed by any
+  other character in time that grew with the square of the run, which a comment's plain line could
+  hold, on every draw of the line; it is a loop now, and counts what it reads.

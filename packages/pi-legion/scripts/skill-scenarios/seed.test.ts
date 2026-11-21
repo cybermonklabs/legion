@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { settled } from "@legion/test-fixtures/wait";
 import type * as seedModule from "./seed";
 
 // e2e/api.ts, which seed.ts calls, reads its port when it loads: set it as rig.sh's seed_ts does,
@@ -20,7 +21,11 @@ const work = temporaryDirectory("skill-scenarios-seed");
 beforeAll(async () => {
   process.env.DISPATCH_E2E_PORT = "18777";
   delete process.env.PLAYWRIGHT_BASE_URL;
-  seed = await import("./seed");
+  // The one hook of this file that does real work: it loads seed.ts and what that imports
+  // (dispatch's e2e/api.ts and its harness modules, @legion/contracts, zod). The load is waited
+  // for through the shared wait, so a load that outlasts the row's deadline fails here, naming
+  // it, rather than as Bun's unnamed "a beforeEach/afterEach hook timed out" once it returns.
+  seed = await settled("seed.ts and the modules it imports to load", import("./seed"));
 });
 let dirs = 0;
 function freshDir(name: string): string {

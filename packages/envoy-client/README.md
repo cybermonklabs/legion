@@ -10,22 +10,38 @@ history before that and stops where the fragments begin.
 
 ## Running the suite
 
-`bun run test` runs the suite with `--timeout 30000`, because Bun's own per-test default is
-5,000 ms and nothing here wrote it, sized it or explained it. On a busy machine that default is a
-limit on a row's work rather than on a hang: measured in a 2-CPU pod under 16 busy loops
-(8 x nproc), `dispatch-cwd.test.ts`'s row that kills a child ignoring SIGTERM reached 5,000.89 ms
-and failed, where it costs 0.14 s idle and 0.31 s with its own file alone. A row that hangs still
-fails the suite; it takes 30 s to say so rather than 5 s.
+`bun run test` runs two `bun test` commands, each with the row-deadline preload
+(`--preload @legion/test-fixtures/row-deadline`) and one `--timeout`, the command's guard. No row
+carries a limit of its own: a wait of `@legion/test-fixtures/wait` (`until`, `settled`) ends before
+the guard of the command that runs it, with a failure that names what it waited for, and it cannot
+read a row's own number. One hook does: `nats-credential.test.ts`'s `beforeAll`, one Go build of
+natsd and calloutd with no shared wait in it, keeps `BUILD_GUARD_MS` (300000 ms), the measured
+process run `docs/testing.md` lets a hook guard itself. The second command runs the files whose
+rows take far longer than the rest: `nats-stall.test.ts`, `nats-auth.test.ts`, the three
+`*.live.test.ts` suites, `dispatch-askgate.test.ts`, `dispatch-who-waits.test.ts`,
+`askgate-record.test.ts`, `broker-credential-signins.test.ts`, `dispatch-write-outcomes.test.ts`
+and `nats-credential.test.ts`; the first runs every other file. The
+guards are 30000 and 120000 ms, each at least twice the slowest row or hook its command ran under
+8 busy loops on 2 CPUs; `package.json`'s `"//"` note gives each reading, and the hook's.
 
-Bun reads that number from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
+Bun reads the guard from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
 preload that calls `jest.setTimeout` governs the first test file of a run only, and
-`BUN_TEST_TIMEOUT` is not read, each of the three measured on Bun 1.4.4. So a bare `bun test` here
-still runs under Bun's 5,000 ms, and every row whose own work reaches half of that carries its own
-limit as the third argument to `test`, with what can hang and the two costs that sized it written
-beside it. Each row's comment is the record of its own number.
+`BUN_TEST_TIMEOUT` is not read, each of the three measured on Bun 1.4.4. So a bare `bun test`
+here runs under Bun's 5,000 ms default and without the preload: run the package's script.
 
-A row whose limit is a bound on work rather than a hang guard says so beside its number, and a row
-whose limit must stay below something the row must not wait out says that too.
+No row passes or fails by reading a clock. A row about one of the client's own timers runs it on
+Bun's fake clock (`jest.useFakeTimers()`, which holds `AbortSignal.timeout` as well) or holds it,
+and reads what the client did at each moment; a row that bounds the work of the client reads the
+client's own count of it (`bearerRedactionMatches`, `excerptPatternCharacters` in
+`dispatch-http.ts`). What no count reaches, the steps a regular expression takes within one pass,
+recheck's automaton checker reads from each pattern instead (`test/pattern-analysis.ts`): a row
+analyzes a pattern it reads in a moment, and holds a slower one to the verdict `bun run
+analyze:patterns` committed beside its test. Real sockets do not fit the fake clock, so the NATS
+dial's rows run `connectNats` on a clock they drive (`NatsDialClock`,
+`src/__tests__/driven-dial-clock.ts`), which holds each wait and bound until the row ends it, hold
+nats.js's own timers until the row runs them (`src/__tests__/held-nats-timers.ts`), so no real
+time orders a bound or a handshake against one of them, and read the timers nats.js's own code
+armed and ran from `@legion/test-fixtures/timer-record`.
 
 ## Inbound delivery
 
@@ -165,8 +181,10 @@ reconnecting forever (2 s apart for a seed or no credential), and a ping every 1
 (`NATS_PING_INTERVAL_MS`) with the connection dropped on the tick that finds two pings unanswered
 (`NATS_MAX_PINGS_OUT`). So a
 path that freezes without closing is left within 30 s and redialed at once, and a session is back
-within 42 s when that redial also hangs for its 10 s timeout and the 2 s wait (a broker-token
-session lost less than a minute after its last dial: within 50 s); nats.js's
+within 42.1 s when that redial also hangs for its 10 s timeout, the 2 s wait and its 0.1 s jitter
+(`NATS_RECONNECT_JITTER_MS`), the jitter set here rather than left to nats.js's default (a
+broker-token session lost less than a minute after its last dial redials up to
+`BROKER_REDIAL_CAP_MS` after it leaves the path, a recovery no row prices); nats.js's
 default 120 s interval left a frozen path for up to 6 minutes. A session that presents its broker
 token never gives up over a refused credential, and redials on `brokerRedialDelays` instead of
 2 s apart: at once when it loses a connection that lived a minute or more past its last dial,
@@ -180,7 +198,8 @@ renewal, a session switch) goes out within about a second (`BROKER_REDIAL_POLL_M
 of a wait too, once for each token, between the planned redials, whose schedule it does not move.
 A token of another session than the last one dialed (a switch) goes out so whatever the wait; a
 renewal goes out so at most once between two planned redials while the hub refuses, and once more
-after each admission (`BrokerNatsCredential.admitted`). A seed or no credential keeps the flat 2 s.
+after each admission (`BrokerNatsCredential.admitted`). A seed or no credential keeps the flat 2 s
+and its jitter.
 A plugin opens its connection with
 `connectNats(connect, options, plan, hooks)`: one bound around the whole `connect()` (the name
 lookup, every address and every server, which nats.js times one at a time), and a failed dial
@@ -190,9 +209,10 @@ waits on the broker-token backoff instead, 2-4 s, 4-8 s, 8-16 s, then 10-20 s, a
 refuses twice is dropped and another trade started at once, once for the session until a dial is
 admitted, on the count the credential keeps and its keeper shares
 (`BrokerNatsCredential.refused`); the host logs each drop as it is made, whether or not another
-dial follows (`hooks.onTokenDropped`, `NATS_DIAL_TOKEN_DROPPED`). A server that closes a dial
-during its
-handshake, as
+dial follows (`hooks.onTokenDropped`, `NATS_DIAL_TOKEN_DROPPED`). The waits, the broker-token
+backoff's included, the bounds and the budget's reading are those of `hooks.clock`
+(`NatsDialClock`), the process's own unless a test hands it a clock it drives. A server that
+closes a dial during its handshake, as
 nats-server does to a CONNECT that comes more than 2 s after its INFO, fails it at once
 (`patches/nats@2.29.3.patch`). A failed connect is logged as
 `natsDialFailure(named, error, presenting)`: `could not connect to NATS at <servers> presenting

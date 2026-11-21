@@ -1,4 +1,5 @@
 import { jest } from "bun:test";
+import { turn as realTurn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { act } from "@testing-library/react";
 
 /**
@@ -58,25 +59,23 @@ export async function settle(): Promise<void> {
 }
 
 /**
- * Lets the real event loop turn, inside `act`, until `done` answers true, and moves no clock.
- * Bun's fake clock holds `setTimeout` and not the real `setImmediate` (and `Date.now` reads the
- * fake clock), so what reaches a page on real turns - a `BroadcastChannel` message in happy-dom,
- * a `fake-indexeddb` keep - arrives here while every product timer stays where the row left it.
- * A row waits here rather than in `waitFor`, which moves a held clock 50 ms each time it polls,
- * when it must show something came without a timer: how many polls a step takes depends on how
- * loaded the machine is, so a clock `waitFor` moved says how often it polled and not what the
- * product waited for. What comes on real turns comes within a few; `turns` that bring nothing
- * end the wait (a thousand unless a row stepping the clock gives fewer per step), and the row
- * fails on what it expects next.
+ * Lets the real event loop turn, each turn inside `act`, until `done` answers true, and moves no
+ * clock but what `each` moves. Bun's fake clock holds `setTimeout` and not the real `setImmediate`
+ * (and `Date.now` reads the fake clock), so what reaches a page on real turns - a
+ * `BroadcastChannel` message in happy-dom, a `fake-indexeddb` keep - arrives here while every
+ * product timer stays where the row left it. A row waits here rather than in `waitFor`, which
+ * moves a held clock 50 ms each time it polls, when it must show something came without a timer:
+ * how many polls a step takes depends on how loaded the machine is, so a clock `waitFor` moved
+ * says how often it polled and not what the product waited for. The wait is `turnsUntil`'s
+ * (`@legion/test-fixtures/fake-clock`): it takes no count of turns, ends at the row's deadline
+ * naming `what` and what `state` says, and runs `each` before each turn.
  */
-export async function onRealTurns(done: () => boolean, turns = 1_000): Promise<void> {
-  for (let turn = 0; turn < turns && !done(); turn += 1) {
-    await act(() => {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setImmediate(resolve);
-      return promise;
-    });
-  }
+export async function onRealTurns(
+  what: string,
+  done: () => boolean,
+  options: { readonly each?: () => void; readonly state?: () => string } = {}
+): Promise<void> {
+  await turnsUntil(what, done, { ...options, turn: () => act(realTurn) });
 }
 
 /** Runs `body` on the fake clock, so a wait inside it - a backoff, a send's deadline, a key's

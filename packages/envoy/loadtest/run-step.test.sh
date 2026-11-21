@@ -28,6 +28,25 @@ readonly fake_bin_dir="${temporary_dir}/bin"
 readonly calls_file="${temporary_dir}/go-calls"
 readonly release_fifo="${temporary_dir}/release"
 
+# fail MESSAGE: how the test ends where a run did what it must not, or a wait did not hold.
+fail() {
+  printf 'FAIL: %s\n' "$*" >&2
+  exit 1
+}
+
+# The test's one guard and its one wait, scripts/e2e/lib/proof-wait.sh's proof_guard and wait_held,
+# which ends at once where its fact can no longer come and otherwise 30 s before the guard, naming
+# the fact, and keeps its last poll in work. Guard 70 s: at least twice this test's longest run
+# beside 8 busy loops on 2 CPUs in a builds Job, 17 s (builds Job d3-fixed-a, two runs, 2026-11-19),
+# plus the wait's 30 s margin; on CI, this test's longest green run was 1 s (run 44602677244), over
+# the 20 newest green merge-group runs of ci.yaml that ran its step up to 2026-11-19 (runs
+# 44508510162 to 44607131679).
+work=$temporary_dir
+note() { echo "$*"; }
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "${here}/../../../scripts/e2e/lib/proof-wait.sh"
+proof_guard 70
+
 first_pid=""
 cleanup() {
   if [[ -n "$first_pid" ]] && kill -0 "$first_pid" 2>/dev/null; then
@@ -68,6 +87,14 @@ export LOADTEST_TEST_RELEASE="$release_fifo"
 
 step_args=(--events 0 --sessions 1 --requests 0)
 
+# first_in_build: whether the first run has reached its build, the fake go, for wait_held; a first
+# run that exited never will.
+first_in_build() {
+  grep -q '^first go ' "$calls_file" 2>/dev/null && return 0
+  kill -0 "$first_pid" 2>/dev/null || wait_impossible="the first run exited before it reached its build"
+  return 1
+}
+
 # start_first ROOT CMD...: start CMD as the first run on ROOT and wait until it is inside the fake
 # go, holding whatever it holds of the root.
 start_first() {
@@ -78,19 +105,9 @@ start_first() {
   mkfifo "$release_fifo"
   LOADTEST_ROOT="$root" LOADTEST_TEST_RUN=first "$@" >"${temporary_dir}/first-output" 2>&1 &
   first_pid=$!
-  local i
-  for ((i = 0; i < 300; i++)); do
-    grep -q '^first go ' "$calls_file" 2>/dev/null && return 0
-    if ! kill -0 "$first_pid" 2>/dev/null; then
-      cat "${temporary_dir}/first-output" >&2
-      printf 'FAIL: the first run exited before it reached its build\n' >&2
-      exit 1
-    fi
-    sleep 0.1
-  done
+  wait_held "the first run to reach its build" first_in_build && return 0
   cat "${temporary_dir}/first-output" >&2
-  printf 'FAIL: the first run did not reach its build within 30 s\n' >&2
-  exit 1
+  fail "$wait_gave_up"
 }
 
 stop_first() {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFile, copyFile, cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { parseArgs } from "node:util";
+import { exitProcess } from "../../packages/envoy-client/src/process-exit";
 import { labelKey, type ArmReading as RoundArm, readRound } from "./analyze";
 import type { CaseRow } from "./build-corpus";
 import {
@@ -1444,5 +1445,11 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
+/** How long the command's exit gives stderr to take the run's last progress lines before it
+ * exits whatever is still queued (`exitProcess`). Nothing stops the command but the person who
+ * runs it, who reads its output as it comes; the bound is how long a reader that takes nothing
+ * keeps it. */
+const EXIT_FLUSH_MS = 5_000;
+
 // Only when run: a test that imports `runFresh` must not run a command.
-if (import.meta.main) process.exit(await main(Bun.argv.slice(2)));
+if (import.meta.main) await exitProcess(await main(Bun.argv.slice(2)), EXIT_FLUSH_MS);

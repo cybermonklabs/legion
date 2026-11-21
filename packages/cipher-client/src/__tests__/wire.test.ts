@@ -9,7 +9,7 @@
 // an entry in that file fails here, and a field added to that file fails the client that does not
 // send it yet.
 
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, setSystemTime, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { forgetHeldSecrets } from "@legion/contracts/held-secrets";
@@ -222,6 +222,10 @@ function checkNames(what: string, want: readonly string[], got: readonly string[
   ).toEqual([...want].sort());
 }
 
+/** The moment `Date.now()` is held at while the corpus replays: each proof's `iat` is its whole
+ *  second. */
+const SIGNED_AT = new Date("2026-03-04T05:06:07.890Z");
+
 /** The proof's header and claim sets whole, the literal claims, and the shape of each
  *  placeholder — including that the embedded key carries no private member, which is the whole of
  *  what the broker may ever receive of a client's key. */
@@ -258,8 +262,7 @@ function checkProof(exchange: CorpusExchange, endpoint: string, request: StubReq
         expect(typeof got === "string" && got.length > 0).toBe(true);
         break;
       case "${iat}":
-        expect(typeof got).toBe("number");
-        expect(Math.abs(Date.now() / 1000 - (got as number))).toBeLessThan(60);
+        expect(got).toBe(Math.floor(SIGNED_AT.getTime() / 1000));
         break;
       case "${token_endpoint}":
         expect(got).toBe(endpoint);
@@ -317,71 +320,80 @@ function tokenAsCorpus(token: BrokerToken): Record<string, unknown> {
 }
 
 test("the wire corpus holds this client", async () => {
-  for (const exchange of corpus.exchanges) {
-    // Each entry is one client's trade, held to its own answer: the tokens an earlier entry's
-    // client traded are held for the scrub (`@legion/contracts/held-secrets`), and one of them
-    // (`<broker-access-token-with-no-credential>`) shares a run of ten characters with a later
-    // entry's refusal text, which the scrub would then withhold. A process of its own holds
-    // nothing another one traded.
-    forgetHeldSecrets();
-    const broker = stubBroker(exchange.answer.status, exchange.answer.body);
-    // The caller stops waiting at the first wait the client asks for, and that wait passes only
-    // when the client is closed: a refusal the client trades again on (an unregistered pod
-    // session) is then answered after the one trade this entry describes.
-    const caller = new AbortController();
-    const client = new BrokerTokenClient({
-      brokerUrl: broker.url,
-      key: await newDpopKey(),
-      subject: await corpusSource(exchange.subject),
-      ...(exchange.actor === undefined ? {} : { actor: await corpusSource(exchange.actor) }),
-      session: exchange.session,
-      projects: exchange.projects,
-      // The entry's own form says whether this trade declines the launcher credential, so the
-      // one place the corpus states it is the form it asserts.
-      launcherCredential:
-        exchange.form[FORM_LAUNCHER_CREDENTIAL] !== FORM_LAUNCHER_CREDENTIAL_DECLINED,
-      sleep: (_ms: number, signal?: AbortSignal) => {
-        caller.abort();
-        const { promise, resolve } = Promise.withResolvers<void>();
-        signal?.addEventListener("abort", () => resolve(), { once: true });
-        return promise;
-      },
-      log: () => {},
-    });
-    let token: BrokerToken | undefined;
-    let refusal: unknown;
-    try {
-      token = await client.token(caller.signal);
-    } catch (error) {
-      refusal = error;
-    } finally {
-      client.close();
-    }
-    expect(broker.requests.length, `${exchange.name}: the client's trades`).toBe(1);
-    checkRequest(exchange, broker.url, broker.requests[0] as StubRequest);
-    if (exchange.expect.outcome === "accept") {
-      expect(refusal, `${exchange.name}: ${refusal}`).toBeUndefined();
-      const got = tokenAsCorpus(token as BrokerToken);
-      const want = exchange.expect.token as Record<string, unknown>;
-      checkNames("the token the client took", Object.keys(want), Object.keys(got));
-      for (const [name, value] of Object.entries(want)) {
-        expect(String(got[name]), `${exchange.name}: the client read ${name}`).toBe(String(value));
-      }
-      continue;
-    }
-    expect(exchange.expect.outcome, `${exchange.name}: this suite knows accept and refuse`).toBe(
-      "refuse"
-    );
-    expect(token, `${exchange.name}: a refused trade hands its caller no identity at all`).toBe(
-      undefined
-    );
-    expect((refusal as Error).message).toContain(exchange.expect.error_contains as string);
-    expect(
-      refusal instanceof BrokerRefusedError && refusal.permanent,
-      `${exchange.name}: only a refusal no later trade can cure stops a renewal loop, and the broker's 429 is not one`
-    ).toBe(exchange.expect.permanent as boolean);
+  // Bun holds `Date.now()`, which each proof stamps `iat` from, at SIGNED_AT; timers stay real.
+  setSystemTime(SIGNED_AT);
+  try {
+    for (const exchange of corpus.exchanges) await replay(exchange);
+  } finally {
+    setSystemTime();
   }
 });
+
+/** One corpus exchange against a stub broker: the trade it sends and what it takes or refuses. */
+async function replay(exchange: CorpusExchange): Promise<void> {
+  // Each entry is one client's trade, held to its own answer: the tokens an earlier entry's
+  // client traded are held for the scrub (`@legion/contracts/held-secrets`), and one of them
+  // (`<broker-access-token-with-no-credential>`) shares a run of ten characters with a later
+  // entry's refusal text, which the scrub would then withhold. A process of its own holds
+  // nothing another one traded.
+  forgetHeldSecrets();
+  const broker = stubBroker(exchange.answer.status, exchange.answer.body);
+  // The caller stops waiting at the first wait the client asks for, and that wait passes only
+  // when the client is closed: a refusal the client trades again on (an unregistered pod
+  // session) is then answered after the one trade this entry describes.
+  const caller = new AbortController();
+  const client = new BrokerTokenClient({
+    brokerUrl: broker.url,
+    key: await newDpopKey(),
+    subject: await corpusSource(exchange.subject),
+    ...(exchange.actor === undefined ? {} : { actor: await corpusSource(exchange.actor) }),
+    session: exchange.session,
+    projects: exchange.projects,
+    // The entry's own form says whether this trade declines the launcher credential, so the
+    // one place the corpus states it is the form it asserts.
+    launcherCredential:
+      exchange.form[FORM_LAUNCHER_CREDENTIAL] !== FORM_LAUNCHER_CREDENTIAL_DECLINED,
+    sleep: (_ms: number, signal?: AbortSignal) => {
+      caller.abort();
+      const { promise, resolve } = Promise.withResolvers<void>();
+      signal?.addEventListener("abort", () => resolve(), { once: true });
+      return promise;
+    },
+    log: () => {},
+  });
+  let token: BrokerToken | undefined;
+  let refusal: unknown;
+  try {
+    token = await client.token(caller.signal);
+  } catch (error) {
+    refusal = error;
+  } finally {
+    client.close();
+  }
+  expect(broker.requests.length, `${exchange.name}: the client's trades`).toBe(1);
+  checkRequest(exchange, broker.url, broker.requests[0] as StubRequest);
+  if (exchange.expect.outcome === "accept") {
+    expect(refusal, `${exchange.name}: ${refusal}`).toBeUndefined();
+    const got = tokenAsCorpus(token as BrokerToken);
+    const want = exchange.expect.token as Record<string, unknown>;
+    checkNames("the token the client took", Object.keys(want), Object.keys(got));
+    for (const [name, value] of Object.entries(want)) {
+      expect(String(got[name]), `${exchange.name}: the client read ${name}`).toBe(String(value));
+    }
+    return;
+  }
+  expect(exchange.expect.outcome, `${exchange.name}: this suite knows accept and refuse`).toBe(
+    "refuse"
+  );
+  expect(token, `${exchange.name}: a refused trade hands its caller no identity at all`).toBe(
+    undefined
+  );
+  expect((refusal as Error).message).toContain(exchange.expect.error_contains as string);
+  expect(
+    refusal instanceof BrokerRefusedError && refusal.permanent,
+    `${exchange.name}: only a refusal no later trade can cure stops a renewal loop, and the broker's 429 is not one`
+  ).toBe(exchange.expect.permanent as boolean);
+}
 
 test("the corpus names every field a client reads", () => {
   const named = new Set<string>();

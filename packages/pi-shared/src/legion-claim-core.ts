@@ -1,5 +1,6 @@
 import type { LegionRegistration } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
+import { jsonLineRecord } from "@legion/envoy-client/json-line-record";
 import {
   callReadyWithRetry,
   LegionDaemonApiError,
@@ -55,6 +56,11 @@ export interface LegionClaimHost {
    * session's own `claimFirstTurnBoundMs` (`src/claim-first-turn-bound.ts`), which every host
    * reads from its own environment and which holds the default. */
   readonly firstTurnBoundMs: number;
+  /** Tests only: told, in this process's own clock, the moment the deferred claim's bound is
+   *  armed and which of its two paths then took the name, so a test reads the program's own
+   *  record of when it acted rather than a clock of its own (`claimStepRecord` below). Unset in
+   *  production. */
+  readonly recordClaimStep?: ((step: ClaimStep) => void) | undefined;
   /** The first wait before the role is claimed again after the listener answered the claim 503,
    * doubled at each retry up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`. Unset, `ROLE_CLAIM_RETRY_FIRST_DELAY_MS`;
    * a test sets it short. */
@@ -70,6 +76,25 @@ export interface LegionClaimHost {
   readonly stopping: string;
   /** Ends the claim's agent, so the daemon launches it again. */
   readonly stop: () => void;
+}
+
+/** One step of the deferred claim, for `LegionClaimHost.recordClaimStep`: the bound armed, with
+ *  its delay, and the name taken, by the bound's timer or by the first turn; each with the
+ *  `Date.now()` it happened at. */
+export type ClaimStep =
+  | { readonly armed: number; readonly boundMs: number }
+  | { readonly claimedBy: "bound" | "first-turn"; readonly at: number };
+
+/** Tests only: the file a host appends each `ClaimStep` to, one JSON line each. Unset, as every
+ *  deployment runs, nothing is written. */
+export const CLAIM_RECORD_FILE = "LEGION_CLAIM_RECORD_FILE";
+
+/** The `recordClaimStep` the file `env` names takes, or undefined where it names none. A write it
+ *  cannot make changes nothing the boot does. */
+export function claimStepRecord(
+  env: Record<string, string | undefined>
+): ((step: ClaimStep) => void) | undefined {
+  return jsonLineRecord<ClaimStep>(env, CLAIM_RECORD_FILE);
 }
 
 /** What the boot answers: the claim step it left to run after it, for a caller that waits on it
@@ -230,10 +255,11 @@ function claimRoleAtFirstTurn(
 ): Promise<void> {
   const done = Promise.withResolvers<void>();
   let ran = false;
-  const claim = (): void => {
+  const claim = (by: "bound" | "first-turn"): void => {
     if (ran) return;
     ran = true;
     clearTimeout(bound);
+    host.recordClaimStep?.({ claimedBy: by, at: Date.now() });
     void (async () => {
       try {
         await claimRoleAgainOnBusy(() => host.claimRole(role), role, {
@@ -247,9 +273,12 @@ function claimRoleAtFirstTurn(
       done.resolve();
     })();
   };
-  const bound = setTimeout(claim, host.firstTurnBoundMs);
+  // Recorded before the timer is armed, so the bound it fires at is no earlier than this record
+  // plus its delay.
+  host.recordClaimStep?.({ armed: Date.now(), boundMs: host.firstTurnBoundMs });
+  const bound = setTimeout(() => claim("bound"), host.firstTurnBoundMs);
   bound.unref?.();
-  firstTurn(claim);
+  firstTurn(() => claim("first-turn"));
   return done.promise;
 }
 

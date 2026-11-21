@@ -12,6 +12,7 @@ import {
 } from "../../theme/classes";
 
 import { MarkdownPreview } from "./MarkdownPreview";
+import { countReferenceRead } from "./reference-reads";
 import { referenceSpans, trimReference } from "./reference-spans";
 import { useReferencePath, useReferenceTarget } from "./reference-target";
 import { buildDispatchReference, type DispatchReferenceRoute } from "./routes";
@@ -78,13 +79,19 @@ function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
   );
 }
 
+/** A GitHub issue's or pull request's path: owner, repository, `issues` or `pull`, number. */
+const githubIssuePathPattern = /^\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)$/;
+
+/** The REST path of the GitHub issue or pull request `value` links to, or undefined for any other
+ *  URL. Each call is counted with the length of `value` (`countReferenceRead`). */
 function githubReference(value: string): string | undefined {
+  countReferenceRead("githubReference", value.length);
   try {
     const url = new URL(value);
     if (url.hostname !== "github.com") {
       return undefined;
     }
-    const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)$/);
+    const match = url.pathname.match(githubIssuePathPattern);
     return match === null ? undefined : `/repos/${match[1]}/${match[2]}/issues/${match[3]}`;
   } catch {
     return undefined;
@@ -128,6 +135,14 @@ const whitespaceOnly = /^\s*$/;
  *  is read where the reference ends (sticky), so a body of many references costs one pass and
  *  not a copy of the rest of it per reference. */
 const trailingRun = /\S*/y;
+
+/** The patterns of this module, by name, for the test that reads each the way a backtracking
+ *  engine runs it (`reference-patterns.test.ts`): each runs on every body a card is read from. */
+export const UNFURL_PATTERNS: Readonly<Record<string, RegExp>> = {
+  githubIssuePathPattern,
+  trailingRun,
+  whitespaceOnly,
+};
 
 /**
  * Every reference-shaped word of `body`, in the order it holds them: the references one reading

@@ -209,10 +209,14 @@ two_builds_prerequisites() {
   if [ "$base_port" = "$head_port" ] || [ "$base_port" = "$envoy_port" ] || [ "$head_port" = "$envoy_port" ]; then
     fail "the base, head and fake Envoy ports must differ ($base_port, $head_port, $envoy_port)"
   fi
+  # The checks the psql below runs, read first so a refused DSN ends the run in its own words.
+  local refusal=''
+  require_dsn_database refusal DATABASE_URL "$database_url" "this run resets the database" ||
+    fail "$refusal"
   # The `vector` extension is the deployment's bootstrap's to install, as a cluster's master role
   # (0072_embeddings_core.up.sql), and the role this run connects as is not one, so a database
   # without it is one no build can migrate. It is read here rather than met with a failed boot.
-  [ "$(psql "$database_url" -X -tAc "select count(*) from pg_extension where extname = 'vector'" 2>/dev/null)" = 1 ] ||
+  [ "$(two_builds_psql -tAc "select count(*) from pg_extension where extname = 'vector'" 2>/dev/null)" = 1 ] ||
     fail "DATABASE_URL must name a database that already holds the vector extension, which only the cluster's master role can install"
   [ $# -eq 0 ] || "$@"
   note "database host $db_host (URL not printed)"
@@ -242,7 +246,15 @@ two_builds_build() {
 # upgrade both proofs are about. empty_public_schema (lib/loopback-dsn.sh) says what goes and why
 # the schema's extensions stay.
 two_builds_reset_database() {
-  empty_public_schema "$database_url" || fail "could not empty the database's public schema"
+  empty_public_schema DATABASE_URL "$database_url" || fail "could not empty the database's public schema"
+}
+
+# two_builds_psql ARGS… runs psql on the database DATABASE_URL names, the one both proofs run in,
+# handed that connection in libpq's own variables, PGPASSWORD among them, by lib/loopback-dsn.sh's
+# exec_dsn_database, so no argument list holds the password. It runs in a subshell of its own,
+# which the exec replaces.
+two_builds_psql() {
+  (exec_dsn_database DATABASE_URL "$database_url" "this run resets the database" -- psql -X "$@")
 }
 
 # two_builds_fake_envoy starts the listener both builds are pointed at, which is the Dispatch

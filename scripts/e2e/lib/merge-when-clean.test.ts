@@ -1,7 +1,9 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { timeLeft } from "@legion/test-fixtures/wait";
 
 // merge_when_clean and await_merger_merge (lib/workflow.sh) against a fake gh first on PATH.
 // merge_when_clean is the proof human's merge of a pull request the merger does not merge: it
@@ -107,6 +109,15 @@ const queued = (position: number, state: string): PullRequest => ({
   queue: { position, state },
 });
 
+// `bound` is the wait's MERGE_WHEN_CLEAN_BOUND in seconds. A row that expects the wait to end on a
+// read (a merge, a CLEAN to merge by hand, a refusal, a closed pull request) gives it none: the
+// bound is then the whole seconds left before the row's deadline (`timeLeft`, a margin before the
+// step's --timeout), which no correct run reaches, so the row's verdict rests on what the wait read
+// and a wait that never ends still fails by the library's own message before the row's guard. The
+// slowest of those rows took 5,592.07 ms beside 32 busy loops on 2 CPUs ("a read that fails", five
+// reads; three runs in Job legion-load-run-gb9jt), past the 5 s they had before. A row that
+// expects the timeout itself sets 1, the timeout being what it holds; the wait reads before it
+// judges the bound, so its message always names a read.
 type Fake = {
   readFail?: number;
   mergeFail?: string;
@@ -126,6 +137,7 @@ function run(reads: PullRequest[], flags = "--squash --delete-branch", fake: Fak
   const script = `${prelude}${fake.fn ?? "merge_when_clean"} "$repo" 7 ${flags}${record}`;
   const result = Bun.spawnSync(["bash", "-c", script], {
     env: {
+      ...bunCacheOff,
       PATH: `${bin}:${process.env.PATH}`,
       HOME: state,
       LIB: lib,
@@ -133,7 +145,7 @@ function run(reads: PullRequest[], flags = "--squash --delete-branch", fake: Fak
       FAKE_GH_READ_FAIL: String(fake.readFail ?? 0),
       FAKE_GH_MERGE_FAIL: fake.mergeFail ?? "",
       FAKE_GH_BRANCH_GONE: fake.branchGone ? "1" : "",
-      MERGE_WHEN_CLEAN_BOUND: String(fake.bound ?? 5),
+      MERGE_WHEN_CLEAN_BOUND: String(fake.bound ?? Math.max(1, Math.floor(timeLeft() / 1000))),
       MERGE_WHEN_CLEAN_POLL: "0.02",
     },
   });
@@ -151,6 +163,15 @@ function run(reads: PullRequest[], flags = "--squash --delete-branch", fake: Fak
     commit: stdout.match(/^commit=(.*)$/m)?.[1],
   };
 }
+
+// The library's own timeout line (merge_when_clean_timeout), which must be all of stderr, with the
+// seconds it waited, at least one, written N. Its polls are the fake's reads, and at least one: the
+// wait reads before it judges the bound, so the line always says what the last read found.
+function timeoutLine(stderr: string): string {
+  return stderr.trimEnd().replace(/^(FAIL daemon-merge: timed out after )[1-9]\d*s /, "$1Ns ");
+}
+const timedOut = (polls: number, reads: string) =>
+  `FAIL daemon-merge: timed out after Ns (${polls} polls) waiting for sjawhar/legion-smoke#7 to merge: it reads ${reads}; unsettled checks: [{"name":"gate","workflow":"fail-on-demand","status":"QUEUED","conclusion":null}]`;
 
 describe("merge_when_clean", () => {
   test("reads the merge record in one GraphQL query whose filter prints the fake's nine lines", () => {
@@ -273,18 +294,22 @@ describe("merge_when_clean", () => {
     expect(r.status).toBe(1);
     expect(r.merges).toHaveLength(0);
     expect(r.deletes).toHaveLength(0);
-    expect(r.stderr).toMatch(
-      /^FAIL daemon-merge: timed out after \ds \(\d+ polls\) waiting for sjawhar\/legion-smoke#7 to merge: it reads OPEN, mergeStateStatus BLOCKED, nothing armed; unsettled checks: \[\{"name":"gate"/
+    expect(r.reads.length).toBeGreaterThan(0);
+    expect(timeoutLine(r.stderr)).toBe(
+      timedOut(r.reads.length, "OPEN, mergeStateStatus BLOCKED, nothing armed")
     );
-    expect(r.stderr.trimEnd().split("\n")).toHaveLength(1);
   });
 
   test("armed past the bound fails naming what is armed", () => {
     const r = run([autoMerge], "--squash --delete-branch", { bound: 1 });
     expect(r.status).toBe(1);
     expect(r.merges).toHaveLength(0);
-    expect(r.stderr).toContain(
-      `it reads OPEN, mergeStateStatus BLOCKED, auto-merge enabled at ${enabledAt} (SQUASH); unsettled checks:`
+    expect(r.reads.length).toBeGreaterThan(0);
+    expect(timeoutLine(r.stderr)).toBe(
+      timedOut(
+        r.reads.length,
+        `OPEN, mergeStateStatus BLOCKED, auto-merge enabled at ${enabledAt} (SQUASH)`
+      )
     );
   });
 
@@ -325,8 +350,10 @@ describe("await_merger_merge", () => {
     expect(r.status).toBe(1);
     expect(r.merges).toHaveLength(0);
     expect(r.deletes).toHaveLength(0);
-    expect(r.stderr).toContain("timed out after");
-    expect(r.stderr).toContain("mergeStateStatus CLEAN");
+    expect(r.reads.length).toBeGreaterThan(0);
+    expect(timeoutLine(r.stderr)).toBe(
+      timedOut(r.reads.length, "OPEN, mergeStateStatus CLEAN, nothing armed")
+    );
   });
 
   test("without --delete-branch the merged pull request keeps its branch", () => {

@@ -309,10 +309,14 @@ port below the kernel's ephemeral range (`port_range`, `port_open`, `pick_port`)
 listener builds (`build_natsd`, `build_listener`, each taking the `packages/envoy` directory to
 build from, which is how `smoke-role-takeover.sh --base-rev` builds the listener from another
 revision), the argv and assignments each service is run with (`set_natsd_argv`, `set_listener_env`)
-and when it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`). It is sourced,
-never run: it starts no process, so every script keeps its own isolation, logs, traps, timeouts,
-messages and exit codes. A caller defines `refuse` and sets `local_stack_fail` to the function an
-exhausted port range is reported through, `refuse` in both smokes here.
+and when it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until` where no guard is
+set). It sources `scripts/e2e/lib/proof-wait.sh`, the stage proofs' own guard and wait
+(`proof_guard`, `wait_held`), which a smoke that sets a guard waits through alone, and adds the
+failing fact of a wait on a process the run started (`running`, `exited`): the wait ends at once
+where that process has exited. It is sourced, never run: it starts no process, so every script
+keeps its own isolation, logs, traps, messages and exit codes. A caller defines `refuse`, `note`
+and, where it sets a guard, `fail`, and sets `local_stack_fail` to the function an exhausted port
+range is reported through, `refuse` in both smokes here.
 `packages/envoy-client/test/envoy-stack.ts` is the same stack for the TypeScript suite.
 
 ## listener-api.sh

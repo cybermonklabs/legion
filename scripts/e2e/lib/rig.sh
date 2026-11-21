@@ -1,18 +1,18 @@
 # shellcheck shell=bash disable=SC2154 # the variables below are the caller's (see the header)
-# The host-side rig helpers a stage proof shares: bounded waits, ports, the processes the run starts,
-# and their teardown. Everything they touch is the run's own — its work directory, its processes,
-# and the ports the kernel chose for it.
+# The host-side rig helpers a stage proof shares: the proof's guard and its one wait, ports, the
+# processes the run starts, and their teardown. Everything they touch is the run's own — its work
+# directory, its processes, and the ports the kernel chose for it.
 #
 # Sourced, never run. The caller sets
 #   root           the checkout
 #   work           the run's scratch directory; every process that carries the run's mark, which
 #                  the caller exports as LEGION_E2E_RUN=$work (run_marks, lib/process-tree.sh),
-#                  belongs to the run
+#                  belongs to the run, and wait_for keeps its last poll's output there
 #   evidence       the evidence directory; each service started by start_process logs to
 #                  $evidence/logs/<name>.log
-#   timeout_hook   empty, or a function a timed-out until_true runs before it fails
+#   timeout_hook   empty, or a function a wait that gives up runs before it fails
 # and defines note and fail (which exits). A production guard that finds a violation writes it to
-# $evidence/pane-endpoint-violation.txt, and the next bounded wait aborts naming it.
+# $evidence/pane-endpoint-violation.txt, and the next until_true aborts naming it.
 #
 # Under the stage scripts' pipefail, an early-exiting consumer — `head -N`, `grep -q`, a
 # `while … break` — never sits downstream of a live producer (kubectl, gh, jj): the producer's
@@ -62,20 +62,42 @@ real_bin_path() {
   printf '%s\n' "$dest"
 }
 
-# until_true SECONDS DESCRIPTION COMMAND... — all synchronization has a bounded named wait. It
-# polls COMMAND every half second until SECONDS of wall time have passed, each poll's own run
-# included, and says what it waits for on entry and every 60 s while it does (polls and seconds),
-# so a healthy wait and a stall read differently to anyone watching a run's output. A poll that
-# never returns would hold the wait past its bound, so a caller's remote calls carry their own
-# timeouts.
+# lib/proof-wait.sh holds the proof's one guard and its one wait (proof_guard, proof_seconds_left,
+# wait_for and its returning form wait_held), which the pi-envoy smokes share through
+# packages/pi-envoy/scripts/local-stack.sh. It reads the caller's work, timeout_hook, note and
+# fail, which this rig's caller sets and defines. until_true and await_start below are the bounded
+# waits of the proofs only a person runs, which set no guard; no proof that sets one calls them.
+# shellcheck source-path=SCRIPTDIR source=proof-wait.sh
+. "$root/scripts/e2e/lib/proof-wait.sh"
+
+# serving NAME PID COMMAND... runs COMMAND for a wait_for on the service NAME, started as PID
+# (start_process): once PID has exited it sets wait_impossible, naming the service's log, so the
+# wait ends at once.
+serving() {
+  local name=$1 pid=$2
+  shift 2
+  "$@" && return 0
+  kill -0 "$pid" 2>/dev/null || wait_impossible="the process exited; see $evidence/logs/$name.log"
+  return 1
+}
+
+# until_true SECONDS DESCRIPTION COMMAND... — the bounded wait of a proof that sets no guard (see
+# proof_guard). It polls COMMAND at once and then every half second, each poll's own run included,
+# and gives up at the first poll that fails once SECONDS of wall time have passed: it polls before
+# it judges the bound, so a wait that starts late, on a box that lost the CPU before its first
+# poll, still reads a fact that is already true. It says what it waits for on entry and every 60 s
+# while it does (polls and seconds), so a healthy wait and a stall read differently to anyone
+# watching a run's output. A poll that never returns would hold the wait past its bound, so a
+# caller's remote calls carry their own timeouts.
 until_true() {
   local limit=$1 what=$2 polls=0 started=$SECONDS beat=$SECONDS
   shift 2
   note "waiting up to ${limit}s for $what"
-  while ((SECONDS - started < limit)); do
+  while :; do
     [ ! -s "$evidence/pane-endpoint-violation.txt" ] || fail "ABORT: $(cat "$evidence/pane-endpoint-violation.txt")"
     polls=$((polls + 1))
     if "$@" >/dev/null 2>&1; then return 0; fi
+    ((SECONDS - started < limit)) || break
     if ((SECONDS - beat >= 60)); then
       beat=$SECONDS
       note "still waiting for $what: poll $polls, $((SECONDS - started))s of ${limit}s"
@@ -86,10 +108,10 @@ until_true() {
   fail "timed out after ${limit}s ($polls polls) waiting for $what"
 }
 
-# lib/loopback-dsn.sh holds require_loopback_dsn and run_database_url, the two helpers a proof
-# that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask
-# libpq. It needs nothing of this rig's, and envoy-session-delivery.sh sources it without this
-# file.
+# lib/loopback-dsn.sh holds require_loopback_dsn, require_run_database and exec_run_database, the
+# helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of
+# why they ask libpq. It needs nothing of this rig's, and envoy-session-delivery.sh sources it
+# without this file.
 # shellcheck source-path=SCRIPTDIR source=loopback-dsn.sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"
 
@@ -102,12 +124,19 @@ until_true() {
 # shellcheck source-path=SCRIPTDIR source=port-file.sh
 . "$root/scripts/e2e/lib/port-file.sh"
 
-# await_port_file NAME FILE VAR waits, bounded (read_port_file, lib/port-file.sh), for FILE, the
-# port file held-port.py writes before it runs the service NAME, while NAME's process (<NAME>_pid)
-# lives, and assigns VAR its port. The locals' names are ones no caller passes.
+# await_port_file NAME FILE VAR waits for FILE, the port file held-port.py writes before it runs
+# the service NAME, while NAME's process (<NAME>_pid) lives, and assigns VAR its port. A proof that
+# set its guard waits through wait_for; one that set none keeps read_port_file's own bound
+# (lib/port-file.sh). The locals' names are ones no caller passes.
 await_port_file() {
-  local _name=$1 _file=$2 _var=$3 _pid_var _status=0
+  local _name=$1 _file=$2 _var=$3 _pid_var _value _status=0
   _pid_var=${_name}_pid
+  if [ -n "$proof_deadline_ms" ]; then
+    wait_for "$_name to hold a port" serving "$_name" "${!_pid_var}" test -s "$_file"
+    read -r _value <"$_file"
+    printf -v "$_var" '%s' "$_value"
+    return 0
+  fi
   read_port_file "$_file" "${!_pid_var}" "$_var" || _status=$?
   case $_status in
     0) ;;
@@ -264,7 +293,7 @@ held_only_by() {
 
 # await_start NAME PID SECONDS DESCRIPTION COMMAND... waits, bounded, for COMMAND to succeed while
 # the service NAME started as PID lives, and fails the check naming the service's log the moment it
-# exits.
+# exits. A proof that set its guard waits with `wait_for DESCRIPTION serving NAME PID COMMAND...`.
 await_start() {
   local name=$1 pid=$2 limit=$3 what=$4 i
   shift 4

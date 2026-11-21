@@ -160,7 +160,8 @@ export function isRenderableFrame(value: unknown): value is AgentStreamFrame {
     return isSettings(frame as unknown as Record<string, unknown>);
   }
   if (frame.kind === "context-cleared") {
-    // The frame carries nothing beyond the version and the `seq`, both checked above.
+    // The frame carries nothing a view reads beyond the version and the `seq`, both checked
+    // above: its `interval`, `at` and `readAt` are the session's own record, which no view reads.
     return true;
   }
   if (frame.kind === "context") {

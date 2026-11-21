@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import {
   act,
   // biome-ignore lint/style/noRestrictedImports: the bare pointer press below has no user-event form - `click` would also send the click this row proves the page has not had.
@@ -27,6 +27,12 @@ import { writesOf } from "./features/writes/write-store";
 // suspended resource outside `act`. So the module is loaded here, with the test file, and no row
 // starts or waits for it.
 import "./features/margin/Margin";
+
+// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+// `realClock`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */
 const about = (field: string, login: string) => expect.objectContaining({ [field]: login });
@@ -565,13 +571,31 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
       );
       await user.click(screen.getByRole("button", { name: "Sign out" }));
       // The question waits out the window for the tab that does not answer: 50 ms before the
-      // window ends it is not asked, whatever the other tab answered on the real turns since,
-      // and once the window has passed it is.
+      // window ends it is not asked, though the other tab's answer has reached this tab by then,
+      // and once the window has passed it is. That answer is read through a marker the other tab
+      // sends behind it, a hello, which this tab answers only once it has read what that tab said
+      // before it: a question asked on the answering tab's answer alone is asked as that answer is
+      // read (`app.tsx`'s `onSignOut`), so it would be asked by the time the hello is answered.
+      // Real turns carry both, and move no clock.
       await tick(OTHER_TABS_ANSWER_MS - 50);
-      await onRealTurns(() => app.asked.length > 1);
+      await onRealTurns("the other tab to be asked the second question", () => {
+        return (
+          second.told.filter((told) => Reflect.get(Object(told), "unsentOf") === "alice").length ===
+          2
+        );
+      });
+      const beforeHello = second.told.length;
+      second.say({ hello: true });
+      await onRealTurns("this tab to answer the hello the other tab sent behind its answer", () => {
+        return second.told
+          .slice(beforeHello)
+          .some((told) => Reflect.get(Object(told), "here") === true);
+      });
       expect(app.asked).toHaveLength(1);
       await tick(50);
-      await onRealTurns(() => app.asked.length > 1);
+      await onRealTurns("the question, asked once the window has passed", () => {
+        return app.asked.length > 1;
+      });
       expect(app.asked).toHaveLength(2);
       expect(app.asked[1]).toBe(
         "Sign out and discard 3 unsent changes, and any unsent changes in your other Dispatch tabs?\n\n• CORE-1 set to done\n• CORE-4 set to backlog\n• Labels of CORE-4"
@@ -628,7 +652,9 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
     expect(app.asked[0]).toBe(`Sign out and discard ${named}${elsewhere}?${listed}`);
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
-    await onRealTurns(() => app.asked.length > 1);
+    await onRealTurns("the second question, asked on the two answering tabs' answers", () => {
+      return app.asked.length > 1;
+    });
     expect(app.asked).toHaveLength(2);
     expect(app.asked[1]).toBe(`Sign out and discard ${named}?${listed}`);
 

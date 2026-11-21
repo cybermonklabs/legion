@@ -8,9 +8,13 @@ import {
   HEARTBEAT_RETRY_MIN_MS,
 } from "@legion/envoy-client/envoy-settings";
 import type { ZodNumberProperty } from "@legion/pi-shared/pi-types";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { captureEnvironment, type EnvironmentRestore } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import {
+  temporaryDirectories,
+  temporaryDirectory,
+} from "@legion/test-fixtures/temporary-directories";
 import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
 import type { resetNatsConnectForTests as ResetNatsConnectForTests } from "../../pi-envoy/extensions/envoy";
 import type legionEntryDefault from "./legion";
@@ -60,6 +64,10 @@ mock.module("@oh-my-pi/pi-coding-agent", () => ({
 // it, and everything the module body did there would outlive the run.
 const envoyConfigDirectory = temporaryDirectory("legion-role-claim-envoy-config");
 const envoyConfigFile = join(envoyConfigDirectory, "envoy.json");
+
+/** The pane's state directory (`LEGION_STATE_DIR`, where its boot writes the jj overlay) and its
+ *  working directory: the row's own, removed after it, never a fixed path another run writes. */
+const paneDirectory = temporaryDirectories("legion-role-claim-pane");
 
 /** The Envoy and Legion entries, each loaded once the environment below is in place. The one row
  *  of this file reads them from its own body, and nothing starts a pane before the `beforeAll`
@@ -155,6 +163,7 @@ const originalEnvironment = {
   LEGION_TREE: process.env.LEGION_TREE,
   LEGION_STATE_DIR: process.env.LEGION_STATE_DIR,
   HOME: process.env.HOME,
+  BUN_RUNTIME_TRANSPILER_CACHE_PATH: process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH,
   DISPATCH_URL: process.env.DISPATCH_URL,
   DISPATCH_TOKEN: process.env.DISPATCH_TOKEN,
   DISPATCH_STATE_DIR: process.env.DISPATCH_STATE_DIR,
@@ -164,6 +173,7 @@ const originalEnvironment = {
 let dispatchState = "";
 beforeEach(() => {
   process.env.HOME = "/nonexistent-home-for-legion-tests";
+  Object.assign(process.env, bunCacheOff);
   delete process.env.DISPATCH_URL;
   delete process.env.DISPATCH_TOKEN;
   dispatchState = mkdtempSync(join(tmpdir(), "legion-role-claim-dispatch-"));
@@ -199,7 +209,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   process.env.ENVOY_URL = "http://envoy.test";
   process.env.LEGION_DAEMON_URL = "http://daemon.test";
   process.env.LEGION_BOOT_TOKEN = bootToken;
-  process.env.LEGION_STATE_DIR = "/tmp/legion-state";
+  process.env.LEGION_STATE_DIR = paneDirectory("state");
   process.env.LEGION_TREE = tree;
   process.env.LEGION_ROLE = "architect";
   process.env.LEGION_ISSUE = tree;
@@ -276,7 +286,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   const envoyPi = createPi();
   const legionPi = createPi();
   const context: Context = {
-    cwd: "/tmp/legion-workspace",
+    cwd: paneDirectory("workspace"),
     sessionManager: {
       getSessionId: () => sessionID,
       getSessionFile: () => "/tmp/legion-root.jsonl",

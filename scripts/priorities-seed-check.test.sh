@@ -120,14 +120,32 @@ os.rename(port_file + ".writing", port_file)
 server.serve_forever()
 EOF
 
+# The test's one guard and its one wait, scripts/e2e/lib/proof-wait.sh's proof_guard and wait_held,
+# which keeps its last poll in work. Guard 100 s: at least twice this test's longest run beside 8
+# busy loops on 2 CPUs in a builds Job, 33 s (builds Jobs d2-fixed and d3-fixed-a, two runs,
+# 2026-11-19), plus the wait's 30 s margin; on CI, this test's longest green run was 1 s (run
+# 44575625234), over the 20 newest green merge-group runs of ci.yaml that ran its step up to
+# 2026-11-19 (runs 44418744571 to 44575705732). It waits through wait_held, the returning form of
+# wait_for, because this test's own fail (below) counts a case's failure and goes on, where a
+# stand-in that never binds must end the run.
+work=$temporary_dir
+note() { echo "$*"; }
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "${project_root}/scripts/e2e/lib/proof-wait.sh"
+proof_guard 100
+
+# dispatch_listening: whether the stand-in wrote its port file, which it writes by rename, for
+# wait_held; a stand-in that exited never will.
+dispatch_listening() {
+  [[ -s "${temporary_dir}/port" ]] && return 0
+  kill -0 "$server_pid" 2>/dev/null || wait_impossible="the stand-in Dispatch exited before it bound a port"
+  return 1
+}
+
 python3 "${temporary_dir}/dispatch.py" "$state" "${temporary_dir}/port" &
 server_pid=$!
-for _ in $(seq 1 100); do
-  [[ -s "${temporary_dir}/port" ]] && break
-  sleep 0.1
-done
-[[ -s "${temporary_dir}/port" ]] || {
-  echo "the stand-in Dispatch did not bind a port" >&2
+wait_held "the stand-in Dispatch's port" dispatch_listening || {
+  echo "the stand-in Dispatch did not bind a port: $wait_gave_up" >&2
   exit 1
 }
 port="$(cat "${temporary_dir}/port")"

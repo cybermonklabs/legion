@@ -356,7 +356,9 @@ daemon_go_tests:
   - 'scripts/e2e/lib/github-apps.sh'
   - 'scripts/e2e/stage1-skeleton.sh'
   - 'scripts/e2e/lib/rig.sh'
+  - 'scripts/e2e/lib/proof-wait.sh'
   - 'scripts/e2e/lib/loopback-dsn.sh'
+  - 'scripts/e2e/lib/loopback-dsn.py'
   - 'scripts/e2e/lib/port-file.sh'
   - 'scripts/e2e/lib/held-port.py'
   - 'scripts/e2e/lib/process-tree.sh'
@@ -603,11 +605,13 @@ contracts:
 guide_layout_files: &guide_layout_files
   - 'scripts/semantic-line-breaks.guides.test.ts'
   - 'scripts/semantic-line-breaks.ts'
+  - 'packages/envoy-client/src/process-exit.ts'
   - 'AGENTS.md'
   - 'scripts/e2e/README.md'
   - 'docs/kubernetes.md'
   - 'packages/envoy/AGENTS.md'
   - 'packages/envoy/cmd/dispatch/README.md'
+  - 'packages/test-fixtures/src/**'
 # why: .github/ci-notes/ci.md#release_push_test-one-filter-per-testsh-step-of-the-test-job-that
 release_push_test: &release_push_test
   - *ci_router
@@ -716,6 +720,7 @@ ci_tools_test: &ci_tools_test
   - '.github/scripts/ci-tools.test.sh'
   - '.github/scripts/ci-tools.sh'
   - '.github/ci-tools.yaml'
+  - 'scripts/e2e/lib/proof-wait.sh'
 mirror_ci_tools_test: &mirror_ci_tools_test
   - *ci_router
   - *ci_filters_data
@@ -724,6 +729,7 @@ mirror_ci_tools_test: &mirror_ci_tools_test
   - '.github/scripts/mirror-ci-tools.test.sh'
   - '.github/scripts/mirror-ci-tools.sh'
   - '.github/scripts/ci-tools.sh'
+  - 'scripts/e2e/lib/proof-wait.sh'
 check_ci_tools_test: &check_ci_tools_test
   - *ci_router
   - *ci_filters_data
@@ -740,6 +746,7 @@ ci_tools_proof_test: &ci_tools_proof_test
   - '.github/scripts/ci-tools-proof.test.sh'
   - '.github/scripts/ci-tools-proof.sh'
   - '.github/scripts/ci-tools.sh'
+  - 'scripts/e2e/lib/proof-wait.sh'
 check_action_pins_test: &check_action_pins_test
   - *ci_router
   - *ci_filters_data
@@ -917,6 +924,7 @@ dispatch_browser_samples_test: &dispatch_browser_samples_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/dispatch-browser-samples.test.sh'
   - '.github/scripts/dispatch-browser-samples.sh'
+  - 'scripts/e2e/lib/proof-wait.sh'
 race_memory_test: &race_memory_test
   - *ci_router
   - *ci_filters_data
@@ -931,6 +939,7 @@ disk_watch_test: &disk_watch_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/disk_watch.test.sh'
   - '.github/scripts/disk_watch.py'
+  - 'scripts/e2e/lib/proof-wait.sh'
 # why: .github/ci-notes/ci.md#priorities_seed_check_test-the-one-harness-of-the-job-outside-githubscripts
 priorities_seed_check_test: &priorities_seed_check_test
   - *ci_router
@@ -938,6 +947,7 @@ priorities_seed_check_test: &priorities_seed_check_test
   - '.github/workflows/ci-job-test.yaml'
   - 'scripts/priorities-seed-check.test.sh'
   - 'scripts/priorities-seed-check.sh'
+  - 'scripts/e2e/lib/proof-wait.sh'
 check_ci_filters_test: &check_ci_filters_test
   - *ci_router
   - *ci_filters_data
@@ -1046,6 +1056,8 @@ test:
   - 'scripts/semantic-line-breaks.test.ts'
   - 'scripts/priorities-seed.ts'
   - 'scripts/priorities-seed.test.ts'
+  - 'scripts/bun-cache-census.ts'
+  - 'scripts/bun-cache-census.test.ts'
   - 'scripts/e2e/**'
   - 'packages/contracts/fixtures/daemon-api/**'
   - 'packages/daemon/internal/daemon/controller.go'
@@ -1256,16 +1268,15 @@ conflicts_script:
   - *bun_install
   - *biome
   - 'scripts/conflicts/**'
+  - 'packages/test-fixtures/src/**'
 # why: .github/ci-notes/ci.md#sessions_script-the-session-message-wait-suites-own-job-the-suite
 sessions_script:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-sessions-script.yaml'
+  - *bun_install
   - 'scripts/sessions/**'
-  - '.bun-version'
-  - '.github/actions/setup-bun/**'
-  - '.github/ci-tools.yaml'
-  - '.github/scripts/ci-tools.sh'
+  - 'packages/test-fixtures/src/**'
 broker_client:
   - *ci_router
   - *ci_filters_data
@@ -1344,6 +1355,7 @@ pi_legion:
   - 'packages/pi-shared/test/**'
   - 'packages/envoy-client/src/**'
   - 'packages/envoy-client/test/subscribe-answer.ts'
+  - 'packages/envoy-client/test/pattern-analysis.ts'
   - 'packages/cipher-client/**'
   - 'packages/contracts/src/**'
   - 'packages/test-fixtures/src/**'
@@ -1663,6 +1675,7 @@ envoy_go:
   - '.github/scripts/pg-connection-ceiling.sh'
   - 'packages/envoy/scripts/database-skips.sh'
   - 'packages/envoy/scripts/database-skips.test.sh'
+  - 'scripts/e2e/lib/proof-wait.sh'
   - 'packages/daemon/docker/legion-testpg'
   # why: .github/ci-notes/ci.md#envoy_go-the-three-jobs-whose-tag-steps-lean-on-this-jobs-untagged
   - '.github/workflows/ci-job-dispatch-memory.yaml'
@@ -2346,6 +2359,8 @@ envoy_e2e_local:
   # why: .github/ci-notes/ci.md#envoy_e2e_local-and-legioncipher-client-with-it-the-tsc-program-of
   - 'packages/cipher-client/**'
   - 'packages/contracts/src/**'
+  - 'scripts/e2e/lib/proof-wait.sh'
+  - 'packages/test-fixtures/src/**'
   - *listener_command
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testnats/cmd/natsd/*'
@@ -2370,6 +2385,7 @@ envoy_session_stall:
   - 'packages/pi-shared/**'
   - 'packages/contracts/**'
   - 'packages/test-fixtures/src/**'
+  - 'scripts/e2e/lib/proof-wait.sh'
   - 'packages/cipher-client/**'
   - '.github/scripts/pg-connection-ceiling.sh'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
@@ -2485,6 +2501,7 @@ tool_fallback:
   - '.github/scripts/check-ci-tools.sh'
   - '.github/scripts/ci-tools-proof.sh'
   - '.github/scripts/ci-fault-proxy.py'
+  - 'scripts/e2e/lib/proof-wait.sh'
   - '.github/scripts/tool-fallback-package-blobs.sh'
   - '.github/scripts/tool-fallback-row-call-sites.sh'
   - '.github/scripts/tool-fallback-nowhere-controls.sh'

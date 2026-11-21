@@ -15,13 +15,14 @@
 #      endpoint, which answers every trade with a token of its own, plays the other broker;
 #   5. the listener is connected by its own service token: the hub's connection list names a
 #      connection authorized as the listener's service user, listener/<its machine id>;
-#   6. with one of the two brokers killed, a new session is admitted within 2 s of the kill, three
-#      times over: the hub drops the killed replica's connection, and with it the replica's place in
-#      the auth service's queue group, so no request waits on it. A session opened before the hub
-#      has read that connection's close can be routed to the dead replica and is refused at the
-#      hub's authorization timeout (measured), so the check opens the first session only once the
-#      hub lists one envoy-broker-callout connection fewer (both replicas carry that name), inside
-#      the first session's 2 s.
+#   6. with one of the two brokers killed, the hub drops the killed replica's connection, and with
+#      it the replica's place in the auth service's queue group, and three new sessions opened
+#      after that drop are each admitted, so no request waits on the dead replica. A session
+#      opened before the hub has read that connection's close can be routed to the dead replica and
+#      is refused at the hub's authorization timeout (measured), so the check opens the first
+#      session only once the hub lists one envoy-broker-callout connection fewer (both replicas
+#      carry that name). Nothing here reads a clock: the property is that order of events, the
+#      drop and then three admissions.
 #
 # Each probe is cmd/natsprobe, run with only the variables it needs: as a session, it trades the
 # pod's exchange token for a broker access token under the session the stack registered the pod
@@ -48,6 +49,24 @@ WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/callout-check.XXXXXX")"
 STACK_PID=""
 FOREIGN_PID=""
 
+# The check's one guard and its one wait: scripts/e2e/lib/proof-wait.sh's proof_guard and wait_held,
+# which ends at once where its fact can no longer come and otherwise 30 s before the guard, and
+# keeps its last poll in WORK_DIR. It waits through wait_held, the returning form of wait_for,
+# because this check reports each property on a line of its own and goes on, and a wait that did not
+# hold is such a line (or, for the stack itself, exit 2), so each caller says what its wait's end
+# means. Guard 220 s: at least twice the longest run of its step's command beside 8 busy loops on 2
+# CPUs in a builds Job, 95 s with the stack's start on a warm Go cache (d4-final2, two runs,
+# 2026-11-20), plus the wait's 30 s margin; on CI, the longest green run of its step in
+# ci-job-envoy-go.yaml was 13 s (run 44598907697), over the 20 newest green merge-group runs of
+# ci.yaml that ran it up to 2026-11-19 (runs 44508510162 to 44607131679). A cold build is what
+# dev-stack.sh's --binaries spares a run, and a hub that never drops the killed broker
+# (callout-check.test.sh's case g) waits the 190 s this leaves.
+work=$WORK_DIR
+note() { echo "callout-check: $*" >&2; }
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "$SCRIPT_DIR/../../../scripts/e2e/lib/proof-wait.sh"
+proof_guard 220
+
 stop() {
   local rc="$1"
   trap - EXIT
@@ -72,18 +91,16 @@ if [ "${DEV_STACK_CALLOUT:-}" != 1 ]; then
   echo "callout-check: starting dev-stack.sh --callout (log $stack_log)..." >&2
   bash "$SCRIPT_DIR/dev-stack.sh" --callout "$@" >"$stack_log" 2>&1 &
   STACK_PID=$!
-  ready=false
-  for _ in $(seq 1 600); do
-    if grep -q '^dev-stack: ready\.' "$stack_log" 2>/dev/null; then
-      ready=true
-      break
-    fi
-    kill -0 "$STACK_PID" 2>/dev/null || break
-    sleep 0.5
-  done
-  if [ "$ready" != true ]; then
+  # stack_ready: whether dev-stack.sh printed its ready line, for wait_held; a stack that exited
+  # never will.
+  stack_ready() {
+    grep -q '^dev-stack: ready\.' "$stack_log" 2>/dev/null && return 0
+    kill -0 "$STACK_PID" 2>/dev/null || wait_impossible="dev-stack.sh exited before it was ready"
+    return 1
+  }
+  if ! wait_held "the stack to come up" stack_ready; then
     cat "$stack_log" >&2
-    echo "callout-check: the stack never came up" >&2
+    echo "callout-check: the stack never came up: $wait_gave_up" >&2
     exit 2
   fi
   # The banner's exports, read as values: each `  export NAME=value` line, a quoted value unquoted.
@@ -218,12 +235,14 @@ with open(sys.argv[1], "w") as handle:
 server.serve_forever()
 PY
 FOREIGN_PID=$!
-for _ in $(seq 1 100); do
-  [ -s "$foreign_port_file" ] && break
-  sleep 0.1
-done
-if [ ! -s "$foreign_port_file" ]; then
-  unknown "a token another broker issued is refused: the stand-in token endpoint never started: $(cat "$WORK_DIR/foreign.log")"
+# foreign_listening: whether the stand-in wrote its port, for wait_held; one that exited never will.
+foreign_listening() {
+  [ -s "$foreign_port_file" ] && return 0
+  kill -0 "$FOREIGN_PID" 2>/dev/null || wait_impossible="it exited before it wrote its port"
+  return 1
+}
+if ! wait_held "the stand-in token endpoint's port" foreign_listening; then
+  unknown "a token another broker issued is refused: the stand-in token endpoint never started ($wait_gave_up): $(cat "$WORK_DIR/foreign.log")"
 else
   probe "http://127.0.0.1:$(cat "$foreign_port_file")" --subscribe "$OWN_CHANNEL" --wait 1s
   if [ "$probe_rc" -eq 4 ] && [ "$(first_line_with 'not admitted: ')" = "$NOT_ADMITTED" ]; then
@@ -256,10 +275,24 @@ callout_connections() {
     jq -r '[.connections[]? | select(.name == "envoy-broker-callout")] | length' 2>/dev/null || true
 }
 
-# 6. One of the two brokers killed, then three new sessions, each admitted within 2 s: the first
-# counted from the kill, so the wait for the hub to drop the killed replica is inside its 2 s.
+# 6. One of the two brokers killed, the hub's drop of its connection waited for, then three new
+# sessions, each admitted: the order of events the property is, with no clock read.
 read -r _ second_broker <<<"$DEV_STACK_BROKER_PIDS"
-killed_property="one broker killed and a new session admitted within 2 s"
+killed_property="one broker killed, its connection dropped and three new sessions admitted after it"
+# hub_dropped: whether the hub lists fewer envoy-broker-callout connections than the $before it
+# listed before the kill, for wait_held. It sets listed to each count it reads; a list it cannot
+# read ends the wait at once, since this check then sees nothing of the drop it waits for.
+listed=""
+hub_dropped() {
+  local count
+  count="$(callout_connections)"
+  if [ -z "$count" ]; then
+    wait_impossible="the hub's connection list ($DEV_STACK_NATS_MONITOR_URL/connz) could not be read"
+    return 1
+  fi
+  listed=$count
+  [ "$count" -lt "$before" ]
+}
 if [ -z "${second_broker:-}" ] || ! kill -0 "$second_broker" 2>/dev/null; then
   unknown "$killed_property: DEV_STACK_BROKER_PIDS ($DEV_STACK_BROKER_PIDS) names no live second broker"
 else
@@ -269,53 +302,28 @@ else
   elif [ "$before" -lt 2 ]; then
     unknown "$killed_property: the hub lists $before connection named envoy-broker-callout before the kill, not one for each of the two brokers"
   else
-    killed=$(date +%s%N)
     kill -KILL "$second_broker"
-    dropped=""
-    listed=""
-    waited=0
-    while :; do
-      count="$(callout_connections)"
-      waited=$((($(date +%s%N) - killed) / 1000000))
-      if [ -n "$count" ]; then
-        listed=$count
-        if [ "$count" -lt "$before" ]; then
-          dropped=$waited
-          break
-        fi
-      fi
-      [ "$waited" -ge 2000 ] && break
-      sleep 0.02
-    done
     # A list that could not be read at all after the kill says nothing; one read that still named
     # both connections says the hub kept the killed broker, whatever the reads after it answered.
-    if [ -z "$dropped" ] && [ -z "$listed" ]; then
-      unknown "$killed_property: the hub's connection list ($DEV_STACK_NATS_MONITOR_URL/connz) could not be read after the kill"
-    elif [ -z "$dropped" ]; then
-      fail "$killed_property: the hub still listed $listed connections named envoy-broker-callout ${waited} ms after the kill"
+    if ! wait_held "the hub to drop the killed broker's connection" hub_dropped; then
+      if [ -z "$listed" ]; then
+        unknown "$killed_property: the hub's connection list ($DEV_STACK_NATS_MONITOR_URL/connz) could not be read after the kill"
+      else
+        fail "$killed_property: the hub still listed $listed connections named envoy-broker-callout when the wait for the drop ended: $wait_gave_up"
+      fi
     else
-      slowest=0
       outcome=pass
       detail=""
-      began=$killed
       for attempt in 1 2 3; do
         probe "$AGENT_SECRETS_URL" --subscribe "$OWN_CHANNEL" --wait 10ms
-        took=$((($(date +%s%N) - began) / 1000000))
-        [ "$took" -gt "$slowest" ] && slowest=$took
         if [ "$probe_rc" -ne 0 ]; then
           outcome=fail
-          detail="attempt $attempt: natsprobe exit $probe_rc after ${took} ms: $probe_out"
+          detail="attempt $attempt: natsprobe exit $probe_rc: $probe_out"
           break
         fi
-        if [ "$took" -ge 2000 ]; then
-          outcome=fail
-          detail="attempt $attempt took ${took} ms"
-          break
-        fi
-        began=$(date +%s%N)
       done
       if [ "$outcome" = pass ]; then
-        pass "$killed_property: the hub dropped the killed broker's connection after ${dropped} ms; three sessions, the slowest ${slowest} ms, the first counted from the kill"
+        pass "$killed_property: the hub listed $listed envoy-broker-callout connection after the kill, and three sessions opened after that were admitted"
       else
         fail "$killed_property: $detail"
       fi

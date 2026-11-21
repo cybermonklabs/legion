@@ -62,6 +62,22 @@ trap 'for server in ${servers[@]+"${servers[@]}"}; do kill "$server" 2>/dev/null
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# The harness's one guard and its one wait, scripts/e2e/lib/proof-wait.sh's proof_guard and
+# wait_for: every wait below goes through wait_for, which ends at once where its fact can no longer
+# come and otherwise 30 s before the guard, naming the fact, and keeps its last poll in $work. Guard
+# 400 s: at least twice this harness's longest run beside 8 busy loops on 2 CPUs in a builds Job,
+# 181 s (builds Jobs d2-fixed and d3-fixed-a, two runs, 2026-11-19), plus the wait's 30 s margin; on
+# CI, this harness's longest green run was 12 s (run 44558729067), over the 20 newest green
+# merge-group runs of ci.yaml that ran its step up to 2026-11-19 (runs 44418744571 to 44575705732).
+note() { echo "  $*"; }
+fail() {
+  echo "  FAIL: $*" >&2
+  exit 1
+}
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "$script_dir/../../scripts/e2e/lib/proof-wait.sh"
+proof_guard 400
+
 REGISTRY=ghcr.io/example/fixture/ci
 REGISTRY_PATH=example/fixture/ci
 ACTOR=fixture-actor
@@ -408,8 +424,10 @@ YAML
 # serving every named row's asset and the package holding nothing. Sets `root`, `state`, `log`
 # and `base`. Each case names its own fixture: two cases sharing a name would share a tree and an
 # origin, so a repeated name is refused here rather than surfacing as the `ln -s` below failing.
+# It waits for the origin's port through wait_for, which ends at once where the server exited
+# first (origin_listening).
 fixture() {
-  local name=$1 waited=0 which
+  local name=$1 which
   shift
   root="$work/$name/repo"
   state="$work/$name/state"
@@ -438,15 +456,16 @@ fixture() {
   done
   python3 "$work/origin.py" "$state" "$work/$name/port" &
   servers+=("$!")
-  while [ ! -s "$work/$name/port" ]; do
-    if [ "$waited" -gt 100 ]; then
-      echo "  FAIL: the origin of '$name' did not write its port" >&2
-      return 1
-    fi
-    sleep 0.1
-    waited=$((waited + 1))
-  done
+  wait_for "the origin of '$name' to write its port" origin_listening "$name" "$!"
   base="http://127.0.0.1:$(cat "$work/$name/port")"
+}
+
+# origin_listening NAME PID: whether fixture NAME's origin, process PID, wrote its port, for
+# wait_for; a server that exited never will.
+origin_listening() {
+  [ -s "$work/$1/port" ] && return 0
+  kill -0 "$2" 2>/dev/null || wait_impossible="the origin of '$1' exited without writing its port"
+  return 1
 }
 
 # run_mirror [environment assignment…]: the script under test against this case's tree and

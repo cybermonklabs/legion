@@ -3,6 +3,7 @@ import { copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import { ownGroup } from "./own-group";
 import { scriptFunctions } from "./script-functions";
 
@@ -39,7 +40,7 @@ beforeAll(() => {
 // run runs BODY after controller_omp, with the rig's globals and lib/rig.sh, and one helper:
 // start_cli EXE VAR=VALUE… starts the legion stand-in, whose `sh -c` child runs EXE under env with
 // VAR=VALUE… appended to its environment, sets cli to the stand-in's pid and omp to EXE's once EXE
-// runs, and fails the run when it never does. Each stand-in is stopped with everything under it when
+// runs, and fails the run when it does not by the row's deadline (before_deadline). Each stand-in is stopped with everything under it when
 // BODY ends, its start failed or not (stop_tree, lib/process-tree.sh).
 function run(body: string) {
   const script = `set -Eeuo pipefail
@@ -51,17 +52,24 @@ fail() { echo "fail: $*" >&2; exit 1; }
 . ${JSON.stringify(rig)}
 ${controllerOmp}
 started=()
+# before_deadline succeeds while the row's deadline is ahead: the run is handed that deadline as
+# LEGION_PROOF_DEADLINE_MS (epoch milliseconds, from @legion/test-fixtures/wait), so each wait of
+# BODY asks again until then and no longer, and its own failure prints before the row's guard.
+before_deadline() {
+  local now=\${EPOCHREALTIME/[.,]/}
+  ((10#$now / 1000 < LEGION_PROOF_DEADLINE_MS))
+}
 # The shell's own "Killed" notice of each job the trap stops goes nowhere: it is no output of a row.
 trap '{ for p in \${started[@]+"\${started[@]}"}; do stop_tree "$p"; done; } 2>/dev/null' EXIT
 start_cli() {
-  local exe=$1 i kid want
+  local exe=$1 kid want
   want=$(realpath -e -- "$1")
   shift
   env -i PATH="$PATH" "$work/legion" -c 'sh -c "env \\"\\$@\\"; :" sh "$@"; :' legion "$@" "$exe" 600 </dev/null >/dev/null 2>&1 &
   cli=$!
   started+=("$cli")
   omp=
-  for i in $(seq 1 200); do
+  while :; do
     kid=$(cat /proc/"$cli"/task/*/children 2>/dev/null || :)
     kid=\${kid%% *}
     if [ -n "$kid" ]; then
@@ -70,9 +78,10 @@ start_cli() {
       [ -n "$omp" ] && [ "$(readlink "/proc/$omp/exe" 2>/dev/null || :)" = "$want" ] && break
       omp=
     fi
+    before_deadline || break
     sleep 0.05
   done
-  [ -n "$omp" ] || { echo "the stand-in $cli never ran $exe" >&2; exit 1; }
+  [ -n "$omp" ] || { echo "the stand-in $cli did not run $exe by the row's deadline" >&2; exit 1; }
 }
 # padding prints COUNT variables of a hundred bytes, which sort after LEGION_STATE_DIR as mise x
 # leaves Oh My Pi's environment sorted.
@@ -87,7 +96,11 @@ ${body}`;
   // (ownGroup): its EXIT trap stops each tree, and a stopped member of the test runner's own group
   // hangs the runner up where that group is orphaned, as in a Legion pod.
   const result = Bun.spawnSync(ownGroup(["bash", "-c", script]), {
-    env: { PATH: process.env.PATH ?? "", WORK: work },
+    env: {
+      PATH: process.env.PATH ?? "",
+      WORK: work,
+      LEGION_PROOF_DEADLINE_MS: String(Math.floor(Date.now() + timeLeft())),
+    },
   });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
 }
@@ -100,45 +113,33 @@ for i in $(seq 1 20); do
 done
 echo "found $found of 20"`;
 
-const slow = 120_000;
-
 describe.skipIf(skip)("controller_omp", () => {
-  test(
-    "finds the Oh My Pi the run's legion controller start launched whatever name it runs under",
-    () => {
-      const r = run(`
+  test("finds the Oh My Pi the run's legion controller start launched whatever name it runs under", () => {
+    const r = run(`
 omp_exe=${JSON.stringify(join(bin, "oh-my-pi"))}
 start_cli "$omp_exe" LEGION_STATE_DIR="$state"
 ${lookups}`);
-      expect(r.err).toBe("");
-      expect(r.out).toBe("found 20 of 20\n");
-    },
-    slow
-  );
+    expect(r.err).toBe("");
+    expect(r.out).toBe("found 20 of 20\n");
+  });
 
-  test(
-    "reads LEGION_STATE_DIR from an environment with a mebibyte after it",
-    () => {
-      // A `tr '\\0' '\\n' <environ | grep -q` stops reading at its match, tr is killed writing the
-      // rest, and pipefail makes the pipeline's status 141: the read answers absent.
-      const r = run(`
+  test("reads LEGION_STATE_DIR from an environment with a mebibyte after it", () => {
+    // A `tr '\\0' '\\n' <environ | grep -q` stops reading at its match, tr is killed writing the
+    // rest, and pipefail makes the pipeline's status 141: the read answers absent.
+    const r = run(`
 omp_exe=${JSON.stringify(join(bin, "omp"))}
 mapfile -t pad < <(padding 10000)
 start_cli "$omp_exe" LEGION_STATE_DIR="$state" "\${pad[@]}"
 printf 'environment bytes %s\\n' "$(wc -c <"/proc/$omp/environ")"
 ${lookups}`);
-      expect(r.err).toBe("");
-      const bytes = Number(/^environment bytes (\d+)$/m.exec(r.out)?.[1]);
-      expect(bytes).toBeGreaterThan(1_000_000);
-      expect(r.out).toEndWith("\nfound 20 of 20\n");
-    },
-    slow
-  );
+    expect(r.err).toBe("");
+    const bytes = Number(/^environment bytes (\d+)$/m.exec(r.out)?.[1]);
+    expect(bytes).toBeGreaterThan(1_000_000);
+    expect(r.out).toEndWith("\nfound 20 of 20\n");
+  });
 
-  test(
-    "refuses an Oh My Pi of another state directory, and a legion whose line of children has none",
-    () => {
-      const r = run(`
+  test("refuses an Oh My Pi of another state directory, and a legion whose line of children has none", () => {
+    const r = run(`
 omp_exe=${JSON.stringify(join(bin, "omp"))}
 start_cli "$omp_exe" LEGION_STATE_DIR=/elsewhere
 st=0
@@ -152,24 +153,22 @@ st=0
 why=$(controller_omp "$state" "$omp") || st=$?
 echo "the Oh My Pi itself: status $st: $why"
 `);
-      expect(r.err).toBe("");
-      const want = join(work, "controller-state").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const lines = r.out.trimEnd().split("\n");
-      expect(lines).toHaveLength(3);
-      expect(lines[0]).toMatch(
-        new RegExp(
-          `^another state: status 1: the Oh My Pi \\d+ of \\d+ has LEGION_STATE_DIR=/elsewhere, want ${want}$`
-        )
-      );
-      expect(lines[1]).toMatch(
-        new RegExp(
-          `^no state: status 1: the Oh My Pi \\d+ of \\d+ has LEGION_STATE_DIR=, want ${want}$`
-        )
-      );
-      expect(lines[2]).toMatch(
-        /^the Oh My Pi itself: status 1: no process below \d+ runs \S+\/bin\/omp$/
-      );
-    },
-    slow
-  );
+    expect(r.err).toBe("");
+    const want = join(work, "controller-state").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const lines = r.out.trimEnd().split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatch(
+      new RegExp(
+        `^another state: status 1: the Oh My Pi \\d+ of \\d+ has LEGION_STATE_DIR=/elsewhere, want ${want}$`
+      )
+    );
+    expect(lines[1]).toMatch(
+      new RegExp(
+        `^no state: status 1: the Oh My Pi \\d+ of \\d+ has LEGION_STATE_DIR=, want ${want}$`
+      )
+    );
+    expect(lines[2]).toMatch(
+      /^the Oh My Pi itself: status 1: no process below \d+ runs \S+\/bin\/omp$/
+    );
+  });
 });

@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
-import { askBlocks, type NewAsk, newAskCount, newAsks, openingOf } from "../askgate-new-asks";
+import {
+  askBlocks,
+  fenceColonsReads,
+  type NewAsk,
+  newAskCount,
+  newAsks,
+  openingOf,
+} from "../askgate-new-asks";
 
 /** A row of the Dispatch server's own table of inserted markdown and the ask blocks it adds. */
 interface DecisionBlockInsert {
@@ -625,5 +632,42 @@ describe("newAskCount", () => {
         ],
       })
     ).toBe(2);
+  });
+});
+
+// Every line of a typed block is read for its closing fence (`fenceColons`), and the markdown is
+// the write AskGate gates, so a line that costs more than its length would let a write stall the
+// session's event loop. A run of spaces followed by any other character is the line the
+// end-anchored trim it once ran (`/[ \t]+$/`) read from every start in the run: about the square
+// of the run, which no count sees inside a regular expression. The scan is a loop now, and the
+// count is of the characters it reads, at two lengths of each run.
+describe("the closing fence a typed block's line is read for", () => {
+  /** The characters `fenceColons` read for one ask whose body is the line `body`. */
+  function readsFor(body: string): number {
+    const before = fenceColonsReads();
+    const asks = askBlocks(`:::ask{#window}\n${body}\n:::`);
+    expect(asks.map((ask) => ask.id)).toEqual(["window"]);
+    return fenceColonsReads() - before;
+  }
+
+  const n = 20_000;
+
+  test("a line that ends in a run of spaces costs the run once", () => {
+    const short = readsFor(`x${" ".repeat(n)}`);
+    const long = readsFor(`x${" ".repeat(2 * n)}`);
+    // The run is read from its end, once, and the line's first character and the fence's colons
+    // a few reads more.
+    expect(short).toBeGreaterThanOrEqual(n);
+    expect(short).toBeLessThanOrEqual(n + 16);
+    expect(long).toBeLessThanOrEqual(2 * short);
+  });
+
+  test("a run of spaces followed by another character costs no more than its ends", () => {
+    const short = readsFor(`x${" ".repeat(n)}y`);
+    const long = readsFor(`x${" ".repeat(2 * n)}y`);
+    // Each end stops the scan at its first character, and the fence's colons are read.
+    expect(short).toBeGreaterThan(0);
+    expect(short).toBeLessThanOrEqual(16);
+    expect(long).toBe(short);
   });
 });

@@ -312,7 +312,7 @@ dispatch_events_raw() {
 }
 
 # issue_project <KEY> is the Dispatch project prefix of an issue key (DaemonSession's own
-# derivation, internal/dispatch/client.go:287-289: the text before the first '-'), used both to
+# derivation, internal/dispatch/client.go:586: the text before the first '-'), used both to
 # bind a baseline to its project and to name the daemon's own actor id, legion-daemon:<PROJECT>.
 issue_project() { printf '%s' "${1%%-*}"; }
 
@@ -844,8 +844,8 @@ $(cat "$prs_file")
 # (.resolved_repo is null), and the latest repository note among the messages claiming the
 # daemon's actor (actor {kind:"session", id:"legion-daemon:<PROJECT>"}; the id is caller-named, see
 # the header) is the exact no-repository admission refusal, word for word, with the daemon's outbox
-# marker (internal/workflow/repository.go:76, internal/record/outbox.go:71-73,104-106: body =
-# note + "\n\n<!-- legion-outbox:<id> -->").
+# marker (internal/workflow/repository.go:42,89,114, internal/record/outbox.go:288-297,315-318:
+# body = note + "\n\n<!-- legion-outbox:<id> -->").
 negative_no_repo() {
   local key=$1 ok=1 has
   local state_file

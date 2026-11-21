@@ -150,6 +150,24 @@ export function directivesAround(context: TokenizeContext): number {
 }
 
 /**
+ * Events `openedOnLine` read, in every parse since this module loaded: the count
+ * `nestingScanSteps` answers.
+ */
+let nestingScanned = 0;
+
+/**
+ * How many events `openedOnLine` has read, over every parse since this module loaded. The walk
+ * stops at the line before, so the count grows with the containers a body opens rather than with
+ * the square of its events. The micromark tokenizer's own count (the `tokenizer` count of
+ * `workCounts()`, patches/micromark@4.0.2.patch) holds every state the rewritten constructs run;
+ * this walk is the one loop of this module outside those states, so tests/parse-work.ts reads it
+ * beside that count.
+ */
+export function nestingScanSteps(): number {
+  return nestingScanned;
+}
+
+/**
  * The token of the innermost container that opened on the current line and has not closed, or
  * undefined where none did. The walk stops at the flow chunk of the line before, so it reads only
  * this line's events: the containers it opened, each stamped with its depth, and the exits of the
@@ -163,6 +181,7 @@ function openedOnLine(context: TokenizeContext): Token | undefined {
   const events = context.events;
   let closed = 0;
   for (let index = events.length - 1; index >= 0; index--) {
+    nestingScanned++;
     const [kind, token] = events[index];
     if (kind === "exit" && token.type === "chunkFlow") return undefined;
     if (token._container !== true) continue;

@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  Two scans of text a session writes no longer cost the square of a run of characters: AskGate's
+  read of a typed block's line for its closing fence, and `slack_post`'s trim of the punctuation
+  a sentence puts after a URL. Each ran an end-anchored pattern that read, from every start in a
+  run of spaces (or of those marks) followed by any other character, the rest of the run; each is
+  now a loop that reads the line once, and counts what it reads.

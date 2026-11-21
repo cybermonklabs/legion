@@ -44,5 +44,12 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+# Twice the longest green run on record of this proof or of its siblings, whose run makes this
+# same run around another driver, rounded up to the minute: this proof's own 3 green e2e.yaml jobs
+# up to 2026-11-18 (none in a green run) took at most 164 s (run 44141400318), but they ran the
+# driver #4464 replaced, and the new one, which waits out a minute between its two reads, has no
+# green e2e.yaml job on record up to 2026-11-19; the siblings' longest, merge-wait-readable.sh's
+# proof step, took 346 s (run 43872759148), which the 480 it had before held only 1.39 times.
+proof_guard 720
 live_daemon_proof 'conflict no takeover' conflict-no-takeover TestAConflictKeepsThePhaseAndTakesNoTurnOverLive \
   "${CONFLICT_NO_TAKEOVER_EVIDENCE_DIR:-}"

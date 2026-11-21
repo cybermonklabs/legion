@@ -27,6 +27,22 @@ watch="$script_dir/disk_watch.py"
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# The harness's one guard and its one wait, scripts/e2e/lib/proof-wait.sh's proof_guard and
+# wait_for: every wait below goes through wait_for, which ends at once where its fact can no longer
+# come and otherwise 30 s before the guard, naming the fact, and keeps its last poll in $work. Guard
+# 80 s: at least twice this harness's longest run beside 8 busy loops on 2 CPUs in a builds Job, 25
+# s (builds Jobs d2-fixed and d3-fixed-a, two runs, 2026-11-19), plus the wait's 30 s margin; on CI,
+# this harness's longest green run was 12 s (run 44575705732), over the 20 newest green merge-group
+# runs of ci.yaml that ran its step up to 2026-11-19 (runs 44418744571 to 44575705732).
+note() { echo "  $*"; }
+fail() {
+  echo "  FAIL: $*" >&2
+  exit 1
+}
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "$script_dir/../../scripts/e2e/lib/proof-wait.sh"
+proof_guard 80
+
 work=$(mktemp -d)
 pid=""
 cleanup() {
@@ -96,6 +112,36 @@ for line in open(sys.argv[1]):
 ' "$1"
 }
 
+# The cases' waits, each a COMMAND for wait_for or wait_held, which run it in this shell until it
+# holds. Each ends the wait at once where the sampler, $pid, is gone, since it writes no more.
+sampler_gone() { kill -0 "$pid" 2>/dev/null || wait_impossible="the sampler, pid $pid, is gone: $1"; }
+
+# series_holds <series file> <count> [<from>]: whether the series holds count ticks or more,
+# counting only those stamped at or after from (epoch seconds) when it is given.
+series_holds() {
+  local have
+  have=$( (stamps "$1" 2>/dev/null || true) | awk -v from="${3:-0}" '$1 >= from' | grep -c '^[0-9]' || true)
+  [ "$have" -ge "$2" ] && return 0
+  sampler_gone "its series holds $have of the $2 ticks waited for"
+  return 1
+}
+
+# least_below_before: whether the state's least free disk fell below the before number; sets
+# least to the value it read.
+least_below_before() {
+  least=$(field "$state" least_kb)
+  [ "$least" -lt "$before" ] && return 0
+  sampler_gone "least_kb is $least"
+  return 1
+}
+
+# sampler_stopped: whether the kernel holds the sampler off the CPU (ps state T).
+sampler_stopped() {
+  [ "$(ps -o state= -p "$pid" | tr -d ' ')" = T ] && return 0
+  sampler_gone "it never showed state T"
+  return 1
+}
+
 # The shapes the sampler writes and the report prints back: a time is RFC 3339 in UTC to the
 # second, and a tick carries three readings, each a number or the `unknown` of a reading this
 # kernel would not give.
@@ -136,12 +182,7 @@ echo "case: the series begins in the second start ran in, not a second later"
 # and the boundary a reader most wants to line up would have no tick of the machine beside it.
 after_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 series_file="$state.series"
-for _ in $(seq 30); do
-  [ -s "$series_file" ] && break
-  sleep 0.1
-done
-check "the sampler wrote a tick without waiting a second" \
-  "$([ -s "$series_file" ] && echo true || echo false)"
+wait_for "the sampler's first tick in $series_file" series_holds "$series_file" 1
 first_tick=$(head -1 "$series_file")
 check "that tick is a reading of the machine" "$(contains "$first_tick" "$tick_shape")"
 check "it was read no later than the second start returned in" \
@@ -157,13 +198,10 @@ check "the sampler is alive after start returned" "$(alive "$pid")"
 echo "case: the least value falls when the watched file system fills"
 dd if=/dev/zero of="$watched/filler" bs=1M count=64 status=none
 least=$before
-for _ in $(seq 20); do
-  sleep 0.5
-  least=$(field "$state" least_kb)
-  [ "$least" -lt "$before" ] && break
-done
-check "least_kb fell below before_kb after 64 MiB was written" \
-  "$([ "$least" -lt "$before" ] && echo true || echo false)"
+fell=false
+wait_held "least_kb to fall below before_kb, $before kB, after 64 MiB was written" least_below_before &&
+  fell=true
+check "least_kb fell below before_kb after 64 MiB was written" "$fell"
 check "before_kb is unchanged" "$(is "$(field "$state" before_kb)" "$before")"
 rm -f "$watched/filler"
 
@@ -239,17 +277,14 @@ stall_state="$work/stall.json"
 run_watch start --path "$watched" --state "$stall_state"
 check "start left a sampler to stop" "$(is "$status" 0)"
 pid=$(field "$stall_state" sampler_pid)
-sleep 3
+# Three ticks before the stop, and one after it below, are what show the sampler running either
+# side of it, so the hole the window reads is the stop and not a sampler that died in it.
+wait_for "the sampler to tick three times before the stop" series_holds "$stall_state.series" 3
 kill -STOP "$pid"
 # `kill -STOP` only sends the signal, and the series below may be read only once the process
 # can no longer write. Measured in this pod, a sleeping sampler shows `T` within about a
 # millisecond, so the wait is a guarantee rather than a delay.
-for _ in $(seq 50); do
-  [ "$(ps -o state= -p "$pid" | tr -d ' ')" = T ] && break
-  sleep 0.1
-done
-check "the kernel has the sampler off the CPU" \
-  "$(is "$(ps -o state= -p "$pid" | tr -d ' ')" T)"
+wait_for "the kernel to hold the sampler off the CPU" sampler_stopped
 # While the sampler is off the CPU it cannot write, so its series file is stable here and its
 # last stamp is the last second it has a line for. The second after that one is the second it
 # was waiting for when the signal landed, and that is where the window of seconds no line may
@@ -272,13 +307,12 @@ sleep 4
 # after it.
 resumed_at=$(date -u +%s)
 kill -CONT "$pid"
-sleep 3
+wait_for "the sampler to tick in or after the second it was let go in" \
+  series_holds "$stall_state.series" 1 "$resumed_at"
 run_watch report --state "$stall_state"
 check "report stopped it and exited 0" "$(is "$status" 0)"
 pid=""
 seconds=$(stamps "$stall_state.series")
-ticks=$(grep -c '^[0-9]' <<<"$seconds")
-after=$(awk -v resumed="$resumed_at" '$1 >= resumed' <<<"$seconds" | grep -c '^[0-9]' || true)
 # The number of ticks whose second did not move on: a sampler that reads the clock at the
 # wrong moment could stamp two ticks with one second.
 out_of_order=$(awk 'NR > 1 && $1 <= last { n += 1 } { last = $1 } END { print n + 0 }' <<<"$seconds")
@@ -288,12 +322,11 @@ out_of_order=$(awk 'NR > 1 && $1 <= last { n += 1 } { last = $1 } END { print n 
 # signal landed.
 inside_stall=$(awk -v from="$((last_before_stall + 1))" -v to="$((resumed_at - 1))" \
   '$1 >= from && $1 <= to { n += 1 } END { print n + 0 }' <<<"$seconds")
-# What this proves is that the sampler was running before the stop and came back after it, so
-# the hole below is the stop rather than a sampler that died in it. It cannot ask for a tick in
-# every second it was given: on a loaded runner the sampler loses seconds of its own, and that
-# hole is the very reading this case exists to keep. So the floor is low on purpose.
-check "the sampler ticked either side of the stop" \
-  "$([ "$ticks" -ge 4 ] && [ "$after" -ge 1 ] && echo true || echo false)"
+# That the sampler ran before the stop and came back after it, so the hole below is the stop
+# rather than a sampler that died in it, is the two waits above: three ticks before it, and one
+# stamped in or after the second it was let go in. It cannot ask for a tick in every second it
+# was given: on a loaded runner the sampler loses seconds of its own, and that hole is the very
+# reading this case exists to keep. So the floor is low on purpose.
 check "the stamps follow the real clock: no second is written twice or out of order" \
   "$(is "$out_of_order" 0)"
 # The window has to hold seconds for the check below it to mean anything, and the four-second

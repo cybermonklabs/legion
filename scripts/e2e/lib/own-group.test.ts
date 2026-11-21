@@ -1,11 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { realpathSync } from "node:fs";
+import { realpathSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup, untilRunning } from "./own-group";
 
 const skip = skipWithout("perl", "bash", "sleep", "true");
 
 const started: number[] = [];
+const work = temporaryDirectory("own-group-test");
 afterEach(() => {
   for (const pid of started.splice(0)) {
     try {
@@ -65,22 +68,48 @@ test.skipIf(skip)("untilRunning resolves once the pid runs the program", async (
   expect(realpathSync(`/proc/${child.pid}/exe`)).toBe(realpathSync(hostTool("sleep") ?? "sleep"));
 });
 
+// A wait that never ends fails at its row's deadline, naming the pid, the program and what the pid
+// runs: the row runs in a `bun test` of its own under a guard of 2400 ms, as fake-clock.test.ts's
+// row of test-fixtures does, with the row-deadline preload, so the deadline is 1000 ms (the least
+// margin) before that guard. The verdict is what the child printed: none reads a clock.
 test.skipIf(skip)(
-  "untilRunning fails at its bound, naming the pid, the program and what the pid runs, when the pid never runs the program",
-  async () => {
-    const child = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
-    started.push(child.pid);
+  "untilRunning fails at the row's deadline, naming the pid, the program and what the pid runs, when the pid never runs the program",
+  () => {
     const want = realpathSync(hostTool("true") ?? "true");
     const sleep = realpathSync(hostTool("sleep") ?? "sleep");
-    const began = Date.now();
-    let failure = "";
-    try {
-      await untilRunning(child.pid, "true");
-    } catch (error) {
-      failure = (error as Error).message;
-    }
-    expect(failure).toBe(`pid ${child.pid} did not run ${want} within 10 s (running ${sleep})`);
-    expect(Date.now() - began).toBeGreaterThanOrEqual(10_000);
-  },
-  60_000
+    const stuck = join(work, "stuck.test.ts");
+    writeFileSync(
+      stuck,
+      `import { test } from "bun:test";
+import { ownGroup, untilRunning } from ${JSON.stringify(join(import.meta.dir, "own-group.ts"))};
+test("a pid that never runs the program", async () => {
+  const child = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
+  try {
+    await untilRunning(child.pid, "true");
+  } finally {
+    child.kill("SIGKILL");
+  }
+});
+`
+    );
+    const run = Bun.spawnSync(
+      [
+        process.execPath,
+        "test",
+        "--timeout=2400",
+        "--preload",
+        Bun.resolveSync("@legion/test-fixtures/row-deadline", import.meta.dir),
+        "./stuck.test.ts",
+      ],
+      { cwd: work, env: process.env }
+    );
+    const output = `${run.stdout.toString()}${run.stderr.toString()}`;
+    expect(output).toMatch(
+      new RegExp(
+        `until gave up waiting for pid \\d+ to run ${want.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, 1000 ms before the row's guard of 2400 ms [^\\n]*\\(running ${sleep.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`
+      )
+    );
+    expect(output).not.toContain("timed out");
+    expect(run.exitCode).toBe(1);
+  }
 );

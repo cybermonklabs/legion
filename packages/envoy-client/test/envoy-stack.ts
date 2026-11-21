@@ -1,6 +1,8 @@
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import * as path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { until } from "@legion/test-fixtures/wait";
 import type { Subprocess } from "bun";
 import { z } from "zod";
 
@@ -84,8 +86,8 @@ export interface EnvoyStackOptions {
 
 /** The Go module both rigs build their binaries from. */
 export const ENVOY_MODULE = path.resolve(import.meta.dir, "../../envoy");
-const READY_TIMEOUT_MS = 60_000;
-const TAIL_LINES = 10;
+/** How much of a process's log the error of one that did not come up quotes. */
+const TAIL_LINES = 20;
 const STOP_GRACE_MS = 10_000;
 
 /** What a rig builds, and how it names itself when the build cannot run. */
@@ -199,36 +201,27 @@ export function tail(file: string, lines: number): string {
   }
 }
 
-/** How long a rig gives a process to come up, and how much of its log an error quotes. */
-export interface ReadyBudget {
-  readonly timeoutMs: number;
-  readonly tailLines: number;
-}
-
-const ENVOY_READY: ReadyBudget = { timeoutMs: READY_TIMEOUT_MS, tailLines: TAIL_LINES };
-
-/** Polls `ready` until it holds, throwing when `child` exits first or the budget passes. */
+/**
+ * Waits until `ready` holds, through `@legion/test-fixtures/wait`, and fails at once when `child`
+ * exits first. Either failure quotes the end of `log`, the process's own account of why. A probe
+ * that throws (the process is not listening yet) reads as not ready.
+ */
 export async function awaitReady(
   what: string,
   child: Subprocess,
   log: string,
-  budget: ReadyBudget,
   ready: () => Promise<boolean>
 ): Promise<void> {
-  const deadline = Date.now() + budget.timeoutMs;
-  for (;;) {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error(
-        `${what} exited (${child.exitCode ?? child.signalCode}): ${tail(log, budget.tailLines)}`
-      );
-    }
-    if (await ready().catch(() => false)) return;
-    if (Date.now() > deadline) {
-      throw new Error(
-        `${what} was not ready within ${budget.timeoutMs} ms: ${tail(log, budget.tailLines)}`
-      );
-    }
-    await Bun.sleep(100);
+  try {
+    await until(`${what} to come up`, async () => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new Error(`${what} exited (${child.exitCode ?? child.signalCode})`);
+      }
+      return await ready().catch(() => false);
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${reason}: ${tail(log, TAIL_LINES)}`, { cause: error });
   }
 }
 
@@ -241,7 +234,7 @@ const JszSchema = z.object({
 
 /** `url`'s JSON answer read with `schema`; undefined when it answers no 2xx or another shape. */
 async function getJson<T>(url: string, schema: z.ZodType<T>): Promise<T | undefined> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
+  const response = await fetch(url);
   if (!response.ok) return undefined;
   const parsed = schema.safeParse(await response.json());
   return parsed.success ? parsed.data : undefined;
@@ -303,18 +296,20 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     const natsArgs = ["-p", "-1", "-m", "-1", "-store_dir", path.join(work, "nats-store")];
     const natsd = startServer({
       command: [path.join(bin, "natsd"), ...natsArgs],
-      env: { PATH, HOME: natsHome },
+      env: { ...bunCacheOff, PATH, HOME: natsHome },
       log: natsLog,
     });
     processes.push(natsd);
-    await awaitReady("natsd", natsd, natsLog, ENVOY_READY, async () => {
+    await awaitReady("natsd", natsd, natsLog, async () => {
       const reported = natsdAddresses(natsLog);
       if (reported === undefined) return false;
       return (await getJson(`http://${reported.monitor}/healthz`, StatusSchema))?.status === "ok";
     });
     // Ready means natsd reported both addresses, and its log only grows.
     const addresses = natsdAddresses(natsLog);
-    if (addresses === undefined) throw new Error(`natsd reported no ports: ${tail(natsLog, 10)}`);
+    if (addresses === undefined) {
+      throw new Error(`natsd reported no ports: ${tail(natsLog, TAIL_LINES)}`);
+    }
     const natsHostPort = addresses.client;
     const natsUrl = `nats://${natsHostPort}`;
     const monitor = `http://${addresses.monitor}`;
@@ -346,21 +341,14 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       "the listener",
       listener,
       listenerLog,
-      ENVOY_READY,
       async () => (await getJson(`${envoyUrl}/healthz`, StatusSchema))?.status === "healthy"
     );
-    await awaitReady(
-      "natsd's ENVOY_NOTIFICATIONS stream",
-      natsd,
-      natsLog,
-      ENVOY_READY,
-      async () => {
-        const jsz = await getJson(`${monitor}/jsz?streams=true`, JszSchema);
-        return (jsz?.account_details ?? []).some((account) =>
-          (account.stream_detail ?? []).some((stream) => stream.name === "ENVOY_NOTIFICATIONS")
-        );
-      }
-    );
+    await awaitReady("natsd's ENVOY_NOTIFICATIONS stream", natsd, natsLog, async () => {
+      const jsz = await getJson(`${monitor}/jsz?streams=true`, JszSchema);
+      return (jsz?.account_details ?? []).some((account) =>
+        (account.stream_detail ?? []).some((stream) => stream.name === "ENVOY_NOTIFICATIONS")
+      );
+    });
     return { envoyUrl, natsUrl, natsHostPort, monitorUrl: monitor, stop };
   } catch (error) {
     await stop();

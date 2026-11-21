@@ -52,6 +52,24 @@ readonly temporary_dir
 readonly fake_bin_dir="${temporary_dir}/bin"
 mkdir -p "$fake_bin_dir"
 
+# The test's one guard and its one wait, scripts/e2e/lib/proof-wait.sh's proof_guard and wait_held,
+# the returning form of wait_for, since each caller prints an instance's log before it fails the
+# test. It ends at once where its fact can no longer come and otherwise 30 s before the guard, and
+# keeps its last poll in work. Guard 130 s: at least twice this test's longest run beside 8 busy
+# loops on 2 CPUs in a builds Job, 49 s (d4-final2, two runs, 2026-11-20), plus the wait's 30 s
+# margin; on CI, this test's longest green run was 5 s (run 44579169755), over the 20 newest green
+# merge-group runs of ci.yaml that ran its step up to 2026-11-19 (runs 44508510162 to 44607131679).
+work=$temporary_dir
+note() { echo "$*"; }
+# fail <message>: how proof-wait.sh refuses a guard or a wait this test misused.
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "${project_root}/scripts/e2e/lib/proof-wait.sh"
+proof_guard 130
+
 declare -a instance_pid=()
 cleanup() {
   # Best-effort: if an assertion fails mid-test, don't leave a dev-broker.sh instance (and its
@@ -285,28 +303,37 @@ run_instance() {
   instance_pid[which]=$!
 }
 
-wait_for_ready() {
-  local log_file="$1"
-  for _ in $(seq 1 50); do
-    grep -q 'dev-broker: ready\.' "$log_file" 2>/dev/null && return 0
-    sleep 0.1
-  done
+# instance_ready <n> <log>: whether instance n printed its ready line, for wait_held; an instance
+# that exited never will.
+instance_ready() {
+  grep -q 'dev-broker: ready\.' "$2" 2>/dev/null && return 0
+  kill -0 "${instance_pid[$1]}" 2>/dev/null || wait_impossible="instance $1 exited before it was ready"
   return 1
 }
 
-# Waits up to 5 s for instance <n> to exit by itself and sets the global "exited_status" to its
-# exit status. A run meant to refuse that is still running then went on to serve: it is killed
-# and "exited_status" stays 0, which each caller reads as the failure, so the wait is bounded and
-# reports that case rather than hanging.
+# wait_for_ready <n> <log>: whether instance n reached ready, through the test's one wait. It
+# returns rather than ending the test, since each caller prints the instance's log first.
+wait_for_ready() {
+  wait_held "instance $1 to reach ready" instance_ready "$1" "$2"
+}
+
+# instance_settled <n> <log>: whether instance n has exited, or has gone on to serve, which its
+# ready line says, for wait_held.
+instance_settled() {
+  kill -0 "${instance_pid[$1]}" 2>/dev/null || return 0
+  grep -q 'dev-broker: ready\.' "$2" 2>/dev/null
+}
+
+# wait_for_exit <n> <log>: waits for instance n to exit by itself, and sets the global
+# "exited_status" to its exit status. A run meant to refuse that instead goes on to serve prints
+# its ready line, which ends the wait: it is killed and "exited_status" stays 0, which each caller
+# reads as the failure.
 exited_status=0
 wait_for_exit() {
   local n="$1"
   local pid="${instance_pid[$n]}"
   exited_status=0
-  for _ in $(seq 1 50); do
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.1
-  done
+  wait_held "instance $n to exit, or to serve" instance_settled "$n" "$2" || true
   if kill -0 "$pid" 2>/dev/null; then
     kill -TERM "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
@@ -356,9 +383,9 @@ assert_instance_isolated() {
   # How this instance's cleanup drops a database: through docker by default, or through psql on
   # the admin URL in a DEV_BROKER_POSTGRES_URL run.
   local drop_prefix="${6:-exec dispatch-pg psql -U postgres -v ON_ERROR_STOP=1 -q}"
-  if ! wait_for_ready "$log_file"; then
+  if ! wait_for_ready "$n" "$log_file"; then
     cat "$log_file" >&2
-    echo "FAIL: $label never reached ready" >&2
+    echo "FAIL: $label never reached ready: $wait_gave_up" >&2
     exit 1
   fi
 
@@ -661,7 +688,7 @@ printf 'PASS: two concurrent DEV_BROKER_POSTGRES_URL instances use two databases
 # --- A dbname= in DEV_BROKER_POSTGRES_URL's query string would point the broker at another
 # database: the run refuses before the broker starts, and drops only the database it created. ---
 run_instance 1 "$log1" "$docker_calls1" "$curl_calls1" "${admin_url}&dbname=victim"
-wait_for_exit 1
+wait_for_exit 1 "$log1"
 refused_status="$exited_status"
 refused_db="$(created_database "$docker_calls1")"
 if [[ "$refused_status" -eq 0 ]] || ! grep -q "dev-broker: refused: the broker's database URL connects to 'victim'" "$log1" || grep -q 'starting broker' "$log1"; then
@@ -695,7 +722,7 @@ printf 'PASS: a run whose create database fails drops no database\n'
 # broker, and the refusal prints the dump that moves its databases. ---
 DEV_BROKER_TEST_PG_IMAGE_ID="sha256:eb4759788a2182f08257135e61a34f2cfc3c2914079f3465d64ee62350f4d081" \
   run_instance 1 "$log1" "$docker_calls1" "$curl_calls1"
-wait_for_exit 1
+wait_for_exit 1 "$log1"
 stale_status="$exited_status"
 if [[ "$stale_status" -eq 0 ]] || ! grep -qF "dev-postgres: dispatch-pg runs postgres:16" "$log1" \
   || ! grep -qF "dev-postgres:   docker exec dispatch-pg pg_dumpall -U postgres --clean --if-exists > " "$log1" \
@@ -715,9 +742,9 @@ gcp_prefix="projects/100000000001/secrets/agent-secrets-"
 gcp_key="projects/acme-deployment/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
 DEV_BROKER_GCP_PREFIX="$gcp_prefix" DEV_BROKER_GCP_KMS_KEY_NAME="$gcp_key" \
   run_instance 1 "$log1" "$docker_calls1" "$curl_calls1"
-if ! wait_for_ready "$log1"; then
+if ! wait_for_ready 1 "$log1"; then
   cat "$log1" >&2
-  echo "FAIL: a DEV_BROKER_GCP_* run never reached ready" >&2
+  echo "FAIL: a DEV_BROKER_GCP_* run never reached ready: $wait_gave_up" >&2
   exit 1
 fi
 gcp_workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log1" | head -n1 | cut -d' ' -f3 || true)"

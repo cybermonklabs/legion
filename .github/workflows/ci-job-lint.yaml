@@ -52,6 +52,10 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-24.04-arm
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-18T11:04Z: its
+    # other steps at their longest, 1,362 s, 7 s of its clock over them, and its one Bun test
+    # step's longest ("Check every NATS server a script starts or installs is one the floor
+    # takes"), 41 s, plus that command's guard of 5 s: 1,415 s in all, 23.6 minutes.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -172,9 +176,14 @@ jobs:
       # floor, so a live proof that starts one, and a script or page that installs one, must name
       # one the floor takes. The test scans every tracked shell script and every tracked text file
       # for those, so it runs here, on every change: the test job runs it too, but only when its
-      # filter selects scripts/e2e, and a new driver or page can be anywhere.
+      # filter selects scripts/e2e, and a new driver or page can be anywhere. Its one guard,
+      # --timeout 5000, is many times the slowest row of the file under 8 busy loops on 2 CPUs in a
+      # builds Job at the head 84270ff1 (two runs, gf-bun-test-job, inside scripts/e2e/lib):
+      # "lib/nats-image.sh > ends the driver when it cannot read the constant", 106.88 ms; its one
+      # hook, the afterAll, took under the clock's 10 ms step. The natsfloor build runs when the
+      # file loads, before any row or hook, so no guard of Bun's covers it.
       - name: Check every NATS server a script starts or installs is one the floor takes
-        run: bun test scripts/e2e/lib/nats-image.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/e2e/lib/nats-image.test.ts
 
       # After the install, which is what gives it node_modules: it lists each Bun gate's tsc
       # program with `bunx tsc --listFilesOnly`, and the modules each entry a gate's job runs
@@ -251,6 +260,8 @@ jobs:
   # script alone.
   private-names:
     runs-on: ubuntu-24.04
+    # At least the job's longest over its 11 green merge-group runs up to 2026-11-19T20:18Z (runs
+    # 44575625234 to 44607131679), setup included, 21 s; it runs no test step and no guarded command.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

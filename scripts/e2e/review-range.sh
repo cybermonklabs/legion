@@ -64,5 +64,13 @@ command -v bun >/dev/null || {
 export LEGION_E2E_REPO_ROOT="$root"
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+# Twice the longest green run on record of its siblings, whose run makes this same run around
+# another driver, rounded up to the minute, since this proof has no e2e.yaml job on record yet
+# (main's #4328 added it on 2026-11-18): merge-wait-readable.sh's proof step, 346 s (run
+# 43872759148), and handoff-records.sh's, the sibling that builds and starts Dispatch as this one
+# does, 235 s (run 44313413943). In a builds Job at 29b902d1 on 2 CPUs (d-e2e-review-range) the
+# proof passed in 261 s from a cold Go cache, 179 s of it building the driver.
+# lib/live-daemon-proof.sh refuses an entry script that sets no guard.
+proof_guard 720
 live_daemon_proof 'review range' review-range TestReviewRangeLive \
   "${REVIEW_RANGE_EVIDENCE_DIR:-}"

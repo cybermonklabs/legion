@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  `LISTENER_CALL_BUDGET_MS`, the most one whole listener call takes (its attempts' timeouts and the
+  delay between them), and `THIRD_REFRESH_DONE_MS`, the latest a session's third refresh
+  completes after its last registration, are computed from the session timings rather than
+  written as a sum in a comment, and a test holds the third refresh inside
+  `SESSION_LIVE_WINDOW_MS`.

@@ -1,6 +1,7 @@
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join as joinPath } from "node:path";
 import { parseArgs } from "node:util";
+import { exitProcess } from "../../../packages/envoy-client/src/process-exit.ts";
 import { judge } from "./classes.ts";
 import { type NamedText, renderPairs, renderReport } from "./render.ts";
 
@@ -98,11 +99,16 @@ async function run(argv: readonly string[]): Promise<string> {
   return document;
 }
 
+/** How long a failed run's exit gives stderr to take the line that says why before it exits
+ * whatever is still queued (`exitProcess`). Nothing stops the command but the person who runs it,
+ * who reads its output as it comes; the bound is how long a reader that takes nothing keeps it. */
+const EXIT_FLUSH_MS = 5_000;
+
 if (import.meta.main) {
   try {
     process.stdout.write(await run(Bun.argv.slice(2)));
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exit(1);
+    await exitProcess(1, EXIT_FLUSH_MS);
   }
 }

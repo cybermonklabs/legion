@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1327,22 +1327,31 @@ test("a request another copy of the extension read no text for is not read again
   expect(calls()).toBe(2);
 });
 
-// The empty-list case with the shared read: two copies, a Dispatch that answers in 600 ms, one
-// HTTP read and a request that waits under one second. The delay is real on purpose: the read's
-// 800 ms deadline is a platform timer inside `readSessionAnswers`, and the case times the request
-// that two copies of the handler make together against it.
+// The empty-list case with the shared read: two copies, a Dispatch that answers 600 ms in, one
+// HTTP read, and a request that waits on that read alone. The read's 800 ms deadline is a platform
+// timer inside `readSessionAnswers`, in this process, so the row holds it on Bun's fake clock and
+// Dispatch's answer behind a gate the row opens: the clock moves to the moment Dispatch answers,
+// inside the deadline, and what follows is in the row's order. The read answers rather than its
+// deadline (the read's own record, `source`), copy A passes the request on with nothing added, and
+// copy B passes it on with no read of its own.
 const stateRoots: string[] = [];
 afterEach(() => {
+  // A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+  // `finally`, so the real clock comes back here too, before the next row.
+  jest.useRealTimers();
   for (const root of stateRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("two copies of the extension and an empty list: one HTTP read, under one second", async () => {
+test("two copies of the extension and an empty list: one HTTP read, answered inside its deadline", async () => {
   const stateRoot = mkdtempSync(join(tmpdir(), "session-answers-context-"));
   stateRoots.push(stateRoot);
   let fetches = 0;
+  const asked = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<void>();
   const fetchImpl = (async (input: string | URL | Request) => {
     fetches += 1;
-    await Bun.sleep(600);
+    asked.resolve();
+    await answer.promise;
     const session = new URL(input.toString()).pathname.split("/")[4] ?? "";
     return Response.json({
       session_id: session,
@@ -1351,31 +1360,42 @@ test("two copies of the extension and an empty list: one HTTP read, under one se
       items: [],
     });
   }) as typeof fetch;
-  const read = async () =>
-    carry(
-      (
-        await readSessionAnswers({
-          session: "ses_two_copies_empty",
-          dispatch: {
-            enabled: true,
-            url: "http://dispatch.test",
-            credential: bearerCredential("token"),
-          },
-          env: { DISPATCH_STATE_DIR: stateRoot },
-          fetchImpl,
-        })
-      ).text
-    );
+  /** How each read the copies made ended, as the read reports it. */
+  const sources: string[] = [];
+  const read = async () => {
+    const answered = await readSessionAnswers({
+      session: "ses_two_copies_empty",
+      dispatch: {
+        enabled: true,
+        url: "http://dispatch.test",
+        credential: bearerCredential("token"),
+      },
+      env: { DISPATCH_STATE_DIR: stateRoot },
+      fetchImpl,
+    });
+    sources.push(answered.source);
+    return carry(answered.text);
+  };
   const messages = [skill, ask];
 
-  const started = performance.now();
-  // Copy A's handler, then copy B's on the array A passed on.
-  expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
-  expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
-  const elapsed = performance.now() - started;
+  jest.useFakeTimers();
+  try {
+    // Copy A's handler, its read in flight to Dispatch and its deadline armed.
+    const copyA = withSessionAnswers(messages, requestOf(read, noBranch));
+    await asked.promise;
+    // Dispatch answers 600 ms in: the deadline has not run out by then.
+    jest.advanceTimersByTime(600);
+    answer.resolve();
+    expect(await copyA).toBeUndefined();
+    expect(sources).toEqual(["fresh"]);
+    // Copy B's, on the array A passed on, with the clock where Dispatch answered.
+    expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
+  } finally {
+    jest.useRealTimers();
+  }
 
+  expect(sources).toEqual(["fresh"]);
   expect(fetches).toBe(1);
-  expect(elapsed).toBeLessThan(1_000);
 });
 
 test("a list quoted earlier in the conversation does not switch the list off", async () => {

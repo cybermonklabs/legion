@@ -89,7 +89,7 @@ function fakeConnection(onConnect: () => void) {
 
 /** Turns until the keeper's status reader has done what it does with every status pushed. */
 function readerAtRest(fake: { readonly drained: () => boolean }): Promise<void> {
-  return turnsUntil(fake.drained, "the keeper's reader at rest");
+  return turnsUntil("the keeper's reader at rest", fake.drained);
 }
 
 /** `credential` with the time of each renewal the keeper asks of it kept in `asked`, and of each
@@ -173,7 +173,7 @@ describe("keepNatsCredential", () => {
       expect(asked).toEqual([]);
       jest.advanceTimersByTime(1);
       expect(asked).toEqual([lapses - 1_000]);
-      await turnsUntil(() => fake.reconnects.length > 0, "reconnected with the renewed token");
+      await turnsUntil("reconnected with the renewed token", () => fake.reconnects.length > 0);
       const next = credential.authenticator("nonce-3") as { auth_token: string };
       expect(next.auth_token).not.toBe(first.auth_token);
       expect(broker.state.minted.length).toBe(2);
@@ -188,7 +188,7 @@ describe("keepNatsCredential", () => {
     await turn();
     expect(asked.length).toBe(1);
     expect(fake.reconnects.length).toBe(1);
-  }, 15_000);
+  });
 
   test("a token that lives one second is renewed before it lapses", async () => {
     // The broker allows one-second tokens (BROKER_ACCESS_TOKEN_SECONDS=1): no floor on the wait
@@ -210,7 +210,7 @@ describe("keepNatsCredential", () => {
     } finally {
       stop();
     }
-  }, 10_000);
+  });
 
   test("a renewal that lands no new token is warned about, never naming the token", async () => {
     // The token client answers the token in hand through a transient exchange failure, so the
@@ -226,14 +226,14 @@ describe("keepNatsCredential", () => {
     try {
       // The renewal due at half the token's two-second life.
       jest.advanceTimersByTime(1_000);
-      await turnsUntil(() => warnings.length > 0, "warned of the renewal");
+      await turnsUntil("warned of the renewal", () => warnings.length > 0);
       expect(warnings.join("\n")).toContain("landed no new token");
       for (const one of broker.state.minted) expect(warnings.join("\n")).not.toContain(one.value);
       expect(fake.reconnects).toEqual([]);
     } finally {
       stop();
     }
-  }, 10_000);
+  });
 
   test("a closed connection ends the keeper, its status reader too", async () => {
     const broker = stubBroker(2);
@@ -247,13 +247,13 @@ describe("keepNatsCredential", () => {
     fake.close();
     // Stopped by `closed()` alone: nothing else stops the status reader, nor the renewal due at
     // one second.
-    await turnsUntil(() => fake.readerStopped(), "the keeper's status reader stopped");
+    await turnsUntil("the keeper's status reader stopped", () => fake.readerStopped());
     jest.advanceTimersByTime(60_000);
     await turn();
     expect(asked).toEqual([]);
     expect(fake.reconnects).toEqual([]);
     expect(broker.state.minted.length).toBe(1);
-  }, 15_000);
+  });
 
   test("a connection marked closed before closed() ends trades nothing at the renewal due", async () => {
     // nats.js marks a connection closed before its closed() promise settles: a renewal falling
@@ -277,7 +277,7 @@ describe("keepNatsCredential", () => {
     } finally {
       stop();
     }
-  }, 15_000);
+  });
 });
 
 // On the fake clock too: a refusal is read as the status reader takes it (`readerAtRest`), and
@@ -320,8 +320,8 @@ describe("keepNatsCredential with a refused live token", () => {
       jest.advanceTimersByTime(1);
       expect(asked.length).toBe(1);
       await turnsUntil(
-        () => fake.reconnects.length > 0,
-        "reconnected with the token traded after the drop"
+        "reconnected with the token traded after the drop",
+        () => fake.reconnects.length > 0
       );
       expect(broker.state.trades).toBe(2);
       const next = (credential.authenticator("nonce-3") as { auth_token: string }).auth_token;
@@ -350,7 +350,7 @@ describe("keepNatsCredential with a refused live token", () => {
       await readerAtRest(fake);
       expect(dropped.length).toBe(2);
       jest.advanceTimersByTime(1);
-      await turnsUntil(() => broker.state.trades === 3, "traded after the second outage's drop", {
+      await turnsUntil("traded after the second outage's drop", () => broker.state.trades === 3, {
         state: () => `${broker.state.trades} trades`,
       });
       expect(warnings.length).toBe(2);
@@ -358,7 +358,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 20_000);
+  });
 
   test("the warning repeated after a drop says no token is dropped again until the connection is back", async () => {
     // The deep review of dfa2ea1f59, m1: the repeat, 30 minutes on, still promised a drop the
@@ -408,7 +408,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 10_000);
+  });
 
   test("a refusal of a lapsed token, of one the connection is moving off, or of another kind drops nothing", async () => {
     // A stand-in credential, so each condition is set alone.
@@ -466,7 +466,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 10_000);
+  });
 
   /** A stand-in credential whose renewals the row lands by hand, each with a token that lives
    *  ten minutes; `expiresAt` is when the token in hand lapses. */
@@ -526,7 +526,7 @@ describe("keepNatsCredential with a refused live token", () => {
       land();
       stop();
     }
-  }, 10_000);
+  });
 
   test("a drop's renewal replaces the renewal that was due, rather than adding one", async () => {
     // The token in hand lapses in 2 s, so a renewal is due at 1 s; the drop renews at once and
@@ -549,7 +549,7 @@ describe("keepNatsCredential with a refused live token", () => {
       land();
       stop();
     }
-  }, 10_000);
+  });
 
   test("a token dropped while the broker is away is presented no more", async () => {
     // The renewal after the drop fails, so the connection holds no token: each CONNECT presents
@@ -566,13 +566,13 @@ describe("keepNatsCredential with a refused live token", () => {
       fake.push("error", "AUTHORIZATION_VIOLATION");
       await readerAtRest(fake);
       jest.advanceTimersByTime(1);
-      await turnsUntil(() => broker.state.trades > 1, "traded after the drop");
+      await turnsUntil("traded after the drop", () => broker.state.trades > 1);
       expect(credential.authenticator("nonce-2")).toBeUndefined();
       expect(credential.expiresAt().getTime()).toBe(0);
     } finally {
       stop();
     }
-  }, 15_000);
+  });
 
   // The review of c19c0722bf, R1: a count kept across tokens, and a drop allowed once until the
   // connection was back whatever its session, left a revoked token of a session switched to after
@@ -594,7 +594,7 @@ describe("keepNatsCredential with a refused live token", () => {
       await readerAtRest(fake);
       expect(dropped.length).toBe(1);
       jest.advanceTimersByTime(1);
-      await turnsUntil(() => broker.state.trades === 2, "traded after A's drop");
+      await turnsUntil("traded after A's drop", () => broker.state.trades === 2);
       // The host moves to session B, whose token is revoked too, before the connection is back.
       session = "ses_b";
       await credential.renew(undefined, true);
@@ -608,13 +608,13 @@ describe("keepNatsCredential with a refused live token", () => {
       await readerAtRest(fake);
       expect(dropped.length).toBe(2);
       jest.advanceTimersByTime(1);
-      await turnsUntil(() => broker.state.trades === 4, "traded after B's drop", {
+      await turnsUntil("traded after B's drop", () => broker.state.trades === 4, {
         state: () => `${broker.state.trades} trades`,
       });
     } finally {
       stop();
     }
-  }, 15_000);
+  });
 
   test("one refusal of a token and one of the token after it drop neither", async () => {
     const { state, credential, land } = heldRenewals(Date.now() + 600_000);
@@ -638,7 +638,7 @@ describe("keepNatsCredential with a refused live token", () => {
       land();
       stop();
     }
-  }, 10_000);
+  });
 
   test("an auth service that refuses every token costs each session one trade for the outage", async () => {
     // The hub's auth service is away and the broker is up: every CONNECT is refused whatever its
@@ -658,7 +658,7 @@ describe("keepNatsCredential with a refused live token", () => {
         await readerAtRest(fake);
         // The renewal a drop asks for runs at once on the keeper's timer, and its trade lands.
         jest.advanceTimersByTime(1);
-        await turnsUntil(() => credential.expiresAt().getTime() > Date.now(), "a token in hand", {
+        await turnsUntil("a token in hand", () => credential.expiresAt().getTime() > Date.now(), {
           state: () => `${broker.state.trades} trades`,
         });
         jest.advanceTimersByTime(2_000 - 1);
@@ -678,7 +678,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 30_000);
+  });
 });
 
 // The review of 2fa6fbf7cf, m3: a session switch's follow inside a pass whose deadline is shorter
@@ -729,12 +729,12 @@ describe("followNatsCredential within a bound", () => {
       const follow = ending(followNatsCredential(fake.connection, credential, 4_000));
       // The new session's first trade answered 503: from here only the follow's timers are left,
       // and the token client's next trade, 15 s on.
-      await turnsUntil(() => refused, "the new session's first trade answered");
+      await turnsUntil("the new session's first trade answered", () => refused);
       jest.advanceTimersByTime(1_999);
       await turn();
       expect(follow.outcome()).toBeUndefined();
       jest.advanceTimersByTime(1);
-      await turnsUntil(() => follow.outcome() !== undefined, "the follow's end at 2 s");
+      await turnsUntil("the follow's end at 2 s", () => follow.outcome() !== undefined);
       expect(String(follow.outcome())).toContain(
         "the NATS connection could not take the new session's token: "
       );
@@ -743,7 +743,7 @@ describe("followNatsCredential within a bound", () => {
     } finally {
       warn.mockRestore();
     }
-  }, 15_000);
+  });
 
   test("a connection that never comes back fails at what is left of the bound", async () => {
     const broker = stubBroker(600);
@@ -757,19 +757,19 @@ describe("followNatsCredential within a bound", () => {
     const follow = ending(followNatsCredential(fake.connection, credential, 4_000));
     // The token landed with the clock where the follow started it, so all 4 s of the bound are
     // left for the connection, which the follow asks to reconnect.
-    await turnsUntil(() => fake.reconnects.length === 1, "asked to reconnect");
+    await turnsUntil("asked to reconnect", () => fake.reconnects.length === 1);
     jest.advanceTimersByTime(3_999);
     await turn();
     expect(follow.outcome()).toBeUndefined();
     expect(fake.readerStopped()).toBe(false);
     jest.advanceTimersByTime(1);
-    await turnsUntil(() => follow.outcome() !== undefined, "the follow's end at 4 s");
+    await turnsUntil("the follow's end at 4 s", () => follow.outcome() !== undefined);
     expect(String(follow.outcome())).toContain(
       "the NATS connection did not come back as the new session within 4 s"
     );
     expect(fake.reconnects.length).toBe(1);
     expect(fake.readerStopped()).toBe(true);
-  }, 15_000);
+  });
 });
 
 // The credential owns its one count, which its keeper and every dial that opens its connection

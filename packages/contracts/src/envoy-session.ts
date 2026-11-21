@@ -5,14 +5,12 @@
 // forward.
 //
 // The numbers are one arrangement, not six independent settings: three refresh intervals plus one
-// whole listener call - SESSION_HEARTBEAT_MS * 3 plus LISTENER_CALL_ATTEMPTS * timeout +
-// (LISTENER_CALL_ATTEMPTS - 1) * retryDelay, which is 10,250 ms - must fall strictly short of
-// SESSION_LIVE_WINDOW_MS: 3 * 90,000 + 10,250 = 280,250 ms inside 300,000 ms. A session that stops
+// whole listener call (`THIRD_REFRESH_DONE_MS`, below, computed from them) must fall strictly
+// short of SESSION_LIVE_WINDOW_MS, which `src/envoy-session.test.ts` holds. A session that stops
 // reading live unless it is refreshed is refreshed at under a third of its live window, so two
 // whole refreshes may fail and the third still saves it; and that third refresh must COMPLETE, not
 // merely be posted, before the window closes. At equality it has not yet paid for its round trip,
 // and `setInterval` only ever fires late, so equality really buys one failed refresh, not two.
-// Change one of these numbers and check the sum again.
 
 /**
  * The interval at which an Oh My Pi pane's pi-envoy plugin refreshes its Envoy listener
@@ -70,3 +68,18 @@ export const LISTENER_CALL_RETRY_DELAY_MS = 250;
  * wherever it is checked against `SESSION_LIVE_WINDOW_MS`.
  */
 export const LISTENER_CALL_ATTEMPTS = 2;
+
+/**
+ * The most one whole envoy-client call to the listener takes: each attempt's
+ * `LISTENER_CALL_TIMEOUT_MS` and the `LISTENER_CALL_RETRY_DELAY_MS` between two of them.
+ */
+export const LISTENER_CALL_BUDGET_MS =
+  LISTENER_CALL_ATTEMPTS * LISTENER_CALL_TIMEOUT_MS +
+  (LISTENER_CALL_ATTEMPTS - 1) * LISTENER_CALL_RETRY_DELAY_MS;
+
+/**
+ * The latest a session's third refresh completes after its last registration: three
+ * `SESSION_HEARTBEAT_MS` and one whole call. It falls strictly short of `SESSION_LIVE_WINDOW_MS`,
+ * so two whole refreshes may fail and the third still keeps the session live.
+ */
+export const THIRD_REFRESH_DONE_MS = 3 * SESSION_HEARTBEAT_MS + LISTENER_CALL_BUDGET_MS;

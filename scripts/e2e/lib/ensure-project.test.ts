@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
@@ -77,6 +78,7 @@ function run(
     ],
     {
       env: {
+        ...bunCacheOff,
         PATH: `${dir}:/usr/bin:/bin`,
         HOME: dir,
         LIB: lib,

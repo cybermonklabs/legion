@@ -17,9 +17,9 @@
  */
 
 import { $markSchema, $markAttr, $remark } from '@milkdown/kit/utils';
-import type { Attrs, Mark as ProseMirrorMark, Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
+import type { Attrs, MarkType, Mark as ProseMirrorMark, Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 import type { EditorView } from '@milkdown/kit/prose/view';
-import type { Root } from '@milkdown/kit/transformer';
+import type { ParserState, Root } from '@milkdown/kit/transformer';
 import type { Transformer } from 'unified';
 
 import { generateMarkId } from 'proof-sdk-upstream/src/formats/marks.js';
@@ -94,8 +94,60 @@ type DispatchMarkNode = {
 
 export const dispatchAskAttr = $markAttr('dispatchAsk', () => ({}));
 
-/** The asks the markdown parser has open, outermost first, per parser state. */
-const openAskSpans = new WeakMap<object, Attrs[]>();
+/** The asks the markdown parser has open on one parser state: their attrs, outermost first; those
+ *  of them no equal ask around them holds (`distinct`: a mark set keeps one of two equal marks, so
+ *  these are the ask marks the open asks give); how many of each id and author; whether the ask
+ *  marks the state holds are still those of every open ask (`intact`), which a node closing ends,
+ *  since `closeNode` resets the state's open marks to none (@milkdown/transformer's
+ *  `#closeNodeAndPush`); and whether the state owes the marks of every open ask (`owed`): an ask
+ *  ended after a node closed inside it, so the ask marks are to be those of the asks around it,
+ *  and the state holds none of them yet. */
+interface OpenAsks {
+  readonly attrs: Attrs[];
+  readonly distinct: Attrs[];
+  readonly counts: Map<string, number>;
+  intact: boolean;
+  owed: boolean;
+}
+
+const openAskSpans = new WeakMap<ParserState, OpenAsks>();
+
+/**
+ * `state`'s open asks, made the first time an ask's runner is handed it, with three of its methods
+ * wrapped; ParserState holds each as a property of its own, so a wrapper replaces it on that one
+ * state. A node that closes marks the asks no longer intact and clears what they owe, since it
+ * drops every open mark, the owed ones with them. `addText` and `addNode` are the two that put the
+ * open marks on a node, so each first opens what the asks owe, outermost first, as the earlier
+ * runner opened them at the owing ask's end: a mark owed is opened only where a node then holds
+ * it. An inline leaf (an image, a piece of HTML, a hard break) holds none in any document this
+ * engine returns (`withoutLeafMarks`, which every import seam applies), so adding one leaves the
+ * debt for the node after it.
+ */
+function openAsksOf(state: ParserState, markType: MarkType): OpenAsks {
+  const known = openAskSpans.get(state);
+  if (known !== undefined) return known;
+  const asks: OpenAsks = { attrs: [], distinct: [], counts: new Map(), intact: true, owed: false };
+  const { addNode, addText, closeNode, openMark } = state;
+  const pay = () => {
+    asks.owed = false;
+    for (const ask of asks.distinct) openMark(markType, ask);
+  };
+  state.closeNode = () => {
+    asks.intact = false;
+    asks.owed = false;
+    return closeNode();
+  };
+  state.addText = (text) => {
+    if (asks.owed) pay();
+    return addText(text);
+  };
+  state.addNode = (nodeType, attrs, content) => {
+    if (asks.owed && !(nodeType.isInline && nodeType.isLeaf)) pay();
+    return addNode(nodeType, attrs, content);
+  };
+  openAskSpans.set(state, asks);
+  return asks;
+}
 
 export const dispatchAskSchema = $markSchema('dispatchAsk', (ctx) => ({
   attrs: {
@@ -127,18 +179,50 @@ export const dispatchAskSchema = $markSchema('dispatchAsk', (ctx) => ({
       const n = node as DispatchMarkNode;
       const attrs = n.attrs || {};
       const askAttrs = { id: attrs.id ?? null, by: attrs.by ?? 'unknown' };
-      // Two readers' asks may cover the same text, so their spans nest, but closeMark drops every
-      // open mark of the type: close this span, then re-open the asks around it.
-      const outer = openAskSpans.get(state) ?? [];
-      openAskSpans.set(state, outer);
-      state.openMark(markType, askAttrs);
-      outer.push(askAttrs);
+      // Two readers' asks may cover the same text, so their spans nest. Once an ask's content is
+      // read, the open ask marks are those of the asks around it, in their order, whatever closed
+      // inside it, as the earlier runner gave them: it closed every ask mark there and opened
+      // each enclosing ask again, about D²/2 marks for an ask D deep. The marks are still the
+      // enclosing asks' and this ask's unless a node closed inside the ask, so the ask closes its
+      // own mark alone: closeMark calls `removeFromSet` on what it is handed
+      // (@milkdown/transformer's ParserState), and a mark's `removeFromSet` removes that mark and
+      // no other. An ask the same as one around it (its id and its author) adds no mark, since
+      // the set keeps one of two equal marks, so it closes none there. A node that closed inside
+      // the ask dropped every open mark, the enclosing asks' with them, and the state then owes
+      // them: `openAsksOf`'s `addText` and `addNode` open them before the next node that holds
+      // marks, so a mark is opened again only where the document holds it. While they are owed,
+      // the state holds no ask mark, and an ask opening adds its own to what is owed.
+      const asks = openAsksOf(state, markType);
+      // No ask open: no ask mark is either, whatever closed since the last one, and none is owed.
+      if (asks.attrs.length === 0) {
+        asks.intact = true;
+        asks.owed = false;
+      }
+      const key = JSON.stringify([askAttrs.id, askAttrs.by]);
+      const around = asks.counts.get(key) ?? 0;
+      if (!asks.owed) state.openMark(markType, askAttrs);
+      asks.attrs.push(askAttrs);
+      if (around === 0) asks.distinct.push(askAttrs);
+      asks.counts.set(key, around + 1);
       try {
         state.next((n.children as never[]) || []);
       } finally {
-        outer.pop();
-        state.closeMark(markType);
-        for (const outerAttrs of outer) state.openMark(markType, outerAttrs);
+        asks.attrs.pop();
+        if (around === 0) {
+          asks.distinct.pop();
+          asks.counts.delete(key);
+        } else {
+          asks.counts.set(key, around);
+        }
+        if (!asks.intact) {
+          // The state holds no ask mark of an ask around this one, only those of asks that opened
+          // since the node closed: close those, and owe the rest.
+          state.closeMark(markType);
+          asks.owed = true;
+          asks.intact = true;
+        } else if (around === 0 && !asks.owed) {
+          state.closeMark(markType.create(askAttrs) as unknown as typeof markType);
+        }
       }
     },
   },
@@ -315,13 +399,29 @@ function parseDispatchSpanToken(value: string): DispatchSpanToken | null {
   };
 }
 
+/**
+ * Writes `kept` over `children`, each once, in place: the list stays the one its parent holds, so
+ * a count of what the parse touches through that list (tests/parse-work.ts) reads these writes
+ * and every later read of the list as the walk's own.
+ */
+function writeBack(children: MdastNode[], kept: readonly MdastNode[]): void {
+  for (let i = 0; i < kept.length; i++) children[i] = kept[i];
+  children.length = kept.length;
+}
+
+/**
+ * Moves each child that stands between an open `<span data-dispatch>` and its close into the span
+ * it stands in. Each child is read once and the children are written back once: a splice per
+ * moved child would shift every later child each time, about the square of the children for a
+ * paragraph of asks.
+ */
 function normalizeSplitDispatchSpans(parent: MdastParent): void {
   const { children } = parent;
+  const kept: MdastNode[] = [];
   const stack: (MdastNode & DispatchMarkNode)[] = [];
-  let i = 0;
 
-  while (i < children.length) {
-    const child = children[i];
+  for (const child of children) {
+    const current = stack[stack.length - 1];
     if (child.type === 'html' && typeof child.value === 'string') {
       const token = parseDispatchSpanToken(child.value);
       if (token?.type === 'open') {
@@ -331,53 +431,48 @@ function normalizeSplitDispatchSpans(parent: MdastParent): void {
           attrs: token.attrs,
           children: [],
         };
-
-        const current = stack[stack.length - 1];
         if (current) {
           current.children = current.children ?? [];
           current.children.push(node);
-          children.splice(i, 1);
         } else {
-          children.splice(i, 1, node);
-          i += 1;
+          kept.push(node);
         }
-
         stack.push(node);
         continue;
       }
 
-      if (token?.type === 'close') {
-        if (stack.length > 0) {
-          stack.pop();
-          children.splice(i, 1);
-          continue;
-        }
+      if (token?.type === 'close' && current) {
+        stack.pop();
+        continue;
       }
     }
 
-    if (stack.length > 0) {
-      const current = stack[stack.length - 1];
+    if (current) {
       current.children = current.children ?? [];
       current.children.push(child);
-      children.splice(i, 1);
       continue;
     }
-    i += 1;
+    kept.push(child);
   }
+  writeBack(children, kept);
 }
 
+/** Reads every `<span data-dispatch>` of `node`'s subtree into a `dispatchMark`. A block of HTML
+ *  that holds a whole span is put in place by the nodes it reads as, the children written back
+ *  once where one does, rather than a splice that shifts every later child. */
 function visit(node: MdastNode): void {
   if (!node.children) return;
   normalizeSplitDispatchSpans(node as MdastParent);
   const children = node.children;
+  let rebuilt: MdastNode[] | undefined;
 
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
     if (child.type === 'html' && typeof child.value === 'string' && isDispatchHtml(child.value)) {
       const parsed = parseDispatchHtml(child.value);
       if (parsed) {
-        children.splice(i, 1, ...parsed);
-        i += parsed.length - 1;
+        rebuilt ??= children.slice(0, i);
+        for (const read of parsed) rebuilt.push(read);
         continue;
       }
     }
@@ -385,7 +480,9 @@ function visit(node: MdastNode): void {
     if (child.children) {
       visit(child);
     }
+    rebuilt?.push(child);
   }
+  if (rebuilt) writeBack(children, rebuilt);
 }
 
 /** Raw remark transformer factory — use directly in a `unified()` pipeline (headless). */

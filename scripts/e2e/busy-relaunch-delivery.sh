@@ -114,6 +114,13 @@ if [ ! -x "$LEGION_OMP_PATH" ]; then
 fi
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+# Twice the longest run on record, rounded up to the minute. A person runs this proof
+# (.github/e2e-scripts.json's elsewhere list), so its readings are the runs its pull request
+# recorded in issue pods (dispatch://INFRA-3276, check c-r4-live, #3983) up to 2026-11-15: of 26
+# runs over this checkout the longest took 343 s (at c238b964), and of 26 runs of the
+# --base-commit negative control, which this one proof_guard covers too, the longest took 470 s
+# (at 3751dd22, over 2e546572).
+proof_guard 960
 
 test_name=TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive
 driver_file=packages/daemon/internal/daemon/busy_relaunch_live_test.go

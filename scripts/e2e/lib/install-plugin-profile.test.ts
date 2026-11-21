@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // Which Oh My Pi install-plugin-profile.sh runs against the profile, and how. The script runs from a
@@ -85,7 +86,13 @@ esac
       dest,
       ...extra,
     ],
-    { env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: join(run, "caller-home") } }
+    {
+      env: {
+        ...bunCacheOff,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        HOME: join(run, "caller-home"),
+      },
+    }
   );
   return {
     dest,

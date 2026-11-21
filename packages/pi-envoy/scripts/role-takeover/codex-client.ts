@@ -55,7 +55,8 @@
  *   {"id":"3","op":"deliveries"}                 every message `codex queue` handed it, in order
  *
  * Its input ending is the person quitting Codex: `SessionEnd` runs, the MCP server's stdin closes,
- * and it waits up to 10 s for the server to deregister and exit.
+ * and it waits for the server to deregister and exit, through @legion/test-fixtures/wait, which
+ * ends at the proof's deadline.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import {
@@ -69,6 +70,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { exitProcess } from "@legion/envoy-client/process-exit";
+import { settled } from "@legion/test-fixtures/wait";
 import type { Subprocess } from "bun";
 
 /** What Codex CLI 0.154.0 hands every stdio MCP server whatever its `env_vars` say (measured: a
@@ -88,6 +91,11 @@ const CODEX_DEFAULT_ENV = [
 
 /** How often a waiting `codex queue`, and this process for a new one, look at the queue. */
 const QUEUE_POLL_MS = 50;
+
+/** How long `codex queue`'s exit waits for its line to reach the pipe: inside the 30 s the plugin
+ *  gives the command before it kills it (`QUEUE_TIMEOUT_MS` of
+ *  packages/claude-envoy/src/codex/codex-cli.ts). */
+const QUEUE_EXIT_FLUSH_MS = 5_000;
 
 interface Command {
   readonly id?: string;
@@ -126,7 +134,10 @@ function writeWhole(file: string, text: string): void {
 }
 
 /** `codex queue --thread <id> --message=<text>`: hands the message to the running session and
- *  exits 0 once it took it, 1 when it refused it or no session process takes the queue. */
+ *  exits 0 once it took it, 1 when it refused it or no session process takes the queue. Each exit
+ *  comes once its line has reached the pipe, or `QUEUE_EXIT_FLUSH_MS` after it asked to
+ *  (`exitProcess`), inside the 30 s the plugin gives `codex queue` before it kills it
+ *  (`QUEUE_TIMEOUT_MS`, packages/claude-envoy/src/codex/codex-cli.ts). */
 async function queue(args: readonly string[]): Promise<never> {
   let thread: string | undefined;
   let message: string | undefined;
@@ -138,7 +149,7 @@ async function queue(args: readonly string[]): Promise<never> {
   }
   if (thread === undefined || message === undefined) {
     process.stderr.write("codex queue: --thread and --message are required\n");
-    process.exit(2);
+    return await exitProcess(2, QUEUE_EXIT_FLUSH_MS);
   }
   mkdirSync(queueDirectory, { recursive: true, mode: 0o700 });
   const name = `${Date.now()}-${randomBytes(4).toString("hex")}`;
@@ -152,10 +163,10 @@ async function queue(args: readonly string[]): Promise<never> {
       };
       if (said.ok) {
         process.stdout.write(`Queued message for thread ${thread}.\n`);
-        process.exit(0);
+        return await exitProcess(0, QUEUE_EXIT_FLUSH_MS);
       }
       process.stderr.write(`codex queue: ${said.error ?? "refused"}\n`);
-      process.exit(1);
+      return await exitProcess(1, QUEUE_EXIT_FLUSH_MS);
     }
     // Read each pass: the session writes it as it starts, and it names the process that answers.
     let taker: { readonly pid?: unknown; readonly started?: unknown } = {};
@@ -166,7 +177,7 @@ async function queue(args: readonly string[]): Promise<never> {
     }
     if (typeof taker.pid !== "number" || startOf(taker.pid) !== taker.started) {
       process.stderr.write(`codex queue: no codex session is running for thread ${thread}\n`);
-      process.exit(1);
+      return await exitProcess(1, QUEUE_EXIT_FLUSH_MS);
     }
     await Bun.sleep(QUEUE_POLL_MS);
   }
@@ -270,21 +281,22 @@ void (async () => {
 
 let nextRequestID = 0;
 
-/** Sends one MCP request and resolves with the server's answer to it. */
+/** Sends one MCP request and resolves with the server's answer to it. The wait for the answer is
+ *  @legion/test-fixtures/wait's, which ends at the proof's deadline (LEGION_PROOF_DEADLINE_MS,
+ *  which nats-callout-sessions.sh's proof_guard sets and lib/codex-host.sh hands this process). */
 async function request(method: string, params: unknown): Promise<unknown> {
   nextRequestID += 1;
   const id = nextRequestID;
-  const settled = Promise.withResolvers<void>();
-  waiters.set(id, settled.resolve);
+  const answered = Promise.withResolvers<void>();
+  waiters.set(id, answered.resolve);
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
   child.stdin.flush();
-  const deadline = setTimeout(() => {
-    settled.reject(new Error(`the MCP server did not answer ${method} within 60s: ${serverErr}`));
-  }, 60_000);
   try {
-    await settled.promise;
+    await settled(`the MCP server to answer ${method}`, answered.promise);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${reason}: ${serverErr}`, { cause: error });
   } finally {
-    clearTimeout(deadline);
     waiters.delete(id);
   }
   return answers.get(id);
@@ -314,6 +326,8 @@ async function runHooks(event: string, input: Record<string, unknown>): Promise<
         stdout: "pipe",
         stderr: "pipe",
       });
+      // Codex's own bound on a hook, which this stand-in copies: the hook's `timeout` from
+      // hooks.json, in seconds, 60 where it names none, past which Codex kills it.
       const timer = setTimeout(() => ran.kill("SIGKILL"), (hook.timeout ?? 60) * 1000);
       const [stdout, stderr, code] = await Promise.all([
         new Response(ran.stdout).text(),
@@ -482,5 +496,7 @@ for await (const text of console) {
 }
 if (session !== "") await runHooks("SessionEnd", { session_id: session, cwd });
 child.stdin.end();
-await Promise.race([child.exited, Bun.sleep(10_000)]);
+// The MCP server exits once its stdin ends (`envoy-channel.ts`); a server that does not fails the
+// wait at the proof's deadline, naming it.
+await settled("the MCP server to exit once its stdin ended", child.exited);
 process.exit(0);

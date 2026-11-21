@@ -22,6 +22,8 @@
 #                                                  <dir> (read-only but for <dir>/<output> and
 #                                                  <dir>/sessions), output to <dir>/out.txt, the
 #                                                  model and thinking level to <dir>/judge-model.txt
+#   rig.sh judge-image                             pulls the judges' container image unless Docker
+#                                                  holds it: the pull judge-omp makes when it must
 #
 # A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start>`, which needs that
 # batch's services: <index> is the run's place in the batch and <start> the batch's start in epoch
@@ -143,7 +145,8 @@
 #   LEGION_E2E_MODEL_PROVIDER_MODEL
 #                                 provider, optional: the model id of that block a label's agents run
 #                                 (default the judge's, claude-opus-4-8); the judge keeps its own
-# `judge` and `judge-omp` also need Docker: each judge runs in a container (cmd_judge_omp).
+# `judge`, `judge-omp` and `judge-image` also need Docker: each judge runs in a container
+# (cmd_judge_omp).
 # Optional:
 #   SKILL_SCENARIOS_WORK      work directory, outside any checkout, and with no `.omp` in it or in
 #                             any directory above it (default ${TMPDIR:-/tmp}/skill-scenarios)
@@ -1231,6 +1234,29 @@ judge_keys() {
   [ -z "${key_file:-}" ] || printf '%s\n' "$key_file"
 }
 
+# cmd_judge_image pulls judge_image unless Docker already holds it, quietly. cmd_judge_omp runs it
+# before its container, so a first judge's pull progress never lands in its out.txt and a failed
+# pull names itself; a caller that starts many judges can run it first, so that no judge's own time
+# holds the pull, as rig.test.ts's judge-omp tests do in a beforeAll. The registry answers one
+# request of a batch badly now and then (a token it refuses to mint, a manifest GET it drops) and
+# serves the next, so the pull is asked three times a couple of seconds apart before the rig
+# refuses. Only the last attempt's own words are kept, and only for the refusal: an attempt the
+# next one makes good says nothing.
+cmd_judge_image() {
+  [ $# = 0 ] || fail "usage: rig.sh judge-image"
+  command -v docker >/dev/null || fail "judge-image: docker is not on PATH; each judge runs in a container"
+  docker image inspect "$judge_image" >/dev/null 2>&1 && return 0
+  local pulled='' pull_error='' attempt
+  for attempt in 1 2 3; do
+    pull_error=$(docker pull --quiet "$judge_image" 2>&1 >/dev/null) && {
+      pulled=1
+      break
+    }
+    [ "$attempt" -eq 3 ] || sleep 2
+  done
+  [ -n "$pulled" ] || fail "judge-image: docker could not pull $judge_image in 3 attempts: $pull_error"
+}
+
 # cmd_judge_omp KIND DIR OUTPUT runs one fresh judge session in DIR on DIR/prompt.txt: no plugins,
 # the KIND profile's skills alone (ste: asd-ste100; bare: none), the judge's pinned model and
 # thinking level, its transcript under DIR/sessions, its output to DIR/out.txt with a last line
@@ -1294,22 +1320,7 @@ cmd_judge_omp() {
   [ -x "$omp" ] || fail "judge-omp: $omp is not an executable omp"
   local extra=() word
   for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do extra+=(-e "$word"); done
-  # Pulled here, quietly, so a first run's pull progress never lands in the judge's out.txt, and a
-  # failed pull names itself. The registry answers one request of a batch badly now and then (a
-  # token it refuses to mint, a manifest GET it drops) and serves the next, so the pull is asked
-  # three times a couple of seconds apart before the rig refuses. Only the last attempt's own
-  # words are kept, and only for the refusal: an attempt the next one makes good says nothing.
-  if ! docker image inspect "$judge_image" >/dev/null 2>&1; then
-    local pulled='' pull_error='' attempt
-    for attempt in 1 2 3; do
-      pull_error=$(docker pull --quiet "$judge_image" 2>&1 >/dev/null) && {
-        pulled=1
-        break
-      }
-      [ "$attempt" -eq 3 ] || sleep 2
-    done
-    [ -n "$pulled" ] || fail "judge-omp: docker could not pull $judge_image in 3 attempts: $pull_error"
-  fi
+  cmd_judge_image
   docker run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \
     --tmpfs /tmp:exec,mode=1777 --tmpfs "$h:exec,uid=$(id -u),gid=$(id -g)" \
     -v "$(dirname "$omp"):/opt/omp:ro" -v "$agent:/opt/profile:ro" \
@@ -1612,5 +1623,6 @@ run) shift && cmd_run "$@" ;;
 score) shift && bun "$here/score.ts" runs "$work/runs" "$@" ;;
 judge) shift && cmd_judge "$@" ;;
 judge-omp) shift && cmd_judge_omp "$@" ;;
+judge-image) shift && cmd_judge_image "$@" ;;
 *) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' && exit 2 ;;
 esac; exit

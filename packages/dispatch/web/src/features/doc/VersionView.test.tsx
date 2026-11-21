@@ -138,6 +138,9 @@ test("VersionView keeps its editor when the parent renders again with an equal h
 // event, so each re-read of that answer is a new object. The editor is built from the login in
 // it, and the same person read again must leave the reader where they were reading.
 test("VersionView keeps its editor when the signed-in person is read again with a later event head", async () => {
+  // On the fake clock, as the row above: a rebuild the re-read would start runs within the
+  // 20 ms the clock is moved, and none is left on a timer of the real clock to land after it.
+  jest.useFakeTimers();
   const { editors, setWhoAmI, view } = renderVersionView({
     highlight: undefined,
     markdown: "Read the current specification",
@@ -147,10 +150,11 @@ test("VersionView keeps its editor when the signed-in person is read again with 
     await waitFor(() => expect(editors).toHaveLength(1));
     setWhoAmI({ ...signedIn, event_head: "12" });
     setWhoAmI({ ...signedIn, event_head: "13" });
-    await Bun.sleep(20);
+    await tick(20);
     expect(editors).toHaveLength(1);
     expect(editors[0]?.destroyed).toBe(false);
   } finally {
+    realClock();
     view.unmount();
   }
 });

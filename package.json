@@ -57,6 +57,8 @@
     "micromark@4.0.2": "patches/micromark@4.0.2.patch",
     "micromark-core-commonmark@2.0.3": "patches/micromark-core-commonmark@2.0.3.patch",
     "micromark-extension-gfm-footnote@2.1.0": "patches/micromark-extension-gfm-footnote@2.1.0.patch",
-    "mdast-util-from-markdown@2.0.3": "patches/mdast-util-from-markdown@2.0.3.patch"
+    "mdast-util-from-markdown@2.0.3": "patches/mdast-util-from-markdown@2.0.3.patch",
+    "proof-sdk@./proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz": "patches/proof-sdk@.%2Fproof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz.patch",
+    "remark-inline-links@7.0.0": "patches/remark-inline-links@7.0.0.patch"
   }
 }

@@ -21,6 +21,7 @@
 
 import type { LegionPhase } from "../../packages/contracts/src/legion-api";
 import type { LegionRole } from "../../packages/contracts/src/legion-roles";
+import { exitProcess } from "../../packages/envoy-client/src/process-exit";
 import { sessionConfigFile } from "../../packages/envoy-client/src/session-settings";
 import { paneHandoffReport } from "../../packages/pi-shared/src/handoff-record";
 
@@ -55,5 +56,6 @@ try {
   console.log(JSON.stringify(await report(phase as LegionPhase, role as LegionRole)));
 } catch (error) {
   console.error(`completion-head: ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
+  // The message reaches standard error before the process ends (`exitProcess`).
+  await exitProcess(1);
 }

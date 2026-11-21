@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The plugin interface's `startupTurn` mark is cleared on every fact that says the controller's
+  start is not coming, since `@sjawhar/pi-envoy` now holds the session's startup cards for as long
+  as an unsent mark stands, with no 30 s cap (a sent mark keeps its 30 s cap from the send). A
+  start message whose send Oh My Pi fails clears the mark it set, so the cards are woken at once
+  rather than at that cap, and so does a `/legion-claim-controller` claim (or a re-claim after a
+  session change) refused before the send, as a refused `/legion-controller-start` claim already
+  did. Plugin interface version 6; install it with the `@sjawhar/pi-envoy` released beside it.

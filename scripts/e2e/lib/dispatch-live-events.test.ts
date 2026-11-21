@@ -2,9 +2,14 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { TIMER_RECORD_FILE, TIMER_RECORD_ROOTS } from "@legion/test-fixtures/timer-record";
 import { fixtureSecret } from "../../../packages/test-fixtures/src/fixture-secret";
 
 const probe = join(import.meta.dir, "dispatch-live-events.ts");
+const timerRecordPreload = Bun.resolveSync(
+  "@legion/test-fixtures/timer-record-preload",
+  import.meta.dir
+);
 const servers: Server<undefined>[] = [];
 const scratchDirectories: string[] = [];
 
@@ -20,13 +25,44 @@ function scratch(): string {
   return directory;
 }
 
-async function run(
+interface ProbeRun {
+  readonly code: number;
+  readonly stderr: string;
+  readonly stdout: unknown[];
+}
+
+async function run(...args: string[]): Promise<ProbeRun> {
+  return await runProbe([process.execPath, probe, ...args], process.env);
+}
+
+/** `run`, with the probe's own record of its timers (`@legion/test-fixtures/timer-record`,
+ *  preloaded into it): each timer the probe's code armed, with the delay it chose, and each that
+ *  ran, in the probe's order, read once it exited. */
+async function runRecordingTimers(
   ...args: string[]
-): Promise<{ code: number; stderr: string; stdout: unknown[] }> {
-  const child = Bun.spawn([process.execPath, probe, ...args], {
-    stderr: "pipe",
-    stdout: "pipe",
-  });
+): Promise<ProbeRun & { readonly timers: unknown[] }> {
+  const record = join(scratch(), "timers.jsonl");
+  const result = await runProbe(
+    [process.execPath, "--preload", timerRecordPreload, probe, ...args],
+    {
+      ...process.env,
+      [TIMER_RECORD_FILE]: record,
+      [TIMER_RECORD_ROOTS]: import.meta.dir,
+    }
+  );
+  const file = Bun.file(record);
+  const lines = (await file.exists()) ? (await file.text()).split("\n") : [];
+  return {
+    ...result,
+    timers: lines.filter((line) => line !== "").map((line) => JSON.parse(line)),
+  };
+}
+
+async function runProbe(
+  command: string[],
+  env: Record<string, string | undefined>
+): Promise<ProbeRun> {
+  const child = Bun.spawn(command, { env, stderr: "pipe", stdout: "pipe" });
   const [code, stderr, stdout] = await Promise.all([
     child.exited,
     new Response(child.stderr).text(),
@@ -391,7 +427,7 @@ test("the live event probe authenticates with a bearer file and exits at its tim
   });
   servers.push(server);
 
-  const result = await run(
+  const result = await runRecordingTimers(
     "--url",
     `http://127.0.0.1:${server.port}`,
     "--bearer-file",
@@ -403,6 +439,13 @@ test("the live event probe authenticates with a bearer file and exits at its tim
   expect(result.code).toBe(1);
   expect(result.stderr).toBe("");
   expect(result.stdout).toEqual([]);
+  // The probe's own record of its timers: it armed one, its timeout, for the 0.1 s it was given,
+  // and that timer ran, the one way it exits 1 with nothing printed. So it exited at its timeout:
+  // one armed later, or a redial's backoff before the end, shows its delay here.
+  expect(result.timers).toEqual([
+    { delayMs: 100, from: expect.stringContaining(`${probe}:`), timer: 1 },
+    { fired: 1 },
+  ]);
 });
 
 // INFRA-292's production check: the probe starts its feed where a page does, at whoami's

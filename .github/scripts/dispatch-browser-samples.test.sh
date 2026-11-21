@@ -27,6 +27,22 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# The harness's one guard and its one wait, scripts/e2e/lib/proof-wait.sh's proof_guard and
+# wait_for: every wait below goes through wait_for, which ends at once where its fact can no longer
+# come and otherwise 30 s before the guard, naming the fact, and keeps its last poll in $work. Guard
+# 60 s: at least twice this harness's longest run beside 8 busy loops on 2 CPUs in a builds Job, 12
+# s (builds Jobs d2-fixed and d3-fixed-a, two runs, 2026-11-19), plus the wait's 30 s margin; on CI,
+# this harness's longest green run was 6 s (run 44473369696), over the 20 newest green merge-group
+# runs of ci.yaml that ran its step up to 2026-11-19 (runs 44418744571 to 44575705732).
+note() { echo "  $*"; }
+fail() {
+  echo "  FAIL: $*" >&2
+  exit 1
+}
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "$script_dir/../../scripts/e2e/lib/proof-wait.sh"
+proof_guard 60
+
 # fixture <name>: an empty sample directory for one case, the shape $RUNNER_TEMP has when the
 # sampler has not run yet. Echoes its path. A repeated name is refused here rather than
 # surfacing as one case reading another's samples.
@@ -38,6 +54,14 @@ fixture() {
   fi
   mkdir -p "$dir"
   echo "$dir"
+}
+
+# sampler_between_ticks <pid>: whether the sampler, process pid, sleeps between ticks, its
+# `sleep 5` a child of its own, for wait_for; a sampler that exited takes no tick.
+sampler_between_ticks() {
+  pgrep -P "$1" -x sleep >/dev/null && return 0
+  kill -0 "$1" 2>/dev/null || wait_impossible="the sampler, pid $1, exited before it slept"
+  return 1
 }
 
 # run_report <dir> <title>: runs the reading over that case's samples, setting `out` to its
@@ -144,7 +168,9 @@ check "CPU" "$(contains "$out" 'took no CPU sample$')"
 echo "case: the sampler writes both files, over this machine's own /proc"
 # The one case that runs the sampler itself: the fixtures above stand in for what it writes, so
 # the shape it writes is worth holding. It is started as the browser steps start it, left to
-# take at least one tick, and killed as their trap kills it.
+# take one whole tick, and killed as their trap kills it. A tick is whole once the sampler sleeps
+# between ticks, its `sleep 5` a child of its own (sampler_between_ticks): the writes of that
+# tick are done, and the kill lands on no half-written line.
 dir=$(fixture sampler-runs)
 # What a previous run left behind. The sampler truncates both files, so neither line survives
 # into the reading.
@@ -152,7 +178,7 @@ printf 'stale\n' > "$dir/memory-samples.txt"
 printf 'machine 999999999\n' > "$dir/cpu-samples.txt"
 "$samples_script" sample "$dir" &
 sampler=$!
-sleep 2
+wait_for "the sampler to finish its first tick and sleep" sampler_between_ticks "$sampler"
 kill "$sampler" 2>/dev/null || true
 wait "$sampler" 2>/dev/null || true
 check "the memory samples are numbers of kB" \

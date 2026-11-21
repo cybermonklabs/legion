@@ -9,7 +9,9 @@
     "`apt` is what the job installs for that script alone, `bun` whether it needs bun and this",
     "repository's node_modules, `evidence_variable` the environment variable the script reads for",
     "its evidence directory (empty where it takes none and keeps its work directory instead), and",
-    "`timeout_minutes` the job's limit, measured from the script's header with headroom."
+    "`timeout_minutes` the job's limit: at least the script's own guard (its `proof_guard`, with",
+    "the green runs it was read from beside it) plus the job's setup, the longest green time of its",
+    "other steps, which `timeout_reading` records, read by no job."
   ],
   "hosted": [
     {
@@ -19,6 +21,7 @@
       "bun": false,
       "evidence_variable": "BEHIND_ENTRY_FENCE_EVIDENCE_DIR",
       "timeout_minutes": 25,
+      "timeout_reading": "guard 720 s (its own 7 green e2e.yaml jobs up to 2026-11-18 took at most 158 s, a sibling's 346 s) plus the longest green setup and upload of its own jobs and the sibling merge-wait-readable's, 59 s: 779 s, in 25 minutes",
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/behind-entry-fence.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
       "jj": true
     },
@@ -29,6 +32,7 @@
       "bun": false,
       "evidence_variable": "CHILD_ADOPTION_EVIDENCE_DIR",
       "timeout_minutes": 25,
+      "timeout_reading": "guard 420 s plus the longest green setup and upload of its 11 green e2e.yaml jobs up to 2026-11-18, 50 s: 470 s, in 25 minutes",
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/child-adoption.sh; CI's service satisfies it, and this script starts none",
       "jj": true
     },
@@ -39,6 +43,7 @@
       "bun": false,
       "evidence_variable": "CONFLICT_NO_TAKEOVER_EVIDENCE_DIR",
       "timeout_minutes": 25,
+      "timeout_reading": "guard 720 s (its own 3 green e2e.yaml jobs up to 2026-11-18 took at most 164 s, of the driver #4464 replaced; none of the new driver's on record up to 2026-11-19; a sibling's 346 s) plus the longest green setup and upload of its own jobs and the sibling merge-wait-readable's, 55 s: 775 s, in 25 minutes",
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/conflict-no-takeover.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
       "jj": true
     },
@@ -49,6 +54,7 @@
       "bun": true,
       "evidence_variable": "",
       "timeout_minutes": 25,
+      "timeout_reading": "guard 480 s plus the longest green setup and upload of its 27 green e2e.yaml jobs up to 2026-11-18, 144 s: 624 s, in 25 minutes",
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
       "jj": false
     },
@@ -59,6 +65,7 @@
       "bun": true,
       "evidence_variable": "HANDOFF_RECORDS_EVIDENCE_DIR",
       "timeout_minutes": 25,
+      "timeout_reading": "guard 480 s plus the longest green setup and upload of its 12 green e2e.yaml jobs up to 2026-11-15, 61 s: 541 s, in 25 minutes",
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/handoff-records.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to four minutes",
       "jj": true
     },
@@ -69,6 +76,7 @@
       "bun": false,
       "evidence_variable": "MERGE_WAIT_READABLE_EVIDENCE_DIR",
       "timeout_minutes": 25,
+      "timeout_reading": "guard 720 s (its own 6 green e2e.yaml jobs up to 2026-11-18 took at most 346 s) plus the longest green setup and upload of those jobs, 54 s: 774 s, in 25 minutes",
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/merge-wait-readable.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
       "jj": true
     },
@@ -79,6 +87,7 @@
       "bun": true,
       "evidence_variable": "NATS_CALLOUT_SESSIONS_EVIDENCE_DIR",
       "timeout_minutes": 35,
+      "timeout_reading": "guard 600 s (its own 9 green e2e.yaml jobs up to 2026-11-19, runs 44488343282 to 44607587303 of the four sessions' proof (#4490), took at most 245 s, setup and upload included) plus that 245 s: 845 s, in 35 minutes",
       "why_hosted": "Run it from a checkout on a Linux host with go, bun (and bun install), psql, curl, jq and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/nats-callout-sessions.sh; CI's service is the Postgres server dev-stack.sh --callout creates its two databases on, the four sessions (Oh My Pi, Claude Code and two Codex CLI) are this checkout's plugins in processes of their own under stand-in hosts with no model, and the script starts no container. Its --real-hosts mode, the pinned Oh My Pi, Claude Code and Codex CLI on model routes, is run by hand on a Legion pod or a box given the pins and the routes",
       "jj": false
     },
@@ -89,6 +98,7 @@
       "bun": false,
       "evidence_variable": "PHASE_ENTRY_CONVERGE_EVIDENCE_DIR",
       "timeout_minutes": 20,
+      "timeout_reading": "guard 420 s plus the longest green setup and upload of its 21 green e2e.yaml jobs up to 2026-11-15, 55 s: 475 s, in 20 minutes",
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/phase-entry-converge.sh; the proof needs a real PostgreSQL, which CI's service is, and a real nats-server, which it installs with go install, and it starts no container; a measured run took 45 seconds",
       "jj": true
     },
@@ -99,6 +109,7 @@
       "bun": true,
       "evidence_variable": "REVIEW_RANGE_EVIDENCE_DIR",
       "timeout_minutes": 25,
+      "timeout_reading": "guard 720 s (no e2e.yaml job of its own on record up to 2026-11-18; its siblings' longest, merge-wait-readable's, 346 s) plus the longest green setup and upload of its closest sibling's job, handoff-records' 64 s: 784 s, in 25 minutes",
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/review-range.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself as handoff-records.sh does, and it reaches no outside service; a measured run took 37 seconds with a warm Go build cache",
       "jj": true
     },
@@ -109,6 +120,7 @@
       "bun": true,
       "evidence_variable": "PLAN_RATINGS_EVIDENCE_DIR",
       "timeout_minutes": 25,
+      "timeout_reading": "guard 720 s (no green e2e.yaml job of its own on record up to 2026-11-19; its siblings' longest, merge-wait-readable's, 346 s) plus the longest green setup and upload of its closest sibling's job, handoff-records' 64 s: 784 s, in 25 minutes",
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/plan-ratings.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes about a minute with a warm Go build cache and up to five minutes cold",
       "jj": true
     },
@@ -119,6 +131,7 @@
       "bun": false,
       "evidence_variable": "",
       "timeout_minutes": 20,
+      "timeout_reading": "guard 240 s plus the longest green setup and upload of its 24 green e2e.yaml jobs up to 2026-11-15, 64 s: 304 s, in 20 minutes",
       "why_hosted": "The daemon refuses to start without tmux on PATH, and CI's tmux is the runner's apt binary; with LEGION_E2E_PG_DSN set the script starts no container of its own, which is how ci.yaml's daemon-go job already runs it",
       "jj": false
     },
@@ -129,6 +142,7 @@
       "bun": true,
       "evidence_variable": "STEP_RECORDS_EVIDENCE_DIR",
       "timeout_minutes": 25,
+      "timeout_reading": "guard 720 s (no green e2e.yaml job of its own on record up to 2026-11-19; its siblings' longest, merge-wait-readable's, 346 s) plus the longest green setup and upload of its closest sibling's job, handoff-records' 64 s: 784 s, in 25 minutes",
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/step-records.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to five minutes",
       "jj": true
     },
@@ -139,6 +153,7 @@
       "bun": false,
       "evidence_variable": "SUB_ARCHITECT_EVIDENCE_DIR",
       "timeout_minutes": 25,
+      "timeout_reading": "guard 720 s (no green e2e.yaml job of its own on record up to 2026-11-18; its siblings' longest, merge-wait-readable's, 346 s) plus the longest green setup and upload of a sibling's job, handoff-records' 64 s: 784 s, in 25 minutes",
       "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/sub-architect.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
       "jj": true
     },
@@ -149,6 +164,7 @@
       "bun": true,
       "evidence_variable": "",
       "timeout_minutes": 20,
+      "timeout_reading": "guard 360 s (its 20 green e2e.yaml jobs up to 2026-11-18 took at most 151 s) plus the longest green setup and upload of those jobs, 89 s: 449 s, in 20 minutes",
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
       "jj": false
     }

@@ -1887,10 +1887,10 @@ describe("A long body parsed in the worker", () => {
   // Nothing ever answers this body. The engine's deadline ends with the body parsed on the page;
   // this row shortens it through `setParseDeadline`, the seam `resetMermaidDiagrams` is for the
   // diagram renderer's own limit, so it proves what the deadline ends in without waiting out the
-  // page's own 10 s. The 25 s wait below is above this package's 10 s default
-  // (`web/src/__tests__/setup.ts`) because the row waits out a parse deadline on a parse the test
-  // itself slowed to a stop - its worker never answers - and then the long body's own parse on
-  // the page's thread.
+  // page's own 10 s: nothing in the row runs out on the real clock but that 50 ms. What the wait
+  // below then waits for is the long body's own parse on the page's thread, which is work rather
+  // than a timer, so it waits as every wait of this suite does: inside the budget `setup.ts`
+  // gives it from the row's deadline.
   test("ends formatted on the page's own thread when the worker misses its deadline", async () => {
     const worker = installFakeParseWorker();
     setParseDeadline(50);
@@ -1900,7 +1900,6 @@ describe("A long body parsed in the worker", () => {
       await worker.waitForRequests(1);
       await waitFor(() => expect(topItems(view.container)).toHaveLength(longItems), {
         interval: 250,
-        timeout: 25_000,
       });
       await waitFor(() => expect(pendingMark(view.container)).toBeNull());
       expect(fallbackMark(view.container)).toBeNull();
@@ -1908,7 +1907,7 @@ describe("A long body parsed in the worker", () => {
       setParseDeadline();
       view.unmount();
     }
-  }, 40_000); // the 25 s wait must run out inside the test; below the package's 60 s deadline
+  });
 
   // The other end of the same deadline. An element keeps its place on the parse the worker is
   // holding when it goes (`keepIfPosted`), which is how a streaming turn is shown the frame the

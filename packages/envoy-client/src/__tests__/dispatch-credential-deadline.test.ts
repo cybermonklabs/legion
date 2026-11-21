@@ -47,16 +47,18 @@ const DEADLINE_MS = 3_000;
 const RESERVE_MS = 1_000;
 
 /** Moves the fake clock on a millisecond at a time, settling what each step set off before the
- *  next, until `done()` holds or `most` milliseconds have passed, and answers how far it moved. A
- *  row calls it only once nothing but a timer is left to happen. */
-async function stepUntil(done: () => boolean, most: number): Promise<number> {
+ *  next, until `done()` holds, and answers how far it moved; a wait that would not end fails at
+ *  the row's deadline, naming `what` (`turnsUntil`). A row calls it only once nothing but a timer
+ *  is left to happen. */
+async function stepUntil(what: string, done: () => boolean): Promise<number> {
   let moved = 0;
   await turn();
-  while (!done() && moved < most) {
-    jest.advanceTimersByTime(1);
-    moved += 1;
-    await turn();
-  }
+  await turnsUntil(what, done, {
+    each: () => {
+      jest.advanceTimersByTime(1);
+      moved += 1;
+    },
+  });
   return moved;
 }
 
@@ -110,7 +112,7 @@ test("inside the renewal window, a broker that hangs leaves a Dispatch call its 
       answered = true;
     }
   );
-  await turnsUntil(() => renewing, "the renewal the broker holds");
+  await turnsUntil("the renewal the broker holds", () => renewing);
   // A millisecond short of the credential's share, 2 s of the client's 3 s, nothing has gone.
   jest.advanceTimersByTime(DEADLINE_MS - RESERVE_MS - 1);
   await turn();
@@ -119,18 +121,17 @@ test("inside the renewal window, a broker that hangs leaves a Dispatch call its 
   // answers: a credential that waited longer sends nothing while it stands, which the wait names.
   jest.advanceTimersByTime(1);
   await turnsUntil(
-    () => sentAt.length === 2,
     "the call sent at the credential's share of its deadline, 2 s of 3",
-    { boundMs: 10_000 }
+    () => sentAt.length === 2
   );
-  await turnsUntil(() => answered, "Dispatch's answer to the call", { boundMs: 10_000 });
+  await turnsUntil("Dispatch's answer to the call", () => answered);
   await second;
   expect(sentAt.slice(1).map((at) => at - started)).toEqual([DEADLINE_MS - RESERVE_MS]);
   expect(trades).toBe(2);
   const live = dispatch.asked[0]?.authorization;
   expect(live).toStartWith("DPoP ");
   expect(dispatch.asked.map((asked) => asked.authorization)).toEqual([live, live]);
-}, 20_000);
+});
 
 // R3-99b1 (the review of 99b1e438db): a write whose credential cannot present ends with the
 // credential's own error, within the client's deadline, whatever that deadline is. A registration
@@ -142,61 +143,57 @@ test.each([
   ["a registration still pending", "pending", RegistrationPendingError, "share"],
   ["a trade the broker never answers", "silent", TradeUnansweredError, "share"],
   ["a broker that answers 503", "503", TradeRetryingError, "deadline"],
-] as const)(
-  "a write whose credential meets %s ends with the credential's error inside a deadline shorter than its pacing",
-  async (_, mode, failure, endsAt) => {
-    // The token client says what a trade came to at the wait after it, and the broker that never
-    // answers has the trade: past either, only timers are left to happen.
-    let read = false;
-    const warn = spyOn(console, "warn").mockImplementation((line: unknown) => {
-      if (String(line).includes("trading again")) read = true;
+] as const)("a write whose credential meets %s ends with the credential's error inside a deadline shorter than its pacing", async (_, mode, failure, endsAt) => {
+  // The token client says what a trade came to at the wait after it, and the broker that never
+  // answers has the trade: past either, only timers are left to happen.
+  let read = false;
+  const warn = spyOn(console, "warn").mockImplementation((line: unknown) => {
+    if (String(line).includes("trading again")) read = true;
+  });
+  try {
+    const broker = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async () => {
+        if (mode === "503") return new Response("away", { status: 503 });
+        if (mode === "silent") {
+          read = true;
+          return await new Promise<Response>(() => {});
+        }
+        return Response.json(
+          {
+            error: "invalid_grant",
+            error_description: `pod_session_not_registered: No registration says this pod may write under the session name '${POD_SESSION}'. A pod writes under a session name its deployment registered for it.`,
+          },
+          { status: 400 }
+        );
+      },
     });
-    try {
-      const broker = Bun.serve({
-        port: 0,
-        hostname: "127.0.0.1",
-        fetch: async () => {
-          if (mode === "503") return new Response("away", { status: 503 });
-          if (mode === "silent") {
-            read = true;
-            return await new Promise<Response>(() => {});
-          }
-          return Response.json(
-            {
-              error: "invalid_grant",
-              error_description: `pod_session_not_registered: No registration says this pod may write under the session name '${POD_SESSION}'. A pod writes under a session name its deployment registered for it.`,
-            },
-            { status: 400 }
-          );
-        },
+    servers.push(broker);
+    const dispatch = stubDispatch();
+    const credential = brokerCredential(
+      podEnvironment(`http://127.0.0.1:${broker.port}`, dispatch.url),
+      POD_SESSION
+    );
+    const deadlineMs = 2_500;
+    let settled = false;
+    const error = new DispatchClient(dispatch.url, credential, fetch, { deadlineMs })
+      .comment("DSP-1", { body: "Shipped.", actor: { kind: "session", id: "session-1" } })
+      .then(
+        () => undefined,
+        (caught: unknown) => caught
+      )
+      .finally(() => {
+        settled = true;
       });
-      servers.push(broker);
-      const dispatch = stubDispatch();
-      const credential = brokerCredential(
-        podEnvironment(`http://127.0.0.1:${broker.port}`, dispatch.url),
-        POD_SESSION
-      );
-      const deadlineMs = 2_500;
-      let settled = false;
-      const error = new DispatchClient(dispatch.url, credential, fetch, { deadlineMs })
-        .comment("DSP-1", { body: "Shipped.", actor: { kind: "session", id: "session-1" } })
-        .then(
-          () => undefined,
-          (caught: unknown) => caught
-        )
-        .finally(() => {
-          settled = true;
-        });
-      await turnsUntil(() => read, "the credential's first trade read", { boundMs: 10_000 });
-      // The write ends where the credential's share ends, or where the client's deadline ends
-      // the pause; a write that went on past its deadline is read as moving the clock further.
-      const moved = await stepUntil(() => settled, deadlineMs + 5_000);
-      expect(moved).toBe(endsAt === "share" ? deadlineMs - RESERVE_MS : deadlineMs);
-      expect(await error).toBeInstanceOf(failure);
-      expect(dispatch.asked).toHaveLength(0);
-    } finally {
-      warn.mockRestore();
-    }
-  },
-  20_000
-);
+    await turnsUntil("the credential's first trade read", () => read);
+    // The write ends where the credential's share ends, or where the client's deadline ends
+    // the pause; a write that went on past its deadline is read as moving the clock further.
+    const moved = await stepUntil("the write's end", () => settled);
+    expect(moved).toBe(endsAt === "share" ? deadlineMs - RESERVE_MS : deadlineMs);
+    expect(await error).toBeInstanceOf(failure);
+    expect(dispatch.asked).toHaveLength(0);
+  } finally {
+    warn.mockRestore();
+  }
+});

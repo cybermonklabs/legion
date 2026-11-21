@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  Spec: a `:::` body parses in time linear in its length, and so does a paragraph of many
+  hard-break lines.
+  Dispatch's editor parses both in time linear in their length. Two of micromark's text resolvers
+  spliced the paragraph's events once a line, each splice shifting every event after it:
+  `resolveAllText`, which merges a line's runs of text, and GFM's literal autolinks break `:::a`
+  into two runs, so a 31,000-character body of 2,000 `:::` openers past the nesting bound took it
+  11,642,693 steps where a body of an eighth as many took 145,193; and `resolveAllLineSuffixes`,
+  which puts in a token for the spaces that end a line, so a paragraph of 9,000 lines ending in a
+  hard break or a line suffix took it 162,085,497 steps where one an eighth as long took 2,537,427.
+  Each now builds the events in one pass, through the patch the package already carries on
+  micromark 4.0.2.

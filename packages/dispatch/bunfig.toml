@@ -11,7 +11,9 @@
 # reproduced with its file alone and that seed, as docs/testing.md ("A Dispatch unit test runs in
 # random order") says; it also says what a failure that came from the lane's load needs.
 #
-# This file holds no preload. Commit b7a20b11c4 (pull request #2884) deleted an earlier
-# packages/dispatch/bunfig.toml so that the e2e lane loads no preload.
+# This file holds no preload: each lane names its own on its command line, the web lane its DOM
+# preloads and both the row-deadline preload, so the harness lane loads that one alone. Commit
+# b7a20b11c4 (pull request #2884) deleted an earlier packages/dispatch/bunfig.toml whose preload
+# every lane, the harness one included, had loaded.
 [test]
 randomize = true

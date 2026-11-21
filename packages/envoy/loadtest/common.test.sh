@@ -104,18 +104,33 @@ exec "${real_flock}" "\$@"
 EOF
 chmod +x "${slow_flock}/flock"
 
-# A `date` that takes 1 s: lock_root calls it after its flock and before it writes its record, so
-# a holder with it on PATH holds the lock for 1 s without its own record in the file.
+# A `date` that holds until the test opens its gate: lock_root calls it after its flock and before
+# it writes its record, so a holder with it on PATH holds the lock without its own record in the
+# file until the test lets it go. It opens the FIFO LOADTEST_TEST_DATE_GATE (read and write, which
+# never blocks), marks LOADTEST_TEST_DATE_MARK, and reads the FIFO, which blocks until the test
+# writes a line to it (open_gate).
 mkdir -p "$slow_bin"
 cat >"${slow_bin}/date" <<'EOF'
 #!/usr/bin/env bash
+exec 3<>"${LOADTEST_TEST_DATE_GATE:?}"
 : >"${LOADTEST_TEST_DATE_MARK:?}"
-sleep 1
+read -r _ <&3
+exec 3<&-
 exec "${LOADTEST_TEST_REAL_DATE:?}" "$@"
 EOF
 chmod +x "${slow_bin}/date"
 real_date="$(command -v date)"
 readonly real_date
+
+# open_gate FIFO: let the `date` stand-in that holds FIFO go on. The test opens it read and write,
+# which never blocks, and the line it writes waits in the FIFO, which the stand-in holds open from
+# before its mark, until the stand-in reads it.
+open_gate() {
+  local gate
+  exec {gate}<>"$1"
+  printf 'go\n' >&"$gate"
+  exec {gate}>&-
+}
 
 # alive PID: PID runs and is not a zombie.
 alive() {
@@ -124,25 +139,16 @@ alive() {
   [[ ${stat##*) } != Z* ]]
 }
 
-# wait_for FILE: wait up to 10 s for FILE to exist.
-wait_for() {
-  local i
-  for ((i = 0; i < 100; i++)); do
-    [[ -s "$1" ]] && return 0
-    sleep 0.1
-  done
+# present PATH [PID WHAT]: whether PATH exists, for wait_held; once PID, named WHAT, has ended, it
+# never will.
+present() {
+  [[ -e "$1" ]] && return 0
+  [[ -z "${2:-}" ]] || alive "$2" || wait_impossible="$3 (pid $2) ended before ${1##*/} was there"
   return 1
 }
 
-# wait_gone PID: wait up to 10 s for PID to end.
-wait_gone() {
-  local i
-  for ((i = 0; i < 100; i++)); do
-    alive "$1" || return 0
-    sleep 0.1
-  done
-  return 1
-}
+# gone PID: whether PID has ended, for wait_held.
+gone() { ! alive "$1"; }
 
 # try_lock ROOT [NAME=VALUE...]: call lock_root on ROOT in a new process that holds no descriptor 9
 # and no token unless one is given. Sets rc and out (its output, ADMITTED when it was admitted).
@@ -166,6 +172,21 @@ fail() {
   return 1
 }
 
+# The test's one guard and its one wait, scripts/e2e/lib/proof-wait.sh's proof_guard and wait_held,
+# which ends at once where its fact can no longer come and otherwise 30 s before the guard, naming
+# the fact, and keeps its last poll in work. Guard 480 s: at least twice this test's longest run
+# beside 8 busy loops on 2 CPUs in a builds Job, 222 s (builds Job d3-fixed-a, two runs,
+# 2026-11-19), plus the wait's 30 s margin; on CI, this test's longest green run was 20 s (run
+# 44607131679), over the 20 newest green merge-group runs of ci.yaml that ran its step up to
+# 2026-11-19 (runs 44508510162 to 44607131679). It waits through wait_held, the returning form of
+# wait_for, because this test's own fail (above) counts a case's failure and goes on to the next
+# case.
+work=$temporary_dir
+note() { echo "$*"; }
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "${here}/../../../scripts/e2e/lib/proof-wait.sh"
+proof_guard 480
+
 case_orphaned_child() {
   out=""
   local root="${temporary_dir}/root-a"
@@ -173,7 +194,8 @@ case_orphaned_child() {
     >"${temporary_dir}/holder-a.out" 2>&1 &
   local holder=$!
   pids+=("$holder")
-  wait_for "${temporary_dir}/child-a" || { out="$(cat "${temporary_dir}/holder-a.out")" fail "(a) the holder's child was not admitted"; return; }
+  wait_held "the holder's child to be admitted" present "${temporary_dir}/child-a" "$holder" "the holder" ||
+    { out="$(cat "${temporary_dir}/holder-a.out")" fail "(a) the holder's child was not admitted: $wait_gave_up"; return; }
   local child
   child="$(<"${temporary_dir}/child-a")"
   pids+=("$child")
@@ -190,7 +212,7 @@ case_orphaned_child() {
   names "$out" "$child" || { fail "(a) the refusal does not name the live child that holds the lock (pid $child)"; return; }
 
   kill -TERM "$child"
-  wait_gone "$child" || { fail "(a) the child (pid $child) did not end"; return; }
+  wait_held "the child (pid $child) to end" gone "$child" || { fail "(a) the child (pid $child) did not end: $wait_gave_up"; return; }
   try_lock "$root"
   if ((rc != 0)) || [[ $out != *ADMITTED* ]]; then
     fail "(a) a caller was refused after the child of the killed holder had exited"
@@ -206,23 +228,26 @@ case_stale_record() {
   bash "$locker" "$helper" "$root" "${temporary_dir}/previous-b" >/dev/null 2>&1 &
   local previous=$!
   pids+=("$previous")
-  wait_for "${temporary_dir}/previous-b" || { fail "(b) the previous holder was not admitted"; return; }
+  wait_held "the previous holder to be admitted" present "${temporary_dir}/previous-b" "$previous" "the previous holder" ||
+    { fail "(b) the previous holder was not admitted: $wait_gave_up"; return; }
   kill -TERM "$previous"
   wait "$previous" 2>/dev/null || true
   grep -q "^pid=${previous}\$" "${root}/.run.lock" || { fail "(b) the ended holder's record is not in the lock file"; return; }
 
-  PATH="${slow_bin}:${PATH}" LOADTEST_TEST_DATE_MARK="${temporary_dir}/date-b" LOADTEST_TEST_REAL_DATE="$real_date" \
+  local gate="${temporary_dir}/date-gate-b"
+  mkfifo "$gate"
+  PATH="${slow_bin}:${PATH}" LOADTEST_TEST_DATE_MARK="${temporary_dir}/date-b" LOADTEST_TEST_DATE_GATE="$gate" \
+    LOADTEST_TEST_REAL_DATE="$real_date" \
     bash "$locker" "$helper" "$root" "${temporary_dir}/holder-b" >"${temporary_dir}/holder-b.out" 2>&1 &
   local holder=$!
   pids+=("$holder")
-  local i
-  for ((i = 0; i < 100; i++)); do
-    [[ -e "${temporary_dir}/date-b" ]] && break
-    sleep 0.1
-  done
-  [[ -e "${temporary_dir}/date-b" ]] || { out="$(cat "${temporary_dir}/holder-b.out")" fail "(b) the new holder did not reach its record"; return; }
+  wait_held "the new holder to lock the file and reach its record" present "${temporary_dir}/date-b" "$holder" "the new holder" ||
+    { out="$(cat "${temporary_dir}/holder-b.out")" fail "(b) the new holder did not reach its record: $wait_gave_up"; return; }
 
+  # The caller tries while the new holder holds the lock with no record of its own in the file; the
+  # holder writes its record only once the gate opens, after the caller is done.
   try_lock "$root"
+  open_gate "$gate"
   if ((rc == 0)); then
     fail "(b) a caller was admitted while the new holder (pid $holder) held the lock"
     return
@@ -244,7 +269,8 @@ case_token_without_descriptor() {
   bash "$locker" "$helper" "$root" "${temporary_dir}/holder-c" >/dev/null 2>&1 &
   local holder=$!
   pids+=("$holder")
-  wait_for "${temporary_dir}/holder-c" || { fail "(c) the holder was not admitted"; return; }
+  wait_held "the holder to be admitted" present "${temporary_dir}/holder-c" "$holder" "the holder" ||
+    { fail "(c) the holder was not admitted: $wait_gave_up"; return; }
   local token
   token="$(sed -n 's/^token=//p' "${root}/.run.lock")"
   [[ -n "$token" ]] || { fail "(c) the lock file holds no token"; return; }
@@ -269,7 +295,8 @@ case_invisible_holder() {
   bash "$elsewhere" "$root" "$dead" "${temporary_dir}/ready-d" 300 >/dev/null 2>&1 &
   local holder=$!
   pids+=("$holder")
-  wait_for "${temporary_dir}/ready-d" || { fail "(d) the holder on descriptor 7 did not take the lock"; return; }
+  wait_held "the holder on descriptor 7 to take the lock" present "${temporary_dir}/ready-d" "$holder" "the holder" ||
+    { fail "(d) the holder on descriptor 7 did not take the lock: $wait_gave_up"; return; }
 
   try_lock "$root"
   if ((rc == 0)) || [[ $out == *ADMITTED* ]]; then
@@ -303,7 +330,8 @@ case_holder_ended() {
   bash "$elsewhere" "$root" "$dead" "${temporary_dir}/ready-e" 1 >/dev/null 2>&1 &
   local holder=$!
   pids+=("$holder")
-  wait_for "${temporary_dir}/ready-e" || { fail "(e) the holder on descriptor 7 did not take the lock"; return; }
+  wait_held "the holder on descriptor 7 to take the lock" present "${temporary_dir}/ready-e" "$holder" "the holder" ||
+    { fail "(e) the holder on descriptor 7 did not take the lock: $wait_gave_up"; return; }
   try_lock "$root"
   if ((rc != 0)) || [[ $out != *ADMITTED* ]]; then
     fail "(e) a caller was refused after the holder (pid $holder) ended during its wait"
@@ -322,11 +350,12 @@ case_waiting_callers() {
   bash "$elsewhere" "$root" "$dead" "${temporary_dir}/ready-f" 300 "$foreign_pidns" >/dev/null 2>&1 &
   local holder=$!
   pids+=("$holder")
-  wait_for "${temporary_dir}/ready-f" || { fail "(f) the holder on descriptor 7 did not take the lock"; return; }
+  wait_held "the holder on descriptor 7 to take the lock" present "${temporary_dir}/ready-f" "$holder" "the holder" ||
+    { fail "(f) the holder on descriptor 7 did not take the lock: $wait_gave_up"; return; }
 
   # Caller 1 sits in its first flock for 4 s; caller 2 starts once caller 1 is in it, and waits its
   # whole 3 s while caller 1 has the lock file open.
-  local mark="${temporary_dir}/flock-f" n i waiters=() rcs=()
+  local mark="${temporary_dir}/flock-f" n waiters=() rcs=()
   for n in 1 2; do
     local path="$PATH"
     [[ $n == 2 ]] || path="${slow_flock}:${PATH}"
@@ -335,11 +364,10 @@ case_waiting_callers() {
       "$helper" "$root" "${temporary_dir}/caller-f${n}.pid" >"${temporary_dir}/caller-f${n}.out" 2>&1 9>&- &
     waiters+=("$!")
     pids+=("$!")
-    for ((i = 0; i < 100 && n == 1; i++)); do
-      [[ -d "$mark" ]] && break
-      sleep 0.1
-    done
-    [[ -d "$mark" ]] || { fail "(f) caller 1 did not reach its flock"; return; }
+    if [[ $n == 1 ]]; then
+      wait_held "caller 1 to reach its flock" present "$mark" "${waiters[0]}" "caller 1" ||
+        { fail "(f) caller 1 did not reach its flock: $wait_gave_up"; return; }
+    fi
   done
   for n in 0 1; do
     rcs[n]=0
@@ -383,7 +411,8 @@ case_foreign_record_live_pid() {
   bash "$elsewhere" "$root" "$$" "${temporary_dir}/ready-g" 300 "$foreign_pidns" >/dev/null 2>&1 &
   local holder=$!
   pids+=("$holder")
-  wait_for "${temporary_dir}/ready-g" || { fail "(g) the holder on descriptor 7 did not take the lock"; return; }
+  wait_held "the holder on descriptor 7 to take the lock" present "${temporary_dir}/ready-g" "$holder" "the holder" ||
+    { fail "(g) the holder on descriptor 7 did not take the lock: $wait_gave_up"; return; }
 
   try_lock "$root"
   if ((rc == 0)) || [[ $out == *ADMITTED* ]]; then

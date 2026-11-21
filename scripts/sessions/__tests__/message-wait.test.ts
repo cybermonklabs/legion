@@ -1,31 +1,26 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type OwnDatabase, ownDatabase } from "@legion/test-fixtures/postgres";
+import { settled } from "@legion/test-fixtures/wait";
 import { SQL } from "bun";
 
 /**
- * message-wait.ts measured over a session store of this test's own: a database it creates on the
- * server `LEGION_TEST_PG_DSN` names, holding the two tables
- * `packages/daemon/internal/ompsessions/ompsessions.go` defines and nothing else. The script's
- * `paths()` is unscoped, so the measurement sees exactly the fixture below; the shared session
- * store `OMP_SESSION_SQL_DSN_FILE` names holds every agent's conversation and is no route for a
- * test. The surface is the command a reader runs, spawned, read by its stdout, stderr and exit
- * code: nothing of the script is imported.
+ * message-wait.ts measured over a session store of this test's own: a database
+ * `@legion/test-fixtures/postgres` makes for it on the server `LEGION_TEST_PG_DSN` names, holding
+ * the two tables `packages/daemon/internal/ompsessions/ompsessions.go` defines and nothing else.
+ * The script's `paths()` is unscoped, so the measurement sees exactly the fixture below; the
+ * shared session store `OMP_SESSION_SQL_DSN_FILE` names holds every agent's conversation and is
+ * no route for a test. The surface is the command a reader runs, spawned, read by its stdout,
+ * stderr and exit code: nothing of the script is imported.
+ *
+ * This test never skips: without that server it has measured nothing, and the fixture's refusal
+ * names the variable. It is the pod's and CI's own test server, never the shared Oh My Pi session
+ * store the file OMP_SESSION_SQL_DSN_FILE names.
  */
 
 const SCRIPT = join(import.meta.dir, "..", "message-wait.ts");
-
-const SERVER = process.env.LEGION_TEST_PG_DSN;
-if (SERVER === undefined || SERVER === "") {
-  throw new Error(
-    "LEGION_TEST_PG_DSN must name the PostgreSQL server this test creates its own session-store " +
-      "database on, and drops again. This test never skips: without that server it has measured " +
-      "nothing. It is the pod's and CI's own test server, never the shared Oh My Pi session store " +
-      "the file OMP_SESSION_SQL_DSN_FILE names."
-  );
-}
 
 const MINUTE = 60_000;
 /** The threshold the run uses, which is the script's default: every printed wait passes it. */
@@ -164,19 +159,16 @@ const DIRECTORY = "/example/sessions";
 const labelOf = (session: Fixture): string => `${session.role} ${session.id}`;
 
 const scratch = await mkdtemp(join(tmpdir(), "message-wait-"));
-const DATABASE = `legion_message_wait_${randomUUID().replaceAll("-", "")}`;
-const admin = new SQL(SERVER);
-const storeUrl = new URL(SERVER);
-storeUrl.pathname = `/${DATABASE}`;
-const store = new SQL(storeUrl.toString());
+/** The session store's own database and the connection that fills it, made by the `beforeAll`. */
+let database: OwnDatabase | undefined;
+let store: SQL | undefined;
 // The fixture is built in the `beforeAll` below, which Bun follows with this hook even when it
 // throws, so a create or an insert that fails still takes the database and the scratch directory
 // with it.
 afterAll(async () => {
   await rm(scratch, { recursive: true, force: true });
-  await store.close();
-  await admin.unsafe(`drop database if exists ${DATABASE} with (force)`);
-  await admin.close();
+  await store?.close();
+  await database?.drop();
 });
 
 /** What the spawned run printed: its exit code, its stderr, and its stdout line by line. */
@@ -184,16 +176,20 @@ let code = -1;
 let stderr = "";
 let printed: string[] = [];
 
-// Creating the database, writing the fixture and spawning the script take longer than the five
-// seconds a hook is given by default, whenever the server answers slowly.
+// Creating the database, writing the fixture and spawning the script are this file's slowest
+// work. The command that runs it (.github/workflows/ci-job-sessions-script.yaml) holds this hook
+// to its one guard, --timeout 5000, Bun's default, which is at least twice the hook's slowest
+// reading under 8 busy loops on 2 CPUs, 2,197.48 ms, written beside that command.
 beforeAll(async () => {
-  await admin.unsafe(`create database ${DATABASE} strategy file_copy`);
-  await store.unsafe(
+  database = await ownDatabase("legion_message_wait");
+  const sessions = new SQL(database.url);
+  store = sessions;
+  await sessions.unsafe(
     "create table omp_session_files (path TEXT PRIMARY KEY, content TEXT NOT NULL, " +
       "mtime_ms BIGINT NOT NULL, title TEXT, title_source TEXT, title_updated_at TEXT, " +
       "byte_len BIGINT)"
   );
-  await store.unsafe(
+  await sessions.unsafe(
     "create table omp_session_files_parts (path TEXT NOT NULL, start_offset BIGINT NOT NULL, " +
       "content TEXT NOT NULL, PRIMARY KEY (path, start_offset))"
   );
@@ -205,30 +201,33 @@ beforeAll(async () => {
     const head = session.tailInPart === true ? `${records.slice(0, -1).join("\n")}\n` : text;
     const tail = text.slice(head.length);
     const path = `${DIRECTORY}/${STAMP}_${session.id}.jsonl`;
-    await store`insert into omp_session_files (path, content, mtime_ms, byte_len)
+    await sessions`insert into omp_session_files (path, content, mtime_ms, byte_len)
       values (${path}, ${head}, ${LAST_WRITE_MS}, ${Buffer.byteLength(text)})`;
     if (tail !== "") {
-      await store`insert into omp_session_files_parts (path, start_offset, content)
+      await sessions`insert into omp_session_files_parts (path, start_offset, content)
         values (${path}, ${Buffer.byteLength(head)}, ${tail})`;
     }
   }
 
   const dsnFile = join(scratch, "session-store.url");
-  await writeFile(dsnFile, `${storeUrl.toString()}\n`);
+  await writeFile(dsnFile, `${database.url}\n`);
 
   const child = Bun.spawn(["bun", SCRIPT, "--since", "24h", "--dsn-file", dsnFile], {
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [stdout, failures, exited] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
+  const [stdout, failures, exited] = await settled(
+    "message-wait.ts to exit",
+    Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ])
+  );
   printed = stdout.split("\n");
   stderr = failures;
   code = exited;
-}, 60_000);
+});
 
 /** One printed wait line: the wait, the arrival, what held it, the host state and the session. */
 const waitLine = (wait: string, held: string, state: string, session: Fixture): string =>

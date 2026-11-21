@@ -19,7 +19,15 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { connect, createInbox, headers, type NatsConnection, StringCodec } from "nats";
+import { settled, until as waitUntil } from "@legion/test-fixtures/wait";
+import {
+  connect,
+  createInbox,
+  headers,
+  type MsgHdrs,
+  type NatsConnection,
+  StringCodec,
+} from "nats";
 import { z } from "zod";
 import { readCardLines } from "../test/card-entries";
 
@@ -31,8 +39,9 @@ import { readCardLines } from "../test/card-entries";
 // subject, and Dispatch's delivery frame, which the session accepts through the stand-in. What
 // reached the model is read off the requests the binary sends the stand-in gateway, each held
 // until the test answers it.
-// LEGION_TEST_OMP names the binary, as in dispatch-first-omp.test.ts, and LEGION_TEST_NATS_URL the
-// NATS server (the name the daemon's tests read, packages/daemon/internal/testnats/nats.go). A run
+// LEGION_TEST_OMP names the binary, as in dispatch-first-omp.test.ts, and LEGION_TEST_NATS_URL a
+// NATS server for the frames: core NATS alone, a server started without JetStream, since the
+// stand-in listener relays every frame itself (`sendRelayFrame`) and no case reads a stream. A run
 // without both skips, except on GitHub Actions, where the pi-envoy job supplies both
 // (`ompNatsGuard`).
 const { skip, setup } = ompNatsGuard();
@@ -41,13 +50,6 @@ const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** What the wake (src/card-wake.ts, `CardWake`) says, in its one- and many-card forms. */
 const WAKE_TEXT = /Envoy messages? above arrived with no turn to read (it|them)/;
-
-/** How long a case waits for one thing the session owes it before failing on it. */
-const DEADLINE_MS = 30_000;
-
-/** How long a card read waits for the session file to end on a finished line. One line is one
- * write, so this is orders of magnitude more than it takes; it is a hang guard, not a sleep. */
-const CARDS_WHOLE_MS = 5_000;
 
 /** The one stream the stand-in listener answers a consumer registration with, and stamps every
  *  relay frame it publishes with: one stream for the run, so no frame reports a replaced one. */
@@ -189,22 +191,20 @@ interface CardSession {
   releaseSetup(): void;
 }
 
-/** Polls `probe` until it returns a value, failing on `what` at the deadline or when omp exits. */
+/** Polls `probe` until it returns a value, failing on `what` at the row's deadline or as soon as
+ *  omp exits. What the cases wait on (a request reaching the stand-in, a file, the host's state)
+ *  has no event the test can await, so it is polled. */
 async function until<T>(
   what: string,
   probe: () => T | undefined | Promise<T | undefined>,
   closed: { readonly error?: unknown }
 ): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
-  for (;;) {
+  const { value } = await waitUntil(what, async () => {
     if (closed.error !== undefined) throw closed.error;
-    const value = await probe();
-    if (value !== undefined) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    // What the cases wait on (a request reaching the stand-in, a file, the host's state) has no
-    // event the test can await, so it is polled, and a missing one fails at the deadline.
-    await Bun.sleep(20);
-  }
+    const read = await probe();
+    return read === undefined ? undefined : { value: read };
+  });
+  return value;
 }
 
 /**
@@ -380,14 +380,13 @@ async function startSession(
   const relayFrame = async (what: string, envelope: string): Promise<void> => {
     streamSeq += 1;
     try {
-      await sendRelayFrame({
+      await sendRelayFrame<MsgHdrs>({
         connection,
         newHeaders: headers,
         sessionID: sid,
         subject: stored,
         payload: codec.encode(envelope),
         seq: streamSeq,
-        withinMs: DEADLINE_MS,
         stopped: closed,
       });
     } catch (error) {
@@ -485,7 +484,10 @@ async function startSession(
       const waiting = Promise.withResolvers<Record<string, unknown>>();
       responses.set(id, waiting);
       rpc.send({ ...command, id });
-      const response = await Promise.race([waiting.promise, rpc.closed]);
+      const response = await settled(
+        `omp's answer to ${String(command.type)}`,
+        Promise.race([waiting.promise, rpc.closed])
+      );
       if (response.success !== true) {
         throw new Error(`omp refused ${String(command.type)}: ${JSON.stringify(response)}`);
       }
@@ -509,7 +511,7 @@ async function startSession(
       const writer = running ? "alive" : "gone";
       const file = (await session.state()).sessionFile;
       if (file === undefined) throw new Error("get_state named no session file");
-      return readCardLines(file, writer, CARDS_WHOLE_MS);
+      return readCardLines(file, writer);
     },
     until: (what, probe) => until(what, probe, closed),
     releaseStartup,
@@ -603,8 +605,7 @@ test.skipIf(skip)(
     // Every card was read in a run: none gets a wake.
     const request = await probe(session, next.index + 1);
     expect(conversation(request)).not.toMatch(WAKE_TEXT);
-  },
-  120_000
+  }
 );
 
 /** How an interrupt case holds the run when it interrupts it. */
@@ -656,8 +657,7 @@ for (const abort of ["abort", "abort_and_restore_queue"] as const) {
   for (const hold of ["model request", "tool call"] as const) {
     test.skipIf(skip)(
       `an RPC ${abort} during a held ${hold} keeps the three queued cards, folded with no turn`,
-      () => interruptKeepsCards(abort, hold),
-      120_000
+      () => interruptKeepsCards(abort, hold)
     );
   }
 }
@@ -691,8 +691,7 @@ test.skipIf(skip)(
     expect(entries.filter((entry) => entry.includes(card))).toHaveLength(1);
     expect(conversation(request)).toContain(card);
     expect(conversation(request)).not.toMatch(WAKE_TEXT);
-  },
-  120_000
+  }
 );
 
 // An aside that reaches the host after the run's last step (here: during the run's automatic
@@ -757,8 +756,7 @@ test.skipIf(skip)(
     await session.settled();
     expect(agentEndsSince(framesAtWake).some((frame) => !continuing(frame))).toBe(true);
     expect(session.turns.length).toBe(woken.index + 1);
-  },
-  120_000
+  }
 );
 
 // Plan mode is the host's other fold with no turn, and no case here reaches it: the pinned build's
@@ -814,8 +812,7 @@ test.skipIf(skip)(
     };
     expect(handOver(first)).toBe("startup");
     expect(handOver(card)).toBe("idle");
-  },
-  120_000
+  }
 );
 
 // The third hand-over an Envoy card can be given (extensions/envoy.ts, `handCard`): the inert
@@ -846,8 +843,7 @@ test.skipIf(skip)(
     const written = (await session.cardEntries()).filter((entry) => entry.includes(btw));
     expect(written).toHaveLength(1);
     expect(CardEntrySchema.parse(JSON.parse(written[0] as string)).details.handOver).toBe("inert");
-  },
-  120_000
+  }
 );
 
 // Several cards that reach an idle session together. pi-envoy reads `isIdle` when it hands each
@@ -894,8 +890,7 @@ test.skipIf(skip)(
     for (const card of cards) {
       expect(entries.filter((entry) => entry.includes(card))).toHaveLength(1);
     }
-  },
-  120_000
+  }
 );
 
 // A card that reaches pi-envoy while Oh My Pi starts holds none of the host's RPC input. The
@@ -912,25 +907,21 @@ test.skipIf(skip)(
 // startup went unanswered until the startup was released. On 18.12.2, when this test was written,
 // RPC mode also drained every startup send first (`runner.sends.drain()`), so a card's own turn
 // there would have held `get_state` and `prompt` back until it ended.
-test.skipIf(skip)(
-  "a card that arrives while the session starts holds no RPC input",
-  async () => {
-    const session = await startSession({ holdStartup: true });
-    const cards = [await session.card("s1"), await session.card("s2")];
-    await within("get_state written while the startup is held", 5_000, session.state());
-    // The cards wait for the startup: neither has started a turn while it is held.
-    expect(session.turns).toHaveLength(0);
-    session.releaseStartup();
+test.skipIf(skip)("a card that arrives while the session starts holds no RPC input", async () => {
+  const session = await startSession({ holdStartup: true });
+  const cards = [await session.card("s1"), await session.card("s2")];
+  await within("get_state written while the startup is held", 5_000, session.state());
+  // The cards wait for the startup: neither has started a turn while it is held.
+  expect(session.turns).toHaveLength(0);
+  session.releaseStartup();
 
-    // The cards' turn is held at its model request, and the host still answers RPC commands.
-    const woken = await session.nextTurn("the turn the startup cards' wake started");
-    await within("get_state written while the turn is held", 5_000, session.state());
+  // The cards' turn is held at its model request, and the host still answers RPC commands.
+  const woken = await session.nextTurn("the turn the startup cards' wake started");
+  await within("get_state written while the turn is held", 5_000, session.state());
 
-    const messages = conversation(woken.request);
-    for (const card of cards) expect(messages).toContain(card);
-    expect(lastMessage(woken.request)).toMatch(WAKE_TEXT);
-    woken.reply([text("Read the startup cards.")]);
-    await probe(session, woken.index + 1);
-  },
-  120_000
-);
+  const messages = conversation(woken.request);
+  for (const card of cards) expect(messages).toContain(card);
+  expect(lastMessage(woken.request)).toMatch(WAKE_TEXT);
+  woken.reply([text("Read the startup cards.")]);
+  await probe(session, woken.index + 1);
+});

@@ -17,8 +17,20 @@ export const SLACK_BOT_TOKEN_SECRET = "LEGION_SLACK_BOT_TOKEN";
  * environment, held to https or a loopback host, and handed to the poster. */
 const SLACK_POST_API_URL_VARIABLE = "SLACK_POST_API_URL";
 
-/** How long the broker request and the post may take together before the tool stops waiting. The
- * poster gives Slack 10 s of its own. */
+/** How long the poster gives Slack to answer chat.postMessage. */
+const SLACK_ANSWER_MS = 10_000;
+
+/** How long the poster's exit gives stdout to take its one line before it exits whatever is still
+ * queued, as `exitProcess` (`./process-exit`) does: the poster runs as `bun -e`, which imports
+ * nothing of this package, so it ends that way in a copy of its own. The tool reads the line as it
+ * comes, so only a reader that takes nothing keeps the poster this long. What stops the poster is
+ * the tool's SIGKILL at `POST_TIMEOUT_MS`, and Slack's answer and this flush together leave the
+ * rest of it to the broker's grant and Bun's start. */
+const POSTER_FLUSH_MS = 5_000;
+
+/** How long the broker request and the post may take together before the tool stops waiting and
+ * kills the poster. The poster gives Slack `SLACK_ANSWER_MS` of its own and its stdout
+ * `POSTER_FLUSH_MS`. */
 const POST_TIMEOUT_MS = 30_000;
 
 /** Slack's own error codes for chat.postMessage, as its reference lists them
@@ -112,12 +124,23 @@ const out = (value) => {
   if (token !== "") line = line.split(token).join("[redacted]");
   process.stdout.write(line + "\\n");
 };
+const exit = async () => {
+  const flushed = Promise.withResolvers();
+  if (process.stdout.destroyed || process.stdout.writableFinished) {
+    flushed.resolve();
+  } else {
+    process.stdout.once("error", () => flushed.resolve());
+    process.stdout.end(() => flushed.resolve());
+  }
+  await Promise.race([flushed.promise, Bun.sleep(${POSTER_FLUSH_MS})]);
+  process.exit(0);
+};
 let sent = false;
 try {
   const input = JSON.parse(await Bun.stdin.text());
   if (token === "") {
     out({ invalid: "the poster's environment carries no LEGION_SLACK_BOT_TOKEN" });
-    process.exit(0);
+    await exit();
   }
   const base = (process.env.SLACK_POST_API_URL || "https://slack.com/api").replace(/\\/+$/, "");
   let status = 0;
@@ -128,13 +151,13 @@ try {
       method: "POST",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json; charset=utf-8" },
       body: JSON.stringify({ channel: input.channel, thread_ts: input.thread_ts, text: input.text }),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(${SLACK_ANSWER_MS}),
     });
     status = response.status;
     raw = await response.text();
   } catch {
     out({ unanswered: true });
-    process.exit(0);
+    await exit();
   }
   let answer;
   try {
@@ -155,6 +178,7 @@ try {
 } catch {
   out(sent ? { unanswered: true } : { invalid: "a reply the poster could not read" });
 }
+await exit();
 `;
 
 /** One reply into a Slack thread. */
@@ -199,7 +223,34 @@ const WEB_SCHEME = /^https?:\/\//i;
 const BARE_HOST = /(?<![\w@./:%-])((?:[a-z0-9-]{1,63}\.)*[a-z0-9-]{1,63})\.?(:\d{1,5})?(?![\w-])/gi;
 /** An IPv6 literal written with no scheme: in brackets, optionally with a zone and a port. */
 const BARE_IPV6 = /(?<![\w@./:%-])\[([0-9a-f:.]{2,45})(?:%[\w.-]{1,32})?\](?::\d{1,5})?/gi;
-const TRAILING_PUNCTUATION = /[.,;:!?)\]}]+$/;
+/** What a sentence puts after a URL, which Slack's link reading leaves off its end. */
+const TRAILING_PUNCTUATION = ".,;:!?)]}";
+
+/**
+ * How many characters `withoutTrailingPunctuation` has read in this process, so a test holds the
+ * trim to the length of the URL it is handed rather than to the time it took. It is a loop and
+ * runs no regular expression: the end-anchored `/[.,;:!?)\]}]+$/` it once ran read, from every
+ * start in a run of those marks followed by any other character, the rest of the run (about the
+ * square of the run), and JavaScriptCore counts no step a regular expression takes.
+ */
+let trailingCharactersRead = 0;
+
+/** How many characters `withoutTrailingPunctuation` has read in this process. */
+export function trailingPunctuationReads(): number {
+  return trailingCharactersRead;
+}
+
+/** `url` without the run of `TRAILING_PUNCTUATION` it ends in, read once from its end. */
+function withoutTrailingPunctuation(url: string): string {
+  let end = url.length;
+  let read = 0;
+  for (; end > 0; end--) {
+    read++;
+    if (!TRAILING_PUNCTUATION.includes(url.charAt(end - 1))) break;
+  }
+  trailingCharactersRead += read;
+  return url.slice(0, end);
+}
 
 /** The addresses only the cluster reaches: unspecified, loopback, private, shared (carrier-grade
  * NAT) and link-local IPv4; and IPv6's unspecified, loopback and IPv4-compatible block (`::/96`),
@@ -250,7 +301,7 @@ function linkInsideCluster(
   const decoded = text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
   for (const match of decoded.matchAll(URL_CANDIDATE)) {
     if (!WEB_SCHEME.test(match[0])) continue;
-    for (const written of new Set([match[0], match[0].replace(TRAILING_PUNCTUATION, "")])) {
+    for (const written of new Set([match[0], withoutTrailingPunctuation(match[0])])) {
       const host = hostOf(written);
       if (host !== undefined && insideCluster(host, dispatchHost, true)) return written;
     }

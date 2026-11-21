@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { timeLeft, until } from "@legion/test-fixtures/wait";
 import {
   type ActiveDispatchConfig,
   type DispatchConfigResolution,
@@ -23,11 +24,13 @@ import {
 import type * as EnvoyConfigModule from "../envoy-config";
 import {
   askgateSetting,
+  type CommandSpawnRecord,
   type EnvoyConfig,
   type EnvoyHarness,
   envoyConfigPath,
   missingConfigNotice,
   readEnvoyConfig,
+  recordCommandSpawnsForTests,
   type SectionOff,
 } from "../envoy-config";
 import { type EnabledEnvoySettings, envoySettings as resolveEnvoy } from "../envoy-settings";
@@ -1076,7 +1079,7 @@ describe("a ! command in envoy.json", () => {
     } finally {
       setSystemTime();
     }
-  }, 45_000);
+  });
 
   // Oh My Pi loads each extension instance as a fresh module: a cache held by one module instance
   // would run every command again in each, blocking the parent's event loop at a subagent's start.
@@ -1245,77 +1248,146 @@ describe("a ! command in envoy.json", () => {
     return readdirSync(scratch);
   }
 
-  /** Whether the process with this pid is gone within a second: a killed orphan is a zombie until
-   * the process it was reparented to reaps it, and `kill(pid, 0)` still answers for a zombie. */
-  function gone(pid: number): boolean {
-    for (const deadline = Date.now() + 1_000; Date.now() < deadline; Bun.sleepSync(20)) {
+  /** Runs `body` with each `!` command's spawn recorded (`recordCommandSpawnsForTests`) and
+   * returns the records: the timeout the read armed and what ended the command, the read's own
+   * record rather than a time taken around a call that blocks this thread (R4). */
+  function spawnsDuring(body: () => void): CommandSpawnRecord[] {
+    const spawns: CommandSpawnRecord[] = [];
+    recordCommandSpawnsForTests((spawn) => spawns.push(spawn));
+    try {
+      body();
+    } finally {
+      recordCommandSpawnsForTests(undefined);
+    }
+    return spawns;
+  }
+
+  /** Waits until the process with this pid is gone: a killed orphan is a zombie until the process
+   * it was reparented to reaps it, and `kill(pid, 0)` still answers for a zombie. */
+  async function gone(pid: number): Promise<void> {
+    await until(`process ${pid} to be gone`, () => {
       try {
         process.kill(pid, 0);
+        return false;
       } catch {
         return true;
       }
-    }
-    return false;
+    });
   }
 
-  test("that exits 0 is its value at once, and a process it left running is killed", () => {
+  // The process the command leaves running writes `finished` only if it runs to its end, so a
+  // file there says the read waited for it instead of killing it. "At once" is the spawn's own
+  // record: the shell's exit ended it, not the 10 s timeout it was armed with, so a read that
+  // waited the timeout out on what the command left running fails here, whatever it then answers.
+  test("that exits 0 is its value at once, and a process it left running is killed", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const pidFile = path.join(home, "child.pid");
+    const finished = path.join(home, "finished");
     const lingeringSecret = fixtureSecret("linger");
     const file = writeFile(path.join(home, "envoy.json"), {
       dispatch: {
         ...dispatchOn,
-        token: `!sleep 30 & echo $! > ${pidFile}; echo ${lingeringSecret}`,
+        token: `!(sleep 30; echo done > ${finished}) & echo $! > ${pidFile}; echo ${lingeringSecret}`,
       },
     });
     const cwd = tempDir();
     let dispatch: DispatchWithToken | undefined;
-    let elapsed = 0;
-    const left = inScratchTmp(() => {
-      const started = Date.now();
-      dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
-      elapsed = Date.now() - started;
+    let left: string[] = [];
+    const spawns = spawnsDuring(() => {
+      left = inScratchTmp(() => {
+        dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+      });
     });
+    expect(spawns).toEqual([
+      { timeoutMs: 10_000, detached: true, exitedDueToTimeout: false, success: true },
+    ]);
     expect(dispatch).toEqual({
       enabled: true,
       url: "https://dispatch.example",
       token: lingeringSecret,
     });
-    expect(elapsed).toBeLessThan(2_000);
     const child = Number(readFileSync(pidFile, "utf-8").trim());
     expect(child).toBeGreaterThan(0);
-    expect(gone(child)).toBe(true);
+    await gone(child);
+    expect(existsSync(finished)).toBe(false);
     expect(left).toEqual([]);
-  }, 20_000);
+  });
 
-  test("still running after 10 s is an error naming the field and the file, and every process it started is killed", () => {
+  // The tests' slot runs once the command's process group is killed, outside the spawn's own
+  // `try`: a slot that throws leaves the value read and the group kill as they were, where one
+  // inside the `try` read as a command that never started and left what it started running.
+  test("whose spawn record throws is still its value, and a process it left running is still killed", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const pidFile = path.join(home, "child.pid");
+    const slotSecret = fixtureSecret("slot");
+    const file = writeFile(path.join(home, "envoy.json"), {
+      dispatch: { ...dispatchOn, token: `!sleep 900 & echo $! > ${pidFile}; echo ${slotSecret}` },
+    });
+    const cwd = tempDir();
+    let dispatch: DispatchWithToken | undefined;
+    recordCommandSpawnsForTests(() => {
+      throw new Error("the tests' slot threw");
+    });
+    try {
+      inScratchTmp(() => {
+        dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+      });
+    } finally {
+      recordCommandSpawnsForTests(undefined);
+    }
+    expect(dispatch).toEqual({
+      enabled: true,
+      url: "https://dispatch.example",
+      token: slotSecret,
+    });
+    await gone(Number(readFileSync(pidFile, "utf-8").trim()));
+  });
+
+  // The command never ends by itself while the row runs: it waits for a `release` file that nothing
+  // in the row creates, so only the read's own 10 s timeout ends it, however long this process is
+  // not run. Its wait ends unreleased only at the row's deadline (`timeLeft`, in turns of its 0.1 s
+  // look at the file), so a read that lost its timeout fails the row there rather than hang the
+  // suite: the read blocks this process, so no timer of the row can end it sooner. That the
+  // timeout is the 10 s the error names is the spawn's own record of what it was armed with and
+  // what ended it (R4), so a timer armed longer than its message says fails here too. The process
+  // it leaves running, `sleep 900`, outlives any run, so its absence is the group kill and not its
+  // own end.
+  test("still running after 10 s is an error naming the field and the file, and every process it started is killed", async () => {
+    const home = tempDir();
+    const env = commandEnvironment(home);
+    const pidFile = path.join(home, "child.pid");
+    const release = path.join(home, "release");
+    const ended = path.join(home, "ended");
+    const turns = Math.ceil(timeLeft() / 100);
     const file = writeFile(path.join(home, "envoy.json"), {
       dispatch: {
         ...dispatchOn,
-        token: `!echo canary; sleep 40 & echo $! > ${pidFile}; sleep 30 # ${home}`,
+        token: `!echo canary; sleep 900 & echo $! > ${pidFile}; i=0; while [ ! -e ${release} ] && [ $i -lt ${turns} ]; do sleep 0.1; i=$((i+1)); done; echo ended > ${ended}`,
       },
     });
     const cwd = tempDir();
     let dispatch: DispatchWithToken | undefined;
-    let elapsed = 0;
-    const left = inScratchTmp(() => {
-      const started = Date.now();
-      dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
-      elapsed = Date.now() - started;
+    let left: string[] = [];
+    const spawns = spawnsDuring(() => {
+      left = inScratchTmp(() => {
+        dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+      });
     });
-    expect(elapsed).toBeLessThan(15_000);
+    expect(spawns).toEqual([
+      { timeoutMs: 10_000, detached: true, exitedDueToTimeout: true, success: false },
+    ]);
+    // An answer of `canary` is a command that ended by itself: its timeout did not end it.
     expect(dispatch).toEqual({
       enabled: false,
       notice: null,
       error: `${file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
     });
-    expect(gone(Number(readFileSync(pidFile, "utf-8").trim()))).toBe(true);
+    expect(existsSync(ended)).toBe(false);
+    await gone(Number(readFileSync(pidFile, "utf-8").trim()));
     expect(left).toEqual([]);
-  }, 20_000);
+  });
 
   test("whose field a variable overrides, or whose section is off, is not run", () => {
     const home = tempDir();

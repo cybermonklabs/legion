@@ -293,7 +293,7 @@ call POST /api/v1/projects "{\"key\":\"ALFA\",\"name\":\"Alfa\",$assignee,$actor
 # Both projects' next issue is 1042, so one bare number names an issue of each and
 # number_project is what decides which of them the page meant. One statement moves both, as the
 # Go tests of the search bar do.
-psql "$database_url" -X -q -v ON_ERROR_STOP=1 \
+two_builds_psql -q -v ON_ERROR_STOP=1 \
   -c "update projects set next_number = 1042 where key in ('SRCH', 'ALFA')" >/dev/null ||
   fail "could not set both projects' next issue number"
 # The number is in each twin's title as well, so the keyword leg of both builds finds them: the

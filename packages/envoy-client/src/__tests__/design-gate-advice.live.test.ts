@@ -103,10 +103,10 @@ describe.skipIf(!dispatchStackEnabled)(
           actor: { kind: "session", id: SESSION },
         });
       }
-    }, 600_000);
+    });
     afterAll(async () => {
       await stack?.stop();
-    }, 60_000);
+    });
 
     test("a Verification document no gate records names no gate", async () => {
       const issue = await createIssue(PROJECT, "Approved verification");
@@ -117,7 +117,7 @@ describe.skipIf(!dispatchStackEnabled)(
 
       expect(printed).toEndWith(`${storedSentence(approved + 1, PERSON)} ${NEXT_STEP}`);
       expect(printed).not.toContain("design gate");
-    }, 120_000);
+    });
 
     test("a plan a plan review approved names no gate", async () => {
       const issue = await createIssue(PROJECT, "Approved plan");
@@ -136,7 +136,7 @@ describe.skipIf(!dispatchStackEnabled)(
         `${storedSentence(stored, SESSION)} ${planNextStep(issue.key, stored)}`
       );
       expect(printed).not.toContain("design gate");
-    }, 120_000);
+    });
 
     // Dispatch refuses a request for a person's approval on every plan (409
     // PLAN_APPROVED_BY_REVIEW), whoever approved it, and a person approves a plan from its
@@ -162,7 +162,7 @@ describe.skipIf(!dispatchStackEnabled)(
         `Approval: approved v${approved} by ${PERSON}, changed since (now v${stored}) - a plan review of this version records a new approval with dispatch plan-approve, content sha256:`
       );
       expect(line).toMatch(/, content sha256:[0-9a-f]{64}$/);
-    }, 120_000);
+    });
 
     test("a child issue's own document, which no gate records, names none", async () => {
       const parent = await createIssue(PROJECT, "Parent of the child");
@@ -177,7 +177,7 @@ describe.skipIf(!dispatchStackEnabled)(
 
       expect(printed).toEndWith(`${storedSentence(approved + 1, PERSON)} ${NEXT_STEP}`);
       expect(printed).not.toContain("design gate");
-    }, 120_000);
+    });
 
     test("a live issue's gate names that issue and its step", async () => {
       const issue = await createIssue(PROJECT, "Gated spec");
@@ -193,7 +193,7 @@ describe.skipIf(!dispatchStackEnabled)(
       expect(printed).toEndWith(
         `${storedSentence(approved + 1, PERSON)} ${gateClause([{ issue: issue.key, step: "spec" }])} ${NEXT_STEP}`
       );
-    }, 120_000);
+    });
 
     test("two live issues' gates name both, each with its step", async () => {
       const owner = await createIssue(FIRST_TREE, "The issue the document belongs to");
@@ -214,7 +214,7 @@ describe.skipIf(!dispatchStackEnabled)(
           { issue: other.key, step: "criteria" },
         ])} ${NEXT_STEP}`
       );
-    }, 120_000);
+    });
 
     test("a gate only a done issue records names none", async () => {
       const live = await createIssue(PROJECT, "The issue the document belongs to");
@@ -231,6 +231,6 @@ describe.skipIf(!dispatchStackEnabled)(
 
       expect(printed).toEndWith(`${storedSentence(approved + 1, PERSON)} ${NEXT_STEP}`);
       expect(printed).not.toContain("design gate");
-    }, 120_000);
+    });
   }
 );

@@ -17,13 +17,16 @@ import {
  * How often a session pings its NATS server, and how many pings may go unanswered. nats.js 2.29.3
  * sends one ping per tick and drops the connection on the tick that finds `maxPingOut` pings still
  * unanswered, so a path that freezes (packets stop, neither side closes) is left within
- * 3 x 10 s = 30 s and redialed at once. A redial that also hangs costs the dial timeout below and
- * the 2 s reconnect wait: 30 + 10 + 2 = 42 s, under a minute. nats.js's default 120 s interval
- * left a frozen path for up to 6 minutes. A session that presents its broker token redials on
- * `brokerRedialDelays` instead: at once where its connection lived a minute or more past its last
- * dial, as a connection that froze mostly has, and its next is then due within
- * `BROKER_REDIAL_FIRST_MS` of that one's start, which the 10 s hang has passed; a connection lost
- * sooner keeps its place in the backoff, so its redial can come up to 20 s on: 30 + 20 = 50 s.
+ * 3 x 10 s = 30 s and redialed at once. A redial that also hangs costs the dial timeout below, the
+ * 2 s reconnect wait and its 0.1 s jitter: 30 + 10 + 2 + 0.1 = 42.1 s, under a minute. nats.js's
+ * default 120 s interval left a frozen path for up to 6 minutes. A session that presents its
+ * broker token redials on `brokerRedialDelays` instead: at once where its connection lived a
+ * minute or more past its last dial, as a connection that froze mostly has, and its next is then
+ * due within `BROKER_REDIAL_FIRST_MS` of that one's start, which the 10 s hang has passed; a
+ * connection lost sooner keeps its place in the backoff, so its redial can come up to
+ * `BROKER_REDIAL_CAP_MS` after the path is left. Only the first recovery is priced by a row
+ * (`recoveryBoundMs`, `test/stall-scenario.ts`, which reads `reconnectTimeWait` and
+ * `reconnectJitter`): a broker session sets neither, and no stall row dials with a broker token.
  */
 export const NATS_PING_INTERVAL_MS = 10_000;
 export const NATS_MAX_PINGS_OUT = 2;
@@ -40,12 +43,19 @@ export const NATS_MAX_PINGS_OUT = 2;
  */
 export const NATS_DIAL_TIMEOUT_MS = 10_000;
 
+/** The most nats.js adds at random to the 2 s reconnect wait of a seed or no credential between
+ *  two dials (non-TLS servers): nats.js 2.29.3's own default, set here so the recovery a session
+ *  is held to is priced from this module's settings and a change of nats.js's defaults cannot
+ *  move it. */
+export const NATS_RECONNECT_JITTER_MS = 100;
+
 /** The `connect` options every session plugin dials NATS with: its credential (`natsAuthOptions`:
  * a seed's nkey user, the session's broker token, or none), reconnect attempts without limit, the
- * ping check above, and, for the broker token alone, never giving up over a refused credential. A
- * seed or no credential reconnects 2 s apart (`reconnectTimeWait`), and a server that refuses it
- * twice in a row still closes the connection for good, as below; a broker token presented to a
- * server that sends no nonce fails the CONNECT (`noAuthService`, `./nats-credential`).
+ * ping check and dial timeout above, and, for the broker token alone, never giving up over a
+ * refused credential. A seed or no credential reconnects 2 s apart (`reconnectTimeWait`) with the
+ * jitter above, and a server that refuses it twice in a row still closes the connection for good,
+ * as below; a broker token presented to a server that sends no nonce fails the CONNECT
+ * (`noAuthService`, `./nats-credential`).
  *
  * That last one matters on a hub whose connections an auth service admits
  * (packages/envoy/internal/cipher/natscallout): while that service is away, which a restart of the
@@ -58,10 +68,10 @@ export const NATS_DIAL_TIMEOUT_MS = 10_000;
  * service (R12, `__tests__/nats-connection-r12.test.ts`): no auth service decides those.
  *
  * A session that presents its broker token redials on `brokerRedialDelays`, a backoff, in place of
- * the 2 s (nats.js reads `reconnectTimeWait` only in its own default handler,
- * `options.js:95-105`, so a broker session sets none): every refused redial costs the auth service
- * a decision, and a hub that refuses every session at once would otherwise be asked again by each
- * of them every 2 s for as long as it refuses. */
+ * the 2 s and its jitter (nats.js reads `reconnectTimeWait` and `reconnectJitter` only in its own
+ * default handler, `options.js:95-105`, so a broker session sets neither): every refused redial
+ * costs the auth service a decision, and a hub that refuses every session at once would otherwise
+ * be asked again by each of them every 2 s for as long as it refuses. */
 export function natsConnectionOptions(input: {
   readonly servers: readonly string[];
   readonly name: string;
@@ -81,7 +91,7 @@ export function natsConnectionOptions(input: {
           ignoreAuthErrorAbort: true,
           reconnectDelayHandler: brokerRedialDelays(input.credential.broker),
         }
-      : { reconnectTimeWait: 2_000 }),
+      : { reconnectTimeWait: 2_000, reconnectJitter: NATS_RECONNECT_JITTER_MS }),
   };
 }
 
@@ -334,6 +344,30 @@ export function natsDialBudget(leftMs: number, afterDialMs: number, plan: NatsDi
   return Math.max(0, Math.min(plan.budgetMs, leftMs - afterDialMs));
 }
 
+/**
+ * The clock a dial reads and times itself on: `now` its monotonic reading in milliseconds, `sleep`
+ * the wait before a redial, and `arm` a dial's bound, which runs `expire` once `ms` have passed
+ * unless the disarm it returns runs first. Every session plugin's dial runs on the process's own
+ * (`performance.now`, `node:timers/promises`' `setTimeout` and `setTimeout`); a test hands
+ * `connectNats` one it drives, which holds each wait and bound until the test ends it, so the test
+ * reads the delays and bounds the dial chose, and their order, and no clock.
+ */
+export interface NatsDialClock {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  arm(ms: number, expire: () => void): () => void;
+}
+
+/** The process's own clock, the one every dial of a session plugin runs on. */
+const PROCESS_CLOCK: NatsDialClock = {
+  now: () => performance.now(),
+  sleep: (ms) => delay(ms),
+  arm: (ms, expire) => {
+    const timer = setTimeout(expire, ms);
+    return () => clearTimeout(timer);
+  },
+};
+
 /** What `connectNats` reads of its caller, and what it tells it. */
 export interface NatsDialHooks {
   /** The bound of the first dial, below `NATS_DIAL_TIMEOUT_MS` when the caller has less time. */
@@ -343,6 +377,10 @@ export interface NatsDialHooks {
   readonly stopped?: () => boolean;
   /** A dial failed and another starts `delayMs` from now; `attempt` counts from 1. */
   readonly onRetry?: (error: unknown, delayMs: number, attempt: number) => void;
+  /** The clock the dial reads and times itself on, the process's own unless a test hands it one
+   *  (`NatsDialClock`). Its `sleep` waits every wait between two dials, the broker-token
+   *  backoff's included, unless `delay` stands in for it. */
+  readonly clock?: NatsDialClock;
   /** The hub refused the session's broker token twice, and the dial `attempt` dropped it and
    *  started another trade (`BrokerNatsCredential.refused`). Called at the drop, before the dial's
    *  budget is read, so a drop at the last dial a call can afford is told too. */
@@ -353,7 +391,8 @@ export interface NatsDialHooks {
   readonly credential?: NatsCredential;
   /** The draw of a refused broker token's wait, uniform in [0, 1): `Math.random`, or a test's. */
   readonly random?: () => number;
-  /** How a wait between two dials is waited: `node:timers/promises`' `setTimeout`, or a test's. */
+  /** How a wait between two dials is waited in place of `clock.sleep`: a test's, which waits for
+   *  a fact of its own (a live token) rather than the wait's length. Unset, the clock waits it. */
   readonly delay?: (ms: number) => Promise<unknown>;
 }
 
@@ -485,7 +524,10 @@ function brokerDialRefusals(
  * still opens closes within its server's share. The connection that opens
  * gets back the whole timeout of `options` for its reconnects (`keepWholeTimeout`). nats.js itself
  * gives up on a first dial that fails (it drops the server unless `waitOnFirstConnect` is set, and
- * with that set it would dial forever, past any deadline of its caller's).
+ * with that set it would dial forever, past any deadline of its caller's). The waits, the
+ * broker-token backoff's included, the bounds and the budget's reading are `hooks.clock`'s, the
+ * process's own unless a test hands it one (a test's `hooks.delay` may wait the waits instead);
+ * nats.js's own timers stay the process's.
  */
 export async function connectNats(
   connect: (options: ConnectionOptions) => Promise<NatsConnection>,
@@ -493,12 +535,13 @@ export async function connectNats(
   plan: NatsDialPlan,
   hooks: NatsDialHooks = {}
 ): Promise<NatsConnection> {
-  const started = performance.now();
-  const elapsed = () => performance.now() - started;
+  const clock = hooks.clock ?? PROCESS_CLOCK;
+  const started = clock.now();
+  const elapsed = () => clock.now() - started;
   const timeout = options.timeout ?? NATS_DIAL_TIMEOUT_MS;
   const servers = Array.isArray(options.servers) ? Math.max(1, options.servers.length) : 1;
   const brokerRefusals = brokerDialRefusals(hooks.credential, hooks.random ?? Math.random);
-  const wait = hooks.delay ?? delay;
+  const wait = hooks.delay ?? ((ms: number) => clock.sleep(ms));
   let delayMs = plan.firstDelayMs;
   let failed: unknown;
   for (let attempt = 1; ; attempt += 1) {
@@ -522,7 +565,8 @@ export async function connectNats(
           ...options,
           timeout: Math.min(bound, Math.max(NATS_MIN_REDIAL_BOUND_MS, Math.floor(bound / servers))),
         },
-        bound
+        bound,
+        clock
       );
       keepWholeTimeout(nc, timeout);
       brokerRefusals?.admitted(dialedAt);
@@ -573,7 +617,8 @@ interface AbandonOption {
 async function boundedDial(
   connect: (options: ConnectionOptions) => Promise<NatsConnection>,
   options: ConnectionOptions,
-  boundMs: number
+  boundMs: number,
+  clock: NatsDialClock
 ): Promise<NatsConnection> {
   const abandon = new AbortController();
   const withAbandon: ConnectionOptions & AbandonOption = {
@@ -582,16 +627,16 @@ async function boundedDial(
   };
   const dialing = connect(withAbandon);
   const expired = Promise.withResolvers<never>();
-  const timer = setTimeout(() => {
+  const disarm = clock.arm(boundMs, () => {
     abandon.abort();
     expired.reject(new NatsDialBoundError(`the NATS dial did not complete within ${boundMs} ms`));
-  }, boundMs);
+  });
   try {
     return await Promise.race([dialing, expired.promise]);
   } catch (error) {
     dialing.then((late) => late.close()).catch(() => undefined);
     throw error;
   } finally {
-    clearTimeout(timer);
+    disarm();
   }
 }

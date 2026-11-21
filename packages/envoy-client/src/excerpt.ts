@@ -6,7 +6,7 @@
 // Envoy transport (`transport.ts`) a body that is not the listener's error JSON, and the operator's
 // live-events probe (`scripts/e2e/lib/dispatch-live-events.ts`) a whoami answer with no event_head.
 
-import { textHead } from "./ask-answer";
+import { textHead, WHITESPACE_RUN } from "./ask-answer";
 
 const REDACTED = "[redacted]";
 
@@ -28,6 +28,27 @@ const BEARER_PIECE = 8;
 /** A token, or the tokens, an excerpt redacts: a client's credential's secret, and each token it
  *  presented lately (`SentTokens`). */
 export type Tokens = string | readonly string[];
+
+/**
+ * The work excerpts have done in this process, counted where it is spent, so a test holds it to
+ * the size of what an excerpt reads rather than to the time it took: each match the token
+ * redaction's scans visit (`redactTokens`), and each character a pattern pass of `excerpt` is
+ * handed. A step a regular expression takes inside one pass is not counted, because
+ * JavaScriptCore counts none: recheck's reading of each pattern (`EXCERPT_PATTERNS`) is what holds
+ * a pass linear.
+ */
+let bearerMatchesVisited = 0;
+let patternCharactersHanded = 0;
+
+/** How many matches the token redaction's scans have visited in this process. */
+export function bearerRedactionMatches(): number {
+  return bearerMatchesVisited;
+}
+
+/** How many characters the pattern passes of excerpts have been handed in this process. */
+export function excerptPatternCharacters(): number {
+  return patternCharactersHanded;
+}
 
 /**
  * The first `EXCERPT_SCAN_LIMIT` characters of `text`, each run of any of `tokens`' characters at
@@ -55,6 +76,7 @@ function redactTokens(text: string, tokens: readonly string[]): string {
     for (const piece of pieces) {
       let found = scanned.indexOf(piece);
       while (found !== -1 && found < EXCERPT_SCAN_LIMIT) {
+        bearerMatchesVisited++;
         covered.fill(1, found, found + length);
         found = scanned.indexOf(piece, found + 1);
       }
@@ -71,6 +93,35 @@ function redactTokens(text: string, tokens: readonly string[]): string {
 }
 
 /**
+ * The patterns of `excerpt`'s passes, in the order it runs them: scripts and styles, tags, the
+ * value of an `Authorization` or a `DPoP` header or member, the value after `Bearer` or `DPoP`, a
+ * JWS, and the whitespace runs `textHead` folds to one space (`WHITESPACE_RUN`). A tag holds no
+ * `<`, and a script or style block left open runs to the end. The block pattern spells its two
+ * names out, where a back-reference to one name would close a block with the name that opened it
+ * the same way, and the JWS pattern starts a match only at the start of a run of base64url
+ * characters by taking the character before it (or the text's start) into its first group, where
+ * a look-behind would do the same: recheck's automaton checker reads neither a back-reference nor
+ * a look-behind, and reads each of these linear (`excerpt-patterns.test.ts`).
+ */
+const SCRIPT_OR_STYLE_BLOCK =
+  /<script\b[^<>]*>(?:[\s\S]*?<\/script\s*>|[\s\S]*)|<style\b[^<>]*>(?:[\s\S]*?<\/style\s*>|[\s\S]*)/gi;
+const TAG = /<[^<>]*>/g;
+const AUTHORIZATION_VALUE =
+  /(\b(?:authorization|dpop)["']?\s*[:=]\s*(?:\[\s*)?["']?(?:(?:bearer|basic|digest|token|dpop)\s+)?)[^\s"'<>,;\]]+/gi;
+const BEARER_VALUE = /(\b(?:bearer|dpop)\s+)[^\s"'<>,;]+/gi;
+const JWS_VALUE = /(^|[^A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g;
+
+/** `excerpt`'s patterns by name, for the analyzer rows of `excerpt-patterns.test.ts`. */
+export const EXCERPT_PATTERNS: Readonly<Record<string, RegExp>> = {
+  "script-or-style-block": SCRIPT_OR_STYLE_BLOCK,
+  tag: TAG,
+  "authorization-value": AUTHORIZATION_VALUE,
+  "bearer-value": BEARER_VALUE,
+  "jws-value": JWS_VALUE,
+  "whitespace-run": WHITESPACE_RUN,
+};
+
+/**
  * Text a gateway chose (a body, or the reason phrase) as one line of plain text safe to quote. A
  * misconfigured gateway echoes the request back, so two kinds of credential are redacted: first
  * every piece of each of the client's own `tokens`, trimmed as fetch sends them (`redactTokens`);
@@ -83,24 +134,28 @@ function redactTokens(text: string, tokens: readonly string[]): string {
  * (`&quot;`) or as the second value of a list is redacted too. All of it runs before the cut to
  * one line, so a cut never leaves a credential's first characters behind. The text is the
  * answerer's, and the excerpt is built on the host's event loop, so only the first
- * `EXCERPT_SCAN_LIMIT` characters are read and every pattern runs in linear time: a tag holds no
- * `<`, a script or style block left open runs to the end, and a JWS is matched only from the start
- * of a run of base64url characters.
+ * `EXCERPT_SCAN_LIMIT` characters are read and every pattern runs in linear time
+ * (`EXCERPT_PATTERNS`).
  */
 export function excerpt(text: string, tokens: Tokens): string {
   const trimmed = (typeof tokens === "string" ? [tokens] : tokens).map((token) => token.trim());
-  const plain = redactTokens(text, trimmed)
-    .replace(/<(script|style)\b[^<>]*>(?:[\s\S]*?<\/\1\s*>|[\s\S]*$)/gi, " ")
-    .replace(/<[^<>]*>/g, " ");
-  return textHead(
-    plain
-      .replace(
-        /(\b(?:authorization|dpop)["']?\s*[:=]\s*(?:\[\s*)?["']?(?:(?:bearer|basic|digest|token|dpop)\s+)?)[^\s"'<>,;\]]+/gi,
-        `$1${REDACTED}`
-      )
-      .replace(/(\b(?:bearer|dpop)\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)
-      .replace(/(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g, REDACTED)
-  );
+  const withoutBlocks = patternPass(redactTokens(text, trimmed), SCRIPT_OR_STYLE_BLOCK, " ");
+  const withoutTags = patternPass(withoutBlocks, TAG, " ");
+  const withoutAuthorization = patternPass(withoutTags, AUTHORIZATION_VALUE, `$1${REDACTED}`);
+  const withoutBearer = patternPass(withoutAuthorization, BEARER_VALUE, `$1${REDACTED}`);
+  return headPass(patternPass(withoutBearer, JWS_VALUE, `$1${REDACTED}`));
+}
+
+/** `text` with `pattern` replaced, counting the characters the pass is handed. */
+function patternPass(text: string, pattern: RegExp, replacement: string): string {
+  patternCharactersHanded += text.length;
+  return text.replace(pattern, replacement);
+}
+
+/** `textHead` of `text`, counting the characters its pass (`WHITESPACE_RUN`) is handed. */
+function headPass(text: string): string {
+  patternCharactersHanded += text.length;
+  return textHead(text);
 }
 
 /**

@@ -113,11 +113,26 @@ export type AgentStreamSettingsState =
   | Omit<AgentStreamSettingsUnreported, "v" | "kind" | "seq">;
 
 /** What a `context` frame says without its envelope: the two figures the host's own
- *  `getContextUsage()` answered with, once `setContext`'s rule has let them through. */
+ *  `getContextUsage()` answered with, once `setContext`'s rule has let them through, and the
+ *  caller's record of when they were read and went out (`AgentStreamContextTiming`). */
 export type AgentStreamContextState = Omit<
   Extract<AgentStreamFrame, { kind: "context" }>,
   "v" | "kind" | "seq"
 >;
+
+/** The caller's record of one reading: the number of its interval it goes out in, when it goes
+ *  out under that number, and when it was read, each as the `context` frame carries it, and as the
+ *  `context-cleared` frame carries it for an answer of no window. */
+export type AgentStreamContextTiming = Required<
+  Pick<AgentStreamContextState, "interval" | "at" | "readAt">
+>;
+
+/** What the context slot holds without its envelope: a `context` frame's reading, or the
+ *  `context-cleared` frame an answer of no window puts in its place, each with the caller's record
+ *  of it. */
+type AgentStreamContextSlot =
+  | Omit<Extract<AgentStreamFrame, { kind: "context" }>, "v" | "seq">
+  | Omit<Extract<AgentStreamFrame, { kind: "context-cleared" }>, "v" | "seq">;
 
 const encoder = new TextEncoder();
 
@@ -325,12 +340,13 @@ export class AgentStreamPublisher {
   /** `#settings` as JSON, which a new state is compared against. */
   #settingsJson: string | undefined;
   /** How much of its context window the session fills, as last kept: the reading `setContext`
-   *  last let through, `"cleared"` once the host has answered no window, and undefined until the
-   *  host first answers either (and again after `reset`). */
-  #context: AgentStreamContextState | "cleared" | undefined;
+   *  last let through, the clearing frame once the host has answered no window, and undefined
+   *  until the host first answers either (and again after `reset`). */
+  #context: AgentStreamContextSlot | undefined;
   #contextSeq = 0;
-  /** The reading `#context` holds as JSON, which a new reading is compared against; undefined
-   *  while it holds none. */
+  /** The two figures of the reading `#context` holds as JSON, which a new reading is compared
+   *  against; undefined while it holds none. Its interval number is when it went out, not what it
+   *  says. */
   #contextJson: string | undefined;
 
   constructor(deps: AgentStreamPublisherDeps) {
@@ -455,6 +471,10 @@ export class AgentStreamPublisher {
    * How much of its context window the session fills now, as the host's own `getContextUsage()`
    * answered: kept for every replay, whose frame between the settings and the commands it is, and
    * published at once when it differs from what was last kept while a viewer is attached.
+   * `timing` is the caller's record of the reading, which the frame carries: the number of the
+   * caller's interval it goes out in, when, and when it was read. The caller's throttle numbers
+   * the intervals, an answer of no window among them, and a reading or a clear kept unchanged
+   * keeps the record it went out with.
    *
    * A reading is kept and published only when the host answers a window above zero and a usable
    * figure: either a `percent` the host computed or tokens of its own. An answer of no usage, or
@@ -472,21 +492,22 @@ export class AgentStreamPublisher {
    * 18.16.0-sami.20261105-032528, whose status line's startup wiring answered that shape: sent,
    * it would draw a ring at nought per cent over a conversation well underway.
    */
-  setContext(subject: string, usage: ContextUsage | undefined): void {
+  setContext(
+    subject: string,
+    usage: ContextUsage | undefined,
+    timing: AgentStreamContextTiming
+  ): void {
     if (usage === undefined || !(usage.contextWindow > 0)) {
-      if (this.#context === "cleared") return;
-      this.#context = "cleared";
+      if (this.#context?.kind === "context-cleared") return;
+      this.#context = { kind: "context-cleared", ...timing };
       // Forgotten, so a reading equal to the one before the clear is news again.
       this.#contextJson = undefined;
     } else {
       if (typeof usage.percent !== "number" && !(usage.tokens > 0)) return;
-      const kept: AgentStreamContextState = {
-        contextWindow: usage.contextWindow,
-        tokens: usage.tokens,
-      };
-      const json = JSON.stringify(kept);
+      const figures = { contextWindow: usage.contextWindow, tokens: usage.tokens };
+      const json = JSON.stringify(figures);
       if (json === this.#contextJson) return;
-      this.#context = kept;
+      this.#context = { kind: "context", ...figures, ...timing };
       this.#contextJson = json;
     }
     this.#seq += 1;
@@ -548,11 +569,8 @@ export class AgentStreamPublisher {
 
   /** The frame the context slot rides in: the reading it keeps, or the clearing frame in its
    *  place. */
-  #contextFrame(context: AgentStreamContextState | "cleared"): AgentStreamFrame {
-    if (context === "cleared") {
-      return { kind: "context-cleared", seq: this.#contextSeq, v: AGENT_STREAM_PROTOCOL };
-    }
-    return { ...context, kind: "context", seq: this.#contextSeq, v: AGENT_STREAM_PROTOCOL };
+  #contextFrame(context: AgentStreamContextSlot): AgentStreamFrame {
+    return { ...context, seq: this.#contextSeq, v: AGENT_STREAM_PROTOCOL };
   }
 
   /**

@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # Tests for `ci-tools-proof.sh ladder-report`: the refusal that reads how many records of the
 # stand-in curl's log carried CI_TOOLS_PROOF_FULL_LADDER, and holds that count to LADDER_RECORDS
-# at the top of that script.
+# at the top of that script. And, at the end of this file, for `report`'s reading of the end
+# record a case's install writes (CI_TOOLS_PROOF_ENDED): an install that refused is read as
+# having ended on its own, and one killed or signalled before its trap could write is read as
+# one the runner ended.
 #
-# No case reaches the network. Each case writes a curl.log of its own and runs the verb over it,
-# so no case starts a server and none reads a database. Every line of such a log is the
-# five-field line the stand-in curl of the shorten-ladder step writes, one line for each fetch
-# it was handed.
+# No case reaches the network. Each ladder-report case writes a curl.log of its own and runs the
+# verb over it, so no case starts a server and none reads a database. Every line of such a log
+# is the five-field line the stand-in curl of the shorten-ladder step writes, one line for each
+# fetch it was handed.
 #
-# What this file covers is that one refusal, read in each case below: a legitimate log passes;
+# What the ladder-report cases cover is that one refusal, read in each case below: a legitimate log passes;
 # a log with one record more than the bound is refused; a log whose every record carries the
 # name is refused; a log whose kept measurement is under the floor is refused for its records
 # as well as for that measurement; and a log with no such record still refuses for the reason
@@ -160,4 +163,61 @@ check "the unrecognised-refusal reading says what it read" \
   "$(contains "$out" "so this job arranged a refusal whose shape the stand-in curl does not recognise")"
 check "no refusal speaks beside those two" "$(is "$(error_count "$out")" 2)"
 
-summary "ci-tools-proof.sh ladder-report"
+# ---------------------------------------------------------------- report's end record
+# `report` decides whether a case's install ended on its own from the record the install wrote
+# (.github/scripts/ci-tools.sh, CI_TOOLS_PROOF_ENDED), and reads no clock. Each case below runs
+# an install as a step runs one, a `bash -euo pipefail` shell that sources the fetch helper
+# with CI_TOOLS_PROOF_ENDED naming the case's record, ends it the way the case names, and runs
+# the verb over it with nothing else of the job: no origin and no fault, so the verb reads no
+# line of either, and the record and the outcome are what decide. A record an earlier install
+# left, 7, is written first: the helper removes it before the install runs, so a case that
+# reads 7 reads a stale record.
+helper="$script_dir/ci-tools.sh"
+
+# install_then_report <case> <the command that ends the install>: sets `ended` to the case's
+# record, `out` to the verb's combined output and `status` to its exit.
+install_then_report() {
+  local name=$1 ending=$2 case_dir
+  case_dir=$(mktemp -d "$work/case.XXXXXX")
+  mkdir -p "$case_dir/ci-tools-proof"
+  ended="$case_dir/ci-tools-proof/$name.ended"
+  printf '7\n' > "$ended"
+  RUNNER_TEMP="$case_dir" "$rig" corrupt > /dev/null
+  set +e
+  # The install runs in a subshell whose stderr goes nowhere, so the notice bash prints for a
+  # child a signal ended is not in this harness's output.
+  # shellcheck disable=SC2016 # $1 is the inner shell's, the helper's path
+  (CI_TOOLS_PROOF_ENDED="$ended" bash -euo pipefail -c '. "$1"; '"$ending" install "$helper") > /dev/null 2>&1
+  out=$(RUNNER_TEMP="$case_dir" "$rig" report "$name" --outcome failure --row crane 2>&1)
+  status=$?
+  set -e
+}
+
+echo "case: an install that refused ended on its own, and its status is the record"
+install_then_report refused 'exit 1'
+check "exits 0" "$(is "$status" 0)"
+check "the record holds the status the install exited with" "$(is "$(cat "$ended")" 1)"
+check "reads that the install ended on its own" \
+  "$(contains "$out" "the install of this case ended on its own, with status 1")"
+check "no refusal speaks" "$(is "$(error_count "$out")" 0)"
+
+echo "case: an install killed before its trap could run is one the runner ended, not a refusal"
+# shellcheck disable=SC2016 # $$ is the install shell's own pid, expanded there
+install_then_report killed 'kill -KILL "$$"'
+check "exits 1" "$(is "$status" 1)"
+check "the install left no record, and the stale one is gone" "$([ ! -e "$ended" ] && echo true || echo false)"
+check "says the runner ended the step rather than the step refusing" \
+  "$(contains "$out" "the install left no end record at $ended, so the runner ended that step at its own timeout-minutes")"
+check "that is the one refusal" "$(is "$(error_count "$out")" 1)"
+
+echo "case: an install the runner signals at its bound is one the runner ended too"
+# The runner signals a step it ends before it kills it; the helper's trap of that signal clears
+# the EXIT trap, so the shell exits with no record. TERM is the signal driven here: a shell this
+# harness starts may have been started with SIGINT ignored, which no trap of the shell can take.
+# shellcheck disable=SC2016 # $$ is the install shell's own pid, expanded there
+install_then_report terminated 'kill -TERM "$$"; exit 1'
+check "exits 1" "$(is "$status" 1)"
+check "the install left no record" "$([ ! -e "$ended" ] && echo true || echo false)"
+check "says the runner ended the step" "$(contains "$out" "the install left no end record at $ended")"
+
+summary "ci-tools-proof.sh ladder-report and report's end record"

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { until } from "@legion/test-fixtures/wait";
 import { connect, Events, StringCodec } from "nats";
 import {
   type EnvoyStack,
@@ -7,10 +8,34 @@ import {
   useEnvoyStackDirectory,
 } from "../../test/envoy-stack";
 import { startStallProxy } from "../../test/stall-proxy";
-import { RECOVERY_BOUND_MS } from "../../test/stall-scenario";
+import {
+  expectRecoveredByPingOut,
+  type NatsStatusEvent,
+  RECOVERY_BOUND_MS,
+  recoveryBoundMs,
+} from "../../test/stall-scenario";
 import { natsConnectionOptions } from "../nats-connection";
 
 const codec = StringCodec();
+
+// The minute the spec allows is the sum of the timers that pace a recovery, so it is held on
+// those settings rather than read off a clock (R4): nats.js drops a frozen path on the ping tick
+// that finds `maxPingOut` pings unanswered, and a redial that hangs too costs its dial timeout
+// and the reconnect wait before the next. The rows below show, from the connection's own status
+// events, that a recovery takes exactly the steps this sum prices.
+test("natsConnectionOptions leaves a frozen path and dials past a hung redial within the spec's minute, by its settings", () => {
+  const options = natsConnectionOptions({
+    servers: ["nats://127.0.0.1:4222"],
+    name: "nats-stall-settings",
+    credential: { kind: "none" },
+  });
+  const left = recoveryBoundMs(options, 0);
+  const redialed = recoveryBoundMs(options, 1);
+  expect(
+    redialed,
+    `a frozen path is left after ${left} ms and a hung redial passed after ${redialed} ms`
+  ).toBeLessThan(RECOVERY_BOUND_MS);
+});
 
 // Reserved here, at the file's module scope: the file's own `afterAll` removes it once the
 // `describe` below has stopped the stack writing into it.
@@ -21,10 +46,10 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
 
   beforeAll(async () => {
     stack = await startEnvoyStack({ work: stackDirectory });
-  }, 120_000);
+  });
   afterAll(async () => {
     await stack?.stop();
-  }, 60_000);
+  });
 
   for (const { row, slug, stalledRedials, unackedBytes } of [
     {
@@ -53,13 +78,12 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
       if (stack === undefined) throw new Error("the Envoy stack did not start");
       const proxy = await startStallProxy(stack.natsHostPort);
       const publisher = await connect({ servers: [stack.natsUrl], name: `nats-stall-pub-${slug}` });
-      const client = await connect(
-        natsConnectionOptions({
-          servers: [proxy.url],
-          name: `nats-stall-${slug}`,
-          credential: { kind: "none" },
-        })
-      );
+      const options = natsConnectionOptions({
+        servers: [proxy.url],
+        name: `nats-stall-${slug}`,
+        credential: { kind: "none" },
+      });
+      const client = await connect(options);
       try {
         const subject = `nats-stall.${slug}.${crypto.randomUUID()}`;
         const before = Promise.withResolvers<void>();
@@ -77,9 +101,13 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
         await publisher.flush();
         await before.promise;
 
+        // Every status event nats.js reports from here on, in order, and when the reconnect came,
+        // for the log line only.
+        const statuses: NatsStatusEvent[] = [];
         let reconnectedAt: number | undefined;
         void (async () => {
           for await (const status of client.status()) {
+            statuses.push({ type: status.type, data: status.data });
             if (status.type === Events.Reconnect) reconnectedAt ??= Date.now();
           }
         })();
@@ -96,29 +124,30 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
         for (let sent = 0; sent < unackedBytes; sent += chunk.length) {
           client.publish(`${subject}.unacked`, chunk);
         }
-        // What is measured is nats.js's own wall-clock ping and dial timers, so the wait is real
-        // time. A publish reaches the client only once it has subscribed again on a path that
-        // answers, and each one before that goes to the frozen connection and is lost, so one
-        // goes out every quarter second until one arrives or the bound passes.
-        for (
-          let attempt = 0;
-          arrivedAt === undefined && Date.now() - frozenAt < RECOVERY_BOUND_MS;
-          attempt += 1
-        ) {
+        // nats.js's own ping and dial timers pace the recovery, so the wait is real time. A publish
+        // reaches the client only once it has subscribed again on a path that answers, and each one
+        // before that goes to the frozen connection and is lost, so each read of the wait sends one
+        // more until one arrives.
+        let attempt = 0;
+        await until("a publish sent after the freeze to reach the client", async () => {
+          if (arrivedAt !== undefined) return true;
           publisher.publish(subject, codec.encode(`after-${attempt}`));
+          attempt += 1;
           await publisher.flush();
-          await Bun.sleep(250);
-        }
+          return false;
+        });
 
         const reconnectMs = reconnectedAt === undefined ? undefined : reconnectedAt - frozenAt;
         const receiveMs = arrivedAt === undefined ? undefined : arrivedAt - frozenAt;
         console.log(
           `nats-stall row ${slug.toUpperCase()}: reconnect ${reconnectMs === undefined ? "none" : `${(reconnectMs / 1000).toFixed(1)} s`}, first publish received ${receiveMs === undefined ? "never" : `${(receiveMs / 1000).toFixed(1)} s`} after the freeze`
         );
-        expect(reconnectMs).toBeDefined();
-        expect(reconnectMs ?? Number.POSITIVE_INFINITY).toBeLessThan(RECOVERY_BOUND_MS);
-        expect(receiveMs).toBeDefined();
-        expect(receiveMs ?? Number.POSITIVE_INFINITY).toBeLessThan(RECOVERY_BOUND_MS);
+        // The reconnect's status event can follow the first publish that arrived on its path.
+        await until("the client to report its reconnect", () => reconnectedAt !== undefined);
+        // Within the minute, by the steps it took: the settings row prices a recovery of these
+        // steps under it, and the connection's own events show it took them and no others.
+        expect(recoveryBoundMs(options, stalledRedials)).toBeLessThan(RECOVERY_BOUND_MS);
+        expectRecoveredByPingOut({ options, statuses }, stalledRedials);
         const redials = proxy.connections.slice(beforeFreeze);
         // The stalled redials never subscribed; the one after them did.
         expect(redials.length).toBeGreaterThan(stalledRedials);
@@ -128,22 +157,24 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
         expect(redials[stalledRedials]?.subscribedAt).toBeDefined();
         // nats.js abandons a dial after its dial timeout; the socket it opened must go with it, so
         // the client holds no socket to a redial it gave up on. The proxy never closes a stalled
-        // connection, so its close is the client's. Real nats.js dial timers: the wait polls the
-        // real clock.
-        for (const hung of redials.slice(0, stalledRedials)) {
-          while (hung.closedAt === undefined && Date.now() - hung.acceptedAt < 30_000) {
-            await Bun.sleep(250);
-          }
+        // connection, so its close is the client's. It comes at the give-up, which is before the
+        // redial after it: nats.js closes the transport of the dial it gave up on before its dial
+        // loop dials again (`protocol.js`, `dial`'s catch, then `dodialLoop`), so a socket closed
+        // at any later moment is closed after the proxy accepted that next redial.
+        for (const [index, hung] of redials.slice(0, stalledRedials).entries()) {
+          await until("the client to close the socket of the redial it gave up on", () => {
+            return hung.closedAt !== undefined;
+          });
           console.log(
-            `nats-stall row ${slug.toUpperCase()} hung redial: accepted ${((hung.acceptedAt - frozenAt) / 1000).toFixed(1)} s after the freeze, ${hung.closedAt === undefined ? "still open" : `closed ${((hung.closedAt - hung.acceptedAt) / 1000).toFixed(1)} s after it was accepted`}`
+            `nats-stall row ${slug.toUpperCase()} hung redial: accepted ${((hung.acceptedAt - frozenAt) / 1000).toFixed(1)} s after the freeze, closed ${(((hung.closedAt ?? Number.NaN) - hung.acceptedAt) / 1000).toFixed(1)} s after it was accepted`
           );
-          expect(hung.closedAt).toBeDefined();
+          expect(hung.closedAt).toBeLessThanOrEqual(redials[index + 1]?.acceptedAt ?? Number.NaN);
         }
       } finally {
         await client.close();
         await publisher.close();
         await proxy.close();
       }
-    }, 120_000);
+    });
   }
 });

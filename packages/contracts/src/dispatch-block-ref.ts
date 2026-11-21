@@ -69,6 +69,13 @@ export function decodeBlockId(encoded: string): string | undefined {
  */
 const MAX_BLOCK_PIN = 9223372036854775807n;
 
+/** A block reference's pin after its `@`: `v` and N, a positive integer with no leading zero. */
+const blockPin = /^v([1-9][0-9]*)$/;
+
+/** The patterns of this module, by name, for a test that reads each the way a backtracking engine
+ *  runs it: every reader of a Dispatch reference in text runs them on what an author wrote. */
+export const DISPATCH_BLOCK_REF_PATTERNS: Readonly<Record<string, RegExp>> = { blockPin };
+
 /**
  * The block a `#b-` fragment (`encoded`, after the `b-`) names, and the version `pin` it pins when
  * it ends in `@v<N>` (a version of a document, or a revision of a comment; whether the block's
@@ -80,7 +87,7 @@ const MAX_BLOCK_PIN = 9223372036854775807n;
  */
 export function parseBlockFragment(encoded: string): { block: string; pin?: string } | undefined {
   const at = encoded.indexOf("@");
-  const pin = at === -1 ? undefined : encoded.slice(at + 1).match(/^v([1-9][0-9]*)$/)?.[1];
+  const pin = at === -1 ? undefined : encoded.slice(at + 1).match(blockPin)?.[1];
   if (at !== -1 && (pin === undefined || BigInt(pin) > MAX_BLOCK_PIN)) {
     return undefined;
   }

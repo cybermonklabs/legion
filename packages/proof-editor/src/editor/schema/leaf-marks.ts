@@ -26,10 +26,25 @@
 import { Fragment, type Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 
 /**
+ * The steps `withoutLeafMarks` has taken in this process: one for each node it visits and one for
+ * each earlier child it copies into a node's new children, so a test holds the walk every headless
+ * parse ends with to the size of the document rather than to the time it took
+ * (tests/parse-work.ts). ProseMirror compares node types by identity, so no counting Proxy can
+ * stand in for the document, and the walk counts itself.
+ */
+let leafMarkSteps = 0;
+
+/** How many steps `withoutLeafMarks` has taken in this process so far. */
+export function leafMarkWalkSteps(): number {
+  return leafMarkSteps;
+}
+
+/**
  * `doc` with every inline leaf's marks removed; the input is returned unchanged - the same node,
  * allocating nothing - when it carries none, which is almost every document.
  */
 export function withoutLeafMarks(doc: ProseMirrorNode): ProseMirrorNode {
+  leafMarkSteps++;
   // A node that may hold no mark: inline, with no content of its own, and not text.
   if (doc.isLeaf) {
     return doc.isInline && !doc.isText && doc.marks.length > 0 ? doc.mark([]) : doc;
@@ -46,7 +61,10 @@ export function withoutLeafMarks(doc: ProseMirrorNode): ProseMirrorNode {
     }
     if (children === null) {
       children = [];
-      for (let earlier = 0; earlier < index; earlier += 1) children.push(doc.child(earlier));
+      for (let earlier = 0; earlier < index; earlier += 1) {
+        leafMarkSteps++;
+        children.push(doc.child(earlier));
+      }
     }
     children.push(next);
   }

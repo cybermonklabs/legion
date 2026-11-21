@@ -1,4 +1,4 @@
-import { describe, expect, jest, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   IDEMPOTENCY_KEY_COMMITTED,
@@ -169,6 +169,12 @@ const appendKey = (id: string) =>
   `askgate-rec.${createHash("sha256").update(`${SESSION}\n${id}`).digest("hex")}`;
 
 describe("the AskGate decision record", () => {
+  // A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+  // `finally`, so the real clock comes back here too, before the next row.
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   test("the session's first decision creates its document and appends its record, and the second appends to that document", async () => {
     const dispatch = fakeRecord({}, "doc-7");
     const g = harness({ client: dispatch.client });

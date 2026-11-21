@@ -23,7 +23,15 @@ on:
 jobs:
   dispatch-ui:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 15
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-18T10:22Z
+    # (runs 44087306143 to 44278917020): its other steps at their longest, 125 s, 6 s of its clock
+    # over them, and its two test steps' longest plus their package scripts' guards, the proof
+    # editor's 32 s + 47 s and the dashboard's 166 s (run 44228248957) + 1,090 s (its three bun
+    # test commands' guards, which packages/dispatch/package.json's `//` note gives: test:web's
+    # 30 s, raised from 15 s by its reading in builds Job g4c-dash-web; test:web:drafts' 1,000 s,
+    # useIssueDrafts.exploration.test.ts alone, read in builds Job g4b-dash-web; and test:harness's 60 s):
+    # 1,466 s, or 25 minutes.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

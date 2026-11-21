@@ -4,6 +4,7 @@ import { release } from "node:os";
 import { join } from "node:path";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import { ownGroup, untilRunning } from "./own-group";
 import { scriptFunctions } from "./script-functions";
 
@@ -363,7 +364,8 @@ unspawn() { echo "kill $1" >&"\${SPAWNER[1]}"; read -r _ <&"\${SPAWNER[0]}"; }
 while spawn; [ "$Q" -lt 400 ]; do unspawn "$Q"; done
 unspawn "$Q"
 start_process daemon sleep 0.2
-sleep 1
+# The daemon ends of itself, and this shell reaps it, before its pid can pass to a stranger.
+wait "$daemon_pid" 2>/dev/null || true
 n=0
 while spawn; [ "$Q" != "$daemon_pid" ]; do
   unspawn "$Q"
@@ -391,16 +393,26 @@ unspawn "$daemon_pid"`;
     }
     expect(stderr).toBe("");
     expect(stdout).toBe("stranger alive\n");
-  },
-  120_000
+  }
 );
 
-// run runs BODY in a bash with lib/rig.sh sourced as a proof sources it (rigPrelude), its $work
-// holding the logs directory start_process writes to, and answers its status and both streams.
+// run runs BODY in a bash with lib/rig.sh sourced as a proof sources it (rigPrelude), the row's
+// guard set (proof_guard, from the row's deadline, so each wait_for of BODY ends before the row's
+// guard and names what it waited for), its $work holding the logs directory start_process writes
+// to, and answers its status and both streams.
 function run(body: string) {
-  const ran = Bun.spawnSync(["bash", "-c", `${rigPrelude}\nmkdir -p "$work/logs"\n${body}`], {
-    env: { PATH: process.env.PATH ?? "", TMPDIR: dir },
-  });
+  const guard =
+    "proof_guard $(( (ROW_DEADLINE_MS - $(proof_now_ms)) / 1000 + proof_margin_seconds ))";
+  const ran = Bun.spawnSync(
+    ["bash", "-c", `${rigPrelude}\n${guard}\nmkdir -p "$work/logs"\n${body}`],
+    {
+      env: {
+        PATH: process.env.PATH ?? "",
+        TMPDIR: dir,
+        ROW_DEADLINE_MS: String(Math.floor(Date.now() + timeLeft())),
+      },
+    }
+  );
   return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString() };
 }
 const pidsIn = (out: string) => (out.match(/\b\d{2,}\b/g) ?? []).map(Number);
@@ -418,15 +430,15 @@ test("start_process starts a service that leads its own group, and signal_group 
   const r = run(`${goneOrRunning}
 start_process svc bash -c 'sleep 300 & echo $! >"$0"; wait' "$work/child"
 echo "start $?"
-until_true 10 "the service's child" test -s "$work/child"
+wait_for "the service's child" test -s "$work/child"
 child=$(<"$work/child")
 [ "$(proc_group "$svc_pid")" = "$svc_pid" ] && echo "leads its group" || echo "not its group's leader"
 signal_group "$svc_pid" TERM
 stop_pid "$svc_pid"
-until_true 10 "the service's child to end" gone "$child"
+wait_for "the service's child to end" gone "$child"
 echo "service $(state "$svc_pid"), child $(state "$child")"
 start_process svc2 setsid bash -c 'echo $$ >"$0.leader"; sleep 300 & echo $! >"$0"; wait' "$work/child2"
-until_true 10 "the setsid service's child" test -s "$work/child2"
+wait_for "the setsid service's child" test -s "$work/child2"
 leader2=$(<"$work/child2.leader") child2=$(<"$work/child2")
 echo "setsid's pids $leader2 $child2"
 [ "$svc2_pid" != "$leader2" ] && echo "with setsid the recorded pid is not the service's"
@@ -450,7 +462,7 @@ eval "real_$(declare -f proc_start)"
 proc_start() { :; }
 start_process svc3 setsid bash -c 'echo $$ >"$0.leader"; sleep 300 & echo $! >"$0"; wait' "$work/child3"
 eval "$(declare -f real_proc_start | sed '1s/^real_//')"
-until_true 10 "the setsid service's child" test -s "$work/child3"
+wait_for "the setsid service's child" test -s "$work/child3"
 leader3=$(<"$work/child3.leader") child3=$(<"$work/child3")
 echo "setsid's pids $leader3 $child3"
 echo "recorded: \${started_at[$svc3_pid]-none}"
@@ -512,7 +524,7 @@ printf '%s %s\\n' ${stranger.pid} ${Number(start) + 1} >"$work/agent/helper.pid"
 echo "cleanup, a stranger given the helper's pid: $(state ${stranger.pid})"
 printf '%s %s\\n' ${stranger.pid} ${start} >"$work/agent/helper.pid"
 (cleanup)
-until_true 10 "the helper to end" gone ${stranger.pid}
+wait_for "the helper to end" gone ${stranger.pid}
 echo "cleanup, the helper itself: $(state ${stranger.pid})"`);
   expect(r.out).toBe(
     "cleanup, a stranger given the helper's pid: running\ncleanup, the helper itself: gone\n"
@@ -546,7 +558,7 @@ ${stopAgent}
 printf '%s\\n' "trap '' TERM" 'echo $$ >"$1"' 'exec sleep 300' >"$work/member.sh"
 own_session "$work/agent.pid" bash -c 'bash "$1" "$2" & wait' agent "$work/member.sh" "$work/agent.member"
 agent_pid "$work/agent.pid" agent
-until_true 10 "the agent's member" test -s "$work/agent.member"
+wait_for "the agent's member" test -s "$work/agent.member"
 member=$(<"$work/agent.member")
 echo "pids $agent $member"
 mkdir "$work/proc"
@@ -554,13 +566,13 @@ ln -s "/proc/$agent" "$work/proc/$agent"
 ln -s "/proc/$member" "$work/proc/$member"
 export proc_root=$work/proc
 stop_agent "$agent"
-until_true 10 "the agent to end" gone "$agent"
+wait_for "the agent to end" gone "$agent"
 ${then}`;
 test("the Envoy session-states stop_agent ends an agent's member that outlives its TERM, so nothing of a stopped Claude Code runs beside its resume", () => {
   const r = run(
     memberRig(
       states("stop_agent"),
-      `until_true 10 "stop_agent to end the agent's member" gone "$member"
+      `wait_for "stop_agent to end the agent's member" gone "$member"
 echo "after stop_agent: member $(state "$member")"`
     )
   );
@@ -575,7 +587,7 @@ test("the clean-session-stop stop_agent leaves an agent's member that outlives i
       `echo "after stop_agent: member $(state "$member")"
 stop_marked_processes "$work"
 echo "sweep $?"
-until_true 10 "the member to end" gone "$member"
+wait_for "the member to end" gone "$member"
 echo "after the sweep: member $(state "$member")"`
     )
   );

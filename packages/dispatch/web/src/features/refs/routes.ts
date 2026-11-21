@@ -21,6 +21,7 @@ import {
   parseBlockReference,
   withBlock,
 } from "./block-reference";
+import { countReferenceRead } from "./reference-reads";
 import { referenceSpans } from "./reference-spans";
 import { pageInBound, routeInBound } from "./target-id";
 
@@ -214,6 +215,40 @@ export const AGENT_ARTIFACT_PATH = "/agents/:sessionId/artifacts/:slug";
 
 /** Agents reference the conversation as `dispatch://KEY/log`; the browser path is `/conversation`. */
 const legacyLogReferencePattern = /^log$/;
+/** A pinned version as written: a positive integer with no leading zero. */
+const versionPattern = /^[1-9]\d*$/;
+/** A `dispatch://` reference: the key or `agent`, then whatever its target writes. */
+const dispatchReferencePattern = /^dispatch:\/\/([^/]+)(?:\/(.*))?$/;
+/** An issue's ask, comment or message after `dispatch://KEY/`. */
+const issueItemReferencePattern = /^(ask|comment|message)\/([^/?#\s]+)$/;
+/** An issue's artifact page after `/issues/KEY/`. */
+const issueArtifactPathPattern = /^artifacts?\/([^/?#\s]+)$/;
+/** An issue's ask, comment or message page after `/issues/KEY/`. */
+const issueItemPathPattern = /^(asks|comments|messages)\/([^/?#\s]+)$/;
+/** A project document's page after `/projects/KEY/`. */
+const projectDocumentPathPattern = /^documents\/([^/?#\s]+)$/;
+
+/** Every pattern `referenceRouteFromHref` runs of this module, by name, for the test that reads
+ *  each the way a backtracking engine runs it (`reference-patterns.test.ts`): each runs on what
+ *  an author wrote. */
+export const ROUTE_PATTERNS: Readonly<Record<string, RegExp>> = {
+  agentArtifactPathPattern,
+  agentArtifactReferencePattern,
+  artifactSlugOnlyPattern,
+  dispatchReferencePattern,
+  issueArtifactPathPattern,
+  issueArtifactReferencePattern,
+  issueItemPathPattern,
+  issueItemReferencePattern,
+  issueKeyOnlyPattern,
+  issuePathPattern,
+  legacyLogReferencePattern,
+  projectArtifactReferencePattern,
+  projectDocumentPathPattern,
+  projectKeyOnlyPattern,
+  projectPathPattern,
+  versionPattern,
+};
 
 export function isProjectRoute(route: DispatchRoute | AgentArtifactRoute): route is ProjectRoute {
   return (
@@ -266,7 +301,7 @@ function version(value: string | null | undefined): number | undefined | null {
   if (value === null || value === undefined || value === "") {
     return undefined;
   }
-  return /^[1-9]\d*$/.test(value) ? Number(value) : null;
+  return versionPattern.test(value) ? Number(value) : null;
 }
 
 /** A route's slug percent-decoded and its version parsed; `undefined` when either names nothing. */
@@ -348,7 +383,7 @@ function parseIssueReference(key: string, target: string | undefined): IssueRout
   if (artifact !== null) {
     return artifactRoute(key, artifact[1] ?? "", artifact[2]);
   }
-  const item = target.match(/^(ask|comment|message)\/([^/?#\s]+)$/);
+  const item = target.match(issueItemReferencePattern);
   const id = item?.[2] === undefined ? undefined : decodedSegment(item[2]);
   if (item === null || id === undefined) {
     return undefined;
@@ -388,7 +423,7 @@ export function parseNodeReference(value: string): DispatchReferenceRoute | unde
       ? undefined
       : withBlock(parseNodeReference(document), target.block, target.pin);
   }
-  const match = value.match(/^dispatch:\/\/([^/]+)(?:\/(.*))?$/);
+  const match = value.match(dispatchReferencePattern);
   if (match === null) {
     return undefined;
   }
@@ -450,11 +485,11 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   if (target === "decisions") {
     return { key, kind: "decisions" };
   }
-  const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
+  const artifact = target.match(issueArtifactPathPattern);
   if (artifact !== null) {
     return artifactRoute(key, artifact[1] ?? "", new URLSearchParams(search).get("v"));
   }
-  const item = target.match(/^(asks|comments|messages)\/([^/?#\s]+)$/);
+  const item = target.match(issueItemPathPattern);
   const id = item?.[2] === undefined ? undefined : decodedSegment(item[2]);
   if (item === null || id === undefined) {
     return undefined;
@@ -488,7 +523,7 @@ export function parseProjectPath(pathname: string, search = ""): ProjectRoute | 
   if (target === "documents") {
     return { kind: "documents", project };
   }
-  const document = target.match(/^documents\/([^/?#\s]+)$/);
+  const document = target.match(projectDocumentPathPattern);
   if (document === null) {
     return undefined;
   }
@@ -558,11 +593,13 @@ export function routeProjectOf(pathname: string): string | undefined {
  * rendered body (`collectReferenceAnchors`); undefined for an external link or a dashboard path
  * that is not an issue/document reference (`pageRoutes`). A `#b-<block id>` fragment names the
  * page's block while text cites it (`pageInBound`), else the page; a reference past the bounds
- * names nothing (`parseDispatchReference`). */
+ * names nothing (`parseDispatchReference`). Each call is counted with the length of `href`
+ * (`countReferenceRead`), which its steps read a fixed number of times over. */
 export function referenceRouteFromHref(
   href: string,
   appOrigin: string = window.location.origin
 ): DispatchReferenceRoute | undefined {
+  countReferenceRead("referenceRouteFromHref", href.length);
   if (href.startsWith("dispatch://")) {
     return parseDispatchReference(href);
   }

@@ -5,7 +5,7 @@
 
 import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { EXCERPT_SCAN_LIMIT, excerpt, SentTokens } from "../excerpt";
+import { EXCERPT_SCAN_LIMIT, excerpt, excerptPatternCharacters, SentTokens } from "../excerpt";
 
 // F2 (the review of be17859eca): the token the credential holds now is one of the tokens it
 // presented, so it is scanned once, not once as `secret()` and again as a kept token.
@@ -90,15 +90,20 @@ test.each([
 // The JWS pattern runs on the host's event loop over up to `EXCERPT_SCAN_LIMIT` characters of
 // text a gateway chose, so it starts a match only at the start of a run of base64url characters.
 // Started anywhere, it scans a run to its end from each `eyJ` inside it: measured on this
-// repository's dev box, 0.53 s for one 64 KiB page of `eyJ-`, against 0.3 ms with the lookbehind.
-// Twenty pages put the defect at about 10 s idle, past the row's 5 s limit, while the row itself
-// takes milliseconds even on a loaded box: the limit is a bound on work, not a hang guard.
+// repository's dev box, 0.53 s for one 64 KiB page of `eyJ-`, against 0.3 ms when it starts only
+// at a run's start. No row counts the steps a pattern takes, since JavaScriptCore counts none, and
+// a limit on time holds no two machines alike: recheck's automaton checker reads the pattern
+// linear (`jws-value`, excerpt-patterns.test.ts), and reads one started anywhere as quadratic.
+// This row holds what such pages come to, and the characters each excerpt's passes are handed:
+// six passes over at most what it reads.
 test("the JWS pattern does bounded work on twenty pages that start a JWS at every fourth character", () => {
   for (let page = 0; page < 20; page += 1) {
     const hostile = `${page}${"eyJ-".repeat(EXCERPT_SCAN_LIMIT / 4)}`;
+    const handed = excerptPatternCharacters();
     expect(excerpt(hostile, [])).toStartWith(`${page}`);
+    expect(excerptPatternCharacters() - handed).toBeLessThanOrEqual(6 * EXCERPT_SCAN_LIMIT);
   }
-}, 5_000);
+});
 
 // The same bound as every pattern of `excerpt`: a proof cut by the first `EXCERPT_SCAN_LIMIT`
 // characters is redacted whole, its piece inside the bound included, and nothing past it is read.

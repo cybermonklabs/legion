@@ -460,7 +460,37 @@ DISPATCH_DATABASE_URL="${POSTGRES_SERVER}/${DISPATCH_DB}${POSTGRES_QUERY}"
 # shellcheck source-path=SCRIPTDIR source=lib/callout-stack.sh
 . "$SCRIPT_DIR/lib/callout-stack.sh"
 
-admin_psql() { psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -q "$@"; }
+# psql takes the server's password from PGPASSWORD, set in that one command's environment alone,
+# and each URL without it, so no process listing (`ps -ww`, /proc/<pid>/cmdline) shows the
+# password while psql runs. The userinfo of POSTGRES_SERVER is `<user>[:<password>]`,
+# percent-encoded as a URI's is; the shell's own printf decodes it (each `%XX` as `\xXX`, a
+# backslash first doubled so it stays itself), so the password reaches no argument list on the way.
+POSTGRES_PASSWORD=""
+POSTGRES_SERVER_BARE="$POSTGRES_SERVER"
+postgres_authority="${POSTGRES_SERVER#*://}"
+if [[ "$postgres_authority" == *@* ]]; then
+  postgres_userinfo="${postgres_authority%@*}"
+  if [[ "$postgres_userinfo" == *:* ]]; then
+    postgres_password_encoded="${postgres_userinfo#*:}"
+    postgres_password_encoded="${postgres_password_encoded//\\/\\\\}"
+    printf -v POSTGRES_PASSWORD '%b' "${postgres_password_encoded//%/\\x}"
+    POSTGRES_SERVER_BARE="${POSTGRES_SERVER%%://*}://${postgres_userinfo%%:*}@${postgres_authority##*@}"
+  fi
+fi
+
+# server_psql URL ARGS...: psql on URL, a database of POSTGRES_SERVER, as POSTGRES_SERVER's user,
+# with the password in psql's environment alone.
+server_psql() {
+  local url="${POSTGRES_SERVER_BARE}${1#"$POSTGRES_SERVER"}"
+  shift
+  if [ -n "$POSTGRES_PASSWORD" ]; then
+    PGPASSWORD="$POSTGRES_PASSWORD" psql "$url" "$@"
+  else
+    psql "$url" "$@"
+  fi
+}
+
+admin_psql() { server_psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -q "$@"; }
 
 KEEPER_PID=""
 ISSUER_PID=""
@@ -600,7 +630,7 @@ echo "dev-stack: created databases $BROKER_DB and $DISPATCH_DB" >&2
 for url in "$BROKER_DATABASE_URL" "$DISPATCH_DATABASE_URL"; do
   want="${url%%\?*}"
   want="${want##*/}"
-  connected="$(psql "$url" -v ON_ERROR_STOP=1 -Atqc 'select current_database()')"
+  connected="$(server_psql "$url" -v ON_ERROR_STOP=1 -Atqc 'select current_database()')"
   if [ "$connected" != "$want" ]; then
     echo "dev-stack: refused: a database URL of this run connects to '$connected', not $want; drop any dbname= from the Postgres URL's query string" >&2
     exit 1

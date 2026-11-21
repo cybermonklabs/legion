@@ -1087,7 +1087,7 @@ test("every (state, event) pair goes as the rule says", async () => {
   }
   expect(runs).toBeGreaterThan(1_500);
   expect([...findings].slice(0, 40)).toEqual([]);
-}, 120_000);
+});
 
 test("a replayed handler 403 after a possibly landed answer settles as its refusal", async () => {
   const { run, error } = await drive([
@@ -1225,4 +1225,4 @@ test("every sequence of events up to the client's limits goes as the rule says",
   expect(runs).toBeGreaterThan(1_000);
   expect(longest).toBeGreaterThan(5);
   expect([...findings].slice(0, 40)).toEqual([]);
-}, 600_000);
+});

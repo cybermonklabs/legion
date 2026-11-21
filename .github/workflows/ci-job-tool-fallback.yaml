@@ -15,8 +15,8 @@ jobs:
   tool-fallback:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/ci-job-tool-fallback.md#the-jobs-budget-and-the-bound-every-install-step-carries
-    # 1 + 2 + 1 + 1 + 2 + 1 + 3 + 1 = 12 min + 10 = 22 min; an install step's 2 x 326 s -> 11 min.
-    timeout-minutes: 22
+    # 1 + 2 + 1 + 1 + 2 + 1 + 3 + 1 + 2 = 14 min + 10 = 24 min; an install step's 2 x 326 s -> 11 min.
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,6 +68,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-jj
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/jj-primary.ended
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
       - name: Read the jj-primary case
@@ -266,6 +267,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-crane
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/crane-primary.ended
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
@@ -282,6 +284,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-crane
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/crane-second-source.ended
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
       - name: Read the crane-second-source case
@@ -296,6 +299,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-changie
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/changie-primary.ended
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
@@ -311,6 +315,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-changie
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/changie-second-source.ended
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
       - name: Read the changie-second-source case
@@ -331,6 +336,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-jj
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/jj-second-source.ended
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
       - name: Read the jj-second-source case
@@ -356,6 +362,8 @@ jobs:
         continue-on-error: true
         timeout-minutes: 11
         uses: ./.github/actions/setup-bun
+        env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/bun-primary.ended
 
       - name: Read the bun-primary case
         run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome ${{ steps.bun-primary.outcome }} --row bun-linux-x64 --expect-source github-release
@@ -372,6 +380,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/setup-bun
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/bun-second-source.ended
           CI_TOOLS_NPM_BASE: ${{ steps.origin.outputs.npm }}
 
       - name: Read the bun-second-source case
@@ -389,6 +398,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-elan
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/elan-primary.ended
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
@@ -408,6 +418,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-elan
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/elan-second-source.ended
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
       - name: Read the elan-second-source case
@@ -422,6 +433,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-uv
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/uv-primary.ended
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
@@ -437,6 +449,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-uv
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/uv-second-source.ended
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
       - name: Read the uv-second-source case
@@ -452,6 +465,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-docker-plugin
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/pulumi-docker-primary.ended
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
@@ -467,6 +481,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-docker-plugin
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/pulumi-docker-second-source.ended
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
       - name: Read the pulumi-docker-second-source case
@@ -481,6 +496,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-pulumi
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/pulumi-cli-primary.ended
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
 
@@ -496,6 +512,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-pulumi
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/pulumi-cli-second-source.ended
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
 

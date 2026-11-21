@@ -124,6 +124,11 @@
       "bun": "./src/inbound-connection.ts",
       "default": "./dist/inbound-connection.js"
     },
+    "./json-line-record": {
+      "types": "./src/json-line-record.ts",
+      "bun": "./src/json-line-record.ts",
+      "default": "./dist/json-line-record.js"
+    },
     "./listener-relay": {
       "types": "./src/listener-relay.ts",
       "bun": "./src/listener-relay.ts",
@@ -148,6 +153,11 @@
       "types": "./src/process-ancestry.ts",
       "bun": "./src/process-ancestry.ts",
       "default": "./dist/process-ancestry.js"
+    },
+    "./process-exit": {
+      "types": "./src/process-exit.ts",
+      "bun": "./src/process-exit.ts",
+      "default": "./dist/process-exit.js"
     },
     "./relay-registration": {
       "types": "./src/relay-registration.ts",
@@ -195,6 +205,10 @@
       "types": "./test/stall-proxy.ts",
       "bun": "./test/stall-proxy.ts"
     },
+    "./test/pattern-analysis": {
+      "types": "./test/pattern-analysis.ts",
+      "bun": "./test/pattern-analysis.ts"
+    },
     "./test/stall-scenario": {
       "types": "./test/stall-scenario.ts",
       "bun": "./test/stall-scenario.ts"
@@ -229,10 +243,16 @@
       "default": "./dist/transport.js"
     }
   },
+  "//": [
+    "test: each command's --timeout is at least twice the slowest row or hook it ran under 8 busy loops on 2 CPUs at 61b66deb (three runs in a builds Job).",
+    "The first, 30000: a ! command in envoy.json > still running after 10 s is an error naming the field and the file, 10,200.35 ms; the two keyed-writes upload rows, as fixed after that head, took up to 10,440 ms under the same load in an issue pod. Read again at 6ca1a534 with #4437's fourth merge, the whole command under the same load (two runs in builds Job d8-ec-first-8): the files main's #4140 gave row timeouts of their own, the slowest nats-credential-deadlines.test.ts's switch whose first trade answers 503, 12,599.24 ms. Read again at the round-3 class-search tree (main 46c275dcba with #4437's head e9d8f5075f and its uncommitted fixes), the whole command under the same load (two runs in builds Job d2-c9-ec, 2026-11-19): followNatsCredential's switch whose first trade answers 503 waits for ready, 8,900.18 and 14,991.18 ms, which 30000 holds 2.001 times; Bun prints no hook times, so no hook is read there. Main's nats-handshake.test.ts (#4353) runs here since its rows read the timers its dials arm, not the wall clock: under the same load (three runs in each of builds Jobs nt-t1-8 and nt-c1-8, 2026-11-20, beside nats-dial-retry.test.ts), its slowest row, a server that never answers, which waits out its dial's whole 10 s bound on the process's clock, took up to 10,104.52 ms, which 30000 holds 2.968 times; nats-dial-retry.test.ts's slowest, the last dial's own error, up to 623.22 ms. Read again at #4437's round-4 tree 24b2e96b28, with nats-handshake.test.ts and nats-dial-retry.test.ts as e61fe76646 rewrote them, the whole command under the same load (three runs in builds Job g4b-ec-first, legion-load-run-hbzpt, 2026-11-21, with LEGION_E2E=1 as CI sets it, each hook timed by a preload the Job's patch added): the slowest row, that switch whose first trade answers 503, 13,404.06 ms (12,298.89 and 10,017.98 ms the slowest of the other runs), which 30000 holds 2.24 times; the slowest hook, the temporary-directory afterEach dispatch-review.test.ts registers, 84.15 ms; nats-handshake.test.ts's slowest row, the server that never answers, at most 10,003.17 ms, and nats-dial-retry.test.ts's, the last dial's own error, at most 555.16 ms.",
+    "The second, 120000: 6,202.12 ms here; with LEGION_E2E_ENVOY_STACK and LEGION_E2E_DISPATCH_STACK set, nats-stall.test.ts's slowest row took 50,109.26 ms and the live suites' beforeAll up to 52,389.38 ms under the same load. nats-auth.test.ts's Docker rows took at most 32.89 ms on CI. Three files of main's #4140 run here too, each above the first's half: dispatch-write-outcomes.test.ts, whose every sequence of events took 16,382.88 ms in the first command under that load (d8-ec-first-8); broker-credential-signins.test.ts, whose closed client's slot took 16,094.57 ms (d8-ec-moved-8); and nats-credential.test.ts, whose rows behind the auth service, with LEGION_E2E_ENVOY_STACK set, took up to 20,483.92 ms (builds Jobs d8-natscred-8 and d8-natscred-8b). That file's beforeAll, one go build of natsd and calloutd, keeps a guard of its own (BUILD_GUARD_MS, 300000): at least twice the 56 s the CI step running the file whole took at its longest, over its 57 green runs up to 2026-11-19. Read again there (the same Job and load, with LEGION_E2E_ENVOY_STACK and LEGION_E2E_DISPATCH_STACK set): nats-stall.test.ts's row B, 50,099.84 and 50,101.21 ms, the slowest; broker-credential-signins.test.ts 16,091.73 ms; nats-credential.test.ts's reconnect after two refusals 13,685.66 ms here and up to 20,010.78 ms alone (the envoy-session-stall step's command); dispatch-write-outcomes.test.ts 12,192.64 ms; the live suites' new row, a plan a person approved names dispatch plan-approve, 1,798.60 ms. dispatch-askgate.test.ts's row that spawns node -e fails in a builds Job, which has no node; CI's runner has one. Main's third live suite, comment-mention.live.test.ts (#4426), runs here beside the other two: its beforeAll starts the same stack (startDispatchStack), and the envoy-session-stall step that runs it whole took at most 16 s over its 7 green merge-group runs up to 2026-11-20 (44709419415 to 44735067614). Read under the same load at 1c711353dc, the file alone (three runs in builds Job r4b-mention-8, legion-load-run-dp4j4, 2026-11-21, with LEGION_E2E_DISPATCH_STACK set and each hook timed by a print the Job's patch added, since Bun prints no hook times): its beforeAll took 50,287.16 ms and 47,893.23 ms with the Go build cache an earlier build left (twice: 100,574.32 ms, which 120000 holds), its afterAll at most 10,703.09 ms and its row at most 1,905.42 ms. The Job's first run, on an empty Go cache, built the server cold in a beforeAll of 466,790.72 ms, which 120000 does not hold: every live suite here builds the same server, so a run of this command with the stack variables set on an empty Go cache has its first live suite pay that build. CI's envoy-client job runs this command with neither variable set, so its live suites skip there; the envoy-session-stall job, which sets both, builds natsd, the listener and the Dispatch server in a step of its own before its first suite, so each suite's build there is warm."
+  ],
   "scripts": {
-    "build": "bun build src/askgate-marker.ts src/askgate-new-asks.ts src/bearer.ts src/broker-credential.ts src/consumer-delivery.ts src/delivery.ts src/delivery-ledger.ts src/dispatch-cli.ts src/dispatch-command.ts src/dispatch-config.ts src/dispatch-cwd.ts src/dispatch-execute.ts src/dispatch-first.ts src/dispatch-http.ts src/dispatch-picture-tools.ts src/dispatch-pictures.ts src/dispatch-session-directory.ts src/dispatch-session-state.ts src/dispatch-subscribe.ts src/envoy-config.ts src/envoy-settings.ts src/errors.ts src/excerpt.ts src/inbound-connection.ts src/listener-relay.ts src/machine.ts src/nats-connection.ts src/nats-credential.ts src/process-ancestry.ts src/relay-registration.ts src/secret-file.ts src/session-answers.ts src/session-settings.ts src/slack-post.ts src/stream-topics.ts src/tmux-place.ts src/tmux-place-cache.ts src/tmux-server.ts src/tool-contract.ts src/transport.ts --root src --outdir dist --target bun --format esm",
+    "build": "bun build src/askgate-marker.ts src/askgate-new-asks.ts src/bearer.ts src/broker-credential.ts src/consumer-delivery.ts src/delivery.ts src/delivery-ledger.ts src/dispatch-cli.ts src/dispatch-command.ts src/dispatch-config.ts src/dispatch-cwd.ts src/dispatch-execute.ts src/dispatch-first.ts src/dispatch-http.ts src/dispatch-picture-tools.ts src/dispatch-pictures.ts src/dispatch-session-directory.ts src/dispatch-session-state.ts src/dispatch-subscribe.ts src/envoy-config.ts src/envoy-settings.ts src/errors.ts src/excerpt.ts src/inbound-connection.ts src/json-line-record.ts src/listener-relay.ts src/machine.ts src/nats-connection.ts src/nats-credential.ts src/process-ancestry.ts src/process-exit.ts src/relay-registration.ts src/secret-file.ts src/session-answers.ts src/session-settings.ts src/slack-post.ts src/stream-topics.ts src/tmux-place.ts src/tmux-place-cache.ts src/tmux-server.ts src/tool-contract.ts src/transport.ts --root src --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --timeout 30000",
+    "analyze:patterns": "bun test/analyze-patterns.ts",
+    "test": "bun test --timeout 30000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns 'src/__tests__/nats-stall.test.ts' --path-ignore-patterns 'src/__tests__/nats-auth.test.ts' --path-ignore-patterns 'src/__tests__/*.live.test.ts' --path-ignore-patterns 'src/__tests__/dispatch-askgate.test.ts' --path-ignore-patterns 'src/__tests__/dispatch-who-waits.test.ts' --path-ignore-patterns 'src/__tests__/askgate-record.test.ts' --path-ignore-patterns 'src/__tests__/broker-credential-signins.test.ts' --path-ignore-patterns 'src/__tests__/dispatch-write-outcomes.test.ts' --path-ignore-patterns 'src/__tests__/nats-credential.test.ts' && bun test --timeout 120000 --preload @legion/test-fixtures/row-deadline src/__tests__/nats-stall.test.ts src/__tests__/nats-auth.test.ts src/__tests__/design-gate-advice.live.test.ts src/__tests__/moved-approval-advice.live.test.ts src/__tests__/comment-mention.live.test.ts src/__tests__/dispatch-askgate.test.ts src/__tests__/dispatch-who-waits.test.ts src/__tests__/askgate-record.test.ts src/__tests__/broker-credential-signins.test.ts src/__tests__/dispatch-write-outcomes.test.ts src/__tests__/nats-credential.test.ts",
     "lint": "bunx biome check src/ bin/ test/"
   },
   "dependencies": {
@@ -246,6 +266,7 @@
     "@biomejs/biome": "^2.3.14",
     "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
+    "recheck": "4.6.2",
     "typescript": "^5.3.0"
   }
 }

@@ -445,9 +445,16 @@ export function useMarginSheet(): MarginSheetModel {
   // lapse ends it - it goes back under its compose's own name unchanged, at the words and under
   // the key it went out with (`HeldSends.setAside`), so the margin shows it there as before.
   const arrivedAt = useRef<string | undefined>(undefined);
+  // The document the arrival has run for, which the margin says by no longer being `aria-busy`
+  // (`arriving`): from then on it shows what the arrival left, the compose that came back with it
+  // included, and a draft kept for the document's words is drawn in a line (`MarginKeptDrafts`)
+  // only where no compose came back for it. The ref keeps the arrival to one run per arrival; this
+  // is the same fact for the render, set after the arrival's own writes.
+  const [arrivedOn, setArrivedOn] = useState<string>();
   useEffect(() => {
     if (visibleArtifactId === undefined) {
       arrivedAt.current = undefined;
+      setArrivedOn(undefined);
       return;
     }
     if (arrivedAt.current === visibleArtifactId || commentsPending) return;
@@ -463,6 +470,7 @@ export function useMarginSheet(): MarginSheetModel {
     }
     const heldThread = [...heldReplyKeys].find((key) => threadsByKey.has(key));
     if (heldThread !== undefined) selectMarginItem(heldThread);
+    setArrivedOn(visibleArtifactId);
   }, [
     commentsPending,
     heldReplyKeys,
@@ -473,6 +481,7 @@ export function useMarginSheet(): MarginSheetModel {
     threadsByKey,
     visibleArtifactId,
   ]);
+  const arriving = visibleArtifactId !== undefined && arrivedOn !== visibleArtifactId;
   // The composer on the open document: the one its held send is - out, or refused - from Send
   // on, or the compose the reader has open there. A held send's composer is the compose that sent
   // it, by the number that compose opened under, so Send keeps the composer the reader wrote in.
@@ -697,6 +706,7 @@ export function useMarginSheet(): MarginSheetModel {
     items: {
       actionFailure,
       answeredAsksPending,
+      arriving,
       asksPending,
       commentsError,
       commentsPending,

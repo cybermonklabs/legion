@@ -36,5 +36,9 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+# Twice the longest green run on record, rounded up to the minute: 11 green e2e.yaml jobs (8 of
+# them in green runs) up to 2026-11-18, the longest proof step 193 s (run 43984470953), which the
+# 360 it had before held only 1.87 times.
+proof_guard 420
 live_daemon_proof 'child adoption' child-adoption TestAQueuedRootUnderALiveTreeJoinsItLive \
   "${CHILD_ADOPTION_EVIDENCE_DIR:-}"

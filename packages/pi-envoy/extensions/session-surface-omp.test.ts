@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, onTestFinished, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -16,9 +16,18 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { connect, ErrorCode, headers, type NatsConnection, NatsError, StringCodec } from "nats";
+import { settled, span, until as waitUntil } from "@legion/test-fixtures/wait";
+import {
+  connect,
+  ErrorCode,
+  headers,
+  type MsgHdrs,
+  type NatsConnection,
+  NatsError,
+  StringCodec,
+} from "nats";
 import { z } from "zod";
-import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
+import { SHELL_OUTPUT_MAX, SHELL_RECORD_FILE, type ShellCommandRecord } from "../src/typed-shell";
 import { NO_WINDOW_MODEL } from "../test/no-window-provider";
 
 // What the live view's two session-side surfaces do on the real Oh My Pi (dispatch://INFRA-812,
@@ -30,12 +39,13 @@ import { NO_WINDOW_MODEL } from "../test/no-window-provider";
 // wire: the frames over a real NATS server, as the Dispatch relay reads them, and the reply over
 // the stand-in Dispatch. What reached the model is read off the requests the binary sends the
 // stand-in gateway, each held until the test answers it.
-// LEGION_TEST_OMP names the binary, as in card-delivery-omp.test.ts, and LEGION_TEST_NATS_URL the
-// NATS server. A run without both skips, except on GitHub Actions, where the pi-envoy job
-// supplies both.
-// This file runs in a Bun process of its own (the package's `test` script): envoy.test.ts's
-// `mock.module("nats", …)` replaces `nats` for the whole process, and a file loaded after it gets
-// the mock's `connect`, which the check below turns into one clear failure.
+// LEGION_TEST_OMP names the binary, as in card-delivery-omp.test.ts, and LEGION_TEST_NATS_URL a
+// NATS server for the frames: core NATS alone, a server started without JetStream. A run without
+// both skips, except on GitHub Actions, where the pi-envoy job supplies both.
+// This file runs in a `bun test` of its own, the package `test` script's second command, which
+// runs only the `-omp` files: envoy.test.ts's `mock.module("nats", …)` replaces `nats` for the
+// whole process, and a file loaded after it gets the mock's `connect`, which the check below
+// turns into one clear failure.
 const omp = process.env.LEGION_TEST_OMP;
 const natsUrl = process.env.LEGION_TEST_NATS_URL;
 const onActions = process.env.GITHUB_ACTIONS === "true";
@@ -50,13 +60,9 @@ function setup(): { readonly binary: string; readonly nats: string } {
   return { binary: omp, nats: natsUrl };
 }
 
-/** How long a case waits for one thing the session owes it before failing on it. */
-const DEADLINE_MS = 30_000;
-
 // The real `connect`'s connection reports the server it reached (`getServer`); the mock's has no
 // such method. Checked once, before any case spends a binary's startup on a connection that
-// reaches no server. Bounded as a case's wait is, not by the runner's 5 s hook default: on a
-// loaded machine the connection alone has taken longer.
+// reaches no server. The hook is bounded by the command's one guard, as each case is.
 beforeAll(async () => {
   if (skip) return;
   const probe = await connect({ servers: setup().nats });
@@ -69,7 +75,7 @@ beforeAll(async () => {
   } finally {
     await probe.close();
   }
-}, DEADLINE_MS);
+});
 
 /** How often one session may put its context usage on the wire in these cases, the interval the
  *  check names (`ENVOY_CONTEXT_FRAME_INTERVAL_MS`). */
@@ -80,12 +86,11 @@ const CONTEXT_INTERVAL_MS = 2_000;
 const SHELL_LIMIT_MS = 2_000;
 
 /** The sessions these cases share are torn down once, at the end: each boot costs the real
- *  binary's startup, and every case of a session leaves it settled for the next one. Each
- *  teardown step is a real binary's stop, so the whole is bounded as a case's wait is. */
+ *  binary's startup, and every case of a session leaves it settled for the next one. */
 const cleanup: Cleanup = [];
 afterAll(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-}, DEADLINE_MS);
+});
 
 function text(reply: string): Block {
   return { type: "text", text: reply };
@@ -118,11 +123,8 @@ const RpcStateSchema = z.object({
   model: z.object({ provider: z.string(), id: z.string(), contextWindow: z.number() }).optional(),
 });
 
-/** One frame the session published on its stream, and when this test read it. */
+/** One frame the session published on its stream. */
 interface SeenFrame {
-  /** `Date.now()` as this test read it: the wall clock the session's publisher times its context
-   *  interval on. */
-  readonly clock: number;
   readonly frame: Record<string, unknown>;
 }
 
@@ -146,9 +148,6 @@ interface SurfaceSession {
   readonly frames: readonly SeenFrame[];
   /** Every request the stand-in served, in arrival order. */
   readonly requests: readonly Request[];
-  /** When the stand-in first served a request whose path starts with `prefix`, on the wall clock;
-   *  undefined while none has arrived. */
-  arrivedAt(prefix: string): number | undefined;
   /** The next Messages request after the ones already taken, once it arrives. */
   nextTurn(what: string): Promise<Turn>;
   /** Sends a person's direct message and resolves once the session has taken the frame: a Send or
@@ -178,26 +177,27 @@ interface SurfaceSession {
   settled(): Promise<void>;
   /** The session file's lines, as raw JSON. */
   entries(): Promise<string[]>;
-  /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
+  /** Every line of the session's record of the `!command`s it ran (`SHELL_RECORD_FILE`,
+   *  src/typed-shell.ts), one per command that ended, in order. */
+  shellRecord(): Promise<ShellCommandRecord[]>;
+  /** Polls `probe` until it returns a value, failing at the row's deadline or when omp exits. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
 }
 
-/** Polls `probe` until it returns a value, failing on `what` at the deadline or when omp exits. */
+/** Polls `probe` until it returns a value, failing on `what` at the row's deadline or as soon as
+ *  omp exits. What the cases wait on (a request reaching the stand-in, a frame, the host's state)
+ *  has no event the test can await, so it is polled. */
 async function until<T>(
   what: string,
   probe: () => T | undefined | Promise<T | undefined>,
   closed: { readonly error?: unknown }
 ): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
-  for (;;) {
+  const { value } = await waitUntil(what, async () => {
     if (closed.error !== undefined) throw closed.error;
-    const value = await probe();
-    if (value !== undefined) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    // What the cases wait on (a request reaching the stand-in, a frame, the host's state) has no
-    // event the test can await, so it is polled, and a missing one fails at the deadline.
-    await Bun.sleep(20);
-  }
+    const read = await probe();
+    return read === undefined ? undefined : { value: read };
+  });
+  return value;
 }
 
 /**
@@ -224,16 +224,18 @@ async function startSession(
 ): Promise<SurfaceSession> {
   const { config = [], env = {}, noWindowModel = false, prepare } = options;
   const { binary, nats } = setup();
-  const { home, workspace, sessions } = await ompRoot(binary, "session-surface-omp-", cleanup);
+  const { home, workspace, sessions, root } = await ompRoot(
+    binary,
+    "session-surface-omp-",
+    cleanup
+  );
+  const shellRecordFile = path.join(root, "shell-record.jsonl");
   await prepare?.({ home, workspace });
 
   const turns: Turn[] = [];
   /** The body and mode each published message id carries, which the accept answers with. */
   const stored = new Map<string, { readonly body: string; readonly mode: "aside" | "steer" }>();
-  /** When the stand-in first served each path, as `arrivedAt` reads it. */
-  const arrivals = new Map<string, number>();
   const { requests, base } = serveStandin(cleanup, async (url, body) => {
-    if (!arrivals.has(url.pathname)) arrivals.set(url.pathname, Date.now());
     if (url.pathname === "/anthropic/v1/messages") {
       const index = turns.length;
       const answer = Promise.withResolvers<string>();
@@ -313,6 +315,7 @@ async function startSession(
         ENVOY_NATS_URL: nats,
         DISPATCH_URL: base,
         DISPATCH_TOKEN,
+        [SHELL_RECORD_FILE]: shellRecordFile,
         ...(noWindowModel && { NO_WINDOW_PROVIDER_BASE_URL: `${base}/anthropic` }),
         ...env,
       },
@@ -356,7 +359,7 @@ async function startSession(
         markers.add(frame.flushMarker);
         continue;
       }
-      frames.push({ clock: Date.now(), frame });
+      frames.push({ frame });
     }
   })();
 
@@ -382,10 +385,6 @@ async function startSession(
     turns,
     frames,
     requests,
-    arrivedAt(prefix) {
-      for (const [served, at] of arrivals) if (served.startsWith(prefix)) return at;
-      return undefined;
-    },
     async nextTurn(what) {
       const turn = await until(what, () => turns[taken], closed);
       taken += 1;
@@ -433,14 +432,13 @@ async function startSession(
       // frame goes again, as the one frame it is; the word it answers is what says it took it.
       streamSeq += 1;
       try {
-        await sendRelayFrame({
+        await sendRelayFrame<MsgHdrs>({
           connection,
           newHeaders: headers,
           sessionID: sid,
           subject,
           payload: codec.encode(envelope),
           seq: streamSeq,
-          withinMs: DEADLINE_MS,
           stopped: closed,
         });
       } catch (error) {
@@ -519,7 +517,10 @@ async function startSession(
       const waiting = Promise.withResolvers<Record<string, unknown>>();
       responses.set(id, waiting);
       rpc.send({ ...command, id });
-      const response = await Promise.race([waiting.promise, rpc.closed]);
+      const response = await settled(
+        `omp's answer to ${String(command.type)}`,
+        Promise.race([waiting.promise, rpc.closed])
+      );
       if (response.success !== true) {
         throw new Error(`omp refused ${String(command.type)}: ${JSON.stringify(response)}`);
       }
@@ -541,6 +542,14 @@ async function startSession(
       if (file === undefined) throw new Error("get_state named no session file");
       return (await readFile(file, "utf8")).split("\n");
     },
+    async shellRecord() {
+      // The session writes its first line as its first command ends.
+      if (!(await Bun.file(shellRecordFile).exists())) return [];
+      return (await readFile(shellRecordFile, "utf8"))
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as ShellCommandRecord);
+    },
     until: (what, probe) => until(what, probe, closed),
   };
   return session;
@@ -548,13 +557,16 @@ async function startSession(
 
 /** One frame of the context slot as a case sees it: a reading's two figures, or the clearing
  *  frame, which carries none and so reads NaN for both (no figure a row expects of a reading
- *  holds of it); its kind; the publisher's sequence number on it; and when this case saw the
- *  frame. */
+ *  holds of it); its kind; and the session's own record of it: its place in the stream (`seq`),
+ *  the number of the interval the publisher sent it in (`interval`), when it went out under that
+ *  number (`at`) and when it was read (`readAt`), both on the session's clock. The clearing frame
+ *  carries the same record as a reading. */
 interface Reading {
-  /** `SeenFrame.clock`: when this case saw the frame, on the wall clock. */
-  readonly clock: number;
   readonly kind: "context" | "context-cleared";
   readonly seq: number;
+  readonly interval: number;
+  readonly at: number;
+  readonly readAt: number;
   readonly tokens: number;
   readonly contextWindow: number;
 }
@@ -564,16 +576,19 @@ function contextFrames(seen: readonly SeenFrame[]): Reading[] {
   return seen
     .filter((each) => each.frame.kind === "context" || each.frame.kind === "context-cleared")
     .map((each) => ({
-      clock: each.clock,
       kind: each.frame.kind === "context" ? "context" : "context-cleared",
-      contextWindow: Number(each.frame.contextWindow),
       seq: Number(each.frame.seq),
+      interval: Number(each.frame.interval),
+      at: Number(each.frame.at),
+      readAt: Number(each.frame.readAt),
+      contextWindow: Number(each.frame.contextWindow),
       tokens: Number(each.frame.tokens),
     }));
 }
 
-/** One `message` frame the session published. */
+/** One `message` frame the session published, and its place in the session's stream (`seq`). */
 interface SeenMessage {
+  readonly seq: number;
   readonly message: Record<string, unknown>;
 }
 
@@ -581,7 +596,10 @@ interface SeenMessage {
 function messageFrames(seen: readonly SeenFrame[]): SeenMessage[] {
   return seen
     .filter((each) => each.frame.kind === "message")
-    .map((each) => ({ message: each.frame.message as Record<string, unknown> }));
+    .map((each) => ({
+      seq: Number(each.frame.seq),
+      message: each.frame.message as Record<string, unknown>,
+    }));
 }
 
 /** The text every part of a stream message carries. */
@@ -631,6 +649,12 @@ async function contextSession(): Promise<SurfaceSession> {
       env: { ENVOY_CONTEXT_FRAME_INTERVAL_MS: String(CONTEXT_INTERVAL_MS) },
     });
     await session.arm();
+    // The reading the session's start is owed reaches this case by the arming replay's state or
+    // soon after it, and until it is here no case can tell the publisher owes nothing: a turn
+    // started first would find that reading in its own window.
+    await session.until("the context frame the session's start was owed", () =>
+      contextFrames(session.frames).length > 0 ? true : undefined
+    );
     return session;
   })();
   return contextSessionPromise;
@@ -653,10 +677,20 @@ async function contextSession(): Promise<SurfaceSession> {
  * Real timers, as the subject is the real binary's own timer.
  */
 async function settledReading(session: SurfaceSession): Promise<Reading | undefined> {
-  await Bun.sleep(CONTEXT_INTERVAL_MS);
+  await span(
+    CONTEXT_INTERVAL_MS,
+    "the timer a held reading arms falls due up to an interval after that reading, and its run " +
+      "sends no frame when the reading is unchanged: the publisher runs in the omp child, which " +
+      "reports no state for it, and no later action shows a frame it did not send"
+  );
   await session.command({ type: "get_state" });
   await session.command({ type: "get_state" });
-  await Bun.sleep(CONTEXT_INTERVAL_MS);
+  await span(
+    CONTEXT_INTERVAL_MS,
+    "the interval that timer's run opened ends with no event: nothing the session publishes or " +
+      "answers marks it, and the only action whose effect shows it is the next reading, which is " +
+      "the caller's to take"
+  );
   await session.flushed();
   return contextFrames(session.frames).at(-1);
 }
@@ -665,32 +699,34 @@ async function settledReading(session: SurfaceSession): Promise<Reading | undefi
 // model's: the harness's models.yml gives the stand-in model a 200000-token window. One turn of a
 // real conversation ends several messages - the person's own and the assistant's - and the
 // publisher reads the figures at the turn's start and after each of them. The turn's start puts
-// its reading on the wire at once and opens the interval; a message that ends inside it has its
-// reading held rather than dropped, and the newest held reading goes out when the interval is up,
-// as it stood at that message. Without that frame the ring would hold the turn's first figure for
-// as long as the session then stayed idle, however much the reply added to it.
+// its reading on the wire at once and opens the interval; the publisher puts one frame on the wire
+// in each interval at most, and a reading taken inside an interval is held until it is up rather
+// than dropped, and goes out as it stood at that message. Without the held frame the ring would
+// hold the turn's first figure for as long as the session then stayed idle, however much the reply
+// added to it.
 //
-// How fast this runner gets through the turn decides only which interval the reply ends in, so no
-// check below measures the turn. A reply that ends inside the interval the turn's frame opened is
-// held to its end; one that ends inside the next interval, opened by the person's message's held
-// reading going out, is held to that one's end; one that ends later still goes out at once. In
-// each case the last frame comes after the turn's last message and carries the figure the reply
-// left, and no frame goes out within an interval of the one before it. That lower bound is the
-// only time checked, counted from before the turn starts on the wall clock the publisher times
-// its interval on, so a slower runner can only widen it. envoy.test.ts's "the session's context
-// frame" rows hold the interval with a host stand-in.
+// How many intervals the turn spans is the host's to decide, and a loaded machine stretches it, so
+// the row proves the promise for any length of turn, from the session's own record alone: each
+// frame's number, when it went out under it and when its reading was taken (the session's clock),
+// and its place in the stream the session numbers (`seq`). From the last frame before the turn to
+// the frame after the reply: every frame went out at most one interval after its reading and not
+// before it; the numbers rise by at least one and by no more than the whole intervals between two
+// frames on the session's clock, so no two frames share an interval and no number is missing that
+// the clock does not account for; a reading taken inside the interval the frame before it opened
+// goes out under the number after that frame's; the turn's frame comes before the turn's first
+// message; and the figure after the reply comes after the reply's own message and carries what the
+// reply added. The row reads no clock of its own. envoy.test.ts's "the session's context frame"
+// rows hold the interval with a host stand-in.
 test.skipIf(skip)(
-  "a turn publishes its frame as it starts and the figure after its reply once the interval is up",
+  "a turn publishes its frame as it starts, its figures go out once an interval at most, each held no longer than the interval it was read in, and the figure after the reply follows it",
   async () => {
     const session = await contextSession();
-    // The turn must open the interval it is measured in. A session writes a message of its own
-    // while it starts - a card, or the line it writes when Envoy inbound is unavailable - and the
-    // reading that message is owed is published as the state the arming replay carries, which is
-    // inside the interval this turn starts in. Waiting for the publisher to owe nothing leaves
-    // the turn's own reading the first of the window.
+    // The turn opens the interval it is measured from: a session writes a message of its own while
+    // it starts, and the reading that message is owed goes out before this case begins.
     await settledReading(session);
     const from = session.frames.length;
-    const prompted = Date.now();
+    const before = contextFrames(session.frames.slice(0, from)).at(-1);
+    if (before === undefined) throw new Error("no context frame went out before the turn");
     await session.command({ type: "prompt", message: "What is the first case?" });
     const turn = await session.nextTurn("the first model request");
     // Four hundred distinct words, hundreds of tokens on the host's estimate, against the handful
@@ -700,58 +736,87 @@ test.skipIf(skip)(
     const words = Array.from({ length: 400 }, (_, index) => (index * 7_919 + 1_000).toString(36));
     turn.reply([text(words.join(" "))]);
     await session.settled();
-    // The reply's last frame and the context frame after it. The frames reach this test over
-    // NATS and the settle over RPC, so the reply's frame can still be on its way here.
-    const seen = await session.until("the frame the reply's own reading was owed", () => {
-      const frames = session.frames.slice(from);
-      const replied = frames.findIndex(
-        (each) =>
-          each.frame.kind === "message" &&
-          (each.frame.message as Record<string, unknown>).role === "assistant" &&
-          (each.frame.message as Record<string, unknown>).streaming === false
-      );
-      const after = frames.findLastIndex((each) => each.frame.kind === "context");
-      return replied !== -1 && after > replied ? frames : undefined;
-    });
+    // The reply's own message, as the session settled it, and the first context frame after it.
+    // The frames reach this test over NATS and the settle over RPC, so the reply's frame can still
+    // be on its way here.
+    const { reply, after } = await session.until(
+      "the frame carrying the reading the reply was owed",
+      () => {
+        const seen = session.frames.slice(from);
+        const settledReply = messageFrames(seen).findLast(
+          (each) => each.message.role === "assistant" && each.message.streaming === false
+        );
+        if (settledReply === undefined) return undefined;
+        const next = contextFrames(seen).find((each) => each.seq > settledReply.seq);
+        return next === undefined ? undefined : { reply: settledReply, after: next };
+      }
+    );
+    const turnFrames = contextFrames(session.frames.slice(from)).filter(
+      (each) => each.seq <= after.seq
+    );
+    const chain = [before, ...turnFrames];
+    const I = CONTEXT_INTERVAL_MS;
 
-    const published = contextFrames(seen);
-    const reading = published[0] as Reading;
-    const trailing = published.at(-1) as Reading;
-    expect(reading.contextWindow).toBe(200_000);
-    expect(reading.tokens).toBeGreaterThan(0);
-    // In the order the session published them: the turn's frame went out when the turn started,
-    // ahead of the person's message the host ends after that, and the reply's figure after the
-    // turn's last message.
-    const kinds = seen.map((each) => each.frame.kind);
-    expect(kinds.indexOf("context")).toBeLessThan(kinds.indexOf("message"));
-    expect(kinds.lastIndexOf("context")).toBeGreaterThan(kinds.lastIndexOf("message"));
-    // The interval held each frame back. The turn starts after the prompt above was sent, its
-    // frame opens the interval as it starts, and no frame goes out within an interval of the one
-    // before it, so the k-th frame after the turn's reached this test no sooner than k intervals
-    // after the prompt was sent. A publisher that sent each reading as it was taken would put the
-    // reply's figure on the wire as soon as the reply ended.
-    for (const [index, each] of published.entries()) {
-      expect(each.clock - prompted).toBeGreaterThanOrEqual(index * CONTEXT_INTERVAL_MS);
-    }
+    const steps = chain
+      .slice(1)
+      .map((frame, index) => ({ frame, previous: chain[index] as Reading }));
+    // A reading taken inside the interval the frame before it opened goes out under the number
+    // after that frame's: no interval can have opened between them.
+    const heldInside = steps.filter(({ frame, previous }) => frame.readAt < previous.at + I);
+    expect(heldInside.map(({ frame }) => frame.interval)).toEqual(
+      heldInside.map(({ previous }) => previous.interval + 1)
+    );
+    // Each frame went out at most one interval after its reading was taken, and not before it: a
+    // held reading waits out the interval it was read in and no more.
+    expect(
+      chain
+        .filter((each) => !(each.at >= each.readAt && each.at - each.readAt <= I))
+        .map((each) => each.interval)
+    ).toEqual([]);
+    // The numbers rise by at least one and by no more than the whole intervals between two frames
+    // on the session's clock, and the readings are in the order they were taken.
+    expect(
+      steps
+        .filter(
+          ({ frame, previous }) =>
+            frame.interval - previous.interval < 1 ||
+            frame.interval - previous.interval > Math.floor((frame.at - previous.at) / I) ||
+            frame.readAt < previous.readAt
+        )
+        .map(({ frame }) => frame.interval)
+    ).toEqual([]);
+    // In the order the session numbered them: the turn's frame went out when the turn started,
+    // ahead of the person's message the host ends after that, and the figure after the reply
+    // after the reply's own message.
+    const first = turnFrames[0] as Reading;
+    const firstMessage = messageFrames(session.frames.slice(from)).sort(
+      (one, other) => one.seq - other.seq
+    )[0];
+    if (firstMessage === undefined) throw new Error("the turn published no message frame");
+    expect(first.seq).toBeLessThan(firstMessage.seq);
+    expect(after.seq).toBeGreaterThan(reply.seq);
+    expect(first.contextWindow).toBe(200_000);
+    expect(first.tokens).toBeGreaterThan(0);
     // The figure the reply left, read when the reply ended rather than when the frame went out:
     // the host answers for the turn that is running, and a reading taken later, with the session
     // idle, is a figure of its own; a reading taken before the reply ended has none of it.
-    expect(trailing.tokens).toBeGreaterThan(reading.tokens + 100);
-    expect(trailing.tokens).toBeLessThan(200_000);
-  },
-  120_000
+    expect(after.tokens).toBeGreaterThan(first.tokens + 100);
+    expect(after.tokens).toBeLessThan(200_000);
+  }
 );
 
 // The next message after the interval publishes the next frame, and the figures reach the viewer
 // in the same breath as that message: the publisher reads them in the host's `message_end`, right
 // after the message's own frame, and sends them there rather than holding them for a timer. The
 // model request is held until the publisher owes nothing and its interval has run out, so the
-// assistant's message is the next reading and goes out at once. "At once" is checked by order,
-// not by time: the host settles the turn only after its message events, so the reading taken in
-// the reply's `message_end` is the one the publisher keeps by the time the turn has settled,
-// while a reading held for the interval would still be waiting on its timer then.
+// assistant's message is the next reading and goes out at once. "At once" is checked by order and
+// by the session's own record, not by time: the host settles the turn only after its message
+// events, so the reading taken in the reply's `message_end` is the one the publisher keeps by the
+// time the turn has settled, while a reading held for the interval would still be waiting on its
+// timer then; the context frame is the very next one the session numbers after the message's; and
+// it carries the moment it was read as the moment it went out.
 test.skipIf(skip)(
-  "a message after the interval publishes its frame at once, before its turn settles",
+  "a message after the interval publishes its frame at once, before its turn settles, the next the session numbers after that message's",
   async () => {
     const session = await contextSession();
     await settledReading(session);
@@ -790,8 +855,19 @@ test.skipIf(skip)(
     );
     expect(replied).not.toBe(-1);
     expect(seen.findIndex((each) => each.frame.kind === "context")).toBeGreaterThan(replied);
-  },
-  120_000
+    const message = messageFrames(seen)
+      .filter((each) => each.seq < frame.seq)
+      .sort((one, other) => one.seq - other.seq)
+      .at(-1);
+    if (message === undefined) throw new Error("no message frame came before the context frame");
+    // Nothing the session published came between the message's own frame and the figures.
+    expect(frame.seq).toBe(message.seq + 1);
+    // And it went out at once, not on the trailing timer: a frame published as it is read carries
+    // the moment it was read as its own, where one the timer held carries the end of the interval
+    // instead (`refreshAgentStreamContext`, extensions/envoy.ts). envoy.test.ts holds that timer
+    // on a fake clock.
+    expect(frame.at).toBe(frame.readAt);
+  }
 );
 
 // A view that opens or wakes draws its ring from the replay, so the newest figures ride in its
@@ -818,8 +894,7 @@ test.skipIf(skip)(
     expect(frame.contextWindow).toBe(200_000);
     expect(frame.tokens).toBe(live.tokens);
     expect(frame.seq).toBe(live.seq);
-  },
-  120_000
+  }
 );
 
 // A compaction is the one moment the figures fall, and a ring left at the old reading would tell a
@@ -868,8 +943,7 @@ test.skipIf(skip)(
     ).toEqual([]);
     expect(after.contextWindow).toBe(200_000);
     expect(after.tokens).not.toBe(beforeCompaction.tokens);
-  },
-  120_000
+  }
 );
 
 // A switch to a model with no context window takes the ring away (dispatch://INFRA-4325): the
@@ -921,6 +995,10 @@ test.skipIf(skip)(
       contextFrames(session.frames.slice(switched)).find((each) => each.kind === "context-cleared")
     );
     expect(cleared.seq).toBeGreaterThan(reading.seq);
+    // By the session's own record, the clear went out at once, as the turn's start read it, in an
+    // interval after the reading's: the publisher owed nothing and its interval had run out.
+    expect(cleared.at).toBe(cleared.readAt);
+    expect(cleared.interval).toBeGreaterThan(reading.interval);
     // Every later read of the turn answers the same window of zero, so the clearing frame is the
     // slot's one frame since the switch, and no reading follows it.
     await settledReading(session);
@@ -933,8 +1011,7 @@ test.skipIf(skip)(
     expect(kinds.slice(-3)).toEqual(["settings", "context-cleared", "commands"]);
     expect(kinds).not.toContain("context");
     expect(replayed.frames.at(-2)?.seq).toBe(cleared.seq);
-  },
-  120_000
+  }
 );
 
 /** The shell session, booted once: the `ENVOY_SHELL_COMMAND_LIMIT_MS` the check names, and a
@@ -999,8 +1076,7 @@ test.skipIf(skip)(
     expect(published).toContain("printf hi");
     expect(published).not.toContain("printf hi\n\n```\nhi\n```");
     expect(conversation(turn.request)).not.toContain(SHELL_HEADING);
-  },
-  120_000
+  }
 );
 
 // A person's `!command` is the session's own to run: the host is never handed the line, the live
@@ -1046,8 +1122,7 @@ test.skipIf(skip)(
           entry.includes("envoy-dispatch-handled-attempt") && entry.includes(sent.messageID)
       )
     ).toHaveLength(1);
-  },
-  120_000
+  }
 );
 
 // The person's line is theirs as they sent it: the space after the mark is in every answer,
@@ -1065,22 +1140,17 @@ test.skipIf(skip)(
     const published = await framesFor(session, sent, "the frame of `! printf hi`");
     expect(published).toHaveLength(1);
     expect(frameText(published[0]?.message ?? {})).toBe("! printf hi\n\n```\nhi\n```");
-  },
-  120_000
+  }
 );
 
 // The command runs where the session runs: `SessionContext.cwd`, not the test's directory.
-test.skipIf(skip)(
-  "a Send of `!pwd` answers the session's own directory",
-  async () => {
-    const session = await shellSession();
-    const sent = await session.send("!pwd -P");
-    expect(await session.reply(sent, "the reply to `!pwd -P`")).toBe(
-      `!pwd -P\n\n\`\`\`\n${realpathSync(session.workspace)}\n\`\`\``
-    );
-  },
-  120_000
-);
+test.skipIf(skip)("a Send of `!pwd` answers the session's own directory", async () => {
+  const session = await shellSession();
+  const sent = await session.send("!pwd -P");
+  expect(await session.reply(sent, "the reply to `!pwd -P`")).toBe(
+    `!pwd -P\n\n\`\`\`\n${realpathSync(session.workspace)}\n\`\`\``
+  );
+});
 
 // The command runs under the host's own shell configuration, which on the real session is read
 // off the five variables the host adds over the environment it builds for a child shell.
@@ -1093,8 +1163,7 @@ test.skipIf(skip)(
     expect(await session.reply(sent, "the reply to the command reading the host's variables")).toBe(
       `${command}\n\n\`\`\`\n1|1|true|not a tty\n\`\`\``
     );
-  },
-  120_000
+  }
 );
 
 // That environment is the host's own for a child shell, not the binary's whole process
@@ -1125,8 +1194,7 @@ test.skipIf(skip)(
     expect(await session.reply(slept, "the reply to `!sleep 600` under the `.env` limit")).toBe(
       `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
     );
-  },
-  120_000
+  }
 );
 
 // No login shell: a login shell reads the profile of the HOME it runs with, and this session's
@@ -1148,42 +1216,33 @@ test.skipIf(skip)(
     expect(await session.reply(sent, "the reply to `!pwd -P` under a profile")).toBe(
       `!pwd -P\n\n\`\`\`\n${realpathSync(session.workspace)}\n\`\`\``
     );
-  },
-  120_000
+  }
 );
 
 // An Aside is the person's turn too, so it takes the same path and is answered the same way.
-test.skipIf(skip)(
-  "an Aside of `!printf hi` behaves as the Send does",
-  async () => {
-    const session = await shellSession();
-    const turnsBefore = session.turns.length;
+test.skipIf(skip)("an Aside of `!printf hi` behaves as the Send does", async () => {
+  const session = await shellSession();
+  const turnsBefore = session.turns.length;
 
-    const sent = await session.send("!printf aside", { mode: "aside" });
-    expect(await session.reply(sent, "the reply to the person's Aside")).toBe(
-      "!printf aside\n\n```\naside\n```"
-    );
-    const published = await framesFor(session, sent, "the frame of the Aside's command");
-    expect(published).toHaveLength(1);
-    expect(frameText(published[0]?.message ?? {})).toBe("!printf aside\n\n```\naside\n```");
-    expect(session.turns.length).toBe(turnsBefore);
-  },
-  120_000
-);
+  const sent = await session.send("!printf aside", { mode: "aside" });
+  expect(await session.reply(sent, "the reply to the person's Aside")).toBe(
+    "!printf aside\n\n```\naside\n```"
+  );
+  const published = await framesFor(session, sent, "the frame of the Aside's command");
+  expect(published).toHaveLength(1);
+  expect(frameText(published[0]?.message ?? {})).toBe("!printf aside\n\n```\naside\n```");
+  expect(session.turns.length).toBe(turnsBefore);
+});
 
 // Every `!` message is answered, one whose command printed nothing included: silence is an answer
 // a person must be given, or the message looks lost.
-test.skipIf(skip)(
-  "a Send of `!true` is answered, saying there was no output",
-  async () => {
-    const session = await shellSession();
-    const sent = await session.send("!true");
-    expect(await session.reply(sent, "the reply to `!true`")).toBe(
-      "!true\n\nThe command printed nothing."
-    );
-  },
-  120_000
-);
+test.skipIf(skip)("a Send of `!true` is answered, saying there was no output", async () => {
+  const session = await shellSession();
+  const sent = await session.send("!true");
+  expect(await session.reply(sent, "the reply to `!true`")).toBe(
+    "!true\n\nThe command printed nothing."
+  );
+});
 
 // Dispatch cannot store U+0000 and refuses a whole reply holding one (400 NUL_CHARACTER), so a
 // command that prints one would leave the person with no answer at all: it is dropped from what
@@ -1199,8 +1258,7 @@ test.skipIf(skip)(
     const published = await framesFor(session, sent, "the frame of the command printing a NUL");
     expect(published).toHaveLength(1);
     expect(frameText(published[0]?.message ?? {})).toBe("!printf 'a\\0b'\n\n```\nab\n```");
-  },
-  120_000
+  }
 );
 
 test.skipIf(skip)(
@@ -1214,34 +1272,32 @@ test.skipIf(skip)(
     const published = await framesFor(session, sent, "the frame of `!exit 3`");
     expect(published).toHaveLength(1);
     expect(frameText(published[0]?.message ?? {})).toBe(answer);
-  },
-  120_000
+  }
 );
 
 // A command that would run for ten minutes is stopped at the session's limit, and the answer says
-// so rather than leaving the person waiting. The session runs the command once Dispatch answered
-// its accept, so the reply reaching the stand-in no sooner than the limit after the accept did is
-// the command running to the limit rather than being cut short; that it was stopped long before
-// its ten minutes is the reply arriving at all, inside the deadline every wait in this file
-// shares. How soon after the limit this runner answers is no part of the rule.
-test.skipIf(skip)(
-  "a Send of `!sleep 600` is stopped at the limit and says when",
-  async () => {
-    const session = await shellSession();
-    const sent = await session.send("!sleep 600");
-    const reply = await session.reply(sent, "the reply to `!sleep 600`");
-    expect(reply).toBe(
-      `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
-    );
-    const accepted = session.arrivedAt(`/api/v1/messages/${sent.messageID}/deliveries/`);
-    const replied = session.arrivedAt(`/api/v1/messages/${sent.messageID}/reply`);
-    if (accepted === undefined || replied === undefined) {
-      throw new Error("the stand-in served no accept or no reply for `!sleep 600`");
-    }
-    expect(replied - accepted).toBeGreaterThanOrEqual(SHELL_LIMIT_MS);
-  },
-  120_000
-);
+// so rather than leaving the person waiting. That the command ran to the limit rather than being
+// cut short is the session's own record of it (`SHELL_RECORD_FILE`, src/typed-shell.ts), written
+// as the command ends and so before the reply is posted: the delay the session armed the limit
+// for, and that the limit's timer, not a stop or the command's own end, is what ended it (R4: the
+// bound the session chose and the path that ended the command, read across the process boundary
+// rather than timed). That it was stopped long before its ten minutes is the reply arriving at
+// all, inside the deadline every wait in this file shares. src/typed-shell.test.ts holds the
+// limit's timer on a fake clock.
+test.skipIf(skip)("a Send of `!sleep 600` is stopped at the limit and says when", async () => {
+  const session = await shellSession();
+  const recorded = (await session.shellRecord()).length;
+  const sent = await session.send("!sleep 600");
+  const reply = await session.reply(sent, "the reply to `!sleep 600`");
+  expect(reply).toBe(
+    `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
+  );
+  // The session runs one command at a time, so the one line written since the send is this
+  // command's, and its index is the count of the lines before it.
+  expect((await session.shellRecord()).slice(recorded)).toEqual([
+    { index: recorded, armedMs: SHELL_LIMIT_MS, endedBy: "limit" },
+  ]);
+});
 
 // One command runs for a session at a time: a second is answered naming the first rather than
 // queued behind it.
@@ -1257,8 +1313,7 @@ test.skipIf(skip)(
     expect(await session.reply(first, "the reply to the command still running")).toBe(
       `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
     );
-  },
-  120_000
+  }
 );
 
 // A command that prints without end must not fill the bus, the person's page or the model's
@@ -1278,8 +1333,7 @@ test.skipIf(skip)(
     const request = await probe(session);
     expect(conversation(request)).toContain("a".repeat(SHELL_OUTPUT_MAX));
     expect(conversation(request)).not.toContain("a".repeat(SHELL_OUTPUT_MAX + 1));
-  },
-  120_000
+  }
 );
 
 // The mark is one `!`, and the rest is the command whatever it starts with.
@@ -1296,85 +1350,146 @@ test.skipIf(skip)(
     // Nothing is hidden from the model: it reads the same report.
     const request = await probe(session);
     expect(conversation(request)).toContain("The command ended with exit status 127.");
-  },
-  120_000
+  }
 );
 
 // A BTW is a side question the model answers, never a line the session runs.
-test.skipIf(skip)(
-  "a BTW runs no command",
-  async () => {
-    const session = await shellSession();
-    const from = session.frames.length;
-    const sent = await session.send("!printf hi", { mode: "btw" });
-    const side = await session.nextTurn("the BTW's side turn");
-    expect(conversation(side.request)).toContain("!printf hi");
-    side.reply([text("The model's answer.")]);
-    expect(await session.reply(sent, "the BTW's reply")).toBe("The model's answer.");
-    expect(
-      messageFrames(session.frames.slice(from)).map((each) => frameText(each.message))
-    ).not.toContain("!printf hi\n\n```\nhi\n```");
-    await session.settled();
-  },
-  120_000
-);
+test.skipIf(skip)("a BTW runs no command", async () => {
+  const session = await shellSession();
+  const from = session.frames.length;
+  const sent = await session.send("!printf hi", { mode: "btw" });
+  const side = await session.nextTurn("the BTW's side turn");
+  expect(conversation(side.request)).toContain("!printf hi");
+  side.reply([text("The model's answer.")]);
+  expect(await session.reply(sent, "the BTW's reply")).toBe("The model's answer.");
+  expect(
+    messageFrames(session.frames.slice(from)).map((each) => frameText(each.message))
+  ).not.toContain("!printf hi\n\n```\nhi\n```");
+  await session.settled();
+});
 
 // A broadcast is no person's turn at all: it keeps its card, and the session runs nothing.
-test.skipIf(skip)(
-  "a broadcast runs no command",
-  async () => {
-    const session = await shellSession();
-    const from = session.frames.length;
-    const sent = await session.send("!printf hi", {
-      accepted: false,
-      broadcastID: "66666666-6666-4666-8666-666666666666",
-    });
-    // The card starts a turn of its own, which carries the text the broadcast sent.
-    const turn = await session.nextTurn("the turn the broadcast's card started");
-    expect(conversation(turn.request)).toContain("!printf hi");
-    turn.reply([text("Read the broadcast.")]);
-    await session.settled();
+test.skipIf(skip)("a broadcast runs no command", async () => {
+  const session = await shellSession();
+  const from = session.frames.length;
+  const sent = await session.send("!printf hi", {
+    accepted: false,
+    broadcastID: "66666666-6666-4666-8666-666666666666",
+  });
+  // The card starts a turn of its own, which carries the text the broadcast sent.
+  const turn = await session.nextTurn("the turn the broadcast's card started");
+  expect(conversation(turn.request)).toContain("!printf hi");
+  turn.reply([text("Read the broadcast.")]);
+  await session.settled();
 
-    expect(session.replied(sent)).toBe(false);
-    expect(
-      messageFrames(session.frames.slice(from)).map((each) => frameText(each.message))
-    ).not.toContain("!printf hi\n\n```\nhi\n```");
-    expect(
-      session.requests.some((request) =>
-        request.path.startsWith(`/api/v1/messages/${sent.messageID}/deliveries/`)
-      )
-    ).toBe(false);
-  },
-  120_000
-);
+  expect(session.replied(sent)).toBe(false);
+  expect(
+    messageFrames(session.frames.slice(from)).map((each) => frameText(each.message))
+  ).not.toContain("!printf hi\n\n```\nhi\n```");
+  expect(
+    session.requests.some((request) =>
+      request.path.startsWith(`/api/v1/messages/${sent.messageID}/deliveries/`)
+    )
+  ).toBe(false);
+});
+
+/** One file of process `pid`'s own `/proc` directory, or undefined once the process is gone. */
+async function procFile(pid: number, name: "cmdline" | "stat"): Promise<string | undefined> {
+  try {
+    return await readFile(`/proc/${pid}/${name}`, "utf8");
+  } catch (error) {
+    // ENOENT: the process is gone; ESRCH: it ended while its file was read.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ESRCH") return undefined;
+    throw error;
+  }
+}
+
+/** One process's state, parent and process group, as its `/proc/<pid>/stat` holds them. */
+interface ProcessStat {
+  readonly state: string;
+  readonly parent: number;
+  readonly group: number;
+}
+
+/** Process `pid`'s `ProcessStat`, read after the command name's last `) ` in its
+ *  `/proc/<pid>/stat`, since that name may itself hold spaces and parentheses (docs/testing.md,
+ *  "A test that looks for a process it started"); undefined once the process is gone. */
+async function processStat(pid: number): Promise<ProcessStat | undefined> {
+  const stat = await procFile(pid, "stat");
+  if (stat === undefined) return undefined;
+  const [state = "", parent = "", group = ""] = stat.slice(stat.lastIndexOf(") ") + 2).split(" ");
+  return { state, parent: Number(parent), group: Number(group) };
+}
+
+/**
+ * Ends a `!command` that polls for `release`, whatever the row's outcome. Without it a row that
+ * fails before it writes `release` leaves the command polling for good: the session's own cleanup
+ * kills Oh My Pi with SIGKILL, which runs none of its exit handlers and leaves the command's
+ * detached group to init, then removes the directory `release` would be written in.
+ *
+ * It writes `release` first, so a command that has not started yet ends as it starts. A command
+ * that started wrote its pid to `pidFile` as its first act (`echo $$ >FILE`). While that pid still
+ * runs the command (its command line names `release`; a pid that ended may be another program's
+ * by now), this kills the command's process group where that group is the command's own (its id
+ * is the command's pid, and it is neither this test process's group nor that of the command's
+ * parent, the Oh My Pi that started it), and the pid alone otherwise. Then it waits until the
+ * process is gone or a zombie.
+ */
+async function endCommand(pidFile: string, release: string): Promise<void> {
+  await Bun.write(release, "");
+  if (!(await Bun.file(pidFile).exists())) return;
+  // The shell creates the file before it writes the pid into it.
+  const pid = await waitUntil("the pid the command writes as its first act", async () => {
+    const written = Number((await readFile(pidFile, "utf8")).trim());
+    return Number.isInteger(written) && written > 0 ? written : undefined;
+  });
+  const command = await processStat(pid);
+  if (command === undefined || command.state === "Z") return;
+  if ((await procFile(pid, "cmdline"))?.includes(release) !== true) return;
+  const ours = await processStat(process.pid);
+  const parent = await processStat(command.parent);
+  const own =
+    command.group === pid && command.group !== ours?.group && command.group !== parent?.group;
+  try {
+    process.kill(own ? -pid : pid, "SIGKILL");
+  } catch (error) {
+    // ESRCH: it ended since it was read.
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+  await waitUntil(`the command ${pid} to end`, async () => {
+    const now = await processStat(pid);
+    return now === undefined || now.state === "Z";
+  });
+}
 
 // A `!command` runs on its own promise, never inside the queued delivery task (D11): a command
 // that runs for minutes must not hold the session's other Dispatch messages behind it. This
 // session's limit is the default two minutes, and the command ends when the case says so, so the
-// second message is answered with the first command demonstrably still running.
-test.skipIf(skip)(
-  "a `!sleep` holds none of the session's other Dispatch messages",
-  async () => {
-    const session = await startSession();
-    const release = path.join(session.workspace, "release");
-    const waiting = await session.send(
-      `!while [ ! -f ${release} ]; do sleep 0.05; done; printf released`
-    );
+// second message is answered with the first command demonstrably still running. The command
+// writes its pid as its first act, so the row's end, pass or fail, ends it (`endCommand`) before
+// the file's `afterAll` tears the session down.
+test.skipIf(skip)("a `!sleep` holds none of the session's other Dispatch messages", async () => {
+  const session = await startSession();
+  const release = path.join(session.workspace, "release");
+  const pidFile = path.join(session.workspace, "pid");
+  onTestFinished(() => endCommand(pidFile, release));
+  const waiting = await session.send(
+    `!echo $$ >${pidFile}; while [ ! -f ${release} ]; do sleep 0.05; done; printf released`
+  );
 
-    const prompt = await session.send("Are you still taking messages?");
-    const turn = await session.nextTurn("the turn the second message started");
-    expect(conversation(turn.request)).toContain("Are you still taking messages?");
-    // The first command is still running: its own answer is not on Dispatch yet.
-    expect(session.replied(waiting)).toBe(false);
-    turn.reply([text("Still taking them.")]);
-    await session.settled();
-    expect(session.replied(waiting)).toBe(false);
-    expect(session.replied(prompt)).toBe(false);
+  const prompt = await session.send("Are you still taking messages?");
+  const turn = await session.nextTurn("the turn the second message started");
+  expect(conversation(turn.request)).toContain("Are you still taking messages?");
+  // The first command is still running: its own answer is not on Dispatch yet.
+  expect(session.replied(waiting)).toBe(false);
+  turn.reply([text("Still taking them.")]);
+  await session.settled();
+  expect(session.replied(waiting)).toBe(false);
+  expect(session.replied(prompt)).toBe(false);
 
-    await Bun.write(release, "");
-    expect(await session.reply(waiting, "the reply once the command ended")).toEndWith(
-      "```\nreleased\n```"
-    );
-  },
-  120_000
-);
+  await Bun.write(release, "");
+  expect(await session.reply(waiting, "the reply once the command ended")).toEndWith(
+    "```\nreleased\n```"
+  );
+});

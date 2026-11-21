@@ -22,7 +22,9 @@
 
 import { expect, test } from "bun:test";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
+import type { Event, Token, TokenizeContext } from "micromark-util-types";
 import type { BlockSchema } from "../src/block-schema.js";
+import { htmlFlowResolveSteps, htmlFlowStrict } from "../src/html-flow.js";
 import { createHeadlessProof, type HeadlessProofEditor } from "../src/lib-headless.js";
 
 /**
@@ -282,3 +284,51 @@ for (const mode of engines) {
     });
   }
 }
+
+// The HTML (flow) resolver moves a block's line prefix into the block and splices the prefix out,
+// and counts its steps (`htmlFlowResolveSteps`): each event its walk back to the block's
+// `htmlFlow` enter reads, and each event the splice removes or shifts, counted from the splice's
+// own arguments as the micromark patch counts each of its splices (`countSplice`). A count written
+// by hand beside a splice drifts from it unnoticed when an argument changes; this row reads the
+// count against the events the row built: a prefix, then a block of 100 lines of data.
+test("the HTML (flow) resolver counts each event it reads and each its splice removes or shifts", () => {
+  const token = (type: string): Token =>
+    ({
+      type,
+      start: { line: 1, column: 1, offset: 0, _index: 0, _bufferIndex: -1 },
+      end: { line: 1, column: 1, offset: 0, _index: 0, _bufferIndex: -1 },
+    }) as Token;
+  const context = {} as TokenizeContext;
+  const prefix = token("linePrefix");
+  const block = token("htmlFlow");
+  const events: Event[] = [
+    ["enter", prefix, context],
+    ["exit", prefix, context],
+    ["enter", block, context],
+    ["enter", token("htmlFlowData"), context],
+  ];
+  for (let line = 0; line < 99; line++) {
+    events.push(
+      ["exit", token("htmlFlowData"), context],
+      ["enter", token("htmlFlowData"), context]
+    );
+  }
+  events.push(["exit", token("htmlFlowData"), context], ["exit", block, context]);
+  const length = events.length;
+  const resolve = htmlFlowStrict.resolveTo;
+  if (resolve === undefined) throw new Error("htmlFlowStrict has no resolveTo");
+  const before = htmlFlowResolveSteps();
+  const resolved = resolve(events, context);
+  const steps = htmlFlowResolveSteps() - before;
+  // The prefix is gone and the block opens where it opened.
+  expect(resolved.length).toBe(length - 2);
+  expect(resolved[0]?.[1]).toBe(block);
+  expect(block.start).toBe(prefix.start);
+  // The walk reads every event from the last back to the block's enter: all but the prefix's two.
+  const walked = length - 2;
+  // The splice removes the prefix's two events and shifts every event after them.
+  const spliced = 2 + (length - 2);
+  expect(steps, `${steps} steps for a walk of ${walked} events and a splice of ${spliced}`).toBe(
+    walked + spliced
+  );
+});

@@ -223,7 +223,8 @@ export type AgentStreamFrame =
    * reports it (INFRA-812). The publisher sends it after each message of a turn, at each turn
    * start and after a compaction, at most one time in each of its own intervals, and keeps in
    * every replay the newest reading or the `context-cleared` frame, whichever came last. The frame
-   * carries the two figures alone; the share they make is the viewer's to draw.
+   * carries the two figures and the number of the interval it went out in; the share the figures
+   * make is the viewer's to draw.
    *
    * They travel in a frame of their own rather than beside the model on `settings` because a
    * viewer drops a whole frame whose fields do not validate, and a bad figure here would take
@@ -240,17 +241,40 @@ export type AgentStreamFrame =
        * reports no window sends `context-cleared` instead.
        */
       readonly contextWindow: number;
+      /**
+       * The number of the publisher's interval this reading went out in, absent from a publisher
+       * older than it, as are `at` and `readAt`. The session's first frame is the one after the
+       * last it numbered; a reading the interval held back goes out when that interval is up,
+       * numbered the next; a reading that goes out at once is numbered on by every whole interval
+       * since the last one opened, so an interval that sent nothing is a number no frame carries.
+       * No viewer reads the three: they are the session's own record of when it read and
+       * published, which its frames' order can be checked against with no clock of the reader's.
+       */
+      readonly interval?: number;
+      /** Epoch ms on the session's clock: when the reading went out under `interval`, which for
+       *  a reading the interval held back is the moment that interval was up. */
+      readonly at?: number;
+      /** Epoch ms on the session's clock: when the reading was taken. */
+      readonly readAt?: number;
     }
   /**
    * The session reports no context window now: its host answers no usage, or a window of zero
    * (INFRA-4325). A viewer draws no ring and no figure. The frame shares the `context` frame's
    * slot, and a viewer applies whichever of the two carries the higher `seq`. A viewer that
-   * predates it drops it: a page built before it drops a frame of a kind it does not know.
+   * predates it drops it: a page built before it drops a frame of a kind it does not know. The
+   * answer of no window goes through the publisher's interval as a reading does, and the frame
+   * carries the same record of it, `interval`, `at` and `readAt`, as the `context` frame does.
    */
   | {
       readonly v: typeof AGENT_STREAM_PROTOCOL;
       readonly kind: "context-cleared";
       readonly seq: number;
+      /** As on the `context` frame. */
+      readonly interval?: number;
+      /** As on the `context` frame. */
+      readonly at?: number;
+      /** As on the `context` frame. */
+      readonly readAt?: number;
     };
 
 /** What the relay asks a session for, and the ping that keeps it publishing. */

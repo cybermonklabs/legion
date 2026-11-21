@@ -4,7 +4,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { http } from "msw";
 import type { ReactNode } from "react";
 
-import { MEANING_PAUSE_MS, useTieredSearch } from "../features/search/useTieredSearch";
+import { useTieredSearch } from "../features/search/useTieredSearch";
 import { answerRequests } from "./network";
 
 // The keystroke's tier asks for the keyword leg alone (`useTieredSearch`, `keywords_only: true`),
@@ -32,10 +32,9 @@ test("the keystroke tier asks for the results path, and an unnarrowed pause tier
   );
 
   try {
-    await waitFor(() => expect(asked).toEqual(["/api/v1/search/results", "/api/v1/search"]), {
-      // Both tiers' waits, and the answers behind them.
-      timeout: MEANING_PAUSE_MS * 8,
-    });
+    // Both tiers' waits, and the answers behind them, end inside the wait's budget, which
+    // `setup.ts` sets from the row's deadline.
+    await waitFor(() => expect(asked).toEqual(["/api/v1/search/results", "/api/v1/search"]));
   } finally {
     hook.unmount();
     client.clear();

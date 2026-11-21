@@ -46,5 +46,8 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+# Twice the longest green run on record, rounded up to the minute: 21 green e2e.yaml jobs (17 of
+# them in green runs) up to 2026-11-15, the longest proof step 190 s (run 43679368771).
+proof_guard 420
 live_daemon_proof 'phase entry converge' phase-entry-converge TestAPhaseEntryConvergesOnARunningDaemonLive \
   "${PHASE_ENTRY_CONVERGE_EVIDENCE_DIR:-}"

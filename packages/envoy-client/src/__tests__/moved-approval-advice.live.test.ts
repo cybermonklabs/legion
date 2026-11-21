@@ -71,10 +71,10 @@ describe.skipIf(!dispatchStackEnabled)(
     beforeAll(async () => {
       stack = await startDispatchStack({ work: directories.stack });
       await asPerson("POST", "/api/v1/projects", { key: PROJECT, name: `${PROJECT} project` });
-    }, 600_000);
+    });
     afterAll(async () => {
       await stack?.stop();
-    }, 60_000);
+    });
 
     test("a write of a document the open request names prints the ask and the hand-back call", async () => {
       const issue = await createIssue(PROJECT, "Approve the design and its checks");
@@ -105,7 +105,7 @@ describe.skipIf(!dispatchStackEnabled)(
           `every point in it, hand the same request back: ${handBack}. Not yours to hand back? ` +
           "Tell the issue's architect."
       );
-    }, 120_000);
+    });
 
     test("a write of a document no open request names prints no such line", async () => {
       const issue = await createIssue(PROJECT, "Approve the design, and keep notes beside it");
@@ -118,6 +118,6 @@ describe.skipIf(!dispatchStackEnabled)(
       const printed = await docEdit(issue.key, notes.artifact.id, "One more note.");
 
       expect(printed).not.toContain("moved the open approval request");
-    }, 120_000);
+    });
   }
 );

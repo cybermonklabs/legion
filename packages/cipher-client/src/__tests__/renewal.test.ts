@@ -10,6 +10,7 @@
 import { expect, test } from "bun:test";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { settled, until } from "@legion/test-fixtures/wait";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { newDpopKey } from "../dpop";
 import { personIdentity } from "../person-identity";
@@ -73,9 +74,12 @@ async function told(call: Promise<unknown>): Promise<unknown> {
   );
 }
 
-/** How long a row's caller waits on the retry loop before it is told what the loop's last trade
- *  came to: long enough for one trade against a stand-in on this machine. */
-const DEADLINE_MS = 1_000;
+/** What a fail-fast caller of `client` is told, which the retry loop tells it as soon as the trade
+ *  it waits on has failed: what that trade came to. Waited for through the shared wait, so a call
+ *  that never answers fails at the row's deadline, naming it. */
+function answerOf(client: BrokerTokenClient): Promise<unknown> {
+  return told(settled("the retry loop's answer to a fail-fast caller", client.token()));
+}
 
 test("the token in hand is reused until the renewal window, then traded again", async () => {
   const broker = stubBroker((_trade, count) => ({ body: accepted(`token-${count}`, 600) }));
@@ -127,10 +131,10 @@ test("a broker that does not answer leaves the token in hand working until it la
     clock.now += 560_000;
     expect((await client.token()).accessToken).toBe("token-1");
     expect(broker.trades.length).toBe(2);
-    // Past its expiry there is nothing live left, so the caller is told at its deadline what the
-    // retry loop's last trade came to, rather than writing with no identity.
+    // Past its expiry there is nothing live left, so the caller is told what the retry loop's
+    // last trade came to, rather than writing with no identity.
     clock.now += 60_000;
-    const refusal = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
+    const refusal = await answerOf(client);
     expect(refusal).toBeInstanceOf(TradeRetryingError);
     expect((refusal as Error).message).toContain("503");
     expect(isFinalRefusal(refusal)).toBe(false);
@@ -143,8 +147,8 @@ test("a broker that does not answer leaves the token in hand working until it la
 // A failed trade's text names the broker and what went wrong, and a caller prints it: a plain
 // broker URL by itself, and one that carries user info (AGENT_SECRETS_URL can) by its fixed phrase
 // alone, no part of it; and no error keeps the library's as its cause, since the body the library
-// read hangs off it. The retry loop trades again on such an answer, so a caller is told the text at
-// its deadline.
+// read hangs off it. The retry loop trades again on such an answer, so a fail-fast caller is told
+// the text once the trade failed.
 test.each([
   // The library refuses a 200 with no token_type, and hangs the body it read off its error.
   ["the library refuses", (token: string) => ({ access_token: token, expires_in: 600 })],
@@ -169,7 +173,7 @@ test.each([
       [withUser, `the broker URL ${URL_NOT_PRINTED}`],
     ] as const) {
       const client = await clientAt(url, { now: Date.now() }, countingSource());
-      const refusal = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
+      const refusal = await answerOf(client);
       client.close();
       if (!(refusal instanceof TradeRetryingError)) throw new Error("the trade was answered");
       expect(refusal.message).toContain(named);
@@ -199,7 +203,7 @@ test("a token pasted as the broker's URL is refused, and named in no part", asyn
 // host it was handed, and the broker is named by `urlForText` already.
 test("a trade that got no answer names the failure by its class", async () => {
   const client = await clientAt("http://127.0.0.1:1", { now: Date.now() }, countingSource());
-  const refusal = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
+  const refusal = await answerOf(client);
   client.close();
   if (!(refusal instanceof TradeRetryingError)) throw new Error("the trade was answered");
   expect(refusal.message).toBe(
@@ -267,10 +271,10 @@ test("the broker's rate limit leaves the token in hand working until it lapses",
     clock.now += 560_000;
     expect((await client.token()).accessToken).toBe("token-1");
     expect(broker.trades.length).toBe(2);
-    // Past its expiry there is nothing live left, so the caller is told at its deadline rather
-    // than writing with no identity, and what it is told says the trade goes on.
+    // Past its expiry there is nothing live left, so the caller is told rather than writing with
+    // no identity, and what it is told says the trade goes on.
     clock.now += 60_000;
-    const refusal = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
+    const refusal = await answerOf(client);
     expect(refusal).toBeInstanceOf(TradeRetryingError);
     expect(isFinalRefusal(refusal)).toBe(false);
     expect((refusal as Error).message).toContain("too many token requests; try again later");
@@ -354,17 +358,13 @@ test("a sign-in the issuer ended drops the token in hand, while an issuer that i
     expect((await client.token()).accessToken).toBe("token-1");
     // At the slot, the issuer no longer honours the sign-in: that is final, whatever is in hand.
     held.shift()?.();
-    let ended: unknown = null;
-    for (let turn = 0; turn < 400 && ended === null; turn++) {
-      ended = await told(client.token());
-      if (ended === null) await Bun.sleep(5);
-    }
+    const ended = await until("a caller told that the sign-in ended", () => told(client.token()));
     expect(ended).toBeInstanceOf(SignInEndedError);
     expect((ended as Error).message).toContain(SIGNIN_COMMAND);
-    // Nothing is held after it: past the slot, with the issuer down again, the caller is told at
-    // its deadline rather than handed the token the ended sign-in traded for.
+    // Nothing is held after it: past the slot, with the issuer down again, the caller is told
+    // what the trade came to rather than handed the token the ended sign-in traded for.
     clock.now += 60_000;
-    const down = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
+    const down = await answerOf(client);
     expect(down).toBeInstanceOf(TradeRetryingError);
     expect((down as Error).message).toContain("HTTP 503");
     expect(broker.trades.length).toBe(1);

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
@@ -40,7 +41,14 @@ daemon_state() { printf '%s' "$STATE"; }
 ${fn("capabilities_probed")}
 capabilities_probed`,
     ],
-    { env: { PATH: process.env.PATH ?? "", HOME: home, STATE: JSON.stringify(state) } }
+    {
+      env: {
+        ...bunCacheOff,
+        PATH: process.env.PATH ?? "",
+        HOME: home,
+        STATE: JSON.stringify(state),
+      },
+    }
   );
   if (ran.exitCode !== 0 && ran.exitCode !== 1)
     throw new Error(`capabilities_probed exited ${ran.exitCode}: ${ran.stderr}`);

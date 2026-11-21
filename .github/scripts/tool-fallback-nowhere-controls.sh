@@ -33,17 +33,18 @@ fi
 # Each install's own window: from its own mark to the mark of the install after it,
 # and for the last of them to this step's own time. No install here may reach the
 # seconds .github/scripts/ci-tools-proof.sh holds every timed install to, which
-# this step reads from that script rather than writing the number again: the rig holds
-# the sixteen corrupted cases below to that same bound, and a bound written in two
-# places is a bound that drifts, with the job then refusing two different things.
-# INSTALL_BOUND in that script is where the number lives, and the comment on it says
-# why it is the number it is. A window also names the install that hung.
-# A mark this step cannot read as a number is refused before any arithmetic, the way
-# `report` refuses a case whose mark holds no `started=`: a window read with no clock
-# is exactly the window the clock exists to catch, so it may not pass quietly. Left to
-# the arithmetic below, an empty mark reads as a large negative number, which is under
-# the bound, and then stops the loop on the empty operand with the step exiting 0 and
-# seven of the eight windows never read.
+# this step reads from that script rather than writing the number again, since a bound
+# written in two places is a bound that drifts. INSTALL_BOUND in that script is where
+# the number lives, and the comment on it says why it is the number it is. A window
+# also names the install that hung. These eight run the merge base's actions, whose
+# ci-tools.sh writes no end record, so the clock is what this step has; the sixteen
+# corrupted cases of the job run this tree's actions, and `report` reads the record each
+# of their installs writes as its last act (CI_TOOLS_PROOF_ENDED) instead.
+# A mark this step cannot read as a number is refused before any arithmetic: a window
+# read with no clock is exactly the window the clock exists to catch, so it may not pass
+# quietly. Left to the arithmetic below, an empty mark reads as a large negative number,
+# which is under the bound, and then stops the loop on the empty operand with the step
+# exiting 0 and seven of the eight windows never read.
 # A bound this step cannot read is refused too, for a different reason, since the step
 # would fail either way: driven with the guard taken out, an empty bound leaves
 # `[ "$seconds" -lt "" ]` failing on every window, so all eight land in `slow` and the

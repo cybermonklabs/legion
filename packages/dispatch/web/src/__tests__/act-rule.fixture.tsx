@@ -4,6 +4,7 @@
 // sets the state of a component of its own, so which row fails, and why, does not depend on the
 // order the rows run in.
 import { afterAll, expect, test } from "bun:test";
+import { until } from "@legion/test-fixtures/wait";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { act as reactAct, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -80,16 +81,21 @@ function LateTimerCount() {
 }
 
 // An update after the file's last row, whatever order the rows ran in: Bun runs this before the
-// preload's `afterAll`, and the timer lands inside the wait. A row's component cannot give this
-// case, because Testing Library's cleanup after each row unmounts it before its timer fires, and
-// React then prints nothing; so this hook mounts its own component on a root it unmounts itself.
+// preload's `afterAll`, and the hook waits for the timer's update to land. A row's component
+// cannot give this case, because Testing Library's cleanup after each row unmounts it before its
+// timer fires, and React then prints nothing; so this hook mounts its own component on a root it
+// unmounts itself. The wait is `until`'s plain poll of the text, not Testing Library's `waitFor`,
+// which would turn the act environment off and so silence the message this case is for.
 afterAll(async () => {
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
   act(() => {
     root.render(<LateTimerCount />);
   });
-  await Bun.sleep(80);
+  await until(
+    "LateTimerCount's timer to land its update",
+    () => container.textContent === "landed"
+  );
   act(() => {
     root.unmount();
   });

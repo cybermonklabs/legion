@@ -43,5 +43,11 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+# Twice the longest green run on record of this proof or of its siblings, whose run makes this
+# same run around another driver, rounded up to the minute: this proof's own 6 green e2e.yaml jobs
+# up to 2026-11-18 (none in a green run) took at most 346 s (run 43872759148), which the 480 it had
+# before held only 1.39 times, and the siblings' longest, handoff-records.sh's proof step, 229 s
+# (run 44096585513).
+proof_guard 720
 live_daemon_proof 'merge wait readable' merge-wait-readable TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive \
   "${MERGE_WAIT_READABLE_EVIDENCE_DIR:-}"

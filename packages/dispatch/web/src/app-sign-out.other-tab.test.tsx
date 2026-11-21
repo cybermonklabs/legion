@@ -1,4 +1,4 @@
-import { expect, jest, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { act, screen, waitFor } from "@testing-library/react";
 
 import { onRealTurns, realClock, tick } from "./__tests__/fake-clock";
@@ -11,6 +11,12 @@ import { writesOf } from "./features/writes/write-store";
 // signs out until that tab says how it ended, or goes: the writes are discarded once Dispatch has
 // ended the session, and go on once it still names the person. The rows of this tab's own
 // sign-out are in `app-sign-out.test.tsx`.
+
+// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+// `realClock`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 // W57. A tab whose sign-out held this tab's writes went without saying how it ended: it closed,
 // crashed or was discarded, so only Dispatch knows whether the sign-out landed. This tab reads
@@ -283,8 +289,9 @@ test("a tab holding writes for another tab's sign-out resumes them once its leas
   // On the fake clock, so the lease and the settle after it are moved past in steps of
   // `STEP_MS` rather than waited out, and the time the writes resume is counted in those steps:
   // the steps are the only thing that moves the clock between the hold and the resume, with the
-  // real turns each step needs for what it set going (`onRealTurns`), so no poll of `waitFor`,
-  // whose count depends on how loaded the machine is, moves it (dispatch://INFRA-1505).
+  // real turns each step needs for what it set going (`onRealTurns`, one step every
+  // `TURNS_PER_STEP` turns), so no poll of `waitFor`, whose count depends on how loaded the
+  // machine is, moves it (dispatch://INFRA-1505).
   jest.useFakeTimers();
   const app = renderApp({
     whoAmI: async () => ({ event_head: "0", kind: "user", login: "alice" }),
@@ -301,17 +308,32 @@ test("a tab holding writes for another tab's sign-out resumes them once its leas
 
     signer.say({ signingOut: "alice" });
     const waiting = "CORE-1 set to done — Waiting for a sign-out in another tab";
-    await onRealTurns(() => screen.queryByText(waiting) !== null);
+    await onRealTurns("alice's write to say it waits for the other tab's sign-out", () => {
+      return screen.queryByText(waiting) !== null;
+    });
     expect(screen.getByText(waiting)).toBeInTheDocument();
     const made = attempts.length;
 
     const STEP_MS = 100;
+    const TURNS_PER_STEP = 20;
     let held = 0;
-    while (attempts.length === made && held <= SIGN_OUT_SETTLE_MS + 7_500) {
-      act(() => jest.advanceTimersByTime(STEP_MS));
-      held += STEP_MS;
-      await onRealTurns(() => attempts.length > made, 20);
-    }
+    let turns = 0;
+    await onRealTurns(
+      "alice's held writes to resume once the lease lapses",
+      () => {
+        return attempts.length > made;
+      },
+      {
+        each: () => {
+          if (turns % TURNS_PER_STEP === 0) {
+            act(() => jest.advanceTimersByTime(STEP_MS));
+            held += STEP_MS;
+          }
+          turns += 1;
+        },
+        state: () => `the clock moved ${held} ms past the hold, in steps of ${STEP_MS} ms`,
+      }
+    );
     expect(attempts.length).toBeGreaterThan(made);
     expect(held).toBeGreaterThanOrEqual(SIGN_OUT_SETTLE_MS + 5_500);
     expect(held).toBeLessThanOrEqual(SIGN_OUT_SETTLE_MS + 6_500);

@@ -428,11 +428,10 @@ notices build (dispatch://INFRA-1413's A2).
 
 ## sessions_script: The session message-wait suite's own job: the suite
 
-The session message-wait suite's own job: the suite, the script it spawns, and the
-Bun that runs both. No install: the two import node: builtins and bun alone, so no
-lockfile and no workspace manifest is an input of this job. The lint and the
-typecheck of the same directory stay in the test job, which the `test` filter
-names scripts/sessions for.
+The session message-wait suite's own job: the suite, the script it spawns, the shared
+test fixtures the suite imports and preloads, and the Bun install that resolves them.
+The lint and the typecheck of the same directory stay in the test job, which the `test`
+filter names scripts/sessions for.
 
 ## pi_legion: src/skills-guard.test.ts spawns packages/claude-envoy/scripts/build.ts
 
@@ -473,7 +472,7 @@ The dashboard's tsc program compiles @legion/envoy-client's sources, and its e2e
 helpers' test/fake-dispatch with them, through the workspace's "bun" export
 condition, so check-ts-filters.sh holds this filter to both. The two suites that
 import it, `e2e/__tests__/delivery-live-probe.test.ts:6-9` and
-local-instance-support.test.ts:2-5, run in this job's test step and in no other,
+local-instance-support.test.ts:4-7, run in this job's test step and in no other,
 so that read is this gate's (ci_job_reads.py's dispatch_ui).
 
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
@@ -903,6 +902,12 @@ every text file git lists under these roots (OLD_RULE_ROOTS) and every AGENTS.md
 the root's and the nested ones among them, so a text there that states the
 replaced rule must start this job. The recordings under packages/dispatch/e2e
 start it too, though the row leaves them out: this filter takes no `!` pattern.
+The CLI guide, packages/envoy/cmd/dispatch/README.md, is in the filter because
+the same file's `states the rule` row (`src/__tests__/dispatch-who-waits.test.ts:765,769`)
+reads its sentence on an assignee move, which must name the project's default
+assignee. packages/envoy/internal/bus/testdata/private-stream-subjects.json is in
+it because `src/__tests__/stream-topics.test.ts:113,120` reads the listener's own
+cases of which topics reach a private stream subject from that file.
 
 ## envoy_go_race: The shared race job: the closure of `go test -race`
 
@@ -1492,10 +1497,14 @@ So on a step with no `continue-on-error` a bound is loud: it fails the job. This
 are in .github/workflows/ci-job-tool-fallback.yaml, and on one of the twenty-four installs
 there whose control passes a step whose `outcome` is `failure`, a bound is silent: a hang
 would satisfy that control and leave the job green, where the job's own ceiling would have
-cancelled it and failed ci-ok. That is why each of those installs is timed as well as read -
-the eight with nowhere to go by the control step "Check all eight installs with nowhere to go failed, and failed in their own time", the sixteen corrupted cases by
-`report` itself - and why a new bound on a step some later assertion accepts the failure of
-needs the same treatment or none at all (dispatch://INFRA-2605).
+cancelled it and failed ci-ok. That is why each of those installs is read for whether it
+ended on its own as well as for its outcome - the eight with nowhere to go by the clock, in
+the control step "Check all eight installs with nowhere to go failed, and failed in their own
+time", since they run the merge base's actions, whose ci-tools.sh writes no end record; the
+sixteen corrupted cases by `report` in .github/scripts/ci-tools-proof.sh, which reads no
+clock but the end record each of their installs writes as its last act
+(.github/scripts/ci-tools.sh:265-270) - and why a new bound on a step some later assertion
+accepts the failure of needs the same treatment or none at all (dispatch://INFRA-2605).
 
 ## Why the tool-fallback job needs no packages scope
 

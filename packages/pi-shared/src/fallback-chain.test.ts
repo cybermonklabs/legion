@@ -3,9 +3,10 @@ import type { HostModel } from "./pi-types";
 
 /**
  * The chain resolver against fakes of the three Oh My Pi modules it loads, registered before the
- * module under test is imported, exactly as the AskGate entry's test registers its own
- * (`packages/pi-envoy/extensions/askgate/askgate.test.ts:5118-5240`): a static import of the
- * resolver would bind the real specifiers, which resolve only inside Oh My Pi.
+ * module under test is imported, exactly as the AskGate entry's test registers its own (the
+ * `mock.module` calls inside `describe("askgate.ts, the entry")` of
+ * `packages/pi-envoy/extensions/askgate/askgate.test.ts`): a static import of the resolver would
+ * bind the real specifiers, which resolve only inside Oh My Pi.
  */
 
 /** The deployment's `retry.fallbackChains`, keyed as the host keys them. */

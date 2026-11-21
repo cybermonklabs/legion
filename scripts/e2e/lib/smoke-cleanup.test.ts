@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
 
@@ -243,6 +244,7 @@ function run(
   writeFileSync(join(state, "comments"), "");
   const result = Bun.spawnSync(["bash", "-c", script, name], {
     env: {
+      ...bunCacheOff,
       PATH: `${bin}:${process.env.PATH}`,
       HOME: runDir,
       RUN: runDir,

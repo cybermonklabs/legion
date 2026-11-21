@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { approvalAsk, edited, handedBack, opened, recordedAt } from "./approval-events.ts";
 
@@ -110,7 +111,7 @@ describe("ask census since #1671", () => {
       ["bun", script, "--from", recordedAt(2), "--to", recordedAt(7), "--project", "TEST"],
       {
         cwd: home,
-        env: { ...environment, HOME: home },
+        env: { ...bunCacheOff, ...environment, HOME: home },
         stdout: "pipe",
         stderr: "pipe",
       }
@@ -172,7 +173,7 @@ describe("ask census since #1671", () => {
       ["bun", script, "--from", recordedAt(2), "--to", recordedAt(7), "--project", "TEST"],
       {
         cwd: checkout,
-        env: { ...environment, HOME: home },
+        env: { ...bunCacheOff, ...environment, HOME: home },
         stdout: "pipe",
         stderr: "pipe",
       }

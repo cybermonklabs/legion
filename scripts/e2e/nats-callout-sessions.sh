@@ -226,6 +226,14 @@ withholds() {
 }
 # shellcheck source=scripts/e2e/lib/codex-host.sh
 source "$root/scripts/e2e/lib/codex-host.sh"
+# credentialed LABEL: whether that session's connection is named a credential that reaches it:
+# under seedless none is (told), and a Codex session told in its environment alone is not where the
+# installed manifest hands its server no NATS_AUTH (codex_manifest_gap).
+credentialed() {
+  told "$1"
+  { [ "${#told_env[@]}" -gt 0 ] || [ "$told_file" = true ]; } || return 1
+  [ -z "$(codex_manifest_gap "$1")" ]
+}
 [ -n "$pg_dsn" ] || refuse "name a Postgres server it may create databases on: LEGION_TEST_PG_DSN or DATABASE_URL"
 for tool in bun psql curl jq python3; do
   command -v "$tool" >/dev/null || refuse "$tool is not on PATH"
@@ -305,6 +313,14 @@ mkdir -p "$evidence/answers"
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/nats-callout-sessions.XXXXXX")
 work=$scratch
 mkdir -p "$work/logs"
+# The proof's one guard and one wait (scripts/e2e/lib/proof-wait.sh), and `running`, which ends a
+# wait on a client at once where that client has exited: packages/pi-envoy/scripts/local-stack.sh,
+# which clients.sh's `send` waits through, as smoke-role-takeover.sh sources it.
+# shellcheck source=packages/pi-envoy/scripts/local-stack.sh
+source "$root/packages/pi-envoy/scripts/local-stack.sh"
+# Guard 600 s: its own 9 green e2e.yaml jobs up to 2026-11-19 (runs 44488343282 to 44607587303,
+# of the four sessions' proof, #4490) took at most 245 s, setup included.
+proof_guard 600
 echo "nats-callout-sessions: evidence in $evidence (hosts: $hosts${control:+, control: $control})"
 
 # ---- teardown -----------------------------------------------------------------------------------
@@ -428,15 +444,8 @@ fi
 
 codex_pack
 
-# wait_for SECONDS COMMAND...: runs COMMAND every 0.2 s until it succeeds; 1 once SECONDS passed.
-wait_for() {
-  local deadline=$((SECONDS + $1))
-  shift
-  until "$@"; do
-    ((SECONDS < deadline)) || return 1
-    sleep 0.2
-  done
-}
+# Every wait below is proof-wait.sh's wait_for or wait_held, which ends at the guard's deadline or
+# at once where what it waits on can no longer happen (wait_impossible), and takes no bound.
 
 # ---- the stack ----------------------------------------------------------------------------------
 stack_log=$evidence/dev-stack.log
@@ -450,13 +459,11 @@ TMPDIR=$stack_tmp bash "$root/packages/envoy/scripts/dev-stack.sh" --callout --d
 stack_pid=$!
 stack_ready() {
   grep -q '^dev-stack: ready\.' "$stack_log" 2>/dev/null && return 0
-  kill -0 "$stack_pid" 2>/dev/null || {
-    tail -n 30 "$stack_log" >&2
-    refuse "dev-stack.sh stopped before it was ready"
-  }
+  kill -0 "$stack_pid" 2>/dev/null ||
+    wait_impossible="dev-stack.sh stopped before it was ready: $(tail -n 30 "$stack_log" | tr '\n' ' ')"
   return 1
 }
-wait_for 1200 stack_ready || refuse "dev-stack.sh was not ready within 20 minutes; see $stack_log"
+wait_held "dev-stack.sh to be ready" stack_ready || refuse "${wait_gave_up}; see $stack_log"
 # The banner's exports, read as values: each `  export NAME=value` line, a quoted value unquoted.
 while IFS= read -r line; do
   name=${line#  export }
@@ -530,7 +537,8 @@ broker_env=(
   AGENT_SECRETS_MACHINE_TOKEN_FILE="$DEV_STACK_EXCHANGE_TOKEN_FILE"
 )
 heartbeat_ms=5000
-client_reply_timeout=60
+# The clients' own waits (@legion/test-fixtures/wait) end at this proof's deadline, which each is
+# handed by name, since each starts under `env -i`.
 # clients.sh's client_fifo, client_ready and send: one stdin fifo per client, its ready line, and
 # one command answered on its stdout.
 # shellcheck source=packages/pi-envoy/scripts/role-takeover/clients.sh
@@ -567,8 +575,10 @@ if [ "$hosts" = plugins ]; then
 # The Oh My Pi session, told NATS_AUTH=broker in its environment.
 omp_home=$work/omp-home
 mkdir -p "$omp_home/cwd"
-jq -n --arg url "$ENVOY_URL" --arg token "$ENVOY_TOKEN" --arg nats "$NATS_URLS" \
-  '{envoy: {url: $url, token: $token, natsUrls: [$nats]}, dispatch: {enabled: false}, askgate: {enabled: false}}' \
+# The listener's token goes to jq in its environment ($ENV), never as an argument, which every
+# process can read in /proc/<pid>/cmdline while jq runs; the same for each envoy.json below.
+ENVOY_TOKEN=$ENVOY_TOKEN jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" \
+  '{envoy: {url: $url, token: $ENV.ENVOY_TOKEN, natsUrls: [$nats]}, dispatch: {enabled: false}, askgate: {enabled: false}}' \
   >"$omp_home/envoy.json"
 client_fifo omp
 # Every client closes the ends this shell holds of every client's fifo (close_held_fifos), so it
@@ -576,11 +586,14 @@ client_fifo omp
 (close_held_fifos && cd -- "$root/packages/pi-envoy" &&
   exec env -i PATH="$PATH" HOME="$omp_home" TMPDIR="$scratch" ENVOY_CONFIG_FILE="$omp_home/envoy.json" \
     ENVOY_HEARTBEAT_MS="$heartbeat_ms" ROLE_TAKEOVER_CWD="$omp_home/cwd" \
-    ROLE_TAKEOVER_CLIENT_LOG="$work/logs/omp-notices.log" "${broker_env[@]}" "${omp_auth[@]}" \
+    ROLE_TAKEOVER_CLIENT_LOG="$work/logs/omp-notices.log" LEGION_PROOF_DEADLINE_MS="$LEGION_PROOF_DEADLINE_MS" \
+    "${broker_env[@]}" "${omp_auth[@]}" \
     bun --preload "$drivers/host-stub.ts" "$drivers/omp-client.ts") \
   <"$work/omp.stdin" >"${client_out[omp]}" 2>"$work/logs/omp.err" &
+client_pid[omp]=$!
 scenario_pids+=($!)
-wait_for 90 client_ready omp || refuse "the Oh My Pi client did not start: $(tail -n 10 "$work/logs/omp.err")"
+wait_held "the Oh My Pi client to start" running "${client_pid[omp]}" "the Oh My Pi client" client_ready omp ||
+  refuse "the Oh My Pi client did not start (${wait_gave_up}): $(tail -n 10 "$work/logs/omp.err")"
 send omp "$(jq -cn --arg s "$omp_session" '{op: "start", session: $s}')"
 
 # The Claude Code session, told `natsAuth: broker` in its envoy.json.
@@ -588,8 +601,8 @@ claude_config=$work/claude-config
 claude_state=$work/claude-state
 mkdir -p "$claude_config" "$claude_state"
 told claude
-jq -n --arg url "$ENVOY_URL" --arg token "$ENVOY_TOKEN" --arg nats "$NATS_URLS" --argjson named "$told_file" \
-  '{envoy: ({enabled: true, url: $url, token: $token, natsUrls: [$nats]} + (if $named then {natsAuth: "broker"} else {} end)),
+ENVOY_TOKEN=$ENVOY_TOKEN jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" --argjson named "$told_file" \
+  '{envoy: ({enabled: true, url: $url, token: $ENV.ENVOY_TOKEN, natsUrls: [$nats]} + (if $named then {natsAuth: "broker"} else {} end)),
     dispatch: {enabled: false}}' >"$claude_config/envoy.json"
 printf '%s\n' "${broker_env[@]}" >"$work/claude.env"
 # The inbox socket goes in a short directory of its own: a unix socket path past 107 bytes is
@@ -599,22 +612,23 @@ client_fifo claude
 claude_flags=()
 ! withholds claude || claude_flags=(--withhold-inbox-answers true)
 (close_held_fifos && cd -- "$root/packages/claude-envoy" &&
-  exec env -i PATH="$PATH" HOME="$work/bun-home" TMPDIR="$scratch" \
+  exec env -i PATH="$PATH" HOME="$work/bun-home" TMPDIR="$scratch" LEGION_PROOF_DEADLINE_MS="$LEGION_PROOF_DEADLINE_MS" \
     bun "$drivers/claude-client.ts" --server "$channel_server" --session "$claude_session" \
     --state-dir "$claude_state" --config-dir "$claude_config" --heartbeat-ms "$heartbeat_ms" \
     --stderr "$work/logs/claude-channel.err" --env-file "$work/claude.env" --inbox "$claude_tmp/inbox" \
     "${claude_flags[@]}") \
   <"$work/claude.stdin" >"${client_out[claude]}" 2>"$work/logs/claude.err" &
+client_pid[claude]=$!
 scenario_pids+=($!)
-wait_for 120 client_ready claude ||
-  refuse "the Claude Code client did not start: $(tail -n 10 "$work/logs/claude.err") $(tail -n 10 "$work/logs/claude-channel.err" 2>/dev/null)"
+wait_held "the Claude Code client to start" running "${client_pid[claude]}" "the Claude Code client" client_ready claude ||
+  refuse "the Claude Code client did not start (${wait_gave_up}): $(tail -n 10 "$work/logs/claude.err") $(tail -n 10 "$work/logs/claude-channel.err" 2>/dev/null)"
 else
   # Real Oh My Pi in RPC mode, this checkout's packed pi-envoy its one extension, told
   # NATS_AUTH=broker in its environment and its Envoy in ~/.config/legion/envoy.json.
   omp_home=$work/real/omp
   mkdir -p "$omp_home/home/.config/legion" "$omp_home/home/.omp" "$omp_home/cwd" "$omp_home/sessions" "$omp_home/tmp"
-  jq -n --arg url "$ENVOY_URL" --arg token "$ENVOY_TOKEN" --arg nats "$NATS_URLS" \
-    '{envoy: {url: $url, token: $token, natsUrls: [$nats]}, dispatch: {enabled: false}, askgate: {enabled: false}}' \
+  ENVOY_TOKEN=$ENVOY_TOKEN jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" \
+    '{envoy: {url: $url, token: $ENV.ENVOY_TOKEN, natsUrls: [$nats]}, dispatch: {enabled: false}, askgate: {enabled: false}}' \
     >"$omp_home/home/.config/legion/envoy.json"
   [ ! -d "$natives" ] || ln -sfT "$natives" "$omp_home/home/.omp/natives"
   mkfifo "$omp_home/stdin"
@@ -633,7 +647,8 @@ else
     [ -f "$omp_home/rpc.log" ] &&
       jq -ecnR 'first(inputs | fromjson? | select(.type == "response" and .id == "ncs-state"))' "$omp_home/rpc.log"
   }
-  wait_for 120 rpc_state >/dev/null || refuse "Oh My Pi did not answer get_state: $(tail -n 10 "$omp_home/stderr.log")"
+  wait_held "Oh My Pi to answer get_state" rpc_state ||
+    refuse "Oh My Pi did not answer get_state (${wait_gave_up}): $(tail -n 10 "$omp_home/stderr.log")"
   state=$(rpc_state)
   omp_session=$(jq -r '.data.sessionId' <<<"$state")
   omp_transcript=$(jq -r '.data.sessionFile' <<<"$state")
@@ -652,8 +667,8 @@ else
   # path past 107 bytes is refused, which a run's nested scratch directory can pass.
   claude_tmp=$(mktemp -d /tmp/ncs-claude.XXXXXX)
   told claude
-  jq -n --arg url "$ENVOY_URL" --arg token "$ENVOY_TOKEN" --arg nats "$NATS_URLS" --argjson named "$told_file" \
-    '{envoy: ({enabled: true, url: $url, token: $token, natsUrls: [$nats]} + (if $named then {natsAuth: "broker"} else {} end)),
+  ENVOY_TOKEN=$ENVOY_TOKEN jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" --argjson named "$told_file" \
+    '{envoy: ({enabled: true, url: $url, token: $ENV.ENVOY_TOKEN, natsUrls: [$nats]} + (if $named then {natsAuth: "broker"} else {} end)),
       dispatch: {enabled: false}}' >"$claude_home/config/envoy.json"
   jq -n --arg bun "$(command -v bun)" --arg entry "$claude_plugin/dist/envoy-channel.js" \
     --arg data "$claude_home/config/envoy-plugin-data" \
@@ -677,12 +692,15 @@ else
   scenario_pids+=($!)
   # One turn of its own first, in the bridge's own prompt frame (it ignores Claude Code's raw user
   # frames): Claude Code's print mode starts its MCP servers with a turn. The session is up once its
-  # channel server has registered it with the listener; a session whose connection the hub does not
-  # admit (the seedless control) may never register, and its receives then say so.
+  # channel server has registered it with the listener. A session named no credential (the
+  # seedless control) is never admitted, so no registration is waited for there, and its receives
+  # say what they find.
   jq -cn '{type: "prompt", id: "ncs-first", message: "Reply with the one word: ready."}' >&"$claude_fd"
   claude_registered() { printf 'Authorization: Bearer %s' "$ENVOY_TOKEN" | curl -fs --max-time 5 -o /dev/null -H @- "$ENVOY_URL/v1/registry/$claude_session"; }
-  wait_for 240 claude_registered ||
-    note "Claude Code's channel server has not registered $claude_session: $(tail -n 3 "$claude_home/stderr.log")"
+  if credentialed claude; then
+    wait_held "Claude Code's channel server to register $claude_session" claude_registered ||
+      refuse "Claude Code's channel server did not register $claude_session (${wait_gave_up}): $(tail -n 3 "$claude_home/stderr.log")"
+  fi
   note "Claude Code session $claude_session"
 fi
 
@@ -745,7 +763,7 @@ omp_answer() {
 omp_entries() {
   local answer
   printf '{"type":"get_entries","id":"%s"}\n' "$1" >&"$omp_fd"
-  wait_for 10 omp_answer "$1" >/dev/null || return 1
+  wait_held "Oh My Pi's answer to get_entries $1" omp_answer "$1" || return 1
   answer=$(omp_answer "$1") || return 1
   if ! jq -e '.success == true' <<<"$answer" >/dev/null; then
     jq -r '.error // "an answer with success not true"' <<<"$answer" >"$omp_entries_error"
@@ -802,6 +820,31 @@ acked_past() {
     <<<"$state"
 }
 
+# ack_pending SESSION: the session's consumer holds a delivery it has not had acked.
+ack_pending() {
+  local state
+  state=$(consumer "$1") && [ -n "$state" ] || return 1
+  jq -e '.num_ack_pending > 0' <<<"$state" >/dev/null
+}
+# The marker of the first message each withheld session's host showed and never had acked, by
+# label; none before one is (message_each sets it).
+declare -A withheld_marker=()
+# decided SESSION FLOOR LABEL MARKER: what the receive of MARKER comes to is settled: the session's
+# consumer acked a sequence past FLOOR (acked_past), or the control withholds that ack. A session
+# whose connection is named no credential (credentialed: every one under seedless, codex-env under
+# manifest-drops-nats-auth) is never admitted, so nothing reaches it; a withheld session's stand-in
+# (withholds: Claude Code under withhold-ack, each Codex session under withhold-ack-codex) never
+# answers what its plugin hands it, so a message its host shows is never acked, and one sent while
+# an earlier one waits on its answer is held behind it. Until the host shows one, a receive is
+# settled only by the host showing it: the consumer's ack pending comes before the host holds the
+# message, and a check read then would say it did not arrive rather than that it was not acked.
+decided() {
+  acked_past "$1" "$2" >/dev/null && return 0
+  credentialed "$3" || return 0
+  withholds "$3" || return 1
+  received "$3" "$4" || { [ -n "${withheld_marker[$3]:-}" ] && ack_pending "$1"; }
+}
+
 # message_each STEP: one direct message to each session, by the listener's own send route, then a
 # check per session that its own consumer acked it, naming where it stopped when it did not.
 message_each() {
@@ -820,22 +863,25 @@ message_each() {
         '{source: "agent", source_session: "nats-callout-sessions", target_session: $t, message: $m}')") ||
       code="unreachable"
     acked=false
-    wait_for 45 acked_past "$session" "$floor" >/dev/null && acked=true
+    wait_held "s-$session to ack '$marker', or the control to withhold it" \
+      decided "$session" "$floor" "$label" "$marker" >/dev/null || true
+    acked_past "$session" "$floor" >/dev/null && acked=true
     # The hub's record of the session's consumer, kept whatever the receive came to.
     consumer "$session" >"$evidence/answers/$step-$label-consumer.json" || true
     if [ "$acked" = true ]; then
       sequence=$(acked_past "$session" "$floor")
       if ! admitted_as "$session"; then
         failed "$step ($label)" "s-$session acked stream sequence $sequence, but the hub lists no connection admitted as session/$session"
-      elif ! wait_for 15 received "$label" "$marker"; then
+      elif ! wait_held "the $label host to show '$marker'" received "$label" "$marker"; then
         failed "$step ($label)" "s-$session acked stream sequence $sequence, but $(not_received "$label" "$marker")"
       else
         pass "$step ($label): s-$session acked stream sequence $sequence, admitted as session/$session"
       fi
     elif received "$label" "$marker"; then
-      failed "$step ($label)" "not acked: the host shows the message, but s-$session acked nothing past stream sequence $floor within 45 s"
+      [ -n "${withheld_marker[$label]:-}" ] || withheld_marker[$label]=$marker
+      failed "$step ($label)" "not acked: the host shows the message, but s-$session acked nothing past stream sequence $floor${wait_gave_up:+ ($wait_gave_up)}"
     elif admitted_as "$session"; then
-      failed "$step ($label)" "admitted as session/$session, but the message (send answered $code) did not arrive within 45 s"
+      failed "$step ($label)" "admitted as session/$session, but the message (send answered $code) did not arrive${wait_gave_up:+ ($wait_gave_up)}"
     else
       failed "$step ($label)" "not admitted: the hub lists no connection admitted as session/$session (send answered $code)$(codex_manifest_gap "$label")"
     fi
@@ -852,18 +898,30 @@ restart() {
   reconnects=$(grep -c 'nats reconnected' "$DEV_STACK_DIR/logs/listener.log" 2>/dev/null || true)
   # shellcheck disable=SC2153 # DEV_STACK_PID is the banner's, read above by name
   kill "-$signal" "$DEV_STACK_PID"
-  restarted() { [ "$(grep -c "^dev-stack: $what restarted " "$stack_log" || true)" -gt "$before" ]; }
-  wait_for 60 restarted || refuse "dev-stack.sh did not restart $what on SIG$signal; see $stack_log"
+  # Each COMMAND takes what it compares as arguments: wait_held's own locals (`what` among them)
+  # would shadow restart's while the COMMAND runs inside it.
+  restarted() { [ "$(grep -c "^dev-stack: $1 restarted " "$stack_log" || true)" -gt "$2" ]; }
+  wait_held "dev-stack.sh to restart $what on SIG$signal" restarted "$what" "$before" ||
+    refuse "dev-stack.sh did not restart $what on SIG$signal (${wait_gave_up}); see $stack_log"
   echo "   $(grep "^dev-stack: $what restarted " "$stack_log" | tail -n 1)"
   if [ "$what" = natsd ]; then
-    reconnected() { [ "$(grep -c 'nats reconnected' "$DEV_STACK_DIR/logs/listener.log" 2>/dev/null || true)" -gt "${reconnects:-0}" ]; }
-    wait_for 60 reconnected || refuse "the listener did not reconnect to the restarted natsd within 60 s; see $DEV_STACK_DIR/logs/listener.log"
+    reconnected() { [ "$(grep -c 'nats reconnected' "$DEV_STACK_DIR/logs/listener.log" 2>/dev/null || true)" -gt "$1" ]; }
+    wait_held "the listener to reconnect to the restarted natsd" reconnected "${reconnects:-0}" ||
+      refuse "the listener did not reconnect to the restarted natsd (${wait_gave_up}); see $DEV_STACK_DIR/logs/listener.log"
   fi
+}
+
+# admitted LABEL: waits for the hub to admit that session's connection, which its traded token
+# brings about: a session whose connection is named no credential (credentialed) is never
+# admitted, so no admission is waited for there.
+admitted() {
+  credentialed "$1" || return 0
+  wait_held "the hub to admit session/$(session_of "$1")" admitted_as "$(session_of "$1")" || true
 }
 
 # Every session connects once its token is traded; the first message waits for that.
 for label in omp claude "${codex_labels[@]}"; do
-  wait_for 60 admitted_as "$(session_of "$label")" || true
+  admitted "$label"
 done
 message_each receives
 
@@ -892,7 +950,7 @@ if [ "$hosts" = plugins ]; then
     send "$label" "$(jq -cn --arg s "${codex_session[$label]}" '{op: "new", session: $s}')"
   done
   for label in omp claude "${codex_labels[@]}"; do
-    wait_for 60 admitted_as "$(session_of "$label")" || true
+    admitted "$label"
   done
   message_each receives-after-switch
 fi

@@ -1,36 +1,28 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
+import { analyzePattern } from "@legion/envoy-client/test/pattern-analysis";
 
 import { wordsOf } from "../refs/tree-fragment";
 import { lineWordsRaw } from "./issue-tree";
-import { isPlainText, parsedReading, plainReading, storedReading } from "./stored-reading";
+import {
+  edgeSpaceReads,
+  isPlainText,
+  parsedReading,
+  plainReading,
+  STORED_READING_PATTERNS,
+  storedReading,
+  storedTextParses,
+} from "./stored-reading";
 import { plainWords, plainWordsRaw, withShortAddresses } from "./tree-drafts";
-
-/** A wall-clock budget for one stored text read to words, not one of the machine-sensitive waits
- *  this package's defaults cover (`web/src/__tests__/setup.ts`). The regression it guards, a
- *  parse with no bound on how deeply lists nest, spends about 9 s on the body below, and the
- *  bounded parse well under one, so a budget far above what a loaded pod spends on the bounded
- *  parse fails only an unbounded one. */
-const NESTING_BUDGET_MS = 3_000;
-
-/** A wall-clock budget for drawing again the lines of an issue's stored texts, each read once
- *  already. A result whose read carries no reading - a server of the build before sends none -
- *  has its line read from its stored text, and an issue under review holds hundreds of results:
- *  the redesign's own root issue held 431 results and 492 distinct stored texts on 2026-11-18.
- *  Reading 900 such texts again from what the first draw read costs tens of milliseconds; parsing
- *  each again, as a first draw does, costs about a second on a pod's CPU. So a budget far above
- *  the first and far below the second fails only a draw that parses every text again. */
-const REDRAW_BUDGET_MS = 300;
 
 // sjawhar/legion#2519: a stored text is read on the page's own thread, and micromark gives every
 // open list or quote a turn on every line, so a body that opens thousands of them cost seconds or
 // overflowed the stack. The parse holds lists and quotes to the document service's bound of 100
 // blocks, where a list marker opens two (the list and its item), so the first 50 markers open
-// lists and the rest read as the text they are, as the server reads them.
+// lists and the rest read as the text they are, as the server reads them. The words are the
+// bound's own reading, and no clock decides the row: a parse with no bound opens all 3000 lists
+// and reads `x` alone, about 9 s later, or overflows the stack.
 test("a stored text of thousands of nested list markers reads to words within the nesting bound", () => {
-  const start = performance.now();
-  const words = plainWordsRaw(`${"- ".repeat(3000)}x`);
-  expect(performance.now() - start).toBeLessThan(NESTING_BUDGET_MS);
-  expect(words).toBe(`${"- ".repeat(2950)}x`);
+  expect(plainWordsRaw(`${"- ".repeat(3000)}x`)).toBe(`${"- ".repeat(2950)}x`);
 });
 
 // A quote marker opens one block, so the first 100 of 150 open quotes and the 50 past the bound
@@ -56,20 +48,26 @@ test("a stored text's front matter reads as its fenced lines, and an unclosed fe
 // from its stored text where the node has no reading, as a result's is from a server that sends
 // none. The readings of the texts a draw read are remembered so that the next draw reads them
 // rather than parses them again: 900 distinct stored texts, each reading held by what asked for
-// it, must draw again within the budget, the second draw in the same order as the first, as a
-// page draws its rows.
+// it, must draw again with no parse at all, the second draw in the same order as the first, as a
+// page draws its rows. The parses are counted (`storedTextParses`), not timed: the redesign's
+// own root issue held 431 results and 492 distinct stored texts on 2026-11-18, and each text
+// parsed again on every draw is what this row refuses.
 test("the lines of more stored texts than the memo holds are drawn again without parsing them again", () => {
+  // Texts of this run's own, so a rerun of the row (`--rerun-each`) finds none of them remembered.
+  const run = crypto.randomUUID();
   const texts = Array.from(
     { length: 900 },
     (_, at) =>
-      `The run \`bun run test:web web/src/case-${at}.test.ts\` ends with **0 fail**, and names each test below as passed.\n` +
+      `The run \`bun run test:web web/src/case-${at}.test.ts\` ends with **0 fail**, and names each test below as passed (${run}).\n` +
       `- the first named test of case ${at}: pass\n- the second named test of case ${at}: pass\n` +
       `${"It held at the head, read with the junit report. ".repeat(12)}`
   );
+  const before = storedTextParses();
   for (const text of texts) lineWordsRaw({ text });
-  const start = performance.now();
+  const firstDraw = storedTextParses();
+  expect(firstDraw - before, "the first draw parses each text once").toBe(texts.length);
   for (const text of texts) lineWordsRaw({ text });
-  expect(performance.now() - start).toBeLessThan(REDRAW_BUDGET_MS);
+  expect(storedTextParses() - firstDraw, "texts the second draw parsed again").toBe(0);
 });
 
 /** `words` on one line, its white space collapsed to single spaces, as every one-line reading of
@@ -347,4 +345,66 @@ test("the parse reads a bare URL, a www address and an email as the words they a
   expect(collapsed(wordsOf(withShortAddresses(reading)))).toBe(
     "See https://example.com/a?b=c, www.example.com and someone@example.com beside ACME-12."
   );
+});
+
+// Every line of a plain text is trimmed of the spaces and tabs it opens and ends with
+// (`plainReading`), on the page's own thread on every draw, and the text is what an author wrote,
+// up to a body's 1 MiB: a line that costs more than its length would stall the page. A run of
+// spaces followed by any other character is the line the end-anchored trim it once ran
+// (`/[ \t]+$/`) read from every start in the run: about the square of the run, which no count sees
+// inside a regular expression. The trim is a loop now, and the count is of the characters it
+// reads, at two lengths of each run.
+describe("the edge spaces a plain text's lines are trimmed of", () => {
+  /** The characters the trim read for `text`, a plain text whose reading is one paragraph of
+   *  `words`. */
+  function readsFor(text: string, words: string): number {
+    expect(isPlainText(text)).toBe(true);
+    const before = edgeSpaceReads();
+    const reading = storedReading(text);
+    const read = edgeSpaceReads() - before;
+    expect(reading).toEqual({
+      content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+      type: "doc",
+    });
+    return read;
+  }
+
+  const n = 20_000;
+
+  test("a line that ends in a run of spaces costs the run once", () => {
+    const short = readsFor(`x${" ".repeat(n)}`, "x");
+    const long = readsFor(`x${" ".repeat(2 * n)}`, "x");
+    // The run is read from its end, once, and the line's first character a read more.
+    expect(short).toBeGreaterThanOrEqual(n);
+    expect(short).toBeLessThanOrEqual(n + 16);
+    expect(long).toBeLessThanOrEqual(2 * short);
+  });
+
+  test("a run of spaces between two words costs no more than its ends", () => {
+    const short = readsFor(`a${" ".repeat(n)}b`, `a${" ".repeat(n)}b`);
+    const long = readsFor(`a${" ".repeat(2 * n)}b`, `a${" ".repeat(2 * n)}b`);
+    // Each end stops the trim at its first character.
+    expect(short).toBeGreaterThan(0);
+    expect(short).toBeLessThanOrEqual(16);
+    expect(long).toBe(short);
+  });
+});
+
+// The patterns this module still runs on a stored text (`STORED_READING_PATTERNS`) go over the
+// whole of what an author wrote, and a pattern that backtracks costs more than linear work in it
+// within one call, which no count sees: JavaScriptCore counts no step a regular expression takes.
+// recheck's automaton checker decides it from the pattern's automaton instead, for every text and
+// not only one a row builds, with no clock of its own (`analyzePattern`, `timeout: null`), so its
+// verdict is the same on every machine, however loaded. The `/^[ \t]+|[ \t]+$/gu` the edge trim
+// ran before it became a loop reads `2nd degree polynomial` here.
+describe("each pattern a stored text is read with, as recheck's automaton checker reads it", () => {
+  for (const [name, pattern] of Object.entries(STORED_READING_PATTERNS)) {
+    test(`stored-reading.ts ${name} is linear in the text`, async () => {
+      const analysis = await analyzePattern(pattern);
+      expect(
+        analysis.status,
+        `stored-reading.ts ${name} /${analysis.source}/${analysis.flags} is ${analysis.status}: ${analysis.verdict}`
+      ).toBe("safe");
+    });
+  }
 });

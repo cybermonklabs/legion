@@ -5,7 +5,7 @@
 // and the proof a NATS connection carries, which the Go checker reads from a committed vector as
 // this suite reads the Go signer's.
 
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { createHash, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -17,17 +17,26 @@ function part(compact: string, at: number): Record<string, unknown> {
   return JSON.parse(Buffer.from(compact.split(".")[at] as string, "base64url").toString("utf8"));
 }
 
+/** The moment the proof's clock reads while it signs: `iat` is its whole second. */
+const SIGNED_AT = new Date("2026-03-04T05:06:07.890Z");
+
 test("a token endpoint proof carries jti, htm, htu and iat, and nothing else", async () => {
-  const key = await newDpopKey();
-  const compact = await key.proof({ method: "post", url: "http://broker.test/v1/oauth/token" });
-  expect(Object.keys(part(compact, 0)).sort()).toEqual(["alg", "jwk", "typ"]);
-  const claims = part(compact, 1);
-  expect(Object.keys(claims).sort()).toEqual(["htm", "htu", "iat", "jti"]);
-  expect(claims.htm).toBe("POST");
-  expect(claims.htu).toBe("http://broker.test/v1/oauth/token");
-  expect(Math.abs(Date.now() / 1000 - (claims.iat as number))).toBeLessThan(60);
-  expect(part(compact, 0).typ).toBe("dpop+jwt");
-  expect(part(compact, 0).alg).toBe("ES256");
+  // Bun holds `Date.now()`, which the proof stamps `iat` from, at SIGNED_AT; timers stay real.
+  setSystemTime(SIGNED_AT);
+  try {
+    const key = await newDpopKey();
+    const compact = await key.proof({ method: "post", url: "http://broker.test/v1/oauth/token" });
+    expect(Object.keys(part(compact, 0)).sort()).toEqual(["alg", "jwk", "typ"]);
+    const claims = part(compact, 1);
+    expect(Object.keys(claims).sort()).toEqual(["htm", "htu", "iat", "jti"]);
+    expect(claims.htm).toBe("POST");
+    expect(claims.htu).toBe("http://broker.test/v1/oauth/token");
+    expect(claims.iat).toBe(Math.floor(SIGNED_AT.getTime() / 1000));
+    expect(part(compact, 0).typ).toBe("dpop+jwt");
+    expect(part(compact, 0).alg).toBe("ES256");
+  } finally {
+    setSystemTime();
+  }
 });
 
 test("the proof's embedded key is the public half alone, and signs the proof", async () => {
@@ -177,24 +186,30 @@ function expectConnectionClaims(compact: string, accessToken: string, nonce: str
 }
 
 test("connectionProof verifies with jose", async () => {
-  const key = await newDpopKey();
-  const presented = "example-session-credential";
-  const nonce = "the-server-nonce-of-this-connection";
-  const compact = key.connectionProof({ accessToken: presented, nonce });
-  // Signed with no await: nats.js asks its authenticator for the CONNECT synchronously.
-  expect(typeof compact).toBe("string");
-  expectConnectionClaims(compact, presented, nonce);
-  expect(Math.abs(Date.now() / 1000 - (part(compact, 1).iat as number))).toBeLessThan(60);
-  // The key its header embeds signed it, and that key is this key's public half.
-  const verified = await jwtVerify(compact, EmbeddedJWK, {
-    typ: "dpop+jwt",
-    algorithms: ["ES256"],
-  });
-  expect(verified.protectedHeader.jwk).toEqual(key.publicJwk);
-  await jwtVerify(compact, key.publicJwk);
-  // Two proofs over one nonce are two proofs: each names a jti of its own.
-  const again = key.connectionProof({ accessToken: presented, nonce });
-  expect(part(again, 1).jti).not.toBe(part(compact, 1).jti);
+  // Bun holds `Date.now()`, which the proof stamps `iat` from, at SIGNED_AT; timers stay real.
+  setSystemTime(SIGNED_AT);
+  try {
+    const key = await newDpopKey();
+    const presented = "example-session-credential";
+    const nonce = "the-server-nonce-of-this-connection";
+    const compact = key.connectionProof({ accessToken: presented, nonce });
+    // Signed with no await: nats.js asks its authenticator for the CONNECT synchronously.
+    expect(typeof compact).toBe("string");
+    expectConnectionClaims(compact, presented, nonce);
+    expect(part(compact, 1).iat).toBe(Math.floor(SIGNED_AT.getTime() / 1000));
+    // The key its header embeds signed it, and that key is this key's public half.
+    const verified = await jwtVerify(compact, EmbeddedJWK, {
+      typ: "dpop+jwt",
+      algorithms: ["ES256"],
+    });
+    expect(verified.protectedHeader.jwk).toEqual(key.publicJwk);
+    await jwtVerify(compact, key.publicJwk);
+    // Two proofs over one nonce are two proofs: each names a jti of its own.
+    const again = key.connectionProof({ accessToken: presented, nonce });
+    expect(part(again, 1).jti).not.toBe(part(compact, 1).jti);
+  } finally {
+    setSystemTime();
+  }
 });
 
 test("connectionProof works with a key this process makes and an imported box key", async () => {

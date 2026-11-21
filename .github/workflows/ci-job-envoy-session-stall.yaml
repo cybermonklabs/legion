@@ -32,7 +32,23 @@ env:
 jobs:
   envoy-session-stall:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 85 s, 6 s of its clock over them, and each test step's longest plus
+    # its guard - the six bare `bun test` steps 397 s + 750 s and the role takeover smoke 111 s +
+    # 360 s - which is 1709 s; and the broker credential step main's #4140 added, 56 s at its
+    # longest over its 57 green runs up to 2026-11-19, plus both its guards, as
+    # ci-job-pi-legion.yaml counts a hook's guard beside its command's: the step's --timeout, 60 s,
+    # and its file's beforeAll's own, BUILD_GUARD_MS, 300 s: 2125 s; and the comment-mention step
+    # main's #4426 added, 16 s at its longest over its 7 green merge-group runs up to 2026-11-20
+    # (44709419415 to 44735067614), plus its guard, 120 s, at least twice its file's slowest hook
+    # beside 8 busy loops with a warm Go build, its beforeAll's 50,287.16 ms (builds Job
+    # r4b-mention-8): 2261 s. A cold build is 466,790.72 ms of that beforeAll, past its guard, so
+    # the steps "Build the Go binaries the Envoy stack suites start" and "Build the Dispatch server
+    # the live suites start" build natsd, the listener and the server before the first suite, and
+    # every suite's build is warm whether or not the Go cache was restored; those two builds took
+    # 718.99 s together beside 8 busy loops on an empty Go cache (builds Job g4b-stack-cold, the
+    # steps' comment gives the reading): 2,980 s, or 50 minutes.
+    timeout-minutes: 50
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -74,27 +90,72 @@ jobs:
       - name: Build contracts for the stall suites
         run: bun run build
         working-directory: packages/contracts
+      # The Go binaries the stack suites start, built in the two steps here so that each suite's
+      # own build is a cache hit: startEnvoyStack builds `./internal/testnats/cmd/natsd
+      # ./cmd/listener` and startDispatchStack builds `./cmd/dispatch`, each with `go build -o
+      # <dir>/` in packages/envoy (packages/envoy-client/test/envoy-stack.ts's buildGoBinaries,
+      # test/dispatch-stack.ts), and these are the same two commands, one to a step so the
+      # CI-filter check reads each one's packages. On a Go cache miss the first suite's beforeAll
+      # built the Dispatch server cold, 466,790.72 ms beside 8 busy loops (builds Job r4b-mention-8),
+      # past its 120000 guard. Read in builds Job g4b-stack-cold (legion-load-run-nrw6f, 2026-11-21,
+      # #4437's round-4 tree 24b2e96b28, 8 busy loops on 2 CPUs): on an empty Go cache these two
+      # builds took 718.99 s together, and then the next two suites' beforeAll hooks were warm,
+      # nats-stall.test.ts's 15,980.46 ms and design-gate-advice.live.test.ts's, which builds and
+      # starts the Dispatch server, 59,492.59 ms (46,914.65 and 41,394.51 ms in the Job's two warm
+      # runs), under their 120000.
+      - name: Build the Go binaries the Envoy stack suites start
+        run: go build -o "$RUNNER_TEMP/stack-build/" ./internal/testnats/cmd/natsd ./cmd/listener
+        working-directory: packages/envoy
+      - name: Build the Dispatch server the live suites start
+        run: go build -o "$RUNNER_TEMP/stack-build/" ./cmd/dispatch
+        working-directory: packages/envoy
+      # Each bare `bun test` step of this job loads the row-deadline preload and sets its guard,
+      # --timeout, at least twice the slowest row or hook its command ran under 8 busy loops on
+      # 2 CPUs in a builds Job (two runs); the reading, and the Job it was read in, are beside each,
+      # and a hook that keeps a guard of its own is named there. Here the row "B: with
+      # natsConnectionOptions it reconnects ... when its first redial also hangs" took 50,109.26 ms
+      # and the file's beforeAll 25,685.20 ms at 61b66deb; read again at the round-3 class-search tree (builds Job d2-c9-ec, two runs, 2026-11-19), the
+      # row took 50,101.21 ms (Bun prints no hook times, so no hook is read there).
       - name: Stall test of envoy-client's NATS connection options
-        run: bun test src/__tests__/nats-stall.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 src/__tests__/nats-stall.test.ts
         working-directory: packages/envoy-client
       # A session's broker-token credential on a real natsd behind the real NATS auth service
       # (packages/envoy/internal/testnats/cmd/calloutd, built beside natsd): a token that lapses
       # while the stub broker is away, every reconnect refused and the connection admitted again
       # once a token is live (slice E2, t-e-9); and a session switch that subscribes
       # the new session's subject only once the connection is admitted with its token (t-e-10).
+      # Guard 60000 ms: the row "reconnects after two refusals once a token is live again" took
+      # 20,483.92 ms under 8 busy loops on 2 CPUs in builds Job d8-natscred-8 (13,455.78 ms alone,
+      # d8-natscred), and 20,010.78 ms and 13,715.49 ms read again at the round-3 class-search tree (builds Job d2-c9-ec, two runs, 2026-11-19). Its
+      # file's beforeAll, one go build of natsd and calloutd, keeps a guard of its own
+      # (BUILD_GUARD_MS, 300000), which the "//" note of packages/envoy-client/package.json reads.
       - name: Broker credential tests on a hub behind the auth service
-        run: bun test src/__tests__/nats-credential.test.ts -t "a session's connection to a hub behind the auth service"
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 60000 src/__tests__/nats-credential.test.ts -t "a session's connection to a hub behind the auth service"
         working-directory: packages/envoy-client
       # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
-      # this one as a file because of the leading "./".
+      # this one as a file because of the leading "./". Guard 180000 ms: the row "a killed session
+      # stays unresponsive until the gone horizon, then reads gone ..." took 60,810.22 ms (61b66deb),
+      # and 60,303.92 ms read again at the round-3 class-search tree (builds Job d2-c9-ec, two runs, 2026-11-19).
       - name: Session state rig of a stalled session
-        run: bun test ./test/session-stall.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 180000 ./test/session-stall.ts
         working-directory: packages/envoy-client
+      # Guard 90000 ms: the row took 30,499.69 ms and its file's beforeAll 16,397.25 ms (61b66deb);
+      # the row took 30,391.46 ms read again at the round-3 class-search tree (builds Job d2-c9-ec, two runs, 2026-11-19).
       - name: Stall test of pi-envoy
-        run: bun test extensions/envoy.test.ts -t "NATS path freezes"
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 90000 extensions/envoy.test.ts -t "NATS path freezes"
         working-directory: packages/pi-envoy
+      # Guard 120000 ms: the row "a session whose redial once hung still exits on SIGTERM" took
+      # 53,001.47 ms and the file's beforeAll 14,816.41 ms (61b66deb); the row took 51,784.80 ms
+      # read again at the round-3 class-search tree (builds Job d2-c9-ec, two runs, 2026-11-19).
+      # Read again at #4437's round-4 tree 24b2e96b28, after the split rewrote
+      # tests/envoy-channel-stall.test.ts and put src/envoy-channel-server.ts back to main's
+      # (builds Job g4b-ce-stall, legion-load-run-klztg, three runs beside 8 busy loops on 2 CPUs,
+      # with this job's LEGION_E2E_ENVOY_STACK and LEGION_E2E_DISPATCH_STACK, natsd and the
+      # listener built once before the runs as the steps above build them here, and each hook
+      # timed by a preload the Job's patch added): that row 42,807.46 ms, the slowest, which
+      # 120000 holds 2.80 times; the file's beforeAll 17,279.88 ms.
       - name: Stall test of claude-envoy
-        run: bun test tests/envoy-channel-stall.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 tests/envoy-channel-stall.test.ts
         working-directory: packages/claude-envoy
       # The role takeover smoke (INFRA-404, A5): one line per row of its spec's R8 table, driven
       # with real client processes against a listener and natsd this job already sets Go up for.
@@ -104,21 +165,39 @@ jobs:
         run: bash packages/pi-envoy/scripts/smoke-role-takeover.sh
       # The design-gate advice over the real CLI and a real Dispatch server (dispatch://INFRA-1727):
       # the server this suite starts is built from this tree, so what it asserts is the sentence a
-      # person reads in a terminal rather than one rendered from a stub.
+      # person reads in a terminal rather than one rendered from a stub. Guard 120000 ms: the
+      # file's beforeAll, which builds and starts that server, took 52,389.38 ms (its slowest row
+      # 2,113.07 ms) at 61b66deb. Read again at the round-3 class-search tree (builds Job d2-c9-ec, two runs, 2026-11-19), with main's row "a plan a
+      # person approved names dispatch plan-approve", its slowest row took 1,798.60 ms; Bun prints
+      # no hook times, so the beforeAll was not read again there. The server its beforeAll builds
+      # is warm: the step "Build the Dispatch server the live suites start" built it before the
+      # first suite.
       - name: Design-gate advice of the real CLI against a real Dispatch
-        run: bun test src/__tests__/design-gate-advice.live.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 src/__tests__/design-gate-advice.live.test.ts
         working-directory: packages/envoy-client
       # The moved-approval-request advice over the same real CLI and real Dispatch
       # (dispatch://INFRA-3096): it proves the field the server fills on a write that takes an
-      # open approval request back from the person is the field the CLI reads and prints.
+      # open approval request back from the person is the field the CLI reads and prints. Guard
+      # 120000 ms: the file's beforeAll took 45,890.03 ms (its slowest row 2,000.90 ms); its slowest
+      # row took 1,607.89 ms read again at the round-3 class-search tree (builds Job d2-c9-ec, two runs, 2026-11-19).
       - name: Moved-approval advice of the real CLI against a real Dispatch
-        run: bun test src/__tests__/moved-approval-advice.live.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 src/__tests__/moved-approval-advice.live.test.ts
         working-directory: packages/envoy-client
       # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
       # target, which is what lets an agent write to the owner of a subject and leave the retry
-      # to Dispatch.
+      # to Dispatch. Guard 120000 ms: its beforeAll builds and starts the same server
+      # (startDispatchStack), and beside 8 busy loops on 2 CPUs at 1c711353dc (builds Job
+      # r4b-mention-8, three runs with LEGION_E2E_DISPATCH_STACK=1, each hook timed by a print the
+      # Job's patch added, since Bun prints no hook times) it took 50,287.16 ms and 47,893.23 ms
+      # with the Go build cache an earlier build left (twice: 100,574.32 ms), its afterAll at most
+      # 10,703.09 ms and its row at most 1,905.42 ms. The step "Build the Dispatch server the live
+      # suites start" builds the same server before the first suite, so this step's build is warm
+      # whether or not the Go cache was restored; the Job's first run, on an empty Go cache, built
+      # the server cold in a beforeAll of 466,790.72 ms, which that step now pays instead. The
+      # whole step took at most 16 s over its 7 green merge-group runs up to 2026-11-20
+      # (44709419415 to 44735067614).
       - name: Comment mention of the real CLI against a real Dispatch
-        run: bun test src/__tests__/comment-mention.live.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 src/__tests__/comment-mention.live.test.ts
         working-directory: packages/envoy-client
       # A keyed write a real Dispatch refused because it could not resolve the caller.
       # The client of this tree sends it again under its own key against a server of this tree,

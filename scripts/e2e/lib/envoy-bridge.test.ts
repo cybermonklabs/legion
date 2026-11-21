@@ -199,23 +199,18 @@ describe("the bridge's output lines", () => {
       `nats://${userinfo(`${secrets.rigToken}/def+gh==`)}172.30.0.1:31000`,
       secrets.rigToken,
     ],
-  ] as const)(
-    "%s: the failure line carries none of it",
-    async (_, which, server, secret) => {
-      const config = bridgeConfigFromEnvironment({
-        SMOKE_REPO: "a/b",
-        SMOKE_RIG_NATS: which === "rig" ? server : "nats://172.30.0.1:31000",
-        SMOKE_UPSTREAM_NATS:
-          which === "upstream" ? server : "nats://envoy-nats.tailnet.example:4222",
-      });
-      const error = await realFailure(server);
-      expect(carried(error)).toContain(secret.toLowerCase());
-      const lines = [bridgeReadyLine(config), bridgeFailureLine(error, config)].join("\n");
-      expect(lines.toLowerCase()).not.toContain(secret.toLowerCase());
-      expect(lines).toContain("BRIDGE UNHEALTHY ");
-    },
-    30_000
-  );
+  ] as const)("%s: the failure line carries none of it", async (_, which, server, secret) => {
+    const config = bridgeConfigFromEnvironment({
+      SMOKE_REPO: "a/b",
+      SMOKE_RIG_NATS: which === "rig" ? server : "nats://172.30.0.1:31000",
+      SMOKE_UPSTREAM_NATS: which === "upstream" ? server : "nats://envoy-nats.tailnet.example:4222",
+    });
+    const error = await realFailure(server);
+    expect(carried(error)).toContain(secret.toLowerCase());
+    const lines = [bridgeReadyLine(config), bridgeFailureLine(error, config)].join("\n");
+    expect(lines.toLowerCase()).not.toContain(secret.toLowerCase());
+    expect(lines).toContain("BRIDGE UNHEALTHY ");
+  });
 
   test("a failed dial reads as the bridge's own line, the upstream named by its variable", async () => {
     const config = bridgeConfigFromEnvironment({
@@ -233,7 +228,7 @@ describe("the bridge's output lines", () => {
     expect(bridgeFailureLine(new Error(`refused ${canary()}`), config)).toBe(
       "BRIDGE UNHEALTHY Error (message withheld)"
     );
-  }, 30_000);
+  });
 });
 
 describe("envelopeValidation", () => {

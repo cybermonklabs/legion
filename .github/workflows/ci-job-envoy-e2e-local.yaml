@@ -32,6 +32,10 @@ env:
 jobs:
   envoy-e2e-local:
     runs-on: ubuntu-24.04-arm
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-19 (runs
+    # 44473367235 to 44607131679): its other steps at their longest, 43 s, and each test step's
+    # longest plus its guard: the refusal test 36 s plus e2e-local.test.sh's proof_guard, 310 s,
+    # and the acceptance run 25 s plus e2e-local.sh's, 150 s: 564 s, under the 10 minutes (600 s).
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

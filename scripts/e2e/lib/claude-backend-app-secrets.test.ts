@@ -8,8 +8,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { timeLeft } from "@legion/test-fixtures/wait";
 
 // claude-backend-tmux.sh's prerequisites on a box whose own `secrets` store holds no App credential
 // (the devbox once its local copies of another deployment's keys were removed): the run must reach
@@ -142,6 +144,7 @@ test.skipIf(skip)(
   () => {
     const run = Bun.spawnSync(["bash", script], {
       env: {
+        ...bunCacheOff,
         HOME: dir,
         PATH: bin,
         TMPDIR: scratch,
@@ -155,7 +158,9 @@ test.skipIf(skip)(
       },
       stdout: "pipe",
       stderr: "pipe",
-      timeout: 60_000,
+      // The run ends before the row's deadline, so a run that hangs fails here with its output.
+      // spawnSync takes whole milliseconds, and reads 0 as no bound at all.
+      timeout: Math.max(1, Math.floor(timeLeft())),
     });
     const output = run.stdout.toString() + run.stderr.toString();
     // read_app_logins passed, so every assertion below is about a run that resolved both App
@@ -172,6 +177,5 @@ test.skipIf(skip)(
     expect(readFileSync(keyRead, "utf8")).toBe(keyCommandPrints);
     expect(readFileSync(tokenRead, "utf8")).toBe("{}");
     expect(existsSync(asked) ? readFileSync(asked, "utf8") : "").toBe("");
-  },
-  90_000
+  }
 );

@@ -9,6 +9,12 @@ name: Dispatch unit suite repeated
 # harness leg with `--rerun-each=20`, a web-cold leg with `--rerun-each=1`. Each leg draws its own
 # seed. Three legs a lane make nine legs a run.
 #
+# The web and web-cold lanes leave out web/src/features/issue/useIssueDrafts.exploration.test.ts,
+# as `test:web` does (its --path-ignore-patterns): that file's eight rows share one sweep of every
+# order of up to five events, which is exhaustive and the same on every seed and every rerun, and
+# which takes minutes. It runs once, in package.json's `test:web:drafts`, in ci.yaml's dispatch-ui
+# job. useIssueDrafts.test.ts's other rows stay in both lanes.
+#
 # What a leg publishes. Its report goes to the step summary. The leg prints one `::error`
 # annotation for each failure that belongs to no row, then one for each failing row. GitHub keeps
 # at most 10 error annotations a step: its REST "Check runs" page says "GitHub Actions are limited
@@ -206,12 +212,15 @@ jobs:
         if: matrix.lane == 'harness'
         run: |
           sudo systemctl start postgresql.service
-          sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
-            -c "create role legion_test login createdb password 'ci'" \
-            -c 'create database legion_test owner legion_test'
+          # The role's password goes to psql on its standard input and in PGPASSWORD, never in its
+          # arguments, where any process of the runner reads it.
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 <<'SQL'
+          create role legion_test login createdb password 'ci';
+          create database legion_test owner legion_test;
+          SQL
           LEGION_TEST_PG_DSN='postgres://legion_test:ci@127.0.0.1:5432/legion_test?sslmode=disable'
           echo "LEGION_TEST_PG_DSN=$LEGION_TEST_PG_DSN" >> "$GITHUB_ENV"
-          psql "$LEGION_TEST_PG_DSN" -c 'select 1'
+          PGPASSWORD=ci psql -X 'postgres://legion_test@127.0.0.1:5432/legion_test?sslmode=disable' -c 'select 1'
       # The budget, by dispatch-browser.yaml's rule: the measured maximum plus 15 per cent,
       # rounded up to the next whole minute, with a floor of two minutes. The measurement is every
       # run of this workflow on its pull request, runs 44023917835 to 44473658176 (2026-11-17 to

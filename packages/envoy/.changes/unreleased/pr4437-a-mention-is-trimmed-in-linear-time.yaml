@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  Dispatch's reference reader trims a mention's trailing underscores and hyphens in time linear
+  in its length. Its pattern `/[_-]+$/` read a long run of them before a letter in time that
+  grew with the square of the run (32,768 characters took 1,655 ms), which any comment body could
+  hold in an address's query.

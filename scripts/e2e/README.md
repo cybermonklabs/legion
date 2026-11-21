@@ -544,6 +544,8 @@ Needs:
 
 - `python3`
 
+- `psql`
+
 - `tmux`
 
 It builds the binary from the checkout (`packages/daemon/cmd/legion`), so it proves the tree you are standing in.
@@ -571,8 +573,12 @@ Each item below names an input and its default, then what it means.
   the Postgres to run against.
   Unset, the script starts its own PostgreSQL 18 container (`legion-e2e-pg-<pid>`) on an ephemeral loopback port and removes it on the way out — the devbox path.
   Set, it starts no container: that is how CI hands it the job's service.
-  Either way the run reads the DSN's host, port, user, password and database once, with Python's `urllib.parse`, and writes the DSNs of its first two steps from them;
+  Either way the daemon's store is a database the run makes there and drops on the way out, and the daemon is handed it in `LEGION_POSTGRES_DSN`, in its own environment alone: `legion.yaml` names no `postgres_dsn`.
+  A set DSN must name a loopback host: [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_run_database` reads it with libpq before the database is made, and its `exec_run_database` hands the daemon, and `legion stop`, the run's database as a URI, so no variable of the script, no argument list and no file holds the password.
+  The psql that makes and drops that database connects to the server's `postgres` database, the one `createdb` and `dropdb` connect to, and takes the connection in libpq's own variables (`PGPASSWORD` among them), which `exec_run_database --libpq-env` sets, so no argument list holds a password there either.
+  The run reads the server's host, port and user once, as libpq reads them, through that same form, for the two steps that reach the server another way: the first step writes a DSN of that address and user with a wrong password of random bytes, and the second step's proxy forwards to that host and port;
   the server must check passwords, as CI's service and the container do, because the first step's wrong password must be refused.
+  The daemon behind the proxy is handed the run's database in libpq's own variables too, with `LEGION_POSTGRES_DSN` naming only the proxy's address and `sslmode=disable`, which pgx reads beside them, so the password is in no variable, argument list or file there either.
 
 Everything the run takes is its own, so two runs on one box
 — a CI job and a devbox session, or two sessions — neither collide nor report each other as a leftover:
@@ -587,7 +593,7 @@ Everything the run takes is its own, so two runs on one box
   — boots are counted per project, so a fresh key is what makes `boots == 1` true on a store that has served other runs, and the proxied daemon's boot is not counted in it.
 
 - a daemon port the kernel chose, held for the whole run by a keeper ([`lib/rig.sh`](#librigsh)'s `keep_port`, [`lib/held-port.py`](#libheld-portpy)):
-  `legion.yaml` names it, and each start serves on a copy of the keeper's socket (`LEGION_LISTEN_FD`, `start_kept`), so the restart serves the same port and nothing else can take it in between;
+  `legion.yaml` names it, and each start serves on a copy of the keeper's socket (`LEGION_LISTEN_FD`, `held-port.py exec --from`, which each start runs after `exec_run_database` rather than through `start_kept`, so the DSN reaches the helper first), so the restart serves the same port and nothing else can take it in between;
   the proxied daemon has a port and a keeper of its own, and the proxy a port the kernel chose;
   and on the devbox path the container `legion-e2e-pg-<pid>`.
 
@@ -596,7 +602,7 @@ the socket's inode from the `LISTEN` row of `/proc/net/tcp`, its holders from `/
 a copy that leaked into the daemon's tmux server, a pane or a `legion` CLI call would keep the port listening after the daemon stops.
 
 After each healthy start the run also reads `GET /readyz` and requires 200, the daemon's own account of having reached serving (the `servingLatch` the boot sets once its runtime is built, its launcher acceptor installed and the goroutine that serves this API begun), over a route that carries no token and reads no database.
-It polls that read for 5 seconds, because the daemon sets the latch on a goroutine of its own that starts when the serving goroutine does, so `/healthz` can be answered in the instant before it runs;
+It waits for that read through `lib/proof-wait.sh`'s `wait_for` (which [`lib/rig.sh`](#librigsh) sources), which gives up 30 s before the proof's guard, because the daemon sets the latch on a goroutine of its own that starts when the serving goroutine does, so `/healthz` can be answered in the instant before it runs;
 a daemon that answers `/healthz` and never latches fails the run all the same.
 It is read at the first boot and again after the restart, never at one of them alone:
 the latch is one-way and the booting process's own, so every start begins unlatched, and `/healthz` is answered whether or not the latch was set — a daemon that answers `/healthz` while it never latches is the state this read catches, at either boot.
@@ -3405,8 +3411,8 @@ It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways
 
 - **Postgres is a loopback server the caller names**, in `LEGION_TEST_PG_DSN`, as for [`child-adoption.sh`](#child-adoptionsh).
   The script creates a database of its own in it with `psql` and force-drops it with `psql` on any exit.
-  It takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `run_database_url`, which it calls in `setup`, before it builds or starts anything.
-  Dispatch's `DATABASE_URL` is the connection string `run_database_url` rebuilds from the keywords libpq reads of the DSN, with that database as its `dbname`, so no client of the run is handed the DSN's own text, and `setup` refuses a DSN the rebuild cannot carry.
+  It takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_run_database`, which it calls in `setup`, before it builds or starts anything, and which refuses a DSN Dispatch cannot be handed as well.
+  Dispatch's `DATABASE_URL` is the connection string the helper rebuilds from the keywords libpq reads of the DSN, with that database as its `dbname`, so no client of the run is handed the DSN's own text: `exec_run_database` sets it as the one variable of Dispatch's environment beside those `env` names, so no variable of the script and no argument list holds it.
   psql is libpq, and Dispatch reads that rebuilt string with pgx (`pgxpool.ParseConfig`), which reads the keyword/value form as libpq does: the pinned `github.com/jackc/pgx/v5 v5.11.0` carries a port of libpq's parser, and `lib/loopback-dsn.sh` says what a raise of that pin moves.
   In a pod, start one without root as `docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md` says.
 
@@ -3818,7 +3824,7 @@ Each item below names an observation, then what it judges; an item that names no
 - `negative no-repo <KEY>`
 
   `.issues | has(<KEY>)` is `false` (refusing outright, never vacuously passing, when `.issues` is not even an object), Dispatch's own `.resolved_repo` is still `null`, and the **latest** repository note among the messages claiming the daemon's actor (`{kind:"session", id:"legion-daemon:<PROJECT>"}`) is the exact no-repository admission refusal, word for word, with the daemon's outbox marker
-  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project <PROJECT>, in Dispatch, and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:119-120`, `packages/daemon/internal/record/outbox.go:71-73,104-106`).
+  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project <PROJECT>, in Dispatch, and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:42,90,119-120`, `packages/daemon/internal/record/outbox.go:288-297,315-318`).
   Dispatch takes a bearer session's actor id from the request body (`packages/envoy/internal/dispatch/api/server.go`, `bearerSessionActor`), so the note shows what Dispatch holds, never who posted it;
   what shows the daemon declined the issue is its own state read.
 
@@ -3830,7 +3836,7 @@ Each item below names an observation, then what it judges; an item that names no
   Dispatch's own `.repo` for the issue now reading X;
   an `issue.updated` event whose `.seq` is above the baseline's own last-seen `.seq` with `.payload.repo` equal to X (Dispatch's own sequence cursor, never a wall-clock comparison, and never merely "any `issue.updated`", which the daemon's own routine status writes also emit);
   and the daemon's exact kept-repository message, word for word, with its claimed actor id and outbox marker (as for `negative no-repo`), built from Dispatch's own resolved spelling of X (`dispatch_repo_now`, read back from the API) rather than the operator's `LEGION_E2E_REPO_X` spelling, since the daemon's real message echoes whatever case Dispatch itself stored
-  — `"Legion keeps <repo> as this issue's repository; the change to <X> in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for <X> instead."` (`packages/daemon/internal/workflow/repository.go:94`)
+  — `"Legion keeps <repo> as this issue's repository; the change to <X> in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for <X> instead."` (`packages/daemon/internal/workflow/repository.go:141`)
 
 **The two-call baseline protocol** (`negative pr-in-x`, `negative repo-edit`):
 `before` mints a fresh run id, captures the baseline under `$MULTIREPO_EVIDENCE_DIR/runs/<run id>/baseline.json` (the directory made with a plain `mkdir`, the file written with `set -o noclobber` — both fail loudly rather than overwrite, so two overlapping `before` calls for the same issue can never collide), binds it to the project, the daemon URL and the issue's own generation, and prints `BASELINE <name>: captured` — never `PASS`, since capturing a baseline is not an acceptance judgment.
@@ -3978,9 +3984,9 @@ Each item below names an input and its default, then what it means.
 
 - `DATABASE_URL` — required
 
-  a scratch PostgreSQL database with `pgvector` available, on `127.0.0.1`, `localhost` or `::1`: [`lib/loopback-dsn.py`](#libloopback-dsnpy) asks libpq which host the DSN names, and the run refuses every other answer.
-  The run empties its `public` schema with [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `empty_public_schema` before the server migrates it: every table, view, routine and type goes, and the extensions stay.
-  It leaves what it wrote there for inspection
+  a PostgreSQL server with `pgvector` available, on `127.0.0.1`, `localhost` or `::1`: [`lib/loopback-dsn.py`](#libloopback-dsnpy) asks libpq which host the DSN names, and the run refuses every other answer.
+  The run makes a database of its own on that server, which the server migrates, and hands Dispatch that database alone, never the one `DATABASE_URL` names, as the URI [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `exec_run_database` sets in Dispatch's own environment, so no variable of the script and no argument list holds it.
+  A run that passes drops it; one that fails keeps it for inspection and names it
 
 - `DISPATCH_BIN` — unset
 
@@ -3996,9 +4002,12 @@ Each item below names an input and its default, then what it means.
 
 The script drops every inherited `DISPATCH_*`, `ENVOY_*` and `NATS_*` variable (and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE`) before it starts anything, so a Legion pane's real listener, Dispatch and NATS credentials reach none of it.
 It starts a NATS of its own (`internal/testnats/cmd/natsd`, JetStream on, on a port the kernel picks), the harness's fake Envoy listener (`packages/dispatch/e2e/fake-envoy.ts`, where the three sessions are registered live and P and C advertise `steer`, a mention's default mode), and the server with NATS on, dev sign-in, an insecure cookie and an agent token minted for the run, in an environment holding nothing else.
-The driver, `dispatch-claimant-delivery.ts`, subscribes to `notifications.>` on that NATS, acts as the sessions P, C and Q with the agent token (each write naming its session as `actor`) and as one person through `GET /auth/_dev/signin`, finds each event's id in the issue's event log, waits up to 10 s for its envelope on the issue's own topic and 2 s more for its other destinations, and prints the agent topics that carried it.
-The mention cases listen 15 s rather than 2 s:
-while a mention's send is pending the outbox holds back the mentioned session's copy and re-checks the event on its 5 s tick.
+The driver, `dispatch-claimant-delivery.ts`, subscribes to `notifications.>` on that NATS, acts as the sessions P, C and Q with the agent token (each write naming its session as `actor`) and as one person through `GET /auth/_dev/signin`, finds each event's id in the issue's event log, waits for its envelope on the issue's own topic, which the outbox publishes first, reads which agent topics carried it 2 s later, and prints them.
+Every case reads its topics that way, whether its verdict is that a topic carried the event or that one did not:
+nothing the run reads says an event's publish is done, so the verdict is read off that span, and a binary that never publishes to a topic fails that case on its own verdict while the cases after it still run.
+Every wait ends at the proof's deadline, `LEGION_PROOF_DEADLINE_MS`, which the script's `proof_guard` sets ([`lib/rig.sh`](#librigsh)).
+The mention cases read their topics once the comment's delivery rows have settled (below) and the issue's topic has carried the event, and 35 s after that rather than 2 s:
+while a mention's send is pending the outbox holds back the mentioned session's copy and re-checks the event on its 5 s tick, and the span covers one listener take-over window (12 s) with the listener client's 5 s before that defer and tick.
 Issue `CLM-1` is the person's, with a spec and no route, claimed by P.
 
 Each item below names a case and how it is driven, then what the event's envelope must have reached for the case to pass.
@@ -4031,21 +4040,21 @@ Each item below names a case and how it is driven, then what the event's envelop
 - `mention-delivered-claimant` — the person comments on `CLM-1` mentioning `session:P`; the fake listener takes the send.
   It prints the payload's mentions (`session:P→P`), the sends the listener took and the comment's delivery rows from `GET /api/v1/comments/{id}`
 
-  no `agent.P` within 15 s (the mention is P's one copy), and the delivery row `sent`
+  no `agent.P` at the end of the mention cases' 35 s (the mention is P's one copy), and the delivery row `sent`
 
 - `mention-failed-claimant` — the same, with the fake listener answering every send to P 404 while its registry read still finds P, so the mention resolves to P and its send fails
 
-  `agent.P` within 15 s, and the delivery row `failed`
+  `agent.P` at the end of the mention cases' 35 s, and the delivery row `failed`
 
 - `mention-failed-follower` — C opens an ask on `CLM-3`, which nobody claims, so C only follows it;
   the person replies in the ask mentioning `session:C`, and the fake listener answers every send to C 404.
   It prints the ask's `claimant`, `route` and `route_holder`
 
-  `agent.C` within 15 s, and the delivery row `failed`
+  `agent.C` at the end of the mention cases' 35 s, and the delivery row `failed`
 
 Each mention case fails when the comment.created payload's mention does not carry the mentioned session's `session_id`:
 the cases are about a mention that resolved, whatever its send did.
-A comment answers its mention attempts `pending` and its sender settles them after the response, so each mention case reads the comment's delivery rows once none is `pending`, and fails when one still is 10 s after the 201 (two of the listener client's 5 s windows).
+A comment answers its mention attempts `pending` and its sender settles them after the response, so each mention case waits for the comment's delivery rows to hold none that is `pending`, which a send the listener refuses reaches about one listener take-over window (12 s) after the 201, as the sender tries again inside it, and only then reads its topics.
 
 Every case runs and prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>: <why>`; a summary follows, and any FAIL exits 1.
 The work directory, under `TMPDIR`, holds the binaries and the logs of natsd, the fake listener and the server:
@@ -4055,6 +4064,8 @@ Every process the run started is stopped on any exit.
 **Negative control.**
 Built from the pull request's base commit, `81a3b5ef7b47`, which has no claimant route, the same run must fail the three cases the claimant route adds and `mention-failed-claimant`, and pass the rest.
 `mention-failed-follower` passes there by design: the base always sent the follower its copy, mentioned or not, and the case proves that behaviour is kept.
+Each case that fails there fails on its own verdict, read off its span, and every case after it still runs:
+in a builds Job at e976062e with this proof's driver (d2-claimant), the base binary's run ended in 122 s.
 A binary built from the pull request's earlier head `15e414ed9b6b`, which skipped a mentioned session's copy as soon as the mention resolved, fails both `mention-failed-claimant` and `mention-failed-follower`.
 Neither serves `route_holder`, printed `absent` there:
 
@@ -4063,8 +4074,11 @@ mkdir -p "$TMPDIR/base-src"
 git --git-dir=<the checkout's git directory> archive <base commit> packages/envoy | tar -x -C "$TMPDIR/base-src"
 go -C "$TMPDIR/base-src/packages/envoy" build -o "$TMPDIR/envoy-dispatch-base" ./cmd/dispatch
 DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-base" bash scripts/e2e/dispatch-claimant-delivery.sh
-# → FAIL case3-ask-answer (agent.C alone), FAIL case2-thread-reply, FAIL untargeted-message and
-#   FAIL mention-failed-claimant (no agent topic), ok for the other five, exit 1
+# → FAIL case3-ask-answer: expected exactly …agent.claimant-e2e-c …agent.claimant-e2e-p (agent.C alone),
+#   FAIL case2-thread-reply: expected …agent.claimant-e2e-p among them (no agent topic),
+#   FAIL untargeted-message: expected exactly …agent.claimant-e2e-p (no agent topic) and
+#   FAIL mention-failed-claimant: expected …agent.claimant-e2e-p among them (no agent topic),
+#   ok for the other five; "summary: 5 ok, 4 FAIL", exit 1
 # Built the same way from 15e414ed9b6b:
 # → FAIL mention-failed-claimant and FAIL mention-failed-follower (no agent topic), ok for the
 #   other seven, exit 1
@@ -4091,11 +4105,12 @@ Each item below names an input and its default, then what it means.
 
 - `DATABASE_URL` — required
 
-  a scratch PostgreSQL database with `pgvector` available, on `127.0.0.1`, `localhost` or `::1`: [`lib/loopback-dsn.py`](#libloopback-dsnpy) asks libpq which host the DSN names, and the run refuses every other answer.
-  The run empties its `public` schema with [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `empty_public_schema` before the server migrates it: every table, view, routine and type goes, and the extensions stay.
-  In a Legion pod, a database that `createdb` makes on the server `LEGION_TEST_PG_DSN` names holds `vector`, so it serves.
-  The run leaves what it wrote there for inspection.
-  The driver reads it too, as `VERIFICATION_RESULTS_E2E_DATABASE_URL`, for the one fixture no route of Dispatch can write: a stored pull request row of the attribution rule before this build's, since every write of this build stamps the rule it judges by
+  a PostgreSQL server with `pgvector` available, on `127.0.0.1`, `localhost` or `::1`: [`lib/loopback-dsn.py`](#libloopback-dsnpy) asks libpq which host the DSN names, and the run refuses every other answer.
+  The run makes a database of its own on that server, which the server migrates, and hands Dispatch and the driver that database alone, never the one `DATABASE_URL` names, as the URI [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `exec_run_database` sets in each one's own environment, so no variable of the script and no argument list holds it.
+  In a Legion pod, the server `LEGION_TEST_PG_DSN` names serves, since every database made from its `template1` holds `vector`.
+  A run that passes drops its database; one that fails keeps it for inspection and names it.
+  It makes and drops that database with `psql` connected to the server's `postgres` database, handed the connection in libpq's own variables (`exec_run_database`'s `--libpq-env`), so no argument list holds the password `DATABASE_URL` carries either.
+  The driver reads and writes it too, as `VERIFICATION_RESULTS_E2E_DATABASE_URL`, for the one fixture no route of Dispatch can write: a stored pull request row of the attribution rule before this build's, since every write of this build stamps the rule it judges by
 
 - `DISPATCH_BIN` — unset
 
@@ -4935,8 +4950,8 @@ LEGION_OMP_PATH=/opt/omp/bin/omp bash scripts/e2e/refusal-fallback-omp.sh     # 
 ```
 
 dispatch://INFRA-956's live proof that a Legion worker a provider refused stays off that model for the whole of the plugin's cooldown and goes back to it when the cooldown ends (its R1).
-It is a script of its own because the window it measures is longer than any CI job holds:
-Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes, the plugin's cooldown here is ten, and `ci.yaml`'s pi-legion job has `timeout-minutes: 10`, so the only way to see that nothing goes back at the five-minute mark and something does after the tenth is to spend the quarter of an hour.
+It is a script of its own because the window it measures does not fit in the CI job that runs this plugin's tests:
+Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes, the plugin's cooldown here is ten, and `.github/workflows/ci-job-pi-legion.yaml`'s pi-legion job gives its own suite up to the whole of its 46 minutes (`timeout-minutes: 46`, the sum of its steps and guards), so the only way to see that nothing goes back at the five-minute mark and something does after the tenth is to spend the quarter of an hour in a run of its own.
 It runs on any Linux host with `bash`, `bun` (after `bun install` at the checkout's root) and `go`, which builds the one server it starts — no PostgreSQL, no Docker, no kube context and no tmux, so a Legion pod, a devbox and a runner holding the pinned binary all run it.
 `LEGION_OMP_PATH` is required and names the Oh My Pi every pane runs, an absolute executable, as for [`provider-error-retry.sh`](#provider-error-retrysh), and the script prints which build it ran.
 It reaches no network:
@@ -5290,7 +5305,7 @@ Its inputs:
 
 | input | what it is |
 | :--- | :--- |
-| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each attempt creates a database of its own on with `psql`, named `ppd_<pid>_<arm>_<n>_<attempt>` and given to the run as the `dbname=` of a connection string [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `run_database_url` rebuilds from the DSN, so the database the DSN itself names is never written, every database the run made is dropped when it ends, on success and on failure, the run takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` are unset before the first connection |
+| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each attempt creates a database of its own on with `psql`, named `ppd_<pid>_<arm>_<n>_<attempt>` and given to that attempt's Dispatch server as the `dbname=` of a connection string [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `exec_run_database` rebuilds from the DSN and sets as the server's `DATABASE_URL`, in its environment alone, so the database the DSN itself names is never written, every database the run made is dropped when it ends, on success and on failure, the run takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` are unset before the first connection |
 | `LEGION_OMP_PATH` | required: the Oh My Pi binary each session runs, which must reach a model |
 | `LEGION_GH_PATH` | optional: the real `gh` the composer is told, the first `gh` on `PATH` otherwise, where the run refuses to start when there is neither and when the one it found is not an executable file |
 | `--base-commit <rev>` | required: the control's commit |
@@ -5490,7 +5505,7 @@ It says so only on the evidence of its own `events.jsonl`, read back and holding
 
 | input | default | meaning |
 | :--- | :--- | :--- |
-| `LEGION_TEST_PG_DSN` | required | a loopback Postgres with pgvector; the run creates and force-drops a database of its own there with `psql`, gives Dispatch the connection string [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `run_database_url` rebuilds for that database, and refuses the DSN in `setup`, before any build or service, when [`lib/loopback-dsn.py`](#libloopback-dsnpy) refuses the host or the rebuild |
+| `LEGION_TEST_PG_DSN` | required | a loopback Postgres with pgvector; the run creates and force-drops a database of its own there with `psql`, gives Dispatch the connection string [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `exec_run_database` rebuilds for that database, in Dispatch's own environment alone, and refuses the DSN in `setup`, before any build or service, when [`lib/loopback-dsn.py`](#libloopback-dsnpy) refuses the host or the rebuild (`require_run_database`) |
 | `SESSION_DELIVERY_MODEL_KEY_FILE` | `/var/run/model-gateway-key/key` | the file holding the sessions' model key, handed to Oh My Pi and Claude Code alone as their `ANTHROPIC_API_KEY` and never printed; the default is where every role pod mounts its model gateway's key |
 | `ANTHROPIC_BASE_URL` | unset | when set, passed to Oh My Pi and Claude Code only, beside the key: a model gateway whose key the key file holds; an issue pod has no Anthropic key of its own; its `ANTHROPIC_BASE_URL` names its model gateway, and `/var/run/model-gateway-key/key` holds that gateway's key |
 | `SESSION_DELIVERY_OMP` | `omp` on `PATH`, else `/opt/omp/bin/omp` | the Oh My Pi to run |
@@ -5570,31 +5585,31 @@ Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 ref
 
 ## lib/loopback-dsn.py
 
-Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
+Prints what libpq reads from a PostgreSQL DSN, or refuses the DSN in one line, and hands a command a run's own database on the DSN's host without printing it.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Ten call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
-Seven are proofs of their own:
-[`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
-The eighth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
-Each of those eight call sites calls it in one line, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` or through its `run_database_url`, which begins with the same check.
-Seven of them source that file through [`lib/rig.sh`](#librigsh), and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own:
+Eleven call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
+Eight are proofs of their own:
+[`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh), [`dispatch-session-settings.sh`](#dispatch-session-settingssh) and [`stage1-skeleton.sh`](#stage1-skeletonsh).
+The ninth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
+Each of those nine call sites calls it in one line, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` or through its `require_run_database`, which begins with the same check.
+Eight of them source that file through [`lib/rig.sh`](#librigsh), and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own:
 
 ```sh
 require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
 ```
 
-The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each proof that makes that run, which is every entry script that sources it.
-The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
-[`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database.
+The tenth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each proof that makes that run, which is every entry script that sources it.
+The eleventh is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
+[`envoy-session-delivery.sh`](#envoy-session-deliverysh), [`dispatch-session-settings.sh`](#dispatch-session-settingssh) and [`stage1-skeleton.sh`](#stage1-skeletonsh) read their DSN with `require_run_database` alone, in the step that names the run's own database.
 Every proof that writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
 That is the first of two frames for the whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary each of them runs reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
 The rationale is written once, above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh): the client the run then writes that server with must be libpq too, because libpq and a URL parser read different text as the host.
-That one copy also says which client each call site then writes the server with, what the pinned `github.com/jackc/pgx/v5 v5.11.0` carries for the four proofs that give Dispatch the caller's raw DSN and for the binary's own rewrites, and what a raise of that pin moves.
+That one copy also says which client each call site then writes the server with, what the pinned `github.com/jackc/pgx/v5 v5.11.0` carries for the two proofs that give Dispatch the caller's raw DSN (the two two-builds proofs) and for the binary's own rewrites, and what a raise of that pin moves.
 
 A caller clears `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` before its first connection, because this helper reads the DSN alone.
 psql reads `PGHOSTADDR`, and `PGSERVICE` with `PGSERVICEFILE` name an entry of `~/.pg_service.conf` that can set `hostaddr`.
 Measured with an exported entry that sets `hostaddr=127.0.0.2`: psql connected to 127.0.0.2, and the helper printed `127.0.0.1` for the same DSN.
-Each of the nine proofs those eight call sites serve drops the three before its first connection: six in the sweep of the environment it does not inherit, the two two-builds proofs through [`lib/two-builds.sh`](#libtwo-buildssh), and `plan-pointer-drive.sh` in an `unset` of its own.
+Each of the ten proofs those nine call sites serve drops the three before its first connection: six in the sweep of the environment it does not inherit, the two two-builds proofs through [`lib/two-builds.sh`](#libtwo-buildssh), and `plan-pointer-drive.sh` and `stage1-skeleton.sh` in an `unset` of their own.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) unsets the three in `prerequisites`, before its own call, and [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh) unsets them before the call of its negative control.
 
 `loopback-dsn.py NAME WHAT` reads the DSN from the environment variable NAME, never from the command line, so no process list holds its password.
@@ -5609,18 +5624,39 @@ libpq decodes a percent sign in a parameter key too, so `%68ost=` reaches it as 
 A WHATWG `URL` ends the user name at the last `@` and starts the query at the first `?`, so it reads the host of `postgres://u@localhost:5432@10.1.2.3/db` as 10.1.2.3 and the host of `postgres://evil.example?@localhost/db` as evil.example, where libpq reads `localhost` in both and the helper prints it.
 Measured with psql 18.6: the first names the port `5432@10.1.2.3`, which psql refuses before it connects anywhere, and the second connects to `localhost (127.0.0.1)`.
 
-`loopback-dsn.py NAME WHAT --dbname DATABASE` prints the connection string that gives a run its own database on the host the DSN names.
-The proofs reach it through `run_database_url` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh), which all eight source.
+`loopback-dsn.py NAME WHAT --dbname DATABASE …` gives a run its own database on the host the DSN names, and prints no part of it.
+The connection string carries the DSN's password, and whatever reads the helper's output would hold that password too: a shell's `$(…)` assigns it to a variable, and that shell's xtrace prints the variable.
+Each form runs every check below, and a refused DSN is one line on stderr and exit 1, before anything runs:
+
+- `--check` prints nothing and exits 0, for a caller that reads the DSN where it reads its other inputs, so a refused input ends the run before the builds.
+
+- `--env VAR -- COMMAND` replaces the helper with COMMAND (`execve`), so COMMAND keeps the helper's pid, which a shell that started it with `&` holds in `$!`, and VAR holds the connection string in COMMAND's environment.
+  That environment is the one the helper was started with, read from `/proc/self/environ` because Python sets `LC_CTYPE` in its own under the C locale, without NAME: NAME holds the caller's DSN itself, the password and the database the caller named, which nothing the run starts may write.
+  VAR may be NAME, which then holds the connection string.
+
+- `--env-only VAR -- COMMAND` hands COMMAND VAR alone, as `env -i` leaves an environment, for a consumer the caller starts with no variable of its own: `env K=V… PROGRAM` as COMMAND names the rest.
+
+- `--libpq-env -- COMMAND` is for psql: COMMAND gets, without NAME, the variable libpq reads each keyword from (`PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`, `PGSSLMODE` and the rest, PQconninfoOption's `envvar`), so it takes no connection string and the password reaches no argument list.
+  A keyword libpq reads from no variable (`keepalives` and `fallback_application_name` are two) is refused.
+  `PGSERVICE` goes as well: libpq fills a keyword from that entry of `~/.pg_service.conf` before it reads the keyword's own variable, so an inherited `PGSERVICE` would outrank the host this form hands over, where the connection string outranks it.
+  libpq reads the variables back (`PQconndefaults`) before COMMAND runs.
+
+- `--own-dbname --libpq-env` (`--check`, or `-- COMMAND`) takes the place of `--dbname DATABASE` for a run that works in the database the DSN itself names rather than in one of its own, as [`lib/two-builds.sh`](#libtwo-buildssh)'s proofs do: every check and every variable `--libpq-env` hands over, with the DSN's own `dbname` as `PGDATABASE`.
+  It refuses a DSN that names no database, where libpq would read `PGDATABASE` or the user name in its place, and none of its refusals names the database.
+
+COMMAND is looked up on the `PATH` the helper was started with, under `--env-only` too.
+The proofs reach these forms through `require_run_database` and `exec_run_database` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh), which all eight source, and the `--own-dbname` form through `require_dsn_database` and `exec_dsn_database` in the same file.
 The string is the keywords libpq reads from the DSN, with DATABASE as `dbname`, written as `dbname='…' host='…'`: the keyword/value form libpq and pgx read wherever they read a URL.
+`--uri` writes the same keywords as a connection URI, `postgres://user:password@host:port/DATABASE?key=value`, for a consumer that reads a URL.
 It is rebuilt and not appended to.
 A `?dbname=` or `&dbname=` appended to the DSN's own text takes its separator from a `?` that can be inside the user name, where it starts no query, and it breaks a DSN whose text ends in a `?`.
 A join of the DSN's server, the database and the DSN's parameters is worse: a `?dbname=other` the caller's DSN carries outranks the path for libpq and for pgx, so the run migrates `other`.
-libpq reads the rebuilt string back before the helper prints it: libpq must read DATABASE as the database, the same host as the DSN names, and every other keyword as the DSN sets it.
-Every value reaches that string as libpq decoded it, so this mode also refuses a value that holds a character that does not print: a newline in a password is a line break in a string the caller writes into a file, and a byte that is no UTF-8 text is a surrogate (`U+DCFF` for the byte `0xFF`) that no file carries back to psql.
+libpq reads the rebuilt string back before COMMAND runs: libpq must read DATABASE as the database, the same host as the DSN names, and every other keyword as the DSN sets it.
+Every value reaches COMMAND as libpq decoded it, so these forms also refuse a value that holds a character that does not print: a control character is a line break or an escape sequence wherever COMMAND's environment is written out, and a byte that is no UTF-8 text is a surrogate (`U+DCFF` for the byte `0xFF`) that the URI form cannot percent-encode.
 A refusal names the database, the host, and every keyword libpq does not read back as the DSN sets it.
 
 The refusals are a character that does not print in the DSN (`str.isprintable()` is false for the C0 controls, DEL, the C1 controls, the bidirectional format characters and the surrogates), a host, `hostaddr` or `service` holding a character that does not print after libpq decodes it, a DSN libpq cannot parse, a DSN with no host, a host list of more than one (libpq connects to the next host when the first does not answer), a `hostaddr` parameter, a `service` parameter (whose entry in `~/.pg_service.conf` can set `hostaddr`, which sends the connection to another address), and a host that is none of the three loopback names.
-The `--dbname` mode refuses one more: any keyword whose value holds such a character, since it writes every value back.
+The `--dbname` forms refuse one more: any keyword whose value holds such a character, since every value reaches COMMAND.
 Each refusal names what libpq read — the host, the hostaddr or the service, or else the keyword alone — and prints no other part of the DSN, because the user name and the password are in it.
 It prints a value only where every character of the value prints, so a refusal is one line and writes no escape sequence to the terminal.
 Each value is decoded with `errors="surrogateescape"`, which round-trips every byte, so host mode takes the DSNs libpq takes, whatever bytes a password holds: it writes no value back.
@@ -5629,17 +5665,21 @@ There is no second, weaker check to fall back on.
 
 `loopback-dsn.test.ts` drives the helper with this host's own libpq and asserts the answer it gave, never a pattern of the DSN:
 the DSN a run is given, `localhost` and `::1`, a `host=` parameter, a host name inside the user name, an empty `hostaddr=`, the two forms with a `?` inside the user name, a second `@` inside the authority, a `?` right before the `@`, a password of bytes that are no UTF-8 text, a `%68ost=` key, a Unix-socket directory, a newline before an `&host=`, a percent-encoded newline, a percent-encoded escape sequence and a percent-encoded C1 control in the host, two hosts, a `hostaddr`, a `service`, a remote host, a DSN with no host, a DSN libpq cannot parse, and an unset variable.
-It drives `run_database_url` over seven DSNs — a `?` in the user name, a host name in the user name, a DSN whose text ends in a `?`, the DSN a run is given, the two a WHATWG `URL` reads another host from, and one whose query sets `dbname` — and pins the string the rewrite answers with, which libpq has read back inside the helper.
-Two more cases pin a refusal of that mode: a password of bytes libpq reads as no UTF-8 text, and a percent-encoded newline in a password.
+It drives `exec_run_database`'s `--env` over seven DSNs — a `?` in the user name, a host name in the user name, a DSN whose text ends in a `?`, the DSN a run is given, the two a WHATWG `URL` reads another host from, and one whose query sets `dbname` — and pins the string the command it ran was handed, read out of the environment that command writes to a file of the test's own; libpq has read that string back inside the helper.
+It drives `--uri --env` over those seven DSNs and two more, a `::1` host and a password that needs percent-encoding, and pins each URI and the host a URL parser reads from it.
+Five cases pin a refusal of those forms, in which the command never runs: a remote host in each form, a password of bytes libpq reads as no UTF-8 text, and a percent-encoded newline in a password in each form.
+The rest pin what the forms print and hand on: `--check` and `require_run_database` print nothing for a DSN they take and the refusal alone for one they refuse; `--env`'s command gets VAR and the caller's other variables and not NAME, and `--env-only`'s gets VAR alone; `--libpq-env`'s gets each keyword in its libpq variable, without NAME and `PGSERVICE`, and a keyword libpq reads from no variable is refused; the helper's own output holds no part of the password; `$!` names the command's own pid; and `exec_run_database` refuses to replace the script's own shell.
+Three cases pin `exec_dsn_database`, the `--own-dbname` form: its command gets the DSN's own database as `PGDATABASE` with each keyword in its libpq variable and without NAME and `PGSERVICE`; the password is in `PGPASSWORD` and in no other variable and no argument of the command; and a DSN that names no database is refused, without its password, and runs no command.
 
 ## lib/loopback-dsn.sh
 
-The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
-Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
-A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing.
-[`lib/rig.sh`](#librigsh) sources this file, which is how seven of the nine proofs that call its helpers themselves have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for each proof that makes its run.
-The ninth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_dsn` itself once more, for its negative control.
+The helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
+Their answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
+None of them assigns a variable of the caller's the connection string, which carries the DSN's password: a variable would reach the caller's xtrace and every command the caller later runs with it.
+Another helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing.
+[`lib/rig.sh`](#librigsh) sources this file, which is how eight of the ten proofs that call its helpers themselves have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) has it through [`lib/rig.sh`](#librigsh) too, which it sources, and calls `require_loopback_dsn` in `prerequisites` for each proof that makes its run.
+The tenth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_dsn` itself once more, for its negative control.
 
 ```sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
@@ -5652,24 +5692,47 @@ The ninth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it thro
   NAME is the environment variable the caller read DSN from, and it starts the refusal, and WHAT is what the run does on that server, in a few words.
   The comment above it is the one copy of why every proof asks libpq, which clients the proofs then write the server with, and what a raise of the pinned pgx moves
 
-- `run_database_url VAR NAME DSN DATABASE WHAT`
+- `require_run_database VAR NAME DSN DATABASE WHAT [--uri | --libpq-env]`
 
-  assigns VAR the connection string that names the run's own database DATABASE on the server DSN names, so nothing the run starts writes the database the caller's DSN itself names, and returns 0.
-  For a DSN the helper refuses it assigns VAR that refusal line and returns 1, the contract `require_loopback_dsn` has, so the caller chooses how the run ends.
-  [`lib/loopback-dsn.py`](#libloopback-dsnpy) rebuilds that string from the keywords libpq reads and reads it back before it prints it, and NAME, the variable the caller read DSN from, starts the refusal a DSN it will not take earns.
-  WHAT is what the run does on that server, in a few words.
-  This mode refuses every DSN the guard refuses, and a value the rebuilt string cannot carry as well, so [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) call it in their setup step as their one read of the DSN, before any build or service
+  runs every check `exec_run_database` runs before it hands a command the run's own database DATABASE on the server DSN names in that form ([`lib/loopback-dsn.py`](#libloopback-dsnpy)'s `--check`), assigns VAR the empty string and returns 0.
+  For a DSN the helper refuses it assigns VAR that refusal line and returns 1, the contract `require_loopback_dsn` has, so the caller chooses how the run ends (`|| fail "$refusal"`).
+  NAME, the variable the caller read DSN from, starts the refusal a DSN it will not take earns, and WHAT is what the run does on that server, in a few words.
+  A caller that hands the database over in two forms checks both, as `envoy-session-states.sh` does for Dispatch's string and psql's variables.
+  This check refuses every DSN the guard refuses, and a value the command cannot be handed as well, so [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) call it in their setup step, once for Dispatch's string and once for psql's variables (`--libpq-env`), as their one read of the DSN, before any build or service
 
-- `empty_public_schema URL`
+- `exec_run_database NAME DSN DATABASE WHAT FORM -- COMMAND...`
 
-  drops every table, view, routine and type of the `public` schema of the database URL names, and keeps the extensions that schema holds.
+  runs COMMAND in place of the shell that calls it, as `exec` does, handed the run's own database DATABASE on the server DSN names and nothing else of DSN.
+  FORM is `[--uri] --env VAR` (VAR holds the connection string, or the URI, in COMMAND's environment, which is otherwise the shell's without NAME), `[--uri] --env-only VAR` (VAR alone is COMMAND's environment, as under `env -i`, and a COMMAND of `env K=V… PROGRAM` names the rest) or `--libpq-env` (each keyword in the variable libpq reads it from, for psql); [`lib/loopback-dsn.py`](#libloopback-dsnpy) says what each hands over.
+  For a DSN the helper refuses, COMMAND never runs: the refusal line goes to stderr and the shell ends with status 1.
+  A caller runs it as the last command of a subshell of its own: in the background (`… &`, or lib/rig.sh's `start_process`), where COMMAND keeps the subshell's pid, so `$!` or `<NAME>_pid` names COMMAND itself, or in `( … )` for a command it waits for.
+  Called in the script's own shell it replaces nothing, says so on stderr and returns 2.
+  [`verification-results.sh`](#verification-resultssh) and [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh) hand Dispatch and their drivers the URI, [`stage1-skeleton.sh`](#stage1-skeletonsh) hands the daemon the URI in `LEGION_POSTGRES_DSN`, whose settings check reads a DSN that leaks there by its `postgres://`, and runs the psql that makes and drops that database, its read of the server's host, port and user, and the daemon behind its proxy with `--libpq-env`, `clean-session-stop-tmux.sh` hands its daemon the string there, and `envoy-session-states.sh` runs its psql with `--libpq-env`
+
+- `require_dsn_database VAR NAME DSN WHAT`
+
+  is `require_run_database` for `exec_dsn_database`: it runs every check that one runs on the database DSN itself names ([`lib/loopback-dsn.py`](#libloopback-dsnpy)'s `--own-dbname --libpq-env --check`), a DSN that names no database among them, and assigns VAR the empty string and returns 0, or assigns VAR the refusal line and returns 1.
+  [`lib/two-builds.sh`](#libtwo-buildssh)'s `two_builds_prerequisites` calls it before its first psql
+
+- `exec_dsn_database NAME DSN WHAT -- COMMAND...`
+
+  is `exec_run_database`'s `--libpq-env` form on the database DSN itself names, for a run that works in that database rather than in one of its own: COMMAND replaces the shell that calls it, handed that database in libpq's own variables, `PGPASSWORD` among them, so no argument list and no variable of the caller's holds the password.
+  A DSN the helper refuses, one that names no database among them, runs no command: the refusal line goes to stderr and the shell ends with status 1.
+  It runs, and refuses the script's own shell, as `exec_run_database` does.
+  [`lib/two-builds.sh`](#libtwo-buildssh)'s `two_builds_psql` and `empty_public_schema` run their psql through it
+
+- `empty_public_schema NAME DSN`
+
+  drops every table, view, routine and type of the `public` schema of the database DSN itself names, and keeps the extensions that schema holds.
+  Its psql is handed that database by `exec_dsn_database`, so no argument list holds the password, and NAME, the variable the caller read DSN from, starts a refusal.
   It returns the status of its `psql`, so the caller ends the run in its own words (`|| fail "could not empty the database's public schema"`).
   The cluster's master role installs `vector` (`0072_embeddings_core.up.sql` takes it as given with `create extension if not exists`), and the role a run connects as need not be that role.
   A `drop schema public cascade` would remove `vector` with the schema and leave a database no build can migrate.
   A Legion pod's test server is one such case: every database made from its `template1` holds `vector`, and its login may not create it again.
-  [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh) and [`lib/two-builds.sh`](#libtwo-buildssh)'s `two_builds_reset_database` call it
+  [`lib/two-builds.sh`](#libtwo-buildssh)'s `two_builds_reset_database` calls it.
+  [`verification-results.sh`](#verification-resultssh) and [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh) make a database of their own with `exec_run_database` instead, which `create database` copies from `template1` with its extensions
 
-`require_loopback_dsn` and `run_database_url` share one call to `lib/loopback-dsn.py`, which takes the DSN from the environment of a command substitution's own subshell, so no process list holds the password.
+`require_loopback_dsn`, `require_run_database` and `require_dsn_database` share one call to `lib/loopback-dsn.py`, which takes the DSN from the environment of a command substitution's own subshell, so no process list holds the password; `exec_run_database` and `exec_dsn_database` put it in the environment of the subshell they replace.
 
 ## lib/held-port.py
 
@@ -6286,29 +6349,68 @@ a file it can open takes both, which still reach the reader, and a file whose di
 
 ## lib/rig.sh
 
-The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
+The host-side helpers a stage proof sources for its rig: the proof's guard and its one wait, the bounded waits of the proofs a person runs, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
-Seven of the nine proofs that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s helpers themselves source it too, for those two helpers, which this file sources for them.
-`envoy-session-delivery.sh` is the eighth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
-`busy-relaunch-delivery.sh` is the ninth: it has those helpers through [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), which it sources, and sources no rig.
+Eight of the ten proofs that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s helpers themselves source it too, for those helpers, which this file sources for them.
+`envoy-session-delivery.sh` is the ninth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
+`busy-relaunch-delivery.sh` is the tenth: it has those helpers through [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), which it sources and which sources this file.
 
 ```sh
 . "$root/scripts/e2e/lib/rig.sh"     # sourced, never run
 ```
 
-The caller sets `root` (the checkout), `work` (the run's scratch directory), `evidence` (each service started by `start_process` logs to `$evidence/logs/<name>.log`) and `timeout_hook` (empty, or a function a timed-out wait runs before it fails), and defines `note` and `fail`, which exits.
+The caller sets `root` (the checkout), `work` (the run's scratch directory, where `wait_for` keeps its last poll's output), `evidence` (each service started by `start_process` logs to `$evidence/logs/<name>.log`) and `timeout_hook` (empty, or a function a timed-out wait runs before it fails), and defines `note` and `fail`, which exits.
 A caller that sweeps, or checks that no process of its run remains, also exports `LEGION_E2E_RUN=$work` once its transcript runs, and names it in every start that clears its environment: the processes that carry that mark, or a daemon pane's `XDG_CONFIG_HOME` under `$work`, are the run's ([`marked_processes`](#libprocess-treesh)), and no process that only works under `$work` or names it on its command line is.
-Stage 1 calls `real_bin_path`, `keep_port`, `start_kept` and `held_only_by`.
+Stage 1 calls `proof_guard`, `wait_for` with `serving`, `real_bin_path`, `keep_port`, `start_process` and `held_only_by`.
+
+A proof a workflow runs (the `hosted` list of `.github/e2e-scripts.json`, `ci.yaml`'s Stage 1 step, and its envoy-session-stall job's role takeover smoke) sets its one guard with `proof_guard`, at its head, with the reading of it beside the number, and waits through `wait_for` or `wait_held` alone.
+`until_true` and `await_start` are the bounded waits of the proofs only a person runs, which set no guard, and no proof that sets one calls them.
+
+The guard and the wait, the first four items below, are `lib/proof-wait.sh`'s, which this file sources, and which `packages/pi-envoy/scripts/local-stack.sh` sources for the pi-envoy smokes.
+It reads the caller's `work`, `timeout_hook`, `note` and `fail`.
 
 Each item below names a function, then what it does.
 
+- `proof_guard SECONDS`
+
+  sets the proof's one guard: the run may take SECONDS from the call.
+  It exports `LEGION_PROOF_DEADLINE_MS`, the moment in epoch milliseconds by which every wait of the proof gives up, `proof_margin_seconds` (30 s) before the guard's deadline, so a wait's own failure and the cleanup after it print before anything stops the run.
+  The proof's Bun drivers read it too (`@legion/test-fixtures/wait`).
+  It arms nothing: what stops a run that hangs outside a wait is the `timeout-minutes` of the CI job that runs the proof, which is at least the guard plus the job's setup.
+  SECONDS is at least twice the longest green run on record, and the call carries that reading in a comment beside it.
+  A second call fails
+
+- `proof_seconds_left`
+
+  prints the whole seconds left before the guard's deadline, and at least 1: the `-test.timeout` of a Go driver, whose `testwait` then gives up `proof_margin_seconds` before that deadline, as `wait_for` does
+
+- `wait_for WHAT CMD…`
+
+  is the wait of a proof that set its guard, failing the run, and fails at once in a proof that set none.
+  It runs CMD in the calling shell every half second until it succeeds, and keeps CMD's output in `$work/wait-for.out`.
+  It gives up `proof_margin_seconds` before the guard's deadline: it runs `timeout_hook`, then fails naming WHAT and the last lines CMD printed.
+  A wait that starts past that moment runs CMD once and then fails, so the cleanup keeps the margin to run in.
+  It takes no bound and no pace, so a step that is only slow never fails the run, and it says how long it has waited every 60 s.
+  A CMD that finds the fact can no longer happen sets `wait_impossible` to why, and the wait fails at once saying so
+
+- `wait_held WHAT CMD…`
+
+  is the same wait returning rather than failing, for a run that goes on past a wait that did not hold and reports it itself, as the role takeover smoke drives every row.
+  It returns 0 once CMD succeeds, and 1 where CMD set `wait_impossible` or the deadline came, with the line `wait_for` would fail with in `wait_gave_up` and how the wait ended (`impossible` or `deadline`) in `wait_ended_by`.
+  A wait inside another wait's CMD keeps its output in `$work/wait-for.<depth>.out`, so it never overwrites what the outer wait reports, and the `wait_impossible` it reads is its own
+
+- `serving NAME PID CMD…`
+
+  runs CMD for a `wait_for` on the service NAME, started as PID (`start_process`), and once PID has exited sets `wait_impossible`, naming NAME's log, so the wait ends at once
+
 - `until_true SECONDS WHAT CMD…`
 
-  runs CMD every half second until it succeeds.
+  is the bounded wait of a proof that sets no guard, one that only a person runs.
+  It runs CMD every half second until it succeeds.
   After SECONDS of wall time, each poll's own run included, it runs `timeout_hook` and fails naming WHAT.
   It says what it waits for on entry and every 60 s.
   A poll that never returns would hold the wait, so callers bound their remote calls.
-  A guard that writes `$evidence/pane-endpoint-violation.txt` makes the next wait abort, naming the violation
+  A production guard that writes `$evidence/pane-endpoint-violation.txt` makes the next `until_true` abort, naming the violation
 
 - `start_process NAME CMD…`
 
@@ -6321,7 +6423,7 @@ Each item below names a function, then what it does.
   starts CMD as the service NAME through [`lib/held-port.py`](#libheld-portpy) `exec`:
   a socket listening on a port the kernel chose, held from that choice until CMD serves on it, handed over as descriptor 3 with `FD_ENV=3`;
   `{port}` in an `--env` value or in CMD is its port.
-  It waits, bounded, for the helper's port file and sets PORT_VAR before CMD runs; `NAME_pid` is CMD's own pid.
+  It waits for the helper's port file, through `wait_for` in a proof that set its guard and within `read_port_file`'s own bound in one that set none, and sets PORT_VAR before CMD runs; `NAME_pid` is CMD's own pid.
   A CMD that clears its environment (`env -i`) names `FD_ENV=3` itself
 
 - `keep_port NAME PORT_VAR`
@@ -6362,7 +6464,8 @@ Each item below names a function, then what it does.
 
 - `await_start NAME PID SECONDS WHAT CMD…`
 
-  waits, bounded, for CMD to succeed while PID lives, and fails naming NAME's log the moment PID exits
+  waits, bounded, for CMD to succeed while PID lives, and fails naming NAME's log the moment PID exits.
+  A proof that set its guard waits with `wait_for WHAT serving NAME PID CMD…` instead
 
 - `stop_pid PID` (in [`lib/process-tree.sh`](#libprocess-treesh), which this rig sources)
 
@@ -7286,9 +7389,10 @@ It offers `h2` and `http/1.1` over TLS as a browser does and prints one JSON lin
 `url`, `alpn` (the protocol the server chose, `false` for none) and `settings` (the server's SETTINGS as Node's HTTP/2 client reads them, `null` without HTTP/2).
 It exits 1 when `settings.enableConnectProtocol` is true, naming the origin on stderr;
 0 when it is false or the server speaks no HTTP/2; 2 on a usage error, or when it has no answer: a TLS or certificate failure, or no SETTINGS within 10 s.
+The line the 10 s deadline prints carries the probe's own record of that wait: the delay its timer was armed with and how many milliseconds after arming it fired.
 Certificates are verified, so a proxy behind a private CA needs `NODE_EXTRA_CA_CERTS`.
 `h2-settings.test.ts` (`bun test scripts/e2e/lib`) runs it against a TLS server that writes a SETTINGS frame advertising extended CONNECT by hand (the pinned Bun's `http2.createSecureServer` sends none), against a local `http2.createSecureServer` that does not advertise it, against an https server with no HTTP/2, against a certificate it cannot verify, and against two servers that answer nothing
-— one that chooses h2 and sends no SETTINGS, one that never finishes the handshake — which it leaves after the 10 s deadline with exit 2.
+— one that chooses h2 and sends no SETTINGS, one that never finishes the handshake — which it leaves at the 10 s deadline with exit 2, the row reading from that record that the deadline timer fired, and no sooner than it was armed for.
 
 ## lib/dispatch-live-events.ts
 

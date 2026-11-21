@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { span, until } from "@legion/test-fixtures/wait";
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
@@ -95,13 +96,10 @@ function state(pid: number): string {
     return "gone";
   }
 }
-// gone says whether PID has ended, a zombie counting as ended, within five seconds.
+// gone waits until PID has ended, a zombie counting as ended, through @legion/test-fixtures/wait's
+// `until`, which ends at the row's deadline naming the pid.
 async function gone(pid: number): Promise<boolean> {
-  for (let i = 0; i < 100; i++) {
-    if (["gone", "Z", "X"].includes(state(pid))) return true;
-    await Bun.sleep(50);
-  }
-  return false;
+  return await until(`pid ${pid} to end`, () => ["gone", "Z", "X"].includes(state(pid)));
 }
 
 // harness runs BODY in a bash with lib/rig.sh and lib/arg-max-force.sh sourced for the run
@@ -463,7 +461,10 @@ stop_marked_processes "$work"; echo "status $?"`
     );
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
-    await Bun.sleep(200);
+    await span(
+      200,
+      "a signal the sweep sent would reach the pid through the kernel at a moment no state orders, and no later action of the row's is ordered after its delivery"
+    );
     expect(state(pid)).toBe("S");
   }
 );
