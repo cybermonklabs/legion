@@ -648,16 +648,20 @@ may an entry of its `requesters`. Each member of an owner group stands where the
 person's secret stands: a member's own session gets the group's agent-tier secret at once; every
 other request for it, and every request for its human-tier secret, waits for the group's
 approval, which any member gives on the broker's page; and every member lists and revokes the
-grants a member approved ([Approvals](#approvals)). A `requesters` entry naming a group admits a session whose
-person is a member.
+grants a member approved ([Approvals](#approvals)). A member may approve a request their own
+session made, as a sole owner may approve their own: a group owner is not a second person, and no
+rule asks for one. A `requesters` entry naming a group admits a session whose person is a member.
+A list or revoke that names the group itself as its approver, rather than a member, is refused
+`400 APPROVER_IS_GROUP`.
 
 The broker reads who is a member from Google Workspace, with the Directory API's `members.list`,
 the members of nested groups included (`packages/envoy/internal/cipher/groups`). It reads a group
-as soon as the five-minute read of the namespace names it for the first time, and every group a
-served secret names once an hour after that. A reread of one secret, such as the one
-`agent-secrets secret` asks for after a write, names no group, so a `retag` that names a group no
-served secret named before admits nobody until the next five-minute read has named it and its
-first read of the group has finished. A read that fails keeps the members of the last one that
+as soon as the five-minute read of the namespace names one it has not read yet, a group whose first
+read failed included, and every group a served secret names once an hour after that; a broker that
+starts waits up to 15 seconds for its first reads before it serves. A reread of one secret, such as
+the one `agent-secrets secret` asks for after a write, names no group, so a `retag` that names a
+group no served secret named before admits nobody until the next five-minute read has named it and
+its first read of the group has finished. A read that fails keeps the members of the last one that
 succeeded. A group whose last good read is more than 2 hours old, or that was never read, admits
 nobody: no member's session gets its agent-tier secret at once, no member may decide its requests,
 no Inbox lists them, and its `requesters` entry admits no session. The broker reads as a reader
@@ -670,13 +674,18 @@ a secret with a `requesters` list (`anyGroupOwned` in
 `packages/envoy/internal/cipher/requests/machine_state.go`). A grant the session got at once stops
 releasing (`GRANT_NOT_LIVE`) once the group no longer admits the session's person, a stale group
 included, and is not revoked. A grant of a secret whose `requesters` names the group ends for good
-once the group no longer admits the session's person, as it does once the list drops a person. A
-grant a member approved rests on that member, and releases only while the group admits the member
-who decided it. Where the group is stale or was never read, its release is refused as a lapsed
-grant (`GRANT_NOT_LIVE`); where the group was read in the last 2 hours and does not list that
-member, its approval chain is broken (`GRANT_CHAIN_INVALID`; [The audit record](#the-audit-record)).
-Each of the two writes the log line `group approval lapsed`, naming the grant, the decider and the
-group ([Health and logs](/legion/broker/operate/#health-and-logs)).
+once a read of the group, two hours old or newer, no longer lists the session's person, as it does
+once the list drops a person. While the group is stale or was never read, the list cannot say who
+is on it: a new request it decides is denied `requester-group-unread`, a live grant is paused
+(`GRANT_NOT_LIVE`), not revoked, and releases again once a read lists the person, and an approval
+of a pending request is refused and leaves it pending. A grant a member approved rests on that
+member, and releases only while the group admits the member who decided it, whoever owns the
+secret now. Where the group is stale or was never read, its release is refused as a lapsed grant
+(`GRANT_NOT_LIVE`); where the group was read in the last 2 hours and does not list that member, its
+approval chain is broken (`GRANT_CHAIN_INVALID`; [The audit record](#the-audit-record)). Each of the
+two writes the log line `group approval lapsed`, naming the grant, the decider and the group
+([Health and logs](/legion/broker/operate/#health-and-logs)). A member the group's last good read
+listed may still revoke the group's grants while it is stale, since a revoke only takes power away.
 
 A group gives the power to decide to whoever may change its members in Google Workspace: a person
 added to an owner group may approve its requests from the broker's next read of the group, within
@@ -784,16 +793,19 @@ The broker evaluates every name
   `{"organization_id": "<uuid>", "federation_rule_id": "fdrl_…", "service_account_id": "svac_…", "service_account": "<id>@<project>.iam.gserviceaccount.com"}`,
   with `"workspace_id": "wrkspc_…"` where the federation rule is enabled for more than one
   workspace, and its release returns a bare Anthropic access token (`sk-ant-oat01-…`): the broker
-  mints the bound account's Google identity token for the audience `https://api.anthropic.com`,
-  with the account's email in it, through the same API, and trades it at Anthropic's
-  `POST /v1/oauth/token`
+  mints a new Google identity token of the bound account for the audience
+  `https://api.anthropic.com`, with the account's email in it, through the same API, and trades it
+  once at Anthropic's `POST /v1/oauth/token`
   ([Anthropic's reference](https://platform.claude.com/docs/en/manage-claude/wif-reference)). The
   same setting binds the secret to its account, with the same refusals, and the same `requesters`
   rule holds, but the type is human tier alone (`type-human-tier`), so no session gets a grant of
-  it without asking. The release's `expires_at` is the token's own end, and the airlock's proxy mints
-  again five minutes before it, as it does for every minted value. The broker reads the stored
-  value for each release,
-  as it reads any secret, and mints from
+  it without asking, and a person approves every release of it: the model judge decides none,
+  whatever seconds the airlock rules give the name ([The model judge](#the-model-judge)). The
+  federation rule's `token_lifetime_seconds` must be 3600 or less, since a grant of the secret
+  lasts an hour at most; the broker refuses a longer token, naming that setting. The minted value
+  expires at the token's own end, which the airlock's proxy reads to mint again five minutes before
+  it, as it does for every minted value; the release's `expires_at` is the grant's end. The broker
+  reads the stored value for each release, as it reads any secret, and mints from
   it. It never returns the stored App key or refresh token. It also reads each type secret's value
   once for each new version or type, and checks it as the minter reads it, so a value the
   minter could not mint from leaves the secret out (`value-malformed`) before anyone asks for it.
@@ -1343,12 +1355,13 @@ a request is a setting of its keys, in the airlock rules file:
 
 - **Nobody**: an agent-tier key is granted at once to the sessions its tags allow, as before.
 - **The judge**: a key whose rules entry has a `judge` value, the longest lifetime in seconds the
-  judge may grant, and no `admin` tag. The entry may also carry `guidance`: the key owner's
-  instruction saying when the judge should grant it. An entry with no `hosts` binds the value
-  nowhere and only says who decides; its value is released to the command as a key with no entry
-  is.
-- **A person**: every other key, and every administrator's key whatever the rules file says. The
-  person decides on the broker page, as before.
+  judge may grant, no `admin` tag, and no `anthropic-federation` type. The entry may also carry
+  `guidance`: the key owner's instruction saying when the judge should grant it. An entry with no
+  `hosts` binds the value nowhere and only says who decides; its value is released to the command
+  as a key with no entry is.
+- **A person**: every other key, and every administrator's key and Anthropic federation key
+  whatever the rules file says, since either can release an organization administrator's
+  credential. The person decides on the broker page, as before.
 
 The judge decides a request when every key in it that needs a decision is a judge key. A request
 with any key a person decides is that person's whole. The broker reads the answer when it writes
@@ -1378,7 +1391,7 @@ at the first that fails, asking the model nothing:
    15 minutes and at most each of those keys' seconds;
 3. the tag policy, read again now, still answers approval for each key the judge decides, and
    still gives the session at once any key it got at once beside them;
-4. no key is an administrator's (the `admin` tag);
+4. no key is an administrator's (the `admin` tag) or an Anthropic federation key;
 5. no key is withheld from that session.
 
 A key the session gets at once, such as an agent-tier key, may stand beside the judge's keys. It

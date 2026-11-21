@@ -26,12 +26,14 @@ last 2 hours. A person added to the group may decide from the broker's next hour
 while the broker cannot read the group for longer than 2 hours, nobody may decide its requests and
 no Inbox lists them ([A group's secret](/legion/broker/concepts/#a-groups-secret)). The record
 names the group as the approver and you as the person who decided, and the grant is the group's:
-every member sees it on their Settings page and may end it.
+every member sees it on their Settings page and may end it. A member may approve a request their
+own session made, as the one owner of a person's secret may: a group owner is not a second person.
 
 Some requests never reach you. Where the deployment configures a model judge, a request for keys
-whose airlock rules entry gives the judge seconds, none of them an administrator's, is the judge's
-to decide: it grants or refuses it, each key against the guidance you gave in the rules file, and
-while it decides the request is on no list. A request the judge cannot decide comes to you once,
+whose airlock rules entry gives the judge seconds, none of them an administrator's or an Anthropic
+federation key, is the judge's to decide: it grants or refuses it, each key against the guidance
+you gave in the rules file, and while it decides the request is on no list. A request the judge
+cannot decide comes to you once,
 as an ordinary card. If you open such a request's page while the judge holds it, the page is
 read-only and says the judge is deciding it. A judged grant's **State** line reads
 `approved by the model judge judge:<model id> at <time>`, with no person beside it.

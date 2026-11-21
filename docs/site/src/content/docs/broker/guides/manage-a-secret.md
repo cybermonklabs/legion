@@ -185,8 +185,11 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   `{"organization_id": "<uuid>", "federation_rule_id": "fdrl_…", "service_account_id": "svac_…", "service_account": "<id>@<project>.iam.gserviceaccount.com"}`,
   with `"workspace_id": "wrkspc_…"` where the federation rule is enabled for more than one
   workspace ([Concepts](/legion/broker/concepts/#requests-and-grants)). An `anthropic-federation`
-  secret is `--tier human` alone. Those last two are an administrator's to write and to set a new
-  value for, not a self-service step, even for the person who owns one: which account the broker
+  secret is `--tier human` alone, a person approves every release of it (the model judge decides
+  none, whatever the airlock rules say), and its federation rule's `token_lifetime_seconds` must be
+  3600 or less, or the broker refuses its tokens. A `google-service-account` and an
+  `anthropic-federation` secret are an administrator's to write and to set a new value for, not a
+  self-service step, even for the person who owns one: which account the broker
   mints for is the deployment's choice, bound to the secret's name in
   `BROKER_SERVICE_ACCOUNT_SECRETS`, and a secret the deployment has bound to nothing releases no
   token at all, however good its value. Ask whoever runs your deployment to create it and bind it.
@@ -723,7 +726,7 @@ new tags, but the broker reads a group's members only once its five-minute read 
 names the group, and a reread of one secret names none. Until that read and the group's first read
 have finished, within about five minutes, no member decides the secret's requests or gets its
 agent-tier secret at once, and a `requesters` entry naming the group refuses every session
-`requester-not-listed`. A group another served secret already names admits its members from the
+`requester-group-unread`. A group another served secret already names admits its members from the
 reread on ([A group's secret](/legion/broker/concepts/#a-groups-secret)).
 
 ## Delete and restore
