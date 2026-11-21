@@ -5,9 +5,9 @@
  *  origin's two answers and its classifier, none of which reaches a probe),
  *  `outside-path-reach.test.ts` (runs that probe), `outside-path-reach-blackhole.test.ts` (the
  *  two runs that need a network dropping TEST-NET-1) and `outside-path-reach-tmout.test.ts` (a
- *  list on a pipe under an inherited TMOUT). `outside-edge-refusals.test.ts`, the tests of the
- *  sibling HTTPS check `e2e/acceptance/outside-edge-refusals.sh`, takes `fakeHost`, `closedPort`,
- *  `bash`, `curl`, `verdict` and `Run` from here too.
+ *  list on a pipe under an inherited TMOUT). The tests of the sibling HTTPS check
+ *  `e2e/acceptance/outside-edge-refusals.sh` take `fakeHost`, `closedPort`, `bash`, `curl`,
+ *  `verdict` and `Run` from here too, through `outside-edge-refusals-fixtures.ts` and directly.
  *  `bun test` collects only `*.test.ts` and its kin, so this module runs nowhere of its own.
  *
  *  Every row runs the script itself against real listeners: a fake Dispatch (`Bun.serve`, which
@@ -149,12 +149,13 @@ export interface Fake<Entry> {
 }
 
 /** The start of a fake from `config`, each in a host process of its own, a process beside the test
- *  process that runs `program` as `bun <program>`. The program prints its control server's port on
- *  127.0.0.1 as its first line on stdout and nothing after it; `POST /` with the config starts its
- *  one fake and answers `{ port }`, and `GET /seen` answers that fake's record. It exits once its
- *  stdin closes, so it never outlives the test process. `what` names the host in every error.
- *  `fakeDispatch` below starts `outside-path-reach-origin.ts` this way, and
- *  `outside-edge-refusals.test.ts` the stand-in edges of `outside-edge-refusals-edge.ts`.
+ *  process that runs `program` as `bun <program>`. The program serves the control server of
+ *  `fake-host-server.ts`: it prints that server's port on 127.0.0.1 as its first line on stdout and
+ *  nothing after it; `POST /` with the config starts its one fake and answers `{ port }`, and
+ *  `GET /seen` answers that fake's record. It exits once its stdin closes, so it never outlives the
+ *  test process. `what` names the host in every error. `fakeDispatch` below starts
+ *  `outside-path-reach-origin.ts` this way, and the edge-refusal tests the stand-in edges of
+ *  `outside-edge-refusals-edge.ts`.
  *
  *  A host serves one fake, never the fakes of other rows, because Bun's test runner, once a row
  *  passes its timeout, kills every process a row of the file started that is still running (it

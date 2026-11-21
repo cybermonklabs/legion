@@ -1,32 +1,38 @@
-/** The host of one stand-in edge of `outside-edge-refusals.test.ts`, a process beside the test
- *  process. `fakeHost` in `outside-path-reach-fixtures.ts` starts one, as
+/** The host of one stand-in edge of the tests of `e2e/acceptance/outside-edge-refusals.sh`, a
+ *  process beside the test process. `fakeHost` in `outside-path-reach-fixtures.ts` starts one, as
  *  `bun outside-edge-refusals-edge.ts`, for each stand-in a row asks for, and says why each
- *  stand-in has a host of its own. It serves a control server on 127.0.0.1, on a port the kernel
- *  picks, and prints that port as its first line on stdout. The script never reads that port.
+ *  stand-in has a host of its own. Its control server, which the script never reads, is
+ *  `serveFakeHost` of `fake-host-server.ts`.
  *
- *  `POST /` with `{ routes, notFound }` starts the stand-in edge, a `Bun.serve` on 127.0.0.1 on a
- *  port the kernel picks, and answers `{ port }`; a second `POST /` is refused. The stand-in routes
- *  a request as the load balancer's HTTP routes would: by the first route whose `host` is the
- *  request's Host header, whose `method`, where the route names one, is the request's method, and
- *  whose `path` is the request's path, or a prefix of it for a `prefix` route. It answers with
- *  that route's `status` and `body`, and with `X-Outside-Edge-Backend: <marker>` where the route
- *  names a marker, as each production route sets it. A request no route takes is answered 404
- *  with `notFound` as its body and no marker, as the Gateway's own 404 is. It records every
- *  request it answers, and `GET /seen` answers that record, in the order it answered them.
+ *  `POST /` with `{ routes, notFound }` starts the stand-in edge on 127.0.0.1, on a port the kernel
+ *  picks. The stand-in routes a request as the load balancer's HTTP routes would: by the first
+ *  route whose `host` is the request's Host header, whose `method`, where the route names one, is
+ *  the request's method, and whose `path` is the request's path, or a prefix of it for a `prefix`
+ *  route. It answers with that route's `status` and `body`, and with
+ *  `X-Outside-Edge-Backend: <marker>` where the route names a marker, as each production route sets
+ *  it. A request no route takes is answered 404 with `notFound` as its body and no marker, as the
+ *  Gateway's own 404 is. It records every request it answers, which `GET /seen` answers.
  *
- *  The host exits once its stdin closes: the test process holds the other end of that pipe, so
- *  the host never outlives the test process. A row stops it by killing it, which closes the
- *  stand-in's connections. Imported, it serves nothing: the test file takes only the types
- *  `Route`, `Edge` and `Seen` from it.
+ *  The path a route matches is the request's path as it came on the wire, up to any `?`: curl
+ *  sends a path such as `/v1/%2e%2e/healthz` as written, and a Gateway route names a path as
+ *  written too. So the stand-in reads raw HTTP/1.1 from its socket (`node:net`) rather than through
+ *  `Bun.serve`, whose `request.url` has already decoded `%2e%2e` and removed the dot segment it
+ *  makes (`/v1/%2e%2e/healthz` reads `/healthz` there), so a planted route could be matched, or
+ *  missed, for a path no probe sent. Each answer closes its connection, as the script makes one
+ *  request on each.
+ *
+ *  Imported, it serves nothing: the tests take only the types `Route`, `Edge` and `Seen` from it.
  */
 
-import type { Server } from "bun";
+import { type AddressInfo, createServer, type Socket } from "node:net";
+import { type Serving, serveFakeHost } from "./fake-host-server";
 
 /** One route of a stand-in edge. */
 export interface Route {
   host: string;
   /** The one method the route takes; every method where it names none. */
   method?: string;
+  /** The path as a request writes it, encoded bytes and all. */
   path: string;
   /** Whether `path` is a prefix of the paths the route takes rather than the one path. */
   prefix?: boolean;
@@ -47,78 +53,82 @@ export interface Edge {
 export interface Seen {
   method: string;
   host: string | null;
+  /** The path as it came on the wire, up to any `?`, never decoded. */
   path: string;
   contentLength: string | null;
 }
 
-/** The stand-in edge the host serves, and its record of every request it answered. */
-interface Standing {
-  server: Server<undefined>;
-  seen: Seen[];
+/** The end of an HTTP/1.1 request's head. */
+const headEnd = Buffer.from("\r\n\r\n");
+
+/** The answer of `routes` to `request`, the head of a request read whole. */
+function route(
+  { routes, notFound }: Edge,
+  request: Seen
+): Pick<Route, "status" | "marker" | "body"> {
+  const taken = routes.find(
+    (each) =>
+      each.host === request.host &&
+      (each.method === undefined || each.method === request.method) &&
+      (each.prefix === true ? request.path.startsWith(each.path) : request.path === each.path)
+  );
+  return taken ?? { status: 404, body: notFound };
 }
 
-/** Starts one stand-in edge that routes as `edge` says. */
-function serveEdge({ routes, notFound }: Edge): Standing {
+/** Reads one request from `socket`, records it in `seen` and answers it as `edge` routes it. */
+function answerOn(socket: Socket, edge: Edge, seen: Seen[]): void {
+  let read = Buffer.alloc(0);
+  let answered = false;
+  // A connection the client resets is no error of the stand-in's.
+  socket.on("error", () => {});
+  socket.on("data", (chunk: Buffer) => {
+    if (answered) return;
+    read = Buffer.concat([read, chunk]);
+    const end = read.indexOf(headEnd);
+    if (end < 0) return;
+    const [requestLine = "", ...lines] = read.subarray(0, end).toString("latin1").split("\r\n");
+    const headers = new Map(
+      lines.map((line) => {
+        const colon = line.indexOf(":");
+        return [line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim()] as const;
+      })
+    );
+    const contentLength = headers.get("content-length") ?? null;
+    // The body, which the script's probes send empty, is read whole before the answer.
+    if (read.length < end + headEnd.length + Number(contentLength ?? 0)) return;
+    answered = true;
+    const [method = "", target = ""] = requestLine.split(" ");
+    const request: Seen = {
+      method,
+      host: headers.get("host") ?? null,
+      path: target.split("?")[0] ?? "",
+      contentLength,
+    };
+    seen.push(request);
+    const { status, marker, body } = route(edge, request);
+    const content = Buffer.from(body);
+    const head = [
+      `HTTP/1.1 ${status} Stand-in`,
+      ...(marker === undefined ? [] : [`X-Outside-Edge-Backend: ${marker}`]),
+      `Content-Length: ${content.length}`,
+      "Connection: close",
+      "",
+      "",
+    ].join("\r\n");
+    socket.end(Buffer.concat([Buffer.from(head, "latin1"), content]));
+  });
+}
+
+/** Starts one stand-in edge that routes as `edge` says. Like any server of these tests it sets no
+ *  idle timeout of its own, which would drop a request this host was kept from answering under
+ *  load. */
+async function serveEdge(edge: Edge): Promise<Serving<Seen>> {
   const seen: Seen[] = [];
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    // As the fake Dispatch of `outside-path-reach-origin.ts` does: no idle timeout of Bun's own,
-    // which would drop a request this host was kept from answering under load.
-    idleTimeout: 0,
-    fetch(request) {
-      const { pathname } = new URL(request.url);
-      const host = request.headers.get("host");
-      seen.push({
-        method: request.method,
-        host,
-        path: pathname,
-        contentLength: request.headers.get("content-length"),
-      });
-      const route = routes.find(
-        (each) =>
-          each.host === host &&
-          (each.method === undefined || each.method === request.method) &&
-          (each.prefix === true ? pathname.startsWith(each.path) : pathname === each.path)
-      );
-      if (route === undefined) return new Response(notFound, { status: 404 });
-      return new Response(route.body, {
-        status: route.status,
-        headers: route.marker === undefined ? {} : { "X-Outside-Edge-Backend": route.marker },
-      });
-    },
-  });
-  return { server, seen };
+  const server = createServer((socket) => answerOn(socket, edge, seen));
+  const listening = Promise.withResolvers<void>();
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  return { port: (server.address() as AddressInfo).port, seen };
 }
 
-if (import.meta.main) {
-  /** The one stand-in this host serves, once `POST /` has started it. */
-  let edge: Standing | undefined;
-  const control = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    routes: {
-      "/": {
-        async POST(request) {
-          const config = (await request.json()) as Edge;
-          if (edge !== undefined) {
-            return Response.json({ code: "ALREADY_STARTED" }, { status: 409 });
-          }
-          edge = serveEdge(config);
-          return Response.json({ port: Number(edge.server.url.port) });
-        },
-      },
-      "/seen": {
-        GET() {
-          return edge === undefined
-            ? Response.json({ code: "NOT_STARTED" }, { status: 404 })
-            : Response.json(edge.seen);
-        },
-      },
-    },
-  });
-  console.log(control.port);
-  // The test process writes nothing here: this only waits for the pipe to close.
-  await Bun.stdin.text();
-  process.exit(0);
-}
+if (import.meta.main) await serveFakeHost(serveEdge);

@@ -61,9 +61,9 @@ jobs:
         run: bun run typecheck
         working-directory: packages/dispatch
       # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, and
-      # outside-edge-refusals.test.ts the edge-refusal check, each of which must refuse to run and
-      # name bash; each skips that row where zsh is missing, and the runner image has no zsh (dash,
-      # the other shell they run under, is Ubuntu's /bin/sh).
+      # outside-edge-refusals-input.test.ts the edge-refusal check, each of which must refuse to run
+      # and name bash; each skips that row where zsh is missing, and the runner image has no zsh
+      # (dash, the other shell they run under, is Ubuntu's /bin/sh).
       - name: Install zsh
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
       # The database cases of e2e/__tests__/psql-session.test.ts and harness-stacks.test.ts skip

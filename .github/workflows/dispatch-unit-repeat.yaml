@@ -168,8 +168,8 @@ jobs:
       - run: bun install --frozen-lockfile
       # As ci-job-dispatch-ui.yaml's step of this name, for its reason:
       # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, and
-      # outside-edge-refusals.test.ts the edge-refusal check, each of which must refuse to run and
-      # name bash; each skips that row where zsh is missing. The runner image has no zsh (dash,
+      # outside-edge-refusals-input.test.ts the edge-refusal check, each of which must refuse to run
+      # and name bash; each skips that row where zsh is missing. The runner image has no zsh (dash,
       # the other shell they run under, is Ubuntu's /bin/sh).
       - name: Install zsh
         if: matrix.lane == 'harness'

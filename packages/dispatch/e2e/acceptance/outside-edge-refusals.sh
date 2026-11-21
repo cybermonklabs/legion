@@ -23,14 +23,19 @@
 #                          sends resolve on this machine (`curl --resolve`).
 #   OUTSIDE_EDGE_ROUTED    a file of `name method sni host path backend` lines, the positive
 #                          controls, one or more per backend: each a request one of our routes
-#                          takes and marks with `X-Outside-Edge-Backend: <backend>`.
-#   OUTSIDE_EDGE_REFUSALS  a file of `name method sni host path [status:marker]` lines, each a
-#                          request the edge must refuse. The optional sixth field names the
-#                          answer that refuses it, where that is not the Gateway's 404: a status
-#                          of 400 to 499 and a marker of letters, digits, `.`, `_` and `-`, such
-#                          as `405:broker` for a GET on the broker's token path. No route of the
-#                          edge matches on method (its Gateway class supports none), so that GET
-#                          reaches the broker, and the broker's own 405, marked, is its refusal.
+#                          takes and marks with `X-Outside-Edge-Backend: <backend>`. A backend is
+#                          never `none`, the word a probe line prints for an answer with no marker.
+#   OUTSIDE_EDGE_REFUSALS  a file of `name method sni host path [405:marker]` lines, each a
+#                          request the edge must refuse. The optional sixth field is for a method
+#                          the edge refuses on a path it forwards on purpose: `405:` and the marker
+#                          of the backend that refuses it, letters, digits, `.`, `_` and `-` but
+#                          not `none`, such as `405:broker` for a GET on the broker's token path.
+#                          No route of the edge matches on method (its Gateway class supports
+#                          none), so that GET reaches the broker, and the broker's own 405,
+#                          marked, is its refusal. 405 is the status RFC 9110 gives a method its
+#                          target does not support; another status there would let a list take an
+#                          answer the edge forwarded, such as a backend's own 401 or 404, for a
+#                          refusal.
 # Both lists split their fields on spaces and tabs; a line whose first field starts with `#` is a
 # comment, and a blank line is skipped. Every byte must be printable ASCII or a tab, but a CR that
 # comes directly before an LF (CRLF line endings). Each line's name is its own, across both lists,
@@ -63,35 +68,48 @@
 #
 # The routed controls are read first. Each must answer naming its backend, whatever its status;
 # one that does not shows this run cannot see a route of this edge, and the run stops at UNKNOWN
-# before it reads any refusal line. Then each refusal line is
-#   refused  when its answer came whole and is the one the line names: status 404 and no marker
-#            in any block for a line of five fields, and exactly the sixth field's status, naming
-#            exactly its marker, for a line of six;
+# before it reads any refusal line. Then each refusal line of five fields first has its unrouted
+# control sent: the line's own method, SNI and path, with the Host
+# unrouted.outside-edge-refusals.invalid, which no route can name (RFC 6761 keeps `.invalid` out of
+# the DNS). Its answer is the edge's own 404 for that path, and it must come whole, 404 with no
+# marker. Then the line itself is
+#   refused  when its answer came whole and is the one the line names: for a line of five fields,
+#            404, no marker in any block and the same body as its unrouted control's; for a line
+#            of six, exactly 405, naming exactly the sixth field's marker;
 #   REACHED  when any other answer came: for a line of five fields, a marker of any value in any
 #            block or a status other than 404;
-#   UNKNOWN  when no status came (a connect or TLS failure, a timeout before the answer), or the
-#            named answer came and curl did not read it whole, its body past 1 MiB included.
+#   UNKNOWN  when no status came (a connect or TLS failure, a timeout before the answer), when
+#            the named answer came and curl did not read it whole, its body past 1 MiB included,
+#            or when a line of five fields came 404 with no marker and its unrouted control did
+#            not answer the edge's own 404, or answered one with another body. A route that
+#            forwards without a marker to a backend that answers 404 gives another body; so may
+#            an edge whose own 404 differs by Host, and the run cannot tell the two apart, so it
+#            reads UNKNOWN, never refused.
 # Each probe prints its status (000 where none came), every marker of its answer in order and
 # separated by `,` (`none` where it had none), and the SHA-256 of its body (`none` where no answer
 # came), so two runs can be compared, and curl's exit code and first message where curl did not
-# exit 0. Then the verdict:
+# exit 0; an unrouted control prints `unrouted <name>` the same way. Then the verdict:
 #   PASS     exit 0: every routed control showed its marker and every refusal line was refused.
-#   FAIL     exit 1: a refusal line was REACHED, whatever else the run could not read: an answer
-#            is evidence, where a probe that came short only failed to look.
+#   FAIL     exit 1: a refusal line was REACHED, whatever else the run could not read, a signal
+#            that stopped it afterwards included: an answer is evidence, where a probe that came
+#            short only failed to look.
 #   UNKNOWN  exit 2: anything that proved nothing, which is never a pass: an input refused, a
 #            tool missing or too old, an empty or unreadable list, a routed control whose marker
-#            was not visible, a refusal line whose answer could not be read, or a run that a HUP,
-#            INT or TERM stopped before its verdict.
+#            was not visible, a refusal line whose answer could not be read as a refusal or a
+#            reach, or a run that a HUP, INT or TERM stopped before its verdict and before any
+#            line was REACHED.
 #
-# A HUP, INT or TERM ends the run at its UNKNOWN verdict, never at bash's own exit with nothing
-# printed. While a list is read, it ends the run at once, sent to the script's own process alone
-# or to its whole process group: a job of its own reads each list, and the script waits for that
-# job in `wait`, which a trapped signal interrupts on every bash (bash holds a trap until a read
-# in the shell itself or in a command substitution ends, and bash 3.2 restarts an interrupted
-# open of a named pipe). While a probe runs, bash runs the trap once that probe's curl has
-# returned: a signal sent to the script's process alone ends the run within
-# OUTSIDE_EDGE_READ_SECONDS, and one sent to its process group, as a terminal's Ctrl-C is, ends
-# that curl too, and the run at once.
+# A HUP, INT or TERM ends the run at a verdict, never at bash's own exit with nothing printed. From
+# the first line of any verdict on, through the exit's cleanup, the three are ignored, so a second
+# signal can neither print a second verdict nor cut the cleanup short; the exit kills every job
+# the run started, a list's reader included, and removes the directory the answers went to. While
+# a list is read, a signal ends the run at once, sent to the script's own process alone or to its
+# whole process group: a job of its own reads each list, and the script waits for that job in
+# `wait`, which a trapped signal interrupts on every bash (bash holds a trap until a read in the
+# shell itself or in a command substitution ends, and bash 3.2 restarts an interrupted open of a
+# named pipe). While a probe runs, bash runs the trap once that probe's curl has returned: a
+# signal sent to the script's process alone ends the run within OUTSIDE_EDGE_READ_SECONDS, and one
+# sent to its process group, as a terminal's Ctrl-C is, ends that curl too, and the run at once.
 #
 # Usage: OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \
 #          OUTSIDE_EDGE_REFUSALS=refusals.txt bash outside-edge-refusals.sh
@@ -106,14 +124,28 @@ set -u
 LC_ALL=C
 # bash's `read` takes an inherited TMOUT as its timeout, which would cut a list short.
 unset TMOUT 2>/dev/null
+# The refusal lines reached so far, set here so no variable of the environment stands for one.
+reached=''
 
+# verdict CODE TEXT: prints TEXT, the run's one verdict, and exits with CODE. A HUP, INT or TERM is
+# ignored from its first line on, through the exit's cleanup, so a second signal can neither print
+# a second verdict nor cut the cleanup short.
+verdict() {
+  trap '' HUP INT TERM
+  printf '%s\n' "$2"
+  exit "$1"
+}
 # unknown MESSAGE: the verdict for anything that proved nothing.
-unknown() {
-  printf 'UNKNOWN: %s\n' "$1"
-  exit 2
+unknown() { verdict 2 "UNKNOWN: $1"; }
+# stopped: the verdict of a run a HUP, INT or TERM stopped: FAIL where a refusal line was reached
+# before it, since an answer is evidence whatever came after it, and UNKNOWN otherwise.
+# shellcheck disable=SC2329 # the trap below invokes it
+stopped() {
+  [ -z "$reached" ] || verdict 1 "FAIL: reached$reached, before a signal stopped the run"
+  unknown "the run was stopped by a signal before its verdict"
 }
 # Set before anything else can wait: the header says when a HUP, INT or TERM ends the run.
-trap 'unknown "the run was stopped by a signal before its verdict"' HUP INT TERM
+trap stopped HUP INT TERM
 
 is_count() { case $1 in '' | *[!0-9]*) return 1 ;; esac; }
 is_port() {
@@ -178,11 +210,11 @@ is_path() {
   case $1 in *$url_outside*) return 1 ;; esac
 }
 
-# is_expected TEXT: TEXT is a refusal line's expected answer, `<status>:<marker>`: a status of 400
-# to 499, a refusal's, a colon, and a marker of letters, digits, `.`, `_` and `-`, never empty.
+# is_expected TEXT: TEXT is a refusal line's expected answer, `405:<marker>`: the method refusal of
+# a backend, and a marker of letters, digits, `.`, `_` and `-`, never empty and never `none`.
 is_expected() {
-  case $1 in 4[0-9][0-9]:?*) ;; *) return 1 ;; esac
-  case ${1#*:} in *[!A-Za-z0-9._-]*) return 1 ;; esac
+  case $1 in 405:?*) ;; *) return 1 ;; esac
+  case ${1#405:} in none | *[!A-Za-z0-9._-]*) return 1 ;; esac
 }
 
 # byte_hex BYTE: sets `hex` to the two hexadecimal digits of BYTE, one byte other than NUL, as
@@ -194,12 +226,12 @@ byte_hex() {
 }
 
 # read_whole SETTING FILE: sets `text` to the whole of FILE, the list SETTING names, read once
-# before anything goes on the network. A job of its own reads it, `reader`, and this shell waits
-# for that job in `wait`, which a trapped signal interrupts on every bash (the header says why);
-# the EXIT trap kills a job a signal left reading. One `read -d ''` reads the whole list: it stops
-# at a NUL byte and succeeds only when it found one, fails with status 1 at the end of the list,
-# and says so on stderr only for a read error. Any other status is a read that stopped before the
-# end, such as a timeout. The job writes the read's stderr, its status and the text to files of
+# before anything goes on the network. A job of its own reads it, and this shell waits for that
+# job in `wait`, which a trapped signal interrupts on every bash (the header says why); the EXIT
+# trap kills a job a signal left reading. One `read -d ''` reads the whole list: it stops at a NUL
+# byte and succeeds only when it found one, fails with status 1 at the end of the list, and says
+# so on stderr only for a read error. Any other status is a read that stopped before the end,
+# such as a timeout. The job writes the read's stderr, its status and the text to files of
 # `work`, and exits 0 only once all three are written. A job that wrote no status could not open
 # the file, and bash says why on stderr; words of bash's own on the read's stderr refuse the run.
 read_whole() {
@@ -208,10 +240,8 @@ read_whole() {
     IFS= read -r -d '' text 2>"$base.said"
     printf '%s' "$?" >"$base.status" && printf '%s' "$text" >"$base.text"
   } <"$2" &
-  reader=$!
-  wait "$reader"
+  wait "$!"
   status=$?
-  reader=''
   if [ "$status" -ne 0 ]; then
     [ -f "$base.status" ] || unknown "$1 names $2, which could not be read: could not open it"
     unknown "$1 names $2, which could not be read whole: what was read could not be written under $work"
@@ -240,7 +270,7 @@ read_whole() {
 read_list() {
   local setting=$1 file=$2 kind=$3 shape='name method sni host path backend' number=0 ended row
   local prefix
-  [ "$kind" = routed ] || shape='name method sni host path [status:marker]'
+  [ "$kind" = routed ] || shape='name method sni host path [405:marker]'
   read_whole "$setting" "$file"
   rest=$text
   while [ -n "$rest" ]; do
@@ -295,8 +325,10 @@ read_list() {
         unknown "line $number of $file: the backend $6 is not letters, digits, '.', '_' and '-'"
         ;;
       esac
+      [ "$6" != none ] ||
+        unknown "line $number of $file: the backend none is the word a probe line prints for an answer with no marker; name the backend another way"
     elif [ "$#" -eq 6 ] && ! is_expected "$6"; then
-      unknown "line $number of $file: the expected answer $6 is not '<status>:<marker>', a status of 400 to 499 and a marker of letters, digits, '.', '_' and '-'"
+      unknown "line $number of $file: the expected answer $6 is not '405:<marker>', the method refusal of a backend whose marker is letters, digits, '.', '_' and '-' and not none"
     fi
     total=$((total + 1))
     names[total]=$1
@@ -315,7 +347,7 @@ read_list() {
 [ -n "${OUTSIDE_EDGE_ROUTED:-}" ] ||
   unknown "OUTSIDE_EDGE_ROUTED is unset: set it to the file of 'name method sni host path backend' lines, one routed control per backend"
 [ -n "${OUTSIDE_EDGE_REFUSALS:-}" ] ||
-  unknown "OUTSIDE_EDGE_REFUSALS is unset: set it to the file of 'name method sni host path [status:marker]' lines the edge must refuse"
+  unknown "OUTSIDE_EDGE_REFUSALS is unset: set it to the file of 'name method sni host path [405:marker]' lines the edge must refuse"
 
 connect=${OUTSIDE_EDGE_CONNECT_SECONDS:-3}
 max_time=${OUTSIDE_EDGE_READ_SECONDS:-10}
@@ -369,12 +401,13 @@ else
 fi
 
 # The directory each list's reader writes what it read to, and each probe its headers, body and
-# curl's stderr, files of its own row; removed when the run exits, after a reader a signal left
-# reading is killed.
+# curl's stderr, files of its own; removed when the run exits, once every job the run started, a
+# reader a signal left reading included, is killed. `jobs -p` lists a reader from the moment it
+# is forked, so a signal before the script has its process id leaves none behind. The three
+# signals are ignored first, so a second one cannot cut the cleanup short.
 work=$(mktemp -d "${TMPDIR:-/tmp}/outside-edge-refusals.XXXXXX" 2>/dev/null) && [ -d "$work" ] ||
   unknown "mktemp could not make a directory under ${TMPDIR:-/tmp} for the answers"
-reader=''
-trap '[ -z "$reader" ] || { kill -KILL "$reader"; wait "$reader"; } 2>/dev/null; rm -rf "$work"' EXIT
+trap 'trap "" HUP INT TERM; left=$(jobs -p); [ -z "$left" ] || { kill -KILL $left; wait $left; } 2>/dev/null; rm -rf "$work"' EXIT
 
 # The probe table: the routed controls in rows 1 to `routed`, then the refusal lines to `total`.
 total=0
@@ -412,7 +445,12 @@ digest_of() {
   [ "${#out}" -eq 64 ] || digest=unreadable
 }
 
-# probe ROW: one request for row ROW of the table, as the header writes it. Sets `status`, to 000
+# The Host of each refusal line's unrouted control: a name no route can name, since RFC 6761 keeps
+# `.invalid` out of the DNS.
+unrouted_host=unrouted.outside-edge-refusals.invalid
+
+# probe ROW [HOST]: one request for row ROW of the table, as the header writes it, with HOST as
+# its Host where it is given (an unrouted control), the row's own otherwise. Sets `status`, to 000
 # where no status came; `marked`, yes or no: whether any header block carried a marker; `seen`,
 # every marker value of every block as it came, and `final`, those of the final block, each one
 # per line; `shown`, every marker value in order, each with any byte outside letters, digits, `.`,
@@ -420,10 +458,12 @@ digest_of() {
 # none; `digest`, the body's SHA-256, of an empty body where an answer came with none, and `none`
 # where no answer came; `code`, curl's exit code; and `said`, curl's first line on stderr.
 probe() {
-  local row=$1 headers="$work/$1.headers" body="$work/$1.body" errors="$work/$1.errors" header
-  local value part
+  local row=$1 host=${2-} file header value part
+  file=$work/$1${host:+.unrouted}
+  [ -n "$host" ] || host=${hosts[row]}
+  local headers="$file.headers" body="$file.body" errors="$file.errors"
   set -- -q --noproxy '*' -g -sS --http1.1 --resolve "${snis[row]}:$port:$address" \
-    -H "Host: ${hosts[row]}" -X "${methods[row]}"
+    -H "Host: $host" -X "${methods[row]}"
   case ${methods[row]} in POST | PUT | PATCH) set -- "$@" -d '' ;; esac
   set -- "$@" -D "$headers" -o "$body" -w '%{http_code}' --connect-timeout "$connect" \
     --max-time "$max_time" --max-filesize 1048576 "$scheme://${snis[row]}$authority_port${paths[row]}"
@@ -480,11 +520,11 @@ answer_names() {
   done
 }
 
-# report LABEL ROW: prints the line of the probe just made of row ROW.
+# report LABEL ROW [NOTE]: prints the line of the probe just made of row ROW, NOTE after it.
 report() {
   local tail=''
   [ "$code" -eq 0 ] || tail="; curl exit $code${said:+: $said}"
-  printf '%s %s %s %s body-sha256 %s%s\n' "$1" "${names[$2]}" "$status" "$shown" "$digest" "$tail"
+  printf '%s %s %s %s body-sha256 %s%s%s\n' "$1" "${names[$2]}" "$status" "$shown" "$digest" "$tail" "${3-}"
 }
 
 # The routed controls, every one of them, before any refusal line: a control whose answer did not
@@ -501,37 +541,65 @@ while [ "$row" -le "$routed" ]; do
 done
 [ -z "$missing" ] || unknown "the marker of $missing is not visible, so no refusal can be read"
 
-reached=''
+# unread: the lines whose answer came short; unclear: the lines of five fields answered 404 with
+# no marker whose body could not be told from a forward, as the header says.
 unread=''
+unclear=''
 while [ "$row" -le "$total" ]; do
+  # own: the body's SHA-256 of the edge's own 404 for this line, from its unrouted control; empty
+  # for a line of six fields, and where the control did not answer 404 with no marker, read whole.
+  own=''
+  if [ -z "${expects[row]}" ]; then
+    probe "$row" "$unrouted_host"
+    report unrouted "$row"
+    if [ "$marked" = no ] && [ "$status" = 404 ] && [ "$code" -eq 0 ]; then own=$digest; fi
+  fi
   probe "$row"
-  # matched: the answer is the one this line names, whether or not curl read it whole.
-  matched=no
   if [ -n "${expects[row]}" ]; then
     if [ "$status" = "${expects[row]%%:*}" ] && answer_names "${expects[row]#*:}"; then
-      matched=yes
+      if [ "$code" -eq 0 ]; then kind=refused; else kind=unread; fi
+    elif [ "$marked" = yes ] || [ "$status" != 000 ]; then
+      kind=REACHED
+    else
+      kind=unread
     fi
-  elif [ "$marked" = no ] && [ "$status" = 404 ]; then
-    matched=yes
-  fi
-  if [ "$matched" = yes ] && [ "$code" -eq 0 ]; then
-    report refused "$row"
-  elif [ "$matched" = no ] && { [ "$marked" = yes ] || [ "$status" != 000 ]; }; then
-    report REACHED "$row"
-    reached="$reached ${names[row]}"
+  elif [ "$marked" = yes ] || { [ "$status" != 000 ] && [ "$status" != 404 ]; }; then
+    kind=REACHED
+  elif [ "$status" = 000 ] || [ "$code" -ne 0 ]; then
+    kind=unread
+  elif [ -z "$own" ]; then
+    kind="; its unrouted control did not answer 404 with no marker, read whole"
+  elif [ "$digest" != "$own" ]; then
+    kind="; another body than its unrouted control's 404"
   else
-    report UNKNOWN "$row"
-    unread="$unread ${names[row]}"
+    kind=refused
   fi
+  case $kind in
+    refused) report refused "$row" ;;
+    REACHED)
+      report REACHED "$row"
+      reached="$reached ${names[row]}"
+      ;;
+    unread)
+      report UNKNOWN "$row"
+      unread="$unread ${names[row]}"
+      ;;
+    *)
+      report UNKNOWN "$row" "$kind"
+      unclear="$unclear ${names[row]}"
+      ;;
+  esac
   row=$((row + 1))
 done
 
 # A reached line is a failure whatever else the run saw: an answer is evidence, while a probe
 # that came short only failed to look.
-[ -z "$reached" ] || {
-  printf 'FAIL: reached%s\n' "$reached"
-  exit 1
-}
-[ -z "$unread" ] || unknown "no answer could be read whole for$unread"
-printf 'PASS: every one of the %s refusal lines was refused (404 with no marker, or the answer its line names), after each of the %s routed controls showed its marker\n' \
-  $((total - routed)) "$routed"
+[ -z "$reached" ] || verdict 1 "FAIL: reached$reached"
+if [ -n "$unread$unclear" ]; then
+  message=''
+  [ -z "$unread" ] || message="no answer could be read whole for$unread"
+  [ -z "$unclear" ] ||
+    message="${message:+$message; }no 404 with no marker could be told from a forward for$unclear: its body is not the edge's own 404 for its path"
+  unknown "$message"
+fi
+verdict 0 "PASS: every one of the $((total - routed)) refusal lines was refused (the edge's own 404 with no marker, or the answer its line names), after each of the $routed routed controls showed its marker"
