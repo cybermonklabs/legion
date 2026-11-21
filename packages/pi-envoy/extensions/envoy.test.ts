@@ -2177,9 +2177,20 @@ async function settle(): Promise<void> {
 // clock, which `setSystemTime` leaves alone. A caller waiting on a real child process rather
 // than on this process's own work passes a longer bound: starting a shell and killing its group
 // is the operating system's work, and two seconds of it is a wait a loaded machine can lose.
-async function until(condition: () => boolean, what: string, timeoutMs = 2_000): Promise<void> {
+// A row whose wait can still be parked when the row ends (bun fails a row at its timeout and
+// goes on to the next while the row's own code waits on a turn of `settle`) passes `ended`, which
+// its teardown aborts: once it is aborted the wait reads the condition no more and returns, so it
+// neither polls on after the row nor throws into a later one.
+async function until(
+  condition: () => boolean,
+  what: string,
+  timeoutMs = 2_000,
+  ended?: AbortSignal
+): Promise<void> {
   const deadline = performance.now() + timeoutMs;
-  while (!condition()) {
+  for (;;) {
+    if (ended?.aborted === true) return;
+    if (condition()) return;
     if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await settle();
   }
@@ -14855,7 +14866,11 @@ console.log(JSON.stringify(args));
     describe("a person's shell command", () => {
       /** The working directories these rows ran their commands in. */
       const workDirectories: string[] = [];
+      /** Each row's end, which its waits take (`until`'s `ended`). The teardown aborts it, whether
+       *  the row returned or bun failed it at its timeout with a wait still parked. */
+      const rowEnds: AbortController[] = [];
       afterEach(() => {
+        for (const ended of rowEnds.splice(0)) ended.abort();
         for (const directory of workDirectories.splice(0)) {
           rmSync(directory, { recursive: true, force: true });
         }
@@ -16011,11 +16026,16 @@ console.log(JSON.stringify(args));
       //
       // The row's one clock is its own timeout. The wait for the command's pid gives up a margin
       // before that timeout, measured from the row's start, so it fails by its own name rather
-      // than by bun's timeout line, and never polls on after bun has failed the row.
+      // than by bun's timeout line. A wait held past both (a turn of the event loop that came late)
+      // is still parked when bun fails the row and runs its teardown, which aborts the row's end
+      // (`rowEnds`): the wait then returns without reading, and the row returns, so nothing of it
+      // polls or throws after it ended.
       const SHUTDOWN_ROW_TIMEOUT_MS = 20_000;
       const SHUTDOWN_ROW_MARGIN_MS = 1_000;
       test("ends a running command when the session shuts down", async () => {
         const rowStarted = performance.now();
+        const ended = new AbortController();
+        rowEnds.push(ended);
         const { agent, context, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-shutdown-kill",
           // Written in the session's own working directory, which the command runs in: the pid
@@ -16039,8 +16059,10 @@ console.log(JSON.stringify(args));
             return /^\d+\n$/u.test(written);
           },
           "the command to write its pid",
-          SHUTDOWN_ROW_TIMEOUT_MS - SHUTDOWN_ROW_MARGIN_MS - (performance.now() - rowStarted)
+          SHUTDOWN_ROW_TIMEOUT_MS - SHUTDOWN_ROW_MARGIN_MS - (performance.now() - rowStarted),
+          ended.signal
         );
+        if (ended.signal.aborted) return;
         const pid = Number(written);
         expect(pid).toBeGreaterThan(0);
         // The command is still running: nothing but the shutdown below ends it.
