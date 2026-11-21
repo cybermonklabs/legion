@@ -8,7 +8,7 @@ The implementer merges the base into the issue branch only when GitHub reports i
 
 A tree is a root issue and the issues beneath it. When another tree's open pull request changes files yours changes, the two race: the second to merge meets a conflict. Before you race it, `envoy_publish` to its implementer's role topic, ask when its next push lands, and merge once, after it.
 
-1. Commit your own edits first, so `@` holds none of yours. Then merge the bookmark, never `@`, with the base, in one new commit, and put `@` on top of it. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
+1. Commit your own edits first and point the bookmark at them (`jj -R "$LEGION_WORKSPACE" bookmark set legion/<KEY> -r @-`), so `@` holds none of yours and the merge carries them; jj refuses a move that is not forward, and then you stop and tell the architect. Then merge the bookmark, never `@`, with the base, in one new commit, and put `@` on top of it. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
 
    ```bash
    base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
