@@ -171,15 +171,16 @@ func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (plug
 // The two attempt budgets of the gate rigs, the boot gate's (gateUnder) and the image probe's
 // (imageGateUnder). answerBudget is one no attempt of a fake that answers comes near, however
 // loaded the machine: a pass that ran past a budget of a second or two was cut off and asked
-// again, and the probe ran once more than its case said. An attempt that answers and then hangs
-// keeps it, and its hang outlasts it, so the budget cuts it only after the answer. hangBudget is
-// the budget of a case whose cut attempts answer nothing (hangsUnder), short so that each attempt
-// it cuts off costs the suite little; such a case runs no attempt that must answer in time, so no
-// probe that answers runs before the one that hangs, and its attempts are counted from the gate
-// (its refusal and its transient lines), since an attempt cut off before the fake wrote its count
-// leaves none.
+// again, and the probe ran once more than its case said. The slowest answering attempt measured
+// was about 8 s, at a load average of 1,200 on 288 CPUs. An attempt that answers and then hangs
+// keeps it, and its hang outlasts it, so the budget cuts it only after the answer: each such case
+// takes the budget's length. hangBudget is the budget of a case whose cut attempts answer nothing
+// (hangsUnder), short so that each attempt it cuts off costs the suite little; such a case runs no
+// attempt that must answer in time, so no probe that answers runs before the one that hangs, and
+// its attempts are counted from the gate (its refusal and its transient lines), since an attempt
+// cut off before the fake wrote its count leaves none.
 const (
-	answerBudget = time.Minute
+	answerBudget = 20 * time.Second
 	hangBudget   = 500 * time.Millisecond
 )
 
