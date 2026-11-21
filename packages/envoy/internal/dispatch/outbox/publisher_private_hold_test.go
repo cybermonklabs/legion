@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -125,7 +126,7 @@ func TestTheOutboxHoldsAPrivateProjectsEventWhileItsHubsAreUnproven(t *testing.T
 	if _, err := scanBatch(context.Background(), deps, unfenced{}, holder); err != nil {
 		t.Fatalf("scan the batch once the hubs are proven: %v", err)
 	}
-	want := "notifications.dispatch.issue.PRIV-1.message.created"
+	want := "notifications.dispatch.issue.PRIV.PRIV-1.message.created"
 	if sent := topicsNaming(publisher, ".PRIV-1."); len(sent) != 1 || sent[0] != want || publishedAt(t, database, private.ID) == nil {
 		t.Fatalf("once the hubs are proven PRIV's event was sent to %v and published at %v, want it published to %s",
 			sent, publishedAt(t, database, private.ID), want)
@@ -359,5 +360,80 @@ func TestANilPrivateHubsReadyHoldsNothing(t *testing.T) {
 		if on := statement.args[len(statement.args)-1]; on != false {
 			t.Fatalf("with no PrivateHubsReady a statement bound the hold %v, want false: %.80q", on, statement.sql)
 		}
+	}
+}
+
+// TestTheHeldPrivateRowsStopAtTheLimit (events.Broker.HoldPrivate, the limit lowered to 3 through
+// its own argument): with PrivateHubsReady answering false, three messages on PRIV's issues are
+// written and held, a fourth is refused with events.ErrPrivateHeldFull and writes no row, and a
+// message on PUB-1 is written and published; the outbox's gauge of what the hold keeps
+// (countPrivateHeld) reads the three.
+//
+// Control, in the test: the same fourth message appended through a broker given no hold is
+// written, so the refusal is the hold's.
+func TestTheHeldPrivateRowsStopAtTheLimit(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	unproven := func() bool { return false }
+	broker.HoldPrivate(unproven, 3)
+	seedHoldProjects(t, database, 4)
+	for n := 1; n <= 3; n++ {
+		appendHoldMessage(t, database, broker, fmt.Sprintf("PRIV-%d", n))
+	}
+	fourth := func(broker *events.Broker) error {
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the fourth message: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := broker.Append(ctx, tx, model.Event{
+			IssueKey: new("PRIV-4"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
+			Payload: model.Message{ID: uuid.NewString(), IssueKey: new("PRIV-4"), Body: "The fourth"},
+		}); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	written := func() int {
+		var count int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from events where issue_key = 'PRIV-4'`).Scan(&count); err != nil {
+			t.Fatalf("count PRIV-4's events: %v", err)
+		}
+		return count
+	}
+	if err := fourth(broker); !errors.Is(err, events.ErrPrivateHeldFull) {
+		t.Fatalf("the fourth PRIV message appended with %v, want events.ErrPrivateHeldFull", err)
+	}
+	if count := written(); count != 0 {
+		t.Fatalf("the refused fourth PRIV message left %d events on PRIV-4, want none", count)
+	}
+	public := appendHoldMessage(t, database, broker, "PUB-1")
+	publisher := &recordingPublisher{}
+	deps := Deps{Store: database, Publisher: publisher, Broker: broker, PrivateHubsReady: unproven}
+	outbox := holding(t, deps)
+	if _, err := scanBatch(ctx, deps, unfenced{}, outbox.instance); err != nil {
+		t.Fatalf("scan the batch: %v", err)
+	}
+	if publishedAt(t, database, public.ID) == nil {
+		t.Fatal("PUB-1's message is unpublished beside the three held PRIV messages, want it published")
+	}
+	if sent := topicsNaming(publisher, ".PRIV-"); len(sent) != 0 {
+		t.Fatalf("while the hubs are unproven the outbox sent %v, want no PRIV topic", sent)
+	}
+	outbox.countPrivateHeld(ctx, true)
+	if count := outbox.privateHeld.Load(); count != 3 {
+		t.Fatalf("the gauge of the held private events reads %d, want the three PRIV messages", count)
+	}
+	outbox.countPrivateHeld(ctx, false)
+	if count := outbox.privateHeld.Load(); count != 0 {
+		t.Fatalf("with the hold off the gauge reads %d, want 0", count)
+	}
+
+	if err := fourth(events.NewBroker()); err != nil {
+		t.Fatalf("control: the fourth PRIV message through a broker with no hold appended with %v, want it written", err)
+	}
+	if count := written(); count != 1 {
+		t.Fatalf("control: the fourth PRIV message through a broker with no hold left %d events on PRIV-4, want one", count)
 	}
 }

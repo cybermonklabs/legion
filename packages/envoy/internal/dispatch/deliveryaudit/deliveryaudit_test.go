@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -45,8 +46,9 @@ var commentColumns = []string{
 }
 
 // recorder is the outbox's NATS boundary: it accepts every envelope, a role forward's included, and
-// records each topic under the event it carries, so a test can hold what the outbox sent against
-// what it recorded. It is always connected, so its connection never changes.
+// records each topic under the event it carries, in the form the outbox records the destination
+// (recordForm), so a test can hold what the outbox sent against what it recorded. It is always
+// connected, so its connection never changes.
 type recorder struct {
 	mu     sync.Mutex
 	topics map[string][]string
@@ -60,7 +62,7 @@ func (r *recorder) ConnectionChanged() <-chan struct{} { return nil }
 
 func (r *recorder) PublishAsync(item contracts.Envelope) <-chan error {
 	r.mu.Lock()
-	r.topics[item.SourceEventID] = append(r.topics[item.SourceEventID], item.Topic)
+	r.topics[item.SourceEventID] = append(r.topics[item.SourceEventID], recordForm(item.Topic))
 	r.mu.Unlock()
 	accepted := make(chan error, 1)
 	accepted <- nil
@@ -80,6 +82,22 @@ func (r *recorder) PublishStoredAsync(_ string, item contracts.Envelope, _ strin
 }
 
 func (r *recorder) Probe(time.Duration) error { return nil }
+
+// recordForm is the destination the outbox records a copy it sent on subject by
+// (model.IssueDestinationKey, SessionDestinationKey, RoleDestinationKey): the subject with the
+// event's project, which the outbox puts after an issue's, a session's or a role's prefix, taken
+// out.
+func recordForm(subject string) string {
+	for _, prefix := range []string{contracts.DispatchIssueTopicPrefix, contracts.AgentTopicPrefix, contracts.RoleTopicPrefix} {
+		if rest, ok := strings.CutPrefix(subject, prefix); ok {
+			if _, after, found := strings.Cut(rest, "."); found {
+				return prefix + after
+			}
+			return subject
+		}
+	}
+	return subject
+}
 
 func (r *recorder) sent(eventID string) []string {
 	r.mu.Lock()
@@ -388,9 +406,9 @@ func (r *rig) expectAddressedAsRecorded(t *testing.T, row map[string]string) {
 	}
 	subject := ""
 	if session, ok := strings.CutPrefix(row["target"], "session:"); ok {
-		subject = contracts.LegacyAgentSubject(session)
+		subject = model.SessionDestinationKey(session)
 	} else if role, ok := strings.CutPrefix(row["target"], "role:"); ok {
-		subject = contracts.RoleTopicPrefix + role
+		subject = model.RoleDestinationKey(role)
 	}
 	want := fmt.Sprint(subject != "" && slices.Contains(recorded, subject))
 	if row["addressed"] != want {

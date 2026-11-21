@@ -459,7 +459,7 @@ func TestClaimantRouteReachesTheSessionHoldingTheIssue(t *testing.T) {
 			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
 				t.Fatalf("publish %s returned %v, want %v", event.Type, err, tc.wantErr)
 			}
-			if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, tc.want) {
+			if got := recordOf(topicsOf(publisher.all())...); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("topics = %#v, want %#v", got, tc.want)
 			}
 		})
@@ -486,7 +486,7 @@ func TestRunRecordsTheClaimantRouteSoARetryDoesNotRepublishIt(t *testing.T) {
 	})
 	// The asker's follower route comes after the claimant's, so failing it ends the first attempt
 	// with the claimant already reached.
-	publisher := &recordingPublisher{failTopic: askerTopic}
+	publisher := &recordingPublisher{failTopic: onBus("TT", askerTopic)[0]}
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
@@ -501,7 +501,7 @@ func TestRunRecordsTheClaimantRouteSoARetryDoesNotRepublishIt(t *testing.T) {
 	waitFor(t, 7*time.Second, "the retry published the event", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
-	if got, want := topicsOf(publisher.all()), []string{issueTopic, claimantTopic, askerTopic}; !reflect.DeepEqual(got, want) {
+	if got, want := recordOf(topicsOf(publisher.all())...), []string{issueTopic, claimantTopic, askerTopic}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("topics across both attempts = %#v, want each once: %#v", got, want)
 	}
 	if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, []string{issueTopic, claimantTopic, askerTopic}) {

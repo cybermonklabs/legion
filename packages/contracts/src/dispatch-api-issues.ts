@@ -291,10 +291,10 @@ export type IssueReleasedEventPayload = z.output<typeof IssueReleasedEventPayloa
  * `issue.deployed`: the delivery timeline's word that the issue's pull request reached production,
  * written once per pull request the moment the timeline first knows the production run that
  * shipped it (by intake or by the reconcile), with the system actor `delivery-timeline`, and
- * published on the issue's subject (`notifications.dispatch.issue.<KEY>.issue.deployed`) as every
- * issue event is. `repo` and `number` name the pull request, `run_id` the production run, and
- * `completed_at` when that run's production job completed, in UTC. The Legion daemon no longer
- * reads it: nothing a deployment publishes wakes a production check. Strict: the Go writer
+ * published on the issue's subject (`notifications.dispatch.issue.<PROJECT>.<KEY>.issue.deployed`)
+ * as every issue event is. `repo` and `number` name the pull request, `run_id` the production
+ * run, and `completed_at` when that run's production job completed, in UTC. The Legion daemon no
+ * longer reads it: nothing a deployment publishes wakes a production check. Strict: the Go writer
  * (`packages/envoy/internal/dispatch/delivery/deployed.go`) emits exactly these four fields.
  */
 export const IssueDeployedEventPayloadSchema = z.strictObject({

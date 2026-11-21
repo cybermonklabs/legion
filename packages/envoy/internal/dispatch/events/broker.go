@@ -4,6 +4,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -23,6 +24,10 @@ import (
 // stream (api/event_stream_relay.go), which carries the other process's events too.
 type Broker struct {
 	stream *Stream[model.Event]
+	// privateReady and privateLimit are the private-delivery hold the broker refuses events by
+	// (HoldPrivate); a nil privateReady refuses nothing.
+	privateReady func() bool
+	privateLimit int
 }
 
 // brokerBuffer is how far behind a Broker subscriber may fall before the stream drops it: 64
@@ -33,6 +38,73 @@ const brokerBuffer = 64
 // NewBroker creates an empty in-process broker.
 func NewBroker() *Broker {
 	return &Broker{stream: NewStream[model.Event]()}
+}
+
+// PrivateHeldLimit is the most events of private projects the outbox holds unpublished while a hub
+// cannot prove it admits Dispatch to the private projects' subjects (outbox.Deps.PrivateHubsReady
+// answering false), past which the event log refuses another (HoldPrivate). The held events are
+// rows of events Dispatch writes anyway, so the limit bounds the backlog and not its storage: the
+// outbox drains it at its measured 219 to 1,340 events a second (internal/dispatch/outbox
+// THROUGHPUT.md), within about eight minutes of the hold's end.
+const PrivateHeldLimit = 100_000
+
+// ErrPrivateHeldFull refuses an event of a private project while the outbox holds the private
+// projects' events and already holds PrivateHeldLimit of them (HoldPrivate). The route that meets
+// it writes nothing and answers 503 PRIVATE_PROJECTS_UNAVAILABLE, so no event is lost or sent
+// early; a public project's event is never refused by it.
+var ErrPrivateHeldFull = errors.New("the outbox holds as many events of private projects as it may while a hub is unproven")
+
+// HoldPrivate makes the broker refuse an event of a private project with ErrPrivateHeldFull while
+// ready answers false and at least limit events of private projects wait unpublished: ready is the
+// outbox's own proof that every hub admits Dispatch to the private projects' subjects
+// (outbox.Deps.PrivateHubsReady), the hold that keeps those events unpublished. A nil ready
+// refuses nothing, which is what a Dispatch whose hubs prove nothing runs. cmd/dispatch calls it
+// once, with the func it gives the outbox, before the broker appends anything.
+//
+// The refusal is one statement queued before the event's own while ready answers false, and none
+// otherwise: whether the event's owner is private (model.PrivateOwnerSQL), and only then whether
+// limit unpublished events of private projects stand, a read that stops at limit rows. Two
+// appends open at once can each read limit - 1 and both be written, so the bound is the limit
+// plus the appends open beside each other at that moment.
+func (b *Broker) HoldPrivate(ready func() bool, limit int) {
+	b.privateReady, b.privateLimit = ready, limit
+}
+
+// privateHeldSQL is the refusal's read: true when the owner $1 to $3 name (an issue key, a
+// document id, a project key, at most one set) is a private project's and $4 events of private
+// projects wait unpublished. A pending subscription command is no event the outbox holds
+// (api/subscribers.go), so it is not counted.
+var privateHeldSQL = `
+	select case when (select ` + model.PrivateOwnerSQL("owner") + `
+	                  from (select $1::text as issue_key, $2::uuid as artifact_id, $3::text as project_key) owner)
+	       then (select count(*) from (
+	                select 1 from events waiting
+	                where waiting.published_at is null
+	                  and (waiting.payload ->> 'pending') is distinct from 'true'
+	                  and ` + model.PrivateOwnerSQL("waiting") + `
+	                limit $4) held) >= $4
+	       else false end
+`
+
+// queuePrivateHeld queues the refusal of e (HoldPrivate) on batch while the hold is on, and nothing
+// while it is off, for an ownerless event, which belongs to no project, or on a broker no hold was
+// given.
+func (b *Broker) queuePrivateHeld(batch *store.WriteBatch, e model.Event) {
+	if b.privateReady == nil || b.privateReady() || (e.IssueKey == nil && e.ArtifactID == nil && e.ProjectKey == nil) {
+		return
+	}
+	batch.Queue("refuse a private project's event past the outbox's held limit", privateHeldSQL,
+		e.IssueKey, e.ArtifactID, e.ProjectKey, b.privateLimit,
+	).QueryRow(func(row pgx.Row) error {
+		var full bool
+		if err := row.Scan(&full); err != nil {
+			return fmt.Errorf("read the events the outbox holds for the private projects: %w", err)
+		}
+		if full {
+			return ErrPrivateHeldFull
+		}
+		return nil
+	})
 }
 
 // LockOwners takes the owner locks of every event owner (store.LockOwners), sorted by lock key. A
@@ -151,6 +223,10 @@ type ownerLastSeqPayload interface {
 //
 // A caller with several events to write queues each of them here: the batch sends them all in one
 // round trip, so the transaction's statements grow with the events but its round trips do not.
+//
+// While the private-delivery hold is on, an event of a private project is refused with
+// ErrPrivateHeldFull once the outbox holds PrivateHeldLimit of them (HoldPrivate): the refusal is
+// the batch's failure, and the caller abandons the transaction, which writes nothing.
 func (b *Broker) QueueAppend(batch *store.WriteBatch, e model.Event, appended func(model.Event)) error {
 	return b.QueueAppendWithLogins(batch, e, nil, appended)
 }
@@ -190,6 +266,7 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	}
 	event := &e
 	lockEventOwner(batch, event)
+	b.queuePrivateHeld(batch, e)
 	// One statement takes the next sequence from the owner row and advances the row to the event
 	// it inserted. Every statement of a data-modifying CTE reads one snapshot, so the insert reads
 	// last_seq as the statements before it left it, and the owner's update writes the very
@@ -462,9 +539,9 @@ func lockEventOwner(batch *store.WriteBatch, e *model.Event) {
 // the wire (`quiet`), because the two answer different questions. Notify answers whether to wake
 // the route, the claimant and the authors, so an agent's own comment is not a wake. Quiet answers
 // whether the event is worth showing at all, so an agent's comment, document or ask is not quiet:
-// a session that subscribed to `notifications.dispatch.issue.<KEY>.>` asked for exactly that
-// activity (skills/dispatch/SKILL.md), and a reader that skipped every non-notifying frame saw
-// none of it.
+// a session that subscribed to `notifications.dispatch.issue.<PROJECT>.<KEY>.>` asked for exactly
+// that activity (skills/dispatch/SKILL.md), and a reader that skipped every non-notifying frame
+// saw none of it.
 func Quiet(e model.Event) bool {
 	if e.Type == "message.delivery" || e.Type == "comment.delivery" {
 		return true

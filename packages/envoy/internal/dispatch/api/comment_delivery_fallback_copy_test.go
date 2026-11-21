@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -304,8 +305,9 @@ func (p *recordingOutboxPublisher) PublishAsync(item contracts.Envelope) <-chan 
 	return accepted
 }
 
-// topicsAbout returns, in the order they were published, the topics of the envelopes whose event
-// is about commentID (its comment.created, a comment.delivery, any other).
+// topicsAbout returns, in the order they were published, the destinations of the envelopes whose
+// event is about commentID (its comment.created, a comment.delivery, any other), each in the form
+// the outbox records it (destinationOf).
 func (p *recordingOutboxPublisher) topicsAbout(t *testing.T, commentID string) []string {
 	t.Helper()
 	p.mu.Lock()
@@ -322,10 +324,26 @@ func (p *recordingOutboxPublisher) topicsAbout(t *testing.T, commentID string) [
 			t.Fatalf("decode the envelope published to %s: %v", item.Topic, err)
 		}
 		if event.Payload.ID == commentID || event.Payload.CommentID == commentID {
-			topics = append(topics, item.Topic)
+			topics = append(topics, destinationOf(item.Topic))
 		}
 	}
 	return topics
+}
+
+// destinationOf is the destination the outbox records a copy it sent on subject by
+// (model.IssueDestinationKey, SessionDestinationKey, RoleDestinationKey): the subject with the
+// event's project, which the outbox puts after an issue's, a session's or a role's prefix, taken
+// out.
+func destinationOf(subject string) string {
+	for _, prefix := range []string{contracts.DispatchIssueTopicPrefix, contracts.AgentTopicPrefix, contracts.RoleTopicPrefix} {
+		if rest, ok := strings.CutPrefix(subject, prefix); ok {
+			if _, after, found := strings.Cut(rest, "."); found {
+				return prefix + after
+			}
+			return subject
+		}
+	}
+	return subject
 }
 
 // A mentioned session whose mention failed was left by the outbox's publish of the comment to the

@@ -7,7 +7,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox/copyrule"
@@ -37,7 +36,7 @@ func TestTheCopyRuleReadsAnEarlierEventsRecordInOneSnapshot(t *testing.T) {
 		Payload: model.Message{ID: "6b1b1c5e-0d3a-4c38-9b7e-0a5f8a0c0505", IssueKey: new("T-1"), Body: "earlier"},
 	})
 	const session = "ses_holder"
-	subject := contracts.LegacyAgentSubject(session)
+	subject := model.SessionDestinationKey(session)
 	body := "@session:" + session + " look"
 	commentID := seedComment(t, database, "T-1", alice, body, nil)
 	comment := appendEvent(t, database, broker, model.Event{
@@ -53,7 +52,7 @@ func TestTheCopyRuleReadsAnEarlierEventsRecordInOneSnapshot(t *testing.T) {
 		update events set published_destinations = array[$2], owed_keys = array[$3],
 		       owed_seq = (select last_seq from issues where key = 'T-1'), attempt_count = 1
 		where id = $1
-	`, earlier.ID, "notifications.dispatch.issue.T-1.message.created", contracts.RoleTopicPrefix+"reviewer"); err != nil {
+	`, earlier.ID, "notifications.dispatch.issue.T-1.message.created", model.RoleDestinationKey("reviewer")); err != nil {
 		t.Fatalf("record the earlier event owing the role's topic: %v", err)
 	}
 	holds := func(_ context.Context, role string) bool { return role == "reviewer" }
@@ -64,7 +63,7 @@ func TestTheCopyRuleReadsAnEarlierEventsRecordInOneSnapshot(t *testing.T) {
 			describeHolder(before), err, earlier.ID)
 	}
 
-	deps := Deps{Store: database, Publisher: &recordingPublisher{failTopic: subject}, Broker: broker}
+	deps := Deps{Store: database, Publisher: &recordingPublisher{failTopic: onBus("TT", subject)[0]}, Broker: broker}
 	outbox := holding(t, deps)
 	wrote := false
 	between := func() {

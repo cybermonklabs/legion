@@ -82,19 +82,19 @@ func TestAnIssuesEventsGoToEachDestinationOneAtATime(t *testing.T) {
 	firstTopics := []string{"notifications.dispatch.issue.T-1.comment.created", roleTopic, "notifications.agent.writer"}
 	waitFor(t, 5*time.Second, "the first event's destinations sent", func() bool { return len(publisher.sent()) == 3 })
 	time.Sleep(200 * time.Millisecond)
-	if got := publisher.sent(); !slices.Equal(got, firstTopics) {
+	if got := recordOf(publisher.sent()...); !slices.Equal(got, firstTopics) {
 		t.Fatalf("sent %v before any answer, want only the first event's destinations %v", got, firstTopics)
 	}
 
 	publisher.accept(0, 1)
 	waitFor(t, 5*time.Second, "the second event's topic sent once the first's was answered", func() bool { return len(publisher.sent()) == 4 })
 	time.Sleep(200 * time.Millisecond)
-	if got := publisher.sent(); len(got) != 4 || got[3] != "notifications.dispatch.issue.T-1.message.created" {
+	if got := recordOf(publisher.sent()...); len(got) != 4 || got[3] != "notifications.dispatch.issue.T-1.message.created" {
 		t.Fatalf("sent %v, want the second event's issue topic next, and its role route still held", got)
 	}
 	publisher.accept(1, 3)
 	waitFor(t, 5*time.Second, "the second event's role route sent", func() bool { return len(publisher.sent()) == 5 })
-	if got := publisher.sent()[4]; got != roleTopic {
+	if got := recordOf(publisher.sent()...)[4]; got != roleTopic {
 		t.Fatalf("the fifth send went to %s, want the role route", got)
 	}
 	for _, event := range []model.Event{first, second} {

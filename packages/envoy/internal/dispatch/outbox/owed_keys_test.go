@@ -249,7 +249,7 @@ func TestAnEventNotDueHasWhatItOwesWrittenAgain(t *testing.T) {
 		IssueKey: new("T-1"), Type: "message.created", Actor: alice,
 		Payload: model.Message{ID: "6b1b1c5e-0d3a-4c38-9b7e-0a5f8a0c0202", IssueKey: new("T-1"), Body: "earlier"},
 	})
-	publisher := &failingPublisher{topic: "notifications.dispatch.issue.T-1.message.created", answer: errors.New("no responders")}
+	publisher := &failingPublisher{topic: "notifications.dispatch.issue.TT.T-1.message.created", answer: errors.New("no responders")}
 	deps := Deps{Store: database, Publisher: publisher, Broker: broker}
 	holding(t, deps).scan(ctx, unfenced{})
 	owed, next, attempts, _ := eventRecord(t, database, earlier.ID)

@@ -121,7 +121,7 @@ func TestAnEventThatIsNotDueIsReadOnlyAsABlockerOfItsOwner(t *testing.T) {
 
 	publisher := &recordingPublisher{}
 	holding(t, Deps{Store: database, Publisher: publisher}).scan(ctx, unfenced{})
-	if got := topicsOf(publisher.all()); !slices.Equal(got, []string{"notifications.dispatch.issue.T-1.message.created"}) {
+	if got := recordOf(topicsOf(publisher.all())...); !slices.Equal(got, []string{"notifications.dispatch.issue.T-1.message.created"}) {
 		t.Fatalf("sent %v, want the fresh event's issue topic alone: its route waits on the earlier event", got)
 	}
 	var waitingUntil, freshUntil time.Time

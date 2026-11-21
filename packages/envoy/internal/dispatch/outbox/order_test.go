@@ -202,8 +202,8 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 			t.Fatalf("event %d counted %d attempts, want none: it only waited on the first event", event.ID, attempts)
 		}
 	}
-	topic := "notifications.dispatch.issue.T-1.message.created"
-	session := contracts.LegacyAgentSubject("S")
+	topic := "notifications.dispatch.issue.TT.T-1.message.created"
+	session := contracts.AgentSubject("TT", "S")
 	order := map[string][]int64{}
 	sequence := map[string]uint64{}
 	stream, err := js.StreamInfo(bus.Stream)
@@ -249,7 +249,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 		arrivals []int64
 		marks    markers
 	)
-	sub, err := rig.conn.Subscribe(contracts.LegacyAgentSubject(holder), func(msg *natsgo.Msg) {
+	sub, err := rig.conn.Subscribe(contracts.AgentSubject("TT", holder), func(msg *natsgo.Msg) {
 		if marks.took(msg) {
 			return
 		}
@@ -285,7 +285,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	})
 	second, third := write("second"), write("third")
 
-	topic := "notifications.dispatch.issue.T-1.message.created"
+	topic := "notifications.dispatch.issue.TT.T-1.message.created"
 	waitFor(t, 10*time.Second, "the later events on the topic family", func() bool {
 		bySubject, _ := streamOrder(t, rig.conn)
 		return slices.Contains(bySubject[topic], second.ID) && slices.Contains(bySubject[topic], third.ID)
@@ -315,7 +315,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	// handed the same message on its own connection, which can arrive just after that
 	// acknowledgement on a busy machine: S is read once it has taken every forward sent to it
 	// (markers.await).
-	marks.await(t, rig.client, contracts.LegacyAgentSubject(holder))
+	marks.await(t, rig.client, contracts.AgentSubject("TT", holder))
 	var order []int64
 	for _, got := range taken() {
 		if !slices.Contains(order, got) {
@@ -427,13 +427,14 @@ func (r sessionOrderRig) settled(t *testing.T, id int64) bool {
 }
 
 // views is, in stream order, the event ids on each of session's subjects - its own and T-1's topic
-// family - and session's view of them: both together, a repeated event id dropped.
+// family, each under T-1's project - and session's view of them: both together, a repeated event
+// id dropped.
 func (r sessionOrderRig) views(t *testing.T, session string) (bySubject map[string][]int64, view []int64) {
 	t.Helper()
 	bySubject = map[string][]int64{}
 	seen := map[int64]bool{}
 	for _, message := range streamMessages(t, r.reader) {
-		if !strings.HasPrefix(message.Subject, "notifications.dispatch.issue.T-1.") && message.Subject != session {
+		if !strings.HasPrefix(message.Subject, "notifications.dispatch.issue.TT.T-1.") && message.Subject != session {
 			continue
 		}
 		id := envelopeEventID(t, message.Data)
@@ -493,19 +494,21 @@ func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil
 	})
 
-	topic := "notifications.dispatch.issue.T-1.message.created"
-	session := contracts.LegacyAgentSubject("S")
+	topic := "notifications.dispatch.issue.TT.T-1.message.created"
+	session := contracts.AgentSubject("TT", "S")
+	// The events' records name each destination with no project (model.*DestinationKey).
+	topicRecord, sessionRecord := recordOf(topic)[0], recordOf(session)[0]
 	firstTo, firstAttempts := publishedDestinations(t, rig.database, first.ID)
 	secondTo, secondAttempts := publishedDestinations(t, rig.database, second.ID)
 	bySubject, view := rig.views(t, session)
 	want := []int64{first.ID, second.ID}
 	t.Logf("event %d went to %v after %d attempts; event %d went to %v after %d attempts", first.ID, firstTo, firstAttempts, second.ID, secondTo, secondAttempts)
 	t.Logf("the stream by subject: %v; S takes T-1's events as %v, want %v", bySubject, view, want)
-	if !slices.Equal(firstTo, []string{topic}) {
+	if !slices.Equal(firstTo, []string{topicRecord}) {
 		t.Fatalf("the first event went to %v, want the topic family alone", firstTo)
 	}
-	if !slices.Contains(secondTo, session) || !slices.Contains(secondTo, topic) {
-		t.Fatalf("the second event went to %v, want the topic family and S's own subject %s", secondTo, session)
+	if !slices.Contains(secondTo, sessionRecord) || !slices.Contains(secondTo, topicRecord) {
+		t.Fatalf("the second event went to %v, want the topic family and S's own subject %s", secondTo, sessionRecord)
 	}
 	if !slices.Equal(bySubject[topic], want) {
 		t.Errorf("the topic family holds %v, want %v", bySubject[topic], want)
@@ -537,7 +540,7 @@ func keepsTheOrderOnTheSessionsOwnSubject(t *testing.T) {
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil
 	})
 
-	session := contracts.LegacyAgentSubject("S")
+	session := contracts.AgentSubject("TT", "S")
 	bySubject, view := rig.views(t, session)
 	want := []int64{first.ID, second.ID}
 	t.Logf("the stream by subject: %v; S takes T-1's events as %v, want %v", bySubject, view, want)
@@ -570,7 +573,8 @@ func keepsTheOrderOnTheSessionsOwnSubject(t *testing.T) {
 // holder's own mention. The last row has two earlier events, so the session send waits on the
 // second's topic send, which the first's failure held back and which was never made.
 func TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch(t *testing.T) {
-	const topic = "notifications.dispatch.issue.T-1.message.created"
+	const topic = "notifications.dispatch.issue.TT.T-1.message.created"
+	roleSubject := onBus("TT", roleTopic)[0]
 	agent, person := model.Actor{Kind: "session", ID: "agent-other"}, model.Actor{Kind: "user", ID: "alice"}
 	for _, tc := range []struct {
 		name  string
@@ -581,10 +585,10 @@ func TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch(t *testing.T)
 		copyTopic string
 		earlier   int
 	}{
-		{name: "the issue's session route", route: new("session:S"), copyTopic: contracts.LegacyAgentSubject("S"), earlier: 1},
-		{name: "the issue's claimant", claim: &model.Actor{Kind: "session", ID: "S"}, copyTopic: contracts.LegacyAgentSubject("S"), earlier: 1},
-		{name: "a role's holder by its forward", route: new("role:reviewer"), copyTopic: roleTopic, earlier: 1},
-		{name: "behind a topic send that was held back itself", route: new("session:S"), copyTopic: contracts.LegacyAgentSubject("S"), earlier: 2},
+		{name: "the issue's session route", route: new("session:S"), copyTopic: contracts.AgentSubject("TT", "S"), earlier: 1},
+		{name: "the issue's claimant", claim: &model.Actor{Kind: "session", ID: "S"}, copyTopic: contracts.AgentSubject("TT", "S"), earlier: 1},
+		{name: "a role's holder by its forward", route: new("role:reviewer"), copyTopic: roleSubject, earlier: 1},
+		{name: "behind a topic send that was held back itself", route: new("session:S"), copyTopic: contracts.AgentSubject("TT", "S"), earlier: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := store.WithTransactionTracking(context.Background())
@@ -651,7 +655,7 @@ func TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch(t *testing.T)
 						copied.Topic, copied.DedupeKey, copied.Source)
 				}
 			}
-			if tc.copyTopic != roleTopic && last[0].DedupeKey != last[1].DedupeKey {
+			if tc.copyTopic != roleSubject && last[0].DedupeKey != last[1].DedupeKey {
 				t.Fatalf("the last event's two copies carry dedupe keys %q and %q, want one key", last[0].DedupeKey, last[1].DedupeKey)
 			}
 			for _, event := range written {
@@ -685,8 +689,8 @@ func TestASendToASessionWaitsForTheAnswerToAnEarlierTopicSendOfItsBatch(t *testi
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	topic := "notifications.dispatch.issue.T-1.message.created"
-	session := contracts.LegacyAgentSubject("S")
+	topic := "notifications.dispatch.issue.TT.T-1.message.created"
+	session := contracts.AgentSubject("TT", "S")
 	waitFor(t, 5*time.Second, "the first event's topic sent", func() bool { return len(publisher.sent()) > 0 })
 	time.Sleep(200 * time.Millisecond)
 	if got := publisher.sent(); !slices.Equal(got, []string{topic}) {
@@ -1008,7 +1012,7 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 		if strings.HasPrefix(item.Topic, contracts.AgentTopicPrefix) {
 			agents++
 		}
-		if item.Topic == contracts.LegacyAgentSubject("claimant") {
+		if recordOf(item.Topic)[0] == model.SessionDestinationKey("claimant") {
 			claimant++
 		}
 	}
@@ -1076,7 +1080,7 @@ func TestOneBrokenRowOfARecipientReadCostsTheBatchAboutTwoStatementsPerHalving(t
 			}
 			continue
 		}
-		want := []string{contracts.LegacyAgentSubject(fmt.Sprintf("author-%d", index))}
+		want := []string{model.SessionDestinationKey(fmt.Sprintf("author-%d", index))}
 		if row.publishedAt == nil || row.attempts != 0 || !slices.Equal(agentTopics(row.destinations), want) {
 			t.Fatalf("edit %d has published_at %v, attempt_count %d and published_destinations %v, want it published to %v",
 				index, row.publishedAt, row.attempts, row.destinations, want)
@@ -1519,7 +1523,7 @@ func TestARecordFromAProcessThatLostTheHoldWritesNoBackOff(t *testing.T) {
 		})
 	}
 	done, failing, behind := message("T-1"), message("T-2"), message("T-2")
-	publisher := &recordingPublisher{failTopic: roleTopic}
+	publisher := &recordingPublisher{failTopic: onBus("TT", roleTopic)[0]}
 	outbox := New(withHeldRoles(Deps{Store: database, Publisher: publisher}))
 	// Another process holds the hold now.
 	holdRow(t, database, uuid.New())

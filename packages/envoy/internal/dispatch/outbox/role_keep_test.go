@@ -253,7 +253,7 @@ func TestARoleRouteToAnUnheldRoleIsKeptForTheRolesNextHolder(t *testing.T) {
 		t.Fatalf("role %s's kept lane holds %d copies, want the one the outbox kept", role, len(kept))
 	}
 	key := fmt.Sprintf("dispatch-%d", event.ID)
-	if kept[0].Topic != contracts.RoleTopicPrefix+role || kept[0].DedupeKey != key || kept[0].EventID != key {
+	if kept[0].Topic != contracts.RoleSubject("TT", role) || kept[0].DedupeKey != key || kept[0].EventID != key {
 		t.Fatalf("the kept copy is topic %q dedupe key %q event id %q, want the envelope as its sender sent it under %q",
 			kept[0].Topic, kept[0].DedupeKey, kept[0].EventID, key)
 	}
@@ -423,7 +423,7 @@ func TestAKeptRoleRouteIsPublishedOnTheRolesKeptLaneUnderTheKeptMsgID(t *testing
 		t.Fatalf("the keep went to %q under %q, want %q under %q",
 			kept[0].subject, kept[0].msgID, bus.KeptRoleSubject(role), bus.KeptMsgID(key, role))
 	}
-	if kept[0].item.Topic != contracts.RoleTopicPrefix+role || kept[0].item.DedupeKey != key {
+	if kept[0].item.Topic != contracts.RoleSubject("TT", role) || kept[0].item.DedupeKey != key {
 		t.Fatalf("the kept envelope is topic %q dedupe key %q, want the message as its sender sent it under %q",
 			kept[0].item.Topic, kept[0].item.DedupeKey, key)
 	}
@@ -539,7 +539,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 		t.Fatalf("the holder received %d forwards (%v), want the kept %s first and the issue's next event %s after it",
 			len(received), eventIDs(received), keptKey, nextKey)
 	}
-	subject := contracts.LegacyAgentSubject(holder)
+	subject := contracts.AgentSubject("TT", holder)
 	stored := storedMsgIDs(t, rig.conn, subject)
 	forwards := []string{
 		bus.ForwardMsgID(contracts.RoleForwardDedupePrefix+keptKey, subject),
@@ -676,7 +676,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 		t.Fatalf("role %s's kept lane holds %v, want %s before %s, both left where the drain would read them",
 			role, eventIDs(copies), firstKey, secondKey)
 	}
-	subject := contracts.LegacyAgentSubject(holder)
+	subject := contracts.AgentSubject("TT", holder)
 	stored := storedMsgIDs(t, rig.conn, subject)
 	forwards := []string{
 		bus.ForwardMsgID(contracts.RoleForwardDedupePrefix+firstKey, subject),

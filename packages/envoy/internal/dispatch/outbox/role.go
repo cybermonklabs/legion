@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 )
@@ -54,16 +55,19 @@ var errNoRoleReaders = errors.New("the outbox has no role-claim or session reade
 //
 // holder is the claim's holder whenever it is known, so the destination's key is the holder's agent
 // subject (destination.key) even while it stays pending; a keep carries none, since it reaches no
-// session. settledKeys is the comment's settled mentions by session, a delivered mention's
-// included (destination.settledKeys), which a keep stores on the copy it keeps so that whoever
-// forwards it to the role's next holder keys it by that holder's own mention (keep,
-// contracts.Envelope.MentionDedupeKeys); mentionKeys is the failed ones alone, which is what the
-// key a keep is stored under is chosen from (roleFallbackKey). Both are put on every role forward
-// of a new comment, by the batch that resolved the role (resolveRoleHolders) and by the fallback
-// pass that decides a held copy of one (decideFallbackCopy), and both are empty for every other
-// event, which has no mention to key by.
+// session. project is the project of the event the copy carries, which the holder's agent subject
+// and the role's topic on the copy name (busSubject, forward, keep), so the bus holds the copy to
+// the tokens that may see that project. settledKeys is the comment's settled mentions by session,
+// a delivered mention's included (destination.settledKeys), which a keep stores on the copy it
+// keeps so that whoever forwards it to the role's next holder keys it by that holder's own mention
+// (keep, contracts.Envelope.MentionDedupeKeys); mentionKeys is the failed ones alone, which is what
+// the key a keep is stored under is chosen from (roleFallbackKey). Both are put on every role
+// forward of a new comment, by the batch that resolved the role (resolveRoleHolders) and by the
+// fallback pass that decides a held copy of one (decideFallbackCopy), and both are empty for every
+// other event, which has no mention to key by.
 type roleForward struct {
 	holder      string
+	project     string
 	keptFor     string
 	skip        string
 	err         error
@@ -232,7 +236,7 @@ func resolveRoleHolders(ctx context.Context, deps Deps, events []*batchEvent, re
 			if !ok {
 				continue
 			}
-			dest.forward = forwardOf(dest.role, event.item, result.resolution, result.err)
+			dest.forward = forwardOf(event.event.Project, dest.role, event.item, result.resolution, result.err)
 			dest.forward.mentionKeys = dest.mentionKeys
 			dest.forward.settledKeys = dest.settledKeys
 			if roleCopyWaitsForAMention(event, *dest) {
@@ -630,13 +634,19 @@ func roleFallbackKey(keys, settled map[string]string, unpinned *unpinnedRoleMent
 // which the pass publishes to its topic as before (publishFallbackCopies). The comment's
 // mentions by session are the caller's to put on the forward, which has read them to decide the
 // row (decideFallbackCopy), as the batch puts them on the forward of its own role route.
-func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope, destination string) *roleForward {
-	role, ok := strings.CutPrefix(destination, contracts.RoleTopicPrefix)
-	if !ok || role == "" {
+//
+// The role is read off the destination in either form (contracts.CanonicalRole), as every other
+// reader of a role's name reads it: the form the record names a role's topic in, the role alone,
+// and the form with its project, notifications.role.<P>.<role>, which is the role and not a role
+// named <P>.<role>. project is the project of the event the copy carries (roleForward.project).
+func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope, destination, project string) *roleForward {
+	named, ok := strings.CutPrefix(destination, contracts.RoleTopicPrefix)
+	if !ok || named == "" {
 		return nil
 	}
+	_, role, _ := contracts.CanonicalRole(named)
 	resolution, err := resolveRole(ctx, deps, role)
-	return forwardOf(role, item, resolution, err)
+	return forwardOf(project, role, item, resolution, err)
 }
 
 // forwardOf maps a role's resolution to how item reaches it, as the listener's role lane maps the
@@ -674,7 +684,18 @@ func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope
 // The listener's capability check (frameDeliveryMode) does not apply: a Dispatch envelope's payload
 // is the event itself, which has no top-level delivery key, so the listener reads it as an untagged
 // send that every holder takes.
-func forwardOf(role string, item contracts.Envelope, resolution roles.Resolution, err error) *roleForward {
+//
+// project is the project of the event item carries, which every arm's copy is sent under
+// (roleForward.project).
+func forwardOf(project, role string, item contracts.Envelope, resolution roles.Resolution, err error) *roleForward {
+	forward := forwardArm(role, item, resolution, err)
+	forward.project = project
+	return forward
+}
+
+// forwardArm is the arm of forwardOf a role's resolution takes, which the project of the copy does
+// not change.
+func forwardArm(role string, item contracts.Envelope, resolution roles.Resolution, err error) *roleForward {
 	if err != nil {
 		return &roleForward{holder: resolution.Holder, heldState: heldStateUnresolved,
 			err: fmt.Errorf("resolve the role's holder: %w", err)}
@@ -750,15 +771,16 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 // ask the same rule (cmd/listener/role_lane.go, roleForward.forwarded), so the copies of one
 // message forwarded by either carry one key and one MsgId.
 //
-// It goes to the holder's agent subject with a Request under the forward's MsgId
-// (bus.ForwardMsgID of that key and the subject), so the stream, which captures agent subjects,
-// stores one copy however often it is sent. The stream's acknowledgement of that copy is the
-// answer, and what counts the forward as having reached the holder, for every holder alike: a
-// holder is delivered its stored copy from its own consumer by the listener's relay and answers
-// the request with nothing (INFRA-771).
+// It goes to the holder's agent subject under the project of the event it carries (busSubject of
+// the holder's record key, model.SessionDestinationKey, and roleForward.project), with a Request
+// under the forward's MsgId (bus.ForwardMsgID of that key and the subject), so the stream, which
+// captures agent subjects, stores one copy however often it is sent. The stream's acknowledgement
+// of that copy is the answer, and what counts the forward as having reached the holder, for every
+// holder alike: a holder is delivered its stored copy from its own consumer by the listener's
+// relay and answers the request with nothing (INFRA-771).
 func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envelope) <-chan error {
 	item.DedupeKey = contracts.RoleForwardDedupeKey(item, f.holder)
-	subject := contracts.LegacyAgentSubject(f.holder)
+	subject := busSubject(model.SessionDestinationKey(f.holder), f.project)
 	return sender.Request(subject, item, bus.RequestOptions{
 		MsgID:   bus.ForwardMsgID(item.DedupeKey, subject),
 		Timeout: deps.forwardAckTimeout(),
@@ -802,7 +824,7 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 	go func() {
 		err := <-stored
 		if err == nil {
-			handOverKept(ctx, deps, sender, f.keptFor, item, keptAt, handed)
+			handOverKept(ctx, deps, sender, f.project, f.keptFor, item, keptAt, handed)
 		}
 		answer <- err
 	}()
@@ -890,9 +912,10 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 // stream, which collapses the two forwards into whichever arrives first, and that is this one
 // unless a drain that read the cursor before this handover reaches the agent subject ahead of it.
 // A keep the outbox retried stamps the retry's own time, the stream having kept the copy the
-// first publish stored.
-func handOverKept(ctx context.Context, deps Deps, sender bus.Sender, role string, item contracts.Envelope, keptAt time.Time, handed *keptHandovers) {
-	if err := handOverKeptCopy(ctx, deps, sender, role, item, keptAt, handed); err != nil && !lostToContextEnd(ctx, err) {
+// first publish stored. project is the project of the event the copy carries, which the handover's
+// forward goes under as the route's own would (roleForward.project).
+func handOverKept(ctx context.Context, deps Deps, sender bus.Sender, project, role string, item contracts.Envelope, keptAt time.Time, handed *keptHandovers) {
+	if err := handOverKeptCopy(ctx, deps, sender, project, role, item, keptAt, handed); err != nil && !lostToContextEnd(ctx, err) {
 		slog.Warn("dispatch outbox: the copy kept for a role was not handed to the holder that claimed it",
 			"role", role, "event_id", item.EventID, "error", err)
 	}
@@ -908,7 +931,7 @@ func handOverKept(ctx context.Context, deps Deps, sender bus.Sender, role string
 // counts only for the holder it reached (keptHandovers.handedTo), and because a keep is made for
 // a role no live holder can take: the resolution that still finds none ends the handover on one
 // claim read rather than on the lane's two.
-func handOverKeptCopy(ctx context.Context, deps Deps, sender bus.Sender, role string, item contracts.Envelope, keptAt time.Time, handed *keptHandovers) error {
+func handOverKeptCopy(ctx context.Context, deps Deps, sender bus.Sender, project, role string, item contracts.Envelope, keptAt time.Time, handed *keptHandovers) error {
 	if deps.KeptLanes == nil {
 		return nil
 	}
@@ -916,7 +939,7 @@ func handOverKeptCopy(ctx context.Context, deps Deps, sender bus.Sender, role st
 	if err != nil {
 		return fmt.Errorf("resolve the holder of role %s, which a copy was just kept for: %w", role, err)
 	}
-	handover := forwardOf(role, item, resolution, nil)
+	handover := forwardOf(project, role, item, resolution, nil)
 	if handover.keptFor != "" || handover.skip != "" || handover.err != nil {
 		return nil
 	}

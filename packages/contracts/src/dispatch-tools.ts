@@ -1186,7 +1186,7 @@ export const dispatchToolSpecs = [
       "Follow or unfollow an ask. Every session that opens or replies to an ask follows it: its answer, " +
       "edits, resolution, and replies reach that session directly. Unfollow to stop; follow to rejoin or " +
       "to hear an ask you never wrote to. Whole-issue subscription is separate: envoy_subscribe " +
-      "notifications.dispatch.issue.<KEY>.>",
+      "notifications.dispatch.issue.<PROJECT>.<KEY>.>",
     arguments: (z) => ({
       ask: z
         .string()

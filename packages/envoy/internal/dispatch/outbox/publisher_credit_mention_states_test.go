@@ -6,7 +6,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -149,7 +148,7 @@ func TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy(t *testi
 				return creditMentionFixture{
 					comment:  head,
 					checks:   []recipientCheck{{event: created, want: []string{claimant.ID}}},
-					heldRows: []string{contracts.LegacyAgentSubject(credit.ID)},
+					heldRows: []string{model.SessionDestinationKey(credit.ID)},
 				}
 			},
 		},
@@ -210,13 +209,13 @@ func TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy(t *testi
 				if _, err := database.Pool.Exec(context.Background(), `
 					insert into comment_fallback_copies (comment_id, destination, event_id, session_id)
 					values ($1, $2, $3, $4)
-				`, head, contracts.LegacyAgentSubject(credit.ID), created.ID, credit.ID); err != nil {
+				`, head, model.SessionDestinationKey(credit.ID), created.ID, credit.ID); err != nil {
 					t.Fatalf("hold the fallback row that owns the credit's destination: %v", err)
 				}
 				return creditMentionFixture{
 					comment:  head,
 					checks:   []recipientCheck{{event: created, want: []string{claimant.ID}}},
-					heldRows: []string{contracts.LegacyAgentSubject(credit.ID)},
+					heldRows: []string{model.SessionDestinationKey(credit.ID)},
 				}
 			},
 		},
@@ -274,7 +273,7 @@ func checkEventHeldForItsMention(t *testing.T, database *store.Store, event mode
 	}
 	want := make([]string, 0, len(reached))
 	for _, sessionID := range reached {
-		want = append(want, contracts.LegacyAgentSubject(sessionID))
+		want = append(want, model.SessionDestinationKey(sessionID))
 	}
 	destinations, _ := publishedDestinations(t, database, event.ID)
 	if got := agentTopics(destinations); !slices.Equal(got, want) {
@@ -332,12 +331,12 @@ func TestACreditThisReadResolvedTheRoleMentionToKeepsItsCopy(t *testing.T) {
 		t.Fatalf("scan batch: %v", err)
 	}
 
-	want := []string{contracts.LegacyAgentSubject(claimant.ID)}
+	want := []string{model.SessionDestinationKey(claimant.ID)}
 	if got := agentTopics(readEventRow(t, rig.database, created.ID).destinations); !slices.Equal(got, want) {
 		t.Fatalf("the comment reached sessions %v, want %v: the claimant hears it on its own topic, and the session the mention is on its way to takes the copy that mention decides, not one of the event's",
 			got, want)
 	}
-	rows := []string{contracts.LegacyAgentSubject(credit.ID)}
+	rows := []string{model.SessionDestinationKey(credit.ID)}
 	if got := heldDestinations(t, rig.database, head); !slices.Equal(got, rows) {
 		t.Fatalf("the comment holds fallback rows for %v, want %v: this read resolved the comment's mention of %s to that session, so its copy is the one that mention decides and is kept for the pass that publishes it",
 			got, rows, fmt.Sprintf("@%s", target))

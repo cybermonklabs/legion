@@ -121,12 +121,15 @@ belongs to.
 Dispatch publishes every change it records to NATS itself, under the thing it belongs to:
 
 ```text
-notifications.dispatch.issue.<KEY>.<type>                an issue, e.g. issue.updated, ask.answered
+notifications.dispatch.issue.<PROJECT>.<KEY>.<type>      an issue, e.g. issue.updated, ask.answered
 notifications.dispatch.document.<PROJECT>.<slug>.<type>  a project document
 notifications.dispatch.project.<PROJECT>.<type>          project settings
 ```
 
-All of them are kept in the stream. Some are also delivered straight to an agent:
+All of them are kept in the stream. Some are also delivered straight to an agent, on the session's
+inbox topic under the event's project, `notifications.agent.<PROJECT>.<session_id>`; an event for a
+role goes to the inbox of the role's holder, with the role's topic under the project the role works
+for, `notifications.role.<PROJECT>.<role>`:
 
 - An issue with a route sends its waking events to that role or session.
 - Every session that follows an ask gets its answer, edits, resolution, and replies on its own
@@ -169,7 +172,7 @@ published still gets it when it reconnects
 | --- | --- |
 | `notifications.agent.<session_id>` | One session's inbox. Direct messages, ask follow-ups, replies in threads it wrote in, comments on documents it wrote, a person's answers, comments and messages on an issue it has claimed, comments on an issue with no route and no session claim whose spec it wrote, and claim changes arrive here. |
 | `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. When no live session holds the role, because nobody claims it or its holder stopped answering, the listener keeps the message for one hour and answers that it kept it, and until when. The next session to hold the role live in that hour gets it, and a holder that stopped answering keeps its role. If no session takes the message in that hour, the listener drops it and, when the publish named your session, sends your session a message that names it, unless it dropped it more than an hour late. |
-| `notifications.dispatch.issue.<KEY>.>` | Every event of one Dispatch issue. |
+| `notifications.dispatch.issue.<PROJECT>.<KEY>.>` | Every event of one Dispatch issue. |
 | `notifications.github.<owner>.<repo>.pr.<n>.>` | Every event of one pull request. |
 | `notifications.legion.<project>.controller` | A Legion project's controller. |
 | `notifications.slack.*.<channel>.mention` | Every mention of the Slack app in one channel, whatever the team. |
@@ -283,7 +286,7 @@ and `DELIVERY_LEDGER_LIMIT` in `packages/envoy-client/src/delivery-ledger.ts`).
 - **What comes this way:** the session's inbox, `notifications.agent.<session_id>` (direct
   messages, Dispatch deliveries, and the forwards of role messages to a role it holds), and the
   topics it follows that the stream keeps, such as an issue's
-  `notifications.dispatch.issue.<KEY>.>`.
+  `notifications.dispatch.issue.<PROJECT>.<KEY>.>`.
 - **What does not:** anything published on a topic before the session followed it. Every
   `notifications.` topic a session may follow is one the stream keeps: the listener refuses a
   publish to, or a subscription to, any other by name, since no session would ever receive it.
@@ -316,7 +319,7 @@ notification topic.
 
 - **What comes back after a break:** everything the consumer holds, in the order it was published:
   messages on the session's inbox topic, `notifications.agent.<session_id>`, and on the topics it
-  follows, such as an issue's `notifications.dispatch.issue.<KEY>.>` or a team's
+  follows, such as an issue's `notifications.dispatch.issue.<PROJECT>.<KEY>.>` or a team's
   `notifications.team.<name>`, up to 72 hours old. When the stream was recreated, or the
   consumer was created below the stream's oldest message, the session is told once that messages
   may be missing.

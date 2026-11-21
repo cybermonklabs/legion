@@ -274,22 +274,39 @@ func (r *roleRig) routedEvent(t *testing.T, key, role string, actor model.Actor)
 	})
 }
 
-// silent fails t when anything arrives on subject before the test ends.
-func (r *roleRig) silent(t *testing.T, subject string) {
-	t.Helper()
-	arrived := subscribe(t, r.conn, subject)
-	t.Cleanup(func() {
-		select {
-		case message := <-arrived:
-			t.Errorf("%s carried %s, want nothing", subject, message.Data)
-		default:
+// everyForm is every subject a copy bound for subject can go out on: subject itself and, for a
+// session's own subject or a role's lane named with no project, the same under any project
+// (notifications.agent.*.<session>), so a test that listens there hears a copy in either form.
+func everyForm(subject string) []string {
+	forms := []string{subject}
+	for _, prefix := range []string{contracts.AgentTopicPrefix, contracts.RoleTopicPrefix} {
+		if rest, ok := strings.CutPrefix(subject, prefix); ok && rest != ">" && !strings.Contains(rest, ".") {
+			forms = append(forms, prefix+"*."+rest)
 		}
-	})
+	}
+	return forms
 }
 
-// receiver is a role holder's own subscription to its agent subject: it records every forward it
-// receives and answers nothing, as a session does now that the stream's acknowledgement is a
-// forward's whole answer. A scan or pass that has returned can have sent a copy this
+// silent fails t when anything arrives on subject, in any of its forms (everyForm), before the
+// test ends.
+func (r *roleRig) silent(t *testing.T, subject string) {
+	t.Helper()
+	for _, form := range everyForm(subject) {
+		arrived := subscribe(t, r.conn, form)
+		t.Cleanup(func() {
+			select {
+			case message := <-arrived:
+				t.Errorf("%s carried %s, want nothing", form, message.Data)
+			default:
+			}
+		})
+	}
+}
+
+// receiver is a role holder's own subscription to its agent subject under TT, the project of the
+// rig's issues (routedEvent), which the outbox forwards that project's copies on: it records every
+// forward it receives and answers nothing, as a session does now that the stream's acknowledgement
+// is a forward's whole answer. A scan or pass that has returned can have sent a copy this
 // subscription has not taken yet, so a test reads it after one through receivedNow or handedNow.
 type receiver struct {
 	subject  string
@@ -301,7 +318,7 @@ type receiver struct {
 
 func (r *roleRig) receiver(t *testing.T, holder string) *receiver {
 	t.Helper()
-	recv := &receiver{subject: contracts.LegacyAgentSubject(holder), arrived: make(chan contracts.Envelope, 64)}
+	recv := &receiver{subject: contracts.AgentSubject("TT", holder), arrived: make(chan contracts.Envelope, 64)}
 	sub, err := r.conn.Subscribe(recv.subject, func(msg *natsgo.Msg) {
 		if recv.marks.took(msg) {
 			return
@@ -388,12 +405,12 @@ func (m *markers) await(t *testing.T, client *bus.Client, subject string) {
 	}
 }
 
-// narrowAgentCapture has the stream capture the agent subjects of holders alone, in place of every
-// agent subject, and lets it capture them all again when the returned func is called or the test
-// ends. A forward to any other holder is then stored nowhere, so nothing acknowledges it and
-// nothing else answers one: that is the shape a role forward goes unanswered in, and the batch
-// that sent it waits roleForwardAckTimeout. The holder's own subscription is handed the forward
-// all the same, over core NATS.
+// narrowAgentCapture has the stream capture the agent subjects of holders alone, under any
+// project, in place of every agent subject, and lets it capture them all again when the returned
+// func is called or the test ends. A forward to any other holder is then stored nowhere, so
+// nothing acknowledges it and nothing else answers one: that is the shape a role forward goes
+// unanswered in, and the batch that sent it waits roleForwardAckTimeout. The holder's own
+// subscription is handed the forward all the same, over core NATS.
 func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 	t.Helper()
 	js, err := r.conn.JetStream()
@@ -409,7 +426,7 @@ func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 		return subject == contracts.AgentTopicPrefix+">"
 	})
 	for _, holder := range holders {
-		narrowed.Subjects = append(narrowed.Subjects, contracts.LegacyAgentSubject(holder))
+		narrowed.Subjects = append(narrowed.Subjects, contracts.AgentTopicPrefix+"*."+holder)
 	}
 	update := func(config *natsgo.StreamConfig, what string) {
 		if _, err := js.UpdateStream(config); err != nil {
@@ -436,16 +453,19 @@ func (recv *receiver) receivedNow(t *testing.T, client *bus.Client) []contracts.
 	return recv.received()
 }
 
-// storedCopies is how many messages the stream holds on the subjects filter matches.
+// storedCopies is how many messages the stream holds on the subjects filter matches, in any of its
+// forms (everyForm).
 func storedCopies(t *testing.T, client *bus.Client, filter string) uint64 {
 	t.Helper()
-	info, err := client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: filter})
-	if err != nil {
-		t.Fatalf("read the stream: %v", err)
-	}
 	var copies uint64
-	for _, count := range info.State.Subjects {
-		copies += count
+	for _, form := range everyForm(filter) {
+		info, err := client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: form})
+		if err != nil {
+			t.Fatalf("read the stream: %v", err)
+		}
+		for _, count := range info.State.Subjects {
+			copies += count
+		}
 	}
 	return copies
 }
@@ -513,7 +533,7 @@ func TestARoleRouteIsForwardedToASelfSubscribedHolderAndPublishedOnTheStreamsAck
 	case <-time.After(10 * time.Second):
 		t.Fatal("the holder received no forward")
 	}
-	if forward.Topic != contracts.RoleTopicPrefix+role || forward.DedupeKey != contracts.RoleForwardDedupePrefix+fmt.Sprintf("dispatch-%d", event.ID) ||
+	if forward.Topic != contracts.RoleSubject("TT", role) || forward.DedupeKey != contracts.RoleForwardDedupePrefix+fmt.Sprintf("dispatch-%d", event.ID) ||
 		forward.EventID != fmt.Sprintf("dispatch-%d", event.ID) {
 		t.Fatalf("the holder received topic %q dedupe key %q event id %q, want the role forward of event %d",
 			forward.Topic, forward.DedupeKey, forward.EventID, event.ID)
@@ -677,7 +697,7 @@ func TestARoleRouteWhoseHolderIsGoneKeepsTheClaimAndIsPublished(t *testing.T) {
 		t.Fatalf("role %s's kept lane holds %d copies, want the one the outbox kept for its next holder", role, len(kept))
 	}
 	key := fmt.Sprintf("dispatch-%d", event.ID)
-	if kept[0].Topic != contracts.RoleTopicPrefix+role || kept[0].DedupeKey != key || kept[0].EventID != key {
+	if kept[0].Topic != contracts.RoleSubject("TT", role) || kept[0].DedupeKey != key || kept[0].EventID != key {
 		t.Fatalf("the kept copy is topic %q dedupe key %q event id %q, want the envelope as its sender sent it under %q",
 			kept[0].Topic, kept[0].DedupeKey, kept[0].EventID, key)
 	}
@@ -843,7 +863,7 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 	holderOf := func(index int) string { return fmt.Sprintf("ses_holder_%02d", index) }
 	seed, public := testnats.User(t)
 	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q, permissions: { publish: { allow: [\">\"], deny: [%q] } } } ]\n}\n",
-		public, contracts.LegacyAgentSubject(holderOf(denied)))
+		public, contracts.AgentSubject("TT", holderOf(denied)))
 	_, url := testnats.StartConfig(t, config, []string{"-js"}, false)
 	t.Setenv("NATS_NKEY_SEED", seed)
 	client, err := bus.ConnectOwningStream([]string{url})
@@ -1121,7 +1141,7 @@ func TestAHeldCopyOfARoleRouteReachesTheRolesHolder(t *testing.T) {
 		// forward's dedupe key, so a copy recorded on the role's topic is one that was forwarded.
 		var forwarded []contracts.Envelope
 		for _, item := range publisher.all() {
-			if item.Topic == roleTopic {
+			if item.Topic == onBus("TT", roleTopic)[0] {
 				forwarded = append(forwarded, item)
 			}
 		}
@@ -1154,7 +1174,7 @@ func TestAHeldCopyOfARoleRouteReachesTheRolesHolder(t *testing.T) {
 		if len(kept) != 1 {
 			t.Fatalf("the pass made %d kept publishes, want the one copy kept for %s's next holder: %+v", len(kept), role, kept)
 		}
-		if kept[0].subject != bus.KeptRoleSubject(role) || kept[0].item.Topic != roleTopic {
+		if kept[0].subject != bus.KeptRoleSubject(role) || kept[0].item.Topic != onBus("TT", roleTopic)[0] {
 			t.Fatalf("the keep went to %q with topic %q, want %q with the role's own topic",
 				kept[0].subject, kept[0].item.Topic, bus.KeptRoleSubject(role))
 		}
@@ -1258,7 +1278,7 @@ func TestAKeptFallbackCopyHandedToItsOwnMentionedHolderCarriesTheMentionsKey(t *
 		t.Fatalf("the copy handed to the session its own mention names carries %q, want no role forward's prefix",
 			handed.DedupeKey)
 	}
-	subject := contracts.LegacyAgentSubject(holder)
+	subject := contracts.AgentSubject("TT", holder)
 	stored := storedMsgIDs(t, rig.conn, subject)
 	if len(stored) != 1 || stored[0] != bus.ForwardMsgID(want, subject) {
 		t.Fatalf("the stream holds %v on %s, want the handover's one copy under %q, the id a drain's forward of it would carry too",
@@ -1439,7 +1459,7 @@ func TestAKeptCopyHandedToTheSecondMentionedHolderCarriesItsOwnMentionsKey(t *te
 		t.Fatalf("the copy handed to the session whose own mention it repeats carries %q, want no role forward's prefix: a key no host has claimed shows the comment a second time",
 			handed.DedupeKey)
 	}
-	subject := contracts.LegacyAgentSubject(second)
+	subject := contracts.AgentSubject("TT", second)
 	stored := storedMsgIDs(t, rig.conn, subject)
 	if len(stored) != 1 || stored[0] != bus.ForwardMsgID(want, subject) {
 		t.Fatalf("the stream holds %v on %s, want the handover's one copy under %q, the id a drain's forward of it would carry too",
@@ -1517,7 +1537,7 @@ func TestAKeptCopyHandedToAHolderWhoseMentionLandedCarriesItsOwnMentionsKey(t *t
 		t.Fatalf("the copy handed to the session whose own mention delivered the comment carries %q, want no role forward's prefix: a key no host has claimed shows the comment a second time",
 			handed.DedupeKey)
 	}
-	subject := contracts.LegacyAgentSubject(second)
+	subject := contracts.AgentSubject("TT", second)
 	stored := storedMsgIDs(t, rig.conn, subject)
 	if len(stored) != 1 || stored[0] != bus.ForwardMsgID(want, subject) {
 		t.Fatalf("the stream holds %v on %s, want the handover's one copy under %q, the id a drain's forward of it would carry too",
@@ -1900,7 +1920,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	const bystander = "ses_mentioned_by_name"
 	const unanswered = "role:unanswered-when-the-comment-was-written"
 	roleTopic := contracts.RoleTopicPrefix + role
-	holderSubject := contracts.LegacyAgentSubject(holder)
+	holderSubject := model.SessionDestinationKey(holder)
 
 	rig := newRoleRig(t)
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
@@ -2061,7 +2081,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 	const elsewhere = "ses_mentioned_on_the_other_issue"
 	target := "role:" + role
 	roleTopic := contracts.RoleTopicPrefix + role
-	holderSubject := contracts.LegacyAgentSubject(holder)
+	holderSubject := model.SessionDestinationKey(holder)
 	mentionKey := func(commentID string) string {
 		return contracts.AgentSendDedupeKey(holder,
 			model.CommentMentionIdempotencyKey(commentID, target, "steer"))
@@ -2128,9 +2148,9 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 				attempts, publishFailure(failure), reached)
 		}
 		_, _, reached := eventState(t, rig.database, apart.ID)
-		if !slices.Contains(reached, contracts.LegacyAgentSubject(bystander)) {
+		if !slices.Contains(reached, model.SessionDestinationKey(bystander)) {
 			t.Fatalf("the other owner's comment reached %v, want %s among them: a session no attempt of that comment names takes its claimant copy as if it had not been mentioned",
-				reached, contracts.LegacyAgentSubject(bystander))
+				reached, model.SessionDestinationKey(bystander))
 		}
 		waitFor(t, 10*time.Second, "the other owner's claimant copy", func() bool {
 			return len(other.received()) > 0
@@ -2290,7 +2310,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 			t.Fatalf("the copy handed to the session whose own mention it repeats carries %q, want no role forward's prefix: a key no host has claimed shows the comment a second time",
 				handed.DedupeKey)
 		}
-		subject := contracts.LegacyAgentSubject(second)
+		subject := contracts.AgentSubject("TT", second)
 		stored := storedMsgIDs(t, rig.conn, subject)
 		if len(stored) != 1 || stored[0] != bus.ForwardMsgID(want, subject) {
 			t.Fatalf("the stream holds %v on %s, want the handover's one copy under %q, the id a drain's forward of it would carry too",

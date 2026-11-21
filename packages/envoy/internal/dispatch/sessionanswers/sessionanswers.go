@@ -12,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -44,7 +43,8 @@ var eventSeen = `(case when e.issue_key is not null or e.artifact_id is not null
 	else ` + access.PartyClause(access.MessagePartiesSQL(`coalesce(e.payload->>'message_id', e.payload->>'id')`), "$4") + ` end)`
 
 // query reads, in one statement, every item a person wrote that Dispatch delivered to the session
-// $1 since $2, $3 being the session's own topic (contracts.LegacyAgentSubject). Its three sources:
+// $1 since $2, $3 being the record key of the session's own destination
+// (model.SessionDestinationKey, which published_destinations holds). Its three sources:
 //
 //   - S1 (reached): events a person wrote of a type that carries a person's words to a session -
 //     ask.answered, comment.created, message.created, message.answered (a reply to a message) and
@@ -244,7 +244,7 @@ var query = `
 // to its followers; the session route, the claimant route and a credit on the issue's primary
 // document each deliver some of them to sessions that do not own the ask.
 func List(ctx context.Context, pool *store.Pool, viewer any, session string, since time.Time) ([]model.SessionAnswer, error) {
-	rows, err := pool.Query(ctx, query, session, since, contracts.LegacyAgentSubject(session), viewer)
+	rows, err := pool.Query(ctx, query, session, since, model.SessionDestinationKey(session), viewer)
 	if err != nil {
 		return nil, fmt.Errorf("read session %q answers: %w", session, err)
 	}

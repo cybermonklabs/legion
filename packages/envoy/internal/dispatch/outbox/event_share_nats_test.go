@@ -75,7 +75,7 @@ func eventPayload(t *testing.T, received <-chan *natsgo.Msg, topic string) (cont
 func TestRunDeliversACommentBodyAtTheEventShareThroughNATS(t *testing.T) {
 	database := storetest.Open(t)
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
-	issueTopic := "notifications.dispatch.issue.T-1.comment.created"
+	issueTopic := "notifications.dispatch.issue.TT.T-1.comment.created"
 	received := subscribe(t, subscriber, issueTopic)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)
@@ -111,7 +111,7 @@ func TestRunDeliversACommentBodyAtTheEventShareThroughNATS(t *testing.T) {
 func TestRunDeliversTheWidestAnsweredAskThroughNATS(t *testing.T) {
 	database := storetest.Open(t)
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
-	issueTopic := "notifications.dispatch.issue.T-1.ask.answered"
+	issueTopic := "notifications.dispatch.issue.TT.T-1.ask.answered"
 	received := subscribe(t, subscriber, issueTopic)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)
@@ -158,7 +158,7 @@ func TestRunDeliversTheWidestAnsweredAskThroughNATS(t *testing.T) {
 func TestRunPublishesAStandInForAnEventNATSRefuses(t *testing.T) {
 	database := storetest.Open(t)
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
-	issueTopic := "notifications.dispatch.issue.T-1.comment.created"
+	issueTopic := "notifications.dispatch.issue.TT.T-1.comment.created"
 	received := subscribe(t, subscriber, issueTopic)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)
@@ -216,7 +216,7 @@ func TestRunPublishesAStandInForAnEventNATSRefuses(t *testing.T) {
 func TestRunStandInKeepsAnAsksSessionsWholeThroughNATS(t *testing.T) {
 	database := storetest.Open(t)
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
-	issueTopic := "notifications.dispatch.issue.T-1.comment.created"
+	issueTopic := "notifications.dispatch.issue.TT.T-1.comment.created"
 	received := subscribe(t, subscriber, issueTopic)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)

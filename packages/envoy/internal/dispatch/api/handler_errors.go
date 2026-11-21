@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -104,6 +105,14 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		if apiErr.status == http.StatusInternalServerError {
 			slog.Error("dispatch: API handler failed", "code", apiErr.code, "error", err)
 		}
+		return
+	}
+	// An event of a private project the event log refused because the outbox already holds as many
+	// of them as it may while a hub is unproven (events.ErrPrivateHeldFull): the write is abandoned
+	// whole, so nothing was written, and the caller tries again once the hubs are proven. It is
+	// asked before the document codes, so a document write refused for it answers the same.
+	if errors.Is(err, events.ErrPrivateHeldFull) {
+		writeError(w, "PRIVATE_PROJECTS_UNAVAILABLE", http.StatusServiceUnavailable, events.ErrPrivateHeldFull.Error())
 		return
 	}
 	documentCode := documentErrorCode(err)

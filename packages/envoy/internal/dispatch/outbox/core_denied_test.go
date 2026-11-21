@@ -75,9 +75,14 @@ func publishedDestinations(t *testing.T, database *store.Store, eventID int64) (
 	return destinations, attempts
 }
 
-// holderSubject is the agent subject of roleHolder, every role's holder in a test that runs the
+// holderSubject is the agent subject roleHolder is forwarded a role route's copy on, under the
+// project of the test's issue, TT: roleHolder is every role's holder in a test that runs the
 // outbox with heldRoles.
-var holderSubject = contracts.LegacyAgentSubject(roleHolder)
+var holderSubject = contracts.AgentSubject("TT", roleHolder)
+
+// anyRoleLane is every role lane, in either form, which a test subscribes to so that a copy the
+// outbox published on a role's topic, whatever its form, arrives there.
+const anyRoleLane = contracts.RoleTopicPrefix + ">"
 
 // A role route whose forward to its holder NATS denies (a per-client grant without the holder's
 // agent subject) is not published: the outbox does not record the destination, does not mark the
@@ -88,7 +93,7 @@ func TestRunRetriesARoleForwardNATSDenies(t *testing.T) {
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "notifications.role.>", "_INBOX.>", "$JS.API.>")
-	received := subscribe(t, subscriber, roleTopic)
+	received := subscribe(t, subscriber, anyRoleLane)
 	forwarded := subscribe(t, subscriber, holderSubject)
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -145,9 +150,10 @@ func TestRunRetriesARoleForwardNATSDenies(t *testing.T) {
 // of the same event is delivered and recorded on the first attempt, and only the role route is left
 // for the retry. The grant covers the role's topic, which reaches no holder.
 func TestRunDeliversTheGrantedRoutesOfAnEventWhoseRoleForwardNATSDenies(t *testing.T) {
-	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "notifications.role.>", "notifications.agent.writer", "_INBOX.>", "$JS.API.>")
 	authorTopic := "notifications.agent.writer"
-	authorReceived := subscribe(t, subscriber, authorTopic)
+	authorSubject := onBus("TT", authorTopic)[0]
+	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "notifications.role.>", authorSubject, "_INBOX.>", "$JS.API.>")
+	authorReceived := subscribe(t, subscriber, authorSubject)
 	forwarded := subscribe(t, subscriber, holderSubject)
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -183,10 +189,11 @@ func TestRunDeliversTheGrantedRoutesOfAnEventWhoseRoleForwardNATSDenies(t *testi
 // denied - and only that: the author route the first attempt delivered is not sent again, and the
 // event is published with every destination recorded, the role route as its role topic.
 func TestTheRetryAfterAGrantDeliversOnlyTheDeniedRoute(t *testing.T) {
-	allow := []string{"notifications.dispatch.>", "notifications.agent.writer", "_INBOX.>", "$JS.API.>"}
-	client, subscriber, grant := grantedNATS(t, allow...)
 	authorTopic := "notifications.agent.writer"
-	authorReceived := subscribe(t, subscriber, authorTopic)
+	authorSubject := onBus("TT", authorTopic)[0]
+	allow := []string{"notifications.dispatch.>", authorSubject, "_INBOX.>", "$JS.API.>"}
+	client, subscriber, grant := grantedNATS(t, allow...)
+	authorReceived := subscribe(t, subscriber, authorSubject)
 	forwarded := subscribe(t, subscriber, holderSubject)
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -232,7 +239,7 @@ func TestTheRetryAfterAGrantDeliversOnlyTheDeniedRoute(t *testing.T) {
 // role's topic.
 func TestRunForwardsAGrantedRoleRoute(t *testing.T) {
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", holderSubject, "_INBOX.>", "$JS.API.>")
-	received := subscribe(t, subscriber, roleTopic)
+	received := subscribe(t, subscriber, anyRoleLane)
 	forwarded := subscribe(t, subscriber, holderSubject)
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -258,8 +265,8 @@ func TestRunForwardsAGrantedRoleRoute(t *testing.T) {
 		if err := json.Unmarshal(message.Data, &item); err != nil {
 			t.Fatalf("decode the forward: %v", err)
 		}
-		if item.Topic != roleTopic || item.SourceEventID == "" || !strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
-			t.Fatalf("the role's holder received %+v, want the event's role forward on %s", item, roleTopic)
+		if item.Topic != onBus("TT", roleTopic)[0] || item.SourceEventID == "" || !strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
+			t.Fatalf("the role's holder received %+v, want the event's role forward on %s", item, onBus("TT", roleTopic)[0])
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the role's holder received nothing through a granted forward")
@@ -287,7 +294,7 @@ func TestRunRetriesAnIssueTopicNATSDenies(t *testing.T) {
 	// genuinely denies.
 	client, subscriber, _ := grantedNATS(t, "notifications.role.>", "_INBOX.>", "$JS.API.>")
 	issueTopic := "notifications.dispatch.issue.T-1.message.created"
-	received := subscribe(t, subscriber, issueTopic)
+	received := subscribe(t, subscriber, contracts.DispatchIssueTopicPrefix+">")
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)

@@ -11,14 +11,19 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // destination is one subject an event is sent to, named by label and id in what a failure reports
 // (`publish route "role:reviewer": …`), since a subject alone does not say which of the event's
-// destinations it was. subject is also what published_destinations records once it is reached. A
-// role route's subject is its role topic and role its role; forward is how the batch reaches the
-// role's holder (resolveRoleHolders), nil for every other destination, which is published to
-// subject itself. dedupeKey is the dedupe key this copy carries in place of the event's own
+// destinations it was. subject is also what published_destinations records once it is reached,
+// in the form every release of Dispatch has recorded it, which names no project: the owner's
+// topic as notifications.dispatch.issue.<KEY>.<type>, a session's as notifications.agent.<session>
+// and a role's as notifications.role.<role>. The copy itself goes out on the subject busSubject
+// makes of it, which names the event's project (routedTo). A role route's subject is its role
+// topic and role its role; forward is how the batch reaches the role's holder
+// (resolveRoleHolders), nil for every other destination, which is published on its own subject.
+// dedupeKey is the dedupe key this copy carries in place of the event's own
 // (envelope), "" for every destination that carries the event's: the copy of a new comment sent
 // to a session whose mention failed sets it, to that mention's send's key
 // (destinations.addSession), and so does a role route's copy of a comment the holder it reaches
@@ -94,19 +99,79 @@ func destinationKey(subject string) string {
 }
 
 // key is the destination's key (destinationKey). A role route's forward goes to its holder's agent
-// subject, so its key is that subject, the key of every other route to the same session: a role
-// forward and a session, author or follower route to one session share one chain, and an earlier
-// event whose role route has not reached the holder holds the holder's later events back. What the
-// role route records once reached is its role topic, not the holder's subject: a role route reached
-// is reached for good, so a retry of its event skips the forward even when the role has moved to
-// another holder since, and the role topic is the one subject every later read of the event knows
-// that route by (planChains, resolveRoleHolders). A role route with no holder known - its claim
-// could not be read, or churned - is keyed on its role topic.
+// subject, so its key is that subject, in the form the record names a session's (destination), the
+// key of every other route to the same session: a role forward and a session, author or follower
+// route to one session share one chain, and an earlier event whose role route has not reached the
+// holder holds the holder's later events back. What the role route records once reached is its role
+// topic, not the holder's subject: a role route reached is reached for good, so a retry of its
+// event skips the forward even when the role has moved to another holder since, and the role topic
+// is the one subject every later read of the event knows that route by (planChains,
+// resolveRoleHolders). A role route with no holder known - its claim could not be read, or churned
+// - is keyed on its role topic.
 func (d destination) key() string {
 	if d.forward != nil && d.forward.holder != "" {
-		return contracts.LegacyAgentSubject(d.forward.holder)
+		return model.SessionDestinationKey(d.forward.holder)
 	}
 	return destinationKey(d.subject)
+}
+
+// busSubject is the subject a copy bound for the destination recorded as subject goes out on: the
+// recorded subject with project, the project of the event the copy carries, in it. An issue's
+// topic becomes contracts.DispatchIssueSubject(project, key, type), a session's
+// contracts.AgentSubject(project, session) and a role's contracts.RoleSubject of the project the
+// role works for (roleProject) and the role, so the bus holds every copy to the tokens that may
+// see its project. A document's and a project's topic name their project already and are
+// unchanged, and so is every subject already in the new form. An event with no project takes
+// contracts.NoProject, though the outbox sends such an event to no destination at all.
+//
+// The record keeps the form with no project, the one every release of Dispatch has written and
+// every reader of the record matches on (published_destinations, owed_keys,
+// comment_fallback_copies.destination): a release before this one reads this one's records and
+// this one reads that one's while the two roll side by side, and a reached destination stays
+// reached whichever wrote it.
+func busSubject(subject, project string) string {
+	if project == "" {
+		project = contracts.NoProject
+	}
+	if rest, found := strings.CutPrefix(subject, contracts.DispatchIssueTopicPrefix); found {
+		key, legacy, ok := contracts.IssueEventKey(subject)
+		if !ok || !legacy {
+			return subject
+		}
+		return contracts.DispatchIssueSubject(project, key, strings.TrimPrefix(rest, key+"."))
+	}
+	if session, found := strings.CutPrefix(subject, contracts.AgentTopicPrefix); found && !strings.Contains(session, ".") {
+		return contracts.AgentSubject(project, session)
+	}
+	if role, found := strings.CutPrefix(subject, contracts.RoleTopicPrefix); found && !strings.Contains(role, ".") {
+		return contracts.RoleSubject(roleProject(role, project), role)
+	}
+	return subject
+}
+
+// roleProject is the project an event of project addresses role under: the project a Legion role
+// works for by its own name (contracts.RoleProject), whatever the event's, since that is the one
+// project its claim is ever made under (contracts.ClaimProject) and the one the Legion daemon and
+// every client name its lane by; and the event's own for every other role, whose name says none.
+func roleProject(role, project string) string {
+	if own := contracts.RoleProject(role); own != contracts.NoProject {
+		return own
+	}
+	if project == "" {
+		return contracts.NoProject
+	}
+	return project
+}
+
+// routedTo is item as the copy bound for dest goes out, for an event of project: on the subject
+// busSubject makes of dest's, and under dest's own dedupe key where it carries one. A role
+// route's copy is forwarded to its holder from there, its topic still the role's (roleForward).
+func routedTo(item contracts.Envelope, dest destination, project string) contracts.Envelope {
+	item.Topic = busSubject(dest.subject, project)
+	if dest.dedupeKey != "" {
+		item.DedupeKey = dest.dedupeKey
+	}
+	return item
 }
 
 // batchEvent is one event of a batch with what the batch made of it: its envelope and
@@ -211,6 +276,11 @@ type chainSend struct {
 	// (standInEnvelope): the same event with its payload left out. It is set once, so a
 	// stand-in NATS refuses too is the end of this send.
 	standIn *contracts.Envelope
+}
+
+// subject is the bus subject the send went out on (busSubject), which is what its log lines name.
+func (s *chainSend) subject() string {
+	return busSubject(s.dest.subject, s.event.event.Project)
 }
 
 // sent reports whether the send counts as one the batch made: its answer is in, it was not refused
@@ -517,10 +587,7 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 		if send.standIn != nil {
 			routed = *send.standIn
 		}
-		routed.Topic = send.dest.subject
-		if send.dest.dedupeKey != "" {
-			routed.DedupeKey = send.dest.dedupeKey
-		}
+		routed = routedTo(routed, send.dest, send.event.event.Project)
 		switch forward := send.dest.forward; {
 		case forward == nil:
 			send.answer = sender.PublishAsync(routed)
@@ -569,7 +636,7 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 				// Logged here, where the stand-in is answered, rather than where it was made:
 				// only now has it reached NATS.
 				slog.Warn("dispatch outbox: a stand-in went out with the payload left out",
-					"event_id", send.event.event.ID, "topic", send.dest.subject)
+					"event_id", send.event.event.ID, "topic", send.subject())
 			}
 			send.state = reached
 		case errors.Is(err, bus.ErrRefused):
@@ -581,12 +648,12 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			// of, and counting it again would count one event twice.
 			if send.standIn != nil {
 				slog.Error("dispatch outbox: the stand-in was refused too",
-					"event_id", send.event.event.ID, "topic", send.dest.subject, "error", err)
+					"event_id", send.event.event.ID, "topic", send.subject(), "error", err)
 				send.state = reached
 				break
 			}
 			deps.countPublishFailure("refused")
-			slog.Error("dispatch outbox: destination refused", "event_id", send.event.event.ID, "topic", send.dest.subject, "error", err)
+			slog.Error("dispatch outbox: destination refused", "event_id", send.event.event.ID, "topic", send.subject(), "error", err)
 			// An event whose payload NATS will not take still has readers waiting on it, so the
 			// same event goes out once more with that payload left out (standInEnvelope): the
 			// reader learns which event it is and reads the item itself. A stand-in refused in

@@ -84,7 +84,7 @@ func TestRunSendsAStandInForARefusedDestinationAndIsDoneOnceThatIsRefusedToo(t *
 		IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.Message{ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", IssueKey: new("T-1"), Body: "Too large for NATS"},
 	})
-	refused := "notifications.dispatch.issue.T-1.message.created"
+	refused := "notifications.dispatch.issue.TT.T-1.message.created"
 	publisher := &refusingPublisher{refuse: refused, attempts: map[string]int{}}
 	registry := metrics.New()
 	deps := withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener})
@@ -100,7 +100,7 @@ func TestRunSendsAStandInForARefusedDestinationAndIsDoneOnceThatIsRefusedToo(t *
 	if attempts[refused] != 2 {
 		t.Fatalf("the refused destination was attempted %d times, want twice: the event, then its stand-in", attempts[refused])
 	}
-	if strings.Join(published, ",") != "notifications.role.reviewer" {
+	if strings.Join(published, ",") != "notifications.role.TT.reviewer" {
 		t.Fatalf("published %v, want the role route past the refused destination", published)
 	}
 	refusals, standInRefusals, standInsOut := 0, 0, 0

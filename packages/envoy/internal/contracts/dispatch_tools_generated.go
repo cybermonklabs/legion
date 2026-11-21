@@ -165,7 +165,7 @@ var DispatchTools = []DispatchTool{
 	},
 	{
 		Name:        "dispatch_follow",
-		Description: "Follow or unfollow an ask. Every session that opens or replies to an ask follows it: its answer, edits, resolution, and replies reach that session directly. Unfollow to stop; follow to rejoin or to hear an ask you never wrote to. Whole-issue subscription is separate: envoy_subscribe notifications.dispatch.issue.<KEY>.>",
+		Description: "Follow or unfollow an ask. Every session that opens or replies to an ask follows it: its answer, edits, resolution, and replies reach that session directly. Unfollow to stop; follow to rejoin or to hear an ask you never wrote to. Whole-issue subscription is separate: envoy_subscribe notifications.dispatch.issue.<PROJECT>.<KEY>.>",
 		Arguments: []ToolField{
 			{Name: "ask", Kind: ToolFieldString, Required: true, Description: "Ask id (uuid); an 8+ hex prefix unique among this session's own open asks works too."},
 			{Name: "action", Kind: ToolFieldEnum, Required: true, Description: "follow | unfollow", Values: []string{"follow", "unfollow"}},

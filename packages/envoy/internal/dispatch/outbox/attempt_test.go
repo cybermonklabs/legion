@@ -99,7 +99,7 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 	if len(topics) != settled {
 		t.Fatalf("sent %d more envelopes with no wake while NATS was unreachable", len(topics)-settled)
 	}
-	firstHeads := []string{"notifications.dispatch.issue.T-1.comment.created", roleTopic, "notifications.agent.writer"}
+	firstHeads := onBus("TT", "notifications.dispatch.issue.T-1.comment.created", roleTopic, "notifications.agent.writer")
 	for index, topic := range topics {
 		if topic != firstHeads[index%len(firstHeads)] {
 			t.Fatalf("sent %v while NATS was unreachable, want only the first event's three chain heads at each scan", topics)
@@ -187,9 +187,10 @@ func TestAnAttemptEndedAfterADenialReturnsBoth(t *testing.T) {
 	broker := events.NewBroker()
 	event := seedThreeDestinationEvent(t, database, broker)
 	unreachable := errors.New("bus: waiting for NATS to reconnect: context deadline exceeded")
+	subjects := onBus("TT", roleTopic, model.SessionDestinationKey("writer"))
 	publisher := &countingPublisher{failTopics: map[string]error{
-		roleTopic:                    denial(roleTopic),
-		"notifications.agent.writer": unreachable,
+		subjects[0]: denial(subjects[0]),
+		subjects[1]: unreachable,
 	}}
 
 	err := publishOnce(t, database, publisher, event)
@@ -222,9 +223,10 @@ func TestEveryDenialNamesItsDestination(t *testing.T) {
 			"previous_claim": map[string]any{"actor": map[string]any{"kind": "session", "id": "claimant"}},
 		},
 	})
-	failTopics := map[string]error{roleTopic: denial(roleTopic)}
-	for _, session := range []string{"writer", "asker", "follower", "claimant"} {
-		failTopics[contracts.LegacyAgentSubject(session)] = denial(contracts.LegacyAgentSubject(session))
+	failTopics := map[string]error{}
+	for _, subject := range onBus("TT", roleTopic, model.SessionDestinationKey("writer"), model.SessionDestinationKey("asker"),
+		model.SessionDestinationKey("follower"), model.SessionDestinationKey("claimant")) {
+		failTopics[subject] = denial(subject)
 	}
 	publisher := &countingPublisher{failTopics: failTopics}
 

@@ -63,7 +63,7 @@ func TestAFallbackPassRecordsACopyWhoseAnswerOutlastedTheHoldsDeadline(t *testin
 
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
-	publisher := &deadlinePassingOnTopic{topic: sessionTopic}
+	publisher := &deadlinePassingOnTopic{topic: onBus("TT", sessionTopic)[0]}
 	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
 	commentID := seedHeldFallbackCopy(ctx, t, deps)
 
@@ -75,7 +75,7 @@ func TestAFallbackPassRecordsACopyWhoseAnswerOutlastedTheHoldsDeadline(t *testin
 	}
 	// The scan that seeded the row published the issue topic; the copy is the pass's one send.
 	copies := topicsOf(publisher.all())[1:]
-	if len(copies) != 1 || copies[0] != sessionTopic {
+	if len(copies) != 1 || copies[0] != onBus("TT", sessionTopic)[0] {
 		t.Fatalf("the pass published %#v, want s1's copy alone: the window took it before the deadline passed; the pass logged:\n%s",
 			copies, logged.String())
 	}
@@ -127,7 +127,7 @@ func TestAFallbackPassWhoseHoldAnotherProcessTookRecordsNothing(t *testing.T) {
 
 			ctx := store.WithTransactionTracking(context.Background())
 			database := storetest.Open(t)
-			publisher := &takeoverPublisher{topic: sessionTopic}
+			publisher := &takeoverPublisher{topic: onBus("TT", sessionTopic)[0]}
 			deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
 			commentID := seedHeldFallbackCopy(ctx, t, deps)
 			var lost atomic.Bool
@@ -184,7 +184,7 @@ func TestAFallbackPassWhoseHoldAnotherProcessTookBeforeItsClaimRecordsNothing(t 
 	after := time.Now()
 
 	// The scan that seeded the row published the issue topic; the copy is the pass's one send.
-	if copies := topicsOf(publisher.all())[1:]; len(copies) != 1 || copies[0] != sessionTopic {
+	if copies := topicsOf(publisher.all())[1:]; len(copies) != 1 || copies[0] != onBus("TT", sessionTopic)[0] {
 		t.Fatalf("the pass published %#v, want s1's copy alone: the pass whose record the guard must refuse is one "+
 			"that claimed and sent; the pass logged:\n%s", copies, logged.String())
 	}
@@ -278,7 +278,7 @@ func TestAFallbackPassWhoseHoldLapsedBeforeItsClaimRecordsNothingBesideItsNextHo
 
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
-	publisher := &takeoverPublisher{topic: sessionTopic}
+	publisher := &takeoverPublisher{topic: onBus("TT", sessionTopic)[0]}
 	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
 	commentID := seedHeldFallbackCopy(ctx, t, deps)
 	stale := holdingProcess(t, database)

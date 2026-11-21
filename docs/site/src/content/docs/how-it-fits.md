@@ -121,9 +121,10 @@ at once.
 ## Envoy: the events between them
 
 Envoy is the event transport, built on NATS JetStream. Dispatch publishes each issue's events to a
-topic of the form `notifications.dispatch.issue.<KEY>.<event>`, and Envoy turns GitHub's webhooks
-into events on topics for each repository and pull request. Legion's coordinator reads both streams
-with durable consumers, so an event that arrives while it is down is read when it comes back.
+topic of the form `notifications.dispatch.issue.<PROJECT>.<KEY>.<event>`, and Envoy turns GitHub's
+webhooks into events on topics for each repository and pull request. Legion's coordinator reads
+both streams with durable consumers, so an event that arrives while it is down is read when it
+comes back.
 
 Envoy also delivers messages to agent sessions directly: a message to one session, to whichever
 session holds a role, or a broadcast a person sends from the Dispatch Agents page. The listener

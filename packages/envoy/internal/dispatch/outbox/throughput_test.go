@@ -445,7 +445,7 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	}
 	t.Cleanup(reader.Close)
 	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
-	if _, err := reader.Subscribe(contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg) {
+	if _, err := reader.Subscribe(contracts.AgentSubject("TT", throughputHolder), func(message *natsgo.Msg) {
 		if rig.marks.took(message) {
 			return
 		}
@@ -639,7 +639,7 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					// holder is handed its forward on a connection of its own, which can take the
 					// last of them just after that acknowledgement on a busy machine: the holder is
 					// read once it has taken every forward the outbox sent it (markers.await).
-					rig.marks.await(t, rig.client, contracts.LegacyAgentSubject(throughputHolder))
+					rig.marks.await(t, rig.client, contracts.AgentSubject("TT", throughputHolder))
 					routed := load.routed(count)
 					roles := rig.roleArrivals()
 					arrivals := map[string][]int64{}

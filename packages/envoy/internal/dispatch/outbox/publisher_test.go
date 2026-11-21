@@ -103,10 +103,19 @@ var errMentionPending = errors.New("a mention's delivery is still undecided")
 // publish sends event to each of its destinations not in delivered, as a batch of that one event
 // would, one at a time - a role route forwarded to its holder as deps resolves it - and returns
 // every failure, each named by its destination, or errMentionPending when there is none and a
-// mentioned session's copy was held back.
+// mentioned session's copy was held back. An event that names no project is given its owner's, as
+// the batch's read gives it (readBatchSQL), so its copies go out under that project.
 func publish(ctx context.Context, deps Deps, event model.Event, slug string, routing routing, delivered map[string]struct{}) error {
 	if event.IssueKey == nil && event.ArtifactID == nil && event.Project == "" {
 		return nil
+	}
+	if event.Project == "" {
+		if err := deps.Store.Pool.QueryRow(ctx, `
+			select coalesce($3, (select project_key from issues where key = $1),
+			       (select project_key from artifacts where id = $2::uuid), '')
+		`, event.IssueKey, event.ArtifactID, event.ProjectKey).Scan(&event.Project); err != nil {
+			return fmt.Errorf("read the project of event %d's owner: %w", event.ID, err)
+		}
 	}
 	item, err := envelope(event, slug)
 	if err != nil {
@@ -141,11 +150,7 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 			// which one event has nothing to hold.
 			continue
 		}
-		routed := item
-		routed.Topic = dest.subject
-		if dest.dedupeKey != "" {
-			routed.DedupeKey = dest.dedupeKey
-		}
+		routed := routedTo(item, dest, event.Project)
 		var answer <-chan error
 		switch {
 		case dest.forward == nil:
@@ -232,11 +237,12 @@ func (p *recordingPublisher) PublishAsync(item contracts.Envelope) <-chan error 
 	return answered(p.Publish(item))
 }
 
-// Request takes a role forward to roleHolder's subject under the forward's dedupe key as the
-// stream's acknowledgement of the copy it stored answers it, recording the envelope, whose topic
-// is still the role's.
+// Request takes a role forward to roleHolder's subject, under any project, under the forward's
+// dedupe key as the stream's acknowledgement of the copy it stored answers it, recording the
+// envelope, whose topic is still the role's.
 func (p *recordingPublisher) Request(subject string, item contracts.Envelope, _ bus.RequestOptions) <-chan error {
-	if subject != contracts.LegacyAgentSubject(roleHolder) || !strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
+	if twin, _ := contracts.LegacyTwin(subject); twin != contracts.LegacyAgentSubject(roleHolder) ||
+		!strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
 		return answered(fmt.Errorf("a Request to %q with dedupe key %q is no role forward to %s", subject, item.DedupeKey, roleHolder))
 	}
 	return answered(p.Publish(item))
@@ -307,14 +313,14 @@ func TestRunPublishesAskAnswerEnvelope(t *testing.T) {
 	waitFor(t, time.Second, "ask answer publication", func() bool {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
-	if asker := publisher.all()[1]; asker.Topic != "notifications.agent.session-asker" || asker.InReplyTo != askID {
+	if asker := publisher.all()[1]; asker.Topic != "notifications.agent.TT.session-asker" || asker.InReplyTo != askID {
 		t.Fatalf("asker route = (%q, %q)", asker.Topic, asker.InReplyTo)
 	}
 	item := publisher.all()[0]
 	if item.EventID != fmt.Sprintf("dispatch-%d", event.ID) || item.SourceEventID != fmt.Sprint(event.ID) {
 		t.Fatalf("event identity = (%q, %q)", item.EventID, item.SourceEventID)
 	}
-	if item.Source != "dispatch" || item.Topic != "notifications.dispatch.issue.T-1.ask.answered" {
+	if item.Source != "dispatch" || item.Topic != "notifications.dispatch.issue.TT.T-1.ask.answered" {
 		t.Fatalf("source/topic = (%q, %q)", item.Source, item.Topic)
 	}
 	if item.InReplyTo != askID || item.Urgency != "blocking" {
@@ -337,8 +343,8 @@ func TestRunPublishesAskAnswerEnvelope(t *testing.T) {
 
 // TestRunPublishesTheDeployedEventOnTheIssueSubject: issue.deployed, which the delivery timeline
 // appends with a system actor (delivery.RecordDeployedEvents), is quiet (Notify false) and still
-// publishes on the issue's own subject, notifications.dispatch.issue.<KEY>.issue.deployed, as
-// every issue event does: the Legion daemon's intake reads it there. The issue's route is not a
+// publishes on the issue's own subject, notifications.dispatch.issue.<PROJECT>.<KEY>.issue.deployed,
+// as every issue event does: the Legion daemon's intake reads it there. The issue's route is not a
 // destination, since nobody is woken by it.
 func TestRunPublishesTheDeployedEventOnTheIssueSubject(t *testing.T) {
 	database := storetest.Open(t)
@@ -368,8 +374,8 @@ func TestRunPublishesTheDeployedEventOnTheIssueSubject(t *testing.T) {
 		t.Fatalf("published %d envelopes, want the issue subject alone: %#v", len(items), items)
 	}
 	item := items[0]
-	if item.Source != "dispatch" || item.Topic != "notifications.dispatch.issue.T-1.issue.deployed" {
-		t.Fatalf("source/topic = (%q, %q), want dispatch on notifications.dispatch.issue.T-1.issue.deployed", item.Source, item.Topic)
+	if item.Source != "dispatch" || item.Topic != "notifications.dispatch.issue.TT.T-1.issue.deployed" {
+		t.Fatalf("source/topic = (%q, %q), want dispatch on notifications.dispatch.issue.TT.T-1.issue.deployed", item.Source, item.Topic)
 	}
 	if item.PayloadSummary != "T-1 issue deployed" {
 		t.Fatalf("payload summary = %q", item.PayloadSummary)
@@ -413,9 +419,9 @@ func TestRunRoutesAskEventsToEveryFollowerRegardlessOfNotify(t *testing.T) {
 				return model.Ask{ID: askID, IssueKey: new("T-1"), Question: "Ship it?", State: "answered"}
 			},
 			wantTopics: []string{
-				"notifications.dispatch.issue.T-1.ask.answered",
-				"notifications.agent.session-asker",
-				"notifications.agent.session-replier",
+				"notifications.dispatch.issue.TT.T-1.ask.answered",
+				"notifications.agent.TT.session-asker",
+				"notifications.agent.TT.session-replier",
 			},
 		},
 		{
@@ -428,8 +434,8 @@ func TestRunRoutesAskEventsToEveryFollowerRegardlessOfNotify(t *testing.T) {
 				}}
 			},
 			wantTopics: []string{
-				"notifications.dispatch.issue.T-1.comment.created",
-				"notifications.agent.session-asker",
+				"notifications.dispatch.issue.TT.T-1.comment.created",
+				"notifications.agent.TT.session-asker",
 			},
 		},
 		{
@@ -440,8 +446,8 @@ func TestRunRoutesAskEventsToEveryFollowerRegardlessOfNotify(t *testing.T) {
 				return model.AskEditEventPayload{Ask: model.Ask{ID: askID, IssueKey: new("T-1"), Question: "Ship it now?", State: "open"}}
 			},
 			wantTopics: []string{
-				"notifications.dispatch.issue.T-1.ask.edited",
-				"notifications.agent.session-replier",
+				"notifications.dispatch.issue.TT.T-1.ask.edited",
+				"notifications.agent.TT.session-replier",
 			},
 		},
 	} {
@@ -499,7 +505,7 @@ func TestRunSkipsAnUnfollowedSession(t *testing.T) {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
-	if len(items) != 2 || items[1].Topic != "notifications.agent.session-replier" {
+	if len(items) != 2 || items[1].Topic != "notifications.agent.TT.session-replier" {
 		t.Fatalf("publications after the asker unfollowed = %#v, want the issue topic and session-replier only", topicsOf(items))
 	}
 }
@@ -644,8 +650,8 @@ func TestRunRoutesDocumentEventsToTheDocumentTopicAndTheirAuthor(t *testing.T) {
 	if payload.IssueKey != nil || payload.ArtifactID == nil || *payload.ArtifactID != artifactID || payload.Project != "TT" {
 		t.Fatalf("document event payload owner = issue %v artifact %v project %q, want nil issue %q artifact and TT project", payload.IssueKey, payload.ArtifactID, payload.Project, artifactID)
 	}
-	if items[1].Topic != "notifications.agent.session-asker" {
-		t.Fatalf("document ask author route topic = %q, want %q", items[1].Topic, "notifications.agent.session-asker")
+	if items[1].Topic != "notifications.agent.TT.session-asker" {
+		t.Fatalf("document ask author route topic = %q, want %q", items[1].Topic, "notifications.agent.TT.session-asker")
 	}
 	if items[1].InReplyTo != askID {
 		t.Fatalf("document ask author route in_reply_to = %q, want %q", items[1].InReplyTo, askID)
@@ -747,14 +753,14 @@ func TestRunRoutesAskReplyToAuthorEvenWhenIssueRoutedElsewhere(t *testing.T) {
 		return len(publisher.all()) == 3 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
-	if items[0].Topic != "notifications.dispatch.issue.T-1.comment.created" {
+	if items[0].Topic != "notifications.dispatch.issue.TT.T-1.comment.created" {
 		t.Fatalf("issue topic = %q", items[0].Topic)
 	}
-	if items[1].Topic != "notifications.role.legion-controller-x" {
+	if items[1].Topic != "notifications.role.CONTROLLER.legion-controller-x" {
 		t.Fatalf("issue route topic = %q, want the issue's own route", items[1].Topic)
 	}
-	if items[2].Topic != "notifications.agent.session-asker" {
-		t.Fatalf("routed copy in-reply-to = %q, want %q", items[2].Topic, "notifications.agent.session-asker")
+	if items[2].Topic != "notifications.agent.TT.session-asker" {
+		t.Fatalf("routed copy in-reply-to = %q, want %q", items[2].Topic, "notifications.agent.TT.session-asker")
 	}
 	if items[2].InReplyTo != askID {
 		t.Fatalf("ask author route in_reply_to = %q, want %q", items[2].InReplyTo, askID)
@@ -789,11 +795,11 @@ func TestRunRoutesHumanReplyToCommentAuthor(t *testing.T) {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
-	if items[0].Topic != "notifications.dispatch.issue.T-1.comment.created" {
+	if items[0].Topic != "notifications.dispatch.issue.TT.T-1.comment.created" {
 		t.Fatalf("issue topic = %q", items[0].Topic)
 	}
-	if items[1].Topic != "notifications.agent.session-writer" {
-		t.Fatalf("comment author route topic = %q, want %q", items[1].Topic, "notifications.agent.session-writer")
+	if items[1].Topic != "notifications.agent.TT.session-writer" {
+		t.Fatalf("comment author route topic = %q, want %q", items[1].Topic, "notifications.agent.TT.session-writer")
 	}
 }
 
@@ -826,8 +832,8 @@ func TestRunRoutesHumanReplyToMessageAuthor(t *testing.T) {
 	if items[0].InReplyTo != rootID {
 		t.Fatalf("message reply in_reply_to = %q, want %q", items[0].InReplyTo, rootID)
 	}
-	if items[1].Topic != "notifications.agent.session-writer" {
-		t.Fatalf("message author route topic = %q, want %q", items[1].Topic, "notifications.agent.session-writer")
+	if items[1].Topic != "notifications.agent.TT.session-writer" {
+		t.Fatalf("message author route topic = %q, want %q", items[1].Topic, "notifications.agent.TT.session-writer")
 	}
 }
 
@@ -862,9 +868,9 @@ func TestRunRoutesHumanAnsweredReplyToRouteAndMessageAuthor(t *testing.T) {
 	})
 	items := publisher.all()
 	wantTopics := []string{
-		"notifications.dispatch.issue.T-1.message.answered",
-		"notifications.role.legion-controller-x",
-		"notifications.agent.session-writer",
+		"notifications.dispatch.issue.TT.T-1.message.answered",
+		"notifications.role.CONTROLLER.legion-controller-x",
+		"notifications.agent.TT.session-writer",
 	}
 	for index, want := range wantTopics {
 		if items[index].Topic != want {
@@ -896,7 +902,7 @@ func TestRunRoutesHumanAnsweredReplyToRouteAndMessageAuthor(t *testing.T) {
 	waitFor(t, time.Second, "targeted answer publication", func() bool {
 		return len(publisher.all()) == 4 && publishedAt(t, database, quiet.ID) != nil
 	})
-	if got := publisher.all()[3].Topic; got != "notifications.dispatch.issue.T-1.message.answered" {
+	if got := publisher.all()[3].Topic; got != "notifications.dispatch.issue.TT.T-1.message.answered" {
 		t.Fatalf("targeted answer topic = %q, want the issue topic only", got)
 	}
 }
@@ -929,11 +935,11 @@ func TestRunRoutesReplyToReplyToBothTheRootAndParentAuthors(t *testing.T) {
 		return len(publisher.all()) == 3 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
-	if items[1].Topic != "notifications.agent.session-writer" {
-		t.Fatalf("root author route topic = %q, want %q", items[1].Topic, "notifications.agent.session-writer")
+	if items[1].Topic != "notifications.agent.TT.session-writer" {
+		t.Fatalf("root author route topic = %q, want %q", items[1].Topic, "notifications.agent.TT.session-writer")
 	}
-	if items[2].Topic != "notifications.agent.session-editor" {
-		t.Fatalf("parent author route topic = %q, want %q", items[2].Topic, "notifications.agent.session-editor")
+	if items[2].Topic != "notifications.agent.TT.session-editor" {
+		t.Fatalf("parent author route topic = %q, want %q", items[2].Topic, "notifications.agent.TT.session-editor")
 	}
 }
 
@@ -963,8 +969,8 @@ func TestRunRoutesCommentResolutionToRootAuthor(t *testing.T) {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
-	if items[1].Topic != "notifications.agent.session-writer" {
-		t.Fatalf("comment resolution author route topic = %q, want %q", items[1].Topic, "notifications.agent.session-writer")
+	if items[1].Topic != "notifications.agent.TT.session-writer" {
+		t.Fatalf("comment resolution author route topic = %q, want %q", items[1].Topic, "notifications.agent.TT.session-writer")
 	}
 }
 
@@ -1034,11 +1040,11 @@ func TestRunPublishesSubscriptionRemovedAndRoutesItDirectlyToTheUnsubscribedSess
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
-	if items[0].Topic != "notifications.dispatch.issue.T-1.subscription.removed" {
+	if items[0].Topic != "notifications.dispatch.issue.TT.T-1.subscription.removed" {
 		t.Fatalf("issue topic = %q", items[0].Topic)
 	}
-	if items[1].Topic != "notifications.agent.planner" {
-		t.Fatalf("author route topic = %q, want notifications.agent.planner", items[1].Topic)
+	if items[1].Topic != "notifications.agent.TT.planner" {
+		t.Fatalf("author route topic = %q, want notifications.agent.TT.planner", items[1].Topic)
 	}
 }
 
@@ -1060,7 +1066,7 @@ func TestRunRetriesSubscriptionRemovedWhenTheAuthorRoutePublishFails(t *testing.
 	// author routes, where a failed notice is merely logged): a failed
 	// author-route publish must leave the event unpublished so the outbox
 	// retries, rather than losing the removed session's only notice for good.
-	publisher := &recordingPublisher{failTopic: "notifications.agent.planner"}
+	publisher := &recordingPublisher{failTopic: "notifications.agent.TT.planner"}
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
@@ -1079,11 +1085,11 @@ func TestRunRetriesSubscriptionRemovedWhenTheAuthorRoutePublishFails(t *testing.
 	if len(items) != 2 {
 		t.Fatalf("published items after retry = %#v, want the issue topic once and the author route once", items)
 	}
-	if items[0].Topic != "notifications.dispatch.issue.T-1.subscription.removed" {
-		t.Fatalf("issue topic = %q, want notifications.dispatch.issue.T-1.subscription.removed", items[0].Topic)
+	if items[0].Topic != "notifications.dispatch.issue.TT.T-1.subscription.removed" {
+		t.Fatalf("issue topic = %q, want notifications.dispatch.issue.TT.T-1.subscription.removed", items[0].Topic)
 	}
-	if items[1].Topic != "notifications.agent.planner" {
-		t.Fatalf("retried author route topic = %q, want notifications.agent.planner", items[1].Topic)
+	if items[1].Topic != "notifications.agent.TT.planner" {
+		t.Fatalf("retried author route topic = %q, want notifications.agent.TT.planner", items[1].Topic)
 	}
 }
 
@@ -1152,8 +1158,8 @@ func TestRunStillPublishesWhenTheRootWalkHitsAReplyToCycle(t *testing.T) {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
-	if items[1].Topic != "notifications.agent.session-writer" {
-		t.Fatalf("parent author route topic = %q, want %q", items[1].Topic, "notifications.agent.session-writer")
+	if items[1].Topic != "notifications.agent.TT.session-writer" {
+		t.Fatalf("parent author route topic = %q, want %q", items[1].Topic, "notifications.agent.TT.session-writer")
 	}
 }
 
@@ -1169,13 +1175,13 @@ func TestRunRoutesAskResolutionToTheAskerAndHumanResolutionToTheRoute(t *testing
 		{
 			name:            "human resolution",
 			actor:           model.Actor{Kind: "user", ID: "alice"},
-			wantTopics:      []string{"notifications.dispatch.issue.T-1.ask.resolved", "notifications.role.legion-controller-x", "notifications.agent.session-asker"},
+			wantTopics:      []string{"notifications.dispatch.issue.TT.T-1.ask.resolved", "notifications.role.CONTROLLER.legion-controller-x", "notifications.agent.TT.session-asker"},
 			wantRouteNotify: true,
 		},
 		{
 			name:            "session resolution",
 			actor:           model.Actor{Kind: "session", ID: "session-closer"},
-			wantTopics:      []string{"notifications.dispatch.issue.T-1.ask.resolved", "notifications.agent.session-asker"},
+			wantTopics:      []string{"notifications.dispatch.issue.TT.T-1.ask.resolved", "notifications.agent.TT.session-asker"},
 			wantRouteNotify: false,
 		},
 	} {
@@ -1244,10 +1250,10 @@ func TestADeclineTellsEveryFollowingSessionInDispatchsOwnWords(t *testing.T) {
 		},
 	})
 	wantTopics := []string{
-		"notifications.dispatch.issue.T-1.ask.resolved",
-		"notifications.role.legion-controller-x",
-		"notifications.agent.session-asker",
-		"notifications.agent.session-replier",
+		"notifications.dispatch.issue.TT.T-1.ask.resolved",
+		"notifications.role.CONTROLLER.legion-controller-x",
+		"notifications.agent.TT.session-asker",
+		"notifications.agent.TT.session-replier",
 	}
 	publisher := &recordingPublisher{}
 	stop := run(t, database, publisher, broker)
@@ -1289,8 +1295,8 @@ func TestRunAddsBoundRoutePublication(t *testing.T) {
 	for _, tc := range []struct {
 		name, route, wantTopic string
 	}{
-		{"role", "role:legion-controller-x", "notifications.role.legion-controller-x"},
-		{"session", "session:5a660655-04ad-4ce0-8a9b-93dd03c412b7", "notifications.agent.5a660655-04ad-4ce0-8a9b-93dd03c412b7"},
+		{"role", "role:legion-controller-x", "notifications.role.CONTROLLER.legion-controller-x"},
+		{"session", "session:5a660655-04ad-4ce0-8a9b-93dd03c412b7", "notifications.agent.TT.5a660655-04ad-4ce0-8a9b-93dd03c412b7"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			database := storetest.Open(t)
@@ -1308,7 +1314,7 @@ func TestRunAddsBoundRoutePublication(t *testing.T) {
 				return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 			})
 			items := publisher.all()
-			if items[0].Topic != "notifications.dispatch.issue.T-1.message.created" {
+			if items[0].Topic != "notifications.dispatch.issue.TT.T-1.message.created" {
 				t.Fatalf("issue topic = %q", items[0].Topic)
 			}
 			if items[1].Topic != tc.wantTopic {
@@ -1340,7 +1346,7 @@ func TestRunPublishesTargetedMessageToIssueSubscribersOnly(t *testing.T) {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
-	if items[0].Topic != "notifications.dispatch.issue.T-1.message.created" {
+	if items[0].Topic != "notifications.dispatch.issue.TT.T-1.message.created" {
 		t.Fatalf("targeted message topic = %q, want issue topic", items[0].Topic)
 	}
 }
@@ -1369,7 +1375,7 @@ func TestRunPublishesQuietAnchorRefreshEventsOnlyToTheIssueTopic(t *testing.T) {
 	})
 	items := publisher.all()
 	for index, event := range eventsToPublish {
-		wantTopic := "notifications.dispatch.issue.T-1." + event.Type
+		wantTopic := "notifications.dispatch.issue.TT.T-1." + event.Type
 		if items[index].Topic != wantTopic {
 			t.Fatalf("%s topic = %q, want issue topic %q", event.Type, items[index].Topic, wantTopic)
 		}
@@ -1409,9 +1415,9 @@ func TestRunPublishesEveryEventButRoutesOnlyNotifyingEvents(t *testing.T) {
 	var issueTopic, roleRoute []contracts.Envelope
 	for _, item := range publisher.all() {
 		switch item.Topic {
-		case "notifications.dispatch.issue.T-1.message.created":
+		case "notifications.dispatch.issue.TT.T-1.message.created":
 			issueTopic = append(issueTopic, item)
-		case "notifications.role.legion-controller-x":
+		case "notifications.role.CONTROLLER.legion-controller-x":
 			roleRoute = append(roleRoute, item)
 		}
 	}
@@ -1540,7 +1546,7 @@ func TestRunRetriesEventWhenRequiredRoleRouteFails(t *testing.T) {
 		IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.Message{ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", IssueKey: new("T-1"), Body: "Retry role delivery"},
 	})
-	publisher := &recordingPublisher{failTopic: "notifications.role.legion-controller-x"}
+	publisher := &recordingPublisher{failTopic: "notifications.role.CONTROLLER.legion-controller-x"}
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
@@ -1555,11 +1561,11 @@ func TestRunRetriesEventWhenRequiredRoleRouteFails(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("published items after retry = %#v, want issue topic once and role route once", items)
 	}
-	if items[0].Topic != "notifications.dispatch.issue.T-1.message.created" {
-		t.Fatalf("issue topic = %q, want notifications.dispatch.issue.T-1.message.created", items[0].Topic)
+	if items[0].Topic != "notifications.dispatch.issue.TT.T-1.message.created" {
+		t.Fatalf("issue topic = %q, want notifications.dispatch.issue.TT.T-1.message.created", items[0].Topic)
 	}
-	if items[1].Topic != "notifications.role.legion-controller-x" {
-		t.Fatalf("retried route topic = %q, want notifications.role.legion-controller-x", items[1].Topic)
+	if items[1].Topic != "notifications.role.CONTROLLER.legion-controller-x" {
+		t.Fatalf("retried route topic = %q, want notifications.role.CONTROLLER.legion-controller-x", items[1].Topic)
 	}
 }
 
@@ -1576,7 +1582,7 @@ func TestRunRetriesEventWhenRequiredAuthorRouteFails(t *testing.T) {
 			ID: "reply", IssueKey: new("T-1"), Body: "Reviewed", ReplyTo: &root,
 		}},
 	})
-	publisher := &recordingPublisher{failTopic: "notifications.agent.writer"}
+	publisher := &recordingPublisher{failTopic: "notifications.agent.TT.writer"}
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
@@ -1591,11 +1597,11 @@ func TestRunRetriesEventWhenRequiredAuthorRouteFails(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("published items after retry = %#v, want issue topic once and author route once", items)
 	}
-	if items[0].Topic != "notifications.dispatch.issue.T-1.comment.created" {
-		t.Fatalf("issue topic = %q, want notifications.dispatch.issue.T-1.comment.created", items[0].Topic)
+	if items[0].Topic != "notifications.dispatch.issue.TT.T-1.comment.created" {
+		t.Fatalf("issue topic = %q, want notifications.dispatch.issue.TT.T-1.comment.created", items[0].Topic)
 	}
-	if items[1].Topic != "notifications.agent.writer" {
-		t.Fatalf("retried author route = %q, want notifications.agent.writer", items[1].Topic)
+	if items[1].Topic != "notifications.agent.TT.writer" {
+		t.Fatalf("retried author route = %q, want notifications.agent.TT.writer", items[1].Topic)
 	}
 }
 
@@ -2047,7 +2053,7 @@ func TestRunRoutesChangedDocumentAskAnswerToFollower(t *testing.T) {
 		return len(publisher.all()) == 2 && publishedAt(t, database, event.ID) != nil
 	})
 	follower := publisher.all()[1]
-	if follower.Topic != "notifications.agent.session-asker" || follower.InReplyTo != askID {
+	if follower.Topic != "notifications.agent.TT.session-asker" || follower.InReplyTo != askID {
 		t.Fatalf("changed answer follower route = (%q, %q)", follower.Topic, follower.InReplyTo)
 	}
 	var forwarded struct {

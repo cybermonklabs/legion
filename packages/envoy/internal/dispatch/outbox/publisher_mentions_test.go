@@ -137,7 +137,7 @@ func TestCommentPayloadSuppressesResolvedRouteAndAuthorSessions(t *testing.T) {
 			route:      new("session:mentioned"),
 			payload:    routeSuppression("00000000-0000-0000-0000-000000000001"),
 			delivery:   "sent",
-			wantTopics: []string{"notifications.dispatch.issue.T-1.comment.created"},
+			wantTopics: []string{"notifications.dispatch.issue.TT.T-1.comment.created"},
 		},
 		{
 			name:     "owner route whose mention failed",
@@ -145,8 +145,8 @@ func TestCommentPayloadSuppressesResolvedRouteAndAuthorSessions(t *testing.T) {
 			payload:  routeSuppression("00000000-0000-0000-0000-000000000006"),
 			delivery: "failed",
 			wantTopics: []string{
-				"notifications.dispatch.issue.T-1.comment.created",
-				"notifications.agent.mentioned",
+				"notifications.dispatch.issue.TT.T-1.comment.created",
+				"notifications.agent.TT.mentioned",
 			},
 		},
 		{
@@ -154,7 +154,7 @@ func TestCommentPayloadSuppressesResolvedRouteAndAuthorSessions(t *testing.T) {
 			route:      new("session:mentioned"),
 			payload:    routeSuppression("00000000-0000-0000-0000-000000000007"),
 			delivery:   "pending",
-			wantTopics: []string{"notifications.dispatch.issue.T-1.comment.created"},
+			wantTopics: []string{"notifications.dispatch.issue.TT.T-1.comment.created"},
 			wantErr:    errMentionPending,
 		},
 		{
@@ -162,7 +162,7 @@ func TestCommentPayloadSuppressesResolvedRouteAndAuthorSessions(t *testing.T) {
 			route:      new("session:someone-else"),
 			payload:    authorSuppression("00000000-0000-0000-0000-000000000002"),
 			delivery:   "sent",
-			wantTopics: []string{"notifications.dispatch.issue.T-1.comment.created", "notifications.agent.someone-else"},
+			wantTopics: []string{"notifications.dispatch.issue.TT.T-1.comment.created", "notifications.agent.TT.someone-else"},
 		},
 		{
 			name:     "author route whose mention failed",
@@ -170,9 +170,9 @@ func TestCommentPayloadSuppressesResolvedRouteAndAuthorSessions(t *testing.T) {
 			payload:  authorSuppression("00000000-0000-0000-0000-000000000008"),
 			delivery: "failed",
 			wantTopics: []string{
-				"notifications.dispatch.issue.T-1.comment.created",
-				"notifications.agent.someone-else",
-				"notifications.agent.mentioned",
+				"notifications.dispatch.issue.TT.T-1.comment.created",
+				"notifications.agent.TT.someone-else",
+				"notifications.agent.TT.mentioned",
 			},
 		},
 		{
@@ -182,9 +182,9 @@ func TestCommentPayloadSuppressesResolvedRouteAndAuthorSessions(t *testing.T) {
 				"id": "00000000-0000-0000-0000-000000000003", "reply_to": rootID,
 			},
 			wantTopics: []string{
-				"notifications.dispatch.issue.T-1.comment.created",
-				"notifications.agent.someone-else",
-				"notifications.agent.mentioned",
+				"notifications.dispatch.issue.TT.T-1.comment.created",
+				"notifications.agent.TT.someone-else",
+				"notifications.agent.TT.mentioned",
 			},
 		},
 	} {
@@ -245,8 +245,8 @@ func TestCommentRouteSuppressionAppliesOnlyToTheCreationRoute(t *testing.T) {
 		t.Fatalf("publish route-changed comment: %v", err)
 	}
 	if got, want := topicsOf(publisher.all()), []string{
-		"notifications.dispatch.issue.T-1.comment.created",
-		"notifications.agent.new-holder",
+		"notifications.dispatch.issue.TT.T-1.comment.created",
+		"notifications.agent.TT.new-holder",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("route-changed publications = %#v, want %#v", got, want)
 	}
@@ -282,7 +282,7 @@ func TestCommentRouteSuppressionFollowsTheResolvedHolder(t *testing.T) {
 	); err != nil {
 		t.Fatalf("publish role-to-session route change: %v", err)
 	}
-	if got, want := topicsOf(publisher.all()), []string{"notifications.dispatch.issue.T-1.comment.created"}; !reflect.DeepEqual(got, want) {
+	if got, want := topicsOf(publisher.all()), []string{"notifications.dispatch.issue.TT.T-1.comment.created"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("role-to-session publications = %#v, want %#v", got, want)
 	}
 }
@@ -295,9 +295,9 @@ func TestCommentRouteSuppressionFollowsTheResolvedHolder(t *testing.T) {
 // unclaimed attempt waited past the claim lease.
 func TestAnUnansweredSessionMentionHoldsTheCopiesOfTheSessionItNames(t *testing.T) {
 	const (
-		issueTopic = "notifications.dispatch.issue.T-1.comment.created"
-		s1Topic    = "notifications.agent.s1"
-		routeTopic = "notifications.role.reviewer"
+		issueTopic = "notifications.dispatch.issue.TT.T-1.comment.created"
+		s1Topic    = "notifications.agent.TT.s1"
+		routeTopic = "notifications.role.TT.reviewer"
 	)
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -360,8 +360,8 @@ func TestAnUnansweredSessionMentionHoldsTheCopiesOfTheSessionItNames(t *testing.
 // whose own topic is left to that mention (destinations.addSession, destinations.leftToMention).
 func TestARouteSuppressedByAnUnansweredMentionsTargetFollowsThatMention(t *testing.T) {
 	const (
-		issueTopic = "notifications.dispatch.issue.T-1.comment.created"
-		routeTopic = "notifications.role.reviewer"
+		issueTopic = "notifications.dispatch.issue.TT.T-1.comment.created"
+		routeTopic = "notifications.role.TT.reviewer"
 	)
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -377,7 +377,7 @@ func TestARouteSuppressedByAnUnansweredMentionsTargetFollowsThatMention(t *testi
 		{route: "role:reviewer", delivery: "sent", want: []string{issueTopic}},
 		{route: "role:reviewer", delivery: "failed", want: []string{issueTopic, routeTopic}},
 		{route: "session:s1", delivery: "sent", want: []string{issueTopic}},
-		{route: "session:s2", delivery: "sent", want: []string{issueTopic, "notifications.agent.s2"}},
+		{route: "session:s2", delivery: "sent", want: []string{issueTopic, "notifications.agent.TT.s2"}},
 	} {
 		t.Run(tc.route+" "+tc.delivery, func(t *testing.T) {
 			commentNumber++
@@ -436,8 +436,10 @@ func waitsFromScan(due *time.Time, before, after time.Time) bool {
 // failed send leaves the copy to the outbox, a sent one delivered it already.
 func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 	const (
-		issueTopic    = "notifications.dispatch.issue.T-1.comment.created"
-		claimantTopic = "notifications.agent.session-claimant"
+		issueTopic    = "notifications.dispatch.issue.TT.T-1.comment.created"
+		claimantTopic = "notifications.agent.TT.session-claimant"
+		// issueRecord is the issue topic as published_destinations records it, with no project.
+		issueRecord = "notifications.dispatch.issue.T-1.comment.created"
 	)
 	for _, tc := range []struct {
 		settled string
@@ -485,7 +487,7 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 			if !waitsFromScan(due, before, after) {
 				t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan", due, mentionPendingDelay)
 			}
-			if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, []string{issueTopic}) {
+			if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, []string{issueRecord}) {
 				t.Fatalf("published_destinations = %#v, want the issue topic alone", destinations)
 			}
 
@@ -526,8 +528,8 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 // fallback row a resending mention is kept as.
 func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing.T) {
 	const (
-		issueTopic    = "notifications.dispatch.issue.T-1.comment.created"
-		claimantTopic = "notifications.agent.session-claimant"
+		issueTopic    = "notifications.dispatch.issue.TT.T-1.comment.created"
+		claimantTopic = "notifications.agent.TT.session-claimant"
 	)
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
@@ -566,8 +568,8 @@ func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing
 	if !waitsFromScan(due, before, after) {
 		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan", due, mentionPendingDelay)
 	}
-	if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, want) {
-		t.Fatalf("published_destinations = %#v, want %#v", destinations, want)
+	if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, recordOf(want...)) {
+		t.Fatalf("published_destinations = %#v, want %#v", destinations, recordOf(want...))
 	}
 	if rows := heldDestinations(t, database, commentID); len(rows) != 0 {
 		t.Fatalf("the comment holds fallback rows %v, want none: a live mention's copy waits in the list, it is not kept as a row", rows)
@@ -583,9 +585,9 @@ func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing
 // never by neither.
 func TestACreditedSessionWhoseMentionFailsAfterTheBatchReadsItTakesTheCopy(t *testing.T) {
 	const (
-		issueTopic    = "notifications.dispatch.issue.T-1.comment.created"
-		claimantTopic = "notifications.agent.session-claimant"
-		writerTopic   = "notifications.agent.session-writer"
+		issueTopic    = "notifications.dispatch.issue.TT.T-1.comment.created"
+		claimantTopic = "notifications.agent.TT.session-claimant"
+		writerTopic   = "notifications.agent.TT.session-writer"
 	)
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
@@ -640,8 +642,8 @@ func TestACreditedSessionWhoseMentionFailsAfterTheBatchReadsItTakesTheCopy(t *te
 	if attempts, _ := nextAttempt(t, database, event.ID); attempts != 0 {
 		t.Fatalf("attempt_count = %d after the deferral resolved, want 0", attempts)
 	}
-	if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, want) {
-		t.Fatalf("published_destinations = %#v, want %#v", destinations, want)
+	if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, recordOf(want...)) {
+		t.Fatalf("published_destinations = %#v, want %#v", destinations, recordOf(want...))
 	}
 }
 
@@ -653,9 +655,10 @@ func TestACreditedSessionWhoseMentionFailsAfterTheBatchReadsItTakesTheCopy(t *te
 // the connection fails, the event is released for the next scan as any event that met it is.
 func TestAHeldBackClaimantCopyDefersNoAttemptThatFailedElsewhere(t *testing.T) {
 	const (
-		issueTopic  = "notifications.dispatch.issue.T-1.comment.created"
-		authorTopic = "notifications.agent.writer"
+		issueTopic  = "notifications.dispatch.issue.TT.T-1.comment.created"
+		authorTopic = "notifications.agent.TT.writer"
 	)
+	roleSubject := onBus("TT", roleTopic)[0]
 	for _, tc := range []struct {
 		name       string
 		failTopics map[string]error
@@ -664,7 +667,7 @@ func TestAHeldBackClaimantCopyDefersNoAttemptThatFailedElsewhere(t *testing.T) {
 	}{
 		{
 			name:       "a denied role route backs the event off",
-			failTopics: map[string]error{roleTopic: denial(roleTopic)},
+			failTopics: map[string]error{roleSubject: denial(roleSubject)},
 			state:      backedOff,
 			reached:    []string{issueTopic, authorTopic},
 		},
@@ -672,7 +675,7 @@ func TestAHeldBackClaimantCopyDefersNoAttemptThatFailedElsewhere(t *testing.T) {
 			name:       "an unavailable connection releases the event",
 			failTopics: map[string]error{authorTopic: fmt.Errorf("bus: %w", bus.ErrUnavailable)},
 			state:      released,
-			reached:    []string{issueTopic, roleTopic},
+			reached:    []string{issueTopic, roleSubject},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -700,14 +703,14 @@ func TestAHeldBackClaimantCopyDefersNoAttemptThatFailedElsewhere(t *testing.T) {
 			before := time.Now()
 			holding(t, withHeldRoles(Deps{Store: database, Publisher: publisher})).scan(ctx, unfenced{})
 			after := time.Now()
-			if got := publisher.attempted(); !reflect.DeepEqual(got, []string{issueTopic, roleTopic, authorTopic}) {
+			if got := publisher.attempted(); !reflect.DeepEqual(got, []string{issueTopic, roleSubject, authorTopic}) {
 				t.Fatalf("topics sent = %#v, want every destination but the held-back claimant copy", got)
 			}
 			if at := publishedAt(t, database, event.ID); at != nil {
 				t.Fatalf("published_at = %v, though the attempt did not finish", at)
 			}
-			if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, tc.reached) {
-				t.Fatalf("published_destinations = %#v, want the destinations reached, %#v", destinations, tc.reached)
+			if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, recordOf(tc.reached...)) {
+				t.Fatalf("published_destinations = %#v, want the destinations reached, %#v", destinations, recordOf(tc.reached...))
 			}
 			attempts, due := nextAttempt(t, database, event.ID)
 			switch tc.state {
@@ -731,7 +734,7 @@ func TestAHeldBackClaimantCopyDefersNoAttemptThatFailedElsewhere(t *testing.T) {
 // TestARetryReachesTheClaimantTheScanReads: the claimant comes from the scan's read of the issue,
 // so an attempt after the claim moved reaches the new holder, and a person's claim reaches no one.
 func TestARetryReachesTheClaimantTheScanReads(t *testing.T) {
-	const issueTopic = "notifications.dispatch.issue.T-1.message.created"
+	const issueTopic = "notifications.dispatch.issue.TT.T-1.message.created"
 	for _, tc := range []struct {
 		name  string
 		moved model.Actor
@@ -740,7 +743,7 @@ func TestARetryReachesTheClaimantTheScanReads(t *testing.T) {
 		{
 			name:  "the claim moved to another session",
 			moved: model.Actor{Kind: "session", ID: "session-new"},
-			want:  []string{issueTopic, "notifications.agent.session-new"},
+			want:  []string{issueTopic, "notifications.agent.TT.session-new"},
 		},
 		{
 			name:  "the claim moved to a person",
@@ -763,7 +766,7 @@ func TestARetryReachesTheClaimantTheScanReads(t *testing.T) {
 			// The first attempt fails at the old claimant's topic, so it reaches no session: every
 			// destination of a batch is sent side by side (sendChains), so a failed issue topic
 			// would not keep the claimant's copy back.
-			publisher := &recordingPublisher{failTopic: "notifications.agent.session-old"}
+			publisher := &recordingPublisher{failTopic: "notifications.agent.TT.session-old"}
 			outbox := holding(t, Deps{Store: database, Publisher: publisher})
 			outbox.scan(ctx, unfenced{})
 			if attempts, _ := nextAttempt(t, database, event.ID); attempts != 1 {
@@ -799,8 +802,10 @@ func TestARetryReachesTheClaimantTheScanReads(t *testing.T) {
 // no receipt and holds its copy the same way, without waiting on it.
 func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t *testing.T) {
 	const (
-		issueTopic = "notifications.dispatch.issue.T-1.comment.created"
-		routeTopic = "notifications.agent.s1"
+		issueTopic = "notifications.dispatch.issue.TT.T-1.comment.created"
+		routeTopic = "notifications.agent.TT.s1"
+		// routeRecord is the route's destination as comment_fallback_copies records it.
+		routeRecord = "notifications.agent.s1"
 	)
 	for _, tc := range []struct {
 		name string
@@ -820,11 +825,11 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 		{name: "the outbox acts first", seeded: "abandoned", wantTopics: []string{issueTopic, routeTopic}, wantState: "failed"},
 		{
 			name: "a claim commits first", seeded: "abandoned", claimFirst: true,
-			wantTopics: []string{issueTopic}, wantHeld: []string{routeTopic}, wantState: "pending",
+			wantTopics: []string{issueTopic}, wantHeld: []string{routeRecord}, wantState: "pending",
 		},
 		{
 			name: "a claim lapsed with its sender", seeded: "resumed",
-			wantTopics: []string{issueTopic}, wantHeld: []string{routeTopic}, wantState: "pending",
+			wantTopics: []string{issueTopic}, wantHeld: []string{routeRecord}, wantState: "pending",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -966,8 +971,10 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 // instead, the pass publishes no copy and settles what it held.
 func TestAResumedMentionsHeldCopyFollowsItsResend(t *testing.T) {
 	const (
-		issueTopic   = "notifications.dispatch.issue.T-1.comment.created"
-		sessionTopic = "notifications.agent.s1"
+		issueTopic   = "notifications.dispatch.issue.TT.T-1.comment.created"
+		sessionTopic = "notifications.agent.TT.s1"
+		// sessionRecord is s1's own destination as comment_fallback_copies records it.
+		sessionRecord = "notifications.agent.s1"
 	)
 	for _, tc := range []struct {
 		name     string
@@ -1053,7 +1060,7 @@ func TestAResumedMentionsHeldCopyFollowsItsResend(t *testing.T) {
 			var settled, published bool
 			if err := database.Pool.QueryRow(ctx, `
 				select settled_at is not null, published from comment_fallback_copies where comment_id = $1 and destination = $2
-			`, commentID, sessionTopic).Scan(&settled, &published); err != nil {
+			`, commentID, sessionRecord).Scan(&settled, &published); err != nil {
 				t.Fatalf("read the held copy: %v", err)
 			}
 			if !settled || published != tc.wantCopy {
@@ -1164,8 +1171,10 @@ func readHeldCopy(t *testing.T, database *store.Store, commentID, destination st
 // the pass that claims it publishes the copy when the mention has failed by then.
 func TestAFallbackCopyWhoseMentionIsStillBeingSentIsClaimedAgainOnlyOnceItsWaitHasPassed(t *testing.T) {
 	const (
-		issueTopic   = "notifications.dispatch.issue.T-1.comment.created"
+		issueTopic   = "notifications.dispatch.issue.TT.T-1.comment.created"
 		sessionTopic = "notifications.agent.s1"
+		// sessionSubject is the subject s1's copy goes out on; sessionTopic is its row's destination.
+		sessionSubject = "notifications.agent.TT.s1"
 	)
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
@@ -1225,7 +1234,7 @@ func TestAFallbackCopyWhoseMentionIsStillBeingSentIsClaimedAgainOnlyOnceItsWaitH
 		t.Fatalf("once the wait had passed the held copy has attempts=%d settled=%v published=%v, want no attempt "+
 			"counted by the wait, settled and published", settled.attempts, settled.settled, settled.published)
 	}
-	if published := topicsOf(publisher.all()); !reflect.DeepEqual(published, []string{issueTopic, sessionTopic}) {
+	if published := topicsOf(publisher.all()); !reflect.DeepEqual(published, []string{issueTopic, sessionSubject}) {
 		t.Fatalf("the passes published %#v, want the scan's issue topic and s1's copy once", published)
 	}
 }
@@ -1238,16 +1247,17 @@ func TestAFallbackCopyWhoseMentionIsStillBeingSentIsClaimedAgainOnlyOnceItsWaitH
 // settled. Once NATS accepts the copy, the next pass publishes it, once, and settles the row.
 func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPublished(t *testing.T) {
 	const (
-		issueTopic   = "notifications.dispatch.issue.T-1.comment.created"
-		sessionTopic = "notifications.agent.s1"
-		deadLetter   = `level=ERROR msg="dispatch outbox: fallback copy reached dead-letter threshold"`
+		issueTopic     = "notifications.dispatch.issue.TT.T-1.comment.created"
+		sessionTopic   = "notifications.agent.s1"
+		sessionSubject = "notifications.agent.TT.s1"
+		deadLetter     = `level=ERROR msg="dispatch outbox: fallback copy reached dead-letter threshold"`
 	)
 	var logged lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
-	publisher := &failingPublisher{topic: sessionTopic, answer: bus.ErrPublishDenied}
+	publisher := &failingPublisher{topic: sessionSubject, answer: bus.ErrPublishDenied}
 	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
 	commentID := seedHeldFallbackCopy(ctx, t, deps)
 	// pass runs a fallback pass once the held copy's backoff has passed.
@@ -1312,7 +1322,7 @@ func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPubl
 		t.Fatalf("once NATS accepted it the held copy has attempts=%d settled=%v published=%v, want %d attempts, settled and published",
 			row.attempts, row.settled, row.published, denied)
 	}
-	if denials, accepted := publisher.seen(); denials != denied || !reflect.DeepEqual(accepted, []string{issueTopic, sessionTopic}) {
+	if denials, accepted := publisher.seen(); denials != denied || !reflect.DeepEqual(accepted, []string{issueTopic, sessionSubject}) {
 		t.Fatalf("NATS saw %d denied publishes and accepted %#v, want %d denials and the issue topic, then the copy once",
 			denials, accepted, denied)
 	}
@@ -1328,16 +1338,17 @@ func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPubl
 // and settles the row published; a pass after that publishes nothing.
 func TestAFallbackCopyOutlivesANATSOutageLongerThanTheDeadLetterThreshold(t *testing.T) {
 	const (
-		issueTopic   = "notifications.dispatch.issue.T-1.comment.created"
-		sessionTopic = "notifications.agent.s1"
-		deadLetter   = `level=ERROR msg="dispatch outbox: fallback copy reached dead-letter threshold"`
+		issueTopic     = "notifications.dispatch.issue.TT.T-1.comment.created"
+		sessionTopic   = "notifications.agent.s1"
+		sessionSubject = "notifications.agent.TT.s1"
+		deadLetter     = `level=ERROR msg="dispatch outbox: fallback copy reached dead-letter threshold"`
 	)
 	var logged lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
-	publisher := &failingPublisher{topic: sessionTopic, answer: bus.ErrUnavailable}
+	publisher := &failingPublisher{topic: sessionSubject, answer: bus.ErrUnavailable}
 	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
 	commentID := seedHeldFallbackCopy(ctx, t, deps)
 	// pass runs a fallback pass with whatever wait the held copy sits behind - the retry.BaseDelay
@@ -1387,9 +1398,9 @@ func TestAFallbackCopyOutlivesANATSOutageLongerThanTheDeadLetterThreshold(t *tes
 	pass()
 	wantKey := contracts.AgentSendDedupeKey("s1", model.CommentMentionIdempotencyKey(commentID, "session:s1", "steer"))
 	copies := publisher.all()[1:]
-	if len(copies) != 1 || copies[0].Topic != sessionTopic || copies[0].DedupeKey != wantKey {
+	if len(copies) != 1 || copies[0].Topic != sessionSubject || copies[0].DedupeKey != wantKey {
 		t.Fatalf("the passes after the outage published %#v, want s1's copy once, to %s keyed %q",
-			copies, sessionTopic, wantKey)
+			copies, sessionSubject, wantKey)
 	}
 }
 
@@ -1416,19 +1427,22 @@ func (p *takeoverPublisher) PublishAsync(item contracts.Envelope) <-chan error {
 // held copy, which a second process's pass then claims, writes nothing of what it came to - a
 // publish, a denial or a release - to that row: the row stays as the second claim left it.
 func TestAFallbackPassWritesNothingToARowClaimedSinceItsClaim(t *testing.T) {
-	const sessionTopic = "notifications.agent.s1"
+	const (
+		sessionTopic   = "notifications.agent.s1"
+		sessionSubject = "notifications.agent.TT.s1"
+	)
 	for _, tc := range []struct {
 		name   string
 		answer error
 	}{
 		{name: "the copy is published", answer: nil},
-		{name: "the copy is denied", answer: fmt.Errorf("publish %s: %w", sessionTopic, bus.ErrPublishDenied)},
-		{name: "NATS is unreachable", answer: fmt.Errorf("publish %s: %w", sessionTopic, bus.ErrUnavailable)},
+		{name: "the copy is denied", answer: fmt.Errorf("publish %s: %w", sessionSubject, bus.ErrPublishDenied)},
+		{name: "NATS is unreachable", answer: fmt.Errorf("publish %s: %w", sessionSubject, bus.ErrUnavailable)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := store.WithTransactionTracking(context.Background())
 			database := storetest.Open(t)
-			publisher := &takeoverPublisher{topic: sessionTopic, answer: tc.answer}
+			publisher := &takeoverPublisher{topic: sessionSubject, answer: tc.answer}
 			deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
 			commentID := seedHeldFallbackCopy(ctx, t, deps)
 			var secondClaim time.Time
@@ -1512,9 +1526,9 @@ func TestAFallbackPassThatIsStoppingClaimsNoRow(t *testing.T) {
 // alike.
 func TestTheCopyOfAFailedMentionCarriesTheMentionsDedupeKey(t *testing.T) {
 	const (
-		issueTopic     = "notifications.dispatch.issue.T-1.comment.created"
-		mentionedTopic = "notifications.agent.mentioned"
-		otherTopic     = "notifications.agent.someone-else"
+		issueTopic     = "notifications.dispatch.issue.TT.T-1.comment.created"
+		mentionedTopic = "notifications.agent.TT.mentioned"
+		otherTopic     = "notifications.agent.TT.someone-else"
 		eventKey       = "dispatch-106"
 	)
 	for _, tc := range []struct {

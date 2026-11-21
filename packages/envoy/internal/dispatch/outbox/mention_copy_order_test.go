@@ -366,7 +366,7 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	}
 	recorder := &storetest.StatementRecorder{}
 	traced := storetest.TracedStore(t, database, recorder)
-	publisher := &failingPublisher{topic: "notifications.dispatch.issue.T-1.message.created", answer: fmt.Errorf("no responders")}
+	publisher := &failingPublisher{topic: "notifications.dispatch.issue.TT.T-1.message.created", answer: fmt.Errorf("no responders")}
 	started := time.Now()
 	stop := runDeps(t, withHeldRoles(Deps{Store: traced, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}), 5*time.Second)
 	// A wake every 100 ms - what an event committed beside the outbox gives it - so each wake

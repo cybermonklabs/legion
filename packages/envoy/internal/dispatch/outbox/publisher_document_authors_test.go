@@ -355,7 +355,7 @@ func TestACommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 			if err := publish(context.Background(), Deps{Store: database, Publisher: publisher}, event, slug, routing{claimant: tc.claimant}, map[string]struct{}{}); err != nil {
 				t.Fatalf("publish %s: %v", event.Type, err)
 			}
-			topics := topicsOf(publisher.all())
+			topics := recordOf(topicsOf(publisher.all())...)
 			if got := agentTopics(topics); !slices.Equal(got, tc.wantAgents) {
 				t.Fatalf("sessions reached = %v, want %v (every topic: %v)", got, tc.wantAgents, topics)
 			}
@@ -363,7 +363,7 @@ func TestACommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 				keys := map[string]string{}
 				for _, item := range publisher.all() {
 					if strings.HasPrefix(item.Topic, contracts.AgentTopicPrefix) {
-						keys[item.Topic] = item.DedupeKey
+						keys[recordOf(item.Topic)[0]] = item.DedupeKey
 					}
 				}
 				if !maps.Equal(keys, tc.wantKeys) {
@@ -421,7 +421,7 @@ func TestAPersonsSpecEditReachesEachSessionThatWroteTheSpecOnce(t *testing.T) {
 	if err := publish(context.Background(), withHeldRoles(Deps{Store: database, Publisher: publisher}), event, "", routing{route: &route}, map[string]struct{}{}); err != nil {
 		t.Fatalf("publish artifact.human_edited: %v", err)
 	}
-	topics := topicsOf(publisher.all())
+	topics := recordOf(topicsOf(publisher.all())...)
 	if got, want := agentTopics(topics), []string{"notifications.agent.session-writer", "notifications.agent.session-editor"}; !slices.Equal(got, want) {
 		t.Fatalf("sessions reached = %v, want %v (every topic: %v)", got, want, topics)
 	}
@@ -466,7 +466,7 @@ func TestAPersonsSpecEditOnAClaimedIssueStillReachesEachSessionThatWroteIt(t *te
 	if err := publish(context.Background(), deps, event, "", routing{claimant: claimant.ID}, map[string]struct{}{}); err != nil {
 		t.Fatalf("publish artifact.human_edited: %v", err)
 	}
-	topics := topicsOf(publisher.all())
+	topics := recordOf(topicsOf(publisher.all())...)
 	want := []string{"notifications.agent.session-writer", "notifications.agent.session-editor"}
 	if got := agentTopics(topics); !slices.Equal(got, want) {
 		t.Fatalf("sessions reached = %v, want %v, the document's writers whatever the issue's claim is (every topic: %v)", got, want, topics)

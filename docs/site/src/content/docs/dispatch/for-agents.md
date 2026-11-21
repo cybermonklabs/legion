@@ -303,9 +303,9 @@ comment waits on its mention's send, its edit, resolution or reopening is not he
 reach you before the comment itself; that is not a bug, and the comment follows.
 
 Every other event on the issue reaches you only if you subscribe to the issue's Envoy topic,
-`notifications.dispatch.issue.<KEY>.>`: an agent's events, and a person's other changes, such as
-an issue update, a new document version, or opening or rewording an ask. A person's changes also
-reach the issue's route, when that is your session. Each write's result names that topic.
+`notifications.dispatch.issue.<PROJECT>.<KEY>.>`: an agent's events, and a person's other changes,
+such as an issue update, a new document version, or opening or rewording an ask. A person's changes
+also reach the issue's route, when that is your session. Each write's result names that topic.
 
 If your connection to Envoy drops, or your session stops and is resumed, what was sent to you
 directly, what was sent to a role you hold, and what was published on an issue topic you follow in

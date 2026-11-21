@@ -165,18 +165,12 @@ var readBatchSQL = `
 `
 
 // privateOwnerSQL is whether the events row alias names belongs to an owner whose project the
-// database holds private, by the project that owner resolves to: a project event's own, an issue's,
-// a document's (readBatchSQL's project column). It is true or false, never null, and the one test
-// the private-delivery hold makes of a row: in the batch's read (readBatchSQL), the fallback pass's
-// claim (claimFallbackCopies) and the retry timer (Outbox.nextRetry). Every event of one owner
-// resolves to one project, so the hold takes an owner whole and never one event of it alone.
+// database holds private (model.PrivateOwnerSQL), the one test the private-delivery hold makes of a
+// row: in the batch's read (readBatchSQL), the fallback pass's claim (claimFallbackCopies), the
+// retry timer (Outbox.nextRetry) and the count of what the hold keeps (privateHeldSQL), and in the
+// event log's refusal past that count's limit (events.Broker.HoldPrivate).
 func privateOwnerSQL(alias string) string {
-	return fmt.Sprintf(`exists (
-		select 1 from projects held
-		where held.visibility = 'private'
-		  and held.key = coalesce(%[1]s.project_key,
-		      (select i.project_key from issues i where i.key = %[1]s.issue_key),
-		      (select a.project_key from artifacts a where a.id = %[1]s.artifact_id)))`, alias)
+	return model.PrivateOwnerSQL(alias)
 }
 
 // readBatch reads a batch (readBatchSQL), in owner order and each owner's events in id order. It

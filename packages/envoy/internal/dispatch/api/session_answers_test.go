@@ -1041,7 +1041,8 @@ const (
 )
 
 // copiesOf is each envelope of the eventType event about id (its payload's id) that the outbox
-// handed p, by the topic it was handed on, failing when one topic was handed it twice.
+// handed p, by the destination it was handed to as the outbox records it (destinationOf), failing
+// when one destination was handed it twice.
 func (p *recordingOutboxPublisher) copiesOf(t *testing.T, eventType, id string) map[string]contracts.Envelope {
 	t.Helper()
 	p.mu.Lock()
@@ -1060,21 +1061,22 @@ func (p *recordingOutboxPublisher) copiesOf(t *testing.T, eventType, id string) 
 		if event.Type != eventType || event.Payload.ID != id {
 			continue
 		}
-		if _, twice := copies[item.Topic]; twice {
+		if _, twice := copies[destinationOf(item.Topic)]; twice {
 			t.Fatalf("the %s about %s was handed on %s twice", eventType, id, item.Topic)
 		}
-		copies[item.Topic] = item
+		copies[destinationOf(item.Topic)] = item
 	}
 	return copies
 }
 
-// handedOn is every envelope the outbox handed p on topic, of whichever event.
+// handedOn is every envelope the outbox handed p for the destination topic names as the outbox
+// records it (destinationOf), of whichever event.
 func (p *recordingOutboxPublisher) handedOn(topic string) []contracts.Envelope {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var handed []contracts.Envelope
 	for _, item := range p.items {
-		if item.Topic == topic {
+		if destinationOf(item.Topic) == topic {
 			handed = append(handed, item)
 		}
 	}
@@ -1292,8 +1294,8 @@ func TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
 	askID := f.ask(t, askSessionA, question)
 	f.follow(t, http.MethodPut, askID, askSessionC)
 	owners := []string{askSessionA, askSessionC}
-	topicOf := contracts.LegacyAgentSubject
-	issueTopic := contracts.LegacyDispatchIssueSubject(f.issue, "comment.created")
+	topicOf := model.SessionDestinationKey
+	issueTopic := model.IssueDestinationKey(f.issue, "comment.created")
 	published := &recordingOutboxPublisher{}
 
 	first := f.comment(t, map[string]any{"body": "Which pool size do you need?", "ask_id": askID}, "alice")

@@ -5,7 +5,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -149,7 +148,7 @@ func TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut(t *
 		t.Fatalf("read the rows held for the pass that publishes them: %v", err)
 	}
 	slices.Sort(owed)
-	want := []string{contracts.LegacyAgentSubject(claimant.ID)}
+	want := []string{model.SessionDestinationKey(claimant.ID)}
 	if !slices.Equal(slices.Compact(owed), want) {
 		t.Fatalf("the comment is owed to %v, want %v: on an issue a session claims a person's comment obliges the claimant alone, and a role mention nobody holds is no reason to deliver it to the document's credits",
 			owed, want)

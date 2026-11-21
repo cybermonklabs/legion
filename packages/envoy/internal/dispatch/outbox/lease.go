@@ -135,12 +135,57 @@ type Outbox struct {
 	// cleared once a probe of its connection is answered (answering). Only Run's goroutine reads
 	// and writes it.
 	probeBeforeHold bool
+	// privateHeld is how many events of private projects the private-delivery hold keeps
+	// unpublished, as this process last counted them while it held the publisher hold
+	// (countPrivateHeld), and 0 while the hold is off or this process publishes nothing: the gauge
+	// envoy_dispatch_outbox_private_held reads it. privateHeldCounted is when it was last counted;
+	// only Run's goroutine reads and writes it.
+	privateHeld        atomic.Int64
+	privateHeldCounted time.Time
+}
+
+// privateHeldCountSQL counts the events the private-delivery hold keeps unpublished: every
+// unpublished event whose owner is a private project's (privateOwnerSQL), a pending subscription
+// command aside, which no batch reads.
+var privateHeldCountSQL = `
+	select count(*) from events
+	where published_at is null
+	  and (payload ->> 'pending') is distinct from 'true'
+	  and ` + privateOwnerSQL("events")
+
+// countPrivateHeld sets the gauge of what the private-delivery hold keeps (privateHeld): 0 while
+// held is false, and otherwise the count of the private projects' unpublished events
+// (privateHeldCountSQL), read at most once each privateHoldDelay, the timer's own re-poll while the
+// hold keeps anything, so a scan woken by every public commit does not count the backlog each
+// time. A count that fails leaves the gauge as it was and is logged; the next one reads again.
+// The count is what the event log's refusal bounds (events.Broker.HoldPrivate, PrivateHeldLimit),
+// so an operator sees the backlog grow toward that limit, and the alert on it pages while it
+// stays above zero.
+func (o *Outbox) countPrivateHeld(ctx context.Context, held bool) {
+	if !held {
+		o.privateHeld.Store(0)
+		o.privateHeldCounted = time.Time{}
+		return
+	}
+	if time.Since(o.privateHeldCounted) < o.deps.privateHoldDelay() {
+		return
+	}
+	var count int64
+	if err := o.deps.Store.Pool.QueryRow(ctx, privateHeldCountSQL).Scan(&count); err != nil {
+		if ctx.Err() == nil {
+			slog.Error("dispatch outbox: count the private projects' held events", "instance", o.instance, "error", err)
+		}
+		return
+	}
+	o.privateHeld.Store(count)
+	o.privateHeldCounted = time.Now()
 }
 
 // New returns an outbox for deps, with an instance id of its own. Run starts it. It makes the
 // record of the fallback copies its passes find held behind an earlier event (heldCopies) and
-// registers that record's gauges on deps.Metrics when it is set, and the note its reads leave the
-// retry timer when the private-delivery hold kept something out of them (Deps.heldReads).
+// registers that record's gauges on deps.Metrics when it is set, with the gauge of the private
+// projects' events the private-delivery hold keeps (countPrivateHeld), and the note its reads leave
+// the retry timer when the private-delivery hold kept something out of them (Deps.heldReads).
 func New(deps Deps) *Outbox {
 	host, err := os.Hostname()
 	if err != nil {
@@ -151,13 +196,19 @@ func New(deps Deps) *Outbox {
 	}
 	deps.held.register(deps.Metrics)
 	deps.heldReads = new(atomic.Bool)
-	return &Outbox{
+	o := &Outbox{
 		deps:        deps,
 		instance:    uuid.New(),
 		token:       fmt.Sprintf("%s/%d", host, os.Getpid()),
 		wake:        make(chan struct{}, 1),
 		standbyWake: make(chan struct{}, 1),
 	}
+	if deps.Metrics != nil {
+		deps.Metrics.NewGaugeFunc("envoy_dispatch_outbox_private_held",
+			"Events of private projects the outbox holds unpublished while a hub cannot prove it admits Dispatch to their subjects",
+			o.privateHeld.Load)
+	}
+	return o
 }
 
 // Publishing reports whether this process publishes the outbox now: it holds the publisher hold
@@ -457,6 +508,9 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 	returned := time.Now()
 	o.hold.Store(nil)
 	cleared := time.Now()
+	// What the private-delivery hold keeps is counted by whichever process holds the publisher
+	// hold next, so this one's gauge reads none from here (countPrivateHeld).
+	o.countPrivateHeld(ctx, false)
 	deadline := hold.Deadline()
 	stopped, stoppedBy := deadline, deadline
 	if returned.Before(stopped) {
@@ -814,7 +868,8 @@ func (l *lanes) statement(fn func() error) error {
 // and leave it to an unrelated wake. What a read held arms the re-poll at this read alone, so the
 // timer does not keep re-polling while a private event waits behind a back-off of its own once
 // the hubs are proven. With a nil func, or one that answers true to every read, it reads
-// nextRetrySQL as before (R9).
+// nextRetrySQL as before (R9). The same reading of the hold sets the gauge of what it keeps
+// (countPrivateHeld).
 func (o *Outbox) nextRetry(ctx context.Context, failed bool) (time.Duration, bool) {
 	held := o.deps.heldSinceRetry()
 	if failed {
@@ -822,9 +877,11 @@ func (o *Outbox) nextRetry(ctx context.Context, failed bool) (time.Duration, boo
 	}
 	var micros *int64
 	statement, args := nextRetrySQL, []any(nil)
-	if held || o.deps.holdsPrivate() {
+	holding := held || o.deps.holdsPrivate()
+	if holding {
 		statement, args = nextRetryHeldSQL, []any{o.deps.privateHoldDelay().Seconds()}
 	}
+	o.countPrivateHeld(ctx, holding)
 	if err := o.deps.Store.Pool.QueryRow(ctx, statement, args...).Scan(&micros); err != nil {
 		if ctx.Err() == nil {
 			slog.Error("dispatch outbox: read the next retry", "instance", o.instance, "error", err)

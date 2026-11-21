@@ -1,9 +1,9 @@
 // The issue.deployed event (LEGION-781): the delivery timeline tells a pull request's issue that
 // the pull request reached production, the moment the timeline first knows which run shipped it,
 // by intake or by the reconcile. It is published on the issue's subject
-// (notifications.dispatch.issue.<KEY>.issue.deployed) as every issue event is; the Legion daemon
-// no longer reads it, since nothing but the checking agent's own wake starts a production check's
-// look.
+// (notifications.dispatch.issue.<PROJECT>.<KEY>.issue.deployed) as every issue event is; the Legion
+// daemon no longer reads it, since nothing but the checking agent's own wake starts a production
+// check's look.
 package delivery
 
 import (

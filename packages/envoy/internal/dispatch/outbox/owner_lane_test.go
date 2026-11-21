@@ -185,7 +185,7 @@ func TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack(t *tes
 		// The attempt count both events carry: their next back-off is retry.Delay(7), 64 s, so a
 		// scan that waits for one misses the bound below by a minute.
 		attempts   = 6
-		issueTopic = "notifications.dispatch.issue.T-1.message.created"
+		issueTopic = "notifications.dispatch.issue.TT.T-1.message.created"
 	)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	rig := newRoleRig(t)
@@ -301,8 +301,8 @@ func TestAnOwnerLeftForTheBatchsEndLogsItsFailureOnce(t *testing.T) {
 	})
 
 	publisher := &answeringTopics{answers: map[string]error{
-		"notifications.dispatch.issue.T-1.message.created": fmt.Errorf("bus: %w", bus.ErrUnavailable),
-		contracts.LegacyAgentSubject("writer"):             fmt.Errorf("bus: %w", bus.ErrPublishDenied),
+		"notifications.dispatch.issue.TT.T-1.message.created": fmt.Errorf("bus: %w", bus.ErrUnavailable),
+		contracts.AgentSubject("TT", "writer"):                fmt.Errorf("bus: %w", bus.ErrPublishDenied),
 	}}
 	deps := Deps{Store: database, Publisher: publisher}
 	if _, err := scanBatch(context.Background(), deps, unfenced{}, holding(t, deps).instance); err != nil {
