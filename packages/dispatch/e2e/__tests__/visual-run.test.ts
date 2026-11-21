@@ -2,8 +2,10 @@ import { afterAll, expect, test } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   utimesSync,
@@ -24,11 +26,11 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 // does, writing its pid to `STUB_STACK_PID` where that is set, and the stand-in `docker` exits
 // with the status the row asks for, which is the status the Playwright run inside the container
 // would have, after writing its pid to `STUB_DOCKER_STARTED` and holding `STUB_DOCKER_HOLD`
-// seconds where those are set, and after writing a `.last-run.json` under `STUB_RESULTS` where
-// that names a directory, as a Playwright run whose rows ran writes one under its results
-// directory. The wait before that write is 50 ms: a file's time comes from the kernel's coarse
-// clock, which moves in steps of a few milliseconds, and a write in the same step as the script's
-// mark of the container's start would read as no newer than it, where a real run is seconds later.
+// seconds where those are set. Where `STUB_RESULTS` names a directory, it then does what a run of
+// the pinned Playwright whose rows ran does there: it removes the whole directory, as Playwright
+// does before its first row, and writes a `.last-run.json` in it, as Playwright does at its end,
+// with the time `STUB_RESULTS_DATE` gives the file and the directory where that is set. Where
+// `STUB_RESULTS` is unset, it writes nothing, as a run that Playwright refuses writes nothing.
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const stubs = mkdtempSync(join(tmpdir(), "visual-run-"));
 afterAll(() => rmSync(stubs, { force: true, recursive: true }));
@@ -51,8 +53,9 @@ writeFileSync(
 [ -z "$STUB_DOCKER_STARTED" ] || echo $$ > "$STUB_DOCKER_STARTED"
 [ -z "$STUB_DOCKER_HOLD" ] || sleep "$STUB_DOCKER_HOLD"
 if [ -n "$STUB_RESULTS" ]; then
-  sleep 0.05
+  rm -rf -- "$STUB_RESULTS"
   mkdir -p -- "$STUB_RESULTS" && : > "$STUB_RESULTS/.last-run.json"
+  [ -z "$STUB_RESULTS_DATE" ] || touch -d "$STUB_RESULTS_DATE" -- "$STUB_RESULTS/.last-run.json" "$STUB_RESULTS"
 fi
 exit "$STUB_DOCKER_STATUS"
 `
@@ -61,23 +64,27 @@ chmodSync(join(stubs, "bun"), 0o755);
 chmodSync(join(stubs, "docker"), 0o755);
 
 /** What a run leaves under its tree: `results`, the directory the stand-in container writes its
- *  results in, as Playwright does where its rows ran, and `stale`, a directory that holds an
- *  earlier run's results, a minute old, before this run starts. Each is read from the package, as
- *  `--output` is. */
+ *  results in, as Playwright does where its rows ran, with the time `resultsDate` gives it where
+ *  set (a `touch -d` date); and `stale`, a directory that holds an earlier run's results before
+ *  this run starts, dated `staleAt`, a minute ago unless set. Each directory is read from the
+ *  package, as `--output` is. */
 interface Results {
   readonly results?: string;
+  readonly resultsDate?: string;
   readonly stale?: string;
+  readonly staleAt?: Date;
 }
 
 /** One run of the script with the stand-ins, the container's status and the order given, in a
  *  tree of its own: a copy of the script at packages/dispatch/e2e/visual-run.sh under a new
  *  temporary root, so that what the run writes lands there and not in this checkout, and the line
- *  names it from that root as it names it from the repository's. */
-function visualRun(
+ *  names it from that root as it names it from the repository's. `runPackage` is that copy's
+ *  package directory, which a row reads what the run left in. */
+async function visualRun(
   status: number,
   order: string | undefined,
   args: readonly string[],
-  { results, stale }: Results = {}
+  { results, resultsDate, stale, staleAt = new Date(Date.now() - 60_000) }: Results = {}
 ) {
   const runPackage = join(mkdtempSync(join(stubs, "tree-")), "packages/dispatch");
   mkdirSync(join(runPackage, "e2e"), { recursive: true });
@@ -86,11 +93,10 @@ function visualRun(
     const directory = resolve(runPackage, stale);
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, ".last-run.json"), "{}");
-    const minuteAgo = new Date(Date.now() - 60_000);
-    utimesSync(join(directory, ".last-run.json"), minuteAgo, minuteAgo);
-    utimesSync(directory, minuteAgo, minuteAgo);
+    utimesSync(join(directory, ".last-run.json"), staleAt, staleAt);
+    utimesSync(directory, staleAt, staleAt);
   }
-  return runBounded({
+  const run = await runBounded({
     argv: ["sh", "e2e/visual-run.sh", ...args],
     bound: "short",
     cwd: runPackage,
@@ -100,10 +106,12 @@ function visualRun(
       PATH: `${stubs}:/usr/bin:/bin`,
       STUB_DOCKER_STATUS: String(status),
       STUB_RESULTS: results,
+      STUB_RESULTS_DATE: resultsDate,
       TMPDIR: stubs,
     },
     from: import.meta.url,
   });
+  return { ...run, runPackage };
 }
 
 /** The line a failed run ends with, naming `directory` as the run prints it: from the repository
@@ -112,7 +120,8 @@ const shotsUnder = (directory: string) =>
   `the run failed; a failed row's shots (-actual.png, -expected.png, -diff.png) are under ${directory}/.`;
 const seedMark = "write that mark in the seed (markWhatTheShotPagesRead, e2e/review-seed.ts)";
 /** The line a failed run ends with where it wrote no results. */
-const ranNoRow = "the run failed, and Playwright ran no row: it wrote no results in this run";
+const ranNoRow =
+  "the run failed, and Playwright ran no row that wrote a result, so there are no shots";
 
 // In each row below that names a directory, the stand-in container writes its results in the
 // directory Playwright itself uses for those arguments, so a line naming any other directory finds
@@ -243,9 +252,11 @@ test(
 // Playwright refuses an argument it cannot read before it runs a row, and exits 1 as a failed row
 // does: `-uG`, whose `G` is no `--update-snapshots` mode, and an option it does not know are two
 // such lists. That run writes no results, so its line names no directory - neither the one its
-// arguments name nor the one an earlier run left results in - says that Playwright ran no row, and
-// says nothing of a seed mark, since no row failed in either order. A run with the same directory
-// whose rows ran and failed still names it.
+// arguments name nor the one an earlier run left results in - says that Playwright ran no row
+// that wrote a result, and says nothing of a seed mark, since no row failed in either order. The
+// earlier run's results are left as they were, with no file of the script's beside them, and a
+// directory that was not there before is not there after. A run with the same directory whose
+// rows ran and failed still names it.
 test(
   "a failed run that wrote no results, as when Playwright refuses its arguments, names no directory",
   async () => {
@@ -259,7 +270,13 @@ test(
       expect(run.stderr).not.toContain("are under");
       expect(run.stderr).not.toContain("e2e/x");
       expect(run.stderr).not.toContain(seedMark);
+      expect(readdirSync(join(run.runPackage, "e2e/x"))).toEqual([".last-run.json"]);
     }
+    const none = await visualRun(1, undefined, ["--no-such-option"]);
+    expect(none.code).toBe(1);
+    expect(none.stderr).toContain(ranNoRow);
+    expect(none.stderr).not.toContain("are under");
+    expect(existsSync(join(none.runPackage, "e2e/test-results"))).toBe(false);
     const ran = await visualRun(1, "reverse", ["--output=e2e/x"], {
       results: "e2e/x",
       stale: "e2e/x",
@@ -269,7 +286,44 @@ test(
     expect(ran.stderr).toContain(seedMark);
     expect(ran.stderr).not.toContain(ranNoRow);
   },
-  rowLimit("short", "short", "short")
+  rowLimit("short", "short", "short", "short")
+);
+
+// A file's time says nothing of which run wrote it, in either direction, so neither of these
+// turns the line: an earlier run's results dated after this run's start (a clock set back since,
+// or a copy that kept its times) leave a refused run naming no directory, and a run's own results
+// dated no later than its start (a clock step, or a file system's coarse times) still name theirs,
+// whether or not the directory was there before the run.
+test(
+  "an earlier run's results dated after this run's start leave a refused run naming no directory",
+  async () => {
+    const run = await visualRun(1, undefined, ["--output=e2e/results", "--no-such-option"], {
+      stale: "e2e/results",
+      staleAt: new Date(Date.now() + 60_000),
+    });
+    expect(run.code).toBe(1);
+    expect(run.stderr).toContain(ranNoRow);
+    expect(run.stderr).not.toContain("e2e/results");
+    expect(readdirSync(join(run.runPackage, "e2e/results"))).toEqual([".last-run.json"]);
+  },
+  rowLimit("short")
+);
+
+test(
+  "a run's own results dated no later than its start still name their directory",
+  async () => {
+    for (const stale of [undefined, "e2e/x"]) {
+      const run = await visualRun(1, undefined, ["--output=e2e/x"], {
+        results: "e2e/x",
+        resultsDate: "@946684800",
+        stale,
+      });
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/x"));
+      expect(run.stderr).not.toContain(ranNoRow);
+    }
+  },
+  rowLimit("short", "short")
 );
 
 /** The option names of one of visual-run.sh's two lists, sorted. */
