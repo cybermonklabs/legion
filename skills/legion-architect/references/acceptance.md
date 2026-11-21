@@ -41,7 +41,7 @@ A tree often brings its own shortfall written up; that is no permission: your jo
   `phase-finished` may never have reached you.
 - `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done,
   and sign off again. One issue beneath never holds it: one the daemon itself holds at `admitted` under an
-  ancestor it has already accepted, which starts when that ancestor closes.
+  ancestor it has already accepted.
 - A finding ask holds the acceptance: one a worker sent you, or one `dispatch read` lists under
   `Open asks:` whose question opens `Finding from ` or `Clear defect from `. Follow it
   (`dispatch follow --ask <id> --action follow`) and publish its reference to the controller topic.
