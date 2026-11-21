@@ -164,8 +164,8 @@ type Settings struct {
 	// seals each request to, read by nkeys.FromSeed, which derives the curve key a curve seed
 	// names (nkeys.FromCurveSeed).
 	SeedFile, IssuerSeedFile, XKeySeedFile string
-	// Services are the services it admits by platform identity (ParseServices).
-	Services []ServiceEntry
+	// Services are the services it admits by platform identity (config.NATSCallout.Services).
+	Services []config.NATSService
 }
 
 // Service is the running auth service: one connection to the hub, subscribed to the authorization
@@ -252,7 +252,10 @@ func (s *Service) beatWhileTurning() {
 // once it has not, and 200 when service answers nil, a broker that runs no auth service or has
 // not started it yet, since nothing then can stall. A liveness probe that reads the status kills a
 // replica whose loop has stalled: its connection to the hub then resets and it leaves the queue
-// group, where a stalled replica would keep being sent requests it never answers.
+// group, where a stalled replica would keep being sent requests it never answers. It reads
+// nothing of that connection: a replica whose hub is away or refuses it stays live and keeps
+// redialling (Start), since a probe that killed it would only start the next replica in the same
+// place.
 func Livez(service func() *Service) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if s := service(); s != nil {
@@ -267,14 +270,14 @@ func Livez(service func() *Service) http.Handler {
 
 // decideFunc is how the service decides a request: Decide, unless a test replaces it to hand the
 // answer a grant of its own.
-type decideFunc func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error)
+type decideFunc func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error)
 
 // Start connects to the hub as the service's own user and answers every authorization request it
 // is sent, in the replicas' queue group, until Close. It reads the three seeds first, refusing a
 // file that is unreadable or holds a seed of the wrong kind (a user, an account, a curve key) by
 // the setting's own name and never the seed. The hub need not answer yet: the connection is made
-// in the background and retried, so a hub that is down or restarting when the broker starts is
-// answered once it is up.
+// in the background and retried on a backoff capped at 2 s, so a hub that is down or restarting
+// when the broker starts, or refuses the service's user, is answered once it is up and admits it.
 func Start(ctx context.Context, settings Settings, deps Deps) (*Service, error) {
 	return start(ctx, settings, deps, Decide)
 }
@@ -303,12 +306,14 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 		}
 		return "", false
 	}
-	// WithImmediateReconnect: every other client of the hub waits on this one. A restart drops
-	// the service's own connection with theirs, and a client that comes back before the service
-	// has resubscribed is refused until it does, so the service retries at once where they wait a
-	// second (internal/bus).
+	// WithPromptReconnect: every other client of the hub waits on this one. A restart drops the
+	// service's own connection with theirs, and a client that comes back before the service has
+	// resubscribed is refused until it does, so the service redials at once where they wait a
+	// second, and then backs off, capped at 2 s, while the hub stays away or refuses it, as a hub
+	// does whose auth_callout does not list it yet (internal/bus). WithInboxPrefix: its replies
+	// arrive under _INBOX_envoy_auth, which no other client of the hub takes.
 	conn, err := bus.Dial(connectionName(), settings.URLs, lookup,
-		bus.WithConnectInBackground(), bus.WithSilentCutDetection(), bus.WithImmediateReconnect(),
+		bus.WithConnectInBackground(), bus.WithSilentCutDetection(), bus.WithPromptReconnect(),
 		bus.WithInboxPrefix(inboxPrefix))
 	if err != nil {
 		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
@@ -518,7 +523,7 @@ func (s *Service) Ready(ctx context.Context) error {
 type answerer struct {
 	issuer, xkey nkeys.KeyPair
 	deps         Deps
-	services     []ServiceEntry
+	services     []config.NATSService
 	decide       decideFunc
 	// drops is the hand-off of what the service drops unanswered, which the counter moves into
 	// dropped (countDrops); dropped, refusals by label and failures, the answers it could not send,

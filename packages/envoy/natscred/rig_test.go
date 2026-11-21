@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -101,7 +102,7 @@ func startRig(t *testing.T, services string, deps natscallout.Deps) *rig {
 		require.NoError(t, os.WriteFile(path, []byte(seed), 0o600))
 		return path
 	}
-	listed, err := natscallout.ParseServices(services)
+	listed, err := config.ParseNATSServices(services)
 	require.NoError(t, err)
 	log := &logtest.Buffer{}
 	registry := metrics.New()

@@ -173,24 +173,59 @@ func request(ctx context.Context, conn *nats.Conn, subject string, body any) ([]
 	return answer.Data, nil
 }
 
+// copiedMissing is the finding of a missing copied bucket (streamset.Stream.Copied), which no
+// command here makes.
+const copiedMissing = "missing: a copied bucket, which only `envoy-infra buckets create` makes; update makes none"
+
+// missingFinding is the finding of stream, missing from the account.
+func missingFinding(stream streamset.Stream) Finding {
+	if stream.Copied {
+		return Finding{Stream: stream.Name, What: copiedMissing}
+	}
+	return Finding{Stream: stream.Name, What: "missing"}
+}
+
+// presentStreams is the set of the account's stream names, from STREAM.NAMES, and a non-empty
+// unknown naming why the listing is not complete. A command reads it first and asks the info only
+// of a stream it names: in a cluster only the meta leader answers an info of a stream that does not
+// exist, so during a meta election that ask draws no answer until its wait ends, while a missing
+// stream read from the names is a fast, named result.
+func presentStreams(ctx context.Context, conn *nats.Conn) (map[string]bool, string) {
+	names, unknown := listStreamNames(ctx, conn)
+	if unknown != "" {
+		return nil, unknown
+	}
+	present := make(map[string]bool, len(names))
+	for _, name := range names {
+		present[name] = true
+	}
+	return present, ""
+}
+
 // Check reads each declared stream under settings on conn and reports, naming the stream, one that
 // is missing, one with fewer copies than the deployment's count, and every other difference from
-// the build's configuration (streamset.Drift). The hold's barrier, which the hold makes and removes,
-// is not read. It sends no create and no update: it runs, unattended, as the measurement job's user
-// (natsgrant.Measure, answered through ForCallout), whose grant holds every stream's info and no
+// the build's configuration (streamset.Drift). A missing stream is read from the account's stream
+// names (presentStreams), not asked for its info; a missing copied bucket's line names `envoy-infra
+// buckets create`. The hold's barrier, which the hold makes and removes, is not read. It sends no
+// create and no update: it runs, unattended, as the measurement job's user (natsgrant.Measure,
+// answered through ForCallout), whose grant holds the stream names, every stream's info and no
 // write. A read that draws no answer, or that the grant refuses, is UNKNOWN, never a pass.
 func Check(ctx context.Context, conn *nats.Conn, settings streamset.Settings) Report {
+	present, unknown := presentStreams(ctx, conn)
+	if unknown != "" {
+		return Report{Unknown: []string{unknown}}
+	}
 	var report Report
 	for _, stream := range streamset.Declared(settings) {
 		if stream.Transient {
 			continue
 		}
-		info, err := streamInfo(ctx, conn, stream.Name)
-		switch {
-		case errors.Is(err, streamset.ErrStreamNotFound):
-			report.Failures = append(report.Failures, Finding{Stream: stream.Name, What: "missing"})
+		if !present[stream.Name] {
+			report.Failures = append(report.Failures, missingFinding(stream))
 			continue
-		case err != nil:
+		}
+		info, err := streamInfo(ctx, conn, stream.Name)
+		if err != nil {
 			report.Unknown = append(report.Unknown, err.Error())
 			continue
 		}
@@ -205,13 +240,16 @@ func Check(ctx context.Context, conn *nats.Conn, settings streamset.Settings) Re
 // conn, with the build's configuration, and raises each that is there by today's reconcile rules
 // (streamset.Ensure): the notification stream's subjects only added, its limits only raised and
 // its envoy_stream_id kept; a bucket's copies raised and the session bucket's age set;
-// ENVOY_MEASURE's copies raised. It stops, naming the stream and the setting, at the first stream
-// with any other difference (streamset.Difference.Raise), which only a census or a restore puts
-// right. It runs as the operator inside a hold, whose grant holds those creates and updates, and
-// refuses to run unless phase reads the hold row held (ErrWrongPhase). No grant outside a hold
-// holds a stream create or update, ENVOY_MEASURE's included: a create or an update carries a
-// configuration of the caller's choosing, whose republish could write any subject, so this is
-// ENVOY_MEASURE's one maker. The barrier is not its.
+// ENVOY_MEASURE's copies raised. A missing copied bucket (streamset.Stream.Copied) it does not
+// make: it reports it missing, naming `envoy-infra buckets create`, and goes on, since only that
+// command makes one, inside its own held workflows. It stops, naming the stream and the setting,
+// at the first stream with any other difference (streamset.Difference.Raise), which only a census
+// or a restore puts right. A missing stream is read from the account's stream names
+// (presentStreams). It runs as the operator inside a hold, whose grant holds those creates and
+// updates, and refuses to run unless phase reads the hold row held (ErrWrongPhase). No grant
+// outside a hold holds a stream create or update, ENVOY_MEASURE's included: a create or an update
+// carries a configuration of the caller's choosing, whose republish could write any subject, so
+// this is ENVOY_MEASURE's one maker. The barrier is not its.
 func Update(ctx context.Context, conn *nats.Conn, settings streamset.Settings, phase Phase) (Report, error) {
 	if err := requirePhase(ctx, "streams update", phase, natsgrant.OperatorPhaseHeld); err != nil {
 		return Report{}, err
@@ -220,19 +258,27 @@ func Update(ctx context.Context, conn *nats.Conn, settings streamset.Settings, p
 	if err != nil {
 		return Report{}, err
 	}
+	present, unknown := presentStreams(ctx, conn)
+	if unknown != "" {
+		return Report{Unknown: []string{unknown}}, nil
+	}
 	var report Report
 	for _, stream := range streamset.Declared(settings) {
 		if stream.Transient || !(stream.Protected || stream.Name == streamset.MeasureStream) {
 			continue
 		}
-		info, err := streamInfo(ctx, conn, stream.Name)
-		missing := errors.Is(err, streamset.ErrStreamNotFound)
-		if err != nil && !missing {
-			report.Unknown = append(report.Unknown, err.Error())
-			return report, nil
+		missing := !present[stream.Name]
+		if missing && stream.Copied {
+			report.Failures = append(report.Failures, missingFinding(stream))
+			continue
 		}
 		var raise []streamset.Difference
 		if !missing {
+			info, err := streamInfo(ctx, conn, stream.Name)
+			if err != nil {
+				report.Unknown = append(report.Unknown, err.Error())
+				return report, nil
+			}
 			for _, difference := range streamset.Drift(stream, info) {
 				if !difference.Raise {
 					report.Failures = append(report.Failures, Finding{Stream: stream.Name, What: difference.String() + ": update stops here; a census or a restore puts it right"})

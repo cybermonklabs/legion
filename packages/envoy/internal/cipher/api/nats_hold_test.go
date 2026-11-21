@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -96,13 +97,13 @@ func newHoldRig(t *testing.T) *holdRig {
 		t.Fatal(err)
 	}
 	tokens := natscallout.PlatformTokens{K8sIssuer: issuer.URL(), K8s: enroll.K8sPodVerifier{Verifier: verifier}}
-	services, err := natscallout.ParseServices(holdServices)
+	services, err := config.ParseNATSServices(holdServices)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var operator natscallout.ServiceEntry
+	var operator config.NATSService
 	for _, entry := range services {
-		if entry.Kind == natscallout.KindOperator {
+		if entry.Kind == config.NATSOperator {
 			operator = entry
 		}
 	}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/holdrecord"
@@ -127,7 +128,7 @@ func StartWith(t testing.TB, opts Options) *Stack {
 		tokens.accounts[listenerToken(machine)] = account
 		entries = append(entries, "listener/"+machine+"/*="+account)
 	}
-	services, err := natscallout.ParseServices(strings.Join(entries, " "))
+	services, err := config.ParseNATSServices(strings.Join(entries, " "))
 	if err != nil {
 		t.Fatalf("holdtest: the stack's services: %v", err)
 	}

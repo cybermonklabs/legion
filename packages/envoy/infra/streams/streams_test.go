@@ -271,10 +271,13 @@ func TestStreamsUpdateChangesOnlyReplicas(t *testing.T) {
 	require.Empty(t, report.Unknown)
 	require.Equal(t, 1, report.ExitCode(), "%v", report.Lines())
 	requireFailureNaming(t, report, ciState, "subjects is")
-	for _, bucket := range []string{bus.RoleClaimBucket, bus.InterestBucket, bus.SessionBucket} {
+	requireFailureNaming(t, report, "KV_"+bus.RoleClaimBucket, "envoy-infra buckets create")
+	for _, bucket := range []string{bus.InterestBucket, bus.SessionBucket} {
 		info := testnats.AwaitStreamCopies(t, h.js, "KV_"+bucket, 3)
 		require.Equal(t, 3, info.Config.Replicas, "KV_%s", bucket)
 	}
+	_, err = h.js.StreamInfo("KV_" + bus.RoleClaimBucket)
+	require.ErrorIs(t, err, natsgo.ErrStreamNotFound, "update made the copied bucket KV_envoy_roles")
 	info, err := h.js.StreamInfo(ciState)
 	require.NoError(t, err)
 	require.Equal(t, odd.Subjects, info.Config.Subjects, "update changed the subjects of a stream it stops at")
@@ -310,4 +313,72 @@ func awaitPublishViolation(t *testing.T, errs <-chan error, subject string) {
 			t.Fatalf("no %s", want)
 		}
 	}
+}
+
+// copiedBuckets are the buckets a listener keeps a watcher-fed copy of, which only envoy-infra
+// buckets creates.
+var copiedBuckets = []string{bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket, bus.KnownSessionBucket, bus.CIStateBucket}
+
+// update makes no copied bucket: with every copied bucket deleted, and the spent-proof bucket, which
+// is not copied, deleted too, it reports each copied bucket missing, naming envoy-infra buckets
+// create, sends no create of any, and makes the spent-proof bucket, and ENVOY_MEASURE, which the
+// fixture leaves to update, each with its one create.
+func TestStreamsUpdateMakesNoCopiedBucket(t *testing.T) {
+	h := startHub(t, 1, natsgrant.Operator(natsgrant.OperatorPhaseHeld))
+	h.makeDeclared(t, streamset.Settings{})
+	for _, bucket := range append(slices.Clone(copiedBuckets), bus.DPoPProofBucket) {
+		require.NoError(t, h.js.DeleteKeyValue(bucket))
+	}
+	h.writes.Take(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	report, err := streams.Update(ctx, h.connect(t, operatorInbox, nil), streamset.Settings{}, phase(natsgrant.OperatorPhaseHeld))
+	require.NoError(t, err)
+	require.Empty(t, report.Unknown)
+	require.Equal(t, 1, report.ExitCode(), "%v", report.Lines())
+	for _, bucket := range copiedBuckets {
+		requireFailureNaming(t, report, "KV_"+bucket, "envoy-infra buckets create")
+		_, err := h.js.StreamInfo("KV_" + bucket)
+		require.ErrorIs(t, err, natsgo.ErrStreamNotFound, "update made the copied bucket KV_%s", bucket)
+	}
+	require.Equal(t, []string{"$JS.API.STREAM.CREATE.KV_" + bus.DPoPProofBucket, "$JS.API.STREAM.CREATE." + streamset.MeasureStream}, h.writes.Take(t))
+}
+
+// check reports a missing stream from the account's stream names, without asking that stream's
+// info: in a cluster only the meta leader answers an info of a stream that does not exist, so during
+// a meta election such an ask draws no answer until its wait ends. A copied bucket's missing line
+// names envoy-infra buckets create; the spent-proof bucket's names no such command.
+func TestStreamsCheckAsksNoInfoOfAMissingStream(t *testing.T) {
+	h := startHub(t, 1, natsgrant.ForCallout(natsgrant.Measure()))
+	h.makeDeclared(t, streamset.Settings{})
+	require.NoError(t, h.js.DeleteKeyValue(bus.RoleClaimBucket))
+	require.NoError(t, h.js.DeleteKeyValue(bus.DPoPProofBucket))
+	infos, err := h.admin.SubscribeSync("$JS.API.STREAM.INFO.>")
+	require.NoError(t, err)
+	require.NoError(t, h.admin.Flush())
+
+	report := streams.Check(t.Context(), h.connect(t, measureInbox, nil), streamset.Settings{})
+	require.Empty(t, report.Unknown)
+	requireFailureNaming(t, report, "KV_"+bus.RoleClaimBucket, "missing")
+	requireFailureNaming(t, report, "KV_"+bus.RoleClaimBucket, "envoy-infra buckets create")
+	requireFailureNaming(t, report, "KV_"+bus.DPoPProofBucket, "missing")
+	for _, failure := range report.Failures {
+		if failure.Stream == "KV_"+bus.DPoPProofBucket {
+			require.NotContains(t, failure.What, "envoy-infra buckets", "a bucket that is not copied named the buckets command")
+		}
+	}
+	require.NoError(t, h.admin.Flush())
+	asked := 0
+	for {
+		msg, err := infos.NextMsg(200 * time.Millisecond)
+		if err != nil {
+			break
+		}
+		asked++
+		for _, missing := range []string{bus.RoleClaimBucket, bus.DPoPProofBucket} {
+			require.NotEqual(t, "$JS.API.STREAM.INFO.KV_"+missing, msg.Subject, "check asked the info of a missing stream")
+		}
+	}
+	require.Positive(t, asked, "check asked no info at all, so the rule above read nothing")
 }

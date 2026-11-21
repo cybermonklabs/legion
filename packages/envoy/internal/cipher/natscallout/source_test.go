@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -84,9 +85,9 @@ func requireNoGrantSourcesTheNotificationStream(t *testing.T, start func(testnat
 	deps := Deps{Introspect: introspector(a), ServiceToken: serviceTokens(tokens)}
 	// unnarrowed answers the measurement job with the grant it held before it configured no
 	// stream, every other connection as the service does: the control row's answer.
-	unnarrowed := func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+	unnarrowed := func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 		decision, err := Decide(ctx, deps, services, req)
-		if err == nil && strings.HasPrefix(decision.Name, string(KindMeasure)+"/") {
+		if err == nil && strings.HasPrefix(decision.Name, string(config.NATSMeasure)+"/") {
 			decision.Grant = measureGrantBefore()
 		}
 		return decision, err

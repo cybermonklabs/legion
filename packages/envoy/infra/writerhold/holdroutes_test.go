@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/holdrecord"
@@ -176,13 +177,13 @@ func TestHoldOnlyTheOperatorMovesTheHold(t *testing.T) {
 	signer := issuer.PublishKey(t, "nats-key")
 	verifier, err := oidc.New(ctx, issuer.URL(), audience)
 	require.NoError(t, err)
-	services, err := natscallout.ParseServices(strings.Join([]string{
+	services, err := config.ParseNATSServices(strings.Join([]string{
 		"operator/-/*=" + holdtest.OperatorAccount, "listener/hub-a/*=" + listenerAccount, "dispatch/dispatch/*=" + dispatchAccount,
 	}, " "))
 	require.NoError(t, err)
-	var operatorEntry natscallout.ServiceEntry
+	var operatorEntry config.NATSService
 	for _, entry := range services {
-		if entry.Kind == natscallout.KindOperator {
+		if entry.Kind == config.NATSOperator {
 			operatorEntry = entry
 		}
 	}

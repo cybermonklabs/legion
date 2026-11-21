@@ -75,10 +75,11 @@ var transactionStatement = regexp.MustCompile(`(?is)^\s*(begin|commit|rollback)\
 // touchStatement is the unchanged-head short-circuit's one write (Importer.touch).
 var touchStatement = regexp.MustCompile(`(?is)^\s*update\s+architecture_sources\s+set\s+last_sync_at\s*=\s*now\(\),\s*last_commit\s*=\s*\$5\b`)
 
-// The import timer stays, because GitHub has no feed of a source's branch head, so a pass over
-// heads that have not moved must stay cheap: it fetches no tree and no blob, appends no event, and
-// writes each source's freshness stamp once (touch) and nothing else - here over three sources of
-// two projects, read through a pool of its own whose every statement is recorded.
+// The import timer stays, because it repairs a push that never arrived, and most of its passes
+// find heads that have not moved, so such a pass must stay cheap: it fetches no tree and no blob,
+// appends no event, and writes each source's freshness stamp once (touch) and nothing else - here
+// over three sources of two projects, read through a pool of its own whose every statement is
+// recorded.
 func TestAnImportPassOverUnchangedHeadsFetchesNothingAndTouchesEachSourceOnce(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles(), repos: map[string]*fakeRepo{

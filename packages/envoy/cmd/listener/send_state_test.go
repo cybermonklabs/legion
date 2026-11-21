@@ -21,8 +21,10 @@ import (
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -64,6 +66,55 @@ func newKnownSessionRigOn(t *testing.T, client *bus.Client, url string) *knownSe
 	// main wires it, for a role send.
 	rig.deps.known = rig.known
 	rig.deps.confirmed = newConfirmedRecord(t)
+	return rig
+}
+
+// backgroundReadsHeld is how long a quiet rig's listener connection sends nothing of its own
+// (newQuietKnownSessionRig): longer than any run of a row, which every lane that runs the package
+// bounds by its -timeout (30m in envoy-go-race).
+const backgroundReadsHeld = time.Hour
+
+// newQuietKnownSessionRig is newKnownSessionRig on a listener connection that, once the rig is
+// built, sends no request of its own within backgroundReadsHeld, so a row that counts what the
+// connection sends (jetStreamAPIProbe) counts its route's requests alone, however long its window
+// lasts. In production these reads come every few seconds, and a window longer than that, as a
+// loaded machine makes 100 requests take, would count them against the route:
+//
+//   - each cache watcher on the connection (the interest registry's, its role claims', the session
+//     registry's and the known-session store's) reads its bucket's stream every 2 s. Each is
+//     replaced by one that reads the same bucket into the same cache (replaceWatcher) and arms its
+//     stream probe backgroundReadsHeld after each read (kvwatch.WithStreamProbeInterval), which
+//     spaces by as much the reads the gate on delivered records may send; the completed read's own
+//     check is its last. The role claim watcher's scheduled read of its bucket, a minute after each
+//     read, is left out.
+//   - the bus client reads the event stream's info every 30 s (its keeper) and every 60 s (its read
+//     of the deployed subjects), which bus.WithKeepInterval and bus.WithStreamSubjectsRefresh hold
+//     off.
+//
+// Production's intervals are unchanged. One request no rig can hold: nats.go re-creates a
+// watcher's ordered consumer (a CONSUMER.CREATE) when neither a record nor a heartbeat reached it
+// for 10 s (kvwatch's streamConfirmMaxAge says when), which a client stalled that long sends and
+// a row then names. The rig waits until every copy can be served, as the listener's start does,
+// before any route reads a store.
+func newQuietKnownSessionRig(t *testing.T) *knownSessionRig {
+	t.Helper()
+	url := testnats.URL(t)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1),
+		bus.WithKeepInterval(backgroundReadsHeld), bus.WithStreamSubjectsRefresh(backgroundReadsHeld))
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	t.Cleanup(client.Close)
+	rig := newKnownSessionRigOn(t, client, url)
+	held := kvwatch.WithStreamProbeInterval(backgroundReadsHeld)
+	replaceWatcher(t, rig.harness.registry, "watcher", "interest registry", unwrappedKV, held)
+	replaceWatcher(t, rig.harness.registry, "roleWatcher", "role claims", unwrappedKV, held)
+	replaceWatcher(t, rig.harness.sessions, "watcher", "session registry", unwrappedKV, held)
+	replaceWatcher(t, rig.known, "watcher", "known session store", unwrappedKV, held)
+	testwait.Eventually(t, "every cache on the listener's connection to complete its first read", func() bool {
+		return rig.harness.registry.Servable() == nil && rig.harness.registry.RoleViewErr() == nil &&
+			rig.harness.sessions.Servable() == nil && rig.known.Opened()
+	})
 	return rig
 }
 
@@ -680,9 +731,11 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 // read a send to a missing entry makes. Over warm caches 100 of them send no JetStream API request
 // on the consumer or stream-info subjects, and the probe of the API shows it is watching by seeing
 // the one call the test makes itself (watchJetStreamAPI, which
-// TestAHundredPublishesSendNoJetStreamAPIRequest uses too).
+// TestAHundredPublishesSendNoJetStreamAPIRequest uses too). The rig's connection sends nothing else
+// in the window (newQuietKnownSessionRig), so what the probe counts is the send route's, however
+// long the sends take.
 func TestAHundredSendsToAStoppedSessionSendNoJetStreamAPIRequest(t *testing.T) {
-	rig := newKnownSessionRig(t)
+	rig := newQuietKnownSessionRig(t)
 	const gone = "ses_stopped_api_free"
 	rig.register(t, gone, nil)
 	rig.stop(t, gone)
@@ -701,11 +754,7 @@ func TestAHundredSendsToAStoppedSessionSendNoJetStreamAPIRequest(t *testing.T) {
 		}
 	}
 
-	control := "$JS.API.STREAM.INFO." + bus.Stream
-	if _, err := rig.harness.client.JS().StreamInfo(bus.Stream); err != nil {
-		t.Fatalf("the watch's control call: %v", err)
-	}
-	if calls := watch.awaitCall(t, control); len(calls) > 0 {
+	if calls := watch.callsBeforeControl(t, rig.harness.client.JS()); len(calls) > 0 {
 		t.Fatalf("100 sends sent %d JetStream API requests: %v", len(calls), calls)
 	}
 }

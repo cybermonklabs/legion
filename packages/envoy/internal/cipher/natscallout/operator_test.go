@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/kvrecords"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -34,7 +35,7 @@ import (
 // startReplica runs one auth service replica against the servers at urls with keys' seeds,
 // admitting services, deciding with decide, stopped when the test ends, and returns once its
 // subscription has reached the hub.
-func startReplica(t *testing.T, urls []string, keys testnats.CalloutKeys, services []ServiceEntry, deps Deps, decide decideFunc) *Service {
+func startReplica(t *testing.T, urls []string, keys testnats.CalloutKeys, services []config.NATSService, deps Deps, decide decideFunc) *Service {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(name, seed string) string {
@@ -118,7 +119,7 @@ func newDecisionLog() *decisionLog { return &decisionLog{byName: map[string][]de
 
 // wrap is decide, keeping each decision it admits.
 func (l *decisionLog) wrap(decide decideFunc) decideFunc {
-	return func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+	return func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 		decision, err := decide(ctx, deps, services, req)
 		if err == nil {
 			l.mu.Lock()
@@ -1161,11 +1162,29 @@ func TestTheBarrierIsAStream(t *testing.T) {
 	require.NoError(t, json.Unmarshal(succeeds(t, operator.Conn, "$JS.API.STREAM.NAMES", nil).raw, &names))
 	require.Contains(t, names.Streams, natsgrant.HoldBarrierStream)
 	succeeds(t, operator.Conn, "$JS.API.STREAM.DELETE."+natsgrant.HoldBarrierStream, nil)
-	_, err := js.StreamInfo(natsgrant.HoldBarrierStream)
-	require.ErrorIs(t, err, nats.ErrStreamNotFound)
+	requireStreamGone(t, js, natsgrant.HoldBarrierStream)
 
 	other := map[string]any{"name": "ENVOY_HOLD_OTHER", "subjects": []string{"_ENVOY_HOLD_OTHER.hold-1"}, "storage": "memory", "num_replicas": 1}
 	operator.refused(t, "$JS.API.STREAM.CREATE.ENVOY_HOLD_OTHER", other)
+}
+
+// streamGoneWait bounds requireStreamGone: long enough for a loaded box, where a 3-member cluster
+// may take its meta group through an election before any member answers, and short of the test's
+// own timeout, so only a stuck cluster fails it.
+const streamGoneWait = 2 * time.Minute
+
+// requireStreamGone requires JetStream to answer that stream does not exist, asking again until it
+// does. In a cluster only the meta leader answers an info of a stream it holds no assignment of
+// (nats-server v2.15.1 jetstream_api.go:2073-2091): another member answers nothing, and with no
+// meta leader at all, as during an election on a loaded box, a member answers only that the
+// cluster is not available. So each ask waits 5 s, and a timeout, or any other answer, is asked
+// again until streamGoneWait.
+func requireStreamGone(t *testing.T, js nats.JetStreamContext, stream string) {
+	t.Helper()
+	testwait.WithinPolling(t, streamGoneWait, 200*time.Millisecond, stream+" answered as not found", func() bool {
+		_, err := js.StreamInfo(stream, nats.MaxWait(5*time.Second))
+		return errors.Is(err, nats.ErrStreamNotFound)
+	})
 }
 
 // The infos of the protected buckets that are not copied, KV_legion_agents, KV_envoy_dpop_proofs
@@ -1306,7 +1325,7 @@ func tE3Deps(now time.Time, a *session) Deps {
 
 // requireAsBefore requires each of rows to be answered, under deps and services, as t-e-3's tests
 // require.
-func requireAsBefore(t *testing.T, deps Deps, services []ServiceEntry, rows []tE3Row) {
+func requireAsBefore(t *testing.T, deps Deps, services []config.NATSService, rows []tE3Row) {
 	t.Helper()
 	for _, row := range rows {
 		decision, err := Decide(t.Context(), deps, services, row.req)

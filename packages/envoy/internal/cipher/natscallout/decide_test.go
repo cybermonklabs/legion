@@ -18,6 +18,7 @@ import (
 	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -109,12 +110,21 @@ func serviceRequest(raw string) Request {
 	return Request{UserNkey: "UUSER", ServerID: "NSERVER", Nonce: "nonce", User: natscred.ServiceUser, Password: raw, Host: "10.0.0.7"}
 }
 
-var exampleServices = []ServiceEntry{
-	{Kind: KindDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
-	{Kind: KindListener, MachineID: "example-hub", Account: listenerAccount, AllProjects: true},
-	{Kind: KindDaemon, Account: daemonAccount, AllProjects: true},
-	{Kind: KindMeasure, Account: measureAccount, Google: true, AllProjects: true},
-	{Kind: KindDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
+// The platform accounts this package's tests list in BROKER_NATS_SERVICES.
+const (
+	listenerAccount = "system:serviceaccount:example-ns:example-listener"
+	daemonAccount   = "system:serviceaccount:example-ns:example-daemon"
+	measureAccount  = "envoy-measure@example-project.iam.gserviceaccount.com"
+	edgeAccount     = "system:serviceaccount:example-ns:example-edge-listener"
+)
+
+var exampleServices = []config.NATSService{
+	{Kind: config.NATSDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
+	{Kind: config.NATSListener, MachineID: "example-hub", Account: listenerAccount, AllProjects: true},
+	{Kind: config.NATSDaemon, Account: daemonAccount, AllProjects: true},
+	{Kind: config.NATSMeasure, Account: measureAccount, Google: true, AllProjects: true},
+	{Kind: config.NATSDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
+	{Kind: config.NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"PRIV"}},
 }
 
 // A session's live token and a proof over this connection's nonce are answered with a user of
@@ -205,7 +215,7 @@ func TestNoAnswerCreatesOrChangesAStream(t *testing.T) {
 func TestAServiceAnswerIsItsScopedGrantLessStreamCalls(t *testing.T) {
 	const heldDaemon = "system:serviceaccount:legion:held-daemon"
 	now := time.Now()
-	services := append(slices.Clone(exampleServices), ServiceEntry{Kind: KindDaemon, Account: heldDaemon})
+	services := append(slices.Clone(exampleServices), config.NATSService{Kind: config.NATSDaemon, Account: heldDaemon})
 	tokens := map[string]platformToken{
 		"dispatch-token":    {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
 		"listener-token":    {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
@@ -217,7 +227,7 @@ func TestAServiceAnswerIsItsScopedGrantLessStreamCalls(t *testing.T) {
 	narrowed := 0
 	for raw, token := range tokens {
 		t.Run(raw, func(t *testing.T) {
-			var entry ServiceEntry
+			var entry config.NATSService
 			for _, candidate := range services {
 				if candidate.Account == token.account && candidate.Google == token.google {
 					entry = candidate
@@ -227,12 +237,12 @@ func TestAServiceAnswerIsItsScopedGrantLessStreamCalls(t *testing.T) {
 			scoped, scopeErr := scopeGrant(entry, serviceGrant(entry))
 			decision, err := Decide(t.Context(), deps, services, serviceRequest(raw))
 			if scopeErr != nil {
-				require.Error(t, err, "%s was admitted where scopeGrant refuses it", entry.name())
-				require.Equal(t, scopeErr.Error(), err.Error(), "%s was refused for another reason than scopeGrant's", entry.name())
+				require.Error(t, err, "%s was admitted where scopeGrant refuses it", entry.Name())
+				require.Equal(t, scopeErr.Error(), err.Error(), "%s was refused for another reason than scopeGrant's", entry.Name())
 				return
 			}
-			require.NoError(t, err, "%s was refused where scopeGrant admits it", entry.name())
-			require.Equal(t, natsgrant.ForCallout(scoped), decision.Grant, "%s's answer is not its scoped grant less stream calls", entry.name())
+			require.NoError(t, err, "%s was refused where scopeGrant admits it", entry.Name())
+			require.Equal(t, natsgrant.ForCallout(scoped), decision.Grant, "%s's answer is not its scoped grant less stream calls", entry.Name())
 			if !slices.Equal(scoped.Publish, decision.Grant.Publish) {
 				narrowed++
 			}
@@ -251,7 +261,7 @@ func TestOnlyTheOperatorsAnswerKeepsItsStreamCalls(t *testing.T) {
 	signer := newHoldSigner(t)
 	stub := &holdStub{}
 	stub.set(rowOf(signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "h-1")))
-	services := append(slices.Clone(exampleServices), ServiceEntry{Kind: KindOperator, Account: operatorAccount, AllProjects: true})
+	services := append(slices.Clone(exampleServices), config.NATSService{Kind: config.NATSOperator, Account: operatorAccount, AllProjects: true})
 	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
 		"operator-token": {account: operatorAccount, issued: now, expiry: now.Add(10 * time.Minute)},
 		"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(10 * time.Minute)},
@@ -312,6 +322,7 @@ func TestRefusals(t *testing.T) {
 		"unlisted-token":  {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
+		"edge-token":      {account: edgeAccount, issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{Introspect: introspector(a, expired, dotted, foreign, unbounded, readOnly), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
@@ -355,6 +366,9 @@ func TestRefusals(t *testing.T) {
 		{"an unlisted service", deps, nil, serviceRequest("unlisted-token"), labelServiceNotListed, "service not listed: system:serviceaccount:example-ns:stranger"},
 		{"a two-hour platform token", deps, nil, serviceRequest("two-hours-token"), labelTokenTooLong, "token lives longer than an hour"},
 		{"a service held to projects this broker cannot read", deps, nil, serviceRequest("held-token"), labelHeldToProjects, "held to exchange projects, which this broker cannot read: service daemon/system:serviceaccount:example-ns:held-daemon"},
+		// An edge listener's entry parses, so that the broker's API reads its projects, and this
+		// build has no grant to answer its connection with.
+		{"an edge listener, whose grant this broker does not have", deps, nil, serviceRequest("edge-token"), labelHeldToProjects, "held to the projects its entry lists, for which this broker has no edge listener's grant: service edge-listener/edge-a"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := row.ctx
@@ -501,17 +515,17 @@ func TestAGrantNamingASystemSubjectIsRefused(t *testing.T) {
 }
 
 // The deployment's operator identity and the writer hold's probe, as BROKER_NATS_SERVICES lists
-// them (ParseServices), beside exampleServices.
+// them (config.ParseNATSServices), beside exampleServices.
 const (
 	operatorAccount = "system:serviceaccount:envoy-operator:envoy-operator"
 	probeAccount    = "system:serviceaccount:envoy-operator:envoy-hold-probe"
 )
 
 var (
-	operatorEntry = ServiceEntry{Kind: KindOperator, Account: operatorAccount, AllProjects: true}
-	probeEntry    = ServiceEntry{Kind: KindProbe, Account: probeAccount, AllProjects: true}
+	operatorEntry = config.NATSService{Kind: config.NATSOperator, Account: operatorAccount, AllProjects: true}
+	probeEntry    = config.NATSService{Kind: config.NATSProbe, Account: probeAccount, AllProjects: true}
 	// holdServices are exampleServices with the operator and the probe listed.
-	holdServices = append(append([]ServiceEntry{}, exampleServices...), operatorEntry, probeEntry)
+	holdServices = append(append([]config.NATSService{}, exampleServices...), operatorEntry, probeEntry)
 )
 
 // The operator entry is answered with natsgrant.Operator of the hold row's phase while the row is

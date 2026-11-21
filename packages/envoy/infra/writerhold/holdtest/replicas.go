@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -131,13 +132,13 @@ func (s *Stack) StartReplica(t testing.TB, cfg ReplicaConfig) *Replica {
 
 // stackServices are the services the stack's auth service lists (Start): the operator, the probe
 // and a listener entry of each of ListenerMachines.
-func stackServices(t testing.TB) []natscallout.ServiceEntry {
+func stackServices(t testing.TB) []config.NATSService {
 	t.Helper()
 	entries := []string{"operator/-/*=" + OperatorAccount, "probe/-/*=" + ProbeAccount}
 	for _, machine := range ListenerMachines {
 		entries = append(entries, "listener/"+machine+"/*="+listenerAccountPrefix+machine)
 	}
-	services, err := natscallout.ParseServices(strings.Join(entries, " "))
+	services, err := config.ParseNATSServices(strings.Join(entries, " "))
 	if err != nil {
 		t.Fatalf("holdtest: the stack's services: %v", err)
 	}

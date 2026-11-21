@@ -68,6 +68,13 @@ func TestTheStartRefusesTheHoldReadWithoutItsOperator(t *testing.T) {
 		operator = "operator/-/*=system:serviceaccount:envoy-operator:envoy-operator"
 	)
 	key := []ed25519.PublicKey{make(ed25519.PublicKey, ed25519.PublicKeySize)}
+	parse := func(raw string) []config.NATSService {
+		services, err := config.ParseNATSServices(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return services
+	}
 	for _, row := range []struct {
 		name     string
 		nats     config.NATSCallout
@@ -75,14 +82,14 @@ func TestTheStartRefusesTheHoldReadWithoutItsOperator(t *testing.T) {
 		refused  bool
 		notNames []string
 	}{
-		{"no operator entry", config.NATSCallout{HoldRead: true, Services: listener, HoldSigningKeys: key},
+		{"no operator entry", config.NATSCallout{HoldRead: true, Services: parse(listener), HoldSigningKeys: key},
 			[]string{"BROKER_NATS_HOLD_READ", "BROKER_NATS_SERVICES"}, true, []string{"BROKER_NATS_HOLD_SIGNING_KEYS"}},
-		{"no signing key", config.NATSCallout{HoldRead: true, Services: listener + " " + operator},
+		{"no signing key", config.NATSCallout{HoldRead: true, Services: parse(listener + " " + operator)},
 			[]string{"BROKER_NATS_HOLD_READ", "BROKER_NATS_HOLD_SIGNING_KEYS"}, true, []string{"BROKER_NATS_SERVICES"}},
 		{"neither", config.NATSCallout{HoldRead: true},
 			[]string{"BROKER_NATS_HOLD_READ", "BROKER_NATS_SERVICES", "BROKER_NATS_HOLD_SIGNING_KEYS"}, true, nil},
-		{"both", config.NATSCallout{HoldRead: true, Services: operator, HoldSigningKeys: key}, nil, false, nil},
-		{"the switch off", config.NATSCallout{Services: listener}, nil, false, nil},
+		{"both", config.NATSCallout{HoldRead: true, Services: parse(operator), HoldSigningKeys: key}, nil, false, nil},
+		{"the switch off", config.NATSCallout{Services: parse(listener)}, nil, false, nil},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			err := refuseHoldReadWithoutOperator(config.Config{NATS: row.nats})

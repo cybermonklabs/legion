@@ -62,6 +62,12 @@ type Stream struct {
 	// Transient is the writer hold's barrier (natsgrant.HoldBarrierStream), which the hold makes and
 	// removes: the census keeps it while it stands, and nothing else makes it or misses it.
 	Transient bool
+	// Copied is a bucket a listener keeps a watcher-fed copy of (copiedBuckets). Only the
+	// operator's `envoy-infra buckets` makes one, inside its own held workflows: a write one of
+	// them acknowledged is lost when it is deleted and made again, and its writer was told it
+	// landed. So Update raises a deployed copied bucket's copies, and reports a missing one,
+	// naming `envoy-infra buckets create`, without making it.
+	Copied bool
 	// Bucket is a KV bucket's configuration, as its program opens it (bus.EnsureKeyValue); nil for
 	// a stream that is no bucket.
 	Bucket *nats.KeyValueConfig
@@ -79,7 +85,7 @@ func Declared(s Settings) []Stream {
 	streams := []Stream{{Name: bus.Stream, Protected: true, Config: notifications}}
 	for _, name := range slices.Concat(bus.ListenerBuckets(), []string{bus.WebhookRedeliveryBucket}) {
 		bucket := BucketConfig(name, s)
-		streams = append(streams, Stream{Name: "KV_" + name, Protected: true, Bucket: bucket, Config: BucketStreamConfig(bucket)})
+		streams = append(streams, Stream{Name: "KV_" + name, Protected: true, Copied: slices.Contains(copiedBuckets, name), Bucket: bucket, Config: BucketStreamConfig(bucket)})
 	}
 	return append(streams,
 		Stream{Name: MeasureStream, Config: nats.StreamConfig{
@@ -89,6 +95,11 @@ func Declared(s Settings) []Stream {
 		Stream{Name: natsgrant.HoldBarrierStream, Protected: true, Transient: true},
 	)
 }
+
+// copiedBuckets are the buckets a listener keeps a watcher-fed copy of (internal/kvwatch): the
+// interest and role-claim buckets (internal/store), the session registry and the known-session
+// store (internal/session), and the CI state bucket (internal/cistore).
+var copiedBuckets = []string{bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket, bus.KnownSessionBucket, bus.CIStateBucket}
 
 // Find is the declared stream named name in streams, and false for an undeclared one.
 func Find(streams []Stream, name string) (Stream, bool) {

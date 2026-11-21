@@ -1084,11 +1084,12 @@ the `url` output and the app's `DISPATCH_SERVER_URL`. It is refused beside the t
 front door's name is then Dispatch's origin; a second origin beside that one is `outsideOrigin`.
 With it the component builds what the sandbox builds and requires `natsInCluster`, refuses
 `frontDoorReplicas` and `frontDoorPdbMinAvailable`, as the sandbox does, and takes the sign-in
-group, `signInOutside` and `outsideOrigin` as it takes them beside the front door; with the
-sign-in group its host must be one Google takes in a redirect URI, as `outsideOrigin`'s must, and
-the Google client lists `<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there:
-the entrance forwards to the app's Service `<hostname>` on port 8766, or straight to the app's pods,
-labelled `app=<hostname>`, through a network endpoint group of that Service.
+group, `signInWorkspaceDomains`, `signInOutside`, `outsideOrigin` and `signInPasskey` as it takes
+them beside the front door; with the sign-in group its host must be one Google takes in a
+redirect URI, as `outsideOrigin`'s must, and the Google client lists
+`<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there: the entrance forwards to
+the app's Service `<hostname>` on port 8766, or straight to the app's pods, labelled
+`app=<hostname>`, through a network endpoint group of that Service.
 
 `loadBalancerSourceRanges` and `networkEndpointGroupName`, unset by default, describe that
 entrance, and each needs `publicOrigin`; beside the tailnet group or in the sandbox each is refused,
@@ -1121,11 +1122,12 @@ come from another resource or stack, such as one built from the backend service'
 resolves, a value of any other form is refused naming `iapAudience`, and one holding an nkey seed
 is refused without echoing it. It needs `publicOrigin`, the origin that load balancer serves, and
 `signInDomain`, the Workspace domain whose accounts may use Dispatch, which Dispatch holds the
-token's `hd` claim to; it refuses `signInClientId`, `signInClientSecret`, `signInOutside` and
-`outsideOrigin`, since IAP signs a person in and a browser reaches Dispatch through it alone. It
-renders `DISPATCH_IDENTITY=iap`, `DISPATCH_IAP_AUDIENCE=<iapAudience>` and
-`DISPATCH_SIGNIN_DOMAIN=<signInDomain>` on the app's container, in the place the sign-in variables
-hold, right before `DISPATCH_SERVER_URL`, and no other `DISPATCH_SIGNIN_*` variable; the Secret
+token's `hd` claim to; it refuses `signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`,
+`signInOutside`, `signInPasskey` and `outsideOrigin`, since IAP signs a person in and a browser
+reaches Dispatch through it alone. It renders `DISPATCH_IDENTITY=iap`,
+`DISPATCH_IAP_AUDIENCE=<iapAudience>` and `DISPATCH_SIGNIN_DOMAIN=<signInDomain>` on the app's
+container, in the place the sign-in variables hold, right before `DISPATCH_SERVER_URL`, and no
+other `DISPATCH_SIGNIN_*` variable; the Secret
 holds no client secret. Its `envoyImage` must be built from a cybermonklabs/legion `main` commit
 whose `envoy-dispatch` takes `DISPATCH_IDENTITY=iap`: an older one refuses that identity mode at
 boot, so the app's pods never start. With `iapAudience` unset none of the three variables
@@ -1156,12 +1158,14 @@ after `DISPATCH_SERVER_URL`, and nothing else. Whatever serves that origin and f
 app's Service on port 8766 is the deployment's to build, whatever way the people it serves come
 in by; if it runs in this cluster, name its namespace in `allowedNamespaces`, which admits that
 namespace's pods to port 8766 and nothing else. With `outsideOrigin` and the sign-in inputs set,
-the Google client `signInClientId` names must list the rendered `DISPATCH_OUTSIDE_ORIGIN`
-followed by `/auth/callback` as an authorized redirect URI, beside
-`https://<hostname>.<tailnetDnsName>/auth/callback`, so with them the component also refuses a
-host Google refuses there: a raw IP address, and one whose top-level domain is not on the public
-suffix list, a single label among them ([Redirect URI validation
-rules](https://developers.google.com/identity/protocols/oauth2/web-server)).
+and `signInPasskey` unset, the Google client `signInClientId` names must list the rendered
+`DISPATCH_OUTSIDE_ORIGIN` followed by `/auth/callback` as an authorized redirect URI, beside
+`https://<hostname>.<tailnetDnsName>/auth/callback`. So with the sign-in inputs the component
+also refuses a host Google refuses there: a raw IP address, and one whose top-level domain is not
+on the public suffix list, a single label among them ([Redirect URI validation
+rules](https://developers.google.com/identity/protocols/oauth2/web-server)). With `signInPasskey`
+the client lists no callback at that origin, and the check stays for the reason the
+`signInPasskey` paragraph below gives.
 `signInOutside: true` renders `DISPATCH_SIGNIN_OUTSIDE=1` right after `DISPATCH_SIGNIN_DOMAIN`,
 which lets a verified Google account outside `signInDomain` sign in as a restricted member while
 some project's owner or access list names its email directly, never through a group; with it,
@@ -1172,6 +1176,47 @@ with the clause naming each sign-in input still unset. Beside `publicOrigin` the
 host is not `publicOrigin`'s, as beside the front door it is not the front door's. An `envoyImage` whose `envoy-dispatch` predates the two
 settings ignores both, as it ignores every variable its settings table
 (`packages/envoy/cmd/dispatch/settings.go`) does not list.
+
+`signInPasskey`, unset by default, renders `DISPATCH_SIGNIN_PASSKEY=1` on the app's container,
+right after `DISPATCH_OUTSIDE_ORIGIN`, which turns on Dispatch's passkey sign-in at `outsideOrigin`
+for people from outside the company: the passkey's relying party is that origin, and its relying
+party ID is that origin's host. It needs `outsideOrigin` and is refused without it, naming it. It
+needs the sign-in group too, though it is not in that group: a person from outside enrolls a
+passkey with an invitation a project owner makes while signed in through Google, so without that
+group nobody could invite anyone, and it is refused with the clause naming each sign-in input
+still unset. With it, Google signs in the Workspace's own people alone, and Dispatch answers
+`/auth/start` and `/auth/callback` at `outsideOrigin` with 404, so the Google client lists no
+`<outsideOrigin>/auth/callback`. Leave it out: Google refuses a redirect URI the client does not
+list, so an `envoyImage` that predates the setting cannot sign anyone in through Google at that
+origin either. The second origin's host is still held to the rule the `outsideOrigin` paragraph
+states for a redirect URI's host, since the sign-in inputs are set, and that rule keeps it a
+domain name, never an IP address: a passkey's relying party ID must be a domain name. List every
+other domain the Workspace owns in `signInWorkspaceDomains` (below). Dispatch refuses an
+invitation to an address on `signInDomain`, on a listed domain or on a subdomain of either, and
+takes an address on a domain left out for an outside person's, so a Workspace account on that
+domain could hold a passkey, which Workspace offboarding does not end: suspending or deleting the
+account in the Workspace touches no passkey. It replaces the Google sign-in of people from
+outside that `signInOutside` turns on, so the two are refused together. The sandbox refuses it by
+name, as it refuses `outsideOrigin`, and so does `iapAudience`, since IAP signs a person in. With
+it unset the component renders exactly what it rendered before it existed. An `envoyImage` whose
+`envoy-dispatch` predates the setting ignores it, as it ignores every variable its settings table
+does not list.
+
+`signInWorkspaceDomains`, unset by default, lists the other domains the Google Workspace owns
+beside `signInDomain`. It renders `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` on the app's container, the
+entries comma-joined in the order given, right after `DISPATCH_SIGNIN_DOMAIN`, or after
+`DISPATCH_SIGNIN_OUTSIDE` when `signInOutside` is set. Dispatch treats an address on `signInDomain`,
+on one of these domains, or on a subdomain of either as a Workspace address, which no invitation
+or outside sign-in may use, so list every domain the Workspace owns. Dispatch reads the setting
+only with Google sign-in, so the input needs the sign-in group, though it is not in that group. It
+is refused without that group, with the clause naming each sign-in input still unset; the sandbox
+and `iapAudience` refuse it by name. Each entry must be one Dispatch takes once it trims the
+entry's surrounding whitespace, as it does: lowercase, taken by IDNA lookup, written in Unicode
+(`bücher.example`) or as its A-labels (`xn--bcher-kva.example`), and then a DNS name of two labels
+or more, each of at most 63 characters, at most 253 characters in all. The entries render trimmed.
+An empty entry, or any other, is refused naming its index. With it unset the component
+renders exactly what it rendered before it existed. An `envoyImage` whose `envoy-dispatch`
+predates the setting ignores it.
 
 `databaseVersion` defaults to `POSTGRES_18`; envoy-infra v2.9.1 and every release before this
 change defaulted to `POSTGRES_16`. A stack that leaves `databaseVersion` unset is upgraded in place
@@ -1591,7 +1636,11 @@ paragraph above states for each label of that origin's host, since the front doo
 `<hostname>.<tailnetDnsName>` on a certificate. It refuses a hostname that breaks that rule in
 every mode, so a stack in the cluster-only mode or the sandbox keeps a hostname a front door can
 later serve, and before any resource registers. The component also refuses invalid tailnet DNS
-names, tags, image references, sign-in domains,
+names, tags, image references, a `signInDomain` Dispatch would refuse at its boot (any whose text,
+trimmed of surrounding whitespace as Dispatch trims it, is not a lowercase DNS name in ASCII of two
+labels or more, each of at most 63 characters, at most 253 in all, the rule `signInWorkspaceDomains`
+entries are held to once IDNA lookup has made them ASCII; the domain renders trimmed), a
+`signInClientId` of whitespace alone, which Dispatch trims to nothing and refuses to boot without,
 namespaces, allowed namespaces, an `appCpu`, `appMemory`, `proxyCpu`, `proxyMemory`,
 `appEphemeralStorage` or `proxyEphemeralStorage` outside
 Autopilot's bounds for the app pod (above), a `pprofPort` outside 1-65535 or on a port the app pod
@@ -1608,8 +1657,11 @@ refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is
 `oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that breaks the rule the paragraph on it
 above states, a `publicOrigin` that breaks the rule its own paragraph states or is set beside the
 tailnet inputs, an `iapAudience` without `publicOrigin` or `signInDomain` or beside
-`signInClientId`, `signInClientSecret`, `signInOutside` or `outsideOrigin`, and, once it resolves,
-an `iapAudience` of another form than a backend service's, a `signInOutside` without the sign-in inputs, an
+`signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`, `signInOutside`, `signInPasskey`
+or `outsideOrigin`, and, once it resolves, an `iapAudience` of another form than a backend
+service's, a `signInOutside` without the sign-in inputs, a `signInPasskey` without `outsideOrigin`
+or the sign-in inputs or beside `signInOutside`, a `signInWorkspaceDomains` without the sign-in
+inputs or with an entry Dispatch would refuse, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside
@@ -2289,7 +2341,17 @@ it at and turns outside sign-in on; every other property above is unchanged:
 ```
 
 Its app then carries `DISPATCH_OUTSIDE_ORIGIN=https://dispatch-outside.example.com` and
-`DISPATCH_SIGNIN_OUTSIDE=1` ([Inputs](#inputs-1)).
+`DISPATCH_SIGNIN_OUTSIDE=1` ([Inputs](#inputs-1)). A deployment that signs them in with a passkey
+instead sets `signInPasskey: true` in place of `signInOutside: true`; the component refuses the
+two together. Its app then carries `DISPATCH_SIGNIN_PASSKEY=1` right after
+`DISPATCH_OUTSIDE_ORIGIN`, and no `DISPATCH_SIGNIN_OUTSIDE`. Either deployment lists the other
+domains its Workspace owns, so that Dispatch treats an address on any of them as the Workspace's:
+
+```yaml
+      signInWorkspaceDomains: [example.net, example.org]
+```
+
+Its app then also carries `DISPATCH_SIGNIN_WORKSPACE_DOMAINS=example.net,example.org`.
 
 A sandbox stack sets neither the tailnet group nor the sign-in group, and sets the two inputs the
 mode then requires: `natsInCluster`, since no front door runs a proxy to a tailnet hub, and
@@ -3386,13 +3448,18 @@ workflows, so its done entry completes the record that `hold release` needs.
 
 - `check`, run by each deploy, unattended, as the measurement job: it reads each declared stream
   and prints `FAIL` for one that is missing, one with fewer copies than the deployment's count,
-  and each other setting that differs from the build's, and sends no create and no update. Its
-  reads ask for no stored subjects.
+  and each other setting that differs from the build's, and sends no create and no update. A
+  missing stream is read from the account's stream names, not asked for its info, so it is a fast,
+  named result even while a cluster elects its meta leader; a missing copied bucket's line names
+  `envoy-infra buckets create`. Its reads ask for no stored subjects.
 - `update` (the writer hold's, inside a `streams-update` hold): it makes each missing protected
   stream, and `ENVOY_MEASURE`, with the build's configuration and raises each by a start's own
   rules (subjects only added, limits only raised, copies raised, `envoy_stream_id` kept), and
-  stops, naming the stream and the setting, at any other difference. So every stream `check`
-  reports missing or below its copies has its repair here.
+  stops, naming the stream and the setting, at any other difference. A copied bucket (the
+  interest, role-claim, session, known-session and CI state buckets, each of which a listener
+  keeps a watcher-fed copy of) it raises but never makes: a missing one is reported, naming
+  `envoy-infra buckets create`, which alone makes one, inside its own held workflows. Every other
+  stream `check` reports missing or below its copies has its repair here.
 - `census` (the writer hold's, inside a hold whose workflow names it), once every family has a
   cutover row in state `done`: it lists every stream and consumer, removes a stream outside the
   declared set and a consumer that matches no declared shape by its whole configuration, and puts a
@@ -4157,9 +4224,13 @@ sessions that share one user holding it, as a `gcp:NatsHub`'s `sessionUser` does
 each receive every other session's replies, so request/reply from such a session is refused by
 design.
 The listener's connection probe of a session needs no rule of its own: it is a request on that
-same relay subject, which the session's relay subscription receives and answers on the probe's own
-reply inbox under this set's `_INBOX.>` publish, and the listener's `notifications.>` publish and
-`_INBOX.>` subscribe carry the listener's side.
+same relay subject, which the session's relay subscription receives and answers under this set's
+`_INBOX.>` publish, and the listener's `notifications.>` publish and `_INBOX.>` subscribe carry the
+listener's side. Its reply subject names the session, `<reply inbox>.<session id>.<random token>`
+(`bus.SessionReplySubject`: a new reply inbox of the listener's, the session's id, and 128 random
+bits), as each relay frame's does under the relay's one reply inbox. The probe waits only on the
+subject it made for that session, and the relay moves a frame only on a reply whose subject names
+the session the frame was sent to: a reply naming another session changes nothing.
 A host's user, holding `HostPermissions`, subscribes to `_INBOX.>` for its listener.
 
 `HostPermissions(machineID)` is the grant of a host's one NATS user, which its listener and every
