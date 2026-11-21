@@ -1,7 +1,6 @@
 package launcher
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -203,6 +202,44 @@ func TestAReleasedWorkspacesWorkIsBundledByTheShimAndRestoredByTheLauncher(t *te
 		t.Fatalf("the restore's notice is %q", notice)
 	}
 	f.requireRestored(workspace, saved)
+}
+
+// A save is read off the shim's own connection, past every connection another process opened to
+// the daemon end ahead of it: one that closes at once, one that sends nothing, an HTTP request and
+// a hello under another pane's boot token, as a client of another test binary redialing a reused
+// loopback port would. Before the fixture's daemon end read each connection's opening, it took the
+// first connection its listener accepted as the shim's and failed on the one that closed.
+func TestASaveIsReadOffTheShimsConnectionPastTheConnectionsAheadOfIt(t *testing.T) {
+	testbin.RequireJJFilters(t)
+	f := newBundleFixture(t)
+	f.workOne()
+	f.aheadOfTheShim = func(address string) {
+		dial := func(open func(net.Conn) error) {
+			t.Helper()
+			conn, err := net.Dial("tcp", address)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			if err := open(conn); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dial(func(conn net.Conn) error { return conn.Close() })
+		dial(func(net.Conn) error { return nil })
+		dial(func(conn net.Conn) error {
+			_, err := conn.Write([]byte("GET /computeMetadata/v1/instance/service-accounts/default/identity HTTP/1.1\r\nHost: metadata\r\n\r\n"))
+			return err
+		})
+		dial(func(conn net.Conn) error {
+			return shimwire.NewWriter(conn).WriteFrame(shimwire.Hello2{BootToken: "another-pane"})
+		})
+	}
+	saved := f.bundleWorkspaceOne()
+	if saved.Head != f.commits["working copy"] || saved.Bookmarks["legion/"+bundleIssue] != f.commits["issue work"] {
+		t.Fatalf("the save is on %s with the bookmarks %v, want the shim's: the working copy %s and legion/%s on %s",
+			saved.Head, saved.Bookmarks, f.commits["working copy"], bundleIssue, f.commits["issue work"])
+	}
 }
 
 // The launcher is its pod's PID 1, whose reaper reaps every exited child the launcher does not
@@ -412,6 +449,10 @@ type bundleFixture struct {
 	ws      string
 	env     []string
 	commits map[string]string
+	// aheadOfTheShim, when a case sets it, is called with the address of bundleWorkspaceOne's
+	// daemon end before the shim starts: what it dials there stands ahead of the shim's own
+	// connection, as another process's client on a reused port would.
+	aheadOfTheShim func(address string)
 }
 
 func newBundleFixture(t *testing.T) *bundleFixture {
@@ -527,13 +568,15 @@ func (f *bundleFixture) at() string {
 // bundleWorkspaceOne runs the real shim against the released pod's workspace and returns the
 // bundle it built: the daemon's end of the worker stream, one bundle-workspace frame, and the
 // result the shim answers, reassembled from its chunk lane as the daemon's reader reassembles it.
+// The daemon end takes the connection that opens with the shim's hello under its boot token,
+// whatever opened before it (daemonEnd).
 func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 	f.t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		f.t.Fatal(err)
+	bootToken := ownToken("boot")
+	end := listenFor(f.t, shimHello(bootToken))
+	if f.aheadOfTheShim != nil {
+		f.aheadOfTheShim(end.Addr().String())
 	}
-	f.t.Cleanup(func() { _ = listener.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	exited := make(chan struct{})
@@ -541,11 +584,12 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		defer close(exited)
 		// The wrapped process is a plain `cat`: the shim bridges its stdio and answers the
 		// bundle frame itself, so nothing of Oh My Pi is needed to prove the save.
-		_, _ = shim.Run(ctx, shim.Config{
-			Network: "tcp", Address: listener.Addr().String(), BootToken: "boot",
+		_, err := shim.Run(ctx, shim.Config{
+			Network: "tcp", Address: end.Addr().String(), BootToken: bootToken,
 			Argv: []string{"/bin/sh", "-c", "exec cat"},
 			Env:  append(f.env, "LEGION_WORKSPACE="+f.ws),
 		})
+		end.codeReturned(err)
 	}()
 	f.t.Cleanup(func() {
 		cancel()
@@ -556,20 +600,13 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		}
 	})
 
-	conn, err := listener.Accept()
-	if err != nil {
-		f.t.Fatal(err)
-	}
+	opened := end.next(f.t, "the shim's hello under its boot token")
+	conn := opened.conn
 	defer conn.Close()
 	if err := conn.SetDeadline(time.Now().Add(2 * time.Minute)); err != nil {
 		f.t.Fatal(err)
 	}
-	reader := shimwire.NewReader(bufio.NewReader(conn))
-	if line, err := reader.ReadLine(); err != nil {
-		f.t.Fatalf("the shim's hello: %v", err)
-	} else if frame, err := shimwire.Decode(line); err != nil || frame.FrameType() != shimwire.TypeHello2 {
-		f.t.Fatalf("the shim opened with %v (%v)", frame, err)
-	}
+	reader := shimwire.NewReader(opened.reader)
 	writer := shimwire.NewWriter(conn)
 	if err := writer.WriteFrame(shimwire.HelloAck{}); err != nil {
 		f.t.Fatal(err)

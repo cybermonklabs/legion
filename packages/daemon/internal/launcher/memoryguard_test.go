@@ -3,7 +3,6 @@ package launcher
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1230,14 +1229,11 @@ func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemor
 	if err := os.MkdirAll(filepath.Join(rolesDir, "tester", RoleLauncherDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(rolesDir, "tester", RoleLauncherDir, LauncherTokenFile), []byte(roleToken("tester")+"\n"), 0o400); err != nil {
+	token := ownToken("launcher-token-tester")
+	if err := os.WriteFile(filepath.Join(rolesDir, "tester", RoleLauncherDir, LauncherTokenFile), []byte(token+"\n"), 0o400); err != nil {
 		t.Fatal(err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
+	listener := listenForLauncher(t, token)
 	stderr := &lockedBuffer{}
 	managers, err := newManagers(Config{
 		Connect: "tcp://" + listener.Addr().String(), Sandbox: "legion-legion-legion-208", PodUID: "pod-1",
@@ -1252,7 +1248,7 @@ func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemor
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		_ = tester.serveUntil(ctx, listener.Addr().String())
+		listener.codeReturned(tester.serveUntil(ctx, listener.Addr().String()))
 	}()
 	t.Cleanup(func() {
 		cancel()

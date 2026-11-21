@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -40,7 +39,7 @@ func TestLauncherPIDOneHelper(t *testing.T) {
 	}
 	err = Run(ctx, Config{
 		Connect: os.Getenv("LEGION_LAUNCHER_TEST_ADDRESS"), PrivateDir: os.Getenv("LEGION_LAUNCHER_TEST_PRIVATE"),
-		Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
+		Token: os.Getenv("LEGION_LAUNCHER_TEST_TOKEN"), Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
 		StopGrace: grace,
 	})
 	if err != nil && ctx.Err() == nil {
@@ -95,21 +94,15 @@ func runAsPIDOne(t *testing.T, helper string) string {
 func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	t.Helper()
 	prefix := pidNamespace(t)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
+	token := ownToken("launcher-token")
+	listener := listenForLauncher(t, token)
 	g := &rig{t: t, listener: listener, private: t.TempDir(), result: make(chan error, 1)}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "GOMAXPROCS=1",
-		namespaceHelperEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(),
+		namespaceHelperEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(), "LEGION_LAUNCHER_TEST_TOKEN="+token,
 		"LEGION_LAUNCHER_TEST_PRIVATE="+g.private, "LEGION_LAUNCHER_TEST_GRACE="+grace.String(), self, "-test.run=^TestLauncherPIDOneHelper$")
 	command := exec.Command("sudo", args...)
 	var output bytes.Buffer
@@ -122,7 +115,11 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 		t.Fatal(err)
 	}
 	g.cancel = func() { _ = stdin.Close() }
-	go func() { g.result <- command.Wait() }()
+	go func() {
+		err := command.Wait()
+		listener.codeReturned(err)
+		g.result <- err
+	}()
 	t.Cleanup(func() {
 		g.cancel()
 		select {
