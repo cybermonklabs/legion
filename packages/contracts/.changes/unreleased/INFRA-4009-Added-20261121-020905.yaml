@@ -1,0 +1,5 @@
+kind: Added
+body: '`ReferenceTarget` carries the optional `status`: the issue''s status, on a member of `GET /api/v1/reference-targets` that names an issue that is not gone.'
+time: 2026-11-21T02:09:05.118402377Z
+custom:
+    Issue: INFRA-4009

@@ -36,9 +36,9 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // getReferenceTargets resolves many dispatch:// references in one read. For each ?ref= it answers
 // what that reference points at: its kind, the words a reader is shown for its target in place of
 // the target's text (refs.TargetNames, the same words GET /api/v1/references shows beside an edge
-// at that node), and whether the target is gone. The answer holds one member per ?ref= in the
-// request's order, each echoing the reference as the request wrote it, so a caller reads the
-// answer by index or by reference; a reference named twice is answered twice.
+// at that node), an issue's status, and whether the target is gone. The answer holds one member
+// per ?ref= in the request's order, each echoing the reference as the request wrote it, so a
+// caller reads the answer by index or by reference; a reference named twice is answered twice.
 //
 // It is a GET with one repeated parameter, not a POST of a list: a POST of the page goes through
 // the write store with an Idempotency-Key (packages/dispatch/web/src/features/writes/), so a POST
@@ -83,12 +83,13 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 
 // referenceTargets reads every ?ref= of the request, writes each id that a reference writes
 // short as its whole id in one batch (wholeReferences), and then resolves the references in one
-// query per node kind. The kind of each answer is the kind the reference itself names, which is
-// the kind its node resolves to (refs.TargetOf stores a block of an ask, a comment or a message
-// under its item's block kind, and those resolve to nodes of kind block), so a gone target is
-// answered under its kind too. A reference whose short id two items or more carry names no one
-// target, so it is looked up as nothing (the zero refs.Target, which has no name and no tree),
-// and is answered gone and ambiguous.
+// query per node kind, which reads an issue's status beside its title (refs.TargetNames). The
+// kind of each answer is the kind the reference itself names, which is the kind its node
+// resolves to (refs.TargetOf stores a block of an ask, a comment or a message under its item's
+// block kind, and those resolve to nodes of kind block), so a gone target is answered under its
+// kind too. A reference whose short id two items or more carry names no one target, so it is
+// looked up as nothing (the zero refs.Target, which has no name, no status and no tree), and is
+// answered gone and ambiguous.
 //
 // A reference is read past the whitespace around it, and echoed as the request wrote it, that
 // whitespace and an id written short included: the answer is read by index or by reference, and
@@ -136,7 +137,7 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 	}
 	for index, target := range named {
 		if name, found := names[target]; found {
-			answers[index].Name, answers[index].Gone = name, false
+			answers[index].Name, answers[index].Status, answers[index].Gone = name.Name, name.Status, false
 		}
 	}
 	if err := s.blockTrees(r.Context(), answers, named, trees); err != nil {
@@ -495,19 +496,21 @@ func withoutBlankEnds(lines string) string {
 }
 
 // referenceTargetsETag hashes the answer itself, every member in order: its reference, its kind,
-// whether it is gone, whether it is ambiguous, its name and its tree, each of the last two after
-// its length so no name's own line endings can read as another member's fields. The answer
-// depends on nothing else, so a set whose members all stand as they did is answered 304, and a
-// member renamed, deleted or restored changes the tag; for a caller given trees, a block whose
-// text changed anywhere changes the tag. A member gone because its short id is ambiguous and a
-// member gone because its target is deleted never share a tag, so a short id that stops being
-// ambiguous, or starts to be, changes the tag too. A caller given trees and one given none are
-// answered different bodies wherever a block is named, and different tags with them.
+// whether it is gone, whether it is ambiguous, its name, its status and its tree, each of the
+// last three after its length so no name's own line endings can read as another member's fields.
+// The answer depends on nothing else, so a set whose members all stand as they did is answered
+// 304, and a member renamed, deleted or restored, or an issue whose status moved, changes the
+// tag; for a caller given trees, a block whose text changed anywhere changes the tag. A member
+// gone because its short id is ambiguous and a member gone because its target is deleted never
+// share a tag, so a short id that stops being ambiguous, or starts to be, changes the tag too. A
+// caller given trees and one given none are answered different bodies wherever a block is named,
+// and different tags with them.
 func referenceTargetsETag(targets []model.ReferenceTarget) string {
 	hash := sha256.New()
 	for _, target := range targets {
-		_, _ = fmt.Fprintf(hash, "%s %s %t %t %d %s %d %s\n", target.Ref, target.Kind, target.Gone,
-			target.Ambiguous, len(target.Name), target.Name, len(target.TextTree), target.TextTree)
+		_, _ = fmt.Fprintf(hash, "%s %s %t %t %d %s %d %s %d %s\n", target.Ref, target.Kind, target.Gone,
+			target.Ambiguous, len(target.Name), target.Name, len(target.Status), target.Status,
+			len(target.TextTree), target.TextTree)
 	}
 	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
 }

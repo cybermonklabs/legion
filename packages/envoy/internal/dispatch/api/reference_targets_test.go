@@ -36,10 +36,10 @@ func referenceTargets(t *testing.T, handler http.Handler, references []string) (
 
 // One request resolves a whole set: a block that exists, a block a later version deleted, an
 // issue of its own, and that same issue written with whitespace around it. Each member carries
-// the kind its reference names, the words a reader is shown for its target, and whether that
-// target is gone — the deleted block answered, not refused, since a chip whose target is gone
-// still has to draw — and each echoes its reference as the request wrote it, so a caller that
-// matches the answer against the strings it sent finds every one of them.
+// the kind its reference names, the words a reader is shown for its target, an issue's status,
+// and whether that target is gone — the deleted block answered, not refused, since a chip whose
+// target is gone still has to draw — and each echoes its reference as the request wrote it, so a
+// caller that matches the answer against the strings it sent finds every one of them.
 //
 // A second request names items and blocks by ids written short, which are read as GET
 // /api/v1/references reads them: a comment, a block, an ask, a message and a block pinned to a
@@ -77,10 +77,10 @@ func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 	if want := (model.ReferenceTarget{Ref: gone, Kind: "block", Gone: true}); !reflect.DeepEqual(targets[1], want) {
 		t.Errorf("the deleted block answered %#v, want it gone and unnamed", targets[1])
 	}
-	if want := (model.ReferenceTarget{Ref: "dispatch://" + other.Key, Kind: "issue", Name: other.Title}); !reflect.DeepEqual(targets[2], want) {
+	if want := (model.ReferenceTarget{Ref: "dispatch://" + other.Key, Kind: "issue", Name: other.Title, Status: other.Status}); !reflect.DeepEqual(targets[2], want) {
 		t.Errorf("the other issue answered %#v, want %#v", targets[2], want)
 	}
-	if want := (model.ReferenceTarget{Ref: padded, Kind: "issue", Name: other.Title}); !reflect.DeepEqual(targets[3], want) {
+	if want := (model.ReferenceTarget{Ref: padded, Kind: "issue", Name: other.Title, Status: other.Status}); !reflect.DeepEqual(targets[3], want) {
 		t.Errorf("the padded reference answered %#v, want it resolved and echoed as it was written: %#v", targets[3], want)
 	}
 
@@ -115,10 +115,69 @@ func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 	}
 }
 
+// A member that names an issue carries the issue's status as its issues.status column stores it,
+// read beside its title, and every other member carries none and no key status at all: a block,
+// a comment, a document, and an issue nothing holds, which is gone.
+func TestTheReferenceTargetsReadAnswersAnIssuesStatusAlone(t *testing.T) {
+	handler, _ := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "First paragraph.\n")
+	other := createReferenceAPIIssue(t, handler, "CORE")
+	if issue.Status == "" || issue.Status == "in_progress" {
+		t.Fatalf("a new issue's status is %q, want one that is neither empty nor the status the test moves the other issue to", issue.Status)
+	}
+	if started := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+other.Key,
+		map[string]string{"status": "in_progress"}, "alice"); started.Code != http.StatusOK {
+		t.Fatalf("start the other issue: status=%d body=%s", started.Code, started.Body.String())
+	}
+	ids := blockIDsByText(t, handler, issue.PrimaryArtifactID)
+	if ids["First paragraph."] == "" {
+		t.Fatalf("the spec's blocks are %v, want the paragraph", ids)
+	}
+	block := "dispatch://" + issue.Key + "/spec#b-" + text.EncodeBlockID(ids["First paragraph."])
+	comment := createReferenceAPIComment(t, handler, other.Key, "A comment on the started issue.")
+	live := uploadDocument(t, handler, "/api/v1/issues/"+other.Key, "notes.md", "A note.\n")
+
+	wanted := []model.ReferenceTarget{
+		{Ref: "dispatch://" + other.Key, Kind: "issue", Name: other.Title, Status: "in_progress"},
+		{Ref: "dispatch://" + issue.Key, Kind: "issue", Name: issue.Title, Status: issue.Status},
+		{Ref: block, Kind: "block", Name: "First paragraph."},
+		{Ref: "dispatch://" + other.Key + "/comment/" + comment.ID, Kind: "comment", Name: "A comment on the started issue."},
+		{Ref: "dispatch://" + other.Key + "/artifact/" + live.Artifact.Slug, Kind: "artifact", Name: live.Artifact.Name},
+		{Ref: "dispatch://CORE-999", Kind: "issue", Gone: true},
+	}
+	references := make([]string, len(wanted))
+	for index, want := range wanted {
+		references[index] = want.Ref
+	}
+	response := referenceTargetsRequest(t, handler, references, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("read %d references: status=%d body=%s", len(references), response.Code, response.Body.String())
+	}
+	members := decodeBody[model.ReferenceTargets](t, response).Targets
+	if len(members) != len(wanted) {
+		t.Fatalf("the read answered %#v, want one member per reference", members)
+	}
+	for index, want := range wanted {
+		if !reflect.DeepEqual(members[index], want) {
+			t.Errorf("%s answered %#v, want %#v", want.Ref, members[index], want)
+		}
+	}
+	keys := decodeBody[struct {
+		Targets []map[string]any `json:"targets"`
+	}](t, response).Targets
+	for index, member := range keys {
+		if _, carried := member["status"]; carried != (index < 2) {
+			t.Errorf("%s answered %v, want the key status on a member naming an issue that is not gone alone", wanted[index].Ref, member)
+		}
+	}
+}
+
 // The ETag covers the whole answer: the same set, unchanged, is answered 304 under the same tag,
-// and a set one of whose members was renamed is answered the new name under a new tag. Nothing
-// else in the set moved, so a tag over the references alone would tell a page holding it 304 for
-// an answer that now names the issue differently.
+// and a set one of whose members was renamed is answered the new name under a new tag, as is a
+// set whose issue moved to another status and nothing else. Nothing else in the set moved, so a
+// tag over the references alone, or over the names alone, would tell a page holding it 304 for an
+// answer that now names the issue differently or draws it under another status.
 func TestTheReferenceTargetsETagAnswers304UntilAMemberChanges(t *testing.T) {
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -153,6 +212,39 @@ func TestTheReferenceTargetsETagAnswers304UntilAMemberChanges(t *testing.T) {
 	targets := decodeBody[model.ReferenceTargets](t, changed).Targets
 	if len(targets) != 2 || targets[1].Name != "Reference issue, renamed" {
 		t.Errorf("the changed set answered %#v, want the issue's new title", targets)
+	}
+
+	renamedTag := changed.Header().Get("ETag")
+	if again := referenceTargetsRequest(t, handler, set, renamedTag); again.Code != http.StatusNotModified {
+		t.Fatalf("the renamed set read again answered status=%d body=%s, want 304 under its tag", again.Code, again.Body.String())
+	}
+	started := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+other.Key, map[string]any{
+		"status": "in_progress",
+	}, "alice")
+	if started.Code != http.StatusOK {
+		t.Fatalf("start the other issue: status=%d body=%s", started.Code, started.Body.String())
+	}
+	moved := referenceTargetsRequest(t, handler, set, renamedTag)
+	if moved.Code != http.StatusOK {
+		t.Fatalf("the set whose issue moved status answered status=%d body=%s, want the new answer", moved.Code, moved.Body.String())
+	}
+	if tag := moved.Header().Get("ETag"); tag == renamedTag {
+		t.Errorf("the set whose issue moved status kept the ETag %s", tag)
+	}
+	targets = decodeBody[model.ReferenceTargets](t, moved).Targets
+	if len(targets) != 2 || targets[1].Name != "Reference issue, renamed" || targets[1].Status != "in_progress" {
+		t.Errorf("the set whose issue moved status answered %#v, want the same title under the status in_progress", targets)
+	}
+}
+
+// The tag hashes each member's status: two answers that differ in an issue's status alone are
+// answered under two tags.
+func TestTheReferenceTargetsETagHashesAMembersStatus(t *testing.T) {
+	triaged := model.ReferenceTarget{Ref: "dispatch://CORE-1", Kind: "issue", Name: "An issue", Status: "triage"}
+	started := triaged
+	started.Status = "in_progress"
+	if referenceTargetsETag([]model.ReferenceTarget{triaged}) == referenceTargetsETag([]model.ReferenceTarget{started}) {
+		t.Errorf("an answer whose issue is %q and one whose issue is %q share a tag", triaged.Status, started.Status)
 	}
 }
 
@@ -223,7 +315,7 @@ func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testin
 	members := decodeBody[model.ReferenceTargets](t, answered).Targets
 	wanted := []model.ReferenceTarget{
 		{Ref: short, Kind: "block", Name: "", Gone: true, Ambiguous: true},
-		{Ref: reference, Kind: "issue", Name: issue.Title},
+		{Ref: reference, Kind: "issue", Name: issue.Title, Status: issue.Status},
 	}
 	if !reflect.DeepEqual(members, wanted) {
 		t.Fatalf("a set that holds a block prefix two blocks carry answered %#v, want %#v", members, wanted)

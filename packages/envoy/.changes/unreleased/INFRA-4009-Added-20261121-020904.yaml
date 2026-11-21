@@ -1,0 +1,5 @@
+kind: Added
+body: '`GET /api/v1/reference-targets` answers `status` on each member that names an issue that is not gone: the issue''s status as stored (`in_progress`, `done`), read in the statement that reads its title; no other member carries the key. The read''s ETag covers each status, so an issue that moves to another status changes the tag.'
+time: 2026-11-21T02:09:04.662164955Z
+custom:
+    Issue: INFRA-4009
