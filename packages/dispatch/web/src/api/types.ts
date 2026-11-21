@@ -173,6 +173,7 @@ export type {
   InboxReadRequest,
   InboxReadResponse,
   InboxRow,
+  InvitationAnswer,
   Issue,
   IssueAskRow,
   IssueAskThreadRow,

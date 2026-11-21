@@ -626,12 +626,12 @@ func (s *server) resetProjectAccessPerson(w http.ResponseWriter, r *http.Request
 }
 
 // withOwnersPasskeys adds to answer, read in q, the owner's passkey fields (model.ProjectAccess's
-// Passkeys, Invitable and ListedByAnotherOwner) when passkey sign-in is on and the caller is the
-// project's owner in a browser session, the one caller who may make a link; every other answer
-// carries none. Each passkey names who made the link that enrolled it and, where viewer sees it,
-// that link's project: a project of another owner the reader does not see is left out, as every
-// read leaves it out. A person a project of another owner names directly is listed as such and is
-// not invitable, as the link route refuses them (409 LISTED_BY_ANOTHER_OWNER).
+// Passkeys, Invitable, ListedByAnotherOwner and OpenInvitations) when passkey sign-in is on and the
+// caller is the project's owner in a browser session, the one caller who may make a link; every
+// other answer carries none. Each passkey names who made the link that enrolled it and, where
+// viewer sees it, that link's project: a project of another owner the reader does not see is left
+// out, as every read leaves it out. A person a project of another owner names directly is listed
+// as such and is not invitable, as the link route refuses them (409 LISTED_BY_ANOTHER_OWNER).
 func (s *server) withOwnersPasskeys(ctx context.Context, q store.PasskeyReader, answer model.ProjectAccess, caller model.Actor, viewer *model.Viewer) (model.ProjectAccess, error) {
 	if s.deps.Passkeys == nil || answer.Owner != caller.ID || !atBrowserAs(caller) {
 		return answer, nil
@@ -666,7 +666,12 @@ func (s *server) withOwnersPasskeys(ctx context.Context, q store.PasskeyReader, 
 			invitable = append(invitable, person)
 		}
 	}
+	open, err := store.OpenInvitations(ctx, q, answer.Project)
+	if err != nil {
+		return model.ProjectAccess{}, err
+	}
 	answer.Passkeys, answer.Invitable, answer.ListedByAnotherOwner = &passkeys, &invitable, &others
+	answer.OpenInvitations = &open
 	return answer, nil
 }
 

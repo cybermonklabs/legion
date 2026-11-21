@@ -401,6 +401,27 @@ func FullMembers(ctx context.Context, q PasskeyReader, emails []string) ([]strin
 	return full, nil
 }
 
+// OpenInvitations answers each link of project that can still enroll someone: unused and not
+// lapsed on the database's clock, sorted by email and then by when it was made; empty, never nil,
+// for none. It reads no token hash.
+func OpenInvitations(ctx context.Context, q PasskeyReader, project string) ([]model.OpenInvitation, error) {
+	rows, err := q.Query(ctx, `select email, made_at, expires_at from outside_invitations
+		where project_key = $1 and used_at is null and expires_at > now()
+		order by email collate "C", made_at`, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the project's open invitations: %w", err)
+	}
+	open, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.OpenInvitation, error) {
+		var invitation model.OpenInvitation
+		err := row.Scan(&invitation.Email, &invitation.MadeAt, &invitation.ExpiresAt)
+		return invitation, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the project's open invitations: %w", err)
+	}
+	return append([]model.OpenInvitation{}, open...), nil
+}
+
 // ListedByOtherOwners answers which of emails a project whose owner is not owner names directly,
 // sorted, [] for none: the people ListedByAnotherOwner refuses a link of owner for, read at once
 // for the owner's access answer.

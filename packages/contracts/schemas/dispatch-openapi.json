@@ -10262,7 +10262,7 @@
     },
     "/api/v1/projects/{key}/access": {
       "get": {
-        "description": "Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), the owner's browser session also gets passkeys, [{email, enrolled_at, made_by, project?}] for each passkey of a person people names, sorted by email then enrolled_at: made_by is who made the link that enrolled it, and project that link's project, absent where the reader does not see it; invitable, the emails of people the owner can make a link for now (on no domain of the company's Workspace, no full member's, and named by no project of another owner), sorted; and listed_by_another_owner, the emails of people from outside (never a full member's or a Workspace address, which no link is made for whatever else names them) a project of another owner names directly, for whom the owner makes no link until that project's owner takes them off its list, sorted; each [] for none, and all three absent from every other answer. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope.",
+        "description": "Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), the owner's browser session also gets passkeys, [{email, enrolled_at, made_by, project?}] for each passkey of a person people names, sorted by email then enrolled_at: made_by is who made the link that enrolled it, and project that link's project, absent where the reader does not see it; invitable, the emails of people the owner can make a link for now (on no domain of the company's Workspace, no full member's, and named by no project of another owner), sorted; listed_by_another_owner, the emails of people from outside (never a full member's or a Workspace address, which no link is made for whatever else names them) a project of another owner names directly, for whom the owner makes no link until that project's owner takes them off its list, sorted; and open_invitations, [{email, made_at, expires_at}] for each link of the project that can still enroll someone (unused and not lapsed), sorted by email then made_at, with no token; each [] for none, and all four absent from every other answer. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope.",
         "operationId": "getApiV1ProjectsByKeyAccess",
         "parameters": [
           {
@@ -25981,6 +25981,27 @@
         ],
         "type": "object"
       },
+      "OpenInvitation": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "made_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "made_at",
+          "expires_at"
+        ],
+        "type": "object"
+      },
       "OutgoingReference": {
         "properties": {
           "artifact": {
@@ -26909,6 +26930,12 @@
               "array",
               "null"
             ]
+          },
+          "open_invitations": {
+            "items": {
+              "$ref": "#/components/schemas/OpenInvitation"
+            },
+            "type": "array"
           },
           "owner": {
             "type": "string"

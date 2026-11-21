@@ -355,9 +355,6 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
   const [personDraft, setPersonDraft] = useState("");
   const [groupDraft, setGroupDraft] = useState("");
   const [channelsDraft, setChannelsDraft] = useState<string | null>(null);
-  // How many Resets of each person landed while this panel is open: a row lets go of the link it
-  // shows when one does, since that Reset deleted it (`AccessPersonRow`).
-  const [resetsLanded, setResetsLanded] = useState<ReadonlyMap<string, number>>(() => new Map());
   const access = useQuery(projectAccessQuery(project));
   // The groups are only the owner's to add, and the list is the deployment's, which Dispatch
   // refuses a restricted member (`useRestrictedMember`); an owner is a full member, so such a
@@ -384,10 +381,6 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
           .join(" ") === change.channels.join(" ")
           ? null
           : draft
-      );
-    } else if (change.kind === "reset-person") {
-      setResetsLanded((landed) =>
-        new Map(landed).set(change.email, (landed.get(change.email) ?? 0) + 1)
       );
     }
   });
@@ -684,7 +677,6 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
                 removing={pendingOf(
                   (change) => change.kind === "remove-person" && change.email === email
                 )}
-                resetsLanded={resetsLanded.get(email) ?? 0}
                 resetting={pendingOf(
                   (change) => change.kind === "reset-person" && change.email === email
                 )}

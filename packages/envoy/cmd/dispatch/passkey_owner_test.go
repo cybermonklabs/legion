@@ -438,6 +438,69 @@ func TestTheOwnersAnswerNamesOnlyPeopleFromOutsideAsListedByAnotherOwner(t *test
 	}
 }
 
+// TestTheOwnersAnswerListsTheProjectsOpenLinks (R5): alice's access answer lists each link of PRIV
+// that can still enroll someone, with the made_at her Invite answered and no token, so her page
+// drops a link it shows once something else ended it. A newer link ends the older one, a use
+// ends the link it used, and a Reset ends the person's unused links: each leaves the list.
+//
+// Control: read the open links without `used_at is null` (store.OpenInvitations), and the used
+// link stays listed and the row fails.
+func TestTheOwnersAnswerListsTheProjectsOpenLinks(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	type invitation struct {
+		Email  string `json:"email"`
+		MadeAt string `json:"made_at"`
+	}
+	open := func(what string) []invitation {
+		t.Helper()
+		response := r.asOwner(http.MethodGet, "/api/v1/projects/PRIV/access", nil)
+		var answer struct {
+			OpenInvitations *[]invitation `json:"open_invitations"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &answer) != nil || answer.OpenInvitations == nil {
+			t.Fatalf("alice's access answer %s: %d %s, want 200 with open_invitations", what, response.Code, response.Body.String())
+		}
+		if strings.Contains(response.Body.String(), "/enroll#") {
+			t.Fatalf("alice's access answer %s holds a link's token: %s", what, response.Body.String())
+		}
+		return *answer.OpenInvitations
+	}
+	madeAt := func(response *httptest.ResponseRecorder) string {
+		t.Helper()
+		var answer struct {
+			MadeAt string `json:"made_at"`
+		}
+		if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &answer) != nil {
+			t.Fatalf("alice's Invite answered %d %s, want 201", response.Code, response.Body.String())
+		}
+		return answer.MadeAt
+	}
+	if got := open("before any Invite"); len(got) != 0 {
+		t.Fatalf("open_invitations before any Invite = %+v, want []", got)
+	}
+	first := madeAt(r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/invitations", nil))
+	if got := open("after the first Invite"); !slices.Equal(got, []invitation{{outsiderEmail, first}}) {
+		t.Fatalf("open_invitations after the first Invite = %+v, want the one link made at %s", got, first)
+	}
+	secondResponse := r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/invitations", nil)
+	second := madeAt(secondResponse)
+	if got := open("after a second Invite"); !slices.Equal(got, []invitation{{outsiderEmail, second}}) {
+		t.Fatalf("open_invitations after a second Invite = %+v, want the newer link alone, made at %s", got, second)
+	}
+	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
+	r.enrolled(t, device, linkToken(t, "the second link", secondResponse), outsiderEmail)
+	if got := open("after the enrollment"); len(got) != 0 {
+		t.Fatalf("open_invitations after the enrollment used the link = %+v, want []", got)
+	}
+	r.invite(t, outsiderEmail)
+	if reset := r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/reset", nil); reset.Code != http.StatusOK {
+		t.Fatalf("alice's Reset answered %d %s, want 200", reset.Code, reset.Body.String())
+	}
+	if got := open("after the Reset"); len(got) != 0 {
+		t.Fatalf("open_invitations after the Reset = %+v, want []", got)
+	}
+}
+
 // TestTheOwnersResetEndsSignInAndDeletesPasskeys (R5): the owner's Reset of a person the list still
 // names ends their sign-in and deletes their passkeys at once, and leaves them on the list, so a
 // new link enrolls them again. Reset is the owner's browser's alone: a full member's address is

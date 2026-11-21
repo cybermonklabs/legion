@@ -5,7 +5,10 @@ body: |-
   `PasskeyInvitation`, the project it is for and the owner who made it), `PasskeyRequestOptions`,
   `PasskeyRegistration`, `PasskeyAssertion`, `PasskeyEnrollmentStart` and `PasskeySignedIn`, with
   `PASSKEY_REFUSALS` (`PasskeyRefusal`), the codes a ceremony is refused with, and
-  `AUTH_SIGN_IN_PASSKEY`, the `sign_in` of the outside origin's `401 NO_IDENTITY`.
+  `AUTH_SIGN_IN_PASSKEY`, the `sign_in` of the outside origin's `401 NO_IDENTITY`. The generated
+  `ProjectAccess` gains `open_invitations` (`OpenInvitation`: `{email, made_at, expires_at}`), the
+  owner's list of the project's links that can still enroll someone, and `InvitationAnswer`, the
+  owner's Invite answer, carries `made_at`.
 time: 2026-11-20T23:23:03Z
 custom:
     Issue: passkeys-web

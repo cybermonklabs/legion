@@ -5,7 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
-import type { AccessGroup, ProjectAccess } from "../../api/types";
+import type { AccessGroup, InvitationAnswer, ProjectAccess } from "../../api/types";
 import { ProjectAccessPanel } from "./ProjectAccessPanel";
 
 /** CORE's access as the server answers it: owned by alice, naming carol and the group crew. */
@@ -39,7 +39,9 @@ export const ops: AccessGroup = {
 /** The panel for CORE, signed in as `login` through the identity the shell already read: the
  *  query client holds `/auth/whoami`'s answer fresh, as the shell's leaves it, so a panel that
  *  asked for the identity again would show in `whoAmI`. The access read answers what the last
- *  write left, as Dispatch does: `lands(next)` is a write that leaves `next` and answers it. */
+ *  write left, as Dispatch does: `lands(next)` is a write that leaves `next` and answers it, and
+ *  `invites(...links)` is the owner's Invite, each press answering the next of `links` and leaving
+ *  its link in the answer's `open_invitations` in place of the person's earlier one. */
 export function renderPanel({
   answer = access(),
   groups = [crew, ops],
@@ -80,6 +82,29 @@ export function renderPanel({
     lands: (next: ProjectAccess | Promise<ProjectAccess>) => async (): Promise<ProjectAccess> => {
       stored = await next;
       return stored;
+    },
+    invites: (...links: InvitationAnswer[]) => {
+      const invite = spyOn(api, "createProjectInvitation");
+      const answer = (link: InvitationAnswer) => async (_project: string, email: string) => {
+        if (stored.open_invitations !== undefined) {
+          stored = {
+            ...stored,
+            open_invitations: [
+              ...stored.open_invitations.filter((open) => open.email !== email),
+              { email, expires_at: link.expires_at, made_at: link.made_at },
+            ],
+          };
+        }
+        return link;
+      };
+      for (const link of links) {
+        invite.mockImplementationOnce(answer(link));
+      }
+      const last = links.at(-1);
+      if (last !== undefined) {
+        invite.mockImplementation(answer(last));
+      }
+      return invite;
     },
     queryClient,
     /** Closes the panel and opens it again on the same query client, as leaving the tab and

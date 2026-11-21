@@ -448,6 +448,21 @@ type ProjectAccess struct {
 	// LISTED_BY_ANOTHER_OWNER) until that project's owner takes them off its list, or an operator
 	// does.
 	ListedByAnotherOwner *[]string `json:"listed_by_another_owner,omitempty"`
+	// OpenInvitations is, in that same answer alone, each link of this project that can still
+	// enroll someone: unused and not lapsed, sorted by email and then by when it was made, [] for
+	// none. It holds no token. The owner's page drops a link it shows once a read made after that
+	// link landed no longer holds it: a Reset, a newer link, a delisting or the person's
+	// enrollment ended it, wherever that was done.
+	OpenInvitations *[]OpenInvitation `json:"open_invitations,omitempty"`
+}
+
+// OpenInvitation is one link of a project that can still enroll someone
+// (ProjectAccess.OpenInvitations): the address it was made for, when it was made, and when it
+// lapses, both on the database's clock, as the owner's Invite answered them.
+type OpenInvitation struct {
+	Email     string    `json:"email"`
+	MadeAt    time.Time `json:"made_at"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // EnrolledPasskey is one passkey of a person (ProjectAccess.Passkeys): when it was enrolled, who

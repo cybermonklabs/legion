@@ -1,9 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, api, apiErrorMessage } from "../../api/client";
 import { projectAccessQuery } from "../../api/queries";
-import type { ProjectAccess } from "../../api/types";
+import type { InvitationAnswer, ProjectAccess } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import {
@@ -19,14 +19,6 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** One enrolled passkey as the owner's access answer lists it. */
 type EnrolledPasskey = NonNullable<ProjectAccess["passkeys"]>[number];
-
-/** The link a press of Invite made: the outside origin's `/enroll#<token>`, when Dispatch made it
- *  and when it stops, both on Dispatch's clock, which a passkey's `enrolled_at` is read on too. */
-interface Invitation {
-  readonly url: string;
-  readonly made_at: string;
-  readonly expires_at: string;
-}
 
 /** The longest delay `setTimeout` keeps: 2^31 − 1 ms, about 24.8 days. */
 const LONGEST_TIMEOUT_MS = 2_147_483_647;
@@ -77,14 +69,17 @@ const linkFieldClass = `min-h-11 w-full min-w-0 rounded-md px-3 py-2 font-mono t
  * approved.
  *
  * The link is shown only in this row, once: its token is in the answer alone, which Dispatch keeps
- * under no write key, so a later Invite makes a new link, which ends this one. A Reset deletes it,
- * so the row stops showing it once the owner confirms the Reset; and the person's enrollment uses
- * it, so the row stops showing it once the access list, which the row reads again every few
- * seconds while it shows a link, names a passkey enrolled through this project's link after the
- * link was made (`made_at`). A new link and when it stops, and a link made whose answer was lost,
- * are announced to a screen reader through status regions the row holds while Invite can be
- * pressed, since a region that mounts with its words already in it is not announced by every
- * reader.
+ * under no write key. The row lets go of it when a new link lands, when it lapses, and when a read
+ * of the access list made after it landed no longer lists it open (`open_invitations`): a Reset
+ * here or in another tab, a newer link from another tab, a delisting, or the person's enrollment
+ * ended it. A press Dispatch refuses makes no new link, so it leaves the one shown. While the
+ * person is not invitable (another owner's project names them, or they became a full member),
+ * the enrollment refuses the link, so the row does not offer it, and offers it again if they
+ * become invitable while it is still open. The row reads the access list again every few seconds
+ * while it holds a link, shown or not. A new link and when it stops, and a link made whose answer
+ * was lost, are announced to a screen reader through status regions the row holds while Invite
+ * can be pressed, since a region that mounts with its words already in it is not announced by
+ * every reader.
  */
 export function AccessPersonRow({
   email,
@@ -98,7 +93,6 @@ export function AccessPersonRow({
   refusal,
   refusalShownBy,
   removing,
-  resetsLanded,
   resetting,
 }: {
   readonly email: string;
@@ -116,23 +110,29 @@ export function AccessPersonRow({
   readonly refusal: string | null;
   readonly refusalShownBy: string | undefined;
   readonly removing: boolean;
-  /** How many Resets of this person landed while the panel was open: each one deleted the
-   *  person's unused links, so the row lets go of the link it shows. */
-  readonly resetsLanded: number;
   readonly resetting: boolean;
 }): ReactNode {
   const linkId = useId();
-  const [invitation, setInvitation] = useState<Invitation | undefined>(undefined);
+  const queryClient = useQueryClient();
+  const accessKey = projectAccessQuery(project).queryKey;
+  const [invitation, setInvitation] = useState<InvitationAnswer | undefined>(undefined);
   const [copied, setCopied] = useState(false);
-  const invite = useKeyedWrite<Invitation, void>({
+  // How many answers the access read had when the shown link landed. A read before it cannot list
+  // the link, so only a later answer says whether it is still open.
+  const answersAtLanding = useRef(0);
+  const invite = useKeyedWrite<InvitationAnswer, void>({
     inline: true,
     label: () => `Make a link for ${email} on ${project}`,
     mutationKey: ["project-invitation", project, email],
-    onMutate: () => {
-      setInvitation(undefined);
+    // The link shown stays until a new one lands: a press Dispatch refuses ends nothing.
+    onSuccess: (answer) => {
+      if (answer === null) return;
+      answersAtLanding.current = queryClient.getQueryState(accessKey)?.dataUpdateCount ?? 0;
+      setInvitation(answer);
       setCopied(false);
+      // A read already out began before the link existed: it is cancelled, and a new one starts.
+      void queryClient.refetchQueries({ queryKey: accessKey });
     },
-    onSuccess: (answer) => setInvitation(answer ?? undefined),
     method: "POST",
     write: (_none, bounds) => api.createProjectInvitation(project, email, bounds),
   });
@@ -142,20 +142,8 @@ export function AccessPersonRow({
     }
     onReset();
   };
-  // A Reset that landed deleted the person's unused links with their passkeys, so the link an
-  // earlier Invite showed here, or made with its answer lost, enrolls nobody now: the row stops
-  // offering it. A Reset Dispatch refused, or one still out, deletes nothing, and the link stays.
-  const resetsSeen = useRef(resetsLanded);
-  const forgetUnansweredLink = invite.forgetUnanswered;
-  useEffect(() => {
-    if (resetsSeen.current === resetsLanded) return;
-    resetsSeen.current = resetsLanded;
-    setInvitation(undefined);
-    setCopied(false);
-    forgetUnansweredLink();
-  }, [resetsLanded, forgetUnansweredLink]);
   // A link stops working at its expires_at: the row stops offering it then, which also ends its
-  // poll, rather than show a dead link as one that "works once".
+  // reads, rather than show a dead link as one that "works once".
   useEffect(() => {
     if (invitation === undefined) return;
     const left = Date.parse(invitation.expires_at) - Date.now();
@@ -169,31 +157,31 @@ export function AccessPersonRow({
     const lapse = setTimeout(() => setInvitation(undefined), left);
     return () => clearTimeout(lapse);
   }, [invitation]);
+  // While the row holds a link, shown or hidden, the access list is read again now and then: no
+  // Dispatch event tells this page that the person enrolled, that another tab ended the link, or
+  // that another owner's listing ended.
+  const read = useQuery({
+    ...projectAccessQuery(project),
+    enabled: invitation !== undefined,
+    refetchInterval: invitation !== undefined ? SHOWN_LINK_POLL_MS : false,
+  });
+  const open = read.data?.open_invitations;
+  const ended =
+    invitation !== undefined &&
+    open !== undefined &&
+    (queryClient.getQueryState(accessKey)?.dataUpdateCount ?? 0) > answersAtLanding.current &&
+    !open.some(
+      (listed) =>
+        listed.email === email && Date.parse(listed.made_at) === Date.parse(invitation.made_at)
+    );
+  useEffect(() => {
+    if (!ended) return;
+    setInvitation(undefined);
+    setCopied(false);
+  }, [ended]);
   const shown = passkeys !== undefined;
   const enrolled = passkeys ?? [];
-  // A passkey enrolled through this project's link after this link was made used this link: a
-  // newer link of the project ends this one, so no other link of this project enrolled it. The row
-  // stops offering it. A passkey of another project's link, or one enrolled before this link (the
-  // person's first device, when the link is for a second one), leaves it shown. While a project of
-  // another owner names the person, the enrollment refuses the link (LISTED_BY_ANOTHER_OWNER), so
-  // the row does not offer it then either, and says why beside it.
-  const link =
-    invitation !== undefined &&
-    (listedByAnotherOwner ||
-      enrolled.some(
-        (passkey) =>
-          passkey.project === project &&
-          Date.parse(passkey.enrolled_at) > Date.parse(invitation.made_at)
-      ))
-      ? undefined
-      : invitation;
-  // While the row shows a link, the access list is read again now and then, so the passkey the
-  // person enrolls with it shows here, and the used link goes, with no reload.
-  useQuery({
-    ...projectAccessQuery(project),
-    enabled: link !== undefined,
-    refetchInterval: link !== undefined ? SHOWN_LINK_POLL_MS : false,
-  });
+  const link = invitation !== undefined && !ended && invitable ? invitation : undefined;
   const lostAnswer = invite.unanswered !== undefined && !invite.isPending;
 
   return (

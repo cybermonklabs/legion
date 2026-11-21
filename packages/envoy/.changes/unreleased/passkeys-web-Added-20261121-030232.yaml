@@ -10,7 +10,9 @@ body: |-
   sign-in off too, so the outside origin's sign-in page never offers a Google sign-in, unless
   `DISPATCH_SIGNIN_OUTSIDE=1` signs people from outside in with Google there. The owner's link
   (`POST /api/v1/projects/{key}/access/people/{email}/invitations`) answers `made_at` beside `url`
-  and `expires_at`, so the Access tab tells a link the person used from one they have not.
+  and `expires_at`, and the owner's access answer lists `open_invitations`, `[{email, made_at,
+  expires_at}]` for each link of the project that can still enroll someone, with no token, so the
+  Access tab drops a link it shows once something ended it, from this tab or another.
 time: 2026-11-21T03:02:32Z
 custom:
     Issue: passkeys-web
