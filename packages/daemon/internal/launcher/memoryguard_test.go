@@ -431,7 +431,7 @@ func (r *guardRig) nextWait() guardWait {
 	select {
 	case w := <-r.clock.waits:
 		return w
-	case <-time.After(testwait.Bounded(r.t, time.Minute, time.Second)):
+	case <-time.After(testwait.Remaining(r.t)):
 		r.t.Fatalf("the guard never waited for its next reading; its log:\n%s", r.log())
 	}
 	return guardWait{}
@@ -498,7 +498,7 @@ func scanTable(t *testing.T, pod *guardPod) *memoryguard.Table {
 	select {
 	case table := <-tables:
 		return table
-	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+	case <-time.After(testwait.Remaining(t)):
 		t.Fatal("the guard never scanned the fake pod")
 	}
 	return nil
@@ -1058,7 +1058,7 @@ func (f *fleet) dropConnection(role string) {
 	ended := func() int { return strings.Count(f.stderr.String(), role+": launcher: daemon connection: ") }
 	before := ended()
 	_ = f.role(role).conn.Close()
-	if !testwait.Holds(testwait.Bounded(f.t, time.Minute, time.Second), testwait.Poll, func() bool { return ended() > before }) {
+	if !testwait.Holds(testwait.Remaining(f.t), testwait.Poll, func() bool { return ended() > before }) {
 		f.t.Fatalf("the launcher never saw the %s's connection end; its log: %s", role, f.stderr.String())
 	}
 }
@@ -1173,17 +1173,16 @@ func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T)
 		defer close(sent)
 		m.openMemoryReports(shimwire.NewWriter(conn), true)
 	}()
-	bound := testwait.Bounded(t, time.Minute, time.Second)
 	select {
 	case <-conn.writing:
-	case <-time.After(bound):
+	case <-time.After(testwait.Remaining(t)):
 		t.Fatal("the role's sender never began to write the oldest report")
 	}
 	m.queueMemoryKill(report(maxWaitingMemoryKills + 1))
 	close(conn.release)
 	select {
 	case <-sent:
-	case <-time.After(bound):
+	case <-time.After(testwait.Remaining(t)):
 		t.Fatal("the role's sender never finished writing the waiting reports")
 	}
 

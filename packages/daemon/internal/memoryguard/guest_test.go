@@ -338,7 +338,7 @@ func (h *guestHarness) nextWait() fakeWait {
 		return w
 	case <-h.done:
 		h.t.Fatalf("Run returned before ctx ended; the log:\n%s", strings.Join(h.log.all(), "\n"))
-	case <-time.After(testwait.Bounded(h.t, time.Minute, time.Second)):
+	case <-time.After(testwait.Remaining(h.t)):
 		h.t.Fatalf("the watch never waited for its next scan; the log:\n%s", strings.Join(h.log.all(), "\n"))
 	}
 	return fakeWait{}
@@ -369,7 +369,7 @@ func (h *guestHarness) tickReadingStatus(pod *fakePod, pid int, status string, b
 	var o openedPipe
 	select {
 	case o = <-open:
-	case <-time.After(testwait.Bounded(h.t, time.Minute, time.Second)):
+	case <-time.After(testwait.Remaining(h.t)):
 		h.t.Fatalf("no evidence pass read pid %d's status; the log:\n%s", pid, h.logged())
 	}
 	if o.err != nil {
