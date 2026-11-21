@@ -166,6 +166,17 @@ type Deps struct {
 	// never stops in the first place - ciphertest and the in-process rigs - for which the broker
 	// is never draining.
 	Draining func() bool
+	// DatabasePing is the Postgres ping GET /healthz answers from; nil means Enroll.Store.Pool.Ping.
+	// The edge answers from it through a one-second cache (cachedPing), the API port on each check.
+	DatabasePing func(context.Context) error
+}
+
+// pingDatabase pings Postgres: DatabasePing when set, and the store's pool otherwise.
+func (d Deps) pingDatabase(ctx context.Context) error {
+	if d.DatabasePing != nil {
+		return d.DatabasePing(ctx)
+	}
+	return d.Enroll.Store.Pool.Ping(ctx)
 }
 
 type server struct {
@@ -759,7 +770,7 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "SHUTTING_DOWN", "the broker is shutting down and is no longer taking new traffic")
 		return
 	}
-	ping := s.deps.Enroll.Store.Pool.Ping
+	ping := s.deps.pingDatabase
 	if s.health != nil {
 		ping = s.health.result
 	}

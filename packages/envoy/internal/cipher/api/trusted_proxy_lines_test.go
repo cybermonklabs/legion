@@ -10,7 +10,8 @@ import (
 // own text and the last the one the proxy wrote, keys its buckets on the last entry of the last
 // line. The proxy's entry is there whether it merges every line into one, appends to the last line
 // it was sent, or adds a line of its own after the client's, so reading the first line keys the
-// bucket on an address the client chose (the edge reads its header the same way: edgeClientAddress).
+// bucket on an address the client chose (the edge, which Google's balancer writes one line for,
+// refuses a request with more than one instead: edgeClientAddress).
 //
 // The named revert: read the header's first line (r.Header.Get), and the client's own last entry
 // keys the bucket.

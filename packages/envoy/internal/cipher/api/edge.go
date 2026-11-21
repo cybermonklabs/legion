@@ -114,7 +114,7 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 		loginKeyPrefix:    edgeLoginKeyPrefix,
 		loginKeyByAddress: true,
 		verificationURI:   edge.VerificationURL,
-		health:            &cachedPing{ping: func(ctx context.Context) error { return deps.Enroll.Store.Pool.Ping(ctx) }, now: time.Now},
+		health:            &cachedPing{ping: deps.pingDatabase, now: time.Now},
 	}
 	for _, route := range routes() {
 		pattern := route.Method + " " + route.Pattern

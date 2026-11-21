@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,6 +36,13 @@ const testEdgeURL = "https://secrets.edge.example"
 // a test of it may inspect the mux and send it only what the mux answers itself.
 func newTestEdgeMux(t *testing.T) *http.ServeMux {
 	t.Helper()
+	return newTestEdgeMuxPinging(t, nil)
+}
+
+// newTestEdgeMuxPinging is newTestEdgeMux with ping as the Deps' DatabasePing, the ping its GET
+// /healthz answers from.
+func newTestEdgeMuxPinging(t *testing.T, ping func(context.Context) error) *http.ServeMux {
+	t.Helper()
 	provider, err := oauth.New(oauth.Config{
 		Secret: make([]byte, 32), DeviceLifetime: time.Minute, AccessLifetime: time.Minute, RefreshLifetime: time.Hour,
 		VerificationURL: "https://dispatch.internal.example/credentials/machine", ProofSkew: time.Minute,
@@ -52,10 +61,32 @@ func newTestEdgeMux(t *testing.T) *http.ServeMux {
 			Before: func(context.Context, oauth2.GrantType, map[string]any) error { return nil },
 			After:  func(context.Context, oauth2.GrantType, map[string]any) (map[string]any, error) { return nil, nil },
 		},
+		DatabasePing: ping,
 	}
 	mux := http.NewServeMux()
 	RegisterEdge(mux, deps, Edge{URL: testEdgeURL, VerificationURL: "https://dispatch.edge.example/credentials/machine", WorkspaceDomains: []string{"example.com"}})
 	return mux
+}
+
+// TestTheEdgesHealthIsServedFromItsCachedPing: RegisterEdge serves the edge's GET /healthz from
+// the cached ping (cachedPing) over the Deps' database ping, so fifty checks of the edge within a
+// second cost one ping of the database, and each answers 200 ok.
+//
+// The named revert: build the edge's server with no cachedPing, so its GET /healthz pings on each
+// check as the API port's does, and the fifty checks cost fifty pings.
+func TestTheEdgesHealthIsServedFromItsCachedPing(t *testing.T) {
+	var pings atomic.Int64
+	mux := newTestEdgeMuxPinging(t, func(context.Context) error { pings.Add(1); return nil })
+	for i := range 50 {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ok"`) {
+			t.Fatalf("check %d of the edge's GET /healthz = %d %s, want 200 ok", i+1, w.Code, w.Body)
+		}
+	}
+	if got := pings.Load(); got != 1 {
+		t.Fatalf("fifty checks of the edge's GET /healthz pinged the database %d times, want 1", got)
+	}
 }
 
 // TestTheEdgeMountsOnlyTheDeviceLoginRoutes walks every row of the broker's route table and asks
