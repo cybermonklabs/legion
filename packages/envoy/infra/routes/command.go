@@ -16,13 +16,15 @@ import (
 const usageText = `usage: envoy-infra routes record --namespace <ns> --statefulset <name> --out <file> [--context <kubeconfig context>] [--kubectl <path>] [--route-port <port>]
        envoy-infra routes check --namespace <ns> --statefulset <name> --record <file> [--context <kubeconfig context>] [--kubectl <path>] [--monitor-port <port>] [--route-port <port>]
   record, once routeAuthorization's env stage has rolled every pod, before routes, run as the person
-    who deploys, through their kubeconfig context: saves each pod's uid and its nats container's
-    restart count and start, and the context and server of the cluster it read and the digest of
-    each of its CA certificates ("in-cluster" in a pod with no kubeconfig and no --context, which
-    reads the cluster as the pod's ServiceAccount); exit 0 when recorded, 2 otherwise, and while
-    any pod's route port already requires authorization. A record is valid only for a secretKey
-    that has never been under authorization: after a rollback below authorization, or any exit 1 of
-    check, rotate to a new secretKey first.
+    who deploys, through a kubeconfig context that holds the cluster's CA (gcloud container clusters
+    get-credentials without --dns-endpoint; a context with no CA records none, and the Job's check
+    then exits 2): saves each pod's uid and its nats container's restart count and start, and the
+    context and server of the cluster it read and the digest of each of its CA certificates
+    ("in-cluster" in a pod with no kubeconfig and no --context, which reads the cluster as the
+    pod's ServiceAccount); exit 0 when recorded, 2 otherwise, and while any pod's route port
+    already requires authorization. A record is valid only for a secretKey that has never been under
+    authorization: after a rollback below authorization, or any exit 1 of check, rotate to a new
+    secretKey first.
   check, once authorization is on every pod, run as the operator's Job, of the record's cluster:
     one CA certificate shared, or, when either side holds none, its context and server; exit 0
     when authorization is in force with a password and every route since it loaded joined two of
@@ -188,7 +190,7 @@ func check(ctx context.Context, target Target, recordPath string, stdout, stderr
 			return 2
 		}
 		fmt.Fprintf(stderr, "envoy-infra routes check: %s is the record taken through context %q of the cluster at %q, not through context %q of "+
-			"the cluster at %q, and with no CA certificate on both sides the cluster is told by its context and server\n", recordPath,
+			"the cluster at %q, and with no CA certificate on either side the cluster is told by its context and server\n", recordPath,
 			rec.Cluster.Context, rec.Cluster.Server, cluster.Context, cluster.Server)
 		return 2
 	}

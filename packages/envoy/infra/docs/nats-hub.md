@@ -1210,10 +1210,17 @@ a CA certificate, the cluster is told by them: they match when they share one, s
 context at `env` and the Job's `in-cluster` at `authorization`, whose contexts and servers differ,
 match; a bundle in a CA rotation, which holds the old certificate and the new, matches a record of
 either; and two clusters at one address, as two GKE Autopilot clusters' `kubernetes` Services can
-be, share none, exit 2. A rotation that has dropped the record's certificate from the bundle exits
-2 the same way: record again at `env`. When either holds no CA, the context and the server must
-both match: a context renamed since the record then fails the safe way, and the remedy is to check
-through a context of the name the record holds, for the same cluster, or record again at `env`.
+be, share none, exit 2, since GKE gives each cluster a root CA of its own. Outside GKE, two
+clusters that share a root CA would match, and the check would read the other cluster's record
+as a new container on every pod, exit 1, never a clean result. A rotation that has dropped the
+record's certificate from the bundle exits 2 the same way: record again at `env`. When either
+holds no CA, the context and the server must both match: a context renamed since the record then
+fails the safe way, and the remedy is to check through a context of the name the record holds,
+for the same cluster, or record again at `env`. So the person who deploys records through a
+context that holds the cluster's CA, as `gcloud container clusters get-credentials` writes one
+without `--dns-endpoint`: a context with no CA (GKE's DNS-based endpoint, one that trusts the
+system's roots, or one that skips verification) records none, and the Job's check, whose context
+is `in-cluster`, then exits 2.
 Every kubectl the two commands start runs with `KUBERC=off`, so
 no default of a `~/.kube/kuberc` changes a flag they rely on, such as the log's length. `routes
 record` refuses until the `env` roll has finished: while any pod is not Ready with a running
