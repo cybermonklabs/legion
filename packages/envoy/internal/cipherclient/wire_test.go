@@ -150,7 +150,9 @@ func TestTheWireCorpusHoldsThisClient(t *testing.T) {
 // exists: a projected token is read from a file this test writes, and a machine's Google
 // identity token is read from a metadata server this test serves. A person's sign-in is scripted
 // here, its own reader being the device grant, which TestDeviceSignIn drives against a real
-// issuer.
+// issuer. A machine login's access token is scripted too: this client trades none of its own,
+// and the TypeScript client's device login (packages/cipher-client/src/device-login.ts) is the
+// reader that suite builds for it, so the entry holds this client to the same request.
 func corpusSource(t *testing.T, spec corpusToken) Source {
 	t.Helper()
 	switch spec.Kind {
@@ -164,6 +166,8 @@ func corpusSource(t *testing.T, spec corpusToken) Source {
 		return metadataSource(t, spec.Token)
 	case "person-device-sign-in":
 		return &scriptedSource{token: spec.Token, tokenType: spec.TokenType, describe: "a person's sign-in"}
+	case "machine-login-access-token":
+		return &scriptedSource{token: spec.Token, tokenType: spec.TokenType, describe: "a machine login"}
 	default:
 		t.Fatalf("the corpus names the subject kind %q, which this suite does not know", spec.Kind)
 		return nil

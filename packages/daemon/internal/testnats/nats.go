@@ -133,7 +133,7 @@ func URL(t testing.TB) string {
 		if startErr != nil || serverURL != "" {
 			return
 		}
-		started, err := start(Image)
+		started, err := start(Image, nil)
 		if err != nil {
 			startErr = err
 			return
@@ -538,7 +538,13 @@ const startTries = 5
 // client reaches the server. A container Docker created and never saw ready (a readiness wait that
 // timed out under load, or a refused publish) comes back beside the error, and is removed before
 // start returns: no test's end would remove a container the package shares.
-func start(image string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
+//
+// options, when not nil, builds the caller's options, and each attempt calls it for options of its
+// own: an option can carry a reader that an attempt uses up, as a configuration file's does
+// (testcontainers v0.41.0 lifecycle.go:159 reads it to its end as it creates the container, before
+// Docker refuses a publish at the start), and a retry handed the first attempt's would start a
+// server with an empty configuration.
+func start(image string, options func() []testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
 	var refused []error
 	var started *tcnats.NATSContainer
 	for range startTries {
@@ -546,11 +552,14 @@ func start(image string, options ...testcontainers.ContainerCustomizer) (*tcnats
 		if err != nil {
 			return started, errors.Join(append(refused, fmt.Errorf("choose loopback ports to publish NATS on: %w", err))...)
 		}
-		attempt := append([]testcontainers.ContainerCustomizer{
+		attempt := []testcontainers.ContainerCustomizer{
 			tcnats.WithArgument("http_port", monitorPort.Port()),
 			hostConfig(host, ports[0], ports[1]),
 			testcontainers.WithWaitStrategy(wait.ForLog("Server is ready")),
-		}, options...)
+		}
+		if options != nil {
+			attempt = append(attempt, options()...)
+		}
 		started, err = tcnats.Run(context.Background(), image, attempt...)
 		if err == nil {
 			return started, nil
@@ -593,7 +602,9 @@ func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*t
 		entries = append(entries, entry+" }")
 	}
 	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ %s ]\n}\n", strings.Join(entries, ", "))
-	container, err := start(image, tcnats.WithConfigFile(strings.NewReader(config)))
+	container, err := start(image, func() []testcontainers.ContainerCustomizer {
+		return []testcontainers.ContainerCustomizer{tcnats.WithConfigFile(strings.NewReader(config))}
+	})
 	if err != nil {
 		t.Fatalf("start nkey-authorized NATS: %v", err)
 	}
@@ -612,7 +623,7 @@ func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*t
 // every other test shares the package's server through URL.
 func StartImage(t testing.TB, image string) string {
 	t.Helper()
-	container, err := start(image)
+	container, err := start(image, nil)
 	if err != nil {
 		t.Fatalf("start NATS of %s: %v", image, err)
 	}

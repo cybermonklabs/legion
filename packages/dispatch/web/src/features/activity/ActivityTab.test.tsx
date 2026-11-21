@@ -7,7 +7,8 @@ import { MemoryRouter } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import type { Query } from "../../api/paths";
-import type { Agent, DispatchEvent, UserIssueState, UserState } from "../../api/types";
+import type { DispatchEvent, UserIssueState, UserState } from "../../api/types";
+import { runningAgent } from "../credentials/agent-fixture";
 import { writesOf } from "../writes/write-store";
 import { ActivityTab } from "./ActivityTab";
 
@@ -116,23 +117,6 @@ test("ActivityTab's Load older fetches the page before the oldest event it holds
   }
 });
 
-/** One live session, as `GET /api/v1/agents` lists it. */
-function running(sessionId: string, title: string): Agent {
-  return {
-    capabilities: [],
-    dir: "/w",
-    host: "host",
-    last_activity: null,
-    last_seen: 1,
-    machine_id: "host",
-    open_asks: 0,
-    roles: [],
-    session_id: sessionId,
-    state: "live",
-    title,
-  };
-}
-
 // Every row names its author, and a session's name is its live registry title. The tab read the
 // registry only for a history that held a claim, so a row a session wrote on an issue nobody had
 // claimed read as the raw `session:<id>` - the registry was never fetched to resolve it. The name
@@ -142,7 +126,7 @@ test("ActivityTab names a session author by its registered title", async () => {
     message(1, { id: "e2e-long-title-session", kind: "session" }),
   ]);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([
-    running("e2e-long-title-session", "Reviewing PR #1478"),
+    runningAgent({ session_id: "e2e-long-title-session", title: "Reviewing PR #1478" }),
   ]);
   const view = renderTab({});
 

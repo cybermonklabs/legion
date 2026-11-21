@@ -60,7 +60,7 @@ type KeyValue struct {
 	streams jetstream.JetStream
 	// owner is the client that owns the connection streams is on, found once when the handle is
 	// built (clientOwning), whose record of the server's refusals the handle's calls read
-	// (refusedOn, refusedAfterOn); nil on a connection no client owns.
+	// (refusedOn, refusedAfterOn, watchRefused); nil on a connection no client owns.
 	owner *Client
 }
 
@@ -175,12 +175,32 @@ func NewKeyValue(kv nats.KeyValue, watch jetstream.KeyValue, streams jetstream.J
 	return KeyValue{legacy: kv, watch: watch, streams: streams, owner: owner}
 }
 
-// refusedOn is call, a request kv makes once in a while of its bucket's stream (a watch's create,
-// a read of the stream), read for the server's refusal of subjects as it arrives (refusedBy), in
-// the record of the client that owns kv's connection, found when kv was built. A handle on a
-// connection no client owns sends as call does.
+// refusedOn is call, a request kv makes once in a while of its bucket's stream (a read of the
+// stream), read for the server's refusal of subjects as it arrives (refusedBy), in the record of
+// the client that owns kv's connection, found when kv was built. A handle on a connection no
+// client owns sends as call does.
 func refusedOn[T any](kv KeyValue, subjects []string, call func() (T, error)) (T, error) {
 	return refusedBy(kv.owner, subjects, call)
+}
+
+// watchRefused is watch, the construction of a watcher whose consumer create has the shape create
+// describes, read for the server's refusal of a create of that shape as it arrives
+// (refusedByRecord), in the record of the client that owns kv's connection: a watch the grant
+// refuses ends at once naming its refusal, and one the grant allows returns its own watcher
+// whatever other request on the connection the server refuses meanwhile. A refusal that answers
+// the watch before its construction returns leaves that construction running to its own end, and
+// a watcher it then builds is stopped and read until it closes, since no caller holds it (a grant
+// that refuses a consumer by name is the one way to get there: watchCreate.matches). A handle on a
+// connection no client owns watches as watch does.
+func (kv KeyValue) watchRefused(create watchCreate, watch func() (jetstream.KeyWatcher, error)) (jetstream.KeyWatcher, error) {
+	if kv.owner == nil {
+		return watch()
+	}
+	denied := func(sentAt time.Time) error { return kv.owner.deniedPublishMatching(create.matches, sentAt) }
+	return refusedByRecord(kv.owner, denied, watch, func(watcher jetstream.KeyWatcher) {
+		_ = watcher.Stop()
+		DrainWatcher(watcher)
+	})
 }
 
 // refusedAfterOn is call, a read or a write of one key, which the bus makes on every request it
@@ -216,10 +236,51 @@ func (kv KeyValue) revisionSubjects() []string {
 	return []string{jsAPI("DIRECT.GET", stream), jsAPI("STREAM.MSG.GET", stream)}
 }
 
-// watchSubjects are the requests a watch sends to create its consumer, whose name nats.go picks as
-// it sends (jetstream ordered consumers): every consumer create under the bucket's stream.
-func (kv KeyValue) watchSubjects() []string {
-	return []string{jsAPI("CONSUMER.CREATE", "KV_"+kv.Bucket(), ">")}
+// watchCreate is the shape of the request a watch sends to create its consumer, as nats.go builds
+// it (nats.go@v1.55.0 jetstream/kv.go:1356-1361, js.go:1877 and 1963-1969, jsm.go:505-525):
+// prefix, `$JS.API.CONSUMER.CREATE.KV_<bucket>.`, then the consumer's name, then, for a watch of
+// one key, a dot and filter, `$KV.<bucket>.<key>` (every key, `$KV.<bucket>.>`, for a watch given
+// none, jetstream/kv.go:1268-1274). A watch of several keys sends their filters in the request's
+// body and none in its subject, so its filter is empty.
+type watchCreate struct {
+	prefix, filter string
+}
+
+// watchCreate is the shape of the create a watch of keys through kv sends.
+func (kv KeyValue) watchCreate(keys []string) watchCreate {
+	create := watchCreate{prefix: jsAPI("CONSUMER.CREATE", "KV_"+kv.Bucket()) + "."}
+	switch len(keys) {
+	case 0:
+		create.filter = "$KV." + kv.Bucket() + "." + jetstream.AllKeys
+	case 1:
+		create.filter = "$KV." + kv.Bucket() + "." + keys[0]
+	}
+	return create
+}
+
+// matches reports whether subject is a create of this shape: prefix, one token for the name, and
+// then a dot and the filter, or nothing after the name when there is no filter. nats.go picks the
+// name at random as it sends the create (getHash(nuid.Next()), js.go:1968), so a grant cannot
+// tell two creates of one shape apart by it: the refusal of a create of this shape is the refusal
+// this watch's own create meets. A create of the bucket's stream of another shape -- a watch of
+// another key, or a watch of one key beside one of several -- is another request, which a grant can
+// refuse while it allows this watch's, so it never answers this watch. The one exception is a grant
+// that refuses one consumer by name, as it can a durable's: the refusal of that consumer's create
+// answers a watch of the same shape too, before the watch's own create, which the grant allows, has
+// built its watcher, and watchRefused stops that watcher.
+func (create watchCreate) matches(subject string) bool {
+	rest, ok := strings.CutPrefix(subject, create.prefix)
+	if !ok {
+		return false
+	}
+	name, filter, filtered := strings.Cut(rest, ".")
+	if name == "" {
+		return false
+	}
+	if create.filter == "" {
+		return !filtered
+	}
+	return filtered && filter == create.filter
 }
 
 // Legacy is the legacy handle kv's checked reads and writes go through, for a test that wraps it to
@@ -263,7 +324,7 @@ func (kv KeyValue) WatchKeys(ctx context.Context, keys string, opts ...jetstream
 	if err := kv.check(keys, watchOverhead(kv.Bucket())); err != nil {
 		return nil, err
 	}
-	watcher, err := refusedOn(kv, kv.watchSubjects(), func() (jetstream.KeyWatcher, error) { return kv.watch.Watch(ctx, keys, opts...) })
+	watcher, err := kv.watchRefused(kv.watchCreate([]string{keys}), func() (jetstream.KeyWatcher, error) { return kv.watch.Watch(ctx, keys, opts...) })
 	return watcher, invalidKey(keys, err)
 }
 
@@ -277,7 +338,7 @@ func (kv KeyValue) WatchFilteredKeys(ctx context.Context, keys []string, opts ..
 			return nil, err
 		}
 	}
-	watcher, err := refusedOn(kv, kv.watchSubjects(), func() (jetstream.KeyWatcher, error) { return kv.watch.WatchFiltered(ctx, keys, opts...) })
+	watcher, err := kv.watchRefused(kv.watchCreate(keys), func() (jetstream.KeyWatcher, error) { return kv.watch.WatchFiltered(ctx, keys, opts...) })
 	return watcher, invalidKey(keys, err)
 }
 

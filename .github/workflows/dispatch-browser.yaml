@@ -83,8 +83,8 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 540 + 120 + 120 + 524 = 1,304 s, 21 min 44 s, rounded up to the 22 minutes below.
-    timeout-minutes: 22
+    # 660 + 120 + 120 + 565 = 1,465 s, 24 min 25 s, rounded up to the 25 minutes below.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-two-places
@@ -149,8 +149,11 @@ jobs:
         run: .github/scripts/dispatch-browser-wait-for-store.sh
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
         # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is
-        # 419 x 1.15 = 482 s -> 9 min.
-        timeout-minutes: 9
+        # 531 x 1.15 = 611 s -> 11 min. 531 s is the maximum of main's 672 full-lane legs from
+        # 2026-11-18 to 2026-11-21 (the census in the notes, at main 75bd096e02). The suite grew
+        # about 10% in rows in those days (1,453 to 1,600) and the step with it, so 11 min is
+        # about 24% over 531 s: read the maximum again when the suite has grown that much more.
+        timeout-minutes: 11
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ inputs.lane }}" \
             "${{ needs.binaries.outputs.connections }}"
@@ -519,7 +522,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      # why: .github/ci-notes/dispatch-browser.md#why-every-legs-blob-report-is-downloaded-into-a-directory-of-its-own
+      # why: .github/ci-notes/dispatch-browser.md#why-every-legs-blob-report-is-downloaded-without-merge-multiple-and-the-two-layouts-it-lands-in
       - name: Download every leg's blob report
         id: download-blobs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

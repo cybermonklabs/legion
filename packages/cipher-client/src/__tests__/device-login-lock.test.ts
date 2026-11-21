@@ -1,0 +1,856 @@
+// packages/cipher-client/src/__tests__/device-login-lock.test.ts
+//
+// The device login's lock (`device-login-lock.ts`), through `withDeviceLoginLock`: a live holder
+// is waited for, a stale lock is taken by one caller alone, each removal is of the very file the
+// caller looked at, a holder that lets go removes only its own lock, and a holder can tell it
+// still holds its lock. No row sends anything to a broker. Each row holds a caller at one step of
+// the protocol (`at`, `sleep`, or the read of its look, {@link holdTheRead}), or runs the holder's
+// timer callback by hand, so no row is decided by a clock.
+
+import { expect, spyOn, test } from "bun:test";
+import { constants } from "node:fs";
+import * as fs from "node:fs/promises";
+import { chmod, readdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { writeDeviceLoginFile } from "../../test/device-logins";
+import { withDeviceLoginLock } from "../device-login";
+import { readDeviceLogin } from "../device-login-file";
+import { DEVICE_LOGIN_STALE_LOCK_MS, LOCK_HEARTBEAT_MS } from "../device-login-lock";
+import { TRADE_ATTEMPT_MS } from "../token-client";
+import { LockHeldError } from "../token-errors";
+
+const makeDirectory = temporaryDirectories("device-login-lock");
+
+/** A device login file's path in a directory of this test's own. */
+function loginPath(): string {
+  return join(makeDirectory(), "legion", "device-login.json");
+}
+
+/** A modification time past the lock's stale bound: a holder that is gone. */
+function staleTime(): Date {
+  return new Date(Date.now() - DEVICE_LOGIN_STALE_LOCK_MS - 1_000);
+}
+
+/**
+ * Holds the first read of a file, once `arm` is called, that `match` takes by its path and what
+ * it read, until `go` settles: the caller has read the file for a look, and does what it does
+ * with that look only after. Any read of the file holds, by whatever name the caller reads it and
+ * whether it reads the path (`readFile`) or a file it opened (`open`, then the handle's
+ * `readFile`), so the hold is between a look and what follows it however the protocol takes its
+ * look. `read` answers what the held read read; `restore` ends the hold for every later row.
+ */
+function holdTheRead(match: (path: string, read: string) => boolean, go: Promise<void>) {
+  const reached = Promise.withResolvers<string>();
+  let armed = false;
+  let held = false;
+  const hold = async (path: string, read: unknown) => {
+    if (armed && !held && typeof read === "string" && match(path, read)) {
+      held = true;
+      reached.resolve(read);
+      await go;
+    }
+  };
+  const realRead = fs.readFile;
+  const reads = spyOn(fs, "readFile").mockImplementation((async (
+    ...args: Parameters<typeof fs.readFile>
+  ) => {
+    const read = await realRead(...args);
+    await hold(String(args[0]), read);
+    return read;
+  }) as typeof fs.readFile);
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    const handle = await realOpen(...args);
+    const readHandle = handle.readFile.bind(handle);
+    handle.readFile = (async (...options: Parameters<typeof handle.readFile>) => {
+      const read = await readHandle(...options);
+      await hold(String(args[0]), read);
+      return read;
+    }) as typeof handle.readFile;
+    return handle;
+  }) as typeof fs.open);
+  return {
+    read: reached.promise,
+    arm: () => {
+      armed = true;
+    },
+    restore: () => {
+      reads.mockRestore();
+      opens.mockRestore();
+    },
+  };
+}
+
+test("a dead holder's lock costs a trade at most half its attempt", () => {
+  // A trade waits out a lock its holder touched just before it died for the whole stale bound;
+  // the refresh and the exchange must still fit in what is left of the trade's one attempt.
+  expect(DEVICE_LOGIN_STALE_LOCK_MS * 2).toBeLessThanOrEqual(TRADE_ATTEMPT_MS);
+});
+
+test("the holder's beat is a timer every LOCK_HEARTBEAT_MS that touches its lock", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  // The real beat: the timer the lock sets is read, and its callback run here instead of after
+  // LOCK_HEARTBEAT_MS.
+  const timers = spyOn(globalThis, "setInterval");
+  try {
+    await withDeviceLoginLock(path, async () => {
+      expect(timers.mock.calls).toHaveLength(1);
+      const [beat, every] = timers.mock.calls[0] as unknown as [() => Promise<void>, number];
+      expect(every).toBe(LOCK_HEARTBEAT_MS);
+      const old = staleTime();
+      await utimes(lock, old, old);
+      await beat();
+      expect((await stat(lock)).mtimeMs).toBeGreaterThan(old.getTime() + 1_000);
+    });
+  } finally {
+    timers.mockRestore();
+  }
+});
+
+test("the login's lock waits for a live holder and takes a stale one", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+
+  // A live holder: the work runs only once the holder lets go, which it does at the third wait.
+  await writeFile(lock, "another process");
+  let waits = 0;
+  let ranAfter = -1;
+  await withDeviceLoginLock(
+    path,
+    async () => {
+      ranAfter = waits;
+    },
+    {
+      sleep: async () => {
+        waits += 1;
+        if (waits === 3) await Bun.file(lock).delete();
+      },
+    }
+  );
+  expect(ranAfter).toBe(3);
+  expect(await stat(lock).catch(() => null)).toBeNull();
+
+  // A holder gone for longer than the stale bound: its lock is taken with no wait at all.
+  await writeFile(lock, "a process that died holding it");
+  const old = staleTime();
+  await utimes(lock, old, old);
+  let staleWaits = 0;
+  await withDeviceLoginLock(path, async () => {}, {
+    sleep: async () => {
+      staleWaits += 1;
+    },
+  });
+  expect(staleWaits).toBe(0);
+
+  // A caller whose signal ends stops waiting, and never runs the work.
+  await writeFile(lock, "another process");
+  const caller = new AbortController();
+  let ran = false;
+  const stopped = await withDeviceLoginLock(
+    path,
+    async () => {
+      ran = true;
+    },
+    {
+      signal: caller.signal,
+      sleep: async () => {
+        caller.abort(new Error("the caller's deadline"));
+      },
+    }
+  ).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  // The trade that waited names the lock, not the broker, and carries the caller's reason.
+  expect(stopped).toBeInstanceOf(LockHeldError);
+  expect(stopped?.message).toContain("lock beside");
+  expect((stopped?.cause as Error | undefined)?.message).toBe("the caller's deadline");
+  expect(ran).toBe(false);
+  // The holder's lock is the holder's: a caller that gave up leaves it where it was.
+  expect(await readFile(lock, "utf8")).toBe("another process");
+  await Bun.file(lock).delete();
+});
+
+test("the lock tells its holder whether it still holds it, and its holder keeps it fresh", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  // The holder's timer, read here, and its beat run by hand instead of every LOCK_HEARTBEAT_MS.
+  const timers = spyOn(globalThis, "setInterval");
+  const cleared = spyOn(globalThis, "clearInterval");
+  try {
+    await withDeviceLoginLock(path, async (held) => {
+      expect(await held()).toBe(true);
+      // A lock its holder last touched a while ago is touched again at its next beat, so a
+      // holder that is slow is never taken for dead.
+      const old = new Date(Date.now() - 12_000);
+      await utimes(lock, old, old);
+      const [beat] = timers.mock.calls[0] as unknown as [() => Promise<void>];
+      await beat();
+      expect(Date.now() - (await stat(lock)).mtimeMs).toBeLessThan(LOCK_HEARTBEAT_MS);
+      // Another caller took it over.
+      await writeFile(lock, "another process that took the lock over");
+      expect(await held()).toBe(false);
+    });
+    // The holder stopped its timer when its work settled.
+    const timer = timers.mock.results[0]?.value as ReturnType<typeof setInterval>;
+    expect(cleared.mock.calls.map(([stopped]) => stopped)).toContain(timer);
+  } finally {
+    timers.mockRestore();
+    cleared.mockRestore();
+  }
+  // The lock is the new holder's, and stays where it is.
+  expect(await readFile(lock, "utf8")).toBe("another process that took the lock over");
+  await Bun.file(lock).delete();
+});
+
+test("a take-over waits while another caller takes over, and not for one that died doing so", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const steal = `${lock}.steal`;
+  const old = staleTime();
+  await writeFile(lock, "a process that died holding it");
+  await utimes(lock, old, old);
+
+  // Another caller is taking the stale lock over: this one waits, and runs once that caller's
+  // take-over lock is gone, at its third wait.
+  await writeFile(steal, "another caller taking over");
+  let waits = 0;
+  let ranAfter = -1;
+  await withDeviceLoginLock(
+    path,
+    async () => {
+      ranAfter = waits;
+    },
+    {
+      sleep: async () => {
+        waits += 1;
+        if (waits === 3) await Bun.file(steal).delete();
+      },
+    }
+  );
+  expect(ranAfter).toBe(3);
+
+  // A take-over lock 6 s old is one whose caller died inside its take-over: it is removed, and
+  // the stale lock taken, after one wait.
+  await writeFile(lock, "a process that died holding it");
+  await utimes(lock, old, old);
+  await writeFile(steal, "a caller that died taking over");
+  const stealOld = new Date(Date.now() - 6_000);
+  await utimes(steal, stealOld, stealOld);
+  let deadWaits = 0;
+  await withDeviceLoginLock(path, async () => {}, {
+    sleep: async () => {
+      deadWaits += 1;
+    },
+  });
+  expect(deadWaits).toBe(1);
+  expect(await stat(steal).catch(() => null)).toBeNull();
+});
+
+// A file another caller makes in place of one this caller found stale can carry the very inode
+// number of the one it replaced: XFS hands a new file the number freed a moment before (5 of 5
+// tries on a review box). These rows write the other caller's file into the stale file's own
+// inode, which is exactly what such a filesystem gives the check to see, so they hold on every
+// filesystem: the same device and inode, and a fresh modification time and holder value.
+
+test("of two callers inside one take-over, the one that comes second puts the lock back", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  await writeFile(lock, "a process that died holding it");
+  const old = staleTime();
+  await utimes(lock, old, old);
+
+  // A is under its own take-over lock, has found the lock still stale, and is held before it
+  // moves the lock aside: it stopped there for over 5 s, so B took A's take-over lock as dead,
+  // took the stale lock over and now holds a fresh one. A then goes on. It must find the lock it
+  // moves is B's, put it back and wait for B, never take it from B.
+  const aTaking = Promise.withResolvers<void>();
+  const aGoes = Promise.withResolvers<void>();
+  let bHolds = false;
+  let heldAtFirstWait = "";
+  let ranWhileBHeld: boolean | undefined;
+  const a = withDeviceLoginLock(
+    path,
+    async () => {
+      ranWhileBHeld = bHolds;
+    },
+    {
+      at: async (step) => {
+        if (step !== "taking") return;
+        aTaking.resolve();
+        await aGoes.promise;
+      },
+      sleep: async () => {
+        if (heldAtFirstWait === "") {
+          heldAtFirstWait = await readFile(lock, "utf8").catch(() => "(no lock)");
+        }
+        // B's work ends, and B lets go.
+        bHolds = false;
+        await Bun.file(lock).delete();
+      },
+    }
+  );
+  await aTaking.promise;
+  await writeFile(lock, "B holds it");
+  bHolds = true;
+  aGoes.resolve();
+  await a;
+  expect(heldAtFirstWait).toBe("B holds it");
+  expect(ranWhileBHeld).toBe(false);
+  expect(await stat(lock).catch(() => null)).toBeNull();
+});
+
+test("a dead take-over lock is removed only while it is still the dead one", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const steal = `${lock}.steal`;
+  const old = staleTime();
+  await writeFile(lock, "a process that died holding it");
+  await utimes(lock, old, old);
+  await writeFile(steal, "a caller that died taking over");
+  const stealOld = new Date(Date.now() - 6_000);
+  await utimes(steal, stealOld, stealOld);
+
+  // B finds the take-over lock dead and is held before it removes it, while C removes that dead
+  // one and starts a take-over of its own. B then goes on: it must leave C's take-over lock in
+  // place, and wait for C.
+  const bFound = Promise.withResolvers<void>();
+  const bGoes = Promise.withResolvers<void>();
+  let stealAtFirstWait = "";
+  const b = withDeviceLoginLock(path, async () => {}, {
+    at: async (step) => {
+      if (step !== "steal-stale" || stealAtFirstWait !== "") return;
+      bFound.resolve();
+      await bGoes.promise;
+    },
+    sleep: async () => {
+      if (stealAtFirstWait === "") {
+        stealAtFirstWait = await readFile(steal, "utf8").catch(() => "(no take-over lock)");
+      }
+      // C's take-over ends.
+      await Bun.file(steal).delete();
+    },
+  });
+  await bFound.promise;
+  await writeFile(steal, "C takes over");
+  bGoes.resolve();
+  await b;
+  expect(stealAtFirstWait).toBe("C takes over");
+  expect(await stat(steal).catch(() => null)).toBeNull();
+});
+
+test("a named pipe at the lock's path is taken over as a dead lock, and read without waiting", async () => {
+  // A plain read of a named pipe nobody writes to waits until a process writes to it, and every
+  // caller of the lock reads the lock. One left at `<file>.lock` and untouched for the stale bound
+  // is a dead lock, taken over at once; a holder whose lock is swapped for one is told it no
+  // longer holds it, and leaves it, as it leaves any lock that is not its own.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  expect(Bun.spawnSync(["mkfifo", lock]).exitCode).toBe(0);
+  const old = staleTime();
+  await utimes(lock, old, old);
+  let heldAtFirst: boolean | undefined;
+  let heldAfterSwap: boolean | undefined;
+  await withDeviceLoginLock(path, async (held) => {
+    heldAtFirst = await held();
+    await Bun.file(lock).delete();
+    expect(Bun.spawnSync(["mkfifo", lock]).exitCode).toBe(0);
+    heldAfterSwap = await held();
+  });
+  expect(heldAtFirst).toBe(true);
+  expect(heldAfterSwap).toBe(false);
+  expect((await readdir(dirname(path))).sort()).toEqual([
+    "device-login.json",
+    "device-login.json.lock",
+  ]);
+}, 10_000);
+
+test("a take-over that finds the holder back just before it moves the lock puts the lock back", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  await writeFile(lock, "a process that stopped holding it");
+  const old = staleTime();
+  await utimes(lock, old, old);
+
+  // A has found the lock still stale under its take-over lock, and is held just before it moves
+  // the lock aside. The holder comes back then and touches its lock: the same file, holding the
+  // same value, touched a moment ago. A goes on: it must put the holder's lock back and wait for
+  // it, never take it from a holder that is back.
+  const aTaking = Promise.withResolvers<void>();
+  const aGoes = Promise.withResolvers<void>();
+  let takingOnce = false;
+  let lockAtFirstWait = "";
+  let ran = false;
+  const a = withDeviceLoginLock(
+    path,
+    async () => {
+      ran = true;
+    },
+    {
+      at: async (step) => {
+        if (step !== "taking" || takingOnce) return;
+        takingOnce = true;
+        aTaking.resolve();
+        await aGoes.promise;
+      },
+      sleep: async () => {
+        if (lockAtFirstWait === "") {
+          lockAtFirstWait = await readFile(lock, "utf8").catch(() => "(no lock)");
+        }
+        // The holder's work ends, and it lets go.
+        await Bun.file(lock).delete();
+      },
+    }
+  );
+  await Promise.race([aTaking.promise, a]);
+  const now = new Date();
+  await utimes(lock, now, now).catch(() => {});
+  aGoes.resolve();
+  await a;
+  expect(lockAtFirstWait).toBe("a process that stopped holding it");
+  expect(ran).toBe(true);
+  expect(await readdir(dirname(path))).toEqual(["device-login.json"]);
+});
+
+// A holder lets go of its lock, and a caller of its take-over lock, in two steps: a look that
+// reads the file and finds its own value there, and then what it does with it. It can be stopped
+// for longer than the stale bound between the two; its timer is stopped by then, so another caller
+// takes the lock over as stale and starts work under it. A removal by name in the second step
+// would remove that caller's lock, and a third caller could then take the lock beside it: two
+// holders, two refreshes of one refresh token. These rows hold the caller just after the read of
+// its look ({@link holdTheRead}).
+
+test("a holder that lets go leaves the lock another caller took from it while it was stopped", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  let aValue = "";
+  const aGoes = Promise.withResolvers<void>();
+  const look = holdTheRead((_, read) => read === aValue, aGoes.promise);
+  const bWorking = Promise.withResolvers<() => Promise<boolean>>();
+  const bEnds = Promise.withResolvers<void>();
+  let b: Promise<void> | undefined;
+  try {
+    // A's work ends, and A lets go: it is held just after it read its own value back.
+    const a = withDeviceLoginLock(path, async () => {
+      aValue = await readFile(lock, "utf8");
+      look.arm();
+    });
+    await look.read;
+    // A was stopped there for over 15 s, so B finds A's lock stale, takes it over and works.
+    const old = staleTime();
+    await utimes(lock, old, old);
+    b = withDeviceLoginLock(path, async (held) => {
+      bWorking.resolve(held);
+      await bEnds.promise;
+    });
+    const bHeld = await bWorking.promise;
+    const bValue = await readFile(lock, "utf8");
+    expect(bValue).not.toBe(aValue);
+    expect(await bHeld()).toBe(true);
+    // A goes on: B's lock is where it was, and B still holds it.
+    aGoes.resolve();
+    await a;
+    expect(await readFile(lock, "utf8").catch(() => "(no lock)")).toBe(bValue);
+    expect(await bHeld()).toBe(true);
+  } finally {
+    aGoes.resolve();
+    bEnds.resolve();
+    await b;
+    look.restore();
+  }
+  // B let go too, and nothing either caller made is left beside the login.
+  expect(await readdir(dirname(path))).toEqual(["device-login.json"]);
+});
+
+test("a caller that lets go of its take-over lock leaves the one another caller took from it", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const steal = `${lock}.steal`;
+  const old = staleTime();
+  await writeFile(lock, "a process that stopped holding it");
+  await utimes(lock, old, old);
+
+  // A finds the lock stale and is held before it takes its take-over lock, while the lock's
+  // holder comes back and touches it. A goes on: under its take-over lock it finds the lock live,
+  // and lets go of the take-over lock. It is held just after it read that lock's value back.
+  const aFound = Promise.withResolvers<void>();
+  const aGoesOn = Promise.withResolvers<void>();
+  const aLetsGo = Promise.withResolvers<void>();
+  const aWaits = Promise.withResolvers<void>();
+  const dDone = Promise.withResolvers<void>();
+  const dTaking = Promise.withResolvers<void>();
+  const dGoes = Promise.withResolvers<void>();
+  const look = holdTheRead((file) => file.startsWith(steal), aLetsGo.promise);
+  let aFoundOnce = false;
+  let d: Promise<void> | undefined;
+  let a: Promise<void> | undefined;
+  try {
+    a = withDeviceLoginLock(path, async () => {}, {
+      at: async (step) => {
+        if (step !== "lock-stale" || aFoundOnce) return;
+        aFoundOnce = true;
+        aFound.resolve();
+        await aGoesOn.promise;
+      },
+      sleep: async () => {
+        aWaits.resolve();
+        await dDone.promise;
+      },
+    });
+    await aFound.promise;
+    const now = new Date();
+    await utimes(lock, now, now);
+    look.arm();
+    aGoesOn.resolve();
+    const aSteal = await look.read;
+
+    // A was stopped there for over 5 s, and the holder has died for good: D finds the lock stale
+    // and A's take-over lock dead, removes that, and is under a take-over lock of its own.
+    const stealOld = new Date(Date.now() - 6_000);
+    await utimes(steal, stealOld, stealOld);
+    await utimes(lock, old, old);
+    let dTakingOnce = false;
+    d = withDeviceLoginLock(path, async () => {}, {
+      at: async (step) => {
+        if (step !== "taking" || dTakingOnce) return;
+        dTakingOnce = true;
+        dTaking.resolve();
+        await dGoes.promise;
+      },
+      sleep: async () => {},
+    });
+    await Promise.race([dTaking.promise, d]);
+    const dSteal = await readFile(steal, "utf8").catch(() => "(no take-over lock)");
+    expect(dSteal).not.toBe(aSteal);
+    expect(dSteal).not.toBe("(no take-over lock)");
+
+    // A goes on: D's take-over lock is where it was, so no third caller can take over beside D.
+    aLetsGo.resolve();
+    await aWaits.promise;
+    expect(await readFile(steal, "utf8").catch(() => "(no take-over lock)")).toBe(dSteal);
+
+    dGoes.resolve();
+    await d;
+  } finally {
+    aGoesOn.resolve();
+    aLetsGo.resolve();
+    dGoes.resolve();
+    dDone.resolve();
+    await d;
+    await a;
+    look.restore();
+  }
+  // D took the dead holder's lock and let go, then A did: nothing is left beside the login.
+  expect(await readdir(dirname(path))).toEqual(["device-login.json"]);
+});
+
+test("a holder whose work fails and whose release then fails is told the work's failure", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  // Letting go fails at the move of the lock aside.
+  const realRename = fs.rename;
+  const renames = spyOn(fs, "rename").mockImplementation((async (
+    from: Parameters<typeof fs.rename>[0],
+    to: Parameters<typeof fs.rename>[1]
+  ) => {
+    if (String(from) === lock) throw Object.assign(new Error("refused"), { code: "EIO" });
+    return await realRename(from, to);
+  }) as typeof fs.rename);
+  const failure = new Error("the work's own failure");
+  let caught: unknown;
+  try {
+    caught = await withDeviceLoginLock(path, async () => {
+      throw failure;
+    }).catch((error: unknown) => error);
+  } finally {
+    renames.mockRestore();
+  }
+  // The work's error is the one answered, and the release's is kept as its cause.
+  expect(caught).toBe(failure);
+  expect((failure.cause as Error | undefined)?.message).toContain("move the lock beside");
+  expect((failure.cause as Error | undefined)?.message).toContain("EIO");
+  // Control: letting go did fail, so the lock is still there.
+  expect(await readdir(dirname(path))).toContain("device-login.json.lock");
+});
+
+/** Fails each move of the lock at `lock` aside, `EIO`, until its `mockRestore`: a holder's
+ *  release fails. */
+function failTheRelease(lock: string) {
+  const realRename = fs.rename;
+  return spyOn(fs, "rename").mockImplementation((async (
+    from: Parameters<typeof fs.rename>[0],
+    to: Parameters<typeof fs.rename>[1]
+  ) => {
+    if (String(from) === lock) throw Object.assign(new Error("refused"), { code: "EIO" });
+    return await realRename(from, to);
+  }) as typeof fs.rename);
+}
+
+test("a holder whose work fails with a cause of its own, and whose release then fails, keeps both", async () => {
+  // A caller tests what the work threw by its type, and reads its cause: the release's failure is
+  // kept beside that cause, which stays the work's own.
+  class WorkFailure extends Error {}
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const why = new Error("the work's own cause");
+  const failure = new WorkFailure("the work's own failure", { cause: why });
+  const renames = failTheRelease(lock);
+  let caught: unknown;
+  try {
+    caught = await withDeviceLoginLock(path, async () => {
+      throw failure;
+    }).catch((error: unknown) => error);
+  } finally {
+    renames.mockRestore();
+  }
+  expect(caught).toBe(failure);
+  expect(caught).toBeInstanceOf(WorkFailure);
+  expect(failure.cause).toBe(why);
+  const released = "releaseFailure" in failure ? failure.releaseFailure : undefined;
+  expect(released).toBeInstanceOf(Error);
+  const said = released instanceof Error ? released.message : "";
+  expect(said).toContain("move the lock beside");
+  expect(said).toContain("EIO");
+  // Control: letting go did fail, so the lock is still there.
+  expect(await readdir(dirname(path))).toContain("device-login.json.lock");
+});
+
+test("a holder whose work fails with an error that takes no field is told that very error", async () => {
+  // A frozen error cannot be written to: a write to it throws, and that throw must not take the
+  // place of the work's error.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const failure = Object.freeze(new Error("the work's own failure"));
+  const renames = failTheRelease(lock);
+  let caught: unknown;
+  try {
+    caught = await withDeviceLoginLock(path, async () => {
+      throw failure;
+    }).catch((error: unknown) => error);
+  } finally {
+    renames.mockRestore();
+  }
+  expect(caught).toBe(failure);
+  // Control: letting go did fail, so the lock is still there.
+  expect(await readdir(dirname(path))).toContain("device-login.json.lock");
+});
+
+test("a lock in a directory others may write is refused before it is opened or made", async () => {
+  // In such a directory another user picks what is at the lock's path.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  await chmod(dirname(path), 0o777);
+  let ran = false;
+  const refused = await withDeviceLoginLock(path, async () => {
+    ran = true;
+  }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(refused?.message).toContain("mode 0777");
+  expect(refused?.message).toContain("chmod 700");
+  expect(ran).toBe(false);
+  expect(await readdir(dirname(path))).toEqual(["device-login.json"]);
+});
+
+test("a link at the lock's path is no holder's lock, even to a file holding the holder's value", async () => {
+  // The lock is never made as a link, so a link there is no caller's lock: it is not followed.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const copy = join(dirname(path), "a-copy-of-the-lock");
+  let heldThroughLink: boolean | undefined;
+  await withDeviceLoginLock(path, async (held) => {
+    await writeFile(copy, await readFile(lock, "utf8"));
+    await fs.rm(lock);
+    await fs.symlink(copy, lock);
+    heldThroughLink = await held();
+  });
+  expect(heldThroughLink).toBe(false);
+  // The holder leaves the link, as it leaves any lock that is not its own.
+  expect((await fs.lstat(lock)).isSymbolicLink()).toBe(true);
+});
+
+test("the login and its lock are opened to be read as no terminal, and the lock not through a link", async () => {
+  // A device node's open can make it the controlling terminal of a caller that leads its session;
+  // each open of the login or its lock to read it says it must not.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const opened: { path: string; flags: number }[] = [];
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    if (typeof args[1] === "number") opened.push({ path: String(args[0]), flags: args[1] });
+    return await realOpen(...args);
+  }) as typeof fs.open);
+  try {
+    await withDeviceLoginLock(path, async (held) => {
+      expect(await held()).toBe(true);
+      await readDeviceLogin(path);
+    });
+  } finally {
+    opens.mockRestore();
+  }
+  const ofLogin = opened.filter((open) => open.path === path);
+  const ofLock = opened.filter((open) => open.path === lock);
+  expect(ofLogin.length).toBeGreaterThan(0);
+  expect(ofLock.length).toBeGreaterThan(0);
+  for (const open of ofLogin) expect(open.flags & constants.O_NOCTTY).toBe(constants.O_NOCTTY);
+  const lockFlags = constants.O_NOCTTY | constants.O_NOFOLLOW;
+  for (const open of ofLock) expect(open.flags & lockFlags).toBe(lockFlags);
+});
+
+test("a look at the lock takes its status from its one open of it, not from its path again", async () => {
+  // A second lookup of the path can find another file than the one the open read, so the status
+  // and the holder value of one look would be of two files.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  let looking = false;
+  const opened: string[] = [];
+  const lookups: string[] = [];
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    if (looking && String(args[0]) === lock) opened.push(String(args[0]));
+    return await realOpen(...args);
+  }) as typeof fs.open);
+  const realStat = fs.stat;
+  const stats = spyOn(fs, "stat").mockImplementation((async (
+    ...args: Parameters<typeof fs.stat>
+  ) => {
+    if (looking && String(args[0]) === lock) lookups.push(`stat ${String(args[0])}`);
+    return await realStat(...args);
+  }) as typeof fs.stat);
+  const realLstat = fs.lstat;
+  const lstats = spyOn(fs, "lstat").mockImplementation((async (
+    ...args: Parameters<typeof fs.lstat>
+  ) => {
+    if (looking && String(args[0]) === lock) lookups.push(`lstat ${String(args[0])}`);
+    return await realLstat(...args);
+  }) as typeof fs.lstat);
+  let stillHeld: boolean | undefined;
+  try {
+    await withDeviceLoginLock(path, async (held) => {
+      looking = true;
+      stillHeld = await held();
+      looking = false;
+    });
+  } finally {
+    opens.mockRestore();
+    stats.mockRestore();
+    lstats.mockRestore();
+  }
+  // The look read the holder's value through one open of the lock's path, which these spies see,
+  // and took no status of that path by name.
+  expect(stillHeld).toBe(true);
+  expect(opened).toEqual([lock]);
+  expect(lookups).toEqual([]);
+});
+
+test("a link to nothing at the lock's path is waited for while fresh, and taken over once stale", async () => {
+  // The lock cannot be made beside such a link, and a look that follows it finds nothing there. A
+  // caller that tries 50 times to make the lock without one wait is stopped by its signal, so a
+  // caller that spins fails the row rather than hanging it.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  let caller = new AbortController();
+  let makes = 0;
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    if (String(args[0]) === lock && args[1] === "wx") {
+      makes += 1;
+      if (makes > 50) caller.abort(new Error("the caller spun"));
+    }
+    return await realOpen(...args);
+  }) as typeof fs.open);
+  try {
+    // A fresh link is waited for, as a live holder's lock; at the first wait it goes, as a holder
+    // that lets go.
+    await fs.symlink(join(dirname(path), "nothing"), lock);
+    let waits = 0;
+    await withDeviceLoginLock(path, async () => {}, {
+      signal: caller.signal,
+      sleep: async () => {
+        waits += 1;
+        await fs.rm(lock, { force: true });
+      },
+    });
+    expect(waits).toBe(1);
+    // A link untouched for the stale bound is taken over with no wait.
+    caller = new AbortController();
+    makes = 0;
+    await fs.symlink(join(dirname(path), "nothing"), lock);
+    const old = staleTime();
+    await fs.lutimes(lock, old, old);
+    let staleWaits = 0;
+    await withDeviceLoginLock(path, async () => {}, {
+      signal: caller.signal,
+      sleep: async () => {
+        staleWaits += 1;
+      },
+    });
+    expect(staleWaits).toBe(0);
+  } finally {
+    opens.mockRestore();
+  }
+  expect(await readdir(dirname(path))).toEqual(["device-login.json"]);
+});
+
+test("a lock over 64 KiB is taken over as stale without being read whole", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  await writeFile(lock, "x".repeat(1024 * 1024));
+  const old = staleTime();
+  await utimes(lock, old, old);
+  // The longest read of the lock, by its path or moved aside.
+  let longest = 0;
+  const realOpen = fs.open;
+  const opens = spyOn(fs, "open").mockImplementation((async (
+    ...args: Parameters<typeof fs.open>
+  ) => {
+    const handle = await realOpen(...args);
+    if (String(args[0]).startsWith(lock)) {
+      const readHandle = handle.readFile.bind(handle);
+      handle.readFile = (async (...options: Parameters<typeof handle.readFile>) => {
+        const read = await readHandle(...options);
+        longest = Math.max(longest, read.length);
+        return read;
+      }) as typeof handle.readFile;
+    }
+    return handle;
+  }) as typeof fs.open);
+  try {
+    await withDeviceLoginLock(path, async () => {});
+  } finally {
+    opens.mockRestore();
+  }
+  // Its own lock is read as it lets go, so a read was seen; none was of the stale one.
+  expect(longest).toBeGreaterThan(0);
+  expect(longest).toBeLessThanOrEqual(64 * 1024);
+  expect(await readdir(dirname(path))).toEqual(["device-login.json"]);
+});

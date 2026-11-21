@@ -8,12 +8,24 @@
 # the real script with the stand-in first on PATH and reads the file it wrote, the arguments the
 # stand-in recorded and the lines the script printed. The ladder's waits are the case's own,
 # `retry_seconds` seconds for the first and twice that for the second, which `fixture` resets to
-# 0 so that only the three cases about the waits pay for one: two set it to 1 and read that the
-# drive took that long with bash's own SECONDS, and the control sets it to 10 and reads that the
-# drive took no time at all, which a script that slept whatever it was given would fail.
+# 0. A stand-in `sleep` records each wait the ladder asks for through the `sleep` on PATH, and
+# the cases read those records, not how long the drive took: two cases set the knob to 1 and read
+# the waits 1 s and 2 s, or 1 s. The control runs the drive of a gh answering at once under
+# strace and holds it to none of the calls TIMED_WAITS lists, the census of the kernel's calls
+# that wait out a time their caller gives them, arm a clock their caller sets, or wait for a
+# signal or a lock (a futex, an fcntl or an ioctl counted only where it waits, leases or sets a
+# terminal's attributes or a timed break). A `sleep` by any path, a `read -t`, a timed futex or
+# futex_wait, semtimedop, mq_timedreceive, io_uring, a timerfd, alarm and pause, flock, a lock
+# wait by fcntl, any setsockopt (SO_RCVTIMEO, SO_LINGER and the rest) and a terminal's VTIME set
+# by any of its setters each make one. The waits the comment above TIMED_WAITS names as not
+# seen - a `timeout N cmd` wait, which makes only the calls the drive's own `timeout` bounds
+# make, a blocking call a timer_create timer or a process outside the drive's tree ends, a timer
+# the kernel keeps itself (TCP's SYN and retransmission timers), and a busy loop in user space -
+# make none.
 #
 # NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `timeout` that
-# four cases opt into call by call and that otherwise execs the real one, and the script.
+# four cases opt into call by call and that otherwise execs the real one, a stand-in `sleep` that
+# records and returns, and the script.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-run-reads.test.sh
 # CI runs it in ci.yaml's test job.
@@ -114,6 +126,127 @@ real_timeout=$(type -P timeout) ||
       "killed wrapper" >&2
     exit 1; }
 
+# The control's tracer, refused by name where there is none, in the shape of the guards above.
+# GitHub's ubuntu-24.04-arm image, on which ci.yaml's test job runs this file, carries strace:
+# that job's log read on 2026-11-21 (image version 20261116.188.1) holds `strace is already the
+# newest version (6.8-0ubuntu2)`. So no step installs it, and an image without it fails here.
+real_strace=$(type -P strace) ||
+  { echo "dispatch-browser-run-reads.test.sh needs strace on PATH for its negative control" >&2
+    exit 1; }
+# The system calls the control's trace lists. They are the census of the kernel's x86_64, arm64
+# and i386 syscall tables (torvalds/linux master c44104f3642d, read on 2026-11-21) for calls that
+# wait out a time their caller gives them, arm a clock their caller sets, or wait for a signal or
+# a lock, in three groups, with every other such call named below as unlisted and why.
+#
+# Calls that take a timeout of their own: nanosleep, clock_nanosleep, select (and i386's old
+# select), _newselect (i386), pselect6, poll, ppoll, epoll_wait, epoll_pwait, epoll_pwait2,
+# rt_sigtimedwait, futex, futex_wait (kernel 6.7), futex_waitv, semtimedop, mq_timedreceive,
+# mq_timedsend, recvmmsg, io_getevents, io_pgetevents and io_uring_enter, with the i386 ABI's
+# *_time64 names for the ones that have them. A sleep binary and bash's sleep builtin make
+# clock_nanosleep or nanosleep, `read -t` makes pselect6, a thread or a helper waiting on a futex
+# with a timeout makes futex. arm64 has no select, poll, epoll_wait, alarm or pause: on GitHub's
+# ubuntu-24.04-arm runner (kernel 7.0.0-1017-azure, strace 6.8, 2026-11-21) glibc's alarm made
+# setitimer and its pause made ppoll, and io_uring was allowed (io_uring_disabled 0): a 1 s
+# io_uring_enter waited and ended ETIME there.
+#
+# Calls that arm a clock a later call waits out: timerfd_settime (a read of the timerfd waits),
+# setitimer and alarm, sched_setattr (under SCHED_DEADLINE, sched_yield sleeps to the next
+# period), io_uring_setup and io_uring_register, so that every use of io_uring, whose timeouts
+# are its own (IORING_OP_TIMEOUT, a cancel with a timeout), is counted, and every setsockopt. Of
+# socket(7) and tcp(7)'s options these set a time a later call waits out: SO_RCVTIMEO and
+# SO_SNDTIMEO (recv, send, accept, connect), SO_LINGER (close and shutdown wait up to l_linger
+# seconds for unsent data), SO_BUSY_POLL (a blocking recv, poll or epoll_wait busy-polls that
+# many microseconds), TCP_USER_TIMEOUT (unacknowledged data ends the connection after that
+# long), TCP_KEEPIDLE and TCP_KEEPINTVL (a silent peer ends a waiting recv after them),
+# TCP_DEFER_ACCEPT (accept waits up to that long for data), TCP_LINGER2 and TCP_SYNCNT (the
+# kernel's own FIN_WAIT2 and SYN timers). The drive makes no setsockopt at all, so the list
+# counts every one rather than name the options one by one; i386 sets them through socketcall,
+# whose subcall strace names setsockopt. Of the file and terminal options, every request that
+# sets a terminal's attributes sets VTIME, which a later read of the terminal waits out: TCSETS,
+# TCSETSW and TCSETSF (termios, as tcsetattr makes them), TCSETS2, TCSETSW2 and TCSETSF2
+# (termios2), TCSETA, TCSETAW and TCSETAF (the legacy termio) and TCSETX, TCSETXW and TCSETXF
+# (termiox) are the setters x86_64's and arm64's ioctl lists hold, the BSD TIOCSETP and TIOCSETN
+# being absent from both. TCSBRKP and TCSBRK send a break that lasts a given number of
+# deciseconds, or a fixed quarter second, and the call waits it out; TIOCSSERIAL sets a serial
+# port's closing_wait, which a later close waits out. fcntl's F_SETLEASE makes another process's
+# open or truncate of the file wait up to fs.lease-break-time for the holder. All of these are
+# counted.
+#
+# Calls that wait for a signal or a lock and that the drive at this file's head makes none of:
+# pause, flock, and fcntl or fcntl64 with F_SETLKW or F_OFD_SETLKW.
+#
+# Not listed, with why:
+# - timer_create, timer_settime, rt_sigsuspend, sigsuspend (i386), wait4, waitid and waitpid
+#   (i386): the drive's own `timeout` bounds arm their clock with timer_settime and wait in
+#   rt_sigsuspend and wait4 (2, 2 and 40 of them traced at this head on 2026-11-21), so a
+#   `timeout N cmd` wrapping a blocking command, or any blocking call a timer_create timer's
+#   signal ends, makes only calls the drive makes too, and is not seen.
+# - read, readv, pread64, preadv, preadv2, write and its kin, recvfrom, recvmsg, accept, accept4,
+#   connect, sendto, sendmsg, sendmmsg, sendfile, splice, tee, vmsplice, msgrcv, msgsnd, semop,
+#   getrandom and ptrace: they wait on a pipe, a socket, a device, a queue or another process,
+#   and their caller gives them no time to wait out, and the drive makes reads and writes all the
+#   time. Such a call can still wait out a timer the kernel keeps itself: a blocking connect to a
+#   loopback listener whose accept queue is full waits out TCP's SYN retransmission timeout (1 s
+#   at first), and a send waits out TCP's retransmission timer. Those kernel-internal timers are
+#   a class no list of calls can see. In 3 traced runs on 2026-11-21 the drive made 8 connect
+#   calls per run, all AF_UNIX to the absent nscd socket, non-blocking, none a TCP connect.
+#   Another process in the drive's tree is traced under -f; one outside it, such as a network
+#   peer, is not seen.
+# - close and shutdown: they wait out SO_LINGER's time, and the setsockopt that set it is
+#   counted; the drive closes files all the time.
+# - restart_syscall: it resumes an interrupted wait, whose first call is already traced.
+# - sched_yield and rseq_slice_yield: they give up the CPU and wait out no clock (sched_yield's
+#   SCHED_DEADLINE case is sched_setattr's, above).
+# - clock_gettime, clock_getres, gettimeofday, time, times, getitimer, timer_gettime,
+#   timerfd_gettime, sched_rr_get_interval, clock_settime, clock_adjtime, adjtimex,
+#   settimeofday, stime, utime, utimes, utimensat and futimesat, and their 64 and _time64 forms:
+#   they read or set a clock or a file's times and wait for nothing.
+# - prctl with PR_SET_TIMERSLACK lengthens a timed wait that is counted already; setrlimit and
+#   prlimit64 with RLIMIT_CPU or RLIMIT_RTTIME signal after CPU time is used, which ends only a
+#   busy loop (below). The drive's prlimit64 calls read RLIMIT_STACK, RLIMIT_NPROC and
+#   RLIMIT_NOFILE.
+# - A device's own ioctl requests that carry a timeout (SG_IO, USBDEVFS_BULK, I2C_TIMEOUT,
+#   TIOCSRS485's delays and the like): no list can name every driver's requests. The drive's
+#   ioctl calls are TCGETS, TIOCGPGRP and TIOCGWINSZ, and none of them sets a time.
+# - i386's ipc and socketcall multiplexers need no names of their own: strace names their
+#   subcalls (semtimedop, setsockopt), and the list matches those, as a 32-bit helper traced on
+#   2026-11-21 showed.
+# - A busy loop in user space, which spins on the clock with no system call. io_uring with
+#   SQPOLL polled from user space is one, after an io_uring_setup the list counts.
+#
+# A regex, so strace matches only the calls the host's architectures have. What the trace
+# establishes is that the drive made none of these calls, counted as timed_waits counts them, and
+# no more. Every unlisted case named above can still wait unseen: a blocking call a timer_create
+# timer's signal ends, which its caller gave a time through timer_settime, a `timeout N cmd`, a
+# process outside the traced tree, a device's own timed ioctl request and a busy loop; so can a
+# timer the kernel keeps itself (TCP's SYN and retransmission timers and the like). No check here
+# reads elapsed time to make up for those.
+TIMED_WAITS='/^(nanosleep|clock_nanosleep(_time64)?|select|_newselect|pselect6(_time64)?|poll|ppoll(_time64)?|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait(_time64)?|futex(_time64|_waitv|_wait)?|semtimedop(_time64)?|mq_timedreceive(_time64)?|mq_timedsend(_time64)?|recvmmsg(_time64)?|io_getevents|io_pgetevents(_time64)?|io_uring_setup|io_uring_enter|io_uring_register|timerfd_settime(64)?|setitimer|alarm|sched_setattr|setsockopt|pause|flock|fcntl(64)?|ioctl)$'
+
+# timed_waits <trace>: the calls of a strace log the control counts, one per line. A call begins
+# a line `<pid> <name>(`, where strace pads a short pid with spaces (`4     futex(`, as in a fresh
+# PID namespace or on a runner whose pids are short), so the separator is any run of blanks; one
+# another process's call interrupted goes on in a `<... name resumed>` line, which is no new call
+# and is passed over. A futex, futex_time64, futex_wait or futex_waitv call counts only where its
+# timeout argument is a struct, `{tv_sec=`: a lock's FUTEX_WAIT has NULL there and FUTEX_WAKE has
+# no timeout at all. An fcntl or fcntl64 counts only where it is F_SETLKW (F_SETLKW64 on i386),
+# F_OFD_SETLKW or F_SETLEASE, and an ioctl only where it is one of the terminal requests above
+# (TCSET followed by S, A or X, TCSBRK, TCSBRKP or TIOCSSERIAL). Every call of the other names
+# counts. The drive at this file's head makes none that counts: traced on 2026-11-21, in each of
+# 3 runs it made 0 of every listed call but futex, fcntl and ioctl, 27 futex(FUTEX_WAKE_PRIVATE)
+# calls, none of them timed, 51 fcntl calls (F_GETFD, F_SETFD, F_DUPFD, F_DUPFD_CLOEXEC and
+# F_GETFL), none of them a lock wait or a lease, and 26 ioctl calls (TCGETS, TIOCGPGRP and
+# TIOCGWINSZ), none of them a setter. A `/usr/bin/sleep 1` after gh answered made
+# clock_nanosleep, a `read -t 1` on a FIFO pselect6, and a 1 s FUTEX_WAIT_PRIVATE futex with
+# `{tv_sec=1, tv_nsec=0}`.
+timed_waits() {
+  { grep -E '^[0-9]+[[:space:]]+[a-z_0-9]+\(' "$1" || true; } |
+    { grep -Ev '^[0-9]+[[:space:]]+(futex(_time64|_waitv|_wait)?|fcntl(64)?|ioctl)\(' || true; }
+  grep -E '^[0-9]+[[:space:]]+futex(_time64|_waitv|_wait)?\(.*\{tv_sec=' "$1" || true
+  grep -E '^[0-9]+[[:space:]]+fcntl(64)?\([^,]*, F_((OFD_)?SETLKW|SETLEASE)' "$1" || true
+  grep -E '^[0-9]+[[:space:]]+ioctl\([^,]*, (TCSET[SAX]|TCSBRK|TIOCSSERIAL)' "$1" || true
+}
+
 # The stand-in `timeout`, beside the stand-in `gh` and opted into per call. It records the
 # whole argument list of every call it is given, one file per call, whether or not it stands in
 # for that call, so `timeout_calls` and `timeout_args` read the bound and the command that was
@@ -150,6 +283,21 @@ exit "\${answered:-124}"
 TIMEOUT
 chmod +x "$work/bin/timeout"
 
+# The stand-in `sleep`, which the ladder in gh-read.sh calls between attempts. It records the
+# seconds of each call, one file per call, and returns at once: what the cases read is the wait
+# the ladder asked for, not how long it took, so no case waits it out. The cases about the waits
+# read these records and not the drive's wall-clock time, which a loaded host stretches. Two
+# checks here held a drive to at most 1 s of SECONDS: measured 2026-11-21 on a shared 288-CPU dev
+# box, one of them failed in an unforced run with nothing wrong in the script, and with each `cat`
+# delayed both did.
+cat > "$work/bin/sleep" <<SLEEP
+#!/usr/bin/env bash
+set -euo pipefail
+calls=\$(find "$work/sleep-calls" -maxdepth 1 -type f | wc -l)
+printf '%s\n' "\$*" > "$work/sleep-calls/call.\$calls"
+SLEEP
+chmod +x "$work/bin/sleep"
+
 # page <id>|<name>|<conclusion>...: the page the stand-in answers with. `--slurp` collects the
 # pages into one array, so the answer is an array of page objects and each holds a `jobs` array.
 # `run_attempt` is in each job because the jobs API puts it there; nothing in the script reads
@@ -184,11 +332,11 @@ happy_page() {
 # and the three that do set `retry_seconds` themselves after calling it. Any per-call `stderr.<n>`
 # an earlier case wrote goes with it, so one case's faults never answer another's call, and so
 # do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its own call log, and the
-# stand-in gh's per-call `kill-wrapper.<n>` files.
+# stand-in gh's per-call `kill-wrapper.<n>` files, and the stand-in `sleep`'s call log.
 fixture() {
-  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls"
+  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls" "$work/sleep-calls"
   rm -f "$work"/stderr.* "$work"/stub-timeout.* "$work"/kill-wrapper.*
-  mkdir -p "$work/calls" "$work/timeout-calls"
+  mkdir -p "$work/calls" "$work/timeout-calls" "$work/sleep-calls"
   printf '%s\n' "${1:-0}" > "$work/refuse"
   printf '%s\n' "${2:-HTTP 502}" > "$work/stderr"
   retry_seconds=0
@@ -196,16 +344,13 @@ fixture() {
 }
 
 # drive <argument>...: the real script with the stand-in first on PATH. Sets `out` to its
-# combined output, `status` to its exit code and `seconds` to how long the drive took. Not a
-# subshell, so all three survive the call.
+# combined output and `status` to its exit code. Not a subshell, so both survive the call.
 drive() {
-  local started=$SECONDS
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
     GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=$retry_seconds "$read_script" "$@" 2>&1)
   status=$?
   set -e
-  seconds=$((SECONDS - started))
 }
 
 calls() { find "$work/calls" -maxdepth 1 -type f | wc -l | tr -d ' '; }
@@ -217,8 +362,17 @@ field() { jq -r --argjson id "$1" ".[] | select(.id == \$id) | $2" "$work/out.js
 errors() { grep -c '::error::' <<<"$out" || true; }
 error_line() { grep '::error::' <<<"$out" || true; }
 wrote_out_file() { [ -e "$work/out.json" ] && echo yes || echo no; }
-at_least() { [ "$1" -ge "$2" ] && echo true || echo false; }
-at_most() { [ "$1" -le "$2" ] && echo true || echo false; }
+# sleeps: the arguments of each call the ladder made to the stand-in `sleep`, in order and joined
+# by `|`, so one call given two arguments (`1 2`) reads apart from two calls; nothing where it made
+# none.
+sleeps() {
+  local n=0 waits=""
+  while [ -f "$work/sleep-calls/call.$n" ]; do
+    waits="$waits${waits:+|}$(cat "$work/sleep-calls/call.$n")"
+    n=$((n + 1))
+  done
+  echo "$waits"
+}
 
 echo "case: this attempt's jobs become the four fields the readings consume"
 fixture 0
@@ -282,11 +436,13 @@ check "naming the endpoint it read" \
 check "the status gh last printed" "$(contains "$(error_line)" 'HTTP 502')"
 check "the ladder's attempts and this run attempt" \
   "$(contains "$(error_line)" '3 attempts, all on run attempt 4')"
-check "and that this is a failed read and not a failed row" \
-  "$(contains "$(error_line)" 'failed read of the jobs API and not a failed browser row')"
+check "and that this error is a failed read and not a failed row" \
+  "$(contains "$(error_line)" 'This error is a failed read of the jobs API, not a failed browser row\. Re-running this job reads the list again\.$')"
+check "nor that no row failed, which this job did not read" \
+  "$(is "$(contains "$(error_line)" 'no row of the suite failed')" false)"
 check "every attempt's gh output still reaches the log" \
   "$(is "$(grep -c '^HTTP 502$' <<<"$out" || true)" 3)"
-check "and the ladder waited 1 s and then 2 s" "$(at_least "$seconds" 3)"
+check "and the ladder waited 1 s and then 2 s" "$(is "$(sleeps)" "1|2")"
 
 echo "case: a refusal gh printed no HTTP status for"
 # A resolution failure prints no status line, and a line that named one anyway would send a
@@ -357,7 +513,7 @@ check "and gh as the command it wraps" "$(is "$(cut -d' ' -f2 <<<"$(timeout_args
 check "which is this run's attempt read itself" \
   "$(contains "$(timeout_args)" '^30 gh api --paginate --slurp repos/o/r/actions/runs/41/')"
 check "so no gh call is made outside the bound" "$(is "$(calls)" 0)"
-check "and the drive waits for none of it" "$(at_most "$seconds" 1)"
+check "and the ladder's two waits are this case's 0 s" "$(is "$(sleeps)" "0|0")"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
 check "naming the bound that ended the attempt that decided the failure" \
   "$(contains "$(error_line)" 'attempt 3, which decided the failure, stopped at its 30 s bound')"
@@ -530,19 +686,113 @@ check "tried twice" "$(is "$(calls)" 2)"
 check "writes the attempt that answered" "$(is "$(entries)" 7)"
 check "with its legs" "$(is "$(field 13 .leg)" alone-webkit-alone)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
-check "and waited the ladder's first second" "$(at_least "$seconds" 1)"
+check "and waited the ladder's first second" "$(is "$(sleeps)" 1)"
 
 echo "case: the negative control, a gh that answers at once"
-# Without this, the two cases above would pass for a script that slept whatever it was given.
-# The knob is 10 here and the gh answers at once, so an unconditional sleep would take 10 s and
-# this drive takes none; the bound is an upper one because SECONDS counts whole seconds and a
-# drive that straddles a tick reads 1 however short it was.
+# The two cases above read the waits the ladder asked of `sleep`, and this one holds that a gh
+# answering at once makes the drive make none of the calls TIMED_WAITS lists, as timed_waits
+# counts them. A wait the stand-in does not record - a sleep binary by its absolute path,
+# `read -t`, a timed futex or futex_wait, semtimedop, mq_timedreceive, io_uring_enter with a
+# timeout, a timerfd, alarm and pause, flock, an F_OFD_SETLKW lock wait, SO_RCVTIMEO, a close that
+# waits out SO_LINGER, a terminal read that waits out a VTIME set by TCSETS, TCSETA or TCSETS2,
+# any of them after the answer, of any length - makes one, so the drive runs under strace and
+# timed_waits must find none. The waits the comment above TIMED_WAITS names as not seen pass. The
+# knob is 100000 and the real `timeout 120` still bounds the drive, so a wait the size of the
+# knob also ends it with 124.
 fixture 0
-retry_seconds=10
-drive jobs "$work/out.json"
+set +e
+out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
+  GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=100000 "$real_strace" -f -qq -e signal=none \
+  -e trace="$TIMED_WAITS" -o "$work/waits" "$real_timeout" 120 "$read_script" jobs "$work/out.json" 2>&1)
+status=$?
+set -e
 check "exits 0" "$(is "$status" 0)"
 check "calls gh once" "$(is "$(calls)" 1)"
-check "and waits not at all" "$(at_most "$seconds" 1)"
+check "and asks sleep for no wait" "$(is "$(sleeps)" "")"
+waits=$(timed_waits "$work/waits")
+check "and makes none of the calls the trace lists" "$(is "$(grep -c . <<<"$waits" || true)" 0)"
+[ -z "$waits" ] || sed 's/^/    traced: /' <<<"$waits"
+
+echo "case: timed_waits reads a trace line whatever the padding of its pid and the ABI's names"
+# The parser of the control's trace, on lines in the shape strace 6.8 writes. The pid-4 and pid-5
+# lines were written in a fresh PID namespace on this file's x86_64 box, where strace pads a
+# one-digit pid with blanks (`4     futex(`), the *_time64, _newselect, i386 multiplexer and
+# fcntl64 F_SETLKW64 and F_SETFD ones by a 32-bit helper; the pid-2149, 2156, 2164, 2178, 2224,
+# 2229, 2234 and 2239 ones on GitHub's ubuntu-24.04-arm runner; the seven-digit ones on the x86_64
+# box outside a namespace; all on 2026-11-21. The others are those lines with the pid re-padded or
+# under the name i386 gives the call (fcntl64 with F_SETLKW), or a lock's NULL-timeout wait, a
+# wake, a setsockopt of another option and a resumed call built in the same shape. Each `yes`
+# line counts, each `no` line does not.
+while IFS='|' read -r want line; do
+  printf '%s\n' "$line" > "$work/trace-line"
+  got=no
+  [ -z "$(timed_waits "$work/trace-line")" ] || got=yes
+  check "$want: $line" "$(is "$got" "$want")"
+done <<'TRACE'
+yes|4     futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0}) = -1 ETIMEDOUT (Connection timed out)
+yes|3278182 futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0}) = -1 ETIMEDOUT (Connection timed out)
+yes|4     futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0} <unfinished ...>
+yes|5     clock_nanosleep(CLOCK_REALTIME, 0, {tv_sec=0, tv_nsec=10000000}, 0x7ffeea4c2ac0) = 0
+yes|3662081 clock_nanosleep(CLOCK_REALTIME, 0, {tv_sec=1, tv_nsec=0}, 0x7fff1f4bea20) = 0
+yes|27    pselect6(1, [0], NULL, NULL, {tv_sec=0, tv_nsec=999984000}, {sigmask=[CHLD], sigsetsize=8}) = 0 (Timeout)
+yes|4     futex_waitv([{val=0, uaddr=0x7fff242ac83c, flags=FUTEX2_SIZE_U32|FUTEX2_PRIVATE}], 1, 0, {tv_sec=1403474, tv_nsec=902920133}, CLOCK_MONOTONIC) = -1 ETIMEDOUT (Connection timed out)
+yes|4     clock_nanosleep_time64(CLOCK_MONOTONIC, 0, {tv_sec=0, tv_nsec=10000000}, NULL) = 0
+yes|4     pselect6_time64(0, NULL, NULL, NULL, {tv_sec=0, tv_nsec=10000000}, NULL) = 0 (Timeout)
+yes|4     ppoll_time64(NULL, 0, {tv_sec=0, tv_nsec=0}, NULL, 8) = 0 (Timeout)
+yes|4     rt_sigtimedwait_time64([USR1], NULL, {tv_sec=0, tv_nsec=0}, 8) = -1 EAGAIN (Resource temporarily unavailable)
+yes|4     futex_time64(0x804b010, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0}) = -1 ETIMEDOUT (Connection timed out)
+yes|3250631 futex_time64(0x804b010, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0}) = -1 ETIMEDOUT (Connection timed out)
+yes|4     _newselect(0, NULL, NULL, NULL, {tv_sec=0, tv_usec=10000}) = 0 (Timeout)
+yes|4     semtimedop(21, [{sem_num=0, sem_op=-1, sem_flg=0}], 1, {tv_sec=1, tv_nsec=0}) = -1 EAGAIN (Resource temporarily unavailable)
+yes|4     mq_timedreceive(3, 0x7ffe9d83f428, 8, NULL, {tv_sec=1795260801, tv_nsec=515330836}) = -1 ETIMEDOUT (Connection timed out)
+yes|4     timerfd_settime(3, 0, {it_interval={tv_sec=0, tv_nsec=0}, it_value={tv_sec=1, tv_nsec=0}}, NULL) = 0
+yes|4     alarm(1)                          = 0
+yes|4     pause()                           = ? ERESTARTNOHAND (To be restarted if no handler)
+yes|4     flock(4, LOCK_EX)                 = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
+yes|4     setsockopt(3, SOL_SOCKET, SO_RCVTIMEO_OLD, "\1\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16) = 0
+yes|4     setsockopt(3, SOL_SOCKET, SO_RCVTIMEO_OLD, "\1\0\0\0\0\0\0\0", 8) = 0
+yes|4     semtimedop(47, [{sem_num=0, sem_op=-1, sem_flg=0}], 1, {tv_sec=0, tv_nsec=10000000}) = -1 EAGAIN (Resource temporarily unavailable)
+yes|4     io_uring_enter(3, 0, 1, IORING_ENTER_GETEVENTS|IORING_ENTER_EXT_ARG, 0x7ffd7597e5e0, 24) = -1 ETIME (Timer expired)
+yes|2224  io_uring_enter(3, 0, 1, IORING_ENTER_GETEVENTS|IORING_ENTER_EXT_ARG, 0xffffeaa74640, 24) = -1 ETIME (Timer expired)
+yes|4     futex_wait(0x7ffd40f58180, 0, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, {tv_sec=1414019, tv_nsec=781690059}, CLOCK_MONOTONIC) = -1 ETIMEDOUT (Connection timed out)
+yes|2229  futex_wait(0xffffcd665e70, 0, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, {tv_sec=774, tv_nsec=700571771}, CLOCK_MONOTONIC) = -1 ETIMEDOUT (Connection timed out)
+yes|4     fcntl(4, F_OFD_SETLKW, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
+yes|2239  fcntl(4, F_OFD_SETLKW, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
+yes|4     fcntl64(4, F_SETLKW, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
+yes|4     sched_setattr(0, {size=56, sched_policy=SCHED_DEADLINE, sched_flags=0, sched_nice=0, sched_priority=0, sched_runtime=10000000, sched_deadline=1000000000, sched_period=1000000000, sched_util_min=0, sched_util_max=0}, 0) = -1 EPERM (Operation not permitted)
+yes|4     setsockopt(4, SOL_SOCKET, SO_LINGER, {l_onoff=1, l_linger=1}, 8) = 0
+yes|4     setsockopt(3, SOL_TCP, TCP_USER_TIMEOUT, [1000], 4) = 0
+yes|4     setsockopt(3, SOL_SOCKET, SO_BUSY_POLL, [1000], 4) = 0
+yes|4     setsockopt(3, SOL_SOCKET, SO_RCVBUF, [1024], 4) = 0
+yes|4     ioctl(4, TCSETS, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|ONLCR, c_cflag=B38400|CS8|CREAD, c_lflag=ECHOE|ECHOK|ECHOCTL|ECHOKE, ...}) = 0
+yes|4     ioctl(4, TCSETA, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|, c_cflag=B38400|CS8|CREAD, c_lflag=, ...}) = 0
+yes|4     ioctl(4, TCSETAW, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|, c_cflag=B38400|CS8|CREAD, c_lflag=, ...}) = 0
+yes|4     ioctl(4, TCSETS2, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|, c_cflag=B38400|CS8|CREAD, c_lflag=, ...}) = 0
+yes|4     ioctl(4, TCSBRKP, 10)             = 0
+yes|4     ioctl(4, TIOCSSERIAL)             = -1 ENOTTY (Inappropriate ioctl for device)
+yes|2178  ioctl(4, TCSETA, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|, c_cflag=B38400|CS8|CREAD, c_lflag=, ...}) = 0
+yes|2156  ioctl(4, TCSETAW, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|, c_cflag=B38400|CS8|CREAD, c_lflag=, ...}) = 0
+yes|2149  ioctl(4, TCSETS2, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|, c_cflag=B38400|CS8|CREAD, c_lflag=, ...}) = 0
+yes|2164  ioctl(4, TCSBRKP, 10)             = 0
+yes|4     fcntl64(3, F_SETLKW64, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = 0
+yes|4     fcntl(3, F_SETLEASE, F_RDLCK)     = 0
+no|4     futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 2, NULL) = 0
+no|2256817 futex(0x76abf580572c, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+no|4     futex(0x76abf580572c, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+no|4     futex_time64(0x804b010, FUTEX_WAIT_PRIVATE, 2, NULL) = 0
+no|4     futex_time64(0x804b010, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+no|4     ioctl(4, TCGETS, {c_iflag=ICRNL|IXON, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|OPOST|ONLCR, c_cflag=B38400|CS8|CREAD, c_lflag=ISIG|ICANON|ECHO|ECHOE|ECHOK|IEXTEN|ECHOCTL|ECHOKE, ...}) = 0
+no|4     ioctl(3, TIOCGPTN, [19])          = 0
+no|4     ioctl(4, TCGETA, {c_iflag=ICRNL|IXON, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|OPOST|ONLCR, c_cflag=B38400|CS8|CREAD, c_lflag=ISIG|ICANON|ECHO|ECHOE|ECHOK|IEXTEN|ECHOCTL|ECHOKE, ...}) = 0
+no|4     ioctl(4, TCGETS2, {c_iflag=ICRNL|IXON, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|OPOST|ONLCR, c_cflag=B38400|CS8|CREAD, c_lflag=ISIG|ICANON|ECHO|ECHOE|ECHOK|IEXTEN|ECHOCTL|ECHOKE, ...}) = 0
+no|4     fcntl64(4, F_SETFD, FD_CLOEXEC)   = 0
+no|4     futex_wait(0x7ffe02ed1ba0, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, NULL, CLOCK_MONOTONIC) = -1 EAGAIN (Resource temporarily unavailable)
+no|2234  futex_wait(0xffffc227b690, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, NULL, CLOCK_MONOTONIC) = -1 EAGAIN (Resource temporarily unavailable)
+no|4     fcntl(3, F_OFD_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = 0
+no|4     fcntl(0, F_SETFD, FD_CLOEXEC)     = 0
+no|4     <... futex resumed>) = -1 ETIMEDOUT (Connection timed out)
+no|3662081 <... clock_nanosleep resumed>0x7fff1f4bea20) = 0
+TRACE
 
 echo "case: blobs-refused names the download step that failed and nothing beyond it"
 # What this job knows of a refused blob download is which step failed and on which attempt.
@@ -555,7 +805,7 @@ echo "case: blobs-refused names the download step that failed and nothing beyond
 # repository nor the run id, which it no longer reads.
 fixture 0
 set +e
-out=$(PATH="$work/bin:$PATH" GITHUB_REPOSITORY= GITHUB_RUN_ID= \
+out=$(PATH="$work/bin:$PATH" GITHUB_REPOSITORY='' GITHUB_RUN_ID='' \
   GITHUB_RUN_ATTEMPT=$run_attempt "$read_script" blobs-refused 2>&1)
 status=$?
 set -e
@@ -567,8 +817,10 @@ check "naming the step that failed" \
 check "the run attempt it failed on" "$(contains "$(error_line)" 'on run attempt 4')"
 check "and that step's own error line as where the reason is" \
   "$(contains "$(error_line)" "that step's own error line in this job's log")"
-check "and that this is a failed read and not a failed row" \
-  "$(contains "$(error_line)" "failed read of the run's artifacts and not a failed browser row")"
+check "and that this error is a failed read and not a failed row" \
+  "$(contains "$(error_line)" "This error is a failed read of the run's artifacts, not a failed browser row\.$")"
+check "nor that no row failed, which this job did not read" \
+  "$(is "$(contains "$(error_line)" 'no row of the suite failed')" false)"
 check "while naming no GET route at all" "$(is "$(contains "$(error_line)" 'GET ')" false)"
 check "no retry count this job cannot see" \
   "$(is "$(contains "$(error_line)" 'retr')" false)"
@@ -579,7 +831,7 @@ echo "case: an environment variable the step did not set"
 fixture 0
 set +e
 out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-  GITHUB_RUN_ATTEMPT= "$read_script" jobs "$work/out.json" 2>&1)
+  GITHUB_RUN_ATTEMPT='' "$read_script" jobs "$work/out.json" 2>&1)
 status=$?
 set -e
 check "fails the step" "$(is "$status" 1)"
@@ -590,7 +842,7 @@ check "and writes no out-file" "$(is "$(wrote_out_file)" no)"
 
 fixture 0
 set +e
-out=$(PATH="$work/bin:$PATH" GH_TOKEN= GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
+out=$(PATH="$work/bin:$PATH" GH_TOKEN='' GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
   GITHUB_RUN_ATTEMPT=$run_attempt "$read_script" jobs "$work/out.json" 2>&1)
 status=$?
 set -e
