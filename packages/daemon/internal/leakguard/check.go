@@ -414,6 +414,12 @@ type child struct {
 	// (Guard.ghToken), and a git read of a push's records to quote git's error without the push's
 	// content (Guard.git). Nil answers the two together.
 	stderr io.Writer
+	// stdout, where it is not nil, reads the child's standard output as the child writes it,
+	// from a pipe the child holds the other end of, and run answers none of it: a push's diff
+	// and the blobs the record writer reads are read this way (Guard.gitRead), so that no copy
+	// of the whole output is held. It reads to the end of the pipe; an error it answers closes
+	// the pipe, which ends the child's writes, and is run's error.
+	stdout func(io.Reader) error
 }
 
 // program is where name is, read from the base environment's PATH rather than from this
@@ -432,9 +438,16 @@ func program(base []string, name string) string {
 }
 
 // run runs c under ctx and answers its exit status and everything it printed, out and err
-// together unless c.stderr takes err. The error is a child that could not be run at all: one that
-// did not start, one the end of ctx stopped, which is a *stoppedError, or one a signal ended,
-// which has no status. A status is an answer, and no status is not.
+// together unless c.stderr takes err or c.stdout reads out. The error is a child that could not be
+// run at all: one that did not start, one the end of ctx stopped, which is a *stoppedError, or one
+// a signal ended, which has no status; and, after those, an error c.stdout answered. A status is
+// an answer, and no status is not.
+//
+// c.stdout reads from an *os.File pipe, never through exec's own copying goroutine: exec waits
+// for that goroutine at most procgroup.WaitDelay once the child has exited, and a reader still
+// scanning the end of a diff past that wait would lose what it had not read yet and go on
+// writing after run returned. With the pipe, the reader is this goroutine, and run waits for the
+// child only once the reader has read to the end.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	// One read of the base environment for the child, which both the program lookup and the
 	// child's own environment are built from.
@@ -453,8 +466,33 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	if c.stderr != nil {
 		cmd.Stderr = c.stderr
 	}
+	var out, in *os.File
+	if c.stdout != nil {
+		var err error
+		if out, in, err = os.Pipe(); err != nil {
+			return 0, "", err
+		}
+		defer out.Close()
+		cmd.Stdout = in
+	}
 	started := time.Now()
-	err := procgroup.Err(cmd.Run())
+	err := cmd.Start()
+	if in != nil {
+		// The child holds its own copy of the write end; this one closed, the reader sees the
+		// end of the pipe once the child and anything it started have closed theirs.
+		in.Close()
+	}
+	var readErr error
+	if err == nil {
+		if out != nil {
+			readErr = c.stdout(out)
+			// A reader that stopped early leaves the child writing into a pipe nobody reads:
+			// closed, its next write fails and it ends, rather than blocking the wait below.
+			out.Close()
+		}
+		err = cmd.Wait()
+	}
+	err = procgroup.Err(err)
 	switch {
 	case killed():
 		stopped := &stoppedError{
@@ -466,6 +504,8 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 			stopped.bound = deadline.Sub(started)
 		}
 		return 0, printed.String(), stopped
+	case readErr != nil:
+		return 0, printed.String(), readErr
 	case err != nil:
 		return 0, printed.String(), err
 	}

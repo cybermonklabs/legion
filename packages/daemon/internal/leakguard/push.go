@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -113,6 +114,11 @@ func PushName(remote string) string {
 // ref name, and for each commit the destination does not already hold, the author, the
 // committer, the message, each added or renamed path, and each added line. Under a deployment
 // that runs no shared check (sharedCheck) the rules are the whole of it.
+//
+// The records are scanned as they are read (pass), so the rule pass holds one batch of them and
+// never the push's whole diff. An added line of a file version the repository's blob record covers
+// is not read at all (readCover): the record says no rule's content pattern matches any line of
+// that version, so its lines could add no refusal.
 func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	what := PushName(req.Remote)
 	check, err := g.sharedCheck(what)
@@ -143,41 +149,49 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if !public {
 		return nil
 	}
-	records, err := g.pushRecords(ctx, req)
+	pass, err := g.rulePass(ctx, what)
 	if err != nil {
+		return err
+	}
+	cover := g.readCover(ctx, req.Dir, pass.engine)
+	if err := g.pushRecords(ctx, req, cover, pass.add); err != nil {
+		if pass.err != nil {
+			return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: pass.err}
+		}
 		return &SetupFailure{What: what, Why: "the push's commits could not be read", Err: err}
 	}
-	return g.rules(ctx, what, records)
+	cover.report(g.opts.Out)
+	return pass.end(what)
 }
 
-// pushRecords is everything a push would publish, as records: one per ref name, and for each
-// commit the push would add, one for the author identity, one for the committer identity, one
-// for the message, one for each added or renamed path and one for each added line. A commit
-// reached by two of the push's refs is read once.
-func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, error) {
-	var records []Record
+// pushRecords hands emit everything a push would publish, as records: one per ref name, and for
+// each commit the push would add, one for the author identity, one for the committer identity,
+// one for the message, one for each added or renamed path and one for each added line. A commit
+// reached by two of the push's refs is read once. An error of emit stops the read and is the
+// answer.
+func (g *Guard) pushRecords(ctx context.Context, req PushRequest, cover *cover, emit func(Record) error) error {
 	read := map[string]bool{}
 	for _, update := range req.Updates {
 		if ref := update.ref(); ref != "" {
-			records = append(records, RefRecord(ref))
+			if err := emit(RefRecord(ref)); err != nil {
+				return err
+			}
 		}
 		commits, err := g.commits(ctx, req, update)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for _, commit := range commits {
 			if read[commit] {
 				continue
 			}
 			read[commit] = true
-			of, err := g.commitRecords(ctx, req.Dir, commit)
-			if err != nil {
-				return nil, err
+			if err := g.commitRecords(ctx, req.Dir, commit, cover, emit); err != nil {
+				return err
 			}
-			records = append(records, of...)
 		}
 	}
-	return records, nil
+	return nil
 }
 
 // commits are the commits one update would add to the destination, oldest first: the commits
@@ -233,14 +247,14 @@ func zeroSHA(sha string) bool {
 	return sha != "" && strings.Trim(sha, "0") == ""
 }
 
-// commitRecords is one commit as records. The identities and the message come from the commit
-// itself; the added and renamed paths and the added lines come from its diff, read in the shape
-// its number of parents calls for (diffTree).
+// commitRecords hands emit one commit as records. The identities and the message come from the
+// commit itself; the added and renamed paths and the added lines come from its diff, read in the
+// shape its number of parents calls for (diffTree).
 //
 // A record about a file carries that file's path as its label and the line or the path as its
 // text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
 // is anchored on a whole path, and a label carrying anything else would take it away.
-func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record, error) {
+func (g *Guard) commitRecords(ctx context.Context, dir, commit string, cover *cover, emit func(Record) error) error {
 	// git writes the separator for itself, as %x00 in the format: an argument of this process's
 	// own holding a zero byte is a child that cannot be started at all. %P comes before the
 	// body, which is the one field that can hold a newline, so the parents are read without a
@@ -249,11 +263,11 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 	out, err := g.git(ctx, dir, "show", "--no-patch", "--no-color",
 		"--format="+separator+"%an <%ae>"+separator+"%cn <%ce>"+separator+"%P"+separator+"%B"+separator, commit)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	parts := strings.Split(out, "\x00")
 	if len(parts) < 5 {
-		return nil, fmt.Errorf("git show %s answered no identity, parents and message", short(commit))
+		return fmt.Errorf("git show %s answered no identity, parents and message", short(commit))
 	}
 	parents := len(strings.Fields(parts[3]))
 	records := []Record{
@@ -263,16 +277,17 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 	}
 	paths, err := g.addedPaths(ctx, dir, commit, parents)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	for _, path := range paths {
 		records = append(records, Record{Label: path, Text: path})
 	}
-	added, err := g.addedLines(ctx, dir, commit, parents)
-	if err != nil {
-		return nil, err
+	for _, record := range records {
+		if err := emit(record); err != nil {
+			return err
+		}
 	}
-	return append(records, added...), nil
+	return g.addedLines(ctx, dir, commit, parents, cover, emit)
 }
 
 // diffTree is a diff-tree of one commit, in the shape its parents call for: --root for a root
@@ -337,8 +352,21 @@ func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int)
 	return paths, nil
 }
 
-// addedLines are the lines one commit adds, each as a record of the file it is added to. The
-// diff is read with no context lines, so every line of it that a patch marks as added is one.
+// addedLines hands emit the lines one commit adds, each as a record of the file it is added to.
+// Where the repository has no blob record (cover is nil), that is the whole diff (readPatch).
+// Where it has one, a file whose new version the record covers is left out of the read, and the
+// rest are read exactly as the whole diff would read them (coveredRead).
+func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int, cover *cover, emit func(Record) error) error {
+	if cover == nil {
+		return g.readPatch(ctx, dir, commit, parents, nil, nil, emit)
+	}
+	return g.coveredRead(ctx, dir, commit, parents, cover, emit)
+}
+
+// readPatch hands emit the added lines of one commit's diff, restricted to pathspec where that is
+// not nil, and leaving out every file whose path skip holds. The diff is read with no context
+// lines, so every line of it that a patch marks as added is one, and it is read as git writes it,
+// one line held at a time (eachLine).
 //
 // A merge's combined diff marks each line with one column per parent, so a line added against
 // any of them begins with that many characters, one of which is a "+" ("++text" for a line of
@@ -347,36 +375,76 @@ func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int)
 // holds. The "+++ b/<path>" that names the file is read only where a header stands, between a
 // "diff --" line and the hunk that follows it, so a line of content that reads like one is not
 // mistaken for the name of a file.
-func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int) ([]Record, error) {
-	out, err := g.git(ctx, dir, diffTree(parents, "--unified=0", "--no-color", commit)...)
-	if err != nil {
-		return nil, err
+func (g *Guard) readPatch(ctx context.Context, dir, commit string, parents int, pathspec []string, skip map[string]bool, emit func(Record) error) error {
+	args := diffTree(parents, "--unified=0", "--no-color", commit)
+	if pathspec != nil {
+		args = append(append(args, "--"), pathspec...)
 	}
 	width := max(parents, 1)
-	var records []Record
 	path, header := "", false
-	for line := range strings.Lines(out) {
-		line = strings.TrimRight(line, "\r\n")
-		switch {
-		case strings.HasPrefix(line, "diff --"):
-			path, header = "", true
-		case header && strings.HasPrefix(line, "+++ "):
-			path = diffPath(strings.TrimPrefix(line, "+++ "))
-		case strings.HasPrefix(line, "@@"):
-			header = false
-		case header || path == "" || len(line) < width:
-		case strings.Contains(line[:width], "+"):
-			if text := line[width:]; strings.TrimSpace(text) != "" {
-				records = append(records, Record{Label: path, Text: text})
+	return g.gitRead(ctx, dir, func(out io.Reader) error {
+		return eachLine(out, func(line []byte) error {
+			line = bytes.TrimRight(line, "\r\n")
+			switch {
+			case bytes.HasPrefix(line, []byte("diff --")):
+				path, header = "", true
+			case header && bytes.HasPrefix(line, []byte("+++ ")):
+				path = diffPath(string(line[len("+++ "):]))
+				if skip[path] {
+					path = ""
+				}
+			case bytes.HasPrefix(line, []byte("@@")):
+				header = false
+			case header || path == "" || len(line) < width:
+			case bytes.Contains(line[:width], []byte("+")):
+				if text := line[width:]; len(bytes.TrimSpace(text)) != 0 {
+					return emit(Record{Label: path, Text: string(text)})
+				}
+			}
+			return nil
+		})
+	}, args...)
+}
+
+// eachLine hands each line of r to fn, its "\n" included where it has one, as a slice fn must
+// copy what it keeps of. It holds one line at a time, however long: a line longer than its
+// buffer is gathered whole before fn sees it. An error of fn stops the read and is the answer.
+func eachLine(r io.Reader, fn func(line []byte) error) error {
+	in := bufio.NewReaderSize(r, 64<<10)
+	var long []byte
+	for {
+		chunk, err := in.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			long = append(long, chunk...)
+			continue
+		}
+		line := chunk
+		if len(long) > 0 {
+			long = append(long, chunk...)
+			line = long
+		}
+		if len(line) > 0 {
+			if err := fn(line); err != nil {
+				return err
 			}
 		}
+		// A long line's buffer is let go rather than kept for the rest of the read.
+		long = nil
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 	}
-	return records, nil
 }
 
 // diffPath is the path a patch's "+++" line names, with the b/ prefix off and the C quoting a
-// path with a byte git will not print raw undone. A deletion's /dev/null names no file.
+// path with a byte git will not print raw undone. A deletion's /dev/null names no file. git ends
+// the line with a tab where the path holds a space, and that tab is no part of the path: a tab of
+// the path itself is always C-quoted.
 func diffPath(field string) string {
+	field = strings.TrimSuffix(field, "\t")
 	if field == "/dev/null" {
 		return ""
 	}
@@ -398,9 +466,21 @@ func short(commit string) string {
 // failed on its standard error. Reading the two apart also keeps a warning git writes on its
 // standard error out of the records parsed from its output.
 func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, error) {
-	argv := gitArgv(args...)
+	return g.gitWith(ctx, dir, child{}, args...)
+}
+
+// gitRead is git for an output read as git writes it, by read, rather than answered whole: a
+// push's diff, and the blobs the record writer reads.
+func (g *Guard) gitRead(ctx context.Context, dir string, read func(io.Reader) error, args ...string) error {
+	_, err := g.gitWith(ctx, dir, child{stdout: read}, args...)
+	return err
+}
+
+// gitWith is git with the rest of c's shape: a stdin, or a stdout read as it is written.
+func (g *Guard) gitWith(ctx context.Context, dir string, c child, args ...string) (string, error) {
 	var stderr bytes.Buffer
-	status, out, err := g.run(ctx, child{argv: argv, dir: dir, stderr: &stderr})
+	c.argv, c.dir, c.stderr = gitArgv(args...), dir, &stderr
+	status, out, err := g.run(ctx, c)
 	if err != nil {
 		return "", procgroup.Said(err, gitSaid(stderr.String()))
 	}

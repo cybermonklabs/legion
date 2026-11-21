@@ -16,6 +16,7 @@ import (
 const (
 	leakCheckPrePushUsage = "usage: legion leak-check pre-push <remote> <url>  (git's pre-push hook runs it, never a person: git's update lines on standard input, the repository as the working directory)"
 	leakCheckTextUsage    = "usage: legion leak-check text <kind>  (the text on standard input, <kind> what a refusal calls the write)"
+	leakCheckRecordUsage  = "usage: legion leak-check record <rev>...  (records, in the repository of the working directory, each file version of the revisions' trees that no rule matches a line of)"
 )
 
 // leakCheckStdin is where the command reads the write it checks — git's update lines for a
@@ -24,22 +25,29 @@ var leakCheckStdin io.Reader = os.Stdin
 
 // newLeakCheckCommand is `legion leak-check`, the image's shell door to
 // packages/daemon/internal/leakguard: the guard the daemon runs in process is the one a pod's git
-// hook and a pod's own scripts run here, so one set of rules answers for every write. Its two
+// hook and a pod's own scripts run here, so one set of rules answers for every write. Two of its
 // commands are the two shapes a write reaches the guard in from a shell: a push, which git's
-// pre-push hook runs, and a piece of text, which anything about to publish one runs.
+// pre-push hook runs, and a piece of text, which anything about to publish one runs. The third
+// writes the blob record a push reads (leakguard.NotesRef), which a job after each merge to an
+// internal main runs.
 func newLeakCheckCommand(stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{
 		Use:    "leak-check",
 		Short:  "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)",
 		Hidden: true,
 	},
-		leakCheckCommand("pre-push <remote> <url>", 2, leakCheckPrePushUsage, "check a push before git makes it", runLeakCheckPrePush, stderr),
-		leakCheckCommand("text <kind>", 1, leakCheckTextUsage, "check a text about to be published", runLeakCheckText, stderr),
+		leakCheckCommand("pre-push <remote> <url>", exactly(2), leakCheckPrePushUsage, "check a push before git makes it", runLeakCheckPrePush, stderr),
+		leakCheckCommand("text <kind>", exactly(1), leakCheckTextUsage, "check a text about to be published", runLeakCheckText, stderr),
+		leakCheckCommand("record <rev>...", atLeast(1), leakCheckRecordUsage, "record the file versions of revisions that no rule matches a line of, so a push need not read them", runLeakCheckRecord, stderr),
 	)
 }
 
-// leakCheckCommand is one shape of `legion leak-check`: it takes words words, and any other count
-// is a usage error, the guard's StatusSetupFailure, with usage on stderr.
+// exactly and atLeast are the argument counts a shape of `legion leak-check` takes.
+func exactly(n int) func(int) bool { return func(got int) bool { return got == n } }
+func atLeast(n int) func(int) bool { return func(got int) bool { return got >= n } }
+
+// leakCheckCommand is one shape of `legion leak-check`: it takes the words takes allows, and any
+// other count is a usage error, the guard's StatusSetupFailure, with usage on stderr.
 //
 // The guard starts each of its children, the shared check among them, in a process group of its
 // own (leakguard's Guard.run), which none of the terminal's signals reach: git runs its pre-push
@@ -51,13 +59,13 @@ func newLeakCheckCommand(stderr io.Writer) *cobra.Command {
 // running, reparented and waited for by nobody. A signal that ended the context before the guard's
 // answer is reported ends the command with 128+<signal> rather than with the setup failure its
 // stopped check reads as (leakCheckReport), which refuses the push either way.
-func leakCheckCommand(use string, words int, usage, short string, do func(ctx context.Context, args []string, stderr io.Writer) int, stderr io.Writer) *cobra.Command {
+func leakCheckCommand(use string, takes func(int) bool, usage, short string, do func(ctx context.Context, args []string, stderr io.Writer) int, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:    use,
 		Short:  short,
 		Hidden: true,
 		RunE: runs(func(ctx context.Context, args []string) int {
-			if len(args) != words {
+			if !takes(len(args)) {
 				fmt.Fprintln(stderr, usage)
 				return leakguard.StatusSetupFailure
 			}
@@ -82,7 +90,7 @@ func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) i
 	if err != nil {
 		return leakCheckReport(ctx, stderr, "", &leakguard.SetupFailure{What: what, Why: "the repository the hook runs in could not be read", Err: err})
 	}
-	guard := leakguard.New(leakguard.Options{Curl: leakguardCurl})
+	guard := leakguard.New(leakguard.Options{Curl: leakguardCurl, Out: stderr})
 	return leakCheckReport(ctx, stderr, "", guard.Push(ctx, leakguard.PushRequest{
 		Dir:     dir,
 		Remote:  remote,
@@ -105,6 +113,34 @@ func runLeakCheckText(ctx context.Context, args []string, stderr io.Writer) int 
 	}
 	guard := leakguard.New(leakguard.Options{Curl: leakguardCurl})
 	return leakCheckReport(ctx, stderr, kind, guard.Text(ctx, leakguard.TextRequest{Text: string(text)}))
+}
+
+// runLeakCheckRecord writes the blob record in the repository of the working directory: each file
+// version of the trees of the revisions it is given that no rule's content pattern matches a line
+// of, under this binary's key (leakguard's Guard.WriteRecord). It says how many it found covered,
+// recorded and left unrecorded, and exits 0 once it has read every one of them. Anything else is
+// exit 2 and records nothing: a revision that names no commit, a blob git cannot read, rules with
+// no key, and a record another writer moved while this one read, which the next run writes again.
+// Only the record ref is written: the command pushes nothing, and fetching and pushing the ref
+// are its caller's.
+func runLeakCheckRecord(ctx context.Context, revs []string, stderr io.Writer) int {
+	dir, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(stderr, "legion leak-check record: the repository it runs in could not be read: %v\n", err)
+		return leakguard.StatusSetupFailure
+	}
+	guard := leakguard.New(leakguard.Options{Curl: leakguardCurl})
+	summary, err := guard.WriteRecord(ctx, dir, revs)
+	if status, ok := signalled(ctx); ok {
+		return status
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "legion leak-check record: %v\n", err)
+		return leakguard.StatusSetupFailure
+	}
+	fmt.Fprintf(stderr, "legion leak-check record: %s: %d file versions already covered, %d recorded, %d not recorded (a rule matches a line of each)\n",
+		leakguard.NotesRef, summary.Covered, summary.Recorded, summary.NotRecorded)
+	return leakguard.StatusClean
 }
 
 // leakCheckReport prints one answer of the guard and is the status to exit with. A cleared write

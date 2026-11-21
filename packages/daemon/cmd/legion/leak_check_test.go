@@ -190,6 +190,47 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 	}
 }
 
+// `legion leak-check record <rev>...` writes the blob record in the repository it runs in, and a
+// push of what it recorded then reads none of those file versions' lines: the hook says how many
+// the record covered. A second run finds them covered. A call with no revision is a usage error,
+// and a revision that names no commit records nothing; both exit 2.
+func TestLeakCheckRecordWritesTheRecordAPushReads(t *testing.T) {
+	dir := t.TempDir()
+	fixture := fixturegit.Isolated(t, t.TempDir())
+	fixture.Run(dir, fixturegit.InitWorkTree("", "main")...)
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("a line of nothing in particular\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.Run(dir, "git", "add", "-A")
+	fixture.Run(dir, "git", "commit", "--quiet", "-m", "a commit of nothing in particular")
+	line := "refs/heads/main " + fixture.Run(dir, "git", "rev-parse", "HEAD") + " refs/heads/main " + noSHA + "\n"
+	t.Chdir(dir)
+	t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes))
+
+	for _, step := range []struct {
+		name  string
+		stdin string
+		args  []string
+		code  int
+		says  []string
+	}{
+		{name: "the first record", args: []string{"record", "HEAD"}, says: []string{"0 file versions already covered, 1 recorded, 0 not recorded"}},
+		{name: "the second record", args: []string{"record", "HEAD"}, says: []string{"1 file versions already covered, 0 recorded, 0 not recorded"}},
+		{
+			name: "a push of what it recorded", stdin: line, args: []string{"pre-push", "origin", dir + ".git"},
+			says: []string{"the blob record " + leakguard.NotesRef + " covered 1 of the file versions the push adds, and the rules read the other 0"},
+		},
+		{name: "no revision", args: []string{"record"}, code: 2, says: []string{leakCheckRecordUsage}},
+		{name: "a revision that names no commit", args: []string{"record", "no-such-branch"}, code: 2, says: []string{`"no-such-branch" names no commit`}},
+	} {
+		code, printed := leakCheck(t, step.stdin, step.args...)
+		if code != step.code {
+			t.Errorf("%s: exited %d, want %d: %s", step.name, code, step.code, printed)
+		}
+		says(t, printed, step.says)
+	}
+}
+
 func legionLeakCheckPrePush(t *testing.T, dir string, env map[string]string, line, url string) (int, string) {
 	t.Helper()
 	cmd := legionCommand(t, dir, env, "leak-check", "pre-push", "origin", url)

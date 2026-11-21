@@ -78,6 +78,13 @@ It carries:
   The jj wrapper adds one check, and only before a `jj git push`:
   that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not.
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
+  The rules read a push's diff as git writes it, in batches of at most 64 MiB of record text (a longer line alone), so the pass holds about one batch, one line and the engine's cost of one record, whatever the size of the push.
+  A push to a public repository also reads the blob record, git notes on file versions under `refs/notes/legion-leak-guard`: a note's line `pass <key>` says that no content pattern of the rules matches any line of that version, and the push reads no line of a version its record covers.
+  It still reads every ref name, commit identity, message and path, every line of every other version, and every line of a covered version at a path a rule refuses by itself.
+  The key is the sha256 of a tag naming the record, the sha256 of the embedded rule file, the gitleaks module's version and the Go version the binary was built with, so a binary with other rules, another engine or another Go reads every version again.
+  Any run of `legion leak-check record <rev>...` with the same binary writes the record for the versions of those revisions' trees, in the repository it runs in, with one `git fast-import` commit that refuses, exit 2, where another writer moved the ref meanwhile; a job after each merge to an internal main can run it and push the ref.
+  The pushing clone reads the record only once it has fetched `refs/notes/legion-leak-guard`: with no such ref the push reads everything and says nothing, with a ref it cannot read it reads everything and says so, and with a record it says how many of the versions it adds the record covered and how many the rules read.
+  Whoever can write that ref in the pushing clone, or in the repository the clone fetches it from, can make a push skip a version's content, and nothing protects the ref beyond who can write it.
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:

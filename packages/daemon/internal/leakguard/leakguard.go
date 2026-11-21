@@ -23,6 +23,27 @@
 // every component the repository and company rules match replaced by "<name>", the masking
 // .github/scripts/check-private-names.sh does (its named_parts function, which its mask applies).
 //
+// The rule pass of a push reads git's diff as git writes it and scans the records in batches of
+// at most 64 MiB of record text, a line longer than that in a batch of its own (pass). Its peak
+// memory is about one batch, one line of git's output and the detector's own cost of scanning one
+// record, whatever the size of the push.
+//
+// A push also reads the blob record: git notes on file versions (blobs) under NotesRef
+// (refs/notes/legion-leak-guard), whose line "pass <key>" says that no content pattern of the
+// rules matches any line of that version. The key is the sha256 of a tag naming the record, the
+// sha256 of the embedded rule file, the gitleaks module's version and the Go version this binary
+// was built with (Guard.recordKey), so a binary that differs in any of them reads every version
+// again. Any run of `legion leak-check record <rev>...` with this binary writes the record for the
+// versions of those revisions' trees, in the repository it runs in (Guard.WriteRecord); a job
+// after each merge to an internal main can run it and push the ref. A push reads no line of a
+// version its record covers, and everything else as before: every ref name, commit identity,
+// message and path, every line of every other version, and every line of a covered version at a
+// path a rule refuses by itself (cover.coverable). The pushing clone reads the record only once it
+// has fetched NotesRef. With no such ref a push reads everything and says nothing, with one it
+// cannot read it reads everything and says so, and a record never refuses a push. Whoever can
+// write NotesRef in the pushing clone, or in the repository the clone fetches it from, can make a
+// push skip a version's content; nothing here protects the ref beyond who can write it.
+//
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two
 // switches on, the shared check refuses a dispatch:// link, and 786 tracked files of this
@@ -33,6 +54,7 @@ package leakguard
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -82,6 +104,10 @@ type Options struct {
 	// it with a stand-in of its own: no shipped binary sets it, and cmd/legion's test binary sets
 	// the value it passes from LEGION_CMD_TEST_CURL (its TestMain).
 	Curl string
+	// Out is where a push says what its blob record did (Guard.Push, readCover): how many of the
+	// file versions it adds the record covered and how many the rules read, and a record that is
+	// there but could not be read. None of it refuses anything. Nil prints nothing.
+	Out io.Writer
 }
 
 // Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
@@ -96,6 +122,16 @@ type Guard struct {
 	// curl is the curl the guard's reads through curl run (Guard.CurlGet): Options.Curl, or
 	// curlProgram where that is empty. This package's own tests set it directly.
 	curl string
+	// The rest are seams this package's own tests set directly. batchLimit bounds a batch of the
+	// rule pass in place of batchBytes where it is not 0, and onBatch is handed each batch before
+	// it is scanned (pass.scanned). keyRules stands in for the rule file's bytes in the record's
+	// key where it is not empty (Guard.recordKey). beforeImport runs between the record writer's
+	// read of the notes ref and its write of it (Guard.WriteRecord), where another writer's move
+	// of the ref is what a test makes.
+	batchLimit   int
+	onBatch      func(batch []Record)
+	keyRules     string
+	beforeImport func()
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a
@@ -185,18 +221,30 @@ func (g *Guard) Rules(ctx context.Context, records ...Record) error {
 
 // rules is the rule-file pass over records, reported as a refusal of what.
 func (g *Guard) rules(ctx context.Context, what string, records []Record) error {
+	pass, err := g.rulePass(ctx, what)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if pass.add(record) != nil {
+			break
+		}
+	}
+	return pass.end(what)
+}
+
+// rulePass is a rule pass of the embedded rules, for records read one at a time, or the setup
+// failure of rules that could not be compiled.
+func (g *Guard) rulePass(ctx context.Context, what string) (*pass, error) {
 	engine, err := compiled()
 	if err != nil {
-		return &SetupFailure{What: what, Why: "the private-name rules could not be read", Err: err}
+		return nil, &SetupFailure{What: what, Why: "the private-name rules could not be read", Err: err}
 	}
-	lines, err := engine.scan(ctx, records)
-	if err != nil {
-		return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: err}
+	limit := batchBytes
+	if g.batchLimit > 0 {
+		limit = g.batchLimit
 	}
-	if len(lines) == 0 {
-		return nil
-	}
-	return &Refusal{What: what, By: byRules, Lines: lines}
+	return &pass{ctx: ctx, engine: engine, limit: limit, scanned: g.onBatch}, nil
 }
 
 // TextRequest is a piece of text a write would publish, as the shared check's text shape reads it:
