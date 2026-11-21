@@ -2,7 +2,9 @@ package bus
 
 import (
 	"errors"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,26 +14,24 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// A send of the core subscription that a reconnect overtakes gives no verdict. sendCore compares
-// the connection's last error before the bind with the one after the flush, and nats.go sets that
-// error anew within a reconnect: nil as the reconnect begins (doReconnect), a failed attempt's error
-// on each failed attempt, and nil again once an attempt connects (processConnectInit). A verdict
-// made across that compares two sessions: a refusal before and nil after counted a subscription the
-// new server accepted as refused, and ResendRefusedCore then tried the machine's group and dropped
-// the subscription the client held.
+// A send of the core subscription begun while its connection reconnects gives no verdict. sendCore
+// compares the connection's last error before the bind with the one after the flush, and nats.go
+// sets that error anew within a reconnect: nil as the reconnect begins (doReconnect), nil after
+// each failed attempt, and the handshake's result once an attempt connects (processConnectInit). A
+// verdict made across that compares two sessions: a refusal before and nil after counted a
+// subscription the new server accepted as refused, and ResendRefusedCore then tried the machine's
+// group and dropped the subscription the client held.
 //
 // Here the server stops and the client starts to reconnect. The relay then freezes and the server
 // starts again, granting the subscription: an attempt can connect to the relay but its handshake
-// cannot finish. sendCore runs now: nats.go keeps the subscription for the reconnect and puts the
-// flush's PING in its reconnect buffer. The relay thaws once that PING is buffered, the reconnect
-// finishes, nats.go sends the subscription to the server, which accepts it, and the PING's PONG
-// ends the flush. sendCore must answer with an error, not a verdict made across the two sessions.
+// cannot finish. sendCore runs now. Without a check of the session as the send begins, nats.go kept
+// the subscription for the reconnect and put the flush's PING in its reconnect buffer; the relay
+// thaws once that PING is buffered, the reconnect finishes, the server accepts the subscription,
+// and the PING's PONG ends the flush. sendCore must answer with an error, not a verdict made across
+// the two sessions.
 //
-// This enters sendCore on a connection already reconnecting. The order ResendRefusedCore reaches it
-// in, connected at the check and disconnected between the error's read and the flush, cannot be
-// placed: nothing in the client stops a send between those two reads, and a disconnect during the
-// flush's wait instead ends the flush with nats.ErrConnectionClosed (nats.go clears every waiting
-// flush as it disconnects), which sendCore already returns.
+// The two tests after this one place a change of session inside a send that began on a connected
+// connection, with the hooks around sendCore's flush.
 func TestSendCoreGivesNoVerdictForASendAReconnectOvertook(t *testing.T) {
 	const (
 		subject = "notifications.>"
@@ -75,7 +75,7 @@ func TestSendCoreGivesNoVerdictForASendAReconnectOvertook(t *testing.T) {
 	}
 	answered := make(chan answer, 1)
 	go func() {
-		sub, accepted, err := sendCore(recoverableSubscription{transport: coreSubscription, subject: subject, queue: queue, handler: func(*nats.Msg) {}}, conn, client.js)
+		sub, accepted, err := client.sendCore(recoverableSubscription{transport: coreSubscription, subject: subject, queue: queue, handler: func(*nats.Msg) {}}, conn, client.js, reconnects)
 		answered <- answer{sub, accepted, err}
 	}()
 	// The PING is the one thing a reconnecting connection buffers here: the bind's SUB waits for
@@ -133,5 +133,168 @@ func TestSendCoreGivesNoVerdictForASendAReconnectOvertook(t *testing.T) {
 	}
 	if got.sub != nil {
 		t.Fatalf("sendCore returned a subscription beside its error %v", got.err)
+	}
+}
+
+// A send whose connection reconnects between the bind and the server's answer gives no verdict,
+// and the subscription it made is drained, not unsubscribed. nats.go sends that subscription again
+// with every other one as it reconnects, so the new server may accept it and deliver to it; the
+// answer the flush then reads is the new session's, and the last error was cleared on the way.
+//
+// The hook before the flush restarts the server, which grants the subscription, waits for the
+// client to reconnect and for the server to hold the subscription nats.go sent again, and has two
+// messages published to it. The handler holds the first, and the second waits behind it. sendCore
+// must end with errSendSuperseded and leave both messages to the handler: an unsubscribe would drop
+// the second.
+func TestSendCoreGivesNoVerdictAndDrainsASendItsConnectionReconnectedUnder(t *testing.T) {
+	const (
+		subject = "notifications.>"
+		queue   = "send-core-reconnected"
+		topic   = "notifications.team.send-core-reconnected"
+	)
+	seed, public := testnats.User(t)
+	granting := testnats.SubscribeGrantConfig(public, subject, "_INBOX.>")
+	server, uri := testnats.StartConfig(t, granting, []string{"-DV", "-js"}, false)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	var conn *nats.Conn
+	hooked := false
+	client, err := Connect([]string{uri}, WithBeforeCoreSendFlush(func() {
+		hooked = true
+		reconnects := conn.Stats().Reconnects
+		server.Restart(t, granting)
+		testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect inside the send", func() bool {
+			return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > reconnects
+		})
+		// nats.go reads CONNECTED before it sends the subscriptions again, under the connection's
+		// lock, so this flush's PONG comes once the server holds the subscription it was sent.
+		if err := conn.Flush(); err != nil {
+			t.Fatalf("flush the reconnected connection: %v", err)
+		}
+		publisher, err := Dial("send-core-publisher", []string{uri}, os.LookupEnv)
+		if err != nil {
+			t.Fatalf("connect the publisher: %v", err)
+		}
+		defer publisher.Close()
+		for range 2 {
+			if err := publisher.Publish(topic, []byte("{}")); err != nil {
+				t.Fatalf("publish %s: %v", topic, err)
+			}
+		}
+		// The server delivers each message as it reads it, so both are on their way to the client
+		// before this flush's PONG, and so before the PONG of the send's own flush.
+		if err := publisher.Flush(); err != nil {
+			t.Fatalf("flush the publishes: %v", err)
+		}
+	}))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	conn = client.Conn
+	release := make(chan struct{})
+	var free sync.Once
+	let := func() { free.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	handled := make(chan string, 2)
+	handler := func(msg *nats.Msg) {
+		<-release
+		handled <- msg.Subject
+	}
+
+	start := conn.Stats().Reconnects
+	sub, accepted, err := client.sendCore(recoverableSubscription{transport: coreSubscription, subject: subject, queue: queue, handler: handler}, conn, client.js, start)
+	if !hooked {
+		t.Fatal("the hook before the flush never ran; the test proves nothing")
+	}
+	if errors.Is(err, nats.ErrTimeout) {
+		t.Fatalf("the flush timed out, so no answer was read; the test proves nothing: %v", err)
+	}
+	trace := server.Log()
+	trace = trace[strings.LastIndex(trace, "Starting nats-server"):]
+	if delivered := strings.Count(trace, "->> [MSG "+topic+" "); delivered != 2 {
+		t.Fatalf("the restarted server delivered %d messages on %s, want 2; the test proves nothing", delivered, topic)
+	}
+	if !errors.Is(err, errSendSuperseded) || sub != nil {
+		if sub != nil {
+			_ = sub.Unsubscribe()
+		}
+		t.Fatalf("sendCore answered accepted=%v, error %v, for a send its connection reconnected under; want errSendSuperseded and no subscription", accepted, err)
+	}
+	let()
+	for n := range 2 {
+		select {
+		case got := <-handled:
+			if got != topic {
+				t.Fatalf("the handler was handed %s, want %s", got, topic)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the handler was handed %d of the 2 messages the new server delivered to the subscription the send made", n)
+		}
+	}
+}
+
+// A send whose connection drops after the server's answer arrived, and before it is read, gives no
+// verdict. nats.go turns the connection RECONNECTING and then clears its last error, and it counts
+// the reconnect only once a dial succeeds, so with the server gone the count has not moved: the
+// status is what shows the answer's session has ended. The subscription the send made is
+// unsubscribed, not drained: a draining subscription stays in nats.go's set, and the reconnect would
+// send it again with no UNSUB, a member of the queue group that the client no longer reads.
+//
+// The hook after the flush stops the server and waits for the connection to read RECONNECTING.
+// sendCore must end with errSendSuperseded. The server then starts again, granting the
+// subscription, and once the client has reconnected the server must have received no subscription
+// in the send's queue group.
+func TestSendCoreGivesNoVerdictForAnAnswerReadAfterItsConnectionDropped(t *testing.T) {
+	const (
+		subject = "notifications.>"
+		queue   = "send-core-dropped"
+	)
+	seed, public := testnats.User(t)
+	granting := testnats.SubscribeGrantConfig(public, subject, "_INBOX.>")
+	server, uri := testnats.StartConfig(t, granting, []string{"-DV", "-js"}, false)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	var conn *nats.Conn
+	hooked := false
+	client, err := Connect([]string{uri}, WithAfterCoreSendFlush(func() {
+		hooked = true
+		server.Stop(t)
+		testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to read the stop", func() bool {
+			return conn.Status() == nats.RECONNECTING
+		})
+	}))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	conn = client.Conn
+
+	start := conn.Stats().Reconnects
+	sub, accepted, err := client.sendCore(recoverableSubscription{transport: coreSubscription, subject: subject, queue: queue, handler: func(*nats.Msg) {}}, conn, client.js, start)
+	if !hooked {
+		t.Fatal("the hook after the flush never ran; the test proves nothing")
+	}
+	if reconnects := conn.Stats().Reconnects; reconnects != start {
+		t.Fatalf("the connection reconnected %d times inside the send; the test proves nothing about a drop the count does not show", reconnects-start)
+	}
+	if !errors.Is(err, errSendSuperseded) || sub != nil {
+		if sub != nil {
+			_ = sub.Unsubscribe()
+		}
+		t.Fatalf("sendCore answered accepted=%v, error %v, for an answer read after its connection dropped; want errSendSuperseded and no subscription", accepted, err)
+	}
+
+	server.Restart(t, granting)
+	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect", func() bool {
+		return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > start
+	})
+	// nats.go reads CONNECTED before it sends the subscriptions again, so this flush's PONG comes
+	// once the server has read every one.
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the reconnected connection: %v", err)
+	}
+	trace := server.Log()
+	trace = trace[strings.LastIndex(trace, "Starting nats-server"):]
+	if resent := strings.Count(trace, "<<- [SUB "+subject+" "+queue+" "); resent != 0 {
+		t.Fatalf("the restarted server received the send's subscription %d times; the client sent again a subscription it gave no verdict on", resent)
 	}
 }

@@ -47,6 +47,8 @@ type connectOpts struct {
 	streamSubjectsRefresh       time.Duration
 	reconnectWaitTick           func()
 	beforeRequestFlush          func()
+	beforeCoreSendFlush         func()
+	afterCoreSendFlush          func()
 	background                  bool
 	silentCutDetection          bool
 	promptReconnect             bool
@@ -315,7 +317,15 @@ type Client struct {
 	// export_test.go) to hold the flush until the connection it would flush is gone, the
 	// interleaving a flush begun after the connection turned reconnecting has.
 	beforeRequestFlush func()
-	mu                 sync.Mutex
+	// beforeCoreSendFlush and afterCoreSendFlush, when not nil, run on the goroutine of a send of the
+	// core subscription (sendCore), right before the flush that waits for the server's answer and
+	// right after it returns. They are nil outside tests: a test sets them
+	// (WithBeforeCoreSendFlush, WithAfterCoreSendFlush, export_test.go) to lose or replace the
+	// connection while the send is open, the interleavings in which the answer comes from another
+	// session of the connection than the one the send began in.
+	beforeCoreSendFlush func()
+	afterCoreSendFlush  func()
+	mu                  sync.Mutex
 
 	// deniedPublishes holds, under mu, the server's refusals of publishes per subject it refused a
 	// publish to, as the connection reported them (recordPublishDenial), queued in arrival order
@@ -536,6 +546,8 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectErrClock:           opts.reconnectErrClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
+		beforeCoreSendFlush:         opts.beforeCoreSendFlush,
+		afterCoreSendFlush:          opts.afterCoreSendFlush,
 		stopCh:                      make(chan struct{}),
 	}
 	stream := opts.streamConfig()
@@ -1304,8 +1316,10 @@ func (c *Client) CoreSubOK() bool {
 // refused attempt in another group left in its place would move the lane to that group for good.
 // The mark stays set until the server has accepted a send, so CoreSubOK never reads true for a
 // subscription the server refuses. A send whose answer does not come back leaves the refused
-// subscription in place, and so does one a reconnect overtook (sendCore, errSendSuperseded): the
-// reconnect sent that subscription again, and the new server's answer to it decides.
+// subscription in place. So does every attempt that leaves the session of the connection this
+// method read at its start, whichever group it was in (sendCore, errSendSuperseded): a verdict
+// counts only from an attempt that began and ended inside that session. The reconnect sent the
+// refused subscription again, and the new server's answer to it decides.
 //
 // It sends nothing in four cases. While a bind of the registration is in flight, that bind sends
 // the subscription again itself. While the refused subscription still holds messages that the
@@ -1358,7 +1372,10 @@ func (c *Client) ResendRefusedCore() error {
 		}
 		attempt := registration
 		attempt.queue = queue
-		if sub, accepted, err = sendCore(attempt, conn, js); err != nil || accepted {
+		// Every attempt is measured against the session read above, not one of its own: a
+		// reconnect between two groups' attempts would otherwise let the machine's group be tried,
+		// and kept, on a new server that may accept the shared group the client held.
+		if sub, accepted, err = c.sendCore(attempt, conn, js, reconnects); err != nil || accepted {
 			break
 		}
 	}
@@ -1412,9 +1429,10 @@ const coreSendAnswerWait = 2 * time.Second
 // nothing, so the refused subscription the client held stays in place. It never leaves that method.
 var errNoQueueAccepted = errors.New("bus: the server accepted the core subscription in no queue group")
 
-// errSendSuperseded is sendCore's error for a send its connection's reconnect overtook: the
-// connection was not connected as the send began, or reconnected before the server's answer was
-// read. It never leaves ResendRefusedCore.
+// errSendSuperseded is sendCore's error for a send that left the session of the connection it
+// was measured against: the connection did not read CONNECTED and that session's reconnect count
+// as the send began, or no longer did once the server's answer was read. It never leaves
+// ResendRefusedCore.
 var errSendSuperseded = errors.New("bus: the connection reconnected during the core subscription's send")
 
 // sendCore binds registration on conn and waits, within coreSendAnswerWait, until the server has
@@ -1423,39 +1441,68 @@ var errSendSuperseded = errors.New("bus: the connection reconnected during the c
 // error as it reads the -ERR (processTransientError), before the PONG that ends the flush. So the
 // server accepted the subscription when that error is still the one the connection held before
 // the bind (sameError); any other error, a refusal among them, counts as not accepted. A flush
-// that fails leaves the answer unknown: the subscription is unsubscribed and the failure returned.
+// that fails leaves the answer unknown: the subscription is released (releaseAttempt) and the
+// failure returned.
 //
-// That comparison holds only within one session of the connection, since a reconnect sets the
-// last error back to nil (nats.go's processConnectInit): a refusal read before a reconnect and nil
-// after it would count a subscription the new server accepted as refused. nats.go sends a
-// subscription made while the connection reconnects once it has reconnected, and a flush begun
-// then waits in the reconnect buffer and succeeds on the new server, so the flush alone does not
-// catch it. So the send begins only on a connection that is connected, and its session is the
-// reconnect count read after that status (the order ResendRefusedCore reads them in): nats.go
-// counts a reconnect as soon as it dials, before it reads CONNECTED again or sets the error back.
-// A count that changed by the time the answer is read ends the send with errSendSuperseded, the
-// subscription unsubscribed, and leaves the subscription the client held, which the reconnect sent
-// again, to the new server's answer.
-func sendCore(registration recoverableSubscription, conn *nats.Conn, js nats.JetStreamContext) (*nats.Subscription, bool, error) {
-	if conn.Status() != nats.CONNECTED {
+// That comparison holds only within one session of the connection, since nats.go sets the last
+// error anew within a reconnect: to nil as the reconnect begins (doReconnect), to nil after each
+// failed attempt, and to the handshake's result once an attempt connects. Compared across that, a
+// refusal before and nil after counts as refused a subscription the new server accepted, and nil
+// before and nil after counts as accepted an answer no server gave in the session the client
+// keeps. A flush begun while the connection reconnects waits in the reconnect buffer and succeeds
+// on the new server, and a drop after the flush returned clears the error with the count still
+// unchanged, so neither the flush nor the count alone catches a reconnect. So the whole send must
+// stay inside the session ResendRefusedCore read at its start, reconnects: the connection reads
+// CONNECTED and that count both before the bind and after the answer is read. The status is read
+// before the count each time. nats.go turns a connection RECONNECTING before it clears the error,
+// and counts a reconnect once a dial succeeds, before the connection reads CONNECTED again; so a
+// connection that dropped reads RECONNECTING until a dial succeeds, and one that reconnected reads
+// a higher count. A send outside the session ends with errSendSuperseded and its subscription
+// released, and leaves the subscription the client held, which a reconnect sends again, to the
+// new server's answer.
+func (c *Client) sendCore(registration recoverableSubscription, conn *nats.Conn, js nats.JetStreamContext, reconnects uint64) (*nats.Subscription, bool, error) {
+	if conn.Status() != nats.CONNECTED || reconnectsOf(conn) != reconnects {
 		return nil, false, errSendSuperseded
 	}
-	reconnects := reconnectsOf(conn)
 	before := conn.LastError()
 	sub, err := bind(registration, conn, js)
 	if err != nil {
 		return nil, false, err
 	}
+	if hook := c.beforeCoreSendFlush; hook != nil {
+		hook()
+	}
 	if err := conn.FlushTimeout(coreSendAnswerWait); err != nil {
-		_ = sub.Unsubscribe()
+		releaseAttempt(conn, sub)
 		return nil, false, err
 	}
+	if hook := c.afterCoreSendFlush; hook != nil {
+		hook()
+	}
 	after := conn.LastError()
-	if reconnectsOf(conn) != reconnects {
-		_ = sub.Unsubscribe()
+	if conn.Status() != nats.CONNECTED || reconnectsOf(conn) != reconnects {
+		releaseAttempt(conn, sub)
 		return nil, false, errSendSuperseded
 	}
 	return sub, sameError(after, before), nil
+}
+
+// releaseAttempt ends a subscription sendCore made and gives no verdict on, which a server may have
+// accepted and delivered to: a reconnect sends it again with every other subscription, and the new
+// server may accept it. On a connection that reads CONNECTED it drains it: nats.go sends the UNSUB
+// at once and hands the messages the subscription holds to its handler before it removes it, where
+// Unsubscribe would drop them. On one that does not it unsubscribes it: a draining subscription
+// stays in nats.go's set until its drain's flush returns, and the reconnect sends every
+// subscription in that set again with no UNSUB (resendSubscriptions), which would leave the server
+// a member of the queue group that the client no longer reads, taking a share of the group's
+// messages. The messages it holds then are lost with the session that delivered them. A reconnect
+// before a drain ends sends the subscription again as well, as it does for any drain nats.go runs.
+func releaseAttempt(conn *nats.Conn, sub *nats.Subscription) {
+	if conn.Status() == nats.CONNECTED {
+		_ = sub.Drain()
+		return
+	}
+	_ = sub.Unsubscribe()
 }
 
 // reconnectsOf is conn's reconnect count, 0 for no connection: the session of a subscription's
