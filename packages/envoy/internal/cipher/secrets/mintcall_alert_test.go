@@ -20,8 +20,8 @@ func TestATLSAlertReadsAsTheUpstreamAnswering(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			err := tlsalerttest.Get(t, row.addr)
-			if got := transportFailure(context.Background(), err); got != row.want {
-				t.Fatalf("transportFailure(%v) = %q, want %q", err, got, row.want)
+			if got := TransportFailure(context.Background(), err); got != row.want {
+				t.Fatalf("TransportFailure(%v) = %q, want %q", err, got, row.want)
 			}
 		})
 	}

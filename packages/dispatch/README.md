@@ -586,10 +586,11 @@ issue still holds that one answered ask and the settlement writes the answer ont
 again. An upload naming a token the live document has moved past is refused `409 PRECONDITION_FAILED`,
 whose answer carries the live token, the live version and `dispatch doc-read`; the command exits
 non-zero, nothing is written, and the same upload naming the token `dispatch doc-read` prints is
-taken. A replacement that names no token at all is refused `400 PRECONDITION_REQUIRED` by every
-server, under no setting, so that check runs against the one server the rest of the script
-drives. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT` and `DEV_SIGNIN_LOGIN`, which is
-required here because the review and the answer are a person's writes. It writes three issues in
+taken. A replacement that names no token at all is taken unchecked, as it was before #3000, since
+no deployed `dispatch` command could name one (INFRA-4980), so that check runs against the one
+server the rest of the script drives. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT` and
+`DEV_SIGNIN_LOGIN`, which is required here because the review and the answer are a person's
+writes. It writes three issues in
 `PROJECT` and closes all three, also when a check fails. Against `bun run dispatch:local`:
 
 ```bash
