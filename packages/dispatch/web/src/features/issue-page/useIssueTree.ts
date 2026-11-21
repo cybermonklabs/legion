@@ -321,13 +321,15 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // prefix of the document's blocks read (`["artifact", id, "blocks"]`), on its new version, its
   // rename, removal or review, and an ask or comment in it; and a names read
   // (`["reference-targets", …]`) on an event that changes the words or the name under an address
-  // its key holds, on the issue or project document that address is of: a comment's edit, an
-  // ask's edit, a document's creation, new version, rename or removal, and an issue's write that
-  // changes its title (`referenceNameTargets`). A names read's key is the set of addresses it
-  // names, so a tree that comes to hold another set reads again under a key of its own, and only
-  // a change under an address the tree already names needs a rule. No rule names `["whoami"]`,
-  // which the tree reads with `EVENT_FRESH` too: the reader's login does not change while a page
-  // is open.
+  // its key holds, on the issue or project document that address is of: a comment's or an issue
+  // message's edit or delete, an ask's edit, a document's creation, new version, rename or
+  // removal, and an issue's write that changes its title (`referenceNameTargets`). A post's edit
+  // or delete also reaches a read that names the post by its whole id under another owner
+  // (`correctedPostAddresses`), and `markCorrectedPost` writes the post's marks into the answers
+  // the cache holds. A names read's key is the set of addresses it names, so a tree that comes to
+  // hold another set reads again under a key of its own, and only a change under an address the
+  // tree already names needs a rule. No rule names `["whoami"]`, which the tree reads with
+  // `EVENT_FRESH` too: the reader's login does not change while a page is open.
   const coverage = useQuery({ ...issueCoverageQuery(key), ...EVENT_FRESH });
   const decisions = useQuery({ ...issueDecisionsQuery(key, true), ...EVENT_FRESH });
   const results = useQuery({ ...issueResultsQuery(key), ...EVENT_FRESH });

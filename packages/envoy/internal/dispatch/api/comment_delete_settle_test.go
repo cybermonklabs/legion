@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -31,21 +30,20 @@ import (
 // insertedWords is the text the insert suggestions of these rows put in a document.
 const insertedWords = "zarquoninserted"
 
-// pendingInsert is an issue whose spec holds insertedWords under alice's pending insert
-// suggestion, as newPendingInsert leaves it.
-type pendingInsert struct {
-	documentService *docs.Service
-	handler         http.Handler
-	database        *store.Store
-	issueKey        string
-	artifactID      string
-	// insert is alice's insert suggestion, on a browser's insert mark around insertedWords.
-	insert model.Comment
-}
-
-// newPendingInsert makes the issue of pendingInsert.
-func newPendingInsert(t *testing.T) pendingInsert {
-	t.Helper()
+// The stores built from the document's latest version, read straight after the deletes commit
+// and with no wait: the block's latest text (an unpinned block reference), the spec's blocks with
+// their excerpts (its part_of edges), the block's name and text tree (the names read), search, and
+// the related-item check. None gives the words of the deleted inserts. Each read is the dashboard's
+// own, with the display trees it asks for.
+//
+// The issue's spec holds insertedWords, under alice's insert suggestion on a browser's insert mark
+// around them, from its first version, which every one of these stores is built from before the
+// delete, so each read gives them then: the positive control. The related-item check lists an
+// issue's spec as the issue itself, whose snippet is its title (fillRelatedItems), so the check is
+// read over a project document too, which holds the same words under an insert suggestion of its
+// own and is listed as itself. The service settles nothing on its own here (Settle is an hour), so
+// only the delete can have written the stores without the words.
+func TestTheLatestVersionsStoresHoldNoWordOfAPendingInsertOnceItsDeleteCommits(t *testing.T) {
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "An insert's words", "The "+insertedWords+" brown fox jumps")
 	writeBrowserMark(t, database, documentService, issue.PrimaryArtifactID, docs.MarkSpec{
@@ -53,59 +51,30 @@ func newPendingInsert(t *testing.T) pendingInsert {
 		ID:    "m-insert",
 		Attrs: pmdoc.Attrs{"id": "m-insert", "by": "user:alice", "kind": "insert"},
 	}, insertedWords+" ")
-	return pendingInsert{
-		documentService: documentService, handler: handler, database: database,
-		issueKey: issue.Key, artifactID: issue.PrimaryArtifactID,
-		insert: createThreadComment(t, handler, issue.Key, map[string]any{
-			"body":       "Add this word.",
-			"anchor":     map[string]any{"artifact": "spec", "mark_id": "m-insert"},
-			"suggestion": map[string]string{"replace_with": insertedWords + " "},
-		}, "alice"),
-	}
-}
-
-// suggestProjectInsert has a browser mark insertedWords, and the space after them, in the project
-// document as an insert suggestion whose mark is markID, which alice then suggests; it answers her
-// comment.
-func suggestProjectInsert(t *testing.T, handler http.Handler, database *store.Store, documentService *docs.Service, document model.Artifact, markID string) model.Comment {
-	t.Helper()
-	writeBrowserMark(t, database, documentService, document.ID, docs.MarkSpec{
-		Kind:  docs.MarkSuggestion,
-		ID:    markID,
-		Attrs: pmdoc.Attrs{"id": markID, "by": "user:alice", "kind": "insert"},
-	}, insertedWords+" ")
-	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+document.ID+"/comments", map[string]any{
+	specInsert := createThreadComment(t, handler, issue.Key, map[string]any{
 		"body":       "Add this word.",
-		"anchor":     map[string]any{"artifact": document.Slug, "mark_id": markID},
+		"anchor":     map[string]any{"artifact": "spec", "mark_id": "m-insert"},
+		"suggestion": map[string]string{"replace_with": insertedWords + " "},
+	}, "alice")
+	notes := createProjectDocument(t, handler, "TEST", "Design notes", "The "+insertedWords+" brown fox jumps\n")
+	writeBrowserMark(t, database, documentService, notes.ID, docs.MarkSpec{
+		Kind:  docs.MarkSuggestion,
+		ID:    "m-notes-insert",
+		Attrs: pmdoc.Attrs{"id": "m-notes-insert", "by": "user:alice", "kind": "insert"},
+	}, insertedWords+" ")
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+notes.ID+"/comments", map[string]any{
+		"body":       "Add this word.",
+		"anchor":     map[string]any{"artifact": notes.Slug, "mark_id": "m-notes-insert"},
 		"suggestion": map[string]string{"replace_with": insertedWords + " "},
 	}, "alice")
 	if created.Code != http.StatusCreated {
 		t.Fatalf("suggest the insert on the project document: status=%d body=%s", created.Code, created.Body.String())
 	}
-	return decodeBody[model.Comment](t, created)
-}
+	notesInsert := decodeBody[model.Comment](t, created)
+	refreshTermStats(t, database, "TEST")
 
-// The stores built from the document's latest version, read straight after the deletes commit
-// and with no wait: the block's latest text (an unpinned block reference), the spec's blocks with
-// their excerpts (its part_of edges), the block's name and text tree (the names read), search, and
-// the related-item check. None gives the words of the deleted inserts. Each read is the dashboard's
-// own, with the display trees it asks for.
-//
-// The spec of newPendingInsert holds the words from its first version, which every one of these
-// stores is built from before the delete, so each read gives them then: the positive control. The
-// related-item check lists an issue's spec as the issue itself, whose snippet is its title
-// (fillRelatedItems), so the check is read over a project document too, which holds the same words
-// under an insert suggestion of its own and is listed as itself. The service settles nothing on
-// its own here (Settle is an hour), so only the delete can have written the stores without the
-// words.
-func TestTheLatestVersionsStoresHoldNoWordOfAPendingInsertOnceItsDeleteCommits(t *testing.T) {
-	f := newPendingInsert(t)
-	notes := createProjectDocument(t, f.handler, "TEST", "Design notes", "The "+insertedWords+" brown fox jumps\n")
-	notesInsert := suggestProjectInsert(t, f.handler, f.database, f.documentService, notes, "m-notes-insert")
-	refreshTermStats(t, f.database, "TEST")
-
-	specRef := "dispatch://" + f.issueKey + "/spec"
-	blocks := decodeBody[[]model.ArtifactBlock](t, dispatchRequest(t, f.handler, http.MethodGet, "/api/v1/artifacts/"+f.artifactID+"/blocks", nil, "alice"))
+	specRef := "dispatch://" + issue.Key + "/spec"
+	blocks := decodeBody[[]model.ArtifactBlock](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/blocks", nil, "alice"))
 	if len(blocks) != 1 {
 		t.Fatalf("the spec lists the blocks %#v, want its one paragraph", blocks)
 	}
@@ -120,15 +89,15 @@ func TestTheLatestVersionsStoresHoldNoWordOfAPendingInsertOnceItsDeleteCommits(t
 	// The positive control: before the deletes, every read gives the words, so each check below
 	// can fail.
 	for _, read := range reads {
-		if body := treesRequest(t, f.handler, read.target, true).Body.String(); !strings.Contains(body, insertedWords) {
+		if body := treesRequest(t, handler, read.target, true).Body.String(); !strings.Contains(body, insertedWords) {
 			t.Fatalf("%s before the deletes gives no %q, so its check after them cannot fail: %s", read.name, insertedWords, body)
 		}
 	}
 
-	deleteThreadComment(t, f.handler, f.insert.ID, "alice")
-	deleteThreadComment(t, f.handler, notesInsert.ID, "alice")
+	deleteThreadComment(t, handler, specInsert.ID, "alice")
+	deleteThreadComment(t, handler, notesInsert.ID, "alice")
 	for _, read := range reads {
-		if body := treesRequest(t, f.handler, read.target, true).Body.String(); strings.Contains(body, insertedWords) {
+		if body := treesRequest(t, handler, read.target, true).Body.String(); strings.Contains(body, insertedWords) {
 			t.Errorf("%s straight after the deletes gives the deleted inserts' words %q: %s", read.name, insertedWords, body)
 		}
 	}
@@ -168,10 +137,10 @@ func latencySpec() string {
 // hold, heavybodies' plain list of 8,000 items, whose 8,001 blocks are the most any of its stored
 // shapes reads as, and the index a version write pays for by the block (deferBlockIndexBlocks
 // measures the same body at 43 µs a block). Each insert is a browser's insert mark on words of a
-// paragraph of their own, suggested by a comment and deleted by its author, as
-// newPendingInsert makes one. A settled delete writes exactly one version, and one left to
-// the settlement writes none, or what is timed would not be the settle; a delete that writes
-// another count fails the benchmark.
+// paragraph of their own, suggested by a comment and deleted by its author, as the spec's insert
+// of TestTheLatestVersionsStoresHoldNoWordOfAPendingInsertOnceItsDeleteCommits is. A settled delete
+// writes exactly one version, and one left to the settlement writes none, or what is timed would
+// not be the settle; a delete that writes another count fails the benchmark.
 //
 // The architect's rulings on dispatch://INFRA-1523: on 2026-11-20 22:18Z, that the settle should
 // add no more than about a second to the delete's p99 on the heaviest fixture, measured in a

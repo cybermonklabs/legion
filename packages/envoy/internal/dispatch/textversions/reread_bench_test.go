@@ -168,34 +168,31 @@ func logRereadPlan(b *testing.B, database *store.Store) {
 type statementTimer struct {
 	mu            sync.Mutex
 	all, readLogs time.Duration
-	open          map[*pgx.Conn]statementStart
 }
 
-// statementStart is a statement in flight on one connection: when it was sent, and whether it is
-// a read of the log.
+// statementStartKey is the key of the context value that carries a statement's start from
+// TraceQueryStart to its TraceQueryEnd: pgx hands TraceQueryEnd the context TraceQueryStart
+// returned.
+type statementStartKey struct{}
+
+// statementStart is a statement in flight: when it was sent, and whether it is a read of the log.
 type statementStart struct {
 	at      time.Time
 	readLog bool
 }
 
-func (s *statementTimer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.open == nil {
-		s.open = map[*pgx.Conn]statementStart{}
-	}
-	s.open[conn] = statementStart{at: time.Now(), readLog: data.SQL == rereadEventsQuery}
-	return ctx
+func (s *statementTimer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, statementStartKey{},
+		statementStart{at: time.Now(), readLog: data.SQL == rereadEventsQuery})
 }
 
-func (s *statementTimer) TraceQueryEnd(_ context.Context, conn *pgx.Conn, _ pgx.TraceQueryEndData) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	start, ok := s.open[conn]
+func (s *statementTimer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	start, ok := ctx.Value(statementStartKey{}).(statementStart)
 	if !ok {
 		return
 	}
-	delete(s.open, conn)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	took := time.Since(start.at)
 	s.all += took
 	if start.readLog {

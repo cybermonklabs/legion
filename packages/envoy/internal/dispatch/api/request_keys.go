@@ -1170,10 +1170,11 @@ const answerEndedQuery = `
 //
 // An id that stands only in a text - a citation in markdown, a link - or in a member that names a
 // post from another object (reply_to, comment_id) holds no part of the post, and ends nothing; a
-// document that holds a deleted comment ends nothing either, as only the version a delete renamed
-// holds the comment's words. The block text a reply carries of the post it answers (reply_block)
-// is left out: every keyed route whose answer can hold one answers a repeat with the post read
-// again (keyedRereads, keyedReplays; TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh).
+// document named in an answer ends nothing either: its text, a deleted insert suggestion's words
+// included, is the document's history, which a delete leaves (comment_delete.go). The block text
+// a reply carries of the post it answers (reply_block) is left out: every keyed route whose answer
+// can hold one answers a repeat with the post read again (keyedRereads, keyedReplays;
+// TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh).
 //
 // It reads no time, neither the delete's nor the key's. A delete's deleted_at is when its
 // transaction began (clearDeletedPostBody), before it waited for the owner's lock
