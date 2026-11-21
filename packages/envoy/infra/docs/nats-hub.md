@@ -1186,18 +1186,22 @@ envoy-infra routes check --namespace envoy --statefulset envoy-nats --record rou
 `routes record` saves each pod's `uid`, its nats container's `restartCount` and `startedAt`, the
 time, and the cluster it read: the kubeconfig context it read through, its cluster's API server
 and the SHA-256 of that cluster's CA certificate, from the context's `certificate-authority-data`
-(`kubectl config view --minify --flatten` with a jsonpath of that field alone, so no credential of
-the kubeconfig's user reaches the command); or, in a pod with no kubeconfig and no `--context`
+(`kubectl config view --minify --flatten --allow-missing-template-keys=true` with a jsonpath of
+that field alone, so no credential of the kubeconfig's user is in its output, and whose error
+output the commands never show, since kubectl's jsonpath printer can write the whole flattened
+kubeconfig there); or, in a pod with no kubeconfig and no `--context`
 given, the context `in-cluster`, the server
 `https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT` and the SHA-256 of the pod's
 ServiceAccount CA, `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`. A client that holds no
 CA records none. `routes check` requires all three of its own, exit 2 otherwise, in either path,
 since a hub of the same names on another cluster has other pods, which the check would read as a
 new container on every pod; the CA is what tells apart two clusters at one address, as two GKE
-Autopilot clusters' `kubernetes` Services can be. A context renamed since the record fails the
-same way, the safe way: check through a context of the name the record holds, for the same
-cluster, or record again at `env`. It
-refuses until the `env` roll has finished: while any pod is not Ready with a running
+Autopilot clusters' `kubernetes` Services can be. A rotation of the cluster's CA between the record
+and the check exits 2 the same way: record again at `env`. A context renamed since the record fails
+the same way, the safe way: check through a context of the name the record holds, for the same
+cluster, or record again at `env`. Every kubectl the two commands start runs with `KUBERC=off`, so
+no default of a `~/.kube/kuberc` changes a flag they rely on, such as the log's length. `routes
+record` refuses until the `env` roll has finished: while any pod is not Ready with a running
 nats container, is not on the update revision of a finished roll of the StatefulSet (its
 `controller-revision-hash`, and the StatefulSet's `observedGeneration`, `updatedReplicas`, `currentRevision`
 and `updateRevision`), or names no route variables in its nats container, since between two pods of a

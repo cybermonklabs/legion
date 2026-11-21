@@ -27,6 +27,12 @@ import (
 	"github.com/sjawhar/envoy/infra/routes"
 )
 
+// canaryURL is a URL whose user information holds a planted password, built at run time so that
+// no URL with a credential stands in this file's text, which a leak check reads.
+func canaryURL(scheme, user, password, rest string) string {
+	return scheme + "://" + url.UserPassword(user, password).String() + "@" + rest
+}
+
 // exampleCA and otherCA are two clusters' CA certificates, as a client holds them, PEM. Neither is a
 // valid certificate: the Source hashes the bytes and parses nothing.
 const (
@@ -46,20 +52,32 @@ func caDigest(pem string) string {
 // with no kubeconfig when config.json is absent; `get statefulset`, `get pod <name>`, `port-forward pod/<name> ...
 // :<port>`, which writes its PID to pid-<name>-<port>, then prints the local port in
 // port-<name>-<port> and runs until killed, and `logs pod/<name> --container nats --timestamps`.
-// It appends every command line it is given to calls, and refuses any other. It cuts its arguments
+// It appends every command line it is given to calls, and its KUBERC to kuberc-env, and refuses
+// any other. It cuts its arguments
 // joined into one string first, since bash, unlike dash, cuts ${*#...} from each argument apart. A
 // forward writes its PID before it prints its port, since the Source goes on once it reads the port
 // and a test may then read the PID; $FAKE_KUBECTL_FORWARD_DELAY, when set, is the seconds a forward
 // waits between the two.
+//
+// The CA call fails as kubectl v1.36.4 does: with flatten-fails present, always, its stderr that
+// file's text; and for a context with no CA (no ca.b64) under a kuberc that sets
+// allow-missing-template-keys to false for `config view` (kuberc-strict present, KUBERC not off),
+// unless the call sets the flag itself, its stderr then the object its jsonpath was given, the
+// whole flattened kubeconfig, credentials and all, which kuberc-strict holds.
 const fakeKubectl = `#!/bin/sh
 dir="$FAKE_KUBECTL_DIR"
 args="$*"
 printf '%s\n' "$args" >> "$dir/calls"
+printf '%s\n' "${KUBERC-unset}" >> "$dir/kuberc-env"
 case "$args" in
 *" config view --minify --output json") [ -f "$dir/config.json" ] || { echo "error: current-context must exist in order to minify" >&2; exit 1; }
   exec cat "$dir/config.json" ;;
-*" config view --minify --flatten --output jsonpath={.clusters[0].cluster.certificate-authority-data}") [ -f "$dir/config.json" ] || { echo "error: current-context must exist in order to minify" >&2; exit 1; }
-  exec cat "$dir/ca.b64" ;;
+*" config view --minify --flatten "*"--output jsonpath={.clusters[0].cluster.certificate-authority-data}") [ -f "$dir/config.json" ] || { echo "error: current-context must exist in order to minify" >&2; exit 1; }
+  [ -f "$dir/flatten-fails" ] && { echo "error: $(cat "$dir/flatten-fails")" >&2; exit 1; }
+  [ -f "$dir/ca.b64" ] && exec cat "$dir/ca.b64"
+  case "$args" in *" --allow-missing-template-keys=true "*) exit 0 ;; esac
+  [ -f "$dir/kuberc-strict" ] && [ "$KUBERC" != off ] && { echo "error: error executing jsonpath: certificate-authority-data is not found. object given to jsonpath engine was: $(cat "$dir/kuberc-strict")" >&2; exit 1; }
+  exit 0 ;;
 *" get statefulset envoy-nats --output json") exec cat "$dir/statefulset.json" ;;
 *" get pod "*" --output json") pod=${args#* get pod }; pod=${pod%% *}; exec cat "$dir/pod-$pod.json" ;;
 *" port-forward pod/"*) pod=${args#* port-forward pod/}; pod=${pod%% *}; remote=${args##*:}
@@ -224,7 +242,7 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 	}
 	require.Equal(t, 6, forwards, "one port-forward per pod and port for the pass, its /varz and /routez both through the monitoring one:\n%s", calls)
 	require.Contains(t, string(calls), "--context example-context --namespace envoy config view --minify --output json\n")
-	require.Contains(t, string(calls), "--context example-context --namespace envoy config view --minify --flatten --output jsonpath={.clusters[0].cluster.certificate-authority-data}\n")
+	require.Contains(t, string(calls), "--context example-context --namespace envoy config view --minify --flatten --allow-missing-template-keys=true --output jsonpath={.clusters[0].cluster.certificate-authority-data}\n")
 	for _, p := range h.pods {
 		require.Contains(t, string(calls), "--context example-context --namespace envoy get pod "+p.Name+" --output json\n")
 		require.Contains(t, string(calls), "--context example-context --namespace envoy port-forward pod/"+p.Name+" --address 127.0.0.1 :8222\n")
@@ -436,6 +454,108 @@ func TestCheckRefusesARecordOfAnotherClusterAtTheSameAddress(t *testing.T) {
 			require.Contains(t, string(body), `"caSHA256": "`+caDigest(exampleCA)+`"`, "the record holds the CA's digest")
 		})
 	}
+}
+
+// kubectlCanary is a planted kubeconfig, as kubectl's jsonpath printer dumps the object it was
+// given: the user's token, key data and proxy password are each a canary no output may hold.
+var kubectlCanary = `map[string]interface {}{"users":[{"name":"u","user":{"token":"CANARY-TOKEN-INLINE",` +
+	`"client-key-data":"CANARY-KEY-DATA"}}],"clusters":[{"name":"c","cluster":{"proxy-url":"` + canaryURL("http", "u", "CANARY-PROXY-PASSWORD", "proxy") + `"}}]}`
+
+// No credential of the kubeconfig reaches routes record's or routes check's output. kubectl 1.33
+// and later read ~/.kube/kuberc, whose defaults can set any flag the Source does not set itself:
+// one that sets allow-missing-template-keys to false for `config view` makes the CA call fail for a
+// context with no CA and print the whole flattened kubeconfig to stderr, and one for `logs` can cut
+// the log the check reads. So every kubectl the Source starts runs with KUBERC=off, the CA call
+// allows a missing key itself, and no output of that call's stderr is ever shown: its failure
+// names the command and its exit status alone.
+func TestKubectlKeepsTheKubeconfigsCredentialsOutOfItsOutput(t *testing.T) {
+	setup := func(t *testing.T) (*fakeHub, string, func(args ...string) (int, string)) {
+		t.Helper()
+		h := cleanHub()
+		src, dir := fakeKubeHub(t, h)
+		require.NoError(t, src.Close())
+		run := func(args ...string) (int, string) {
+			t.Helper()
+			var stdout, stderr bytes.Buffer
+			code := routes.Command(context.Background(), append(args, "--namespace", "envoy", "--statefulset", "envoy-nats", "--kubectl",
+				filepath.Join(dir, "kubectl")), &stdout, &stderr, routes.OpenKubectl)
+			return code, stdout.String() + stderr.String()
+		}
+		return h, dir, run
+	}
+	record := func(t *testing.T, h *fakeHub, run func(args ...string) (int, string)) (string, int, string) {
+		t.Helper()
+		out := filepath.Join(t.TempDir(), "routes.json")
+		back := h.atEnv()
+		code, output := run("record", "--out", out)
+		back()
+		return out, code, output
+	}
+	noCanary := func(t *testing.T, output string) {
+		t.Helper()
+		for _, canary := range []string{"CANARY-TOKEN-INLINE", "CANARY-KEY-DATA", "CANARY-PROXY-PASSWORD"} {
+			require.NotContains(t, output, canary)
+		}
+	}
+
+	t.Run("every kubectl runs with KUBERC=off, the port-forwards too", func(t *testing.T) {
+		h, dir, run := setup(t)
+		out, code, output := record(t, h, run)
+		require.Equal(t, 0, code, output)
+		code, output = run("check", "--record", out)
+		require.Equal(t, 0, code, output)
+		calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+		require.NoError(t, err)
+		env, err := os.ReadFile(filepath.Join(dir, "kuberc-env"))
+		require.NoError(t, err)
+		require.Contains(t, string(calls), " port-forward pod/", "the check's forwards are among the calls")
+		lines := strings.Split(strings.TrimSpace(string(env)), "\n")
+		require.Len(t, lines, strings.Count(string(calls), "\n"), "one KUBERC per call")
+		for i, line := range lines {
+			require.Equal(t, "off", line, "call %d: %s", i, strings.Split(string(calls), "\n")[i])
+		}
+	})
+	t.Run("the CA call allows a missing key itself", func(t *testing.T) {
+		h, dir, run := setup(t)
+		_, code, output := record(t, h, run)
+		require.Equal(t, 0, code, output)
+		calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+		require.NoError(t, err)
+		require.Contains(t, string(calls), " config view --minify --flatten --allow-missing-template-keys=true --output jsonpath=")
+	})
+	t.Run("a kuberc that forbids a missing key, and a context with no CA", func(t *testing.T) {
+		h, dir, run := setup(t)
+		require.NoError(t, os.Remove(filepath.Join(dir, "ca.b64")))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "kuberc-strict"), []byte(kubectlCanary), 0o600))
+		out, code, output := record(t, h, run)
+		noCanary(t, output)
+		require.Equal(t, 0, code, output)
+		body, err := os.ReadFile(out)
+		require.NoError(t, err)
+		require.Contains(t, string(body), `"caSHA256": ""`, "a context with no CA records none")
+		code, output = run("check", "--record", out)
+		noCanary(t, output)
+		require.Equal(t, 0, code, output)
+	})
+	t.Run("the CA call fails with the credentials on its stderr", func(t *testing.T) {
+		h, dir, run := setup(t)
+		out, code, output := record(t, h, run)
+		require.Equal(t, 0, code, output)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "flatten-fails"), []byte(kubectlCanary), 0o600))
+		for _, args := range [][]string{{"record", "--out", filepath.Join(t.TempDir(), "again.json")}, {"check", "--record", out}} {
+			var code int
+			var output string
+			if args[0] == "record" {
+				_, code, output = record(t, h, run)
+			} else {
+				code, output = run(args...)
+			}
+			noCanary(t, output)
+			require.Equal(t, 2, code, output)
+			require.Contains(t, output, "kubectl config view --minify --flatten --allow-missing-template-keys=true --output "+
+				"jsonpath={.clusters[0].cluster.certificate-authority-data}: exit status 1", "%s names the command and its exit status", args[0])
+		}
+	})
 }
 
 // OpenKubectl refuses a kubectl it cannot find, naming it, before it runs anything.

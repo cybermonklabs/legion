@@ -71,7 +71,7 @@ type forward struct {
 // kubectl runs kubectl with args after the context and namespace and returns its stdout, or an
 // error carrying its stderr.
 func (k *kubectlSource) kubectl(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, k.path, k.args(args...)...)
+	cmd := k.command(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -80,12 +80,48 @@ func (k *kubectlSource) kubectl(ctx context.Context, args ...string) ([]byte, er
 	return stdout.Bytes(), nil
 }
 
+// command is kubectl with args after the context and namespace, in the caller's environment with
+// KUBERC=off. kubectl 1.33 and later read ~/.kube/kuberc, whose defaults set any flag a command
+// does not set itself: one for `logs` could cut the log the check reads, and one that sets
+// allow-missing-template-keys to false for `config view` makes a jsonpath print the whole object
+// it was given, the flattened kubeconfig with its credentials, to stderr.
+func (k *kubectlSource) command(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, k.path, k.args(args...)...)
+	cmd.Env = append(os.Environ(), "KUBERC=off")
+	return cmd
+}
+
 func (k *kubectlSource) args(args ...string) []string {
 	var all []string
 	if k.Context != "" {
 		all = append(all, "--context", k.Context)
 	}
 	return append(append(all, "--namespace", k.Namespace), args...)
+}
+
+// caArgs is the call that reads the context's CA certificate: its certificate-authority-data,
+// which `--flatten` gives for a CA held as data or as a file, with a jsonpath of that field alone,
+// so no credential of the kubeconfig's user is in its output, and empty, not an error, for a context
+// with no CA.
+var caArgs = []string{"config", "view", "--minify", "--flatten", "--allow-missing-template-keys=true", "--output",
+	"jsonpath={.clusters[0].cluster.certificate-authority-data}"}
+
+// clusterCA reads the context's CA certificate (caArgs). Its error names the command and its exit
+// status alone: kubectl's jsonpath printer writes the whole object it was given, the flattened
+// kubeconfig with its credentials, to stderr when it fails, so that stderr is read by nothing.
+func (k *kubectlSource) clusterCA(ctx context.Context) ([]byte, error) {
+	cmd := k.command(ctx, caArgs...)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("kubectl could not read the context's CA certificate: kubectl %s: %w (its error output is not shown, since it can hold "+
+			"the kubeconfig's credentials)", strings.Join(caArgs, " "), err)
+	}
+	ca, err := base64.StdEncoding.DecodeString(strings.TrimSpace(stdout.String()))
+	if err != nil {
+		return nil, fmt.Errorf("decode the cluster's certificate-authority-data: %w", err)
+	}
+	return ca, nil
 }
 
 // inClusterContext names the cluster a pod reads through its ServiceAccount, with no kubeconfig.
@@ -132,13 +168,9 @@ func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
 	if config.CurrentContext == "" || len(config.Clusters) != 1 || config.Clusters[0].Cluster.Server == "" {
 		return Cluster{}, errors.New("kubectl's configuration names no context with one cluster and its server")
 	}
-	data, err := k.kubectl(ctx, "config", "view", "--minify", "--flatten", "--output", "jsonpath={.clusters[0].cluster.certificate-authority-data}")
+	ca, err := k.clusterCA(ctx)
 	if err != nil {
 		return Cluster{}, err
-	}
-	ca, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
-	if err != nil {
-		return Cluster{}, fmt.Errorf("decode the cluster's certificate-authority-data: %w", err)
 	}
 	return Cluster{Context: config.CurrentContext, Server: config.Clusters[0].Cluster.Server, CA: caDigest(ca)}, nil
 }
@@ -301,7 +333,7 @@ func (k *kubectlSource) forwardTo(ctx context.Context, pod string, port int) (*f
 		return f, nil
 	}
 	// The forward outlives this call, so it runs under no context of the call's, and Close ends it.
-	cmd := exec.Command(k.path, k.args("port-forward", "pod/"+pod, "--address", "127.0.0.1", ":"+strconv.Itoa(port))...)
+	cmd := k.command(context.Background(), "port-forward", "pod/"+pod, "--address", "127.0.0.1", ":"+strconv.Itoa(port))
 	// Its stdout goes through an io.Pipe rather than StdoutPipe, so Wait, which waits for exec's
 	// copy into the pipe, may run while the scanner still reads.
 	reader, writer := io.Pipe()
