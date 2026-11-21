@@ -167,8 +167,8 @@ asking, and no person's session sees any of them at all.
 They are `DEMO_SERVICE_TOKEN`, a stored value, and two `github-app` secrets minted at the GitHub
 stand this stack starts: `DEMO_GITHUB_APP`, whose `github-owners` tag names `acme-org`, and
 `DEMO_GITHUB_APP_CASE_PAIR`, whose tag names `ada`, on which that stand's App is installed twice
-under logins that differ only in case (`ada` and `Ada`), so a release of it holds two
-installations and `agent-secrets --github-token` refuses it. The exports name all three
+under logins that differ only in case (`ada` and `Ada`), so a release of its profile holds two
+installations, which is no one token to hand over. The exports name all three
 `github-app` secrets, the stand's address, the route that reads back every call it was sent, and
 the route that sets what it answers each token request from then on: `ordinary`, `refuse`,
 `refuse-repository`, `refuse-permissions`, `widen`, or `fail-once`, which answers the next one
@@ -554,12 +554,14 @@ This scrape was taken on a stack that had answered only these calls since it sta
 listener token's refusal and the `bad name` reread above, the two rereads of `DEMO_BROKEN_APP`,
 the enrolment of the pod session the banner's command makes (its key directory in `$KEYS`), and
 one release of `DEMO_GITHUB_APP` to that session, with the GitHub stand set to `fail-once` first.
-The release prints the installation id of each account it holds a token for, and no token:
+The release prints the installation id of each account it holds a token for, and no token;
+`agent-secrets` names first what the token leaves out:
 
 ```console
 $ curl -s -X POST -d '{"mode": "fail-once"}' "$DEV_BROKER_GITHUB_ANSWER_URL"
 {"mode":"fail-once","repository":""}
 $ AGENT_SECRETS_KEY_DIR=$KEYS agent-secrets DEMO_GITHUB_APP -- sh -c 'printf %s "$DEMO_GITHUB_APP" | jq -c ".installations | map_values(.installation_id)"'
+agent-secrets: the profile DEMO_GITHUB_APP left out issues, statuses:write, workflows for acme-org, since the installation there does not hold them
 agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 {"acme-org":7}
 $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'

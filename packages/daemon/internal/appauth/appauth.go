@@ -181,15 +181,14 @@ type Tokens interface {
 	// implement App for the issue's own owner, which every issue pod's workspace-fetch and
 	// every repository cache clones with (implementTokens, internal/daemon). A workflow role's
 	// directories hold that owner's own lease at the role's permissions instead (Token,
-	// GitHubCredential, INFRA-2543). An App on token_command gets what its command's read-only
-	// release holds instead, which the command decides: the secrets broker's holds the broker's
-	// own set, contents, metadata, pull requests, Actions, checks and statuses read (its
-	// readOnlyPermissions), which differs from readPermissions, so such a lease reads no issue or
-	// attestation. With a key of its own the mint asks for what the installation is granted of
-	// readPermissions and leaves the rest out (exchangeGranted), so an installation whose account
-	// has not granted the App issues, Actions, checks, commit statuses or attestations gets a
-	// token without the ones it is not granted rather than nothing. An owner with no name is
-	// refused before anything is minted, as Token's is.
+	// GitHubCredential). An App on token_command gets what its command's release of
+	// the read profile holds instead, which the deployment's profiles file decides and the
+	// broker cuts to what the installation holds; the read profile docs/deployment.md gives names
+	// readPermissions. With a key of its own the mint asks for what the installation is granted
+	// of readPermissions and leaves the rest out (exchangeGranted), so an installation whose
+	// account has not granted the App issues, Actions, checks, commit statuses or attestations
+	// gets a token without the ones it is not granted rather than nothing. An owner with no name
+	// is refused before anything is minted, as Token's is.
 	ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error)
 }
 
@@ -355,13 +354,11 @@ func (m *Manager) Token(ctx context.Context, role AppRole, owner string) (Lease,
 // ReadToken is Token for a token narrowed to readPermissions, cached under a scope of its own,
 // so an owner's write and read tokens never stand in for each other. Each permission of the set
 // is asked for at read where the installation is granted it, and one it is granted none of is
-// left out (exchangeGranted). In token mode it is the command's read-only release
-// (TokenCommandReadOnly) instead, which the command decides; the secrets broker's holds the
-// broker's own set, contents, metadata, pull requests, Actions, checks and statuses, which
-// differs from readPermissions, so its holder reads no issue or attestation through it. A write
-// request of the same owner is a run of its own either way: it asks for no read-only
-// release, so the two never stand in for each other. An owner with no name is refused, and
-// nothing is minted.
+// left out (exchangeGranted). In token mode it is the command's release of the role's read
+// profile (TokenCommandReadOnly) instead, which the deployment's profiles file decides; the read
+// profile docs/deployment.md gives names this same set. A write request of the same owner is a
+// run of its own either way: it asks for no read-only release, so the two never stand in for
+// each other. An owner with no name is refused, and nothing is minted.
 func (m *Manager) ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error) {
 	return m.lease(ctx, mintRequest{role: role, owner: owner, read: true, permissions: readPermissions})
 }

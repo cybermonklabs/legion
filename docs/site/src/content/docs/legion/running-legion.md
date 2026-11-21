@@ -257,8 +257,8 @@ installations before it mints anything.
 All of that is true of a daemon that mints with its own App key (`private_key`,
 `private_key_command` or `private_key_secret`).
 A daemon that takes its tokens from the secrets broker through `token_command` gets a token only
-for the accounts the secret's `github-owners` tag lists, so an install by any other account
-gives nothing there.
+for the accounts the profile its command names lists, each an account of the secret's
+`github-owners` tag, so an install by any other account gives nothing there.
 
 `--webhook-url` becomes the Envoy App's webhook. That App's webhook secret is the listener's
 `ENVOY_GITHUB_WEBHOOK_SECRET`, its client id is Dispatch's `DISPATCH_APP_CLIENT_ID`, and its

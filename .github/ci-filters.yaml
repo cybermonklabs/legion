@@ -357,6 +357,7 @@ daemon_go_tests:
   - 'skills/legion-worker/references/tools.md'
   - 'skills/legion-worker/references/merge-gate.md'
   - 'scripts/e2e/lib/github-apps.sh'
+  - 'docs/deployment.md'
   - 'scripts/e2e/stage1-skeleton.sh'
   - 'scripts/e2e/lib/rig.sh'
   - 'scripts/e2e/lib/loopback-dsn.sh'

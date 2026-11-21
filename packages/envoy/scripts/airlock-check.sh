@@ -601,9 +601,9 @@ check_k1() {
 	# one string for every request would make it, would end the token the proxy holds for the
 	# grant the session is still running.
 	local proxy_token revokes_before revokes_after proxy_status
-	# The profile's proxy block names no kind and k1 asks for no --github-token, so the proxy
-	# sent S the whole released value, the JSON object of installations; the token is its one
-	# installation's.
+	# The profile's proxy block names no kind and its github block takes the default value,
+	# installations, so the proxy sent S the whole released value, the JSON object of
+	# installations; the token is its one installation's.
 	proxy_token="$(printf '%s' "${K1_HEADER#Bearer }" | jq -Rr '(fromjson? | .installations[]?.token) // empty' | head -n 1)"
 	revokes_before="$K1_GITHUB_REVOKES"
 	revokes_after="$revokes_before"

@@ -235,7 +235,7 @@ held=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir) dir="$2" ;;
-    --github-owner) owners="${owners}${owners:+ }$2" ;;
+    --installation) owners="${owners}${owners:+ }$2" ;;
     --host) hosts="${hosts}${hosts:+ }$2" ;;
     --address) addresses="${addresses}${addresses:+ }$2" ;;
     --installation-permissions) held="${held}${held:+ }$2" ;;
