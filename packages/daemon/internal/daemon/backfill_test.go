@@ -30,9 +30,8 @@ func (d *listingDispatch) ListIssues(context.Context, string, []string) ([]dispa
 // A record written before the record carried the issue's repository is filled at boot from the
 // repository Dispatch resolves the issue to and that repository's default branch, GitHub read once
 // per repository. A record Dispatch resolves to none is left as it is, and the issue and the cause
-// are logged, while every other record is filled: one record's repository never stops the boot
-// (INFRA-4401 D11), and the backfill answers that a record is left, for the refresher to try it
-// again.
+// are logged, while every other record is filled: one record's repository never stops the boot,
+// and the backfill answers that a record is left, for the refresher to try it again.
 func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 	seed := func(t *testing.T) *workflowRuntime {
 		t.Helper()
