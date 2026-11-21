@@ -174,7 +174,9 @@ func runningLegion(t *testing.T) int {
 		_ = probe.Process.Kill()
 		_, _ = probe.Process.Wait()
 	})
-	if !testwait.Holds(5*time.Second, testwait.Poll, func() bool { return registry.Alive(probe.Process.Pid) }) {
+	// The exec is waited for with no span of its own, only what is left of the test binary's
+	// deadline less 30 s (testwait.Bounded): a loaded machine's slow exec passes.
+	if !testwait.Holds(testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, func() bool { return registry.Alive(probe.Process.Pid) }) {
 		t.Fatalf("the probe at %s never exec'd", path)
 	}
 	return probe.Process.Pid
@@ -383,12 +385,15 @@ func startOnDescriptor(t *testing.T, config string, descriptor *os.File) (int, s
 		_ = command.Wait()
 		close(exited)
 	}()
+	// The exit is waited for with no span of its own, only what is left of the test binary's
+	// deadline less 30 s (testwait.Bounded): a loaded machine's slow start passes, and one that
+	// never exits is killed and fails by name.
 	select {
 	case <-exited:
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
 		_ = command.Process.Kill()
 		<-exited
-		t.Fatalf("legion start did not exit within 30s; stderr = %q", stderr.String())
+		t.Fatalf("legion start did not exit 30s before the test binary's deadline; stderr = %q", stderr.String())
 	}
 	return command.ProcessState.ExitCode(), stderr.String()
 }
