@@ -171,23 +171,26 @@ echo "case: the least value falls when the watched file system fills"
 private="$work/private"
 private_state="$work/private.json"
 private_ready="$work/private.status"
+private_log="$work/private.log"
 mkdir "$private"
 if private_out=$(unshare --user --map-root-user --mount --pid --fork sh -c 'mount -t tmpfs -o size=1m tmpfs "$1"' sh "$private" 2>&1); then
   # The namespaces live exactly as long as this script holds the pipe below open. Their first
   # process waits on it, and when the first process of a PID namespace exits the kernel kills every
   # other process in it: the sampler with it, and the tmpfs with the mount namespace. Only this
-  # script holds the write end (the samplers start closes every inherited descriptor), so the
-  # namespaces end when the case closes it, or when this script exits by any path, a SIGKILL that
-  # no trap sees included; no sampler is left on its 5,400 s backstop. The pid in the state file
-  # is the sampler's pid inside its own PID namespace, so nothing here signals it: `report`, which
-  # would, is left to the cases of the shared sampler.
+  # script holds the write end (the sampler that `start` launches inherits none of its
+  # descriptors), so the namespaces end when the case closes it, or when this script exits by any
+  # path, a SIGKILL that no trap sees included; no sampler is left on its 5,400 s backstop. The pid
+  # in the state file is the sampler's pid inside its own PID namespace, so nothing here signals
+  # it: `report`, which would, is left to the cases of the shared sampler. What the namespace's
+  # commands print goes to $private_log, and is printed below when the setup fails.
   exec {private_hold}> >(exec unshare --user --map-root-user --mount --pid --fork sh -c '
+    exec >"$7" 2>&1
     mount -t tmpfs -o size=128m tmpfs "$1" || { echo 90 >"$6"; exit; }
-    env -i PATH="$2" HOME="$3" TMPDIR="$3" "$4" start --path "$1" --state "$5" >/dev/null 2>&1 || { echo 91 >"$6"; exit; }
+    env -i PATH="$2" HOME="$3" TMPDIR="$3" "$4" start --path "$1" --state "$5" || { echo 91 >"$6"; exit; }
     dd if=/dev/zero of="$1/filler" bs=1M count=64 status=none || { echo 92 >"$6"; exit; }
     echo 0 >"$6"
     cat >/dev/null
-  ' sh "$private" "$work/bin" "$work" "$watch" "$private_state" "$private_ready")
+  ' sh "$private" "$work/bin" "$work" "$watch" "$private_state" "$private_ready" "$private_log")
   for _ in $(seq 100); do
     [ -s "$private_ready" ] && break
     sleep 0.2
@@ -210,6 +213,10 @@ if private_out=$(unshare --user --map-root-user --mount --pid --fork sh -c 'moun
     # it must be seen while the namespaces live, or its absence after them would prove nothing.
     check "the sampler runs in the namespaces, seen by its command line" \
       "$([ -n "$(pgrep -f -- "disk_watch.py sample --path $private " || true)" ] && echo true || echo false)"
+  else
+    printf '    setup status %s (90: mount, 91: start, 92: dd, none: no status in 20 s); its output:\n' \
+      "${private_status:-none}" >&2
+    sed 's/^/    /' "$private_log" >&2 || true
   fi
   exec {private_hold}>&-
   for _ in $(seq 50); do
