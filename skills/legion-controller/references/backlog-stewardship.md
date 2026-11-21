@@ -26,7 +26,7 @@ At each pass, read `dispatch issues --project <KEY> --priority 0 --priority 1 --
 - A close that says a defect cannot happen cites the code that prevents it. Without that, the issue is unread, not foreclosed: ask a person, as a finding, whether to reopen it, quoting the close's message.
 - A plan or measurement nobody builds (no claim, and no route that reaches a holder) needs an owner: route it as step 4 of the reconciliation routes unowned work; with no such session, ask a person who owns it, as a finding.
 - A merged pull request names an issue not yet `testing` or `done`: check it live, then move it.
-- Your own earlier messages, or the issue's comments, show someone doing its work by hand more than once: set the status that work has reached, `dispatch issue-update --issue <KEY> --status in_progress` while it goes on, or `--status done --reason '<why it is finished>'` once it is finished. Leave an issue that carries the `legion` label or sits under one that does: the daemon owns its status and undoes yours.
+- Your own earlier messages, or the issue's comments, show someone doing its work by hand more than once: set the status that work has reached, `dispatch issue-update --issue <KEY> --status in_progress` while it goes on, or `--status done --reason '<why it is finished>'` once it is finished. Leave an issue that carries the `legion` label or sits under one that does: the daemon owns its status. It sets a running root's status back, and it takes your write on a child, or on a root that waits for its slot or lingers, as a person's move, which parks or closes that work.
 - A route nobody holds, after the two reads below: staff the role, route to a live holder, or clear the route and assign it.
 
 ## Recovering stopped-session work
