@@ -640,7 +640,9 @@ func TestParentCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 // its parent or blocker first, so the gate writes no near_copy_checks row for a create the
 // credential may not make, and a PATCH that also closes the issue is refused before the close
 // settles its documents, so it writes no version. A parent of its own project is the control,
-// and so is the same near copy under its own project's parent, which the gate refuses.
+// and so is the same near copy under its own project's parent, which the gate refuses. The
+// credential is refused a check of another project's issue too, which the results route reaches
+// through a parent of another project, on the record and on the retraction.
 func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 	rig := newBrokerTokenRigOn(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t), settle: time.Hour})
 	caller := newBrokerCaller(t)
@@ -756,6 +758,20 @@ func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 	if status := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+closer.Key, nil)).Status; status == "done" {
 		t.Fatalf("the refused closes left %s done", closer.Key)
 	}
+	// The control: the same close under a parent of the credential's own project is taken, and
+	// the settlement it runs first opens the decision block's ask, which the close withdraws.
+	closed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+closer.Key, token, map[string]any{
+		"parent": sibling, "status": "done",
+	}))
+	if closed.Code != http.StatusOK {
+		t.Fatalf("a scoped close under its own project's issue: status=%d body=%s, want 200", closed.Code, closed.Body.String())
+	}
+	if status := decodeBody[model.Issue](t, closed).Status; status != "done" {
+		t.Fatalf("the taken close left %s %s, want done", closer.Key, status)
+	}
+	if _, asks := settled(); asks != asksBefore+1 {
+		t.Fatalf("the taken close left %s with %d asks, want the %d its settlement opens", closer.Key, asks, asksBefore+1)
+	}
 
 	allowed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{"parent": sibling}))
 	if allowed.Code != http.StatusOK {
@@ -763,6 +779,56 @@ func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 	}
 	if parent := decodeBody[model.Issue](t, allowed).Parent; parent == nil || *parent != sibling {
 		t.Fatalf("%s's parent = %v, want %s", own, parent, sibling)
+	}
+
+	// A check of another project's issue. Once a person puts a BETA issue under ALPHA's, the
+	// results route finds a check among the Verification documents of the issue and every issue
+	// above it, across projects, and a result or its retraction is appended to the check's issue.
+	// A credential scoped to BETA is refused a check of ALPHA's on both, with nothing written; it
+	// still records on its own project's check, which is the control.
+	uploadDocument(t, rig.handler, "/api/v1/issues/"+approved, "verification.md", twoChecks)
+	underAlpha := createdIssue(t, "create a BETA issue under ALPHA's", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "BETA", "title": "Records on another project's check", "parent": approved, "force": true,
+	})).Key
+	checked := createIssue("BETA", "A BETA issue with a check of its own")
+	uploadDocument(t, rig.handler, "/api/v1/issues/"+checked, "verification.md", twoChecks)
+	resultsOn := func(issue string) int {
+		t.Helper()
+		var count int
+		if err := rig.database.Pool.QueryRow(context.Background(),
+			`select count(*) from check_results where check_issue_key = $1`, issue).Scan(&count); err != nil {
+			t.Fatalf("count the results on %s's checks: %v", issue, err)
+		}
+		return count
+	}
+	// A result on ALPHA's check through BETA's issue, recorded as the session the scoped token
+	// proves, under a credential that names no project: the scoped token is that result's
+	// recorder, one of the callers a retraction admits.
+	standing := recordResultAsSession(t, rig.handler, underAlpha, brokerTestSession, resultBody("k1", "pass", headCommit, nil))
+	alphaResults := resultsOn(approved)
+	recorded := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+underAlpha+"/results", token,
+		resultBody("k1", "pass", newHeadCommit, nil)))
+	expectRefusal(t, "a scoped result on another project's check", recorded, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	if after := resultsOn(approved); after != alphaResults {
+		t.Fatalf("the refused result took %s's checks from %d results to %d, want none written", approved, alphaResults, after)
+	}
+	retracted := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/results/"+standing.ID+"/retract", token, map[string]any{
+		"reason": "The run was against the wrong commit.",
+	}))
+	expectRefusal(t, "a scoped retraction on another project's check", retracted, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	if _, held := storedRetraction(t, rig.database, standing.ID); held {
+		t.Fatalf("the refused retraction left a retraction of %s", standing.ID)
+	}
+	if events := retractionEventsOn(t, rig.database, approved); events != 0 {
+		t.Fatalf("the refused retraction appended %d result.retracted events on %s, want none", events, approved)
+	}
+	ownResult := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+checked+"/results", token,
+		resultBody("k1", "pass", headCommit, nil)))
+	if ownResult.Code != http.StatusCreated {
+		t.Fatalf("a scoped result on its own project's check: status=%d body=%s, want 201", ownResult.Code, ownResult.Body.String())
+	}
+	if after := resultsOn(checked); after != 1 {
+		t.Fatalf("the taken result left %s's checks with %d results, want 1", checked, after)
 	}
 }
 
