@@ -60,33 +60,33 @@ func renderedListenerEnv(t *testing.T, name string) map[string]string {
 
 // TestTheRenderedListenerEnvResolves holds the listener envoy-infra renders to the listener's own
 // rules: the environment of each golden a listener of a hub that may make a project private is
-// rendered as is fed to resolveListenerBrokerConfig, which accepts it, in the token-file form,
-// with the origin it renders, and to resolveListenerV1OpenWithTokenChecks, which keeps /v1 open on
-// the tailnet-only listener and closed on the hub's own, which requires a token of every caller;
-// the open one renders the token check (ENVOY_OIDC_*) that validateListenerAPIAuth needs beside
-// the setting. A render the listener refused would be a listener that does not start (main makes
-// the refusal fatal), so this is the start's own check of what the component renders.
+// rendered as is passes refuseRemovedAPISettings, so it carries no shared token and no setting
+// that kept /v1 open to a caller with no credential, and is fed to resolveListenerBrokerConfig,
+// which accepts it, in the token-file form, with the origin it renders, and to
+// resolveListenerOIDCConfig, which finds the token check (ENVOY_OIDC_*) a private listener renders.
+// A render the listener refused would be a listener that does not start (main makes the refusal
+// fatal), so this is the start's own check of what the component renders.
 //
-// Control: the private environment without ENVOY_PUBLIC_URL; the resolver refuses it, and the
-// test fails naming the variable.
+// Controls: the private environment without ENVOY_PUBLIC_URL, which the resolver refuses, and the
+// test fails naming the variable; and a render that still writes ENVOY_V1_OPEN_WITH_TOKEN_CHECKS,
+// which the start refuses, and the test fails naming it.
 func TestTheRenderedListenerEnvResolves(t *testing.T) {
-	for golden, open := range map[string]bool{
-		"clustered-hub-listener-pod-private.golden":         false,
-		"clustered-hub-tailnet-listener-pod-private.golden": true,
+	for _, golden := range []string{
+		"clustered-hub-listener-pod-private.golden",
+		"clustered-hub-tailnet-listener-pod-private.golden",
 	} {
 		t.Run(golden, func(t *testing.T) {
 			env := renderedListenerEnv(t, golden)
 			getenv := func(name string) string { return env[name] }
+			if err := refuseRemovedAPISettings(getenv); err != nil {
+				t.Fatalf("the listener refuses its start on the environment %s renders: %v", golden, err)
+			}
 			config, err := resolveListenerBrokerConfig(getenv)
 			if err != nil {
 				t.Fatalf("the listener refuses the environment %s renders: %v", golden, err)
 			}
 			if !config.configured() || config.AccountTokenFile == "" || config.GoogleAudience != "" || config.Origin != env[EnvPublicURL] {
 				t.Fatalf("%s resolves to %+v, want the broker check in its token-file form with the origin it renders", golden, config)
-			}
-			got, err := resolveListenerV1OpenWithTokenChecks(getenv)
-			if err != nil || got != open {
-				t.Fatalf("%s: %s resolves to %v, %v; want %v", golden, EnvV1OpenWithTokenChecks, got, err, open)
 			}
 			if issuer, audience, err := resolveListenerOIDCConfig(getenv); err != nil || issuer == "" || audience == "" {
 				t.Fatalf("%s: the token check resolves to %q, %q, %v; want the pair a private listener renders", golden, issuer, audience, err)
@@ -140,7 +140,7 @@ func TestTheRenderedPrivateListenerTakesTheTailnetsProofs(t *testing.T) {
 		request.Header.Set("Authorization", signed.Header.Get("Authorization"))
 		request.Header.Set("DPoP", signed.Header.Get("DPoP"))
 		recorder := httptest.NewRecorder()
-		apiAuth(listenerAPIAuth{token: "a-bearer-so-the-listener-is-closed", brokers: tokens, logger: logging.NewWithWriter("test-machine", io.Discard)}, next).ServeHTTP(recorder, request)
+		apiAuth(listenerAPIAuth{brokers: tokens, offLoopback: true, logger: logging.NewWithWriter("test-machine", io.Discard)}, next).ServeHTTP(recorder, request)
 		return recorder.Code
 	}
 	if status := publish(env[EnvPublicURL]); status != http.StatusAccepted {

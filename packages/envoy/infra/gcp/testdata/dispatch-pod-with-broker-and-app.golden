@@ -2,7 +2,6 @@
   "metadata": {
     "annotations": {
       "checksum/example-dispatch-dispatch": "example-dispatch-dispatch-resource-version",
-      "checksum/example-dispatch-listener": "example-dispatch-listener-resource-version",
       "cluster-autoscaler.kubernetes.io/safe-to-evict": "false"
     },
     "labels": {
@@ -113,15 +112,6 @@
           {
             "name": "ENVOY_ACCOUNT_TOKEN_FILE",
             "value": "/var/run/secrets/envoy-listener/token"
-          },
-          {
-            "name": "ENVOY_TOKEN",
-            "valueFrom": {
-              "secretKeyRef": {
-                "key": "ENVOY_API_TOKEN",
-                "name": "example-dispatch-listener"
-              }
-            }
           },
           {
             "name": "DISPATCH_AGENT_SECRETS_URL",

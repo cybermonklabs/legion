@@ -33,7 +33,9 @@ import (
 //	  "name": "loadtest-<random>",   NATS server_name (nats-server -n) and the listener's machine id
 //	  "root": "<LOADTEST_ROOT>",
 //	  "dispatch_token": "<random>",  Dispatch's DISPATCH_AGENT_TOKEN
-//	  "listener_token": "<random>",  the listener's ENVOY_API_TOKEN
+//	  "listener_token_file": "<LOADTEST_ROOT>/run/loadgen-listener-token",
+//	                                 loadgen's projected token for the listener's audience,
+//	                                 which dev-oidc-issuer keeps fresh while the listener runs
 //	  "ports": {"postgres": 15432, "proxy": 15433, "proxy_stats": 15434, "nats": 14222,
 //	            "nats_monitor": 18222, "listener": 19120, "dispatch": 18777, "pprof": 16061,
 //	            "envoy_proxy": 19121},
@@ -51,14 +53,14 @@ import (
 // is the proxy's wire counts (proxy.go); a stack.json from before it has none, and a step on it
 // reports its round trips as not measured.
 type stackFile struct {
-	Name          string     `json:"name"`
-	Root          string     `json:"root"`
-	DispatchToken string     `json:"dispatch_token"`
-	ListenerToken string     `json:"listener_token"`
-	Ports         stackPorts `json:"ports"`
-	PIDs          stackPIDs  `json:"pids"`
-	PGDirect      bool       `json:"pg_direct"`
-	EnvoyRTT      string     `json:"envoy_rtt"`
+	Name              string     `json:"name"`
+	Root              string     `json:"root"`
+	DispatchToken     string     `json:"dispatch_token"`
+	ListenerTokenFile string     `json:"listener_token_file"`
+	Ports             stackPorts `json:"ports"`
+	PIDs              stackPIDs  `json:"pids"`
+	PGDirect          bool       `json:"pg_direct"`
+	EnvoyRTT          string     `json:"envoy_rtt"`
 }
 
 type stackPorts struct {
@@ -103,7 +105,7 @@ func loadStack(path string) (*stackFile, error) {
 		name  string
 		empty bool
 	}{
-		{"name", st.Name == ""}, {"dispatch_token", st.DispatchToken == ""}, {"listener_token", st.ListenerToken == ""},
+		{"name", st.Name == ""}, {"dispatch_token", st.DispatchToken == ""}, {"listener_token_file", st.ListenerTokenFile == ""},
 		{"ports.postgres", st.Ports.Postgres == 0}, {"ports.nats", st.Ports.NATS == 0},
 		{"ports.nats_monitor", st.Ports.NATSMonitor == 0}, {"ports.listener", st.Ports.Listener == 0},
 		{"ports.dispatch", st.Ports.Dispatch == 0}, {"ports.pprof", st.Ports.Pprof == 0},
@@ -121,7 +123,11 @@ func loadStack(path string) (*stackFile, error) {
 // endpoints is every address and credential a seed or a step uses.
 type endpoints struct {
 	dispatch, listener, nats, natsMon, pprof, pg string
-	token, listenerToken                         string
+	token                                        string
+	// listenerTokenFile is the file the listener's bearer is read from at every request
+	// (listenerBearer); never a token, since the file's writer replaces the token before it
+	// expires. Empty sends no bearer.
+	listenerTokenFile string
 	// natsServerName is the /varz server_name the guard expects; empty skips that check.
 	natsServerName string
 	// pids are the processes the sampler reads from /proc, by name ("postgres" is the
@@ -150,10 +156,11 @@ type endpointFlags struct {
 	// pgGiven is -pg as the command line gave it (argvFlag): pg is its last value, or the content
 	// of pgFile when that gave it.
 	pgGiven argvFlag
-	// token and listenerToken are the contents of tokenFile and listenerTokenFile: no flag takes
-	// a token's value, and tokenGiven and listenerTokenGiven stand where -token and
-	// -listener-token were (removedFlag).
-	token, listenerToken                 string
+	// token is the content of tokenFile: no flag takes a token's value, and tokenGiven and
+	// listenerTokenGiven stand where -token and -listener-token were (removedFlag). The listener's
+	// token is never read into a flag: listenerTokenFile is read at each request
+	// (endpoints.listenerBearer).
+	token                                string
 	tokenGiven, listenerTokenGiven       removedFlag
 	tokenFile, listenerTokenFile, pgFile string
 	natsServerName                       string
@@ -170,7 +177,7 @@ func (f *endpointFlags) register(fs *flag.FlagSet) {
 	f.pgGiven.register(fs, "pg", &f.pg, pgValueRefusal, "direct Postgres URL of the dispatch database, with no password in it (default: the stack's)")
 	fs.StringVar(&f.pgFile, "pg-file", "", "file holding the -pg value, so no password reaches the command line")
 	fs.StringVar(&f.tokenFile, "token-file", "", "file holding the Dispatch agent bearer (default: the stack's)")
-	fs.StringVar(&f.listenerTokenFile, "listener-token-file", "", "file holding the listener bearer (default: the stack's)")
+	fs.StringVar(&f.listenerTokenFile, "listener-token-file", "", "file holding the listener bearer, read at each request (default: the stack's)")
 	f.tokenGiven.register(fs, "token", "-token-file")
 	f.listenerTokenGiven.register(fs, "listener-token", "-listener-token-file")
 	fs.StringVar(&f.natsServerName, "nats-server-name", "", "with -allow-foreign: the NATS server_name to expect (empty skips the check)")
@@ -335,8 +342,11 @@ type credentialFile struct {
 // every user of the machine (/proc/<pid>/cmdline, `ps -eo args`), here and on any machine an ssh
 // carries the command to, so a credential comes only from a file: vm/vm.sh writes one of mode 600
 // on the machine the command runs on, as it writes every container's settings, and
-// cluster/cluster.sh writes them in the runner pod for the one job that reads them. A secret on
-// the command line was refused before this, by parseArgs.
+// cluster/cluster.sh writes them in the runner pod for the one job that reads them. The listener
+// token is a platform identity token whose writer replaces it before it expires -- the kubelet's
+// projected token in the runner pod, the token loop's Google identity token on a VM, the local
+// issuer's file in the stack -- so it is read here at every request (endpoints.listenerBearer)
+// rather than once. A secret on the command line was refused before this, by parseArgs.
 //
 // A credential given in both forms is refused: which was meant cannot be known, and the two may
 // name different things. A file that cannot be read, or that holds nothing, is refused by its flag
@@ -369,12 +379,15 @@ func readCredentials(creds ...credentialFile) error {
 	return nil
 }
 
-// readCredentialFiles reads the three endpoint credentials: the Dispatch agent token, the
-// listener token and the Postgres URL with its password.
+// readCredentialFiles reads the two endpoint credentials read once: the Dispatch agent token and
+// the Postgres URL with its password. A given -listener-token-file is read here once too, so a
+// file that cannot be read is refused before the first connection; its content is read again at
+// every request (endpoints.listenerBearer).
 func (f *endpointFlags) readCredentialFiles() error {
+	listenerToken := ""
 	return readCredentials(
 		credentialFile{"-token", "-token-file", f.tokenFile, &f.token},
-		credentialFile{"-listener-token", "-listener-token-file", f.listenerTokenFile, &f.listenerToken},
+		credentialFile{"-listener-token", "-listener-token-file", f.listenerTokenFile, &listenerToken},
 		credentialFile{"-pg", "-pg-file", f.pgFile, &f.pg},
 	)
 }
@@ -627,8 +640,10 @@ func (f endpointFlags) resolve() (endpoints, error) {
 
 // resolveEndpoints takes every endpoint from st, refusing a flag that differs from it, unless
 // f.allowForeign: then every endpoint flag is required, none falls back to st, and pids stay
-// empty. The credentials are read first (readCredentialFiles): each token from its file, and the
-// Postgres URL from its file or from -pg.
+// empty. The credentials are read first (readCredentialFiles): the agent token from its file, the
+// Postgres URL from its file or from -pg, and a given listener token file once, to refuse one
+// that cannot be read. The listener token file is kept as a path, which is what is compared with
+// the stack's: the token in it is replaced while the run goes on.
 func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 	if st == nil && !f.allowForeign {
 		return endpoints{}, fmt.Errorf("no stack.json, and -allow-foreign is not set")
@@ -648,8 +663,8 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 	}
 	local := func(scheme string, port int) string { return fmt.Sprintf("%s://127.0.0.1:%d", scheme, port) }
 	// The endpoint and token flags, in the order the guard checks them: each one's name, the value
-	// given (a credential's, from its file when it was given as one), the stack's value and the
-	// endpoint it sets.
+	// given (the agent token's from its file when it was given as one, the listener token's file as
+	// its path), the stack's value and the endpoint it sets.
 	fields := []struct {
 		flag, given, stack string
 		dst                *string
@@ -661,7 +676,7 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 		{"-pprof", strings.TrimRight(f.pprof, "/"), local("http", sv.Ports.Pprof), &e.pprof},
 		{"-pg", f.pg, fmt.Sprintf("postgres://postgres@127.0.0.1:%d/dispatch?sslmode=disable", sv.Ports.Postgres), &e.pg},
 		{"-token-file", f.token, sv.DispatchToken, &e.token},
-		{"-listener-token-file", f.listenerToken, sv.ListenerToken, &e.listenerToken},
+		{"-listener-token-file", cleanPath(f.listenerTokenFile), sv.ListenerTokenFile, &e.listenerTokenFile},
 	}
 	all := make([]string, len(fields))
 	for i, field := range fields {
@@ -709,9 +724,9 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 
 // checkStack confirms, before the first write, that each endpoint is the stack's own: NATS
 // /varz names the stack, Dispatch answers an authenticated read with the stack's agent token, and
-// the listener answers /v1/sessions with the stack's API token and refuses any other token (a
-// listener with no token configured would answer every caller). The pod's live listener and
-// production Dispatch hold other tokens, so a mistaken target fails here.
+// the listener answers /v1/sessions with the listener token file's token and refuses any other
+// token (a listener that verifies no credential would answer every caller). The pod's live
+// listener and production Dispatch hold other tokens, so a mistaken target fails here.
 func checkStack(ctx context.Context, e endpoints) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 	if err := checkNATSServerName(ctx, client, e.natsMon, e.natsServerName); err != nil {
@@ -724,23 +739,60 @@ func checkStack(ctx context.Context, e endpoints) error {
 	if status != http.StatusOK {
 		return fmt.Errorf("guard: dispatch check failed: GET %s/api/v1/projects with the stack's agent token answered %d %s", redactURL(e.dispatch), status, trunc(body))
 	}
-	status, body, err = (&listenerclient.Client{URL: e.listener, Token: e.listenerToken, HTTP: client}).Sessions(ctx)
+	return checkListener(ctx, client, e)
+}
+
+// checkListener confirms the listener answers /v1/sessions with the token the listener token file
+// holds now and refuses any other token: a listener that verifies no credential would answer every
+// caller.
+func checkListener(ctx context.Context, client *http.Client, e endpoints) error {
+	status, body, err := e.listenerClient(client).Sessions(ctx)
 	if err != nil {
 		return fmt.Errorf("guard: listener check failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("guard: listener check failed: GET %s%s with the stack's listener token answered %d %s", redactURL(e.listener), listenerclient.SessionsRoute, status, trunc(body))
+		return fmt.Errorf("guard: listener check failed: GET %s%s with the token of %s answered %d %s", redactURL(e.listener), listenerclient.SessionsRoute, e.listenerTokenFile, status, trunc(body))
 	}
-	other := make([]byte, 16)
-	_, _ = rand.Read(other)
-	status, _, err = (&listenerclient.Client{URL: e.listener, Token: hex.EncodeToString(other), HTTP: client}).Sessions(ctx)
+	raw := make([]byte, 16)
+	_, _ = rand.Read(raw)
+	other := hex.EncodeToString(raw)
+	status, _, err = (&listenerclient.Client{URL: e.listener, Bearer: func() (string, error) { return other, nil }, HTTP: client}).Sessions(ctx)
 	if err != nil {
 		return fmt.Errorf("guard: listener check failed: %w", err)
 	}
 	if status/100 == 2 {
-		return fmt.Errorf("guard: listener check failed: %s%s answers %d to a token that is not the stack's, so it does not hold the stack's token", redactURL(e.listener), listenerclient.SessionsRoute, status)
+		return fmt.Errorf("guard: listener check failed: %s%s answers %d to a token that is not the one %s holds, so it verifies no credential", redactURL(e.listener), listenerclient.SessionsRoute, status, e.listenerTokenFile)
 	}
 	return nil
+}
+
+// listenerClient is the listener e names over client, presenting at every call the token
+// e.listenerTokenFile holds at that call (listenerBearer). Every caller of a listener in this
+// package -- the guard, the session registrar and its heartbeats, the loop sessions -- is built
+// here.
+func (e endpoints) listenerClient(client *http.Client) *listenerclient.Client {
+	return &listenerclient.Client{URL: e.listener, Bearer: e.listenerBearer, HTTP: client}
+}
+
+// listenerBearer is the listener token as e.listenerTokenFile holds it now, read through
+// readCredentials, the one reader of a credential file: trailing white space trimmed, and a file
+// that cannot be read or holds nothing refused by -listener-token-file and its path. It is read at
+// every request because its writer replaces the token before it expires and a run outlives a
+// token: the kubelet rewrites a projected token at 80% of its life, the VM's token loop every 30
+// minutes, the stack's dev-oidc-issuer at 80% of its tokens' life. An empty path presents nothing.
+func (e endpoints) listenerBearer() (string, error) {
+	token := ""
+	err := readCredentials(credentialFile{"-listener-token", "-listener-token-file", e.listenerTokenFile, &token})
+	return token, err
+}
+
+// cleanPath is path cleaned (filepath.Clean), and empty when path is: an endpoint flag given empty
+// is an endpoint flag not given.
+func cleanPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	return filepath.Clean(path)
 }
 
 // checkNATSServerName confirms that the NATS server monitored at monURL names itself name, so a

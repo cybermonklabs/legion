@@ -241,7 +241,6 @@ func registerConsumerSession(port int, sessionID string) error {
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Authorization", "Bearer "+listenerTestToken)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {

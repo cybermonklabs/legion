@@ -68,9 +68,10 @@ services:
       DISPATCH_IDENTITY_HEADER_TRUSTED: ${DISPATCH_IDENTITY_HEADER_TRUSTED:-}
       DISPATCH_NATS_DISABLED: ${DISPATCH_NATS_DISABLED:-}
       ENVOY_URL: ${ENVOY_URL:-http://127.0.0.1:9020}
-      ENVOY_TOKEN: ${ENVOY_TOKEN:-}
       # Dispatch's own identity at the listener (the entrypoint above requires one): the Google
-      # audience, or the token file mounted below at /run/envoy-listener/token.
+      # audience, or the token file mounted below at /run/envoy-listener/token. It is the one
+      # credential Dispatch presents there: the listener has no shared token, and this file passes
+      # no ENVOY_TOKEN, with which Dispatch refuses to start.
       ENVOY_ACCOUNT_GOOGLE_AUDIENCE: ${ENVOY_ACCOUNT_GOOGLE_AUDIENCE:-}
       ENVOY_ACCOUNT_TOKEN_FILE: ${ENVOY_ACCOUNT_TOKEN_FILE:+/run/envoy-listener/token}
       # Optional boot seed for mappings absent from the dashboard. Stored

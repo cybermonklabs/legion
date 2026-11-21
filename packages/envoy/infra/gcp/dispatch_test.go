@@ -943,7 +943,7 @@ func TestDispatchRegistersItsCloudResources(t *testing.T) {
 		"gcp:servicenetworking/connection:Connection":       1,
 		"gcp:container/cluster:Cluster":                     1,
 		"gcp:sql/databaseInstance:DatabaseInstance":         1,
-		"random:index/randomPassword:RandomPassword":        4,
+		"random:index/randomPassword:RandomPassword":        3,
 		"gcp:sql/database:Database":                         1,
 		"gcp:sql/user:User":                                 1,
 		"gcp:secretmanager/secretIamMember:SecretIamMember": 2,
@@ -1077,19 +1077,28 @@ func TestDispatchRegistersKubernetesResources(t *testing.T) {
 	require.Positive(t, kubernetesResources)
 }
 
-// The listener binds 0.0.0.0 in a pod of its own, where its API refuses to start without a
-// bearer, so its credential is a Secret of its own: the listener's pod must not name the Secret
-// holding DATABASE_URL and DISPATCH_SIGNING_KEY.
-func TestDispatchListenerSecretHoldsOnlyItsAPIToken(t *testing.T) {
+// The listener verifies Dispatch's own projected service-account token (dispatchListenerIdentityEnv)
+// and no shared bearer (t-e-19): its container carries no ENVOY_API_TOKEN, the app's no ENVOY_TOKEN,
+// which Dispatch refuses at start, and the component generates no listener token and keeps no
+// Secret for one. The listener keeps the projected-token verifier, which is what lets it start
+// bound to 0.0.0.0. Negative control, run by hand: dispatchListenerEnv rendering the shared token
+// again; the test fails naming ENVOY_API_TOKEN.
+func TestTheDispatchDeploymentHandsOutNoSharedToken(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
 
-	secret := m.Named(t, "kubernetes:core/v1:Secret", "example-dispatch-listener")
-	require.Equal(t, "example-dispatch-listener", secret.Inputs.Mappable()["metadata"].(map[string]any)["name"])
-	// The mock engine computes a password's result as <name>-result, so the value names the
-	// listener's own token and no other password the component registers.
-	data, _ := pulumitest.Plain(secret.Inputs["stringData"])
-	require.Equal(t, map[string]any{"ENVOY_API_TOKEN": "example-dispatch-listener-token-result"}, normalizedProperty(data))
+	listener, app := listenerEnv(t, m), appEnv(t, m)
+	require.NotContains(t, listener, "ENVOY_API_TOKEN", "the listener still takes the shared token")
+	require.NotContains(t, app, "ENVOY_TOKEN", "the app still presents the shared token")
+	for _, name := range []string{"ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE", "ENVOY_OIDC_ACCOUNTS"} {
+		require.NotEmpty(t, listener[name], "the listener lost its projected-token verifier's %s", name)
+	}
+	for _, r := range m.Registrations() {
+		require.NotEqual(t, "example-dispatch-listener-token", r.Name, "the component still generates the listener's token (%s)", r.Type)
+		if r.Type == "kubernetes:core/v1:Secret" {
+			require.NotEqual(t, "example-dispatch-listener", r.Name, "the listener's token Secret is still registered")
+		}
+	}
 }
 
 // dispatchSigningKeySets are the four states of a rotation, in the order an operator applies
@@ -1591,8 +1600,7 @@ func TestDispatchFrontDoorAloneWritesItsTLSSecret(t *testing.T) {
 // admits on that branch the account the serviceAccountSubject output names and no other, and names
 // that account its Dispatch principal; the file the app's ENVOY_ACCOUNT_TOKEN_FILE names lies on a
 // projected service-account token minted for the very audience the listener verifies, rewritten by
-// the kubelet before its hour runs out. The app keeps the shared token beside it, presented only on
-// a call a listener of the release before refuses 401 on the account token.
+// the kubelet before its hour runs out. No shared token rides beside it (t-e-19).
 func TestDispatchListenerTakesTheRoleMarkFromTheAppsOwnAccountAlone(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
@@ -1605,7 +1613,7 @@ func TestDispatchListenerTakesTheRoleMarkFromTheAppsOwnAccountAlone(t *testing.T
 
 	file, ok := app["ENVOY_ACCOUNT_TOKEN_FILE"].(string)
 	require.True(t, ok, "the app presents its own account token")
-	require.NotNil(t, app["ENVOY_TOKEN"], "the app keeps the shared token for a listener that refuses its account token")
+	require.NotContains(t, app, "ENVOY_TOKEN", "the app presents its own account token alone")
 	pod := deploymentPodTemplate(t, m, "example-dispatch")
 	var volume string
 	for _, item := range podContainer(t, pod, "envoy-dispatch")["volumeMounts"].([]any) {
@@ -1805,22 +1813,23 @@ func TestDispatchProtectsItsTailscaleServiceWithDeletionProtection(t *testing.T)
 	}
 }
 
-// A listener bound to 0.0.0.0 refuses to start without a bearer. The app reaches the listener and
+// A listener bound to 0.0.0.0 starts only with a credential it verifies: here the projected-token
+// verifier of the app's own account, and no shared token (t-e-19). The app reaches the listener and
 // the proxy over the network, each running in pods of its own.
 func TestDispatchListenerIsAuthenticated(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
 
-	listenerToken := map[string]any{"name": "example-dispatch-listener", "key": "ENVOY_API_TOKEN"}
 	listener := listenerEnv(t, m)
 	require.Equal(t, "example-dispatch", listener["ENVOY_MACHINE_ID"])
 	require.Equal(t, "0.0.0.0", listener["ENVOY_LISTEN_HOST"])
-	require.Equal(t, listenerToken, listener["ENVOY_API_TOKEN"])
+	require.Equal(t, "system:serviceaccount:dispatch:example-dispatch", listener["ENVOY_OIDC_ACCOUNTS"])
+	require.NotContains(t, listener, "ENVOY_API_TOKEN")
 	require.Equal(t, dispatchSocks5Proxy, listener["ENVOY_NATS_SOCKS5_PROXY"])
 
 	app := appEnv(t, m)
 	require.Equal(t, "http://example-dispatch-listener.dispatch.svc.cluster.local:9020", app["ENVOY_URL"])
-	require.Equal(t, listenerToken, app["ENVOY_TOKEN"])
+	require.NotContains(t, app, "ENVOY_TOKEN")
 	require.Equal(t, dispatchSocks5Proxy, app["ENVOY_NATS_SOCKS5_PROXY"])
 }
 
@@ -2271,15 +2280,15 @@ func podChecksums(t *testing.T, m *pulumitest.Mocks, deployment string) map[stri
 // template carries checksum/<secret> for exactly the component Secrets its environment reads, set
 // to that Secret's resourceVersion (the mocks compute <name>-resource-version), and its Deployment
 // registers after the Secret: a changed Secret rolls the pods that read it, and no other. The
-// app reads its own Secret and ENVOY_TOKEN from the listener's; the listener its own; the front
-// door the tailnet auth key.
+// app reads its own Secret; the listener reads none, since it takes no shared token (t-e-19); the
+// front door reads the tailnet auth key.
 func TestDispatchPodsRollWhenTheSecretsTheyReadChange(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
 
 	for deployment, secrets := range map[string][]string{
-		"example-dispatch":          {"example-dispatch-dispatch", "example-dispatch-listener"},
-		"example-dispatch-listener": {"example-dispatch-listener"},
+		"example-dispatch":          {"example-dispatch-dispatch"},
+		"example-dispatch-listener": {},
 		"example-dispatch-tailnet":  {"example-dispatch-tailnet-auth-key"},
 	} {
 		want := map[string]any{}

@@ -6,10 +6,10 @@ package main
 // the spent-proof store it needs, how a decided caller reaches the handlers, and which requests
 // are held to the session that caller names.
 //
-// It is the one credential that says who is calling. The shared token and the OIDC pair say only
-// that the caller holds a credential this listener trusts, so a request under either names its
-// own session in its body and is believed; a broker token names the session the broker issued it
-// to, so a write that acts as a session is held to that one (sessionNotBound).
+// It is the one credential that says which session is calling. The OIDC pair and the Google pair
+// prove a service's account and no session, so a request under either names its own session in its
+// body and is believed; a broker token names the session the broker issued it to, so a write that
+// acts as a session is held to that one (sessionNotBound).
 
 import (
 	"context"
@@ -32,10 +32,11 @@ import (
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
-// The variables a listener takes broker access tokens on, beside ENVOY_API_TOKEN and the
-// ENVOY_OIDC_* pair. They are one group: a listener that names any of them must name the broker,
-// an origin and exactly one account identity, since a half-configured credential would otherwise
-// be a listener that quietly takes none (resolveListenerBrokerConfig).
+// The variables a listener takes broker access tokens on, beside the ENVOY_OIDC_* pair and the
+// ENVOY_OIDC_GOOGLE_* pair. They are one group: a listener that names any of them must name the
+// broker, an origin and exactly one account identity, since a half-configured credential would
+// otherwise be a listener that quietly takes none (resolveListenerBrokerConfig). Off loopback they
+// are a credential the listener requires, as either pair is (requiresCredential).
 const (
 	// EnvBrokerURL is the secrets broker's base URL, the origin the RFC 7662 introspection route
 	// is asked on. Setting it is what turns the credential on; unset, the listener takes no
@@ -363,8 +364,8 @@ func withBrokerCaller(ctx context.Context, caller ciphertoken.Caller) context.Co
 }
 
 // brokerCaller is the caller r's credential proved, and whether it proved one at all. A request
-// under the shared token, under a service-account token, or under no credential proves none, and
-// every route serves it as it always has.
+// under a projected service-account token, under a Google identity token, or under no credential
+// proves none, and every route serves it as it always has.
 func brokerCaller(r *http.Request) (ciphertoken.Caller, bool) {
 	caller, ok := r.Context().Value(brokerCallerKey{}).(ciphertoken.Caller)
 	return caller, ok

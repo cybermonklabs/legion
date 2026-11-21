@@ -124,7 +124,7 @@ cleanup() {
   fi
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
-  stop_pid "$dispatch_identity_issuer_pid"
+  dispatch_identity_stop
   stop_pid "$holder_pid"
   stop_pid "$nats_pid"
   if [ -n "$database_created" ]; then
@@ -224,20 +224,20 @@ nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {pri
 psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1
 
-(umask 077 &&
-  od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/envoy-token" &&
-  od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/dispatch-token" &&
-  printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
-listener() { curl -fsS -H "@$work/envoy-auth-header" "$@"; }
+(umask 077 && od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/dispatch-token")
+# The sessions' listener takes no credential: it is on loopback, where /v1 serves every caller.
+listener() { curl -fsS "$@"; }
 envoy_port=$(bun "$driver" free-port)
 dispatch_port=$(bun "$driver" free-port)
 # Neither service inherits this shell (dispatch-user-turns.sh's reasoning): a HOME or XDG directory
 # holding legion/envoy.json would hand Dispatch a production configuration. Dispatch has an identity
-# of its own at the listener (lib/dispatch-identity.sh), as a deployment gives it.
-dispatch_identity_start
-env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$envoy_port" \
+# of its own and a listener of its own on this NATS (lib/dispatch-identity.sh), as a deployment
+# gives it: that listener's verifier closes its /v1 to every caller with no credential, so the
+# sessions, the driver and this shell call the sessions' listener below, which takes none.
+dispatch_identity_start "$work/envoy-listener" "$nats_url" "legion-e2e-session-settings-dispatch-$$"
+env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" PORT="$envoy_port" \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url" \
-  "${dispatch_identity_listener_env[@]}" "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
+  "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
 listener_pid=$!
 record_start "$listener_pid" || true
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
@@ -245,8 +245,7 @@ env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/no
   DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
   DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
   DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port" DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
-  DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port" \
-  ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
+  DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
   "$work/dispatch" >"$evidence/logs/dispatch.log" 2>&1 &
 dispatch_pid=$!
 record_start "$dispatch_pid" || true
@@ -306,7 +305,7 @@ jq -n --arg work "$work" --arg evidence "$evidence" --arg omp "$omp" --arg chrom
     work: $work, evidence: $evidence, omp: $omp, chromium: $chromium, dispatchUrl: $dispatch,
     envoyUrl: $envoy, natsUrl: $nats, models: [$a, $b], plugin: $plugin, releasedPlugin: $released,
     home: ($work + "/home"), agentDir: ($work + "/agent"), sessionCwd: ($work + "/session"),
-    tmp: ($work + "/tmp"), envoyTokenFile: ($work + "/envoy-token"),
+    tmp: ($work + "/tmp"),
     dispatchTokenFile: ($work + "/dispatch-token"), pidFile: ($work + "/omp.pids"),
     defaultLevel: "low", unkeyedModel: "google/gemini-2.5-flash"
   }' >"$work/rig.json"

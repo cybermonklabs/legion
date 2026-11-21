@@ -11,33 +11,28 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
-	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
-// openTailnetHost is the name a tailnet session reaches a private hub's tailnet-only session
-// listener at, which that listener's ENVOY_ALLOWED_HOSTS holds.
-const openTailnetHost = "envoy-hub.example-tailnet.ts.net"
+// tailnetHost is the name a tailnet session reaches a private hub's tailnet-only session listener
+// at.
+const tailnetHost = "envoy-hub.example-tailnet.ts.net"
 
-// TestOpenWithTokenChecksServesNoneAndVerifiesWhatIsPresented: with ENVOY_V1_OPEN_WITH_TOKEN_CHECKS
-// a listener that has a token check keeps /v1 open to a request that presents no credential, as a
-// private hub's tailnet-only session listener does until the open /v1 is removed. Such a request,
-// at a Host the listener serves, is admitted as none and reaches the handler with no principal and
-// no broker caller, which the private required mode answers with no private project (the
-// listener's project scope of an anonymous caller is empty). A bearer that is no JWT, an Envoy
-// bearer this listener does not hold, is no credential here either, as on the open listener. A
-// projected token that is presented and verifies is admitted as itself, its subject the request's
-// principal, and a DPoP broker token that verifies as its session; one of either that does not
-// verify is refused 401, never served as none.
+// TestAPrivateTailnetListenerVerifiesWhatIsPresentedAndServesNothingElse: a private hub's
+// tailnet-only session listener binds off loopback with a token check (the ENVOY_OIDC_* pair) and
+// its broker settings, so its /v1 is closed: a request that presents no credential, or a bearer it
+// does not hold, is refused 401 at whatever Host it names, the tailnet's own included. A projected
+// token that is presented and verifies is admitted as itself, its subject the request's principal,
+// and a DPoP broker token that verifies as its session; one of either that does not verify is
+// refused 401.
 //
-// Control: the same listener without the setting answers the request with no credential 401
-// (built in, below). Controls run by hand: the refusal of a projected token that does not verify
-// replaced by a fall-through (the wrong-audience row is served, and fails); the principal dropped
-// from a verified projected token (the listed row fails).
-func TestOpenWithTokenChecksServesNoneAndVerifiesWhatIsPresented(t *testing.T) {
+// Controls run by hand: the refusal of a projected token that does not verify replaced by a
+// fall-through (the wrong-audience row is served, and fails); the principal dropped from a
+// verified projected token (the listed row fails).
+func TestAPrivateTailnetListenerVerifiesWhatIsPresentedAndServesNothingElse(t *testing.T) {
 	issuer := oidctest.New(t)
 	signing := issuer.PublishKey(t, "listener-test-key")
 	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
@@ -67,13 +62,10 @@ func TestOpenWithTokenChecksServesNoneAndVerifiesWhatIsPresented(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	auth := func(open bool) http.Handler {
-		return apiAuth(listenerAPIAuth{
-			verifier: verifier, accounts: []string{listenerTestSubject}, brokers: listenerBrokerTokens(t, broker),
-			allowedHosts: []string{openTailnetHost}, openWithTokenChecks: open,
-			logger: logging.NewWithWriter("test-machine", io.Discard),
-		}, next)
-	}
+	listener := apiAuth(listenerAPIAuth{
+		verifier: verifier, accounts: []string{listenerTestSubject}, brokers: listenerBrokerTokens(t, broker),
+		offLoopback: true, logger: logging.NewWithWriter("test-machine", io.Discard),
+	}, next)
 	plain := func(host, authorization string) *http.Request {
 		request := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 		request.Host = host
@@ -89,16 +81,16 @@ func TestOpenWithTokenChecksServesNoneAndVerifiesWhatIsPresented(t *testing.T) {
 		status  int
 		want    seen
 	}{
-		{"no credential, at the tailnet name: served as none", func() *http.Request { return plain(openTailnetHost+":9020", "") }, http.StatusNoContent, seen{}},
-		{"no credential, at a host it does not serve", func() *http.Request { return plain("attacker.example:9020", "") }, http.StatusMisdirectedRequest, seen{}},
-		{"an Envoy bearer it does not hold: served as none", func() *http.Request {
-			return plain(openTailnetHost+":9020", bearerPrefix+"shared-envoy-token-of-a-session")
-		}, http.StatusNoContent, seen{}},
+		{"no credential, at the tailnet name: refused", func() *http.Request { return plain(tailnetHost+":9020", "") }, http.StatusUnauthorized, seen{}},
+		{"no credential, at another host: refused", func() *http.Request { return plain("attacker.example:9020", "") }, http.StatusUnauthorized, seen{}},
+		{"an Envoy bearer it does not hold: refused", func() *http.Request {
+			return plain(tailnetHost+":9020", bearerPrefix+"shared-envoy-token-of-a-session")
+		}, http.StatusUnauthorized, seen{}},
 		{"a listed projected token: admitted as itself", func() *http.Request { return plain("10.0.0.7:9020", bearerPrefix+listed) }, http.StatusNoContent, seen{principal: listenerTestSubject}},
 		{"a projected token for another audience: refused", func() *http.Request {
-			return plain(openTailnetHost+":9020", bearerPrefix+wrongAudienceToken)
+			return plain(tailnetHost+":9020", bearerPrefix+wrongAudienceToken)
 		}, http.StatusUnauthorized, seen{}},
-		{"a projected token of an unlisted subject: refused", func() *http.Request { return plain(openTailnetHost+":9020", bearerPrefix+unlisted) }, http.StatusUnauthorized, seen{}},
+		{"a projected token of an unlisted subject: refused", func() *http.Request { return plain(tailnetHost+":9020", bearerPrefix+unlisted) }, http.StatusUnauthorized, seen{}},
 		{"a broker token that verifies: admitted as its session", func() *http.Request {
 			return brokerTokenRequest(t, session, http.MethodPost, "/v1/messages/publish", sessionToken, `{}`)
 		}, http.StatusNoContent, seen{session: "ses_tailnet"}},
@@ -109,7 +101,7 @@ func TestOpenWithTokenChecksServesNoneAndVerifiesWhatIsPresented(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			got = seen{}
 			recorder := httptest.NewRecorder()
-			auth(true).ServeHTTP(recorder, row.request())
+			listener.ServeHTTP(recorder, row.request())
 			if recorder.Code != row.status {
 				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, row.status, recorder.Body.String())
 			}
@@ -117,43 +109,6 @@ func TestOpenWithTokenChecksServesNoneAndVerifiesWhatIsPresented(t *testing.T) {
 				t.Fatalf("the handler saw %+v, want %+v", got, row.want)
 			}
 		})
-	}
-
-	recorder := httptest.NewRecorder()
-	auth(false).ServeHTTP(recorder, plain(openTailnetHost+":9020", ""))
-	if recorder.Code != http.StatusUnauthorized {
-		t.Fatalf("the control, the same listener without %s: a request with no credential got %d, want 401", EnvV1OpenWithTokenChecks, recorder.Code)
-	}
-}
-
-// TestOpenWithTokenChecksIsOneValueBesideATokenCheck: the setting's one value is "true", unset is
-// off, and any other value refuses the start naming the variable; and validateListenerAPIAuth
-// refuses it on a listener with no token check, where /v1 is open anyway, while a listener with a
-// projected-token check on every address passes with it and no ENVOY_API_ALLOW_UNAUTHENTICATED.
-func TestOpenWithTokenChecksIsOneValueBesideATokenCheck(t *testing.T) {
-	for value, want := range map[string]bool{"": false, "true": true} {
-		got, err := resolveListenerV1OpenWithTokenChecks(func(string) string { return value })
-		if err != nil || got != want {
-			t.Fatalf("%s=%q resolves to %v, %v; want %v", EnvV1OpenWithTokenChecks, value, got, err, want)
-		}
-	}
-	for _, value := range []string{"1", "yes", "TRUE"} {
-		if _, err := resolveListenerV1OpenWithTokenChecks(func(string) string { return value }); err == nil || !strings.Contains(err.Error(), EnvV1OpenWithTokenChecks) {
-			t.Fatalf("%s=%q resolves (err = %v), want a refusal naming the variable", EnvV1OpenWithTokenChecks, value, err)
-		}
-	}
-
-	issuer := oidctest.New(t)
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
-	everywhere := config.Service{ListenHost: "0.0.0.0"}
-	if err := validateListenerAPIAuth(everywhere, listenerAPIAuth{openWithTokenChecks: true}, ""); err == nil || !strings.Contains(err.Error(), EnvV1OpenWithTokenChecks) {
-		t.Fatalf("the setting with no token check validates (err = %v), want a refusal naming it", err)
-	}
-	if err := validateListenerAPIAuth(everywhere, listenerAPIAuth{verifier: verifier, openWithTokenChecks: true}, ""); err != nil {
-		t.Fatalf("the setting beside a projected-token check: %v", err)
 	}
 }
 

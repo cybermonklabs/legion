@@ -65,9 +65,9 @@ const (
 	clusteredHubListenerTokenSeconds = 3600
 
 	// The broker token's volume and where the container mounts it, a top-level path of its own
-	// beside the NATS credential's, so neither mount sits inside the other: a private hub's
-	// listener's projected token of its own account for the secrets broker's audience, which it
-	// introspects callers' broker tokens and reads each decision's privacy with
+	// beside the NATS credential's, so neither mount sits inside the other: the listener's projected
+	// token of its own account for the secrets broker's audience, which it introspects callers'
+	// broker tokens with and, on a private hub, reads each decision's privacy with
 	// (ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE). It lives as long as the NATS one, for the same
 	// reason.
 	clusteredHubListenerBrokerMount     = "/var/run/secrets/envoy-broker"
@@ -92,25 +92,25 @@ const (
 
 // clusteredHubListenerEnv is the listener container's environment: the resolver's rendering of
 // core.ListenerConfig, in its order, which names the projected token's file behind the auth
-// service; without it, the seed file mounted from the operator's Secret; and then how the API
-// admits a caller. No ENVOY_API_TOKEN either way. A listener with a credential renders its token
-// check, ENVOY_OIDC_ISSUER, ENVOY_OIDC_AUDIENCE and ENVOY_OIDC_ACCOUNTS, and every caller
-// presents a projected ServiceAccount token of a listed subject, whatever the NetworkPolicy
-// admits. One without, a tailnet.listener with no clientNamespaces, renders the flag that lets
-// the API serve /v1 with no credential: its NetworkPolicy admits the tailnet entry's pods alone,
-// and that is what keeps /v1 to its callers, since the listener serves on every address of its
-// pod, where its API refuses to start with no bearer unless ENVOY_API_ALLOW_UNAUTHENTICATED is set
-// (packages/envoy/cmd/listener/apiauth.go). The two never render together.
+// service and always carries the broker settings, the credential every session presents; without
+// the auth service, the seed file mounted from the operator's Secret; and then, for a listener
+// that also requires a platform identity, its token check, ENVOY_OIDC_ISSUER, ENVOY_OIDC_AUDIENCE
+// and ENVOY_OIDC_ACCOUNTS, and every such caller presents a projected ServiceAccount token of a
+// listed subject, whatever the NetworkPolicy admits. No ENVOY_API_TOKEN and no
+// ENVOY_API_ALLOW_UNAUTHENTICATED: the listener serves on every address of its pod, off loopback,
+// where it refuses both and starts only with a credential it verifies, its broker settings among
+// them (packages/envoy/cmd/listener/apiauth.go, validateListenerAPIAuth), and answers a request
+// that presents nothing 401.
 func clusteredHubListenerEnv(l *clusteredHubListener) corev1.EnvVarArray {
 	env := envVars(l.env)
 	if l.natsAudience == "" {
 		env = append(env, valueEnv("NATS_NKEY_SEED_FILE", clusteredHubListenerSeedPath))
 	}
 	if c := l.credential; c != nil {
-		return append(env, valueEnv("ENVOY_OIDC_ISSUER", c.issuer), valueEnv("ENVOY_OIDC_AUDIENCE", c.audience),
+		env = append(env, valueEnv("ENVOY_OIDC_ISSUER", c.issuer), valueEnv("ENVOY_OIDC_AUDIENCE", c.audience),
 			valueEnv("ENVOY_OIDC_ACCOUNTS", strings.Join(c.accounts, ",")))
 	}
-	return append(env, valueEnv("ENVOY_API_ALLOW_UNAUTHENTICATED", "1"))
+	return env
 }
 
 // clusteredHubListenerNATSCredential is the listener pod's one NATS credential volume, mounted
@@ -180,17 +180,17 @@ func clusteredHubListenerStartupProbe(port int) *corev1.ProbeArgs {
 	}
 }
 
-// clusteredHubListenerBrokerToken is a private hub's listener's broker token volume, mounted
-// read-only at clusteredHubListenerBrokerMount: the projected token of the pod's own
-// ServiceAccount for the secrets broker's audience.
-func clusteredHubListenerBrokerToken(p *clusteredHubListenerPrivacy) (corev1.VolumeMountArgs, corev1.VolumeArgs) {
+// clusteredHubListenerBrokerToken is the listener's broker token volume, mounted read-only at
+// clusteredHubListenerBrokerMount: the projected token of the pod's own ServiceAccount for the
+// secrets broker's audience.
+func clusteredHubListenerBrokerToken(audience string) (corev1.VolumeMountArgs, corev1.VolumeArgs) {
 	return corev1.VolumeMountArgs{
 		Name: pulumi.String(clusteredHubListenerBrokerTokenName), MountPath: pulumi.String(clusteredHubListenerBrokerMount), ReadOnly: pulumi.Bool(true),
 	}, corev1.VolumeArgs{
 		Name: pulumi.String(clusteredHubListenerBrokerTokenName),
 		Projected: &corev1.ProjectedVolumeSourceArgs{
 			Sources: corev1.VolumeProjectionArray{corev1.VolumeProjectionArgs{ServiceAccountToken: &corev1.ServiceAccountTokenProjectionArgs{
-				Audience: pulumi.String(p.brokerAudience), ExpirationSeconds: pulumi.Int(clusteredHubListenerTokenSeconds),
+				Audience: pulumi.String(audience), ExpirationSeconds: pulumi.Int(clusteredHubListenerTokenSeconds),
 				Path: pulumi.String(clusteredHubListenerBrokerTokenPath),
 			}}},
 		},
@@ -221,16 +221,13 @@ func clusteredHubListenerInstancesName(release string) string {
 // neither takes the one pod out of its Service nor restarts it, and a listener whose bus is down
 // keeps its warm caches and repairs itself; only one that answers nothing at all is taken out or
 // restarted.
-// A private hub's listener mounts a second token, its own account's for the secrets broker's
-// audience (clusteredHubListenerBrokerToken).
+// Every listener mounts a second token, its own account's for the secrets broker's audience
+// (clusteredHubListenerBrokerToken), which its broker settings name.
 func clusteredHubListenerPod(s clusteredHubSettings) corev1.PodSpecArgs {
 	l := s.listener
 	mount, volume := clusteredHubListenerNATSCredential(l)
-	mounts, volumes := corev1.VolumeMountArray{mount}, corev1.VolumeArray{volume}
-	if l.privacy != nil {
-		mount, volume := clusteredHubListenerBrokerToken(l.privacy)
-		mounts, volumes = append(mounts, mount), append(volumes, volume)
-	}
+	brokerMount, brokerVolume := clusteredHubListenerBrokerToken(l.brokerAudience)
+	mounts, volumes := corev1.VolumeMountArray{mount, brokerMount}, corev1.VolumeArray{volume, brokerVolume}
 	pod := corev1.PodSpecArgs{
 		ServiceAccountName:            pulumi.String(clusteredHubListenerName(s.name)),
 		EnableServiceLinks:            pulumi.Bool(false),

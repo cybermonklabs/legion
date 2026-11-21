@@ -19,10 +19,6 @@
             "value": "0.0.0.0"
           },
           {
-            "name": "ENVOY_ALLOWED_HOSTS",
-            "value": "envoy-hub.example-tailnet.ts.net"
-          },
-          {
             "name": "ENVOY_MACHINE_ID",
             "value": "envoy-hub"
           },
@@ -35,12 +31,28 @@
             "value": "1"
           },
           {
-            "name": "NATS_SERVICE_TOKEN_FILE",
-            "value": "/var/run/secrets/envoy/nats-token"
+            "name": "ENVOY_AGENT_SECRETS_URL",
+            "value": "https://example-broker.example-dispatch.svc.cluster.local:8443"
           },
           {
-            "name": "ENVOY_API_ALLOW_UNAUTHENTICATED",
-            "value": "1"
+            "name": "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE",
+            "value": "/var/run/secrets/envoy-broker/token"
+          },
+          {
+            "name": "ENVOY_PUBLIC_URL",
+            "value": "http://envoy-hub.example-tailnet.ts.net:9020"
+          },
+          {
+            "name": "ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND",
+            "value": "50"
+          },
+          {
+            "name": "ENVOY_AGENT_SECRETS_INTROSPECTION_BURST",
+            "value": "200"
+          },
+          {
+            "name": "NATS_SERVICE_TOKEN_FILE",
+            "value": "/var/run/secrets/envoy/nats-token"
           }
         ],
         "image": "example.invalid/envoy@sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
@@ -122,6 +134,11 @@
             "mountPath": "/var/run/secrets/envoy",
             "name": "nats-token",
             "readOnly": true
+          },
+          {
+            "mountPath": "/var/run/secrets/envoy-broker",
+            "name": "envoy-broker-token",
+            "readOnly": true
           }
         ]
       }
@@ -147,6 +164,20 @@
                 "audience": "example-nats-audience",
                 "expirationSeconds": 3600,
                 "path": "nats-token"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "envoy-broker-token",
+        "projected": {
+          "sources": [
+            {
+              "serviceAccountToken": {
+                "audience": "example-broker-audience",
+                "expirationSeconds": 3600,
+                "path": "token"
               }
             }
           ]

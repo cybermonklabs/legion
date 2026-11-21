@@ -2,6 +2,7 @@ package listenerclient
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -10,8 +11,9 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// Every call sends the bearer when the client holds one and no Authorization header when it holds
-// none, whichever route it calls.
+// Every call sends the bearer Bearer answers at that call, and no Authorization header when it
+// answers none or the client has no Bearer, whichever route it calls; a Bearer that fails refuses
+// the call before anything reaches the listener.
 func TestEveryCallSendsTheBearerOnlyWhenThereIsOne(t *testing.T) {
 	var mu sync.Mutex
 	headers := map[string][]string{}
@@ -26,25 +28,34 @@ func TestEveryCallSendsTheBearerOnlyWhenThereIsOne(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	ctx := context.Background()
-	for _, token := range []string{"", "stack-token"} {
-		client := &Client{URL: server.URL, Token: token, HTTP: server.Client()}
-		if _, err := client.Subscribe(ctx, listenerwire.SubscribeRequest{SessionID: "ses_a"}); err != nil {
-			t.Fatalf("subscribe: %v", err)
+	calls := func(client *Client) []error {
+		_, subscribe := client.Subscribe(ctx, listenerwire.SubscribeRequest{SessionID: "ses_a"})
+		publish := client.Publish(ctx, listenerwire.PublishRequest{Topic: "notifications.team.a"})
+		_, unsubscribe := client.Unsubscribe(ctx, listenerwire.UnsubscribeRequest{SessionID: "ses_a"})
+		_, _, sessions := client.Sessions(ctx)
+		return []error{subscribe, publish, unsubscribe, sessions}
+	}
+	for _, bearer := range []func() (string, error){
+		nil,
+		func() (string, error) { return "", nil },
+		func() (string, error) { return "stack-token", nil },
+	} {
+		for _, err := range calls(&Client{URL: server.URL, Bearer: bearer, HTTP: server.Client()}) {
+			if err != nil {
+				t.Fatalf("a call: %v", err)
+			}
 		}
-		if err := client.Publish(ctx, listenerwire.PublishRequest{Topic: "notifications.team.a"}); err != nil {
-			t.Fatalf("publish: %v", err)
-		}
-		if _, err := client.Unsubscribe(ctx, listenerwire.UnsubscribeRequest{SessionID: "ses_a"}); err != nil {
-			t.Fatalf("unsubscribe: %v", err)
-		}
-		if _, _, err := client.Sessions(ctx); err != nil {
-			t.Fatalf("sessions: %v", err)
+	}
+	unreadable := errors.New("the token file cannot be read")
+	for _, err := range calls(&Client{URL: server.URL, Bearer: func() (string, error) { return "", unreadable }, HTTP: server.Client()}) {
+		if !errors.Is(err, unreadable) {
+			t.Errorf("a call whose Bearer failed answered %v, want the Bearer's error", err)
 		}
 	}
 	for _, route := range []string{"/v1/interests/subscribe", "/v1/messages/publish", "/v1/interests/unsubscribe", SessionsRoute} {
 		got := headers[route]
-		if len(got) != 2 || got[0] != "<none>" || got[1] != "Bearer stack-token" {
-			t.Errorf("%s got Authorization %q, want none with no token and %q with one", route, got, "Bearer stack-token")
+		if len(got) != 3 || got[0] != "<none>" || got[1] != "<none>" || got[2] != "Bearer stack-token" {
+			t.Errorf("%s got Authorization %q, want none with no Bearer or an empty one, %q with one, and no request when the Bearer failed", route, got, "Bearer stack-token")
 		}
 	}
 }

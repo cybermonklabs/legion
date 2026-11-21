@@ -525,13 +525,14 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `NATS_NKEY_SEED_FILE` | The NATS user to connect as, as a file holding its seed. |
 | `ENVOY_ALLOW_REMOTE_NATS` | Set to `1` when NATS runs on another machine; otherwise the listener refuses it. |
 | `ENVOY_NATS_SOCKS5_PROXY` | A SOCKS5 proxy, as `host:port` (for example `127.0.0.1:1055`), that every NATS connection goes through, each server's host name handed to the proxy unresolved. Needs `ENVOY_ALLOW_REMOTE_NATS=1`, since the proxy decides which server a connection reaches. |
-| `ENVOY_LISTEN_HOST`, `PORT` | Where to listen. Defaults: `127.0.0.1` and `9020`. |
-| `ENVOY_API_TOKEN` | The bearer token `/v1` callers must send. |
+| `ENVOY_LISTEN_HOST`, `PORT` | Where to listen. Defaults: `127.0.0.1` and `9020`. Off loopback, `/v1` requires a credential of every caller (below). |
+| `ENVOY_API_TOKEN` | No longer read: the listener takes no shared token. Set to anything, it refuses startup, naming the variable and the credentials a caller presents instead. |
 | `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` | Also accept Kubernetes service-account tokens from that issuer for that audience. Set both or neither. |
-| `ENVOY_OIDC_ACCOUNTS` | The service accounts whose tokens the OIDC pair admits, as `system:serviceaccount:<namespace>:<name>` subjects separated by commas or spaces. Unset or empty, every account the issuer signs for is admitted; a value that names no account, only spaces or commas, refuses startup, and so does a stray comma that leaves an entry empty. Any pod of a cluster can get a token for any audience, so set it on a listener that takes no shared token. |
+| `ENVOY_OIDC_ACCOUNTS` | The service accounts whose tokens the OIDC pair admits, as `system:serviceaccount:<namespace>:<name>` subjects separated by commas or spaces. Unset or empty, every account the issuer signs for is admitted; a value that names no account, only spaces or commas, refuses startup, and so does a stray comma that leaves an entry empty. Any pod of a cluster can get a token for any audience, so set it to the accounts that call the listener. |
 | `ENVOY_OIDC_GOOGLE_AUDIENCE`, `ENVOY_OIDC_GOOGLE_ACCOUNTS` | Also accept a Google identity token that Google signed for that audience, for a caller that runs on Google Cloud and holds no Kubernetes token, such as a Cloud Run service. The accounts are service account addresses separated by commas or spaces; the token must name one of them, with its address verified, so the caller asks its metadata server for the token with `format=full`. Set both or neither. |
+| `ENVOY_AGENT_SECRETS_URL`, `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` or `ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE`, `ENVOY_PUBLIC_URL` | Also accept a session's broker token, presented under the DPoP scheme: the listener asks the secrets broker at that URL whether the token is live, calling as its own projected token file or as its machine's Google identity for that audience, and checks the proof against `ENVOY_PUBLIC_URL`, the origin callers reach `/v1` at. Set all of them or none. A session that presents one acts as its own session and no other. On loopback the setting opens nothing and closes nothing; off loopback it is a credential the listener requires, as either pair is. |
 | `ENVOY_DISPATCH_PRINCIPAL` | Dispatch's own account: a `system:serviceaccount:<namespace>:<name>` subject the OIDC pair admits, or a Google service account address the Google pair admits. Only a send whose token proves this account may carry `role`, the role a Dispatch message for a `role:` route is sent for; any other caller that sends `role` is refused `403`, and so is every caller while this is unset. When the role has moved to another session by the time such a send arrives, the listener keeps the message for the role's holder and answers `202` with `kept`. A value no configured pair could prove refuses startup. |
-| `ENVOY_ALLOWED_HOSTS` | Comma-separated host names or addresses, with no port, that a listener with no bearer serves `/v1` to besides loopback. Set it to each name clients reach such a listener by, such as a forward to it. |
+| `ENVOY_ALLOWED_HOSTS` | Comma-separated host names or addresses, with no port, that an open listener serves `/v1` to besides loopback: one on loopback that takes neither the OIDC pair nor the Google pair. Unused when `/v1` requires a credential, as it does off loopback. |
 | `ENVOY_NATS_REPLICAS` | The deployment's replica count, a whole number from 1 to 5; default `1`. The listener creates the `ENVOY_NOTIFICATIONS` stream and its buckets with this many copies and raises one it finds with fewer, at start and every 30 seconds after ([Keeping the stream](#keeping-the-stream)). More than 1 needs a clustered NATS: a single server refuses it, and the listener then exits at start with an error naming the variable. Any other value refuses startup. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
 | `ENVOY_STREAM_MAX_BYTES` | The `ENVOY_NOTIFICATIONS` stream's size limit, a positive whole number of bytes. Once the stream holds that much it refuses every new message and keeps every one it holds, which leaves only when it is 72 hours old, and the sender gets an error it can retry: the listener answers a GitHub webhook `503`, which Dispatch's redelivery sweep has GitHub send again (on a doubling backoff, until GitHub records the delivery or 72 hours after its first failed attempt); Dispatch's outbox retries its event; an agent's send or publish fails with `stream ENVOY_NOTIFICATIONS is full`. Size the limit above what the stream takes in 72 hours at its busiest, with room to spare. Unset, the listener creates the stream with no limit and keeps a limit the stream already has; set, it raises a smaller limit, or none, to its own at start and every 30 seconds, and never lowers one ([Keeping the stream](#keeping-the-stream)). A limit larger than the NATS server can reserve makes the listener exit at start with an error naming the variable. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
 | `ENVOY_SENDER_MESSAGES_PER_MINUTE` | How many messages one agent session may send through this listener in a minute, sends and publishes together: a whole number from 0 to 60000. Unset, blank or `0` sets no limit. A message past the limit is answered `429` with a sentence that says when the session can send it again ([The sender limit](#the-sender-limit)). Any other value refuses startup with an error that names the variable. |
@@ -548,12 +549,17 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_GITHUB_MENTION_TRIGGER` | The mention that publishes a `.mention` event. Defaults to `@legion`. |
 | `ENVOY_SLACK_SIGNING_SECRET` | Required with `slack`: the Slack app's signing secret. |
 
-A listener on anything but loopback refuses to start without `ENVOY_API_TOKEN`, the OIDC pair or
-the Google pair, unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` says that something else fences its
-port, as the clustered hub's NetworkPolicy fences its listener's port.
-A listener with none of them serves `/v1` only to a request whose `Host` is `localhost`, a loopback
-address or a name in `ENVOY_ALLOWED_HOSTS`, and answers any other `Host` with a JSON `421`, so a
-page that rebinds its own name to the listener's address cannot use the API.
+A listener on anything but loopback, by `ENVOY_LISTEN_HOST` or an inherited socket's address, serves
+`/v1` only to a caller that presents a credential it verifies: a token the OIDC pair or the Google
+pair admits, or a broker token its broker settings check. It refuses to start with none of them,
+and answers a request that presents nothing with `401`. `ENVOY_API_TOKEN`,
+`ENVOY_API_ALLOW_UNAUTHENTICATED` and `ENVOY_V1_OPEN_WITH_TOKEN_CHECKS`, which once let a listener
+off loopback serve a caller with no credential it verifies, are gone: a value in any of them
+refuses startup, naming the variable and what replaces it.
+A listener on loopback with neither pair serves `/v1` to a request with no credential, but only to
+one whose `Host` is `localhost`, a loopback address or a name in `ENVOY_ALLOWED_HOSTS`, and answers
+any other `Host` with a JSON `421`, so a page that rebinds its own name to the listener's address
+cannot use the API.
 Keep the API private: only `/webhook/...` needs to be reachable from GitHub and Slack.
 
 The Google identity-token branch accepts both `https://accounts.google.com` and
@@ -562,11 +568,12 @@ configured. Both spellings require a listed, verified account address; addresses
 without case.
 
 `/metrics` counts every `/v1` request the listener admits in `envoy_listener_requests_total`, by
-`credential` — `shared_token`, `none` (a listener with no bearer, which admits a request with no
-credential), `oidc`, `google` or `broker` — and by `path`, the route that served it. A request
-admitted on the shared token or with no credential also logs a warning, at most once a minute
-each, naming the route and the caller's address, so callers that still use either can be found
-and moved to a token of their own.
+`credential` — `none` (a listener on loopback with neither pair, which admits a request with no
+credential), `none_broker_token` (that listener, taking no broker token, admitting a request that
+presents one, unverified), `oidc`, `google` or `broker` — and by `path`, the route that served it.
+A request admitted with no credential or on an unverified broker token also logs a warning, at
+most once a minute each, naming the route and the caller's address, so callers that still present
+no credential the listener verifies can be found and moved to one.
 
 Raising a bucket to `ENVOY_NATS_REPLICAS` copies is an update of the bucket's stream, so the
 listener's NATS user needs `$JS.API.STREAM.UPDATE.KV_<bucket>` for each of its buckets beside the
@@ -886,8 +893,10 @@ candidates. The 2.15.1 this file pins is past all of them; a machine still on an
    ```
 
    `"dispatch": { "enabled": false }` is for a machine with no Dispatch server; one that has a
-   server keeps its `dispatch` section. When `.env` sets `ENVOY_API_TOKEN`, put the same value in
-   `envoy.token`. A session under its own Oh My Pi profile, or with `ENVOY_CONFIG_FILE` set, reads
+   server keeps its `dispatch` section. The listener here binds loopback and takes no credential,
+   so a session presents none; with a verifier pair for a Dispatch's identity it takes the broker
+   settings too, as `single-node.env.example` says, and each session presents its broker token. A
+   session under its own Oh My Pi profile, or with `ENVOY_CONFIG_FILE` set, reads
    another file; [Connecting an agent](/legion/dispatch/for-agents/#connecting-an-agent) says which.
 
 4. Start an Oh My Pi session with `@sjawhar/pi-envoy` 10.0.0 or later
@@ -899,13 +908,11 @@ candidates. The 2.15.1 this file pins is past all of them; a machine still on an
    curl http://127.0.0.1:9020/v1/sessions
    ```
 
-   When `.env` sets `ENVOY_API_TOKEN`, send that token as the bearer on standard input, so it is in
-   no command line. This reads it from `envoy.json` with `jq`, which must be installed: without it
-   the header goes out as `Authorization: Bearer ` and the listener refuses it.
+   A listener given a verifier pair requires a credential of this request too and answers it `401`;
+   read its log for the session's `listener subscribe` line instead:
 
    ```sh
-   printf 'Authorization: Bearer %s' "$(jq -r .envoy.token ~/.config/legion/envoy.json)" |
-     curl -H @- http://127.0.0.1:9020/v1/sessions
+   docker compose -f single-node.compose.yml logs listener | grep 'listener subscribe'
    ```
 
    The answer lists each live session with its `session_id`. Start a second session, and the two

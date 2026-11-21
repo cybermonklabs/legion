@@ -230,19 +230,17 @@ type DepsInput struct {
 	NewIssueSession string
 	ServerURL       string
 	EnvoyURL        string
-	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
-	// none.
-	EnvoyToken string
 	// EnvoyAccountTokenFile is the file holding Dispatch's own projected service-account token for
 	// the listener's audience (cmd/dispatch: ENVOY_ACCOUNT_TOKEN_FILE), which every listener call
-	// reads and presents in EnvoyToken's place (envoy.WithAccountTokenFile); empty presents
-	// EnvoyToken. It is the one credential the listener takes a send's role mark from.
+	// reads and presents as its bearer (envoy.WithAccountTokenFile). It is one of the two
+	// credentials the listener takes a send's role mark from.
 	EnvoyAccountTokenFile string
 	// EnvoyGoogleAudience is the audience of the identity token the metadata server mints for
 	// Dispatch's Google Cloud machine (cmd/dispatch: ENVOY_ACCOUNT_GOOGLE_AUDIENCE), which every
-	// listener call presents in EnvoyToken's place (envoy.WithGoogleIdentity); empty presents none.
-	// With neither it nor EnvoyAccountTokenFile, Dispatch presents no identity and refuses every
-	// send for a role (envoy.ErrNoListenerIdentity).
+	// listener call presents as its bearer instead (envoy.WithGoogleIdentity). With neither it
+	// nor EnvoyAccountTokenFile, Dispatch presents no credential at all, which only a loopback
+	// listener with no verifier pair serves, and refuses every send for a role
+	// (envoy.ErrNoListenerIdentity).
 	EnvoyGoogleAudience string
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.
@@ -333,7 +331,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 	}
 	var envoyClient *envoy.Client
 	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
-		options := []envoy.Option{envoy.WithToken(input.EnvoyToken)}
+		var options []envoy.Option
 		if input.EnvoyAccountTokenFile != "" {
 			options = append(options, envoy.WithAccountTokenFile(input.EnvoyAccountTokenFile))
 		}

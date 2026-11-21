@@ -215,7 +215,7 @@ func registrationBody(id string, topics []string, mentions bool) []byte {
 // with the epoch of the session's NATS connection and, once the session has one, its resume point
 // (relaySessions.delivery).
 func (st *step) registerSessions(ctx context.Context, ns *natsSessions) *registrar {
-	reg := &registrar{listener: &listenerclient.Client{URL: st.cfg.ep.listener, Token: st.cfg.ep.listenerToken, HTTP: &http.Client{Timeout: 10 * time.Second}},
+	reg := &registrar{listener: st.cfg.ep.listenerClient(&http.Client{Timeout: 10 * time.Second}),
 		bodies: make([]listenerwire.SubscribeRequest, len(st.ids)), relay: ns.relay}
 	for i := range st.ids {
 		reg.bodies[i] = st.registrationFields(i)

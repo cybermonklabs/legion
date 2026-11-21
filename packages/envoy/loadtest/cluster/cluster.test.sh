@@ -246,17 +246,21 @@ c=${cmd[*]:-}
 # DIR-MODE CONTENT", appended to LOG -- what the job would read, and how the runner kept it.
 # shellcheck disable=SC2016 # expanded by the runner's sh
 credential_reader='for f in "$2"/*; do printf "%s %s %s %s %s\n" "$1" "${f##*/}" "$(stat -c %a "$f")" "$(stat -c %a "$2")" "$(cat "$f")"; done >>"$3"'
-# flags_name_dir DIR ARG...: every -token-file, -listener-token-file and -pg-file of the job's
-# command ARG... names a file in DIR, the directory its start claims, and there is one at least:
-# a job whose flags named another directory would open no file at all.
+# flags_name_dir DIR ARG...: every -token-file and -pg-file of the job's command ARG... names a
+# file in DIR, the directory its start claims, and there is one at least: a job whose flags named
+# another directory would open no file at all. Its -listener-token-file names the runner pod's own
+# projected token, which the kubelet keeps outside every start's directory.
 flags_name_dir() {
   local dir=$1 prev="" a n=0
   shift
   for a in "$@"; do
     case $prev in
-      -token-file | -listener-token-file | -pg-file)
+      -token-file | -pg-file)
         ((++n))
         [ "${a%/*}" = "$dir" ] || { echo "fake kubectl exec: the start claims $dir, and its job's $prev names $a" >&2; return 1; }
+        ;;
+      -listener-token-file)
+        [ "$a" = /var/run/secrets/envoy-listener/token ] || { echo "fake kubectl exec: its job's -listener-token-file names $a, not the runner's projected token" >&2; return 1; }
         ;;
     esac
     prev=$a
@@ -1343,19 +1347,19 @@ jq -e '.browsertype == null' "$run_dir/state.json" >/dev/null || fail "state.jso
   fail "up did not copy envoy-dispatch into the runner"
 pg_password=$(jq -r .secrets.pg_password "$run_dir/state.json")
 
-# copy_credentials: the three credentials of the run in run_dir as a runner job reads them, one a
-# line in RUNNER_CREDENTIALS' order and with its file's name: dispatch-token, listener-token,
-# pg-url. A run whose state.json lacks one fails here, so no check below compares against nothing.
+# copy_credentials: the two credentials of the run in run_dir as a runner job reads them, one a
+# line in RUNNER_CREDENTIALS' order and with its file's name: dispatch-token, pg-url. A run whose
+# state.json lacks one fails here, so no check below compares against nothing. The listener takes
+# no shared token: a job presents the runner pod's own projected token.
 copy_credentials() {
-  local dt lt pw
+  local dt pw
   dt=$(jq -r '.secrets.dispatch_token // empty' "$run_dir/state.json")
-  lt=$(jq -r '.secrets.listener_token // empty' "$run_dir/state.json")
   pw=$(jq -r '.secrets.pg_password // empty' "$run_dir/state.json")
-  [ -n "$dt" ] && [ -n "$lt" ] && [ -n "$pw" ] || fail "$run_dir/state.json lacks a credential of the copy"
-  printf '%s\n' "dispatch-token $dt" "listener-token $lt" "pg-url postgres://dispatch:$pw@postgres.$ns.svc:5432/dispatch?sslmode=disable"
+  [ -n "$dt" ] && [ -n "$pw" ] || fail "$run_dir/state.json lacks a credential of the copy"
+  printf '%s\n' "dispatch-token $dt" "pg-url postgres://dispatch:$pw@postgres.$ns.svc:5432/dispatch?sslmode=disable"
 }
 
-# job_credentials JOB: the runner job JOB read the copy's three credentials from files of mode 600
+# job_credentials JOB: the runner job JOB read the copy's two credentials from files of mode 600
 # in a directory of mode 700 of its own, each holding the copy's own value (credential_reader's
 # record), and that directory is gone once the job has ended: the EXIT trap of the runner sh that
 # waited on the job removed it. A detached job's removal lands a moment after its start returned.
@@ -1380,7 +1384,7 @@ no_credential_in_args() {
     # A log no call wrote cannot show a credential in a call, so the check would prove nothing.
     [ -s "$log" ] || fail "no call wrote $log, so no_credential_in_args can see no argument in it"
   done
-  # All four of the copy's secrets, as up made them; the Postgres password stands for the URL
+  # All three of the copy's secrets, as up made them; the Postgres password stands for the URL
   # that holds it, whose rest is no secret. A state.json without one fails here, so no check
   # below compares against nothing.
   while read -r name value; do
@@ -1390,13 +1394,14 @@ no_credential_in_args() {
         fail "a ${log##*/} call carries the copy's $name on its command line: $(grep -m1 -F -- "$value" "$log" | cut -c1-300)"
     done
   done < <(jq -r '.secrets | to_entries[] | "\(.key) \(.value)"' "$run_dir/state.json")
-  [ "$(jq '.secrets | length' "$run_dir/state.json")" = 4 ] || fail "$run_dir/state.json does not hold the copy's four secrets"
+  [ "$(jq -c '.secrets | keys' "$run_dir/state.json")" = '["dispatch_token","pg_password","signing_key"]' ] ||
+    fail "$run_dir/state.json does not hold the copy's three secrets and no other: $(jq -c '.secrets | keys' "$run_dir/state.json")"
 }
 
-# up made the copy's four secrets and wrote them into state.json: no call of up carried one as an
+# up made the copy's three secrets and wrote them into state.json: no call of up carried one as an
 # argument (the logs hold only up's calls here, since reset_fake ran before it).
 no_credential_in_args
-pass "up writes the copy's four secrets into state.json with no kubectl or jq call carrying one as an argument"
+pass "up writes the copy's three secrets into state.json with no kubectl or jq call carrying one as an argument"
 
 run_cluster seed --namespace "$ns"
 ((RC == 0)) || fail "seed exited $RC"
@@ -1410,12 +1415,13 @@ for k in artifact_versions ref_targets ref_target_versions ref_sources artifact_
     fail "seed.meta.json's counts lack $k, which common.sh's SEED_COUNTS_SQL counts: $(jq -c .counts "$run_dir/seed.meta.json" 2>/dev/null)"
 done
 # Each of the seed's loadgen jobs is given the -…-file forms of its credentials, naming files the
-# runner wrote for that job alone, and no kubectl call carries a credential.
+# runner wrote for that job alone, and the runner pod's own projected token for the listener; no
+# kubectl call carries a credential.
 for job in seed seed-refs seed-finish; do
   start=$(grep "^$job /work/loadgen " "$fake/runner-starts") || fail "the seed started no loadgen $job in the runner"
   wants=("-pg-file /work/secrets/$job\.[0-9a-f]+/pg-url ")
   [ "$job" = seed-finish ] ||
-    wants+=("-token-file /work/secrets/$job\.[0-9a-f]+/dispatch-token " "-listener-token-file /work/secrets/$job\.[0-9a-f]+/listener-token ")
+    wants+=("-token-file /work/secrets/$job\.[0-9a-f]+/dispatch-token " "-listener-token-file /var/run/secrets/envoy-listener/token ")
   for want in "${wants[@]}"; do
     [[ "$start " =~ \ $want ]] || fail "loadgen $job is not given '$want': $start"
   done
@@ -1443,7 +1449,7 @@ for want in "run -allow-foreign" "-events 4 " "-sessions 400 " "-requests 60 " "
   [[ $start == *"$want"* ]] || fail "the step's loadgen run lacks '$want': $start"
 done
 [[ $start =~ \ -token-file\ (/work/secrets/step-smoke\.[0-9a-f]+)/dispatch-token\  ]] || fail "the step's loadgen run has no -token-file of a directory of its own: $start"
-for want in "-listener-token-file ${BASH_REMATCH[1]}/listener-token " "-pg-file ${BASH_REMATCH[1]}/pg-url "; do
+for want in "-listener-token-file /var/run/secrets/envoy-listener/token " "-pg-file ${BASH_REMATCH[1]}/pg-url "; do
   [[ $start == *"$want"* ]] || fail "the step's loadgen run lacks '$want': $start"
 done
 job_credentials step-smoke
@@ -1611,7 +1617,7 @@ for want in "env LOADTEST_ROOT=/work/root LOADTEST_GOMAXPROCS=16 /work/loadgen r
   [[ $start == *"$want"* ]] || fail "replay r16's loadgen run lacks '$want': $start"
 done
 [[ $start =~ \ -token-file\ (/work/secrets/replay-r16\.[0-9a-f]+)/dispatch-token\  ]] || fail "replay r16's loadgen run has no -token-file of a directory of its own: $start"
-for want in "-listener-token-file ${BASH_REMATCH[1]}/listener-token " "-pg-file ${BASH_REMATCH[1]}/pg-url "; do
+for want in "-listener-token-file /var/run/secrets/envoy-listener/token " "-pg-file ${BASH_REMATCH[1]}/pg-url "; do
   [[ $start == *"$want"* ]] || fail "replay r16's loadgen run lacks '$want': $start"
 done
 # The replay and the checksums replay-prepare and its reset read (replay_checksum) take the copy's
@@ -2134,7 +2140,7 @@ pass "up stops after five quota races in a row on one manifest"
     "RUNNER_IMAGE=mirror.gcr.io/library/debian@$digest")
   mapfile -t -O "${#values[@]}" values < <(pg_tier 16 60 | jq -r '"PG_TIER=\(.tier)", "PG_CPU=\(.cpu)", "PG_MEMORY=\(.memory)",
     (.settings | to_entries[] | "PG_\(.key | ascii_upcase)=\(.value)")')
-  values+=(PG_VOLUME=100Gi "PG_PASSWORD=$(random_hex 24)" "DISPATCH_TOKEN=$(random_hex 32)" "LISTENER_TOKEN=$(random_hex 32)" "SIGNING_KEY=$(random_hex 32)")
+  values+=(PG_VOLUME=100Gi "PG_PASSWORD=$(random_hex 24)" "DISPATCH_TOKEN=$(random_hex 32)" "SIGNING_KEY=$(random_hex 32)")
   for m in secrets.yaml.tmpl postgres.yaml nats.yaml listener.yaml dispatch.yaml runner.yaml; do
     out=$(render_manifest "$MANIFESTS/$m" "${values[@]}") || fail "$m did not render"
     ! grep -qE '__[A-Z][A-Z0-9_]*__' <<<"$out" || fail "$m keeps a placeholder once rendered"
@@ -2217,7 +2223,7 @@ command -v dash >/dev/null ||
   source "$cluster"
   NS=$ns
   secrets_root=$tmp/secrets-work/secrets
-  creds=$'agent-token\nlistener-token\npostgres://dispatch:pw@postgres/dispatch'
+  creds=$'agent-token\npostgres://dispatch:pw@postgres/dispatch'
   # Two starts of one job name -- this command's, or another command's of the same run -- are
   # given two directories, so neither's end removes the other's credentials.
   endpoints seed

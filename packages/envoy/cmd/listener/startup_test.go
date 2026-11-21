@@ -305,15 +305,14 @@ func receiveAsSession(t *testing.T, client *bus.Client, sessionID string) <-chan
 	return frames
 }
 
-// callListener calls a listener /v1 route as the test's shared-token caller and returns its status
-// and body.
+// callListener calls a listener /v1 route with no credential, as a loopback listener serves it, and
+// returns its status and body.
 func callListener(t *testing.T, port int, method, path, body string) (int, string) {
 	t.Helper()
 	request, err := http.NewRequest(method, "http://127.0.0.1:"+strconv.Itoa(port)+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
-	request.Header.Set("Authorization", "Bearer "+listenerTestToken)
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -399,7 +398,6 @@ func TestTheListenerStartsOverKeysAnEarlierListenerStored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("role request: %v", err)
 	}
-	request.Header.Set("Authorization", "Bearer "+listenerTestToken)
 	if status, answer := do(t, request); status != http.StatusOK || !strings.Contains(answer, `"holder":"ses_live"`) {
 		t.Fatalf("GET /v1/roles/reviewer beside the earlier listener's keys: status %d %q, want 200 naming ses_live\n%s", status, answer, listener.Output.String())
 	}
@@ -453,7 +451,6 @@ func ciSettled(t *testing.T, client *bus.Client) bool {
 // it creates no consumer on the CI bucket's stream, publishes no settlement, and reports healthy.
 func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "no-github-route")
@@ -494,7 +491,6 @@ func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 // marked settled. It is the positive control for the test above.
 func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
 	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "github-route", githubWebhookEnv...)
@@ -570,6 +566,7 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
+	t.Cleanup(client.Close)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)

@@ -372,18 +372,12 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if err != nil {
 		return err
 	}
-	// The listener's Deployment, Service, ServiceAccount and bearer share one name. The bearer is
-	// a Secret of its own: the listener's pod names this one and never the component's dispatch
-	// Secret, which holds DATABASE_URL and DISPATCH_SIGNING_KEY. The account is the listener's
-	// own, so no listener pod can project a token naming the app's account (dispatch_cloud.go
-	// grants it the NATS seed alone).
+	// The listener's Deployment, Service and ServiceAccount share one name. The account is the
+	// listener's own, so no listener pod can project a token naming the app's account
+	// (dispatch_cloud.go grants it the NATS seed alone). The listener holds no shared token and so
+	// no Secret of its own (t-e-19): it verifies the app's projected token
+	// (dispatchListenerIdentityEnv).
 	listenerName := s.hostname + "-listener"
-	listenerSecret, err := corev1.NewSecret(ctx, listenerName, &corev1.SecretArgs{
-		Metadata: metadata(listenerName), StringData: pulumi.StringMap{"ENVOY_API_TOKEN": database.listenerToken.Result},
-	}, child...)
-	if err != nil {
-		return err
-	}
 	if _, err := corev1.NewServiceAccount(ctx, listenerName, &corev1.ServiceAccountArgs{Metadata: metadata(listenerName)}, child...); err != nil {
 		return err
 	}
@@ -435,7 +429,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// raw input, so envoy-dispatch's NATS_URLS is never an unchecked copy beside the listener's
 	// checked environment.
 	natsURL := args.NatsUrl.ToStringOutput().ApplyT(func(url string) (string, error) {
-		if _, err := dispatchListenerEnv(s, listenerName, url); err != nil {
+		if _, err := dispatchListenerEnv(s, url); err != nil {
 			return "", fmt.Errorf("%s: %w", dispatch, err)
 		}
 		return url, nil
@@ -450,7 +444,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		if err != nil {
 			return nil, err
 		}
-		env, err := dispatchListenerEnv(s, listenerName, parts[0])
+		env, err := dispatchListenerEnv(s, parts[0])
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", dispatch, err)
 		}
@@ -643,7 +637,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// This pod and the clustered hub's listener pod run the same binary at the same budget, and
 	// what holds the two graces equal is
 	// TestDispatchAndClusteredHubListenerPodsStopInsideTheirGrace, which reads both.
-	if _, err := deployment(listenerName, s.listenerReplicas, s.disruption.listenerPDBMinAvailable, map[string]*corev1.Secret{listenerName: listenerSecret}, corev1.PodSpecArgs{
+	if _, err := deployment(listenerName, s.listenerReplicas, s.disruption.listenerPDBMinAvailable, nil, corev1.PodSpecArgs{
 		ServiceAccountName: pulumi.String(listenerName), TerminationGracePeriodSeconds: pulumi.Int(40), EnableServiceLinks: pulumi.Bool(false),
 		Containers: corev1.ContainerArray{
 			corev1.ContainerArgs{
@@ -731,14 +725,9 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// (dispatchListenerIdentityEnv). The kubelet mints it for the listener's URL as its audience
 	// into a projected volume of its own, mounted read-only into envoy-dispatch alone, and rewrites
 	// it in place before it expires; ENVOY_ACCOUNT_TOKEN_FILE names that file, which Dispatch reads
-	// at every listener call, and no secret is stored for it. ENVOY_TOKEN stays beside it, the
-	// listener's shared token, which Dispatch presents only on a call with no role mark that the
-	// listener refused 401 on the account token twice: a listener of the release before verifies
-	// no account token, and the app does not wait for the listener's rollout (a listener in the
-	// SOCKS5 mode waits for the front door, which the app must not wait behind; the comment above
-	// frontDoor), so a new app pod can reach an old listener pod while both roll. A send for a
-	// role: route is never made on it.
-	appEnv = append(appEnv, valueEnv("ENVOY_URL", listenerURL), valueEnv("ENVOY_ACCOUNT_TOKEN_FILE", dispatchAccountTokenFile), secretEnv("ENVOY_TOKEN", listenerName, "ENVOY_API_TOKEN"))
+	// at every listener call, and no secret is stored for it. It is Dispatch's one credential at
+	// the listener: no shared token rides beside it, and Dispatch refuses one at start (t-e-19).
+	appEnv = append(appEnv, valueEnv("ENVOY_URL", listenerURL), valueEnv("ENVOY_ACCOUNT_TOKEN_FILE", dispatchAccountTokenFile))
 	appMounts := append(corev1.VolumeMountArray{}, seedMount...)
 	tokenMount, tokenVolume := dispatchAccountTokenVolume(listenerURL)
 	appMounts = append(appMounts, tokenMount)
@@ -878,9 +867,8 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		},
 		Volumes: appVolumes,
 	}
-	// envoy-dispatch reads the dispatch Secret and ENVOY_TOKEN from the listener's, so a change to
-	// either rolls the app.
-	appChecksums := map[string]*corev1.Secret{dispatchSecretName: dispatchSecret, listenerName: listenerSecret}
+	// envoy-dispatch reads the dispatch Secret, so a change to it rolls the app.
+	appChecksums := map[string]*corev1.Secret{dispatchSecretName: dispatchSecret}
 	if _, err := deployment(s.hostname, s.replicas, s.disruption.appPDBMinAvailable, appChecksums, appPod, pulumi.DependsOn(appGrants)); err != nil {
 		return err
 	}

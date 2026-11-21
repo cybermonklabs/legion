@@ -64,21 +64,19 @@ func TestDispatchExistingDatabaseInstanceRegistersNoInstanceOfItsOwn(t *testing.
 // each registered as the default path registers it, a same step from that run to this one
 // (dispatchPlanBetween): under its name and parent, with its inputs, its provider, its options and
 // its dependencies. They are the database password, which DATABASE_URL carries and the login
-// dispatch of a promoted replica of the component's own instance holds, the signing key, the agent
-// token and the listener's token. A switch to existingDatabaseInstance therefore replaces none of
-// them.
+// dispatch of a promoted replica of the component's own instance holds, the signing key and the
+// agent token. A switch to existingDatabaseInstance therefore replaces none of them.
 func TestDispatchExistingDatabaseInstanceKeepsEveryGeneratedPassword(t *testing.T) {
 	defaults, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
 	m, err := runDispatch(t, existingDatabaseInstanceArgs(), true)
 	require.NoError(t, err)
 	same := map[dispatchResourceName]string{
-		{randomPasswordType, "example-dispatch-password"}:       stepSame,
-		{randomPasswordType, "example-dispatch-signing-key"}:    stepSame,
-		{randomPasswordType, "example-dispatch-agent-token"}:    stepSame,
-		{randomPasswordType, "example-dispatch-listener-token"}: stepSame,
+		{randomPasswordType, "example-dispatch-password"}:    stepSame,
+		{randomPasswordType, "example-dispatch-signing-key"}: stepSame,
+		{randomPasswordType, "example-dispatch-agent-token"}: stepSame,
 	}
-	require.Equal(t, len(same), countRegistrations(m, randomPasswordType), "the four passwords, and no other")
+	require.Equal(t, len(same), countRegistrations(m, randomPasswordType), "the three passwords, and no other")
 	requireDispatchPlan(t, dispatchPlanBetween(t, defaults, m), same)
 }
 

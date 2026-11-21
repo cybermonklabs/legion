@@ -117,16 +117,12 @@ type AppContextOptions struct {
 	ServerURL       string
 	InsecureCookie  bool
 	EnvoyURL        string
-	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
-	// sends none.
-	EnvoyToken string
 	// EnvoyAccountTokenFile is the file holding Dispatch's own projected service-account token
-	// every Envoy listener call presents in EnvoyToken's place (cmd/dispatch:
-	// ENVOY_ACCOUNT_TOKEN_FILE); empty presents EnvoyToken.
+	// every Envoy listener call presents as its bearer (cmd/dispatch: ENVOY_ACCOUNT_TOKEN_FILE).
 	EnvoyAccountTokenFile string
 	// EnvoyGoogleAudience is ENVOY_ACCOUNT_GOOGLE_AUDIENCE, the audience of the Google Cloud
-	// machine's identity token every listener call presents in EnvoyToken's place instead
-	// (cmd/dispatch); empty presents none.
+	// machine's identity token every listener call presents as its bearer instead (cmd/dispatch).
+	// With neither, a listener call presents no credential.
 	EnvoyGoogleAudience string
 	Docs                docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
@@ -220,7 +216,6 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		NewIssueSession:        opts.NewIssueSession,
 		ServerURL:              opts.ServerURL,
 		EnvoyURL:               opts.EnvoyURL,
-		EnvoyToken:             opts.EnvoyToken,
 		EnvoyAccountTokenFile:  opts.EnvoyAccountTokenFile,
 		EnvoyGoogleAudience:    opts.EnvoyGoogleAudience,
 		Docs:                   opts.Docs,

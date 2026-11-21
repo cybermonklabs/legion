@@ -327,22 +327,20 @@ func TestListenerEnvRendersThePrivacySettingsLast(t *testing.T) {
 		"ENVOY_ALL_PROJECTS_ACCOUNTS=system:serviceaccount:example-dispatch:example-dispatch"), on)
 }
 
-// The introspection limit renders right after the broker check, and the open setting after every
-// privacy setting, each only on a config that sets it (R9). The limit needs the broker check and
-// its bounds, which the listener refuses at boot; the open setting is refused on a listener of an
-// all-public hub, where an open listener needs no token check to stay open.
-func TestListenerEnvRendersTheIntrospectionLimitAndTheOpenSetting(t *testing.T) {
+// The introspection limit renders right after the broker check, only on a config that sets it.
+// The limit needs the broker check and its bounds, which the listener refuses at boot.
+func TestListenerEnvRendersTheIntrospectionLimit(t *testing.T) {
 	urls := []string{"nats://example-hub.example-namespace.svc.cluster.local:4222"}
 	plain, err := privateListenerConfig().Env(urls)
 	require.NoError(t, err)
 	c := privateListenerConfig()
-	c.IntrospectionsPerSecond, c.IntrospectionBurst, c.V1OpenWithTokenChecks = 50, 200, true
+	c.IntrospectionsPerSecond, c.IntrospectionBurst = 50, 200
 	got, err := c.Env(urls)
 	require.NoError(t, err)
 	at := slices.Index(plain, "ENVOY_PUBLIC_URL=http://example-hub-listener.example-namespace.svc.cluster.local:9020") + 1
 	want := slices.Concat(plain[:at],
 		[]string{"ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND=50", "ENVOY_AGENT_SECRETS_INTROSPECTION_BURST=200"},
-		plain[at:], []string{"ENVOY_V1_OPEN_WITH_TOKEN_CHECKS=true"})
+		plain[at:])
 	require.Equal(t, want, got)
 	require.NoError(t, core.CheckPrivacySource("tailnet.listener", c, true))
 
@@ -365,9 +363,6 @@ func TestListenerEnvRendersTheIntrospectionLimitAndTheOpenSetting(t *testing.T) 
 			requireInputError(t, config.Check(), row.input, row.err)
 		})
 	}
-	public := core.ListenerConfig{MachineID: "m", Port: 9020, V1OpenWithTokenChecks: true}
-	requireInputError(t, core.CheckPrivacySource("tailnet.listener", public, false), "tailnet.listener",
-		"tailnet.listener renders ENVOY_V1_OPEN_WITH_TOKEN_CHECKS on a hub that makes no project private")
 }
 
 // CheckBroker takes the broker check in either identity's form, the VM's Google audience or a

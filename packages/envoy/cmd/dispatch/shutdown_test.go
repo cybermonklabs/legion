@@ -1372,6 +1372,58 @@ func TestDispatchRefusesAListenFDThatIsNotASocketAndBindsNothing(t *testing.T) {
 	}
 }
 
+// Dispatch calls the Envoy listener on its own identity alone, so a deployment that still sets the
+// listener's shared token ENVOY_TOKEN is refused at its start: the process exits 1 before it reads
+// its database or binds a port, naming the variable and the two settings that replace it, and
+// never prints the token. The refusal comes before Dispatch reads its database, so the test needs
+// none. An ENVOY_TOKEN that is set and empty, as a compose file that still passes
+// `${ENVOY_TOKEN:-}` gives it, is no token, and the start goes on past it.
+func TestDispatchRefusesToStartWithTheSharedEnvoyToken(t *testing.T) {
+	const shared = "listener-shared-token-7f3a"
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("hold the port DISPATCH_PORT names: %v", err)
+	}
+	t.Cleanup(func() { _ = occupied.Close() })
+	home := t.TempDir()
+	cmd := exec.Command(cmdtest.Build(t, "envoy-dispatch"))
+	cmd.Dir = home
+	cmd.Env = []string{
+		"HOME=" + home,
+		"XDG_CONFIG_HOME=" + home,
+		"DATABASE_URL=postgres://nobody@127.0.0.1:1/never-read",
+		"DISPATCH_AGENT_TOKEN=shutdown-test-token",
+		"DISPATCH_IDENTITY=header:X-Dispatch-User",
+		"DISPATCH_IDENTITY_HEADER_TRUSTED=1",
+		"DISPATCH_NATS_DISABLED=1",
+		"DISPATCH_LISTEN_HOST=127.0.0.1",
+		"DISPATCH_PORT=" + strconv.Itoa(occupied.Addr().(*net.TCPAddr).Port),
+		"ENVOY_URL=http://127.0.0.1:1",
+		"ENVOY_TOKEN=" + shared,
+	}
+	process := cmdtest.Start(t, "Dispatch", cmd)
+	process.WaitExit(t, "its start")
+	output := process.Output.String()
+	if code := cmd.ProcessState.ExitCode(); code != 1 {
+		t.Errorf("Dispatch with ENVOY_TOKEN set exited %d, want 1:\n%s", code, output)
+	}
+	for _, want := range []string{`msg="dispatch: resolve boot config"`, "ENVOY_TOKEN is no longer read", "ENVOY_ACCOUNT_TOKEN_FILE", "ENVOY_ACCOUNT_GOOGLE_AUDIENCE"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("Dispatch with ENVOY_TOKEN set did not refuse its boot naming %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, shared) {
+		t.Errorf("Dispatch's refusal printed the shared token:\n%s", output)
+	}
+	if strings.Contains(output, `msg="dispatch: listen`) || strings.Contains(output, `msg="dispatch: open database"`) {
+		t.Errorf("Dispatch went on past its boot with ENVOY_TOKEN set:\n%s", output)
+	}
+
+	if _, err := resolveBootConfig(envGetter(signInEnvironment(map[string]string{"ENVOY_TOKEN": ""}))); err != nil {
+		t.Errorf("an empty ENVOY_TOKEN refused the boot: %v, want it read as no token", err)
+	}
+}
+
 // dispatchTestLogin is the person the test calls the server as, through header identity.
 const dispatchTestLogin = "alice"
 

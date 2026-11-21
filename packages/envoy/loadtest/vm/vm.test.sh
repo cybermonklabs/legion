@@ -144,7 +144,14 @@
 # it -- is refused by the server with those sessions attached; and (cc) up tells a psql that did
 # not answer from an instance that answered it holds no database: a psql that fails refuses up
 # by name, with what psql said, and no create database of that database is run, while a psql
-# that answers with no row has up make it once.
+# that answers with no row has up make it once; and (dd) every listener takes the VMs' Google
+# identities: each listener container binds 0.0.0.0 with ENVOY_OIDC_GOOGLE_AUDIENCE, the file's
+# listener_audience, and ENVOY_OIDC_GOOGLE_ACCOUNTS naming the accounts of the machine Dispatch
+# runs on and of the load machine, and no ENVOY_API_TOKEN; up starts a token loop on each of those
+# two machines before the first caller starts, which writes the machine's identity token for that
+# audience from the metadata server; Dispatch reads it through ENVOY_ACCOUNT_TOKEN_FILE in the
+# directory mounted into its container and loadgen through -listener-token-file; and check refuses
+# a machine whose account, read from the Compute API, differs from the file's.
 set -euo pipefail
 # Nothing here is read from this test's own standard input, and the fake ssh reads a pipe it is
 # given as ssh does, so the suite runs with /dev/null under it: whatever the caller's standard
@@ -345,6 +352,18 @@ url=${!#}
 printf 'curl\t%s\n' "$url" >>"$FAKE_DIR/actions.log"
 printf '%s\n' "$*" >>"$FAKE_DIR/curl.argv"
 case $url in
+  # The metadata server's identity endpoint, which a machine's token loop asks for that machine's
+  # Google identity token for the listener's audience. Each call is recorded with the machine it
+  # ran on (the fake ssh's FAKE_SSH_TARGET), the audience and the format it asked for, and the
+  # token answered names the audience and the machine, so a case can tell whose token a reader
+  # was given and for which audience.
+  *'/instance/service-accounts/default/identity?'*)
+    query=${url#*\?}
+    audience=$(sed -n 's/^\(.*&\)\{0,1\}audience=\([^&]*\).*/\2/p' <<<"$query")
+    format=$(sed -n 's/^\(.*&\)\{0,1\}format=\([^&]*\).*/\2/p' <<<"$query")
+    printf '%s\t%s\t%s\n' "${FAKE_SSH_TARGET:-local}" "$audience" "$format" >>"$FAKE_DIR/identity.log"
+    printf 'fake-identity-token:%s:%s\n' "$audience" "${FAKE_SSH_TARGET:-local}"
+    ;;
   *metadata*) printf '{"access_token": "fake-token", "expires_in": 3600}\n' ;;
   *generateAccessToken)
     [ ! -f "$FAKE_DIR/mint-refuses" ] ||
@@ -770,13 +789,23 @@ esac
 exit 0
 EOF
 
-cat >"$bin/sleep" <<'EOF'
+cat >"$bin/sleep" <<EOF
 #!/usr/bin/env bash
+REAL_SLEEP=$REAL_SLEEP
+EOF
+cat >>"$bin/sleep" <<'EOF'
 # The fake sleep: it records the wait and returns at once, so a poll's naps cost the test no
 # wall clock. No order a case reads rests on a wait of vm.sh's: the driver reads nothing of
-# Dispatch, so every wait it makes is for something of its own to end.
+# Dispatch, so every wait it makes is for something of its own to end. The one wait of half an
+# hour or more is a token loop's on a machine, between two renewals of its identity token: that
+# nap is taken for as long as the loop that took it and the fakes' directory stand, so a loop
+# renews nothing within a case rather than spinning through the metadata server, and a loop that
+# reset_fake or this test's cleanup ends leaves no nap behind.
 set -u
 printf 'sleep\t%s\n' "$*" >>"$FAKE_DIR/actions.log"
+if [[ ${1:-} =~ ^[0-9]+$ ]] && (($1 >= 1800)); then
+  while [ -d "$FAKE_DIR" ] && kill -0 "$PPID" 2>/dev/null; do "$REAL_SLEEP" 0.2; done
+fi
 exit 0
 EOF
 
@@ -960,11 +989,11 @@ jq -n --arg remote "$remote" --arg loadgen "$bin/loadgen" --arg tunnel "$bin/ppr
   iamcredentials: "https://iamcredentials.googleapis.com",
   oslogin: "https://oslogin.googleapis.com",
   login_service_account: $account,
-  dispatch_service_account: "lt-dispatch@example-project.iam.gserviceaccount.com",
+  listener_audience: "envoy-listener-loadtest",
   vms: {
-    app: {host: "10.138.0.21", instance: "lt-app"},
-    generator: {host: "10.138.0.22", instance: "lt-gen"},
-    nats: {host: "10.138.0.23", instance: "lt-nats"}
+    app: {host: "10.138.0.21", instance: "lt-app", service_account: "lt-app@example-project.iam.gserviceaccount.com"},
+    generator: {host: "10.138.0.22", instance: "lt-gen", service_account: "lt-gen@example-project.iam.gserviceaccount.com"},
+    nats: {host: "10.138.0.23", instance: "lt-nats", service_account: "lt-nats@example-project.iam.gserviceaccount.com"}
   },
   load_vm: "generator",
   containers: {
@@ -985,11 +1014,11 @@ jq -n --arg remote "$remote" --arg loadgen "$bin/loadgen" --arg tunnel "$bin/ppr
   ports: {dispatch: 8766, pprof: 6060, pprof_tunnel: $tunnel_port, proxy: 5432, listener: 9020,
     hub_listener: 9030, nats: 4222, nats_monitor: 8222, stub_embed: 8443,
     load_listeners: [9021, 9022, 9023, 9024]},
-  secrets: {dispatch_token: "dispatch-secret", listener_token: "listener-secret",
-    embed_key: "embed-secret"},
+  secrets: {dispatch_token: "dispatch-secret", embed_key: "embed-secret"},
   paths: {remote_root: ($remote + "/app"), remote_work: ($remote + "/work"),
     nats_store: ($remote + "/app/nats"), cert: ($remote + "/app/stub-embed.pem"),
-    remote_loadgen: ($remote + "/app/loadgen"), loadgen: $loadgen},
+    remote_loadgen: ($remote + "/app/loadgen"), loadgen: $loadgen,
+    listener_token: ($remote + "/run/envoy-listener/token")},
   production_addresses: ["10.139.0.2:5432", "10.138.0.10:4222"]
 }' >"$config"
 
@@ -999,8 +1028,10 @@ write_fixtures() {
   local name
   for name in lt-app lt-gen lt-nats; do
     # The Compute API answers maxRunDuration as an object, never as the duration string it takes
-    # on the way in, which is why vm.sh reads its seconds.
-    jq -n --arg n "$name" '{name: $n, status: "RUNNING",
+    # on the way in, which is why vm.sh reads its seconds. Each machine runs as the account the
+    # deployment file names for it.
+    jq -n --arg n "$name" --arg a "$name@example-project.iam.gserviceaccount.com" '{name: $n, status: "RUNNING",
+      serviceAccounts: [{email: $a, scopes: ["https://www.googleapis.com/auth/cloud-platform"]}],
       scheduling: {automaticRestart: false, maxRunDuration: {seconds: "259200", nanos: 0}}}' >"$fake/compute-$name.json"
   done
   jq -n --arg u "$oslogin_user" '{posixAccounts: [{username: $u, uid: 1000}]}' >"$fake/loginprofile.json"
@@ -1010,6 +1041,9 @@ write_fixtures() {
 }
 
 reset_fake() {
+  # A token loop an earlier case's up left running on a machine naps until the fakes go; it is
+  # ended here, by the token file its argv names, so no case's loop renews into the next one's.
+  pkill -f -- "$remote/run/envoy-listener/token" 2>/dev/null || true
   rm -rf -- "$fake" "$tmp/root" "$remote"
   mkdir -p "$fake/db" "$fake/sessions" "$fake/nc" "$fake/pass" "$tmp/root" "$remote"
   : >"$fake/actions.log"
@@ -1232,7 +1266,7 @@ grep -q '^| dispatch env DISPATCH_AZURE_EMBED_ENDPOINT | DISPATCH_AZURE_EMBED_EN
   fail "check does not read back Dispatch's embedder endpoint"
 grep -q '^| dispatch env DISPATCH_AGENT_TOKEN | set | set | yes |$' "$tmp/out" ||
   fail "check does not prove the agent token set"
-grep -q 'dispatch-secret\|listener-secret\|embed-secret\|pg-secret' "$tmp/out" &&
+grep -q 'dispatch-secret\|embed-secret\|pg-secret\|fake-identity-token' "$tmp/out" &&
   fail "check printed a credential in its table"
 pass "check prints expected beside found for the containers, the instance, the run-time limit, the endpoints and the production addresses, and prints no credential"
 
@@ -1261,6 +1295,89 @@ run_vm check --config "$config"
 grep -q '^| app VM scheduling.maxRunDuration seconds | 259200 | 86400 | no |$' "$tmp/out" ||
   fail "check does not show the run-time limit it expected beside the one it found"
 pass "check exits non-zero when a VM's maxRunDuration is not 259200 s"
+
+# ---- (dd) every listener takes the VMs' Google identities ---------------------------------------
+
+# t-e-19: no listener of the deployment holds a shared token, and each binds 0.0.0.0, so each one
+# verifies its callers' Google identity tokens or refuses to start: the listener's
+# validateListenerAPIAuth refuses a start off loopback with no credential it verifies. Its callers
+# are Dispatch, on the machine Dispatch runs on, and loadgen, on the load machine: every listener
+# container takes ENVOY_OIDC_GOOGLE_AUDIENCE, the deployment file's listener_audience, and
+# ENVOY_OIDC_GOOGLE_ACCOUNTS naming those two machines' accounts (.vms.<machine>.service_account),
+# and no ENVOY_API_TOKEN. On each of those two machines up starts a token loop before the first
+# caller starts, which writes the machine's own identity token for that audience, from the
+# metadata server's identity endpoint, to paths.listener_token, and again every 30 minutes, since
+# a Google identity token lasts an hour. Dispatch reads it through ENVOY_ACCOUNT_TOKEN_FILE in the
+# directory mounted into its container, loadgen through -listener-token-file, each at every
+# request. check reads each machine's account back from the Compute API and refuses one that
+# differs from the file's. The fakes' machines share this pod's file system, so the token file a
+# reader finds is the last loop's; what tells the two machines apart is identity.log, which
+# records the machine each identity call ran on.
+reset_fake
+run_vm up --config "$config"
+((RC == 0)) || fail "up failed before the Google identity case: see the output above"
+audience=$(jq -r .listener_audience "$config")
+token_path=$(jq -r .paths.listener_token "$config")
+app_account=$(jq -r .vms.app.service_account "$config")
+gen_account=$(jq -r .vms.generator.service_account "$config")
+for role in dispatch-listener hub-listener load-listener-1 load-listener-2 load-listener-3 load-listener-4; do
+  env_file=$(compgen -G "$fake/docker/*/$role.env" || true)
+  [ -n "$env_file" ] && [ -f "$env_file" ] || fail "up started no $role container"
+  grep -qx 'ENVOY_LISTEN_HOST=0.0.0.0' "$env_file" || fail "the $role container does not bind 0.0.0.0: $(cat "$env_file")"
+  { grep -qx "ENVOY_OIDC_GOOGLE_AUDIENCE=$audience" "$env_file" && grep -q '^ENVOY_OIDC_GOOGLE_ACCOUNTS=.' "$env_file"; } ||
+    fail "the $role container binds 0.0.0.0 with no Google identity pair for $audience and no other credential it verifies, so that listener refuses to start off loopback: $(cat "$env_file")"
+  accounts=$(sed -n 's/^ENVOY_OIDC_GOOGLE_ACCOUNTS=//p' "$env_file")
+  for want in "$app_account" "$gen_account"; do
+    [[ ",$accounts," == *",$want,"* ]] ||
+      fail "the $role container's ENVOY_OIDC_GOOGLE_ACCOUNTS is '$accounts', which does not name $want, so that machine's caller is refused"
+  done
+  ! grep -q '^ENVOY_API_TOKEN=' "$env_file" ||
+    fail "the $role container is given ENVOY_API_TOKEN, a shared token the listener refuses to start with"
+done
+grep -qx "ENVOY_DISPATCH_PRINCIPAL=$app_account" "$fake/docker/$app_target/dispatch-listener.env" ||
+  fail "the Dispatch listener does not take a send's role mark from the account of the machine Dispatch runs on: $(cat "$fake/docker/$app_target/dispatch-listener.env")"
+dispatch_env=$fake/docker/$app_target/dispatch.env
+token_in_container=$(sed -n 's/^ENVOY_ACCOUNT_TOKEN_FILE=//p' "$dispatch_env")
+[ -n "$token_in_container" ] || fail "Dispatch is given no ENVOY_ACCOUNT_TOKEN_FILE: $(cat "$dispatch_env")"
+! grep -qE '^(ENVOY_TOKEN|ENVOY_ACCOUNT_GOOGLE_AUDIENCE)=' "$dispatch_env" ||
+  fail "Dispatch is given a listener credential other than the token loop's file: $(grep -E '^(ENVOY_TOKEN|ENVOY_ACCOUNT_GOOGLE_AUDIENCE)=' "$dispatch_env")"
+line=$(docker_run_line dispatch)
+[[ $line == *"--volume ${token_path%/*}:${token_in_container%/*}:ro "* && ${token_path##*/} == "${token_in_container##*/}" ]] ||
+  fail "the Dispatch container does not mount the token loop's directory ${token_path%/*} read-only where its ENVOY_ACCOUNT_TOKEN_FILE ($token_in_container) reads it: $line"
+for target in "$app_target" "$gen_target"; do
+  grep -qxF "$target	$audience	full" "$fake/identity.log" 2>/dev/null ||
+    fail "up fetched no identity token for $audience (format full) from the metadata server on $target: $(cat "$fake/identity.log" 2>/dev/null)"
+done
+! grep -qF "$nats_target" "$fake/identity.log" ||
+  fail "up started a token loop on the NATS machine, where no caller of a listener runs"
+[[ $(cat "$token_path" 2>/dev/null) == "fake-identity-token:$audience:"* ]] ||
+  fail "$token_path holds '$(cat "$token_path" 2>/dev/null)', not a machine's identity token for $audience"
+[ "$(stat -c %a "$token_path")" = 644 ] && [ "$(stat -c %a "${token_path%/*}")" = 755 ] ||
+  fail "the token file is mode $(stat -c %a "$token_path") in a directory of mode $(stat -c %a "${token_path%/*}"), not 644 in 755: the Dispatch container's user and loadgen, the ssh user, each read it"
+first_fetch=$(line_at 'identity?audience=') first_start=$(line_at 'run --name ')
+last_fetch=$(grep -n 'identity?audience=' "$fake/actions.log" | tail -n1 | cut -d: -f1)
+[ -n "$first_fetch" ] && [ -n "$first_start" ] && ((last_fetch < first_start)) ||
+  fail "up started a container (action line ${first_start:-none}) before both token loops wrote their first token (lines ${first_fetch:-none} to ${last_fetch:-none})"
+! grep -qF 'fake-identity-token' "$fake/ssh.log" "$fake/docker.log" ||
+  fail "a machine's identity token reached a command line"
+seeded_run
+run_vm step --config "$config" identity 1 --duration 10m
+((RC == 0)) || fail "the step of the Google identity case failed: see the output above"
+IFS=$'\t' read -r path mode content < <(awk -F'\t' '$1 == "run" && $2 == "-listener-token-file" { print $3 "\t" $4 "\t" $5; exit }' "$fake/credentials.log") || true
+[ "${path:-}" = "$token_path" ] ||
+  fail "the step's loadgen run read its listener token from ${path:-no file}, not from the token loop's $token_path"
+[[ ${content:-} == "fake-identity-token:$audience:"* ]] ||
+  fail "the step's loadgen run presented '${content:-nothing}', not a machine's identity token for $audience"
+run_vm check --config "$config"
+((RC == 0)) || fail "check failed on a deployment whose machines run as the file's accounts: $(grep '| no |' "$tmp/out")"
+grep -qxF "| app VM service account | $app_account | $app_account | yes |" "$tmp/out" ||
+  fail "check does not read the app machine's account back from the Compute API"
+jq '.serviceAccounts[0].email = "lt-other@example-project.iam.gserviceaccount.com"' "$fake/compute-lt-gen.json" >"$tmp/j" && mv "$tmp/j" "$fake/compute-lt-gen.json"
+run_vm check --config "$config"
+((RC != 0)) || fail "check exited 0 with the load machine running as an account the deployment file does not name"
+grep -qxF "| generator VM service account | $gen_account | lt-other@example-project.iam.gserviceaccount.com | no |" "$tmp/out" ||
+  fail "check does not show the load machine's account it expected beside the one it found"
+pass "every listener takes the VMs' Google identities: each binds 0.0.0.0 with the listener audience and both callers' accounts and no shared token, both machines' token loops write their identity token before the first caller starts, Dispatch and loadgen read it, and check refuses a machine running as another account"
 
 # ---- (f) reset ------------------------------------------------------------------------------------
 
@@ -2449,17 +2566,19 @@ pass "a step started with a fresh key imports nothing"
 # script's own filters, and nothing of a real deployment is in it.
 readonly example=$here/deployment.example.json
 
-# The example with the five remote paths and the loadgen binary pointed at this pod, because
+# The example with the six remote paths and the loadgen binary pointed at this pod, because
 # those alone name a file system the fakes stand in for. Everything else is the example's own --
-# the project, the zone, every machine, the instance and the settings it expects, every image,
-# secret, load value and production address -- and up and check read it as a reader's own file.
+# the project, the zone, every machine and its account, the instance and the settings it expects,
+# every image, secret, load value and production address -- and up and check read it as a
+# reader's own file.
 readonly example_local=$tmp/example-local.json
-jq --arg root "$remote/example" --arg loadgen "$bin/loadgen" '
+jq --arg root "$remote/example" --arg loadgen "$bin/loadgen" --arg token "$remote/run/envoy-listener/token" '
   .paths.remote_root = $root
   | .paths.nats_store = ($root + "/nats")
   | .paths.cert = ($root + "/stub-embed.pem")
   | .paths.remote_loadgen = ($root + "/loadgen")
   | .paths.remote_work = ($root + "/work")
+  | .paths.listener_token = $token
   | .paths.loadgen = $loadgen' "$example" >"$example_local"
 
 reset_fake
@@ -2588,9 +2707,10 @@ while read -r instance; do
     fail "deployment.example.json names the instance $instance, which is not of the placeholder lt- register"
 done < <(jq -r '(.vms[].instance, .cloudsql.instance)' "$example")
 
-account=$(jq -r .login_service_account "$example")
-[[ $account =~ ^lt-[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]] ||
-  fail "deployment.example.json names the login service account $account, which is not of the placeholder lt- register"
+while read -r account; do
+  [[ $account =~ ^lt-[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]] ||
+    fail "deployment.example.json names the service account $account, which is not of the placeholder lt- register"
+done < <(jq -r '(.login_service_account, .vms[].service_account)' "$example")
 
 while read -r image; do
   digest=${image##*@sha256:}
@@ -2854,9 +2974,12 @@ for log in "${argv_logs[@]}"; do
 done
 # The deployment's credentials, each by name, read out of the deployment file itself.
 credentials() {
-  jq -r '{"agent token": .secrets.dispatch_token, "listener token": .secrets.listener_token,
-    "embedder key": .secrets.embed_key, "database password": .cloudsql.password} |
+  jq -r '{"agent token": .secrets.dispatch_token, "embedder key": .secrets.embed_key,
+    "database password": .cloudsql.password} |
     to_entries[] | "\(.key)\t\(.value)"' "$config"
+  # A machine's identity token for the listeners, as the fake metadata server mints it: it lives
+  # in its token file alone.
+  printf 'identity token\tfake-identity-token:\n'
 }
 while IFS=$'\t' read -r name value; do
   for log in "${argv_logs[@]}"; do
@@ -2882,9 +3005,10 @@ while IFS=$'\t' read -r flag file value; do
     fail "$run_secrets/$file is mode $(stat -c %a "$run_secrets/$file") on the load machine, not 600"
 done <<EOF
 -token-file	dispatch-token	dispatch-secret
--listener-token-file	listener-token	listener-secret
 -pg-file	pg-url	postgres://dispatch:pg-secret@10.139.0.3:5432/dispatch?sslmode=require
 EOF
+[[ $line == *"-listener-token-file $(jq -r .paths.listener_token "$config") "* ]] ||
+  fail "step's loadgen run is not given the load machine's own identity token file as -listener-token-file: $line"
 for flag in -token -listener-token -pg; do
   [[ " $line " != *" $flag "* ]] ||
     fail "step's loadgen run still gives $flag as a value: $line"

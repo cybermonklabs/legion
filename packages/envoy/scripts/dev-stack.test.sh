@@ -352,6 +352,7 @@ NATSD
 printf '{"level":"INFO","msg":"listener API auth: none","nats":"%s"}\n' "${NATS_URLS:-}" >&2
 echo "fake listener: machine=${ENVOY_MACHINE_ID:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
 echo "fake listener: pid=$$ public=${ENVOY_PUBLIC_URL:-} listen-fd=${ENVOY_LISTEN_FD:-}" >&2
+echo "fake listener: api-token=${ENVOY_API_TOKEN-unset} allow-unauthenticated=${ENVOY_API_ALLOW_UNAUTHENTICATED-unset} oidc=${ENVOY_OIDC_ISSUER:+set}/${ENVOY_OIDC_AUDIENCE:-} principal=${ENVOY_DISPATCH_PRINCIPAL:-}" >&2
 # It serves the socket it was handed, whose port held-port.py put in ENVOY_PUBLIC_URL; its own PID
 # stands for a port only where it was handed none.
 port="${ENVOY_PUBLIC_URL##*:}"
@@ -375,6 +376,7 @@ LISTENER
       cat >"$target" <<'DISPATCH'
 #!/usr/bin/env bash
 echo "fake dispatch: database=${DATABASE_URL:-} server-url=${DISPATCH_SERVER_URL:-} listen-fd=${DISPATCH_LISTEN_FD:-} envoy=${ENVOY_URL:-} broker=${DISPATCH_AGENT_SECRETS_URL:-} nats=${NATS_URLS:-} home=${HOME:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
+echo "fake dispatch: envoy-token=${ENVOY_TOKEN-unset} account-token=${ENVOY_ACCOUNT_TOKEN_FILE:-}" >&2
 echo "time=2026-01-01T00:00:00.000Z level=INFO msg=\"dispatch: listening\" addr=127.0.0.1:$$" >&2
 DISPATCH
       ;;
@@ -591,6 +593,24 @@ assert_instance_ready() {
   exported_value="$(exported "$log_file" AGENT_SECRETS_STATE_FILE)"
   [[ "$exported_value" == "${work_dir}/sessions.json" ]] ||
     fail "$label exported AGENT_SECRETS_STATE_FILE=$exported_value, not a records file of its own under its work directory"
+
+  # (r) No shared bearer: the listener is started with no ENVOY_API_TOKEN and no
+  # ENVOY_API_ALLOW_UNAUTHENTICATED, beside the projected-token verifier that takes Dispatch's role
+  # marks; Dispatch presents its own projected token and no ENVOY_TOKEN; the banner exports no
+  # ENVOY_TOKEN. A second shell that reads the listener outside any session presents the projected
+  # token the issuer writes for the listener's audience of the caller account, which the banner
+  # names (DEV_STACK_ENVOY_CALLER_TOKEN_FILE).
+  grep -qxF "fake listener: api-token=unset allow-unauthenticated=unset oidc=set/legion-envoy-listener principal=system:serviceaccount:example-ns:example-dispatch" \
+    "${work_dir}/logs/listener.log" ||
+    fail "$label started its listener with a shared token or without Dispatch's verifier: $(grep 'fake listener: api-token' "${work_dir}/logs/listener.log")"
+  grep -qxF "fake dispatch: envoy-token=unset account-token=${work_dir}/dispatch-listener-token" "${work_dir}/logs/dispatch.log" ||
+    fail "$label started Dispatch with the listener's shared token or without its own: $(grep 'fake dispatch: envoy-token' "${work_dir}/logs/dispatch.log")"
+  ! grep -q '^  export ENVOY_TOKEN=' "$log_file" || fail "$label exported ENVOY_TOKEN, a shared bearer the listener no longer takes"
+  exported_value="$(exported "$log_file" DEV_STACK_ENVOY_CALLER_TOKEN_FILE)"
+  [[ "$exported_value" == "${work_dir}/caller-listener-token" ]] ||
+    fail "$label exported DEV_STACK_ENVOY_CALLER_TOKEN_FILE=$exported_value, not the caller's token file under its work directory"
+  [[ "$(cat "$exported_value" 2>/dev/null)" == "fake-token-for-system:serviceaccount:example-ns:example-caller" ]] ||
+    fail "$label's issuer wrote no token of the caller account at $exported_value"
 
   # (g) The second box, which a session moving from one box to another is driven on: a path of
   # its own for each of the first box's, all under this run's work directory, so two boxes of one

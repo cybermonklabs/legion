@@ -95,11 +95,13 @@
 #
 # ---- what the run starts, and what stops it ------------------------------------------------------
 # A NATS server (internal/testnats/cmd/natsd), two Envoy listeners on ports held from the kernel's
-# choice until each serves on it (lib/held-port.py through lib/rig.sh), a Dispatch server, up to
-# two agent processes and two short-lived listeners of the run's own. Every one of them is
-# stopped on any exit, by the pid it was started as; the run's database is dropped and its work
-# directory removed. The run is re-runnable: it takes a work directory of its own each time and
-# inherits no DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, ANTHROPIC_*, CLAUDE_*, PGHOSTADDR,
+# choice until each serves on it (lib/held-port.py through lib/rig.sh), a Dispatch server with a
+# listener of its own (lib/dispatch-identity.sh), up to two agent processes and two short-lived
+# listeners of the run's own. Every listener but Dispatch's is on loopback with no credential, so
+# the agents and the checks call it with none; Dispatch's takes Dispatch's identity alone. Every
+# one of them is stopped on any exit, by the pid it was started as; the run's database is dropped
+# and its work directory removed. The run is re-runnable: it takes a work directory of its own each
+# time and inherits no DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, ANTHROPIC_*, CLAUDE_*, PGHOSTADDR,
 # PGSERVICE or PGSERVICEFILE variable of the caller's.
 set -Eeuo pipefail
 
@@ -375,7 +377,7 @@ cleanup() {
   stop_pid "$listener_a_keeper_pid"
   stop_pid "$listener_b_keeper_pid"
   stop_pid "$dispatch_keeper_pid"
-  stop_pid "$dispatch_identity_issuer_pid"
+  dispatch_identity_stop
   stop_pid "$natsd_pid"
   # What outlived its stop, a member of an agent's group that outlived the TERM among them: every
   # process the run marked (both agents carry LEGION_E2E_RUN).
@@ -462,7 +464,7 @@ api() { # api PORT METHOD PATH [BODY]
   local port=$1 method=$2 path=$3 body=${4:-} slug
   slug=$(printf '%s' "$path" | tr -c '[:alnum:]' '_' | cut -c1-48)
   answer=$evidence/answers/$check.$port$slug.$RANDOM.json
-  local -a args=(-sS --max-time 20 -o "$answer" -w '%{http_code}' -X "$method" -H "@$work/envoy-auth-header")
+  local -a args=(-sS --max-time 20 -o "$answer" -w '%{http_code}' -X "$method")
   [ -z "$body" ] || args+=(-H 'content-type: application/json' --data "$body")
   api_status=$(curl "${args[@]}" "http://127.0.0.1:$port$path" 2>>"$evidence/logs/curl.log") || api_status=000
   [ "$api_status" = 200 ]
@@ -643,12 +645,7 @@ if [ -n "$needs_claude" ]; then
 fi
 
 mkdir -p "$work/bin" "$work/registered" "$work/home/.omp" "$work/agent" "$work/tmp" "$work/omp-cwd"
-(
-  umask 077
-  od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/envoy-token"
-  od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/dispatch-token"
-  printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header"
-)
+(umask 077 && od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/dispatch-token")
 
 if [ -n "$needs_model" ]; then
   (umask 077 && tr -d '[:space:]' <"$model_key_file" >"$work/model-key")
@@ -671,7 +668,6 @@ if [ -n "$needs_dispatch" ]; then
   go -C "$root/packages/envoy" build -o "$work/bin/envoy-dispatch" ./cmd/dispatch ||
     fail "./cmd/dispatch did not build"
   note "built envoy-dispatch from this checkout"
-  dispatch_identity_start
 fi
 if [ -n "$needs_omp" ] || [ -n "$needs_claude" ]; then
   (cd "$root" && bun install --frozen-lockfile) >"$evidence/logs/bun-install.log" 2>&1 ||
@@ -738,15 +734,16 @@ note "NATS on $nats_url, its JetStream store in $work/nats-store"
 # listener of the same name is refused the bind and shuts itself down.
 start_listener() {
   start_kept "$1" "$2" ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
-    ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
-    ENVOY_MACHINE_ID="envoy-session-states-$$-$1" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
-    ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
-    ENVOY_SESSION_REAP_INTERVAL="$reap_interval" \
-    ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval" "${dispatch_identity_listener_env[@]}" \
-    "$work/bin/envoy-listener"
+    ENVOY_LISTEN_FD=3 ENVOY_MACHINE_ID="envoy-session-states-$$-$1" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
+    "${listener_windows[@]}" "$work/bin/envoy-listener"
 }
+# The windows every running listener judges a record by, Dispatch's own among them.
+listener_windows=(
+  ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon"
+  ENVOY_SESSION_REAP_INTERVAL="$reap_interval" ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval"
+)
 
-serving() { curl -fsS --max-time 3 -H "@$work/envoy-auth-header" "http://127.0.0.1:$1/v1/sessions"; }
+serving() { curl -fsS --max-time 3 "http://127.0.0.1:$1/v1/sessions"; }
 
 keep_port listener_a_keeper port_a
 keep_port listener_b_keeper port_b
@@ -763,7 +760,7 @@ note "listener A on 127.0.0.1:$port_a, listener B on 127.0.0.1:$port_b"
 set_max_age() {
   rm -f "$work/maxage.port"
   start_held maxage maxage_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
-    ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
+    ENVOY_LISTEN_FD=3 \
     ENVOY_MACHINE_ID="envoy-session-states-maxage-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
     NATS_URLS="$nats_url" ENVOY_SESSION_MAX_AGE="$1" "$work/bin/envoy-listener"
   await_start maxage "$maxage_pid" 60 "the maximum-age listener to serve" serving "$maxage_port"
@@ -794,15 +791,16 @@ if [ -n "$needs_dispatch" ]; then
   # its outbox reads the role and session buckets itself to resolve a role route's holder
   # (roleHolderWindows, roles.NewBuckets), and at its own five-minute default it would call a
   # holder live that both listeners already read unresponsive and forward a role-routed event at a
-  # session that answers nothing.
+  # session that answers nothing. Its own listener, which takes Dispatch's identity alone and
+  # leaves ENVOY_SESSION_MAX_AGE unset as the two running listeners do, judges by them too.
+  dispatch_identity_start "$work/bin/envoy-listener" "$nats_url" "envoy-session-states-$$-dispatch" "${listener_windows[@]}"
   start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
     XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent DISPATCH_LISTEN_FD=3 \
     DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
     DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port" \
     DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
-    DISPATCH_WEB_DIST="$work/web-dist" ENVOY_URL="http://127.0.0.1:$port_a" \
-    ENVOY_TOKEN="$(cat "$work/envoy-token")" ENVOY_SESSION_LIVE_WINDOW="$live_window" \
+    DISPATCH_WEB_DIST="$work/web-dist" ENVOY_SESSION_LIVE_WINDOW="$live_window" \
     ENVOY_SESSION_GONE_HORIZON="$gone_horizon" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
     "$work/bin/envoy-dispatch"
   dispatch_url=http://127.0.0.1:$dispatch_port
@@ -939,7 +937,7 @@ omp_launch() {
   own_session "$pidfile" \
     env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" PI_CODING_AGENT_DIR="$work/agent" LEGION_E2E_RUN="$work" \
     DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
-    ENVOY_URL="http://127.0.0.1:$port_a" ENVOY_TOKEN_FILE="$work/envoy-token" \
+    ENVOY_URL="http://127.0.0.1:$port_a" \
     ENVOY_NATS_URL="$nats_url" ENVOY_HEARTBEAT_MS="$heartbeat_ms" \
     ENVOY_MACHINE_ID="envoy-session-states-$$" \
     "$omp_bin" --extension "$work/pi-envoy" --mode rpc \
@@ -1046,7 +1044,7 @@ claude_start() { # claude_start SESSION [--resume]
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 ANTHROPIC_BASE_URL="$model_base_url" \
     ANTHROPIC_MODEL="$claude_model" ANTHROPIC_API_KEY="$(cat "$work/model-key")" \
     DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
-    ENVOY_URL="http://127.0.0.1:$port_a" ENVOY_TOKEN_FILE="$work/envoy-token" \
+    ENVOY_URL="http://127.0.0.1:$port_a" \
     ENVOY_NATS_URL="$nats_url" ENVOY_HEARTBEAT_MS="$heartbeat_ms" \
     ENVOY_MACHINE_ID="envoy-session-states-$$" \
     "$claude_bin" -p --input-format stream-json --output-format stream-json --verbose \
@@ -1624,7 +1622,7 @@ check_gone_only_past_the_horizon() {
   # which then releases its claim.
   rm -f "$work/shortlistener.port"
   start_held shortlistener short_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
-    ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
+    ENVOY_LISTEN_FD=3 \
     ENVOY_MACHINE_ID="envoy-session-states-short-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
     NATS_URLS="$nats_url" ENVOY_SESSION_LIVE_WINDOW=30s ENVOY_SESSION_GONE_HORIZON=90s \
     ENVOY_SESSION_REAP_INTERVAL=10s ENVOY_ROLE_CLAIM_REAP_INTERVAL=10s "$work/bin/envoy-listener"

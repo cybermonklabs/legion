@@ -140,6 +140,8 @@ fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/workflow.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
 . "$root/scripts/e2e/lib/leftovers.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
 
 tm() { tmux -L "$tmux_server" "$@"; }
 
@@ -183,6 +185,7 @@ cleanup() {
   stop_pid "$daemon_pid"
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
+  dispatch_identity_stop
   stop_pid "$daemon_keeper_pid"
   stop_pid "$dispatch_keeper_pid"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
@@ -226,21 +229,21 @@ done_with() {
 # it (lib/rig.sh's start_held). The daemon's and Dispatch's ports are held for the whole run by a
 # keeper (keep_port, start_kept), so legion.yaml can name the daemon's port before it starts, and
 # every poll of a kept port carries a timeout: between two servers it queues a request unanswered.
+# The sessions' listener is on loopback with no credential, so the daemon, every pane, the
+# controller and this script call it with none. Dispatch calls a listener of its own, which takes
+# Dispatch's identity alone (dispatch_identity_start, lib/dispatch-identity.sh).
 start_listener() {
-  local token
-  token=$(cat "$work/envoy-token")
-  ENVOY_API_TOKEN="$token" ENVOY_LISTEN_HOST=127.0.0.1 \
+  ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="legion-e2e-pd-$$" NATS_URLS="nats://127.0.0.1:$port_nats" \
     start_held listener port_listener ENVOY_LISTEN_FD --env 'PORT={port}' -- \
-    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-listener"
+    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT -u ENVOY_API_TOKEN "${app_key_unsets[@]}" "$work/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
-    curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$port_listener/v1/sessions"
+    curl -fsS "http://127.0.0.1:$port_listener/v1/sessions"
 }
 
 start_dispatch() {
-  local dispatch_token envoy_token pg_password
+  local dispatch_token pg_password
   dispatch_token=$(cat "$work/dispatch-token")
-  envoy_token=$(cat "$work/envoy-token")
   pg_password=$(cat "$work/postgres-password")
   mkdir -p "$work/dispatch-home"
   chmod 0700 "$work/dispatch-home"
@@ -249,14 +252,14 @@ start_dispatch() {
   # operator's: make_omp_home exports the operator's XDG_CONFIG_HOME. They are the server's alone,
   # set by its env, not the held-port helper's that runs it.
   DATABASE_URL="postgres://legion:$pg_password@127.0.0.1:$port_pg/dispatch?sslmode=disable" \
-    DISPATCH_AGENT_TOKEN="$dispatch_token" ENVOY_TOKEN="$envoy_token" \
+    DISPATCH_AGENT_TOKEN="$dispatch_token" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
     DISPATCH_LISTEN_HOST=127.0.0.1 NATS_URLS="nats://127.0.0.1:$port_nats" \
-    ENVOY_URL="http://127.0.0.1:$port_listener" \
     start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD \
     --env 'DISPATCH_PORT={port}' --env 'DISPATCH_SERVER_URL=http://127.0.0.1:{port}' -- \
-    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
-    HOME="$work/dispatch-home" XDG_CONFIG_HOME="$work/dispatch-home/.config" "$work/envoy-dispatch"
+    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT -u ENVOY_TOKEN "${app_key_unsets[@]}" \
+    HOME="$work/dispatch-home" XDG_CONFIG_HOME="$work/dispatch-home/.config" "${dispatch_identity_dispatch_env[@]}" \
+    "$work/envoy-dispatch"
   await_start dispatch "$dispatch_pid" 60 "the scratch Dispatch server" \
     curl -fsS --max-time 5 "http://127.0.0.1:$port_dispatch/api/v1"
   dispatch_base="http://127.0.0.1:$port_dispatch"
@@ -271,7 +274,6 @@ state_dir: $state
 operator_token_file: $work/operator-token
 omp_invocation: mise x $pin -- omp
 envoy_url: http://127.0.0.1:$port_listener
-envoy_token_file: $work/envoy-token
 nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
@@ -363,7 +365,7 @@ start_controller() {
 controller_token=legion-$ptoken-controller
 # role_answer prints the listener's status for the lookup of the controller role, and leaves its body
 # in $work/controller-role.json (stage4b-sandbox-tree.sh).
-role_answer() { curl -sS --max-time 20 -o "$work/controller-role.json" -w '%{http_code}' -H "@$work/envoy-auth-header" "http://127.0.0.1:$port_listener/v1/roles/$controller_token" 2>/dev/null; }
+role_answer() { curl -sS --max-time 20 -o "$work/controller-role.json" -w '%{http_code}' "http://127.0.0.1:$port_listener/v1/roles/$controller_token" 2>/dev/null; }
 role_unheld() { [ "$(role_answer)" = 404 ]; }
 # controller_runs WINDOW: the `legion controller start` WINDOW's command started still runs, by the
 # pid it recorded (recorded_pid, lib/process-tree.sh), never by a search of the machine's processes for its
@@ -706,9 +708,7 @@ esac
 note "the agents' model route: $model_route, keyed by $key_command$([ "$model_route" = key-file ] && printf ', calling %s' "${model_base_url:-$anthropic_base_url}")"
 export XDG_STATE_HOME="$work/xdg"
 export TMUX_TMPDIR="$work/tmux"
-(umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
-  printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header" &&
-  head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/dispatch-token" &&
+(umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/dispatch-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/dispatch-token")" >"$work/dispatch-auth-header" &&
   printf 'X-Dispatch-User: %s\n' "$proof_human_user" >"$work/dispatch-human-header" &&
   head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/operator-token" &&
@@ -734,6 +734,7 @@ docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::422
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
+dispatch_identity_start "$work/envoy-listener" "nats://127.0.0.1:$port_nats" "legion-e2e-pd-dispatch-$$"
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Parked decision proof $project" '{key:$key,name:$name}')" >/dev/null
@@ -787,7 +788,6 @@ project: $project
 daemon_url: http://127.0.0.1:$port_daemon
 operator_token_file: $work/operator-token
 envoy_url: http://127.0.0.1:$port_listener
-envoy_token_file: $work/envoy-token
 nats_urls: [nats://127.0.0.1:$port_nats]
 dispatch_url: $dispatch_base
 dispatch_token_file: $work/dispatch-token

@@ -29,12 +29,13 @@ def controller_ticks($tick):
 
 # ticks_name_deployment_open: input the array of the {open} ticks a controller received. True when
 # there is at least one tick and each tick's list, as a set, is one of the two lists the proof's
-# deployment can leave open: secrets (the proof's legion.yaml configures no
-# runtime.kubernetes.agent_secrets), and pool-capacity beside it when that daemon's image probe found
-# the pool cold. Each tick is judged alone: every `legion start` re-probes the image
+# deployment can leave open: none, and pool-capacity alone when that daemon's image probe found the
+# pool cold. secrets is present: the proof's legion.yaml configures the pods' broker route
+# (runtime.kubernetes.agent_secrets), and a tick naming it says the daemon's broker login was not
+# issued, so it fails. Each tick is judged alone: every `legion start` re-probes the image
 # (packages/daemon/internal/capabilities/deployment.go), so a daemon restarted after boot can find the
 # pool warm where boot's scaled it, and a session whose ticks carry both arms passes. No live row is
 # open in the window the controller checkpoint reads (it runs before full-agent-negative, the first
 # checkpoint that opens one), so any other name fails, with the tick quoted by the caller.
 def ticks_name_deployment_open:
-  length > 0 and all(.[]; (.open | sort) as $o | $o == ["secrets"] or $o == ["pool-capacity", "secrets"]);
+  length > 0 and all(.[]; (.open | sort) as $o | $o == [] or $o == ["pool-capacity"]);

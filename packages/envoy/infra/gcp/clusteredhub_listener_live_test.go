@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -17,7 +18,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -28,12 +29,12 @@ import (
 // tests prove that rendering (clusteredhub_listener_test.go's
 // TestClusteredNatsHubListenerEnvironment and the pod's golden
 // testdata/clustered-hub-listener-pod.golden); these prove the binary behaves as the rendering
-// assumes it does: a tailnet.listener with no clientNamespaces starts bound off loopback with no
-// bearer only because ENVOY_API_ALLOW_UNAUTHENTICATED is set, it serves /v1 off loopback with no
-// credential for the one Host ENVOY_ALLOWED_HOSTS names and answers 421 to every other; a listener
-// that pods of the cluster reach refuses every call that presents no token of a listed subject;
-// and a second pod of the same machine id is ready while the first holds the listener's durable
-// and binds it once the first stops, which is the whole of a rolling update of that pod.
+// assumes it does: a tailnet.listener with no clientNamespaces starts bound off loopback because
+// its broker settings are a credential it verifies, and refuses every call that presents none
+// (t-e-19); a listener that pods of the cluster reach refuses every call that presents no token of a
+// listed subject; and a second pod of the same machine id is ready while the first holds the
+// listener's durable and binds it once the first stops, which is the whole of a rolling update of
+// that pod.
 //
 // They need no container runtime: the one server they run is the nats-server this binary links
 // in, started in the test process by testnats.Start and shut down with the test. Its version is
@@ -51,10 +52,6 @@ const (
 	// clusteredHubListenerOtherHost is a Host this listener was never told, the one a page that
 	// rebound its own name to the pod's address would carry.
 	clusteredHubListenerOtherHost = "envoy.example.invalid"
-
-	// clusteredHubListenerLiveMachineID is the machine id every listener here runs as, and so the
-	// one durable consumer they contend for (bus.ListenerDurable).
-	clusteredHubListenerLiveMachineID = "clustered-hub-live"
 
 	// clusteredHubListenerHealthWindow is how long a listener gets to reach "healthy" on a bus
 	// whose durable nobody holds: it warms its caches first, up to 30 s apiece
@@ -83,40 +80,63 @@ func buildLiveListener(t *testing.T) string {
 	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-listener", Dir: filepath.Join("..", "..", "cmd", "listener")})
 }
 
-// liveListenerEnv is the whole environment of a tailnet listener pod of gcp:ClusteredNatsHub (a
-// tailnet.listener with no clientNamespaces) on this machine: core.ListenerConfig.Env for the
-// config the component resolves — PORT,
-// ENVOY_LISTEN_HOST=0.0.0.0, ENVOY_ALLOWED_HOSTS, ENVOY_MACHINE_ID and NATS_URLS — with
-// ENVOY_API_ALLOW_UNAUTHENTICATED=1 after it, as clusteredHubListenerEnv adds it
-// (clusteredhub_listener.go), unless allowUnauthenticated is false, which is the negative control.
-// It is the process's whole environment, so there is no ENVOY_API_TOKEN and no OIDC pair in it,
-// which is what the pod renders too. The pod's NATS_NKEY_SEED_FILE is left out: this server
-// carries no authorization, so there is no seed to mount.
-func liveListenerEnv(t *testing.T, port int, natsURL string, allowUnauthenticated bool) []string {
+// liveListenerEnv is the whole environment the component renders for the listener container of
+// args, as a process on this machine takes it: read from the rendered Deployment, with PORT,
+// NATS_URLS (the test's server) and ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE replaced, the last by a
+// file of the test's holding a placeholder token, for the projected token the kubelet would mount
+// (the listener reads it only when it introspects a token, so no broker is called here);
+// ENVOY_OIDC_ISSUER replaced by issuer when issuer is set; NATS_NKEY_SEED_FILE left out, since this
+// server carries no authorization; and each of drop left out, which is a control's doing. It is the
+// process's whole environment, so there is no ENVOY_API_TOKEN, no ENVOY_API_ALLOW_UNAUTHENTICATED
+// and no ENVOY_ALLOWED_HOSTS in it, which is what the pod renders too.
+func liveListenerEnv(t *testing.T, args *gcp.ClusteredNatsHubArgs, port int, natsURL, issuer string, drop ...string) []string {
 	t.Helper()
-	env, err := core.ListenerConfig{
-		MachineID:    clusteredHubListenerLiveMachineID,
-		Port:         port,
-		ListenHost:   "0.0.0.0",
-		AllowedHosts: []string{clusteredHubListenerLiveHost},
-	}.Env([]string{natsURL})
-	require.NoError(t, err)
-	if allowUnauthenticated {
-		env = append(env, "ENVOY_API_ALLOW_UNAUTHENTICATED=1")
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("placeholder-projected-token\n"), 0o600))
+	rendered := containerEnv(t, podContainer(t, deploymentPodTemplate(t, runClusteredHub(t, args), clusteredListenerName), "listener"))
+	require.NotEmpty(t, rendered["ENVOY_AGENT_SECRETS_URL"], "the rendered listener carries no broker settings")
+	var env []string
+	for name, value := range rendered {
+		text, ok := value.(string)
+		require.True(t, ok, "%s is rendered from a Secret, which this machine cannot read", name)
+		switch {
+		case slices.Contains(drop, name), name == "NATS_NKEY_SEED_FILE":
+			continue
+		case name == "PORT":
+			text = strconv.Itoa(port)
+		case name == "NATS_URLS":
+			text = natsURL
+		case name == "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE":
+			text = tokenFile
+		case name == "ENVOY_OIDC_ISSUER" && issuer != "":
+			text = issuer
+		}
+		env = append(env, name+"="+text)
 	}
 	return env
 }
 
-// startLiveListener starts a listener of the pod's environment on a port reservePorts reserved and
-// waits for its /healthz to answer 200, so it returns a process that is serving. It returns the
-// process and the port it serves on. The listener binds ENVOY_LISTEN_HOST=0.0.0.0 as the pod does,
-// so it binds the port itself rather than inherit a cmdtest.HoldPort socket, which listens on
-// loopback alone.
+// liveBrokerSettings are the variables of a listener's broker check, which a control drops to show
+// they are the credential that lets a tailnet listener start off loopback.
+var liveBrokerSettings = []string{
+	"ENVOY_AGENT_SECRETS_URL", "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", "ENVOY_PUBLIC_URL",
+	"ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND", "ENVOY_AGENT_SECRETS_INTROSPECTION_BURST",
+}
+
+// liveListenerRefusal is the line the listener's own API check refuses a start off loopback with
+// when it takes no credential it verifies (cmd/listener/apiauth.go, validateListenerAPIAuth).
+const liveListenerRefusal = "off loopback /v1 serves only a caller that presents a credential this listener verifies"
+
+// startLiveListener starts a listener of the tailnet listener pod's environment
+// (clusteredArgs' tailnet.listener) on a port reservePorts reserved and waits for its /healthz to
+// answer 200, so it returns a process that is serving. It returns the process and the port it
+// serves on. The listener binds ENVOY_LISTEN_HOST=0.0.0.0 as the pod does, so it binds the port
+// itself rather than inherit a cmdtest.HoldPort socket, which listens on loopback alone.
 func startLiveListener(t *testing.T, name, binary, natsURL string) (*cmdtest.Process, int) {
 	t.Helper()
 	port := reservePorts(t, 1)[0]
 	cmd := exec.Command(binary)
-	cmd.Env = liveListenerEnv(t, port, natsURL, true)
+	cmd.Env = liveListenerEnv(t, clusteredArgs(), port, natsURL, "")
 	process := startReady(t, name, cmd, func(*cmdtest.Process) error {
 		status, body, err := liveListenerHealthz(port)
 		if err != nil {
@@ -241,23 +261,21 @@ func nonLoopbackIPv4(t *testing.T) string {
 	return ""
 }
 
-// The listener pod gcp:ClusteredNatsHub renders starts on this machine, and
-// ENVOY_API_ALLOW_UNAUTHENTICATED is what lets it: the listener's own API check refuses a listener
-// bound off loopback with neither bearer nor OIDC pair without it (cmd/listener/apiauth.go,
-// validateListenerAPIAuth), so the same environment without the flag exits non-zero naming the
-// flag and serves nothing at all. The listener that did start then serves /v1 over this machine's
-// own non-loopback address with no Authorization header for the one Host ENVOY_ALLOWED_HOSTS
-// names, answering GET /v1/sessions 200, and answers 421 to the same request carrying any other
-// Host (cmd/listener/apiauth.go, servesHost). That pair is what the NetworkPolicy the component
-// renders fences: the listener itself serves whoever reaches it with the right Host, so what keeps
-// the open port to the tailnet entry's pods is the policy, and what keeps a rebound name from
-// using it is this fence.
-func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
+// The tailnet listener pod gcp:ClusteredNatsHub renders starts on this machine because its broker
+// settings are a credential the listener verifies: the listener's own API check refuses a listener
+// bound off loopback that takes none (cmd/listener/apiauth.go, validateListenerAPIAuth), so the same
+// environment without the broker settings exits non-zero naming the rule and serves nothing at all.
+// The listener that did start then refuses GET /v1/sessions over this machine's own non-loopback
+// address 401 when the call presents no credential, whatever Host it carries, the tailnet name the
+// component renders included: there is no open /v1 and no Host fence left (t-e-19). What a session
+// presents is a broker token under DPoP, which cmd/listener's own tests prove; this proves the
+// rendered pod admits nothing else.
+func TestTheTailnetSessionListenerRefusesACallWithoutABrokerToken(t *testing.T) {
 	binary := buildLiveListener(t)
 	_, natsURL := testnats.Start(t)
 
 	listeners := 0
-	process, port := startLiveListener(t, "the listener", binary, natsURL)
+	process, port := startLiveListener(t, "the tailnet listener", binary, natsURL)
 	listeners++
 
 	answers := 0
@@ -265,79 +283,62 @@ func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 	require.NoError(t, err)
 	answers++
 	require.Equal(t, http.StatusOK, status, "/healthz answered %d: %s\n%s", status, body, process.Output.String())
-	require.NotEmpty(t, body, "/healthz answered an empty body")
 	t.Logf("the listener's first /healthz: %d %s", status, strings.TrimSpace(body))
-
-	// The boot lines that say the listener is open and fenced, so a later 200 is read against the
-	// configuration it was actually given.
-	require.NotZero(t, liveListenerLogLines(process, "listener API auth: disabled"),
-		"the listener logged no line saying /v1 takes no credential:\n%s", process.Output.String())
-	hosts := "listener API hosts: loopback, " + clusteredHubListenerLiveHost
+	hosts := "listener API hosts: any (a credential is required)"
 	require.NotZero(t, liveListenerLogLines(process, hosts),
 		"the listener logged no %q line:\n%s", hosts, process.Output.String())
 
 	// Nothing of /v1 is read from a listener still answering "starting": the read routes answer
-	// 503 until the caches behind them have filled, and a refusal then would be no fence's doing.
+	// 503 until the caches behind them have filled, and a refusal then would be no credential's.
 	waited, healthy, reads := awaitListenerStatus(t, process, port, `"status":"healthy"`, clusteredHubListenerHealthWindow)
 	answers += reads
 	require.NotZero(t, reads, "no /healthz answer was read while waiting for the listener to hold its durable")
 	t.Logf("the listener held its durable after %.1fs: %s", waited.Seconds(), strings.TrimSpace(healthy))
 
-	// The negative control. The same environment with ENVOY_API_ALLOW_UNAUTHENTICATED removed, on
-	// a port reserved for it (reservePorts), so no other program is listening there: the API check
-	// runs before the socket is bound (cmd/listener/main.go), so nothing listens on the port
-	// throughout and a listener that served would answer on it.
+	addr := net.JoinHostPort(nonLoopbackIPv4(t), strconv.Itoa(port))
+	for _, host := range []string{clusteredHubListenerLiveHost, clusteredHubListenerOtherHost} {
+		status, body := liveListenerAnswer(t, addr, "/v1/sessions", host)
+		answers++
+		require.Equal(t, http.StatusUnauthorized, status,
+			"GET /v1/sessions at %s as %s with no credential answered %d: %s\n%s", addr, host, status, body, process.Output.String())
+		t.Logf("GET /v1/sessions at %s as %s with no credential: %d %s", addr, host, status, strings.TrimSpace(body))
+	}
+
+	// The negative control. The same environment with the broker settings removed, on a port
+	// reserved for it (reservePorts), so no other program is listening there: the API check runs
+	// before the socket is bound (cmd/listener/main.go), so nothing listens on the port throughout
+	// and a listener that served would answer on it.
 	controlPort := reservePorts(t, 1)[0]
 	control := exec.Command(binary)
-	control.Env = liveListenerEnv(t, controlPort, natsURL, false)
-	refused := startLogged(t, "the listener without ENVOY_API_ALLOW_UNAUTHENTICATED", control)
+	control.Env = liveListenerEnv(t, clusteredArgs(), controlPort, natsURL, "", liveBrokerSettings...)
+	refused := startLogged(t, "the tailnet listener without its broker settings", control)
 	listeners++
 	refused.WaitExit(t, "its own API check")
 	require.NotNil(t, refused.Cmd.ProcessState, "the refused listener left no exit status")
 	require.NotZero(t, refused.Cmd.ProcessState.ExitCode(),
-		"the listener started with no bearer off loopback and no flag:\n%s", refused.Output.String())
-	named := liveListenerLogLines(refused, "ENVOY_API_ALLOW_UNAUTHENTICATED")
-	require.NotZero(t, named, "the refusal does not name the flag that would have allowed it:\n%s", refused.Output.String())
-	t.Logf("the refusal exited %d and named the flag on %d line(s): %s",
+		"the listener started off loopback with no credential:\n%s", refused.Output.String())
+	named := liveListenerLogLines(refused, liveListenerRefusal)
+	require.NotZero(t, named, "the refusal does not name the rule:\n%s", refused.Output.String())
+	t.Logf("the refusal exited %d and named the rule on %d line(s): %s",
 		refused.Cmd.ProcessState.ExitCode(), named, strings.TrimSpace(refused.Output.String()))
 	_, _, err = liveListenerHealthz(controlPort)
 	require.Error(t, err, "something answered /healthz on the refused listener's port %d", controlPort)
-
-	// The pod's own address, with no credential: the Host the hub told it is served, every other
-	// is not.
-	addr := net.JoinHostPort(nonLoopbackIPv4(t), strconv.Itoa(port))
-	served, body := liveListenerAnswer(t, addr, "/v1/sessions", clusteredHubListenerLiveHost)
-	answers++
-	require.Equal(t, http.StatusOK, served,
-		"the listener refused GET /v1/sessions at %s for the Host it was told, %s: %s\n%s",
-		addr, clusteredHubListenerLiveHost, body, process.Output.String())
-	t.Logf("GET /v1/sessions at %s as %s: %d %s", addr, clusteredHubListenerLiveHost, served, strings.TrimSpace(body))
-
-	misdirected, body := liveListenerAnswer(t, addr, "/v1/sessions", clusteredHubListenerOtherHost)
-	answers++
-	require.Equal(t, http.StatusMisdirectedRequest, misdirected,
-		"the listener served a Host it was never told, %s: %s\n%s", clusteredHubListenerOtherHost, body, process.Output.String())
-	require.Contains(t, body, "ENVOY_ALLOWED_HOSTS",
-		"the refusal does not name the list that would have served %s", clusteredHubListenerOtherHost)
-	t.Logf("GET /v1/sessions at %s as %s: %d %s", addr, clusteredHubListenerOtherHost, misdirected, strings.TrimSpace(body))
 
 	t.Logf("%d listener process(es) run, %d HTTP answer(s) read", listeners, answers)
 }
 
 // A listener that requires a credential — here the hub's own listener input with no tailnet,
 // which the pods of a client namespace reach — runs on this machine in the very environment the
-// component renders for its container, read from the rendered Deployment, with four values
-// replaced for this machine: PORT, NATS_URLS (the test's server), ENVOY_OIDC_ISSUER (a local
-// issuer standing in for the cluster's, which mints the projected tokens), and no
-// NATS_NKEY_SEED_FILE, since this server carries no authorization. Over this machine's own
-// non-loopback address, as a pod of the cluster reaches it, GET /v1/sessions with no
-// Authorization header is refused 401, so is one presenting a token of a subject
-// ENVOY_OIDC_ACCOUNTS does not list, and one presenting a listed subject's token is served 200.
+// component renders for its container (liveListenerEnv), with ENVOY_OIDC_ISSUER replaced by a local
+// issuer standing in for the cluster's, which mints the projected tokens. Over this machine's own
+// non-loopback address, as a pod of the cluster reaches it, GET /v1/sessions with no Authorization
+// header is refused 401, so is one presenting a token of a subject ENVOY_OIDC_ACCOUNTS does not
+// list, and one presenting a listed subject's token is served 200.
 //
-// The control is the same environment with the three ENVOY_OIDC_* variables taken out: the
-// listener then refuses to start, naming ENVOY_API_ALLOW_UNAUTHENTICATED, which shows the
-// rendered environment carries no open flag and that the token check is what lets it bind off
-// loopback at all.
+// The control is the same environment with its credentials taken out, the three ENVOY_OIDC_*
+// variables and the broker settings: the listener then refuses to start, naming the rule, which
+// shows the rendered environment carries no open flag and that its credentials are what let it bind
+// off loopback at all.
 func TestClusteredNatsHubListenerRefusesAnInClusterCallWithoutAToken(t *testing.T) {
 	binary := buildLiveListener(t)
 	_, natsURL := testnats.Start(t)
@@ -351,23 +352,7 @@ func TestClusteredNatsHubListenerRefusesAnInClusterCallWithoutAToken(t *testing.
 	require.Equal(t, clusteredListenerIssuer, rendered["ENVOY_OIDC_ISSUER"])
 
 	envFor := func(port int, drop ...string) []string {
-		var env []string
-		for name, value := range rendered {
-			text, ok := value.(string)
-			require.True(t, ok, "%s is rendered from a Secret, which this machine cannot read", name)
-			switch {
-			case slices.Contains(drop, name), name == "NATS_NKEY_SEED_FILE":
-				continue
-			case name == "PORT":
-				text = strconv.Itoa(port)
-			case name == "NATS_URLS":
-				text = natsURL
-			case name == "ENVOY_OIDC_ISSUER":
-				text = issuer.URL()
-			}
-			env = append(env, name+"="+text)
-		}
-		return env
+		return liveListenerEnv(t, args, port, natsURL, issuer.URL(), drop...)
 	}
 
 	answers, listeners := 0, 0
@@ -411,15 +396,15 @@ func TestClusteredNatsHubListenerRefusesAnInClusterCallWithoutAToken(t *testing.
 
 	controlPort := reservePorts(t, 1)[0]
 	control := exec.Command(binary)
-	control.Env = envFor(controlPort, "ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE", "ENVOY_OIDC_ACCOUNTS")
-	refused := startLogged(t, "the same listener without its token check", control)
+	control.Env = envFor(controlPort, append([]string{"ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE", "ENVOY_OIDC_ACCOUNTS"}, liveBrokerSettings...)...)
+	refused := startLogged(t, "the same listener without its credentials", control)
 	listeners++
 	refused.WaitExit(t, "its own API check")
 	require.NotNil(t, refused.Cmd.ProcessState, "the refused listener left no exit status")
 	require.NotZero(t, refused.Cmd.ProcessState.ExitCode(),
-		"the listener started off loopback with neither a token check nor the open flag:\n%s", refused.Output.String())
-	require.NotZero(t, liveListenerLogLines(refused, "ENVOY_API_ALLOW_UNAUTHENTICATED"),
-		"the refusal does not name the flag:\n%s", refused.Output.String())
+		"the listener started off loopback with no credential:\n%s", refused.Output.String())
+	require.NotZero(t, liveListenerLogLines(refused, liveListenerRefusal),
+		"the refusal does not name the rule:\n%s", refused.Output.String())
 	_, _, err := liveListenerHealthz(controlPort)
 	require.Error(t, err, "something answered /healthz on the refused listener's port %d", controlPort)
 

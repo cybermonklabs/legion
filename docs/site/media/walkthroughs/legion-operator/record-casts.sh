@@ -134,16 +134,12 @@ until_true 60 "Postgres" docker exec "$pg_container" pg_isready -h 127.0.0.1 -U 
 docker run -d --name "$nats_container" --cpus 0.5 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
 until_true 90 "NATS" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
-(umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$operator/envoy-token")
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$operator/operator-token")
-ENVOY_API_TOKEN="$(cat "$operator/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=example-host-legion NATS_URLS=$nats_url \
-  start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$work/envoy-listener"
-# The bearer reaches curl on standard input from printf, a shell builtin, so it is in no command line.
-envoy_up() {
-  printf 'Authorization: Bearer %s' "$(cat "$operator/envoy-token")" |
-    curl -fsS -H @- "http://127.0.0.1:$envoy_port/v1/sessions"
-}
-until_true 60 "the Envoy listener" envoy_up
+# The listener is on loopback with no credential, so the daemon, the controller and this script
+# call it with none.
+ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=example-host-legion NATS_URLS=$nats_url \
+  start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- env -u ENVOY_API_TOKEN "$work/envoy-listener"
+until_true 60 "the Envoy listener" curl -fsS "http://127.0.0.1:$envoy_port/v1/sessions"
 # The agents' model: accepts every request and never answers.
 start_process model bun -e \
   "const s = Bun.serve({ hostname: '127.0.0.1', port: 0, idleTimeout: 0, fetch: () => new Promise(() => {}) }); console.log('model listening port=' + s.port)"
@@ -195,7 +191,6 @@ operator_token_file: ./operator-token
 envoy_url: http://127.0.0.1:$envoy_port
 nats_urls:
   - $nats_url
-envoy_token_file: ./envoy-token
 probe_interval_seconds: 5
 EOF
 cat >"$operator/controller.yaml" <<EOF
@@ -203,7 +198,6 @@ project: SHOP
 daemon_url: http://127.0.0.1:$daemon_port
 operator_token_file: ./operator-token
 envoy_url: http://127.0.0.1:$envoy_port
-envoy_token_file: ./envoy-token
 nats_urls: [$nats_url]
 state_dir: ./controller-state
 EOF

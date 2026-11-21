@@ -97,11 +97,10 @@ type dispatchDatabase struct {
 	// signing is the signing-key set, one generated key per generation of
 	// signingKeyGenerations and in that order: the first signs every new cookie, every one
 	// verifies.
-	signing       []*random.RandomPassword
-	agentToken    *random.RandomPassword
-	listenerToken *random.RandomPassword
-	principal     pulumi.StringOutput
-	seedAccessor  *secretmanager.SecretIamMember
+	signing      []*random.RandomPassword
+	agentToken   *random.RandomPassword
+	principal    pulumi.StringOutput
+	seedAccessor *secretmanager.SecretIamMember
 	// listenerSeedAccessor is the NATS seed's grant to the listener's own account,
 	// ServiceAccount <hostname>-listener, the one grant that account holds.
 	listenerSeedAccessor *secretmanager.SecretIamMember
@@ -399,13 +398,6 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	if err != nil {
 		return nil, err
 	}
-	// The listener binds 0.0.0.0 in a pod of its own, where its API refuses to start without a
-	// bearer, and its credential is its own, never a key of the Secret holding the database URL
-	// and the signing key.
-	listenerToken, err := random.NewRandomPassword(ctx, s.hostname+"-listener-token", &random.RandomPasswordArgs{Length: pulumi.Int(48), Special: pulumi.Bool(false)}, child)
-	if err != nil {
-		return nil, err
-	}
 	// The principal lives in the cluster's Workload Identity pool, which Google creates with the
 	// cluster. It is built from the pool the cluster half reports, the cluster's own
 	// WorkloadIdentityConfig, so it resolves only once the pool exists, and the component's own
@@ -459,8 +451,8 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	}
 	return &dispatchDatabase{
 		connectionName: connectionName, waitFor: waitFor, password: password, signing: signing,
-		agentToken: agentToken, listenerToken: listenerToken,
-		principal: principal, seedAccessor: seedAccessor, listenerSeedAccessor: listenerSeedAccessor,
+		agentToken: agentToken,
+		principal:  principal, seedAccessor: seedAccessor, listenerSeedAccessor: listenerSeedAccessor,
 		azureKeyAccessor: azureKeyAccessor, chatTokenAccessor: chatTokenAccessor,
 	}, nil
 }

@@ -82,10 +82,10 @@ func closedHost(t *testing.T) string {
 // metadata server mints an identity token for the listener's audience, which Dispatch keeps until
 // shortly before its own exp, and a send for a role is made on it, marked. A metadata server that
 // does not answer at a call fails that call as ErrAccountToken, which the delivery tries again,
-// never as ErrNoListenerIdentity and never on the shared token; a send with no role mark - the control -
-// is made on the shared token. Whether the machine has a metadata server at all is decided at
-// Dispatch's start (CheckGoogleIdentity): a machine with none refuses to start, naming the
-// setting, and one with a metadata server starts.
+// never as ErrNoListenerIdentity, and makes no listener call: a send with no role mark fails the
+// same way, since no shared bearer stands behind the identity. Whether the machine has a metadata
+// server at all is decided at Dispatch's start (CheckGoogleIdentity): a machine with none refuses
+// to start, naming the setting, and one with a metadata server starts.
 func TestDispatchsGoogleIdentityMarksARoleSendAndFailsClosedWithoutOne(t *testing.T) {
 	stand := &sendStand{}
 	listener := httptest.NewServer(http.HandlerFunc(stand.serve))
@@ -101,7 +101,7 @@ func TestDispatchsGoogleIdentityMarksARoleSendAndFailsClosedWithoutOne(t *testin
 		if err := CheckGoogleIdentity(context.Background()); err != nil {
 			t.Fatalf("control: the start-time check on a machine with a metadata server: %v", err)
 		}
-		client := New(listener.URL, WithGoogleIdentity("envoy-listener"), WithToken("shared"))
+		client := New(listener.URL, WithGoogleIdentity("envoy-listener"))
 		for range 2 {
 			if _, err := client.Send(context.Background(), marked); err != nil {
 				t.Fatalf("a send for a role on the Google identity: %v", err)
@@ -116,22 +116,18 @@ func TestDispatchsGoogleIdentityMarksARoleSendAndFailsClosedWithoutOne(t *testin
 		}
 	})
 
-	t.Run("a metadata server that does not answer for a moment: the send for a role fails as ErrAccountToken, never as no identity, and is not made on the shared token", func(t *testing.T) {
+	t.Run("a metadata server that does not answer for a moment: every send fails as ErrAccountToken, never as no identity, and makes no call", func(t *testing.T) {
 		t.Setenv(googleidentity.MetadataHostVar, closedHost(t))
 		var logs bytes.Buffer
-		client := New(listener.URL, WithGoogleIdentity("envoy-listener"), WithToken("shared"), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
-		_, err := client.Send(context.Background(), marked)
-		if !errors.Is(err, ErrAccountToken) || !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrNoListenerIdentity) {
-			t.Fatalf("a send for a role while the metadata server does not answer = %v, want ErrAccountToken (retried), not ErrNoListenerIdentity", err)
+		client := New(listener.URL, WithGoogleIdentity("envoy-listener"), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+		for _, input := range []SendInput{marked, unmarked} {
+			_, err := client.Send(context.Background(), input)
+			if !errors.Is(err, ErrAccountToken) || !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrNoListenerIdentity) {
+				t.Fatalf("a send (role %q) while the metadata server does not answer = %v, want ErrAccountToken (retried), not ErrNoListenerIdentity", input.Role, err)
+			}
 		}
 		if got := stand.taken(); len(got) != 0 {
-			t.Fatalf("the listener was called %+v for a send for a role with no token minted, want no call", got)
-		}
-		if _, err := client.Send(context.Background(), unmarked); err != nil {
-			t.Fatalf("control: a send with no role mark while the metadata server does not answer: %v", err)
-		}
-		if got := stand.taken(); len(got) != 1 || got[0].authorization != "Bearer shared" || got[0].role != nil {
-			t.Fatalf("control: the listener was called %+v, want one unmarked send on the shared token", got)
+			t.Fatalf("the listener was called %+v with no token minted, want no call", got)
 		}
 	})
 

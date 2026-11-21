@@ -176,9 +176,11 @@ type prodRenderShape struct {
 
 // prodRenderShapes are the production calls, in the document's order: gcp:Dispatch as production
 // calls it, and again with oidcAudience, Dispatch's service-token verifier, which a consumer sets
-// once its pin carries the input; gcp:ClusteredNatsHub without its tailnet block, as production
-// runs it before the hub's cutover, and with the block and its listener, as the cutover writes it;
-// and gcp:NatsHub, the VM hub.
+// once its pin carries the input; and gcp:ClusteredNatsHub without its tailnet block, as production
+// runs it before the hub's cutover, and with the block and its listener, as the cutover writes it.
+// gcp:NatsHub, the VM hub, is not among them: production removes it before it takes this release
+// (t-e-19), whose VM hub refuses a listener with no broker settings, as production's call has
+// (prodRenderVMHub, which TestAForwardedLoopbackListenerIsOffLoopback sees refused).
 func prodRenderShapes() []prodRenderShape {
 	withAudience := prodRenderDispatchInputs()
 	withAudience["oidcAudience"] = prodRenderString("example-dispatch-audience")
@@ -195,13 +197,18 @@ func prodRenderShapes() []prodRenderShape {
 			// The cutover's update waits for the window that frees the hub's tailnet name.
 			dependsOn: []resource.URN{prodRenderFromConsumer("kubernetes:batch/v1:Job", "example-cutover-switch")},
 		},
-		{
-			shape: "vm-hub", typ: "envoy-infra:gcp:NatsHub", name: "example-hub",
-			inputs:    prodRenderVMHubInputs(),
-			providers: map[tokens.Package]p.ProviderReference{"gcp": prodRenderProvider("gcp")},
-			// The listener's seed secret exists before the hub boots.
-			dependsOn: []resource.URN{prodRenderFromConsumer("gcp:secretmanager/secret:Secret", "example-nats-seed-example-hub")},
-		},
+	}
+}
+
+// prodRenderVMHub is production's gcp:NatsHub call, the VM hub, as it stands before production
+// removes it.
+func prodRenderVMHub() prodRenderShape {
+	return prodRenderShape{
+		shape: "vm-hub", typ: "envoy-infra:gcp:NatsHub", name: "example-hub",
+		inputs:    prodRenderVMHubInputs(),
+		providers: map[tokens.Package]p.ProviderReference{"gcp": prodRenderProvider("gcp")},
+		// The listener's seed secret exists before the hub boots.
+		dependsOn: []resource.URN{prodRenderFromConsumer("gcp:secretmanager/secret:Secret", "example-nats-seed-example-hub")},
 	}
 }
 
@@ -310,8 +317,9 @@ func prodRenderClusteredInputs() map[string]property.Value {
 }
 
 // prodRenderClusteredTailnetInputs are the clustered hub's inputs once the cutover writes the
-// tailnet block: the hosts serving the hub's tailnet name, its session listener, the hosts' auth
-// key and the copies JetStream keeps.
+// tailnet block: the hosts serving the hub's tailnet name, its session listener with its broker
+// settings, which a release from t-e-19 on requires, the hosts' auth key and the copies JetStream
+// keeps.
 func prodRenderClusteredTailnetInputs() map[string]property.Value {
 	inputs := prodRenderClusteredInputs()
 	inputs["tailnet"] = prodRenderObject(map[string]property.Value{
@@ -321,13 +329,16 @@ func prodRenderClusteredTailnetInputs() map[string]property.Value {
 		"replicas":       prodRenderInt(2),
 		"tailscaleImage": prodRenderString(prodRenderTailscaleImage),
 		"listener": prodRenderObject(map[string]property.Value{
-			"image":          prodRenderString(prodRenderHubEnvoyImage),
-			"machineId":      prodRenderString("example-hub"),
-			"nkey":           prodRenderString(prodRenderKeyHubListener),
-			"seedSecretName": prodRenderString("example-hub-listener-seed"),
-			"seedSecretKey":  prodRenderString("nats-seed"),
-			"cpu":            prodRenderString("500m"),
-			"memory":         prodRenderString("1Gi"),
+			"image":           prodRenderString(prodRenderHubEnvoyImage),
+			"machineId":       prodRenderString("example-hub"),
+			"nkey":            prodRenderString(prodRenderKeyHubListener),
+			"seedSecretName":  prodRenderString("example-hub-listener-seed"),
+			"seedSecretKey":   prodRenderString("nats-seed"),
+			"cpu":             prodRenderString("500m"),
+			"memory":          prodRenderString("1Gi"),
+			"agentSecretsUrl": prodRenderString("https://example-broker.example-dispatch.svc.cluster.local:8443"),
+			"publicUrl":       prodRenderString("http://example-hub.example-tailnet.ts.net:9020"),
+			"brokerAudience":  prodRenderString("example-broker-audience"),
 		}),
 	})
 	inputs["tailnetAuthKey"] = property.New("example-tailnet-auth-key").WithSecret(true).

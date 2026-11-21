@@ -6,9 +6,11 @@ import { runJq } from "./run-jq";
 // controller session read from its transcript, and the verdict that judges each tick alone against
 // the two lists the deployment can open. The finding behind the per-tick verdict: three `legion
 // start`s run between boot and the controller checkpoint, each re-probes the image, and
-// pool-capacity is each probe's own verdict, so one session's ticks can carry
-// ["secrets", "pool-capacity"] and ["secrets"] both, and a snapshot of the running daemon's open rows
-// would hold only while nothing restarts it or opens a live row before the read.
+// pool-capacity is each probe's own verdict, so one session's ticks can carry ["pool-capacity"] and
+// none both, and a snapshot of the running daemon's open rows would hold only while nothing
+// restarts it or opens a live row before the read. The proof's legion.yaml configures the pods'
+// broker route (runtime.kubernetes.agent_secrets), so secrets is present, and a tick naming it says
+// the daemon's broker login was not issued.
 const lib = import.meta.dir;
 // jq runs PROGRAM with the module on the include path over STDIN: JSON, or, when RAW, one string
 // read as the script reads a session or a delivery (`jq -R -s`).
@@ -80,34 +82,33 @@ describe("ticks_name_deployment_open: each tick names one of the two lists the d
   const verdict = (ticks: string[][]) =>
     jq("ticks_name_deployment_open", JSON.stringify(ticks.map((open) => ({ open }))));
 
-  test("a warm pool: secrets alone", () => {
-    expect(verdict([["secrets"]])).toBe(true);
+  test("a warm pool: nothing open", () => {
+    expect(verdict([[]])).toBe(true);
   });
 
-  test("a cold pool: secrets and pool-capacity, in either order", () => {
-    expect(verdict([["secrets", "pool-capacity"]])).toBe(true);
-    expect(verdict([["pool-capacity", "secrets"]])).toBe(true);
+  test("a cold pool: pool-capacity alone", () => {
+    expect(verdict([["pool-capacity"]])).toBe(true);
   });
 
   test("a pool cold at one start and warm at the next: both arms in one session", () => {
-    expect(verdict([["secrets", "pool-capacity"], ["secrets"]])).toBe(true);
+    expect(verdict([["pool-capacity"], []])).toBe(true);
   });
 
-  test("a tick that does not name secrets", () => {
-    expect(verdict([["pool-capacity"]])).toBe(false);
-    expect(verdict([[]])).toBe(false);
+  test("a tick naming secrets: the daemon's broker login was not issued", () => {
+    expect(verdict([["secrets"]])).toBe(false);
+    expect(verdict([["secrets", "pool-capacity"]])).toBe(false);
   });
 
   test("a tick naming a row the deployment cannot open", () => {
-    expect(verdict([["secrets", "model-fallback"]])).toBe(false);
+    expect(verdict([["model-fallback"]])).toBe(false);
   });
 
   test("a tick naming a live row", () => {
-    expect(verdict([["secrets", "web-search"]])).toBe(false);
+    expect(verdict([["web-search"]])).toBe(false);
   });
 
   test("one bad tick fails the session", () => {
-    expect(verdict([["secrets"], ["secrets", "model-fallback"]])).toBe(false);
+    expect(verdict([[], ["pool-capacity", "model-fallback"]])).toBe(false);
   });
 
   test("no ticks", () => {

@@ -553,19 +553,27 @@ The processes:
   refuses while a stack process runs: `stack.sh stop` first.
 - **NATS** with JetStream: `nats-server -js -a 127.0.0.1 -n <stack name> -m <monitor port>`, on a
   fresh store directory at each start.
-- **The listener**, with `ENVOY_MACHINE_ID=<stack name>` and a random API token.
+- **The listener**, with `ENVOY_MACHINE_ID=<stack name>` and no shared token: it verifies the
+  projected-token stand-ins of its two callers that `dev-oidc-issuer`, started beside it, writes
+  and keeps fresh (`ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE=envoy-listener-loadtest` and
+  `ENVOY_OIDC_ACCOUNTS` naming `system:serviceaccount:loadtest:dispatch` and
+  `system:serviceaccount:loadtest:loadgen`), and takes a send's role mark from Dispatch's alone
+  (`ENVOY_DISPATCH_PRINCIPAL`). `stack.sh stop listener` stops the issuer with it.
 - **Dispatch**, with a random agent token and header identity
   (`DISPATCH_IDENTITY=header:X-Dispatch-User`, `DISPATCH_IDENTITY_HEADER_TRUSTED=1`). It reaches
-  the stack's listener (`ENVOY_URL`) and NATS. It gets no `AWS_*` variables, so it calls no
-  embedding model. `DISPATCH_WEB_DIST` is an empty directory.
+  the stack's listener (`ENVOY_URL`) with the issuer's token of its own account, which it reads at
+  each call (`ENVOY_ACCOUNT_TOKEN_FILE=run/dispatch-listener-token`), and NATS. It gets no `AWS_*`
+  variables, so it calls no embedding model. `DISPATCH_WEB_DIST` is an empty directory.
 - **The listener's latency proxy** (`envoy_proxy`), only under `LOADTEST_ENVOY_RTT` (run-step.sh
   `--envoy-rtt`): `loadgen proxy -rtt <d>` from `LOADTEST_ENVOY_PROXY_PORT` to the listener.
   Dispatch's `ENVOY_URL` names it; `loadgen` reaches the listener directly. `reset` starts it
   before Dispatch, and stops an earlier one first. Its log is `$LOADTEST_ROOT/logs/envoy-proxy.out`.
 
-`stack.json` holds the stack name (`loadtest-<random>`), the two random tokens, every port and
-every pid, and how the running Dispatch was started: `pg_direct`, `envoy_rtt` and `dispatch_log`.
-It is mode 600. `loadgen` reads every endpoint and token from it.
+`stack.json` holds the stack name (`loadtest-<random>`), the random agent token, the file the
+issuer keeps loadgen's listener token in (`listener_token_file`, `run/loadgen-listener-token`),
+every port and every pid, and how the running Dispatch was started: `pg_direct`, `envoy_rtt` and
+`dispatch_log`. It is mode 600. `loadgen` reads every endpoint and token from it, the listener
+token from that file at each request (The guard, below).
 
 ## The seed
 
@@ -2673,8 +2681,10 @@ is given. The guard stops a mistaken target before the first write:
 
 1. An endpoint flag (`-url`, `-listener`, `-nats`, `-nats-mon`, `-pprof`, `-pg`, `-token-file`,
    `-listener-token-file`) that differs from `stack.json` is refused before any connection, unless
-   `-allow-foreign` is given; a token file differs when the token it holds does. The refusal names
-   the flag and `-allow-foreign`. Under
+   `-allow-foreign` is given; the agent token's file differs when the token it holds does, and the
+   listener token's file when it names a file other than `stack.json`'s `listener_token_file`,
+   since the token in it is replaced while a run goes on. The refusal names the flag and
+   `-allow-foreign`. Under
    `-allow-foreign`, every one of these flags is required, and the first one left empty is refused
    by name before any connection; so is a URL flag whose value is not a URL with a scheme and a
    host as Go's `net/url` reads it (for `-nats`, a comma-separated list of servers, each naming a
@@ -2710,18 +2720,28 @@ is given. The guard stops a mistaken target before the first write:
    or that holds nothing, is refused by the flag and the path, before any connection. `vm.sh`
    writes every credential file on the machine its command runs on (Running on the deployment,
    below) and `cluster.sh` writes them in the runner for the one job that reads them (Running on
-   a cluster copy, below); the local stack's commands read the tokens from `stack.json` and give
-   `-pg` a URL with no password.
+   a cluster copy, below); the local stack's commands read the agent token from `stack.json` and
+   give `-pg` a URL with no password.
+
+   The listener takes no shared token, so loadgen's listener bearer is a platform identity token
+   of its own, and `-listener-token-file` names the file its writer keeps it in: in the local
+   stack, the token `dev-oidc-issuer` writes for `system:serviceaccount:loadtest:loadgen`
+   (`stack.json`'s `listener_token_file`, `run/loadgen-listener-token`); in the cluster copy, the
+   runner pod's projected token, `/var/run/secrets/envoy-listener/token`; on the deployment, the
+   load machine's Google identity token, which its token loop writes. Each writer replaces the
+   token before it expires and a run outlives a token, so the guard, the session registrations
+   and their heartbeats and the loop sessions read the file again at every request and present
+   what it holds then.
 3. Before its first write, `loadgen` checks:
    - NATS `/varz` `server_name` is the stack name.
    - Dispatch answers `GET /api/v1/projects` with the stack's random agent token.
-   - The listener answers `/v1/sessions` with the stack's random API token, and refuses a random
-     other token.
+   - The listener answers `/v1/sessions` with the token `-listener-token-file` holds, and refuses a
+     random other token, so a listener that verifies no credential fails the check.
 
    A failed check exits before any write, and names the check.
 
-The pod's live listener and production Dispatch hold other tokens, so a mistaken target fails the
-check.
+The pod's live listener and production Dispatch take other credentials: neither holds the stack's
+agent token or verifies the stack's own `dev-oidc-issuer`, so a mistaken target fails the check.
 
 `-allow-foreign` is for a stack that is not local, such as the cluster load test's copy.
 With it, every endpoint and token comes from its flag or its file, and none from `stack.json`. A flag that fell
@@ -2824,6 +2844,14 @@ credential: every token and password is random and made for the run.
 
   `down` names these kinds one by one. `kubectl get all` also lists kinds such as
   replicationcontrollers and daemonsets, which such a Role may not list, so it is refused.
+- **Two ServiceAccounts in the namespace, `dispatch-loadtest` and `loadgen-runner`.** The copy's
+  listener takes no shared token: it verifies the projected tokens of its two `/v1` callers,
+  Dispatch and the runner pod, each running as its own account (`serviceAccountName` in
+  `manifests/dispatch.yaml` and `manifests/runner.yaml`), and its `ENVOY_OIDC_ACCOUNTS` lists
+  those two and no other pod of the namespace. The load-test Role writes no ServiceAccount, so
+  `cluster.sh` creates neither and `down` deletes neither: the namespace's owner declares both,
+  each with no role of its own. A namespace without them refuses the runner pod at `up`, naming
+  the account.
 - **The lock.** One copy runs in a namespace at a time. `up` creates the ConfigMap
   `dispatch-loadtest-lock` with six data keys: `holder-pod`, `holder-uid`, `issue`, `run`,
   `started` and `heartbeat`. `up` reads the uid and the issue from `POD_UID` and `LEGION_ISSUE`,
@@ -2939,20 +2967,28 @@ so. A write (`drop database`, a `kubectl cp`, a start in the runner) is never re
 
 No credential of the copy is an argument of anything, on this pod or in the runner, where every
 argument of every process is readable by every user of the machine (`/proc/<pid>/cmdline`). `up`
-makes the copy's four secrets (the Postgres password, the two tokens, the signing key) and gives
-each to the `jq` that writes `state.json` as a file it reads (`--rawfile` from a pipe), never as
-a value; each manifest takes them through `sed`'s standard input. Each `loadgen` job that reads
-the Dispatch agent token, the listener token or the Postgres URL with its password — `seed`,
-`seed-refs` and `seed-finish`, a step's and a replay's `loadgen run`, and `replay-checksum` —
-gets them on the standard input of the `kubectl exec` that starts it. The
+makes the copy's three secrets (the Postgres password, the agent token, the signing key) and
+gives each to the `jq` that writes `state.json` as a file it reads (`--rawfile` from a pipe),
+never as a value; each manifest takes them through `sed`'s standard input. Each `loadgen` job
+that reads the Dispatch agent token or the Postgres URL with its password — `seed`, `seed-refs`
+and `seed-finish`, a step's and a replay's `loadgen run`, and `replay-checksum` — gets them on
+the standard input of the `kubectl exec` that starts it. The
 runner's `sh` writes them into `/work/secrets/<job>.<random>`, a directory of mode 700 that one
 start alone claims (its `mkdir` fails on one that is there, and then nothing is written, removed
-or started), each in a file of mode 600, and `loadgen` is given `-token-file`,
-`-listener-token-file` and `-pg-file` (The guard, above). The `sh` that waits on the job removes
+or started), each in a file of mode 600, and `loadgen` is given `-token-file` and `-pg-file`
+(The guard, above). The `sh` that waits on the job removes
 the directory once the job has ended, however it ended, and on a `HUP` or `TERM` of its own
 (a detached job's shell ignores `INT`, as `sh` does in every background job, so an `INT` leaves
 it running with its job), so no credential outlives the job that read it, and two starts of one
 job name never share a directory. Browser typing is given none.
+
+The listener takes no shared token, so there is none to make. Each of its callers presents a
+projected token of its own ServiceAccount for the listener's audience, `envoy-listener-loadtest`,
+which the kubelet keeps at `/var/run/secrets/envoy-listener/token` in its pod and rewrites before
+it expires: Dispatch as `dispatch-loadtest`, read through `ENVOY_ACCOUNT_TOKEN_FILE`, and every
+runner job as `loadgen-runner`, given `-listener-token-file /var/run/secrets/envoy-listener/token`
+and reading it at every request. The listener's `ENVOY_OIDC_ACCOUNTS` lists those two accounts,
+and its `ENVOY_DISPATCH_PRINCIPAL` is Dispatch's, so a runner job marks no role.
 
 | Subcommand | What it does |
 | --- | --- |
@@ -3569,14 +3605,14 @@ when that key was last imported, `cgroup.jsonl`, `steps/`, `curves/` and `logs/`
 
 | Subcommand | What it does |
 | --- | --- |
-| `up --config FILE [--run ID] [--loadgen PATH]` | Starts every container of the specification below by image digest, each on the machine the file puts it on, with its CPU and memory limits and nothing silently defaulted, installs `loadgen` and the stub embedder on the load machine, makes the database `cloudsql.database` names when the instance does not hold it yet, and waits until Dispatch answers `/healthz`. It makes the run directory and names the run. |
-| `check --config FILE [--run ID]` | The read-back: every container's CPU, memory and image, Dispatch's network mode, the instance's own settings from the Cloud SQL Admin API, every machine's run-time limit from the Compute API, every endpoint setting of every container, and that each production address the file names is refused from every machine. One markdown table of expected beside found, and exit 1 on any difference. |
+| `up --config FILE [--run ID] [--loadgen PATH]` | Starts every container of the specification below by image digest, each on the machine the file puts it on, with its CPU and memory limits and nothing silently defaulted, installs `loadgen` and the stub embedder on the load machine, starts the token loop of the machine Dispatch runs on and of the load machine before any caller of a listener (The listeners' callers, below), makes the database `cloudsql.database` names when the instance does not hold it yet, and waits until Dispatch answers `/healthz`. It makes the run directory and names the run. |
+| `check --config FILE [--run ID]` | The read-back: every container's CPU, memory and image, Dispatch's network mode, the instance's own settings from the Cloud SQL Admin API, every machine's run-time limit and service account from the Compute API, every endpoint setting of every container, and that each production address the file names is refused from every machine. One markdown table of expected beside found, and exit 1 on any difference. |
 | `seed --config FILE [--run ID] [--embed-timeout 8h] [--workers 8]` | Both seeds a step draws on: `loop-seed-plan`, `loop-seed-write` on the load machine, `loop-seed-check`, `loop-seed-export`, then the baseline population's own seed (`loadgen seed` on the load machine, into `paths.remote_work`/`seed.json`), then `seed-finish` with the embedding gate, whose one wait covers the items of both seeds; each phase's wall clock and the gate's coverage progress in `<run>/seed.json`; then the template database. A deployment is seeded once and every later run adopts that seeding (below). A phase is idempotent: a `seed.json` already on the load machine with the deployment's own shape — projects, and at least `load.baseline.sessions` issues, each with a key and its route — is left as it is rather than written a second time. |
 | `reset --config FILE [--run ID]` | The whole reset (below), its duration recorded. |
 | `step --config FILE [--run ID] NAME FACTOR [--duration 10m] [--warmup 30s]` | One step: the reset, the VM sampler, the profiling tunnel (below), Postgres's own collectors (below), `loadgen run` at FACTOR, then `cgroup-merge`, `cloudsql-cpu` and `tables`. Every profile of the window is `loadgen run`'s own, taken through the tunnel; the driver reads nothing of Dispatch's profiling port (below). A step stopped before its window is out takes its remote work with it (below). |
 | `series --config FILE [--run ID] [--duration 10m] [--long 60m] [--long-warmup 5m]` | The baseline, 1x and 2x at `--long` after a `--long-warmup` warm-up, then the grid 3, 4, 6, 8, 12, 16 and 20 at `--duration`, stopping at the first failing step, then the refinement `loadgen curves` asks for until `refine.txt` is empty. |
 | `collect --config FILE [--run ID]` | `loadgen curves -series loop` over the run's steps, in the order they ran, into `<run>/curves`. |
-| `down --config FILE [--run ID]` | Stops every container and the stub embedder, and removes the run's credential files from the load machine. The machines and the instance are left alone. |
+| `down --config FILE [--run ID]` | Stops every container, the stub embedder and the token loops, removes the machines' listener tokens, and removes the run's credential files from the load machine. The machines and the instance are left alone. |
 
 ```bash
 packages/envoy/loadtest/vm/vm.sh up --config <deployment file>
@@ -3615,8 +3651,9 @@ pod, and `nc` on the machines.
 
 ### The machines, and the containers on them
 
-`vms` takes any number of machines, each one `{"host": ..., "instance": ...}`: the address the
-other machines reach it at, and its Compute instance name. `containers` says which of them each
+`vms` takes any number of machines, each one `{"host": ..., "instance": ..., "service_account":
+...}`: the address the other machines reach it at, its Compute instance name, and the Google
+service account it runs as, which `check` reads back from the Compute API. `containers` says which of them each
 container of the specification below runs on. The deployment this was written for has three — an
 application machine, a load generator, and a machine of their own for NATS and the hub listener,
 which is production's own shape — and a file that keeps NATS on the application machine describes
@@ -3637,6 +3674,35 @@ a container placed on a machine `vms` does not name, a machine no container runs
 `load_vm` that is no machine of the file are each refused **by name**, before anything is started.
 Everything that walks the machines follows the file: `up`'s mount of each remote root, `check`'s
 read-back, the sampler's `-vm` arguments, `down` and the reset's restarts.
+
+### The listeners' callers
+
+No listener of the deployment takes a shared token. Every listener container — `dispatch-listener`,
+`hub-listener` and `load-listener-1` to `-4` — binds `0.0.0.0`, and a listener off loopback with no
+credential it verifies refuses to start, so each verifies the Google identity tokens of its two
+callers:
+
+- `ENVOY_OIDC_GOOGLE_AUDIENCE` is the file's `listener_audience`, and
+  `ENVOY_OIDC_GOOGLE_ACCOUNTS` names the accounts of the machine Dispatch runs on and of the load
+  machine, where `loadgen` runs (`vms.<machine>.service_account`, named once when both run as one
+  account). `ENVOY_DISPATCH_PRINCIPAL` is the account of Dispatch's machine, the one a send's role
+  mark is taken from. `check` reads every machine's account back from the Compute API, beside the
+  file's, so a machine that runs as another account — whose callers every listener would refuse —
+  is a difference in the table.
+- On each of those two machines, `up` starts a **token loop** before any caller there starts. As
+  root, it asks the machine's metadata server for its identity token for that audience
+  (`instance/service-accounts/default/identity?audience=<listener_audience>&format=full`) and moves
+  it over `paths.listener_token` (default `/run/envoy-listener/token`, on the machine's tmpfs) in
+  one rename, then again every 30 minutes, since a Google identity token lasts an hour, retrying a
+  failed renewal each minute. `up` is refused, naming the machine, when the first token cannot be
+  written. `down` ends both loops and removes their tokens.
+- **Dispatch** reads its machine's token through `ENVOY_ACCOUNT_TOKEN_FILE`, in the token's
+  directory mounted read-only at `/var/run/secrets/envoy-listener` in its container, and **loadgen**
+  through `-listener-token-file <paths.listener_token>`, each at every request.
+
+The token is mode 644 in a directory of 755: its two readers are the Dispatch container's own
+user and `loadgen` as the ssh user, and it hands nobody on the machine anything, since every
+process there can ask the metadata server for that very token.
 
 ### Reaching the machines: OS Login
 
@@ -3691,14 +3757,14 @@ of every process, so a credential of the deployment is not one:
 
 - **Every container's settings** go in an environment file of mode 600 on its own machine,
   written over `ssh`'s standard input and given to `docker run` as `--env-file`, so Dispatch's
-  `DATABASE_URL`, its agent token, the listener token and the embedder's key are no arguments of
-  `docker`.
+  `DATABASE_URL`, its agent token and the embedder's key are no arguments of `docker`.
 - **The credentials of the commands that run on the load machine** — the Dispatch agent token,
-  the listener token, the Postgres URL with its password and the embedder's api-key — go in
-  files of mode 600 under the run's own directory there, `<paths.remote_work>/runs/<run id>`,
-  written the same way; `seed`, `loop-seed-write` and `loadgen run` are given `-token-file`,
-  `-listener-token-file` and `-pg-file`, and the stub embedder `-key-file` (The guard, above).
-  The endpoint flags that are addresses alone stay on the command line.
+  the Postgres URL with its password and the embedder's api-key — go in files of mode 600 under
+  the run's own directory there, `<paths.remote_work>/runs/<run id>`, written the same way;
+  `seed`, `loop-seed-write` and `loadgen run` are given `-token-file` and `-pg-file`, and the stub
+  embedder `-key-file` (The guard, above). Their listener token is the load machine's own identity
+  token, `-listener-token-file <paths.listener_token>` (The listeners' callers, above). The
+  endpoint flags that are addresses alone stay on the command line.
 - **The profiling tunnel's identity** — the run's own OS Login private key — goes in a file of
   mode 600 in that same directory, put there by the first `step` that opens a tunnel, because
   that tunnel is an `ssh` the load machine runs itself (The profiling tunnel, below). It is the
@@ -3735,6 +3801,7 @@ reader needs, and these are the readers:
 | `paths.nats_store`, mounted at `/data` in `nats` | the NATS container, **as its own user**, as its JetStream store | 755 — `up` makes it with `mkdir` under the machine's own umask, never with `put_file`, so it is no owner-only directory |
 | `<paths.remote_root>/env/<container>.env`, given as `--env-file` | `docker`, as **root**, before the container starts | 600 — it holds the credentials above, and no container user reads it |
 | `<paths.remote_work>/runs/<run id>/<name>` | the command on the load machine it is given to as a `-…-file` flag, as the ssh user that wrote it | 600 |
+| `paths.listener_token`, its directory mounted read-only at `/var/run/secrets/envoy-listener` in `dispatch` | the Dispatch container, **as its own user**, through `ENVOY_ACCOUNT_TOKEN_FILE`, and `loadgen` on the load machine as the ssh user, through `-listener-token-file` | 644 in a directory of 755 — written by the token loop as root, read by two other users |
 | `paths.remote_loadgen` | the load machine, which executes it | 755 |
 
 `vm/vm.test.sh` reads every one of those modes off the file itself after an `up`, and takes the
@@ -3763,6 +3830,9 @@ script does. What the example cannot carry is why each key is there, which is be
   of this file and not of the script.
 - `production_addresses` are the addresses the deployment may never reach; `check` proves each one
   refuses a connection from every machine.
+- `listener_audience` is the audience every listener verifies its callers' Google identity tokens
+  for, and `vms.<machine>.service_account` the account each machine runs as (The listeners'
+  callers, above). The file names no listener token: the machines mint their own.
 - `load` holds what a step sends. A step drives two populations at once, because the question
   INFRA-988 asks is whether production Dispatch carries the spec loop's load on top of
   production's own usual traffic. The baseline population is INFRA-598's 1x, which every step
@@ -3806,7 +3876,8 @@ script does. What the example cannot carry is why each key is there, which is be
 - The other optional keys and their defaults: `ssh_command` `"ssh"`, `ports.pprof_tunnel` `16060`,
   `pprof_tunnel_command` `"ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes"`, `paths.loadgen`
   `"$LOADTEST_ROOT/bin/loadgen"`, `paths.remote_loadgen`, `paths.remote_work`,
-  `paths.nats_store`, `paths.cert`, `paths.cgroup`
+  `paths.nats_store`, `paths.cert`, `paths.listener_token` `"/run/envoy-listener/token"`,
+  `paths.cgroup`
   `"/sys/fs/cgroup/system.slice/docker-%s.scope"`, `pprof_url` (the profiling endpoint the
   sampler is given when no step tunnel stands in for it, `http://<the host of Dispatch's
   machine>:<ports.pprof>`), `embed_tokens_per_minute` `1000000`, production's own quota, and
@@ -3822,7 +3893,7 @@ them, above):
 
 | Container | CPU | Memory | Other | What it reads off its machine's disk |
 | --- | --- | --- | --- | --- |
-| `dispatch` | 16 | 32 GiB | `DISPATCH_PPROF_PORT`, host networking, the entrypoint `envoy-dispatch` | `paths.cert` read-only at `/etc/ssl/stub-embed.pem`, mode 644, as its own user; its environment file, mode 600, read by `docker` as root |
+| `dispatch` | 16 | 32 GiB | `DISPATCH_PPROF_PORT`, host networking, the entrypoint `envoy-dispatch` | `paths.cert` read-only at `/etc/ssl/stub-embed.pem`, mode 644, and the directory of `paths.listener_token` read-only at `/var/run/secrets/envoy-listener`, the token mode 644, both as its own user; its environment file, mode 600, read by `docker` as root |
 | `auth-proxy` | 200m | 256 MiB | | nothing: its arguments are addresses alone |
 | `dispatch-listener` | 500m | 512 MiB | | its environment file, mode 600, read by `docker` as root |
 | `nats` | none | none | JetStream, its store on its machine's disk | `paths.nats_store` at `/data`, mode 755, written as its own user |

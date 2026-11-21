@@ -40,6 +40,9 @@ set -euo pipefail
 # pane seed (NATS_NKEY_SEED, NATS_NKEY_SEED_FILE) or daemon seed (NATS_DAEMON_NKEY_SEED,
 # NATS_DAEMON_NKEY_SEED_FILE).
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_SEED_FILE
+# The rig's listener takes no credential, and it refuses to start with a shared token
+# (ENVOY_API_TOKEN), so it inherits none an operator's shell may export.
+unset ENVOY_API_TOKEN
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 # The model route first, and under box-login the one-at-a-time lock (lib/box-login.sh), before the
@@ -389,24 +392,22 @@ if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
 fi
 
 # NATS and the Envoy listener on the host: the hub's nats-server with JetStream (lib/nats-image.sh),
-# and the listener built from packages/envoy with its API bearer, which reaches every pane as a 0600
-# file (envoy_token_file).
+# and the listener built from packages/envoy, on loopback with no credential, so the daemon, every
+# pane and this script call it with none.
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
 docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
-(umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
-  printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
-ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e2-$$" NATS_URLS=$nats_url \
+ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e2-$$" NATS_URLS=$nats_url \
   python3 "$held_port" exec --port-file "$work/listener.port" --fd-env ENVOY_LISTEN_FD --env 'PORT={port}' -- \
   "$work/envoy-listener" >"$work/listener.log" 2>&1 &
 listener_pid=$!
 record_start "$listener_pid" || true
 port_of "the Envoy listener" "$work/listener.port" "$listener_pid" envoy_port "$work/listener.log"
 until_true 60 "the Envoy listener to answer /v1/sessions" \
-  curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$envoy_port/v1/sessions"
-envoy_role() { curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$envoy_port/v1/roles/$1"; }
+  curl -fsS "http://127.0.0.1:$envoy_port/v1/sessions"
+envoy_role() { curl -fsS "http://127.0.0.1:$envoy_port/v1/roles/$1"; }
 
 # The branch plugins, each packed as the release packs it, into this run's own OMP profile: the
 # Envoy plugin first, then the Legion plugin, whose manifest the daemon's contract gate reads.
@@ -431,7 +432,6 @@ provider_keys:
 envoy_url: http://127.0.0.1:$envoy_port
 nats_urls:
   - $nats_url
-envoy_token_file: $work/envoy-token
 probe_interval_seconds: 5
 # The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
 # the default of 8 wakes a minute every wake after the first would spend those waits queueing.

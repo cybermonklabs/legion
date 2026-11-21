@@ -105,23 +105,15 @@ type ListenerConfig struct {
 	// address they then share.
 	IntrospectionsPerSecond int
 	IntrospectionBurst      int
-	// V1OpenWithTokenChecks keeps /v1 open to a caller that presents no credential beside a token
-	// check, ENVOY_V1_OPEN_WITH_TOKEN_CHECKS=true (cmd/listener/apiauth.go): a presented token is
-	// verified and refused when it does not verify, and a request with none is served as the open
-	// listener serves it. A private hub's tailnet-only session listener renders it, so the private
-	// mode narrows no caller before the open /v1 itself is removed; a listener of an all-public hub
-	// renders none (CheckPrivacySource).
-	V1OpenWithTokenChecks bool
 }
 
-// The listener's own names and bounds of the two introspection-limit settings and the open
-// setting, written here for brokerVars's reason.
+// The listener's own names and bounds of the two introspection-limit settings, written here for
+// brokerVars's reason.
 const (
 	introspectionsPerSecondVar = "ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND"
 	introspectionBurstVar      = "ENVOY_AGENT_SECRETS_INTROSPECTION_BURST"
 	maxIntrospectionsPerSecond = 1000
 	maxIntrospectionBurst      = 100000
-	v1OpenWithTokenChecksVar   = "ENVOY_V1_OPEN_WITH_TOKEN_CHECKS"
 )
 
 // privacyVars are the names of the three privacy settings, in the order Env renders them, each
@@ -312,9 +304,6 @@ func CheckPrivacySource(listener string, c ListenerConfig, hubPrivate bool) erro
 			if set {
 				return InputErrorf(listener, "%s renders %s on a hub that makes no project private, which renders no privacy setting", listener, privacyVars[i].variable)
 			}
-		}
-		if c.V1OpenWithTokenChecks {
-			return InputErrorf(listener, "%s renders %s on a hub that makes no project private, where an open listener needs no token check to stay open", listener, v1OpenWithTokenChecksVar)
 		}
 		return nil
 	}
@@ -551,8 +540,8 @@ func ServiceAccountSubject(subject string) (namespace, name string, ok bool) {
 // ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND then ENVOY_AGENT_SECRETS_INTROSPECTION_BURST, then
 // the service identity's one variable, then the privacy settings, in privacyVars's order —
 // ENVOY_PROJECT_PRIVACY_URL, ENVOY_PROJECT_PRIVACY_REQUIRED=true, ENVOY_ALL_PROJECTS_ACCOUNTS
-// comma-joined — and ENVOY_V1_OPEN_WITH_TOKEN_CHECKS=true last, each only on a config that sets
-// it, so a listener without them renders what it always rendered, byte for byte.
+// comma-joined — last, each only on a config that sets it, so a listener without them renders what
+// it always rendered, byte for byte.
 func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	if err := c.Check(); err != nil {
 		return nil, err
@@ -634,9 +623,6 @@ func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	}
 	if len(c.AllProjectsAccounts) > 0 {
 		env = append(env, privacyVars[2].variable+"="+strings.Join(c.AllProjectsAccounts, ","))
-	}
-	if c.V1OpenWithTokenChecks {
-		env = append(env, v1OpenWithTokenChecksVar+"=true")
 	}
 	return env, nil
 }

@@ -9,15 +9,17 @@
 #       Starts every container of the deployment by image digest, each on the machine the
 #       deployment file puts it on, with the CPU and memory limits of the specification below
 #       and nothing silently defaulted, installs loadgen and the stub embedder on the load
-#       machine, makes the database cloudsql.database names when the instance does not hold it
-#       yet, and waits until Dispatch answers /healthz. With no --run it makes the run
+#       machine, starts the token loop of each machine a caller of a listener runs on (The
+#       listeners' callers, below) before any caller, makes the database cloudsql.database names
+#       when the instance does not hold it yet, and waits until Dispatch answers /healthz. With no
+#       --run it makes the run
 #       directory and names the run in <root>/current; with --run it starts the
 #       deployment again under a run this pod started, and leaves <root>/current and that run's
 #       state.json as they are.
 #   vm.sh check --config FILE [--run ID]
 #       The read-back of acceptance criterion A1, as a markdown table of expected beside found:
 #       every container's CPU, memory and image, Dispatch's network mode, the instance's own
-#       settings from the Cloud SQL Admin API, every machine's run-time limit
+#       settings from the Cloud SQL Admin API, every machine's run-time limit and service account
 #       from the Compute API, every endpoint setting of every container, and that each
 #       production address the deployment file names is refused from every machine. Exit 1 on
 #       any difference.
@@ -47,8 +49,8 @@
 #   vm.sh collect --config FILE [--run ID]
 #       loadgen curves -series loop over the run's steps, in the order they ran, into <run>/curves.
 #   vm.sh down --config FILE [--run ID]
-#       Stops every container and the stub embedder. The machines and the instance are left
-#       alone: they are dispatch://INFRA-1051's to create and to remove.
+#       Stops every container, the stub embedder and the token loops. The machines and the
+#       instance are left alone: what created them removes them.
 #
 # The container specification (R3 and the plan's departure 7), which up starts and check reads
 # back. Every container is started by image digest, never by a tag:
@@ -145,11 +147,24 @@
 # Which file is written where follows the machine the command runs on. The commands that run on
 # the load machine -- loop-seed-write, seed, loadgen run and the stub embedder -- read theirs
 # from the run's own directory there (remote_secret, endpoints, stub_embed_start): the agent
-# token, the listener token, the Postgres URL with its password and the embedder's api-key. The
-# seed phases that run on this pod -- loop-seed-check, loop-seed-export and seed-finish -- read
-# theirs from the run's directory here (local_secret), and each is removed when the seed ends,
-# as the passfile is removed with the psql call that read it. `down` removes the load machine's,
-# so a deployment that is turned off leaves no token and no password on a disk that outlives it.
+# token, the Postgres URL with its password and the embedder's api-key. The seed phases that run
+# on this pod -- loop-seed-check, loop-seed-export and seed-finish -- read theirs from the run's
+# directory here (local_secret), and each is removed when the seed ends, as the passfile is
+# removed with the psql call that read it. `down` removes the load machine's, so a deployment
+# that is turned off leaves no token and no password on a disk that outlives it.
+#
+# The listeners' callers. No listener takes a shared token: every listener container binds
+# 0.0.0.0 and verifies the Google identity tokens its two callers present, for the deployment
+# file's listener_audience: Dispatch, on the machine .containers.dispatch names, and loadgen, on
+# the load machine. ENVOY_OIDC_GOOGLE_ACCOUNTS names those two machines' accounts,
+# .vms.<machine>.service_account, which check reads back from the Compute API, and a send's role
+# mark is taken from the account of Dispatch's machine alone (ENVOY_DISPATCH_PRINCIPAL). Each of
+# those two machines runs a token loop, as root, that writes the machine's own identity token for
+# that audience from its metadata server to paths.listener_token, on the machine's tmpfs, before
+# the first caller there starts and again every 30 minutes, since a Google identity token lasts an
+# hour (listener_token_start). Dispatch reads it through ENVOY_ACCOUNT_TOKEN_FILE in that
+# directory, mounted read-only into its container, and loadgen through -listener-token-file, each
+# at every request.
 #
 # Dispatch's identity is DISPATCH_IDENTITY=header:X-Dispatch-User with
 # DISPATCH_IDENTITY_HEADER_TRUSTED=1 and a shared agent token, as stack.sh's start_dispatch sets
@@ -181,9 +196,10 @@
 # "$LOADTEST_ROOT/bin/loadgen", paths.remote_loadgen "<remote_root>/loadgen", paths.nats_store
 # "<remote_root>/nats", paths.cert "<remote_root>/stub-embed.pem", paths.stateful_dir
 # "<remote_root's own last element>" (the directory under /mnt/stateful_partition that
-# remote_root is a bind mount of), paths.cgroup "/sys/fs/cgroup/system.slice/docker-%s.scope",
-# token_url, sqladmin, compute, iamcredentials and oslogin (the Google endpoints, for a test
-# server), and the whole of load (below).
+# remote_root is a bind mount of), paths.listener_token "/run/envoy-listener/token" (where each
+# caller's machine keeps its identity token for the listeners), paths.cgroup
+# "/sys/fs/cgroup/system.slice/docker-%s.scope", token_url, sqladmin, compute, iamcredentials and
+# oslogin (the Google endpoints, for a test server), and the whole of load (below).
 #
 # The load a step sends, from R5 and R7. A step drives two populations at once, because the
 # question this issue asks is whether production Dispatch carries the spec loop's load on top of
@@ -375,9 +391,22 @@ DB_HOLDERS=(dispatch dispatch-listener "${LOAD_LISTENERS[@]}" hub-listener)
 # names, and check reads back the network mode alone.
 # Where the stub embedder's certificate is mounted inside the Dispatch container (SSL_CERT_FILE).
 CERT_IN_CONTAINER=/etc/ssl/stub-embed.pem
+# The listener token. No listener of the deployment takes a shared token: each binds
+# 0.0.0.0 and verifies the Google identity tokens of its two callers' machines, the one Dispatch
+# runs on and the load machine, for the deployment file's listener_audience. On each of those two
+# machines up starts a token loop that writes the machine's own identity token for that audience
+# to paths.listener_token (default LISTENER_TOKEN_DEFAULT, on the machine's tmpfs), from the
+# metadata server's IDENTITY_URL, before the first caller starts and again every
+# LISTENER_TOKEN_SECONDS, since a Google identity token lasts an hour. Dispatch reads it, at each
+# call, through ENVOY_ACCOUNT_TOKEN_FILE in that file's directory mounted read-only at
+# LISTENER_TOKEN_IN_CONTAINER, and loadgen through -listener-token-file (endpoints).
+LISTENER_TOKEN_DEFAULT=/run/envoy-listener/token
+LISTENER_TOKEN_IN_CONTAINER=/var/run/secrets/envoy-listener
+LISTENER_TOKEN_SECONDS=1800
+IDENTITY_URL=http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity
 # The environment variables whose values are credentials: check proves each one is set and never
 # prints or compares its value.
-SECRET_VARS=" DISPATCH_AGENT_TOKEN ENVOY_TOKEN ENVOY_API_TOKEN DISPATCH_AZURE_EMBED_KEY DATABASE_URL "
+SECRET_VARS=" DISPATCH_AGENT_TOKEN DISPATCH_AZURE_EMBED_KEY DATABASE_URL "
 # Every profile of a step's window is `loadgen run`'s own, in the order it writes them (run.go
 # step.profile): the CPU profile of the window itself, then the three state snapshots it reads
 # at that window's end, heap?debug=1 last because with a heap of tens of GiB it is over 500 MB
@@ -422,6 +451,9 @@ valid() {
     # jq field name may be and no more.
     machine) re='^[A-Za-z_][A-Za-z0-9_]{0,62}$' ;;
     service_account) re='^[A-Za-z0-9][A-Za-z0-9._-]{0,127}@[A-Za-z0-9][A-Za-z0-9.-]{0,252}$' ;;
+    # The audience a Google identity token is minted for, which reaches the metadata server's URL
+    # as a query value: no character a query would read as its own.
+    audience) re='^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$' ;;
     name) re='^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$' ;;
     path) re='^/[A-Za-z0-9._/-]{0,255}$' ;;
     address) re='^[A-Za-z0-9]([A-Za-z0-9.:_-]{0,252}[A-Za-z0-9])?:[1-9][0-9]{0,4}$' ;;
@@ -513,11 +545,37 @@ cfg_valid() {
   printf '%s\n' "$v"
 }
 
-# vm_host VM, vm_instance VM: the address the other machines reach a machine at, and its Compute
-# instance name. A machine's name is one of .vms's own keys, which check_placement has read and
+# vm_host VM, vm_instance VM, vm_service_account VM: the address the other machines reach a
+# machine at, its Compute instance name, and the Google service account it runs as, whose
+# identity token a caller on that machine presents to a listener and which check reads back from
+# the Compute API. A machine's name is one of .vms's own keys, which check_placement has read and
 # proven before any of this is called.
 vm_host() { cfg_valid host ".vms.$1.host"; }
 vm_instance() { cfg_valid name ".vms.$1.instance"; }
+vm_service_account() { cfg_valid service_account ".vms.$1.service_account"; }
+
+# listener_audience: the audience every listener verifies its callers' Google identity tokens
+# for, and the one each machine's token loop asks the metadata server for.
+listener_audience() { cfg_valid audience .listener_audience; }
+
+# listener_accounts: the accounts every listener admits, comma-separated: the machine Dispatch
+# runs on, and the load machine, where loadgen runs, named once when the two run as one account.
+listener_accounts() {
+  local app load
+  app=$(vm_service_account "$DISPATCH_VM")
+  load=$(vm_service_account "$LOAD_VM")
+  if [ "$load" = "$app" ]; then printf '%s\n' "$app"; else printf '%s,%s\n' "$app" "$load"; fi
+}
+
+# listener_token_path: where each caller's machine keeps its identity token for the listeners.
+listener_token_path() { cfg_valid path .paths.listener_token "$LISTENER_TOKEN_DEFAULT"; }
+
+# listener_token_vms: the machines a caller of a listener runs on, once each: Dispatch's, and the
+# load machine.
+listener_token_vms() {
+  printf '%s\n' "$DISPATCH_VM"
+  [ "$LOAD_VM" = "$DISPATCH_VM" ] || printf '%s\n' "$LOAD_VM"
+}
 
 # vm_ssh VM: the ssh target of a machine. The user is OS Login's and the same on every machine of
 # the project, so the deployment file names an address alone (oslogin_ready).
@@ -974,11 +1032,12 @@ membytes() {
 }
 
 # container_env ROLE: ROLE's environment, one NAME=value a line. Empty for a container that takes
-# none. Dispatch presents its machine's Google identity to the listener it calls (the
-# deployment's dispatch_service_account, an identity token for VM_LISTENER_AUDIENCE the metadata
-# server mints), the identity that listener takes a send's role mark from: without it Dispatch
-# refuses every send for a `role:` route, which the replay's role-routed issues make.
-VM_LISTENER_AUDIENCE=envoy-listener-loadtest
+# none. No listener takes a shared token. Every listener binds 0.0.0.0 and verifies the Google
+# identity tokens of its callers' machines for listener_audience (listener_accounts), and takes a
+# send's role mark from the account of the machine Dispatch runs on alone. Dispatch presents that
+# machine's identity token, which the token loop keeps in the directory mounted into its
+# container (container_run_args), at each call: without it Dispatch refuses every send for a
+# `role:` route, which the replay's role-routed issues make.
 container_env() {
   local role=$1
   case $role in
@@ -996,8 +1055,7 @@ NATS_URLS=$(nats_url)
 ENVOY_MACHINE_ID=dispatch
 ENVOY_ALLOW_REMOTE_NATS=1
 ENVOY_URL=$(listener_url)
-ENVOY_TOKEN=$(cfg .secrets.listener_token)
-ENVOY_ACCOUNT_GOOGLE_AUDIENCE=$VM_LISTENER_AUDIENCE
+ENVOY_ACCOUNT_TOKEN_FILE=$LISTENER_TOKEN_IN_CONTAINER/$(basename -- "$(listener_token_path)")
 DISPATCH_EMBEDDER=azure
 DISPATCH_AZURE_EMBED_ENDPOINT=$(stub_embed_url)
 DISPATCH_AZURE_EMBED_KEY=$(cfg .secrets.embed_key)
@@ -1012,10 +1070,9 @@ ENVOY_LISTEN_HOST=0.0.0.0
 ENVOY_MACHINE_ID=$role
 NATS_URLS=$(nats_url)
 ENVOY_ALLOW_REMOTE_NATS=1
-ENVOY_API_TOKEN=$(cfg .secrets.listener_token)
-ENVOY_OIDC_GOOGLE_AUDIENCE=$VM_LISTENER_AUDIENCE
-ENVOY_OIDC_GOOGLE_ACCOUNTS=$(cfg_valid service_account .dispatch_service_account)
-ENVOY_DISPATCH_PRINCIPAL=$(cfg_valid service_account .dispatch_service_account)
+ENVOY_OIDC_GOOGLE_AUDIENCE=$(listener_audience)
+ENVOY_OIDC_GOOGLE_ACCOUNTS=$(listener_accounts)
+ENVOY_DISPATCH_PRINCIPAL=$(vm_service_account "$DISPATCH_VM")
 EOF
       ;;
   esac
@@ -1048,6 +1105,9 @@ container_run_args() {
       # the profile is reachable from its own machine, which is the far end of the step's tunnel.
       printf '%s\n' --network host
       printf '%s\n' --volume "$(cert_path):$CERT_IN_CONTAINER:ro"
+      # The token loop's directory, read-only: Dispatch reads its machine's identity token for the
+      # listeners there at each call (ENVOY_ACCOUNT_TOKEN_FILE), as the loop replaces it.
+      printf '%s\n' --volume "$(dirname -- "$(listener_token_path)"):$LISTENER_TOKEN_IN_CONTAINER:ro"
       printf '%s\n' --env-file "$(container_env_file "$role")"
       ;;
     auth-proxy)
@@ -1112,6 +1172,58 @@ container_start() {
 container_stop() {
   local role=$1
   docker_on "$(container_vm "$role")" rm -f "$role" >/dev/null 2>&1 || true
+}
+
+# ---- the listener token loop ----------------------------------------------------------------------
+
+# LISTENER_TOKEN_LOOP: the sh a machine's token loop runs, as root, with its arguments MODE
+# TOKEN URL SECONDS: it asks the metadata server's identity endpoint URL for the machine's own
+# Google identity token and moves it over TOKEN in one rename, at mode 644, so a reader sees the
+# old token or the new one and never a part of either. MODE once does that one time and answers
+# whether it worked; MODE renew does it every SECONDS, and a minute after a renewal that failed,
+# until the loop is ended. 644 in a directory of 755 is what its two readers need, the Dispatch
+# container's own user and loadgen as the ssh user, and it hands nobody anything: every process
+# of the machine can ask its metadata server for this very token.
+# Each of these machine scripts is one line: every remote command of this script is one word to
+# ssh, and one line in a process listing.
+# shellcheck disable=SC2016 # expanded by the machine's sh
+LISTENER_TOKEN_LOOP='mode=$1 token=$2 url=$3 every=$4; fetch() { curl -fsS --max-time 30 -H "Metadata-Flavor: Google" "$url" >"$token.new" && [ -s "$token.new" ] && chmod 644 -- "$token.new" && mv -f -- "$token.new" "$token"; }; if [ "$mode" = once ]; then fetch; exit; fi; while sleep "$every"; do until fetch; do sleep 60; done; done'
+
+# listener_token_pid_file: where a machine's token loop records its pid, beside the run's remote
+# root and outside the directory mounted into the Dispatch container.
+listener_token_pid_file() { printf '%s/listener-token.pid\n' "$(remote_root)"; }
+
+# LISTENER_TOKEN_KILL: the sh that ends the token loop whose pid the file $pidfile names, by its
+# process group, which setsid made the loop's own, so its nap goes with it. A pid file that holds
+# anything but a pid above 1 ends nothing: kill -- -1 would signal every process there is.
+# shellcheck disable=SC2016 # expanded by the machine's sh
+LISTENER_TOKEN_KILL='pid=$(cat -- "$pidfile" 2>/dev/null) || pid=""; case $pid in "" | *[!0-9]* | 0 | 1) ;; *) kill -TERM -- "-$pid" 2>/dev/null ;; esac'
+
+# listener_token_start VM: VM's token loop, started before any caller of a listener starts there:
+# whatever loop an earlier up left is ended first, the directory of listener_token_path is made at
+# mode 755, the machine's identity token for listener_audience is written once -- refused by name
+# when it cannot be, since a caller started without it is refused by every listener -- and then
+# the loop is detached to renew it, its pid recorded. It runs as root (sudo) because the token
+# lives on the machine's tmpfs, /run, which the ssh user cannot write; a token on no disk is gone
+# when the machine is.
+listener_token_start() {
+  local vm=$1 token url
+  token=$(listener_token_path)
+  url="$IDENTITY_URL?audience=$(listener_audience)&format=full"
+  # shellcheck disable=SC2016 # expanded by the machine's sh
+  on_vm "$vm" sudo sh -c 'loop=$1 pidfile=$5; shift; '"$LISTENER_TOKEN_KILL"'; mkdir -p -- "${1%/*}" && chmod 755 -- "${1%/*}" && sh -c "$loop" sh once "$@" || exit 1; nohup setsid sh -c "$loop" sh renew "$@" </dev/null >/dev/null 2>&1 & echo "$!" >"$pidfile"' \
+    sh "$LISTENER_TOKEN_LOOP" "$token" "$url" "$LISTENER_TOKEN_SECONDS" "$(listener_token_pid_file)" ||
+    die "up: the $vm VM wrote no identity token for the listeners' audience $(listener_audience) at $token from its metadata server ($IDENTITY_URL), so every listener would refuse the callers there"
+  note "the $vm VM keeps its identity token for $(listener_audience) at $token, renewed every $LISTENER_TOKEN_SECONDS s"
+}
+
+# listener_token_stop VM: VM's token loop ended by the process group it recorded, and its token
+# and pid file removed. A loop that is not there is no failure: down runs over machines whose
+# loop may already be gone.
+listener_token_stop() {
+  # shellcheck disable=SC2016 # expanded by the machine's sh
+  on_vm "$1" sudo sh -c 'token=$1 pidfile=$2; '"$LISTENER_TOKEN_KILL"'; rm -f -- "$token" "$pidfile"; exit 0' \
+    sh "$(listener_token_path)" "$(listener_token_pid_file)" >/dev/null 2>&1 || true
 }
 
 # ---- the stub embedder --------------------------------------------------------------------------
@@ -1397,20 +1509,20 @@ loadgen_bin() {
 # on the load machine's loopback while a step runs, since that is where loadgen run runs and the
 # profiling port answers on the loopback of Dispatch's own machine alone.
 #
-# The three endpoints that carry a secret -- the agent token, the listener token and the
-# Postgres URL with its password -- are given as files and not as values: a value would be an
-# argument of loadgen on the load machine and of the ssh that carries it there, which
-# `ps -eo args` hands to anything that can list processes on either machine
-# (dispatch://INFRA-988).
+# The two endpoints that carry a secret -- the agent token and the Postgres URL with its password
+# -- are given as files and not as values: a value would be an argument of loadgen on the load
+# machine and of the ssh that carries it there, which `ps -eo args` hands to anything that can
+# list processes on either machine. The listener token is the load
+# machine's own identity token, which its token loop keeps at listener_token_path and loadgen
+# reads there at each request (listener_token_start).
 endpoints() {
-  local token_file listener_token_file pg_file
+  local token_file pg_file
   token_file=$(remote_secret dispatch-token "$(cfg .secrets.dispatch_token)")
-  listener_token_file=$(remote_secret listener-token "$(cfg .secrets.listener_token)")
   pg_file=$(remote_secret pg-url "$(pg_url "$(cfg .cloudsql.database dispatch)")")
   ENDPOINTS=(
     -allow-foreign
     -url "$(dispatch_url)" -token-file "$token_file"
-    -listener "$(listener_url)" -listener-token-file "$listener_token_file"
+    -listener "$(listener_url)" -listener-token-file "$(listener_token_path)"
     -nats "$(nats_url)" -nats-mon "$(nats_mon_url)"
     -pprof "${1:-$(pprof_url)}" -pg-file "$pg_file"
   )
@@ -1567,6 +1679,11 @@ cmd_up() {
       die "up: making the database $database on the instance failed"
     note "made the database $database on the instance"
   fi
+  # The token loops before any caller of a listener: Dispatch and loadgen each present their
+  # machine's identity token, and every listener refuses a caller with none.
+  for vm in $(listener_token_vms); do
+    listener_token_start "$vm"
+  done
   # The stub embedder before Dispatch: Dispatch reads its certificate at startup (SSL_CERT_FILE),
   # so a Dispatch started before it has nothing to trust and every embed fails.
   stub_embed_start
@@ -1649,6 +1766,17 @@ check_run_duration() {
   done
 }
 
+# check_service_accounts: the account every machine runs as, read from the Compute API, beside
+# the one the deployment file names for it: the listeners admit the identity tokens of the
+# accounts the file names, so a machine that runs as another one has each of its callers refused.
+check_service_accounts() {
+  local vm json
+  for vm in "${VM_NAMES[@]}"; do
+    json=$(vm_json "$vm") || json='{}'
+    check_row "$vm VM service account" "$(vm_service_account "$vm")" "$(jq -r '.serviceAccounts[0].email // empty' <<<"$json")"
+  done
+}
+
 # check_production_refused: every production address R2 forbids is refused from every machine.
 # nc's non-zero exit is the expectation: an address that answers is a path into production.
 #
@@ -1681,6 +1809,7 @@ cmd_check() {
   check_env
   check_instance
   check_run_duration
+  check_service_accounts
   check_production_refused
   printf '| check | expected | found | ok |\n| --- | --- | --- | --- |\n%s' "$CHECK_ROWS"
   # The table is the deployment's, so neither the tunnel nor the remote root's mount is in it.
@@ -2757,21 +2886,24 @@ cmd_down() {
   positional 0 "no positional arguments"
   use_run
   oslogin_ready
-  local role
+  local role vm
   stub_embed_stop
   # In the reverse of the start order, so Dispatch stops before what it talks to.
   for ((i = ${#CONTAINERS[@]} - 1; i >= 0; i--)); do
     role=${CONTAINERS[i]%% *}
     container_stop "$role"
   done
+  # The token loops after every caller of a listener has stopped, with the tokens they kept.
+  for vm in $(listener_token_vms); do
+    listener_token_stop "$vm"
+  done
   # Nothing of the deployment reads them again, and they outlive it otherwise: the run's
-  # directory on the load machine holds the agent token, the listener token, the Postgres URL
-  # with its password, the embedder's key and -- once a step has opened a profiling tunnel --
-  # the run's own OS Login private key, which OS Login accepts on all three machines
-  # (tunnel_identity). Each is mode 600, but on a disk that stays; this is what removes them,
-  # and the only thing that does.
+  # directory on the load machine holds the agent token, the Postgres URL with its password, the
+  # embedder's key and -- once a step has opened a profiling tunnel -- the run's own OS Login
+  # private key, which OS Login accepts on all three machines (tunnel_identity). Each is mode 600,
+  # but on a disk that stays; this is what removes them, and the only thing that does.
   remote_secrets_remove
-  note "down done: every container of run $RUN is stopped and the run's credential files are gone from the $LOAD_VM VM. The machines and the Cloud SQL instance are left as they are: dispatch://INFRA-1051's merge removes them."
+  note "down done: every container of run $RUN is stopped, the token loops are ended with their tokens, and the run's credential files are gone from the $LOAD_VM VM. The machines and the Cloud SQL instance are left as they are: what created them removes them."
 }
 
 main() {

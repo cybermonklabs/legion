@@ -136,9 +136,11 @@ DISPATCH_BINARIES=("$BIN/envoy-dispatch" "$BIN/dispatch-seed" "$BIN/dispatch-see
 # Processes in stop order, and in start order (envoy_proxy and dispatch are started by seed and
 # reset).
 PROCESSES=(dispatch envoy_proxy listener issuer nats proxy postgres)
-# Dispatch's token for the listener's audience, which dev-oidc-issuer writes beside the listener
-# (start_listener).
+# Dispatch's token for the listener's audience, and loadgen's, which dev-oidc-issuer writes beside
+# the listener and keeps fresh (start_listener). stack.json names loadgen's as listener_token_file,
+# the file loadgen reads its listener bearer from at every request.
 ISSUER_TOKEN_FILE=$RUN/dispatch-listener-token
+LOADGEN_TOKEN_FILE=$RUN/loadgen-listener-token
 START_ORDER=(postgres proxy nats listener envoy_proxy dispatch)
 # The stack.json port keys (PORT_KEYS), each one's environment variable (PORT_VAR) and the default
 # ports of this root, which follow LOADTEST_ROOT, are common.sh's (stack_ports).
@@ -226,7 +228,9 @@ set_pid() { stack_set '.pids[$n] = $p' --arg n "$1" --argjson p "$2"; }
 # variable this environment sets, and those inside the ephemeral range (port_in_ephemeral), which a
 # stack recorded before its blocks moved below that range holds: those take this root's default. So
 # a rerun with no port variable set keeps the stack's ports; it refuses to move a port while the
-# stack runs. The name, tokens and pids are kept.
+# stack runs. The name, the agent token and the pids are kept. listener_token_file is
+# LOADGEN_TOKEN_FILE on every setup, and a listener_token an older setup wrote is removed: the
+# listener takes no shared token.
 write_stack_json() {
   local ports k p var defaults args=()
   defaults=$(stack_ports "$ROOT") || die "no block of the stack's ports fits below this machine's ephemeral range (common.sh, port_base, says why above)"
@@ -236,8 +240,8 @@ write_stack_json() {
     (
       umask 077
       jq -n --arg name "loadtest-$(random_hex 4)" --arg root "$ROOT" \
-        --arg dt "$(random_hex 24)" --arg lt "$(random_hex 24)" --argjson ports "$ports" \
-        '{name: $name, root: $root, dispatch_token: $dt, listener_token: $lt, ports: $ports,
+        --arg dt "$(random_hex 24)" --arg ltf "$LOADGEN_TOKEN_FILE" --argjson ports "$ports" \
+        '{name: $name, root: $root, dispatch_token: $dt, listener_token_file: $ltf, ports: $ports,
           pids: {postgres: 0, proxy: 0, nats: 0, listener: 0, envoy_proxy: 0, dispatch: 0}, pg_direct: false}' >"$STACK"
     )
     note "wrote $STACK (stack $(stack_name), ports $(jq -c .ports "$STACK"))"
@@ -263,7 +267,7 @@ write_stack_json() {
     stack_set '.ports = $ports' --argjson ports "$ports"
     note "ports in $STACK updated from the environment and the ephemeral range ($(ephemeral_range)): $(jq -c . <<<"$ports")"
   fi
-  stack_set '.root = $root' --arg root "$ROOT"
+  stack_set '.root = $root | del(.listener_token) | .listener_token_file = $ltf' --arg root "$ROOT" --arg ltf "$LOADGEN_TOKEN_FILE"
 }
 
 # ---- processes ---------------------------------------------------------------------------------------
@@ -483,22 +487,30 @@ start_nats() {
   note "nats pid $(pid_of nats) on 127.0.0.1:$(port nats), monitor $(port nats_monitor), store $store"
 }
 
-# listener_up sends the listener's bearer on curl's standard input, in no command line.
+# listener_up sends loadgen's token, read from its file now, on curl's standard input, in no
+# command line.
 listener_up() {
-  printf 'Authorization: Bearer %s' "$(jq -r .listener_token "$STACK")" |
+  local token
+  token=$(cat -- "$LOADGEN_TOKEN_FILE") || return 1
+  printf 'Authorization: Bearer %s' "$token" |
     curl -fsS --max-time 2 -H @- "http://127.0.0.1:$(port listener)/v1/sessions"
 }
 
-# start_listener starts dev-oidc-issuer, the stand-in for Dispatch's service-account token issuer,
-# then the listener verifying its tokens. Dispatch presents the token the issuer writes and keeps
-# fresh (ISSUER_TOKEN_FILE) as its identity at the listener, the one the listener takes a send's
-# role mark from (ENVOY_DISPATCH_PRINCIPAL): without it Dispatch refuses every send for a `role:`
-# route, which the replay's role-routed issues make. The issuer serves a port the kernel picks,
-# which only the listener reads, and is stopped and started with it (stack.sh stop listener stops
-# both); its key lives in its memory, so a listener verifies only the tokens of the issuer started
-# beside it, and Dispatch reads the token file at each call.
+# start_listener starts dev-oidc-issuer, the stand-in for the cluster's service-account token
+# issuer, then the listener verifying its tokens, of the two callers ENVOY_OIDC_ACCOUNTS names
+# alone, as the cluster copy's listener does (cluster/manifests/listener.yaml). The listener takes
+# no shared token. Dispatch presents the token the issuer writes and keeps fresh
+# (ISSUER_TOKEN_FILE) as its identity at the listener, the one the listener takes a send's role
+# mark from (ENVOY_DISPATCH_PRINCIPAL): without it Dispatch refuses every send for a `role:` route,
+# which the replay's role-routed issues make. loadgen presents its own (LOADGEN_TOKEN_FILE,
+# stack.json's listener_token_file), read at each request, which marks no role. The issuer serves
+# a port the kernel picks, which only the listener reads, and is stopped and started with it
+# (stack.sh stop listener stops both); its key lives in its memory, so a listener verifies only
+# the tokens of the issuer started beside it, and both callers read their token file at each
+# call.
 ISSUER_AUDIENCE=envoy-listener-loadtest
 ISSUER_PRINCIPAL=system:serviceaccount:loadtest:dispatch
+LOADGEN_PRINCIPAL=system:serviceaccount:loadtest:loadgen
 issuer_url() { grep -o 'issuer listening url=[^ ]*' "$LOGS/issuer.out" | tail -n1 | cut -d= -f2-; }
 start_listener() {
   running listener && return 0
@@ -507,7 +519,8 @@ start_listener() {
   local issuer_env=("${base_env[@]}")
   stop_one issuer
   spawn issuer "$LOGS/issuer.out" issuer_env "$BIN/dev-oidc-issuer" \
-    --token "$ISSUER_AUDIENCE=$ISSUER_PRINCIPAL=$ISSUER_TOKEN_FILE"
+    --token "$ISSUER_AUDIENCE=$ISSUER_PRINCIPAL=$ISSUER_TOKEN_FILE" \
+    --token "$ISSUER_AUDIENCE=$LOADGEN_PRINCIPAL=$LOADGEN_TOKEN_FILE"
   wait_for "dev-oidc-issuer to report its URL" 30 issuer "$LOGS/issuer.out" issuer_url
   set_pid issuer "$(pid_of issuer)"
   local log=$LOGS/listener.out
@@ -518,14 +531,14 @@ start_listener() {
     "ENVOY_LISTEN_HOST=127.0.0.1"
     "ENVOY_MACHINE_ID=$(stack_name)"
     "NATS_URLS=nats://127.0.0.1:$(port nats)"
-    "ENVOY_API_TOKEN=$(jq -r .listener_token "$STACK")"
     "ENVOY_OIDC_ISSUER=$(issuer_url)"
     "ENVOY_OIDC_AUDIENCE=$ISSUER_AUDIENCE"
+    "ENVOY_OIDC_ACCOUNTS=$ISSUER_PRINCIPAL $LOADGEN_PRINCIPAL"
     "ENVOY_DISPATCH_PRINCIPAL=$ISSUER_PRINCIPAL")
   spawn listener "$log" listener_env "$BIN/envoy-listener"
   wait_for "the listener's /v1/sessions" 60 listener "$log" listener_up
   set_pid listener "$(pid_of listener)"
-  note "listener pid $(pid_of listener) on 127.0.0.1:$(port listener), Dispatch's identity from dev-oidc-issuer pid $(pid_of issuer) at $(issuer_url)"
+  note "listener pid $(pid_of listener) on 127.0.0.1:$(port listener), its callers' identities from dev-oidc-issuer pid $(pid_of issuer) at $(issuer_url)"
 }
 
 dispatch_healthy() {
@@ -599,9 +612,12 @@ launch_dispatch() {
   mkdir -p -- "$webdist" "$STACK_HOME"
   # scripts/e2e/dispatch-session-settings.sh's Dispatch, on the stack's ports and tokens. No
   # DISPATCH_SIGNING_KEY: Dispatch keeps its key under the stack's HOME (XDG_DATA_HOME), so it is the
-  # same across steps. No AWS_*: no Bedrock calls. Of the settings below, the only one 35efd326 (the
-  # replay seed's build) lacks is DISPATCH_PPROF_PORT: it has no pprof.go, so the overlay's
-  # LOADTEST_DISPATCH_PPROF_PORT stands in for it.
+  # same across steps. No AWS_*: no Bedrock calls. No ENVOY_TOKEN: Dispatch presents its projected
+  # token at the listener (ENVOY_ACCOUNT_TOKEN_FILE) and refuses a shared one. Of the settings
+  # below, 35efd326 (the replay seed's build) lacks DISPATCH_PPROF_PORT, for which the overlay's
+  # LOADTEST_DISPATCH_PPROF_PORT stands in, and ENVOY_ACCOUNT_TOKEN_FILE, so it would call the
+  # listener with no credential; loadgen replay-seed (replay_seed.go) routes no issue, so that
+  # Dispatch has no route delivery to make.
   # shellcheck disable=SC2034
   local dispatch_env=("${base_env[@]}"
     "DATABASE_URL=postgres://postgres@127.0.0.1:$pg_port/$db?sslmode=disable"
@@ -616,7 +632,6 @@ launch_dispatch() {
     "GOMAXPROCS=$procs"
     "NATS_URLS=nats://127.0.0.1:$(port nats)"
     "ENVOY_URL=http://127.0.0.1:$envoy_port"
-    "ENVOY_TOKEN=$(jq -r .listener_token "$STACK")"
     "ENVOY_ACCOUNT_TOKEN_FILE=$ISSUER_TOKEN_FILE")
   # LOADTEST_DISPATCH_ENV names a file of NAME=value lines appended to that environment, which is
   # how the spec-loop stack points Dispatch at `loadgen stub-embed` (DISPATCH_EMBEDDER=azure, the

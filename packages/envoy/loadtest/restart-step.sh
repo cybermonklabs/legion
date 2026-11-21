@@ -106,13 +106,15 @@ sleep_until() {
 # kill_and_restart: SIGKILL the stack's listener, keep it down, start it again with the same
 # binary, arguments and environment, and write restart.json.
 kill_and_restart() {
-  local pidf=$RUN/listener.pid pid port token envs cmd
+  local pidf=$RUN/listener.pid pid port token_file envs cmd
   pid=$(cat -- "$pidf")
   [ -r "/proc/$pid/environ" ] || die "the stack's listener (pid $pid) is not running; nothing to restart"
   mapfile -d '' envs <"/proc/$pid/environ"
   mapfile -d '' cmd <"/proc/$pid/cmdline"
   port=$(jq -er .ports.listener "$ROOT/stack.json")
-  token=$(jq -er .listener_token "$ROOT/stack.json")
+  # loadgen's own token for the listener, which the stack's dev-oidc-issuer keeps fresh: the file is
+  # read at each probe, as loadgen reads it at each request, since the issuer replaces the token.
+  token_file=$(jq -er .listener_token_file "$ROOT/stack.json")
   local kill_ns first_ns restart_ns ready_ns attempts=0 new up
   kill_ns=$(date +%s%N)
   kill -KILL "$pid"
@@ -133,7 +135,7 @@ kill_and_restart() {
     new=$(cat -- "$pidf")
     up=false
     while [ -e "/proc/$new" ] && ! grep -q '^State:.*Z' "/proc/$new/status" 2>/dev/null; do
-      if printf 'Authorization: Bearer %s' "$token" | curl -fsS --max-time 1 -H @- "http://127.0.0.1:$port/v1/sessions" >/dev/null 2>&1; then
+      if printf 'Authorization: Bearer %s' "$(cat -- "$token_file")" | curl -fsS --max-time 1 -H @- "http://127.0.0.1:$port/v1/sessions" >/dev/null 2>&1; then
         up=true
         break
       fi

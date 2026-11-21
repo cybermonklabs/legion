@@ -46,8 +46,11 @@ Options:
                              (required).
   --targets IP[,IP...]       Probe these addresses instead of resolving the name each tick
                              (e.g. both tasks' addresses from aws ecs describe-tasks).
-  --token-file PATH          File holding the listener's /v1 bearer (default: $ENVOY_TOKEN_FILE;
-                             otherwise $ENVOY_TOKEN; otherwise no bearer).
+  --token-file PATH          File holding the listener's /v1 bearer, a platform identity token the
+                             listener verifies, read again at each tick since its issuer rewrites
+                             it before it lapses (default: $ENVOY_TOKEN_FILE; otherwise no bearer,
+                             which a loopback listener serves). ENVOY_TOKEN is not read: the
+                             listener takes no shared token, and a run that sets it refuses.
   --interval SECONDS         Seconds between ticks (default 1).
   --duration SECONDS         Seconds to run, duration/interval ticks; 0 runs until Ctrl-C
                              (default 300).
@@ -154,6 +157,10 @@ if [[ -n "$dispatch_url$dispatch_token_file$dispatch_issue$dispatch_session" ]];
   dispatching=1
 fi
 [[ -z "$token_file" || -r "$token_file" ]] || die_usage "cannot read the token file $token_file"
+# The listener takes no shared token, so neither does the probe: a run handed one would send no
+# bearer and read the listener's every 401 as a misconfiguration of its own.
+[[ -z "${ENVOY_TOKEN:-}" ]] ||
+  die_usage "ENVOY_TOKEN is not read: the listener takes no shared token; give the probe a platform identity token the listener verifies with --token-file or ENVOY_TOKEN_FILE, or none for a loopback listener"
 
 required=(curl sed)
 [[ ${#targets[@]} -gt 0 ]] || required+=(getent)
@@ -170,18 +177,20 @@ trap 'rm -rf "$work_dir"' EXIT
 # Bearers go to curl in header files, never on its command line, where ps shows them.
 umask 077
 envoy_header="${work_dir}/envoy.header"
-token=""
-if [[ -n "$token_file" ]]; then
-  token="$(<"$token_file")"
-else
-  token="${ENVOY_TOKEN:-}"
-fi
-token="${token//[$'\r\n\t ']/}"
-if [[ -n "$token" ]]; then
-  printf 'Authorization: Bearer %s\n' "$token" >"$envoy_header"
-else
-  : >"$envoy_header"
-fi
+# write_envoy_header writes the listener's bearer header from the token file as it holds it now, or
+# an empty header file where the run names none. probe_tick calls it at the start of every tick: a
+# platform identity token is rewritten before it lapses (a kubelet's projected token, a token
+# loop's Google identity token), and one read at start would be refused once it lapsed in a long run.
+write_envoy_header() {
+  local token=""
+  [[ -z "$token_file" ]] || token="$(<"$token_file")"
+  token="${token//[$'\r\n\t ']/}"
+  if [[ -n "$token" ]]; then
+    printf 'Authorization: Bearer %s\n' "$token" >"$envoy_header"
+  else
+    : >"$envoy_header"
+  fi
+}
 dispatch_header="${work_dir}/dispatch.header"
 if ((dispatching)); then
   dispatch_token="$(<"$dispatch_token_file")"
@@ -310,6 +319,7 @@ probe_tick() {
   local tick="$1" ts send_key="" dispatch_state="-" addresses=() target label healthz_code
   local healthz_status v1_code v1_error send_code dispatch_column
   printf -v ts '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+  write_envoy_header
   if [[ ${#targets[@]} -gt 0 ]]; then
     addresses=("${targets[@]}")
   else

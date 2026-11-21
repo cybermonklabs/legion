@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/sjawhar/envoy/infra/core"
 )
 
 // Where the VM keeps what its units read. Container-Optimized OS mounts / read-only; /etc and
@@ -20,7 +18,6 @@ const (
 	natsConfPath = "/etc/nats/nats-server.conf"
 	fetchPath    = "/etc/envoy/fetch-secret"
 	joinedPath   = "/etc/envoy/tailnet-joined"
-	seedEnvPath  = "/etc/envoy/listener-seed-env"
 	// serveDir holds Tailscale Serve's configuration alone: containerboot watches the directory
 	// of TS_SERVE_CONFIG, and exits when it cannot (tailscale v1.104.1
 	// cmd/containerboot/serve.go:50-53).
@@ -31,20 +28,15 @@ const (
 	joinedMarker = dataMount + "/tailnet-joined"
 	keyDir       = "/run/envoy"
 	keyPath      = keyDir + "/tailnet-auth-key"
-	// listenerEnvPath is the listener's seed, as docker run --env-file reads it.
-	listenerEnvPath = keyDir + "/listener.env"
-	unitDir         = "/etc/systemd/system/"
+	unitDir      = "/etc/systemd/system/"
 	// tailnetInterface is the interface tailscaled's kernel networking (TS_USERSPACE=false) makes.
 	tailnetInterface = "tailscale0"
-	// localNATS is NATS as a process on the VM's host network reaches it.
-	localNATS = "nats://127.0.0.1:4222"
 
 	fetchKeyService   = "fetch-tailnet-key.service"
 	tailscaledService = "tailscaled.service"
 	joinedService     = "tailnet-joined.service"
 	firewallService   = "nats-firewall.service"
 	natsService       = "nats.service"
-	listenerService   = "envoy-listener.service"
 )
 
 // vm is what the hub VM's cloud-config is built from. Every field comes from a plain input, so
@@ -56,18 +48,7 @@ type vm struct {
 	tags           []string
 	natsImage      string
 	tailscaleImage string
-	natsConf       string    // the rendered authorization, public keys only
-	listener       *listener // the hub's own Envoy listener, when the hub runs one
-}
-
-// listener is the hub's Envoy listener: its image, the secret id of its NATS seed, which the VM
-// fetches whenever the listener starts, and its environment but the seed (core.ListenerConfig.Env).
-// seedSecret is empty for a listener behind the auth service, whose environment names its service
-// identity instead: the VM writes no seed script and fetches no seed for it.
-type listener struct {
-	image      string
-	seedSecret string
-	env        []string
+	natsConf       string // the rendered authorization, public keys only
 }
 
 // cloudConfig is the document cloud-init reads from the VM's user data.
@@ -92,19 +73,15 @@ type writeFile struct {
 // that tailscaled's bind mount is always of a file.
 //
 // write_files holds the NATS configuration, the secret fetcher and the units; runcmd loads the
-// units and starts them in order. Every hub gets a Tailscale Serve configuration, empty without a
-// listener; a hub whose listener has a seed also gets its seed script. They are started, never
-// enabled: /etc does not outlive the boot.
+// units and starts them in order. Every hub gets Tailscale Serve's empty configuration
+// (serveConfig). They are started, never enabled: /etc does not outlive the boot.
 func (v vm) document() cloudConfig {
 	files := []writeFile{
 		{Path: natsConfPath, Permissions: "0644", Content: v.natsConf},
 		{Path: fetchPath, Permissions: "0755", Content: fetchScript},
 		{Path: joinedPath, Permissions: "0755", Content: joinedScript},
+		{Path: servePath, Permissions: "0644", Content: serveConfig},
 	}
-	if v.listener != nil && v.listener.seedSecret != "" {
-		files = append(files, writeFile{Path: seedEnvPath, Permissions: "0755", Content: seedEnvScript})
-	}
-	files = append(files, writeFile{Path: servePath, Permissions: "0644", Content: serveConfig(v.listener != nil)})
 	runcmd := []string{"systemctl daemon-reload"}
 	for _, u := range v.units() {
 		files = append(files, writeFile{Path: unitDir + u.name, Permissions: "0644", Content: u.text})
@@ -161,20 +138,16 @@ data_disk || echo "envoy-hub: data disk $d left unmounted: $why; see docs/nats-h
 type unitFile struct{ name, text string }
 
 // units are the VM's units, in the order runcmd starts them: the key is fetched before tailscaled
-// starts, tailnet-joined watches tailscaled once it has, the host firewall is opened before NATS
-// starts, and the listener, when the hub runs one, starts after NATS.
+// starts, tailnet-joined watches tailscaled once it has, and the host firewall is opened before
+// NATS starts.
 func (v vm) units() []unitFile {
-	units := []unitFile{
+	return []unitFile{
 		{fetchKeyService, v.fetchKeyUnit()},
 		{tailscaledService, v.tailscaledUnit()},
 		{joinedService, joinedUnit()},
 		{firewallService, firewallUnit()},
 		{natsService, v.natsUnit()},
 	}
-	if v.listener != nil {
-		units = append(units, unitFile{listenerService, v.listenerUnit()})
-	}
-	return units
 }
 
 // userData returns the document as the VM's user data: YAML after the #cloud-config line that
@@ -195,7 +168,7 @@ func (v vm) userData() (string, error) {
 
 // fetchScript is the secret fetcher, run by /bin/sh with curl, jq, base64 and coreutils, which
 // Container-Optimized OS ships (cos-tools/<build>/lakitu/cos-package-info.json for M125 and M133).
-// It fetches the tailnet auth key and the listener's seed. It retries itself, rather than leaving
+// It fetches the tailnet auth key. It retries itself, rather than leaving
 // that to systemd, so that its unit's start job ends only once the value is written or every
 // attempt failed, and tailscaled, ordered after the key's fetch, never starts on the empty key file
 // between two attempts.
@@ -240,48 +213,10 @@ until fetch; do
 done
 `
 
-// seedEnvScript writes the listener's NATS seed as docker run --env-file reads it, run by /bin/sh
-// before every start of the listener's container. The listener's image runs as an unprivileged
-// user, who cannot read a file readable by root alone, and docker reads an env file as root, so
-// the seed reaches the container's environment and no file inside it. A seed of more than one line
-// is refused, since each further line would be another variable of the listener's environment.
-const seedEnvScript = `#!/bin/sh
-# listener-seed-env ENV_FILE SECRET writes the latest version of the Secret Manager secret SECRET,
-# an nkey seed, to ENV_FILE as the one line ` + core.EnvNATSSeed + `=<seed>, readable by root alone. It
-# fetches with the fetch-secret beside it, and so retries as that does. Nothing of the seed is
-# printed or passed in a command's arguments.
-set -u
-env_file=$1
-secret=$2
-raw=$(mktemp "$env_file.raw.XXXXXX") || exit 1
-trap 'rm -f "$raw"' EXIT
-trap 'rm -f "$raw"; exit 1' INT TERM
-"$(dirname "$0")/fetch-secret" "$raw" "$secret" || exit 1
-seed=$(cat "$raw") || exit 1
-case $seed in
-*'
-'*)
-  echo "listener-seed-env: the latest version of $secret holds more than one line" >&2
-  exit 1
-  ;;
-esac
-tmp=$(mktemp "$env_file.XXXXXX") || exit 1
-if printf '` + core.EnvNATSSeed + `=%s\n' "$seed" >"$tmp" && mv -f "$tmp" "$env_file"; then
-  exit 0
-fi
-rm -f "$tmp"
-exit 1
-`
-
-// serveConfig is Tailscale Serve's configuration. With no listener it is an empty object, so
-// containerboot clears a prior Serve configuration held on the data disk.
-func serveConfig(withListener bool) string {
-	if !withListener {
-		return "{}\n"
-	}
-	port := strconv.Itoa(core.DefaultListenerPort)
-	return `{"TCP":{"` + port + `":{"TCPForward":"127.0.0.1:` + port + `"}}}` + "\n"
-}
+// serveConfig is Tailscale Serve's configuration, an empty object: the hub runs no listener
+// (refuseHubListener), so it forwards nothing, and containerboot clears a prior Serve
+// configuration held on the data disk, the forward a hub that ran a listener wrote among them.
+const serveConfig = "{}\n"
 
 // fetchKeyUnit runs the secret fetcher for the tailnet auth key once per boot, on a mounted data
 // disk that holds no joined marker: once the node has joined, the key is never fetched again. It
@@ -351,8 +286,8 @@ func joinedUnit() string {
 // fetched, and starts after the fetch ends, but does not require it: a node whose tailnet state
 // is on the disk never reads the key (TS_AUTH_ONCE), so a failed fetch must not keep it down.
 // containerboot hands the key file's path to the tailscale CLI, which reads it (tailscale v1.104.1
-// cmd/containerboot/tailscaled.go:120-121). Every hub gives containerboot a Serve configuration:
-// the empty one clears a prior forward, while the listener's forwards its port.
+// cmd/containerboot/tailscaled.go:120-121). Every hub gives containerboot the empty Serve
+// configuration, which clears a forward a prior render held.
 func (v vm) tailscaledUnit() string {
 	run := []string{
 		"--cap-add", "NET_ADMIN", "--device", "/dev/net/tun",
@@ -402,46 +337,6 @@ func (v vm) natsUnit() string {
 		v.natsImage,
 		"-c", natsConfPath, "-js", "--store_dir", "/data", "-m", strconv.Itoa(monitorPort), "--server_name", v.hostname,
 	}, "ExecStop=/usr/bin/docker stop -t 30 nats")
-}
-
-// systemdEnvEscapes keeps a value literal through ExecStart's quoting, backslash,
-// environment-variable and unit-specifier expansion: systemd reads `%` as a unit specifier, `$` as
-// a variable, and quotes and backslashes as its own syntax, so an accepted URL or audience holding
-// one (an encoded `%2F`, say) would fail the unit's load or reach the listener changed. An argument
-// holding none of them renders as it always did, so every unit whose values hold none is byte for
-// byte what it was.
-var systemdEnvEscapes = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$", "%", "%%")
-
-// systemdSpecial are the characters systemdEnvEscapes writes, and the single quote, which opens a
-// quoted word of systemd's own and so is literal only inside the double quotes the escape adds.
-const systemdSpecial = `\'"$%`
-
-// listenerUnit runs the hub's Envoy listener on the host's network, after NATS. A listener with a
-// seed has it fetched before every start: a fetch that fails fails the start, and the unit's
-// restart fetches again 10 seconds later. A listener behind the auth service has no seed, and so
-// no env file and no fetch: its environment names the audience its bus asks the metadata server,
-// on the host's network, for an identity token for. It listens on the VM's loopback, where
-// Tailscale Serve forwards the tailnet's connections to its port, and reaches NATS there too. It
-// is stopped with docker stop -t 30, since the listener's own shutdown takes up to 28 seconds
-// (stopBudget in packages/envoy/cmd/listener/main.go).
-func (v vm) listenerUnit() string {
-	var run, service []string
-	if v.listener.seedSecret != "" {
-		run = append(run, "--env-file", listenerEnvPath)
-		service = append(service, "ExecStartPre="+seedEnvPath+" "+listenerEnvPath+" "+v.listener.seedSecret)
-	}
-	// Every environment value is quoted and escaped when it holds a character systemd would read:
-	// the listener's URLs, hosts and audiences are inputs a consumer writes, and core refuses only
-	// whitespace and control characters in them.
-	for _, e := range v.listener.env {
-		if strings.ContainsAny(e, systemdSpecial) {
-			e = `"` + systemdEnvEscapes.Replace(e) + `"`
-		}
-		run = append(run, "-e", e)
-	}
-	return containerUnit("Envoy's listener, which the tailnet reaches through Tailscale Serve", natsService, "envoy-listener",
-		append(run, v.listener.image),
-		append(service, "TimeoutStartSec=600", "ExecStop=/usr/bin/docker stop -t 30 envoy-listener")...)
 }
 
 // containerUnit is a unit that runs one container, name, on the host's network, with run its

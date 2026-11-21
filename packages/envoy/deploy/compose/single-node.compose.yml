@@ -63,23 +63,46 @@ services:
       start_period: 5s
     environment:
       PORT: ${ENVOY_LISTENER_PORT:-9020}
+      # Loopback alone, on host networking: only this machine reaches the listener, so it serves
+      # this machine's sessions with no credential while neither pair below is set. Nothing here
+      # exposes it further; a forwarder that did (Tailscale Serve, say) would make it a listener
+      # off loopback, which needs a credential it verifies.
       ENVOY_LISTEN_HOST: 127.0.0.1
       ENVOY_MACHINE_ID: ${ENVOY_MACHINE_ID:?set ENVOY_MACHINE_ID (this machine's name)}
       # This machine's own NATS, above, so the listener needs no ENVOY_ALLOW_REMOTE_NATS.
       NATS_URLS: nats://127.0.0.1:${NATS_PORT:-4222}
-      # Optional on loopback: when set, every /v1 caller must send it as a bearer token.
-      ENVOY_API_TOKEN: ${ENVOY_API_TOKEN:-}
       # Dispatch's identity, for a Dispatch that sends role routes through this listener: one
       # verifier pair and the principal (deploy/README.md, "Dispatch's identity at the Envoy
-      # listener"). Sessions that only reach each other leave them empty. Setting a pair closes /v1
-      # to every caller with no bearer, this host's sessions included: set ENVOY_API_TOKEN with it
-      # and give those sessions that token (ENVOY_TOKEN, or envoy.token in their envoy.json).
+      # listener"). Sessions that only reach each other leave them empty. A pair closes /v1 to
+      # every caller that presents no token this listener verifies, this machine's sessions
+      # included: set the broker settings below with it, and those sessions reach it on their
+      # machine's broker credential.
       ENVOY_OIDC_ISSUER: ${ENVOY_OIDC_ISSUER:-}
       ENVOY_OIDC_AUDIENCE: ${ENVOY_OIDC_AUDIENCE:-}
       ENVOY_OIDC_ACCOUNTS: ${ENVOY_OIDC_ACCOUNTS:-}
       ENVOY_OIDC_GOOGLE_AUDIENCE: ${ENVOY_OIDC_GOOGLE_AUDIENCE:-}
       ENVOY_OIDC_GOOGLE_ACCOUNTS: ${ENVOY_OIDC_GOOGLE_ACCOUNTS:-}
       ENVOY_DISPATCH_PRINCIPAL: ${ENVOY_DISPATCH_PRINCIPAL:-}
+      # The secrets broker this listener verifies a session's broker token (DPoP) with: the
+      # broker's URL, this listener's own identity there (the Google audience on a Google Cloud VM,
+      # or the token file mounted below), and the origin its callers reach it at, which each proof
+      # names (cmd/listener/brokerauth.go). Set the URL, one identity and the origin, or none.
+      ENVOY_AGENT_SECRETS_URL: ${ENVOY_AGENT_SECRETS_URL:-}
+      ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE: ${ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE:-}
+      ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE: ${ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE:+/run/envoy-broker/token}
+      ENVOY_PUBLIC_URL: ${ENVOY_PUBLIC_URL:-}
+    volumes:
+      # The token file ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names on this machine, when set;
+      # /dev/null otherwise, which the listener does not read. A path that does not exist refuses
+      # `up` rather than becoming an empty directory. A bind of one file keeps the file it found at
+      # start, so the token must be rewritten in place; a writer that replaces it by rename needs
+      # the container restarted.
+      - type: bind
+        source: ${ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE:-/dev/null}
+        target: /run/envoy-broker/token
+        read_only: true
+        bind:
+          create_host_path: false
 
 volumes:
   nats-data:

@@ -200,10 +200,11 @@ func TestAForeignRunsMetaHoldsNoTokenOrPassword(t *testing.T) {
 			t.Fatalf("%q parsed to token file %q, listener token file %q: the test does not pass the tokens", c.args, ef.tokenFile, ef.listenerTokenFile)
 		}
 		var logged bytes.Buffer
-		// The endpoints hold the tokens as readCredentials reads them out of the two files.
+		// The endpoints hold the agent token as readCredentials reads it out of its file, and the
+		// listener token's file, which every request reads.
 		cfg := runConfig{
 			name: *name, allowForeign: true, boxBusyBefore: 0, args: recordedArgs(fs),
-			ep: endpoints{pg: ef.pg, token: agent, listenerToken: listener, pids: map[string]int{}},
+			ep: endpoints{pg: ef.pg, token: agent, listenerTokenFile: listenerFile, pids: map[string]int{}},
 		}
 		meta, err := json.Marshal(collectMeta(context.Background(), cfg, log.New(&logged, "", 0)))
 		if err != nil {

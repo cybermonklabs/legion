@@ -10,9 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/loadtest/listenerclient"
 )
 
 // isolatePG keeps a test's -pg values from the environment: pgconn.ParseConfig, which the guard
@@ -30,22 +34,28 @@ func isolatePG(t *testing.T) {
 	t.Setenv("PGPASSFILE", filepath.Join(home, "absent.pgpass"))
 }
 
+// testStackListenerTokenFile is the listener token file the test stack names: the file the stack's
+// dev-oidc-issuer keeps loadgen's token in (stack.sh), which resolve keeps as a path and reads
+// nothing of.
+const testStackListenerTokenFile = "/loadtest/run/loadgen-listener-token"
+
 func testStack() *stackFile {
 	return &stackFile{
-		Name: "loadtest-abc", DispatchToken: "agent-secret", ListenerToken: "listener-secret",
+		Name: "loadtest-abc", DispatchToken: "agent-secret", ListenerTokenFile: testStackListenerTokenFile,
 		Ports: stackPorts{Postgres: 15432, Proxy: 15433, ProxyStats: 15434, NATS: 14222, NATSMonitor: 18222, Listener: 19120, Dispatch: 18777, Pprof: 16061},
 		PIDs:  stackPIDs{Postgres: 11, Dispatch: 12},
 	}
 }
 
 func TestGuardRefusesAFlagThatDiffersFromTheStack(t *testing.T) {
-	// The tokens come from their files alone, so a token that differs is refused naming the file
-	// flag that gave it.
+	// The agent token comes from its file alone, so a token that differs is refused naming the
+	// file flag that gave it. The listener token file is the stack's when it names the stack's
+	// file, whatever the token in it, since that token is replaced while the run goes on.
 	cases := map[string]endpointFlags{
 		"-url":                 {url: "http://127.0.0.1:9020"},
 		"-listener":            {listener: "http://127.0.0.1:9020"},
 		"-token-file":          {token: "some-other-token"},
-		"-listener-token-file": {listenerToken: "some-other-token"},
+		"-listener-token-file": {listenerTokenFile: credentialFileAt(t, "other-listener-token", "listener-secret\n")},
 		"-pg":                  {pg: "postgres://postgres@127.0.0.1:5432/dispatch"},
 	}
 	for flag, flags := range cases {
@@ -67,7 +77,7 @@ func TestGuardTakesEndpointsFromTheStack(t *testing.T) {
 		t.Fatalf("a flag equal to the stack's value was refused: %v", err)
 	}
 	if e.dispatch != "http://127.0.0.1:18777" || e.pg != "postgres://postgres@127.0.0.1:15432/dispatch?sslmode=disable" ||
-		e.listenerToken != "listener-secret" || e.natsServerName != "loadtest-abc" {
+		e.listenerTokenFile != testStackListenerTokenFile || e.natsServerName != "loadtest-abc" {
 		t.Fatalf("endpoints %+v do not come from the stack", e)
 	}
 	if e.pids["postgres"] != 11 || e.pids["dispatch"] != 12 {
@@ -81,17 +91,19 @@ func TestGuardTakesEndpointsFromTheStack(t *testing.T) {
 	}
 }
 
-// foreignFlags gives every endpoint flag a foreign value.
-func foreignFlags() endpointFlags {
+// foreignFlags gives every endpoint flag a foreign value, the listener token file one of t's.
+func foreignFlags(t *testing.T) endpointFlags {
+	t.Helper()
 	return endpointFlags{
 		url: "http://dispatch.example:8080/", listener: "http://listener.example:9120", nats: "nats://nats.example:4222",
 		natsMon: "http://nats.example:8222", pprof: "http://dispatch.example:6061", pg: "postgres://postgres@db.example:5432/dispatch",
-		token: "cluster-agent-token", listenerToken: "cluster-listener-token", allowForeign: true,
+		token: "cluster-agent-token", listenerTokenFile: credentialFileAt(t, "cluster-listener-token", "cluster-listener-token\n"),
+		allowForeign: true,
 	}
 }
 
 func TestGuardAllowForeignUsesTheFlags(t *testing.T) {
-	e, err := resolveEndpoints(foreignFlags(), testStack())
+	e, err := resolveEndpoints(foreignFlags(t), testStack())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,11 +129,11 @@ func TestGuardAllowForeignRefusesAMissingFlag(t *testing.T) {
 		"-pprof":               func(f *endpointFlags) { f.pprof = "" },
 		"-pg":                  func(f *endpointFlags) { f.pg = "" },
 		"-token-file":          func(f *endpointFlags) { f.token = "" },
-		"-listener-token-file": func(f *endpointFlags) { f.listenerToken = "" },
+		"-listener-token-file": func(f *endpointFlags) { f.listenerTokenFile = "" },
 	}
 	for flag, unset := range unsetters {
 		for _, st := range []*stackFile{testStack(), nil} {
-			flags := foreignFlags()
+			flags := foreignFlags(t)
 			unset(&flags)
 			_, err := resolveEndpoints(flags, st)
 			var missing *missingForeignFlagError
@@ -159,8 +171,8 @@ func credentialFileAt(t *testing.T, name, content string) string {
 // does (vm/vm.sh writes these on the machine the load runs from).
 func credentialFiles(t *testing.T) endpointFlags {
 	t.Helper()
-	f := foreignFlags()
-	f.token, f.listenerToken, f.pg = "", "", ""
+	f := foreignFlags(t)
+	f.token, f.pg = "", ""
 	f.tokenFile = credentialFileAt(t, "token", "cluster-agent-token\n")
 	f.listenerTokenFile = credentialFileAt(t, "listener-token", "cluster-listener-token \t\n")
 	f.pgFile = credentialFileAt(t, "pg", "postgres://postgres:pw@db.example:5432/dispatch\n\n")
@@ -168,17 +180,23 @@ func credentialFiles(t *testing.T) endpointFlags {
 }
 
 // TestGuardReadsCredentialFiles: each credential that carries a secret is the content of the
-// file its -…-file flag names, trailing white space trimmed, and the file form alone satisfies
-// -allow-foreign, so a caller gives the three on no command line at all.
+// file its -…-file flag names, trailing white space trimmed -- the listener token as the file
+// holds it at the request that presents it -- and the file form alone satisfies -allow-foreign,
+// so a caller gives the three on no command line at all.
 func TestGuardReadsCredentialFiles(t *testing.T) {
 	isolatePG(t)
-	e, err := resolveEndpoints(credentialFiles(t), testStack())
+	flags := credentialFiles(t)
+	e, err := resolveEndpoints(flags, testStack())
 	if err != nil {
 		t.Fatalf("a foreign run given its three credentials as files was refused: %v", err)
 	}
-	if e.token != "cluster-agent-token" || e.listenerToken != "cluster-listener-token" ||
+	listenerToken, err := e.listenerBearer()
+	if err != nil {
+		t.Fatalf("the listener token file %s: %v", e.listenerTokenFile, err)
+	}
+	if e.token != "cluster-agent-token" || e.listenerTokenFile != flags.listenerTokenFile || listenerToken != "cluster-listener-token" ||
 		e.pg != "postgres://postgres:pw@db.example:5432/dispatch" {
-		t.Fatalf("endpoints %+v: want each credential its file's content, trailing white space trimmed", e)
+		t.Fatalf("endpoints %+v, listener token %q: want each credential its file's content, trailing white space trimmed", e, listenerToken)
 	}
 }
 
@@ -229,12 +247,85 @@ func TestGuardRefusesAnUnusableCredentialFile(t *testing.T) {
 	}
 }
 
+// TestLoadgenPresentsTheListenerTokenFile: the listener's bearer is what the file
+// -listener-token-file names holds at the moment of each request, never what it held when the
+// command started. The file is a platform identity token that its writer replaces before it
+// expires -- the kubelet's projected token in the cluster copy, the token loop's Google identity
+// token on the VM deployment -- and a heartbeat goes on for hours, so a token read once would be
+// refused once it expired. Against a stub listener that takes only the file's current token, the
+// guard's GET /v1/sessions and a session's registration each present the file's content, and after
+// the file is replaced, its new content.
+func TestLoadgenPresentsTheListenerTokenFile(t *testing.T) {
+	isolatePG(t)
+	var mu sync.Mutex
+	current := ""
+	presented := map[string][]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		presented[r.URL.Path] = append(presented[r.URL.Path], r.Header.Get("Authorization"))
+		want := "Bearer " + current
+		mu.Unlock()
+		if r.Header.Get("Authorization") != want {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "token")
+	// rotate replaces the file in one rename, as the kubelet swaps a projected token in and the
+	// token loop moves its new token over the old one, so no request reads half of either.
+	rotate := func(token string) {
+		t.Helper()
+		mu.Lock()
+		current = token
+		mu.Unlock()
+		next := filepath.Join(dir, ".token.next")
+		if err := os.WriteFile(next, []byte(token+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(next, tokenFile); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rotate("projected-token-1")
+	flags := credentialFiles(t)
+	flags.listener = srv.URL
+	flags.listenerTokenFile = tokenFile
+	e, err := resolveEndpoints(flags, nil)
+	if err != nil {
+		t.Fatalf("a foreign run given its listener token file was refused: %v", err)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	reg := &registrar{listener: e.listenerClient(client), bodies: []listenerwire.SubscribeRequest{{SessionID: "ses_a"}}, relay: newRelaySessions(1, 1)}
+	ctx := context.Background()
+	for _, token := range []string{"projected-token-1", "projected-token-2"} {
+		rotate(token)
+		guardErr := checkListener(ctx, client, e)
+		registerErr := reg.register(ctx, 0)
+		mu.Lock()
+		sessions, subscribe := presented[listenerclient.SessionsRoute], presented["/v1/interests/subscribe"]
+		mu.Unlock()
+		// The guard's first read presents the stack's token; its second, a random one it expects refused.
+		if len(sessions) < 2 || sessions[len(sessions)-2] != "Bearer "+token {
+			t.Fatalf("with the file holding %q, the guard's GET %s presented %q: want the file's current content, not a token read before the file changed", token, listenerclient.SessionsRoute, sessions)
+		}
+		if len(subscribe) < 1 || subscribe[len(subscribe)-1] != "Bearer "+token {
+			t.Fatalf("with the file holding %q, the registration presented %q: want the file's current content, not a token read before the file changed", token, subscribe)
+		}
+		if guardErr != nil || registerErr != nil {
+			t.Fatalf("with the file holding %q: guard %v, registration %v; want both admitted", token, guardErr, registerErr)
+		}
+	}
+}
+
 // TestGuardPrintsNoURLPassword: a foreign URL that does not parse is refused naming its flag
 // alone, and a failed guard check names the endpoint without its userinfo, user or password.
 func TestGuardPrintsNoURLPassword(t *testing.T) {
 	isolatePG(t)
 	const password = "url-password-51d2"
-	flags := foreignFlags()
+	flags := foreignFlags(t)
 	flags.pg = "host=db.example user=postgres password=" + password
 	if _, err := resolveEndpoints(flags, testStack()); err == nil || !strings.Contains(err.Error(), "-pg") || strings.Contains(err.Error(), password) {
 		t.Fatalf("a -pg that is not a URL: refusal %v, want one naming -pg without its password", err)
@@ -243,7 +334,7 @@ func TestGuardPrintsNoURLPassword(t *testing.T) {
 	// (case-sensitive), and an invalid port fails its parse: each is refused by name, with no
 	// part of the value and none of pgx's error.
 	for _, pg := range []string{"POSTGRES://u:pw-frag1@h/db", "pg://u:pw-frag2@h/db", "postgres://u:pw-frag3@h:notaport/db"} {
-		flags := foreignFlags()
+		flags := foreignFlags(t)
 		flags.pg = pg
 		_, err := resolveEndpoints(flags, testStack())
 		if err == nil || !strings.Contains(err.Error(), "-pg") {
@@ -256,7 +347,7 @@ func TestGuardPrintsNoURLPassword(t *testing.T) {
 			}
 		}
 	}
-	flags = foreignFlags()
+	flags = foreignFlags(t)
 	flags.nats = "nats://tok@127.0.0.1:3,nats://u:" + password + "@127.0.0.1:4"
 	if _, err := resolveEndpoints(flags, testStack()); err != nil {
 		t.Fatalf("a -nats server list: refused %v, want it accepted", err)
@@ -445,8 +536,9 @@ func TestTheTokenFilesAreRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a foreign run given its tokens as files was refused: %v", err)
 	}
-	if e.token != "cluster-agent-token" || e.listenerToken != "cluster-listener-token" {
-		t.Fatalf("token %q and listener token %q: want each its file's content, trailing white space trimmed", e.token, e.listenerToken)
+	listenerToken, err := e.listenerBearer()
+	if err != nil || e.token != "cluster-agent-token" || listenerToken != "cluster-listener-token" {
+		t.Fatalf("token %q and listener token %q (%v): want each its file's content, trailing white space trimmed", e.token, listenerToken, err)
 	}
 }
 

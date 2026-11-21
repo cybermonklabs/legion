@@ -211,8 +211,16 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 			[]string{`tailnet.listener.seedSecretName "seed_secret"`}},
 		{"a seed secret key with a slash", func(a *A) { listener(a).SeedSecretKey = "a/b" }, "tailnet.listener.seedSecretKey",
 			[]string{`tailnet.listener.seedSecretKey "a/b"`}},
-		{"an allowed host with a port", func(a *A) { listener(a).AllowedHosts = []string{"envoy.example.com", "envoy.example.com:443"} },
-			"tailnet.listener.allowedHosts", []string{"tailnet.listener.allowedHosts[1]"}},
+		// Every session listener binds off loopback and requires a credential, so it reads no
+		// ENVOY_ALLOWED_HOSTS (t-e-19): allowedHosts is refused by name wherever it is declared.
+		{"allowed hosts on a tailnet.listener", func(a *A) { listener(a).AllowedHosts = []string{"envoy.example.com"} },
+			"tailnet.listener.allowedHosts", []string{"tailnet.listener.allowedHosts is given, but the session listener binds off loopback", "reads no ENVOY_ALLOWED_HOSTS"}},
+		// The broker settings are the session listener's credential, one set (t-e-19); with tailnet
+		// its origin is the tailnet's, so publicUrl may be left unset and no other is taken.
+		{"a tailnet.listener with an origin other than the tailnet's", func(a *A) { listener(a).PublicUrl = "http://envoy.example.com:9020" },
+			"tailnet.listener.publicUrl", []string{`tailnet.listener.publicUrl "http://envoy.example.com:9020" is not http://envoy-hub.example-tailnet.ts.net:9020`}},
+		{"a tailnet.listener without its broker audience", func(a *A) { listener(a).BrokerAudience = "" },
+			"tailnet.listener.brokerAudience", []string{"tailnet.listener.brokerAudience is required with tailnet.listener.agentSecretsUrl"}},
 		{"an empty listener cpu", func(a *A) { listener(a).Cpu = str("") }, "tailnet.listener.cpu", []string{"tailnet.listener.cpu is empty; leave it unset for 500m"}},
 		{"a listener cpu that is no quantity", func(a *A) { listener(a).Cpu = str("half") }, "tailnet.listener.cpu", []string{"not a Kubernetes quantity"}},
 		// The listener container is the listener pod's whole request now that the listener is a
@@ -266,8 +274,8 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 			"tailnet.listener.oidcAudience", []string{"tailnet.listener.oidcAudience is given on a tailnet.listener with no clientNamespaces", "declare the listener as listener"}},
 		{"a tailnet listener with no client namespace given an account", func(a *A) { listener(a).OidcAccounts = []string{clusteredListenerAccount} },
 			"tailnet.listener.oidcAccounts", []string{"tailnet.listener.oidcAccounts is given on a tailnet.listener with no clientNamespaces"}},
-		{"allowed hosts on a listener that requires a credential", func(a *A) { ownListener(a).AllowedHosts = []string{"envoy.example.com"} }, "listener.allowedHosts",
-			[]string{"listener.allowedHosts is given on a listener that requires a credential", "reads no ENVOY_ALLOWED_HOSTS"}},
+		{"allowed hosts on the hub's own listener", func(a *A) { ownListener(a).AllowedHosts = []string{"envoy.example.com"} }, "listener.allowedHosts",
+			[]string{"listener.allowedHosts is given, but the session listener binds off loopback", "reads no ENVOY_ALLOWED_HOSTS"}},
 		{"an http issuer", func(a *A) { ownListener(a).OidcIssuer = "http://issuer.example.com" }, "listener.oidcIssuer",
 			[]string{`listener.oidcIssuer "http://issuer.example.com" must be an https URL`}},
 		{"an issuer with a query", func(a *A) { ownListener(a).OidcIssuer = clusteredListenerIssuer + "?x=1" }, "listener.oidcIssuer",

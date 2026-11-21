@@ -12,7 +12,10 @@
 # production. DISPATCH_SIGNING_KEY comes from the run's Secret, as production's comes from its
 # own: the key is the same in every pod of the run, so HOME keeps nothing a pod recreated between
 # steps needs, and HOME is an emptyDir. The profiler binds 127.0.0.1:6060 inside the pod; the
-# pprof sidecar forwards :6061 to it for loadgen's -pprof.
+# pprof sidecar forwards :6061 to it for loadgen's -pprof. The pod runs as the ServiceAccount
+# dispatch-loadtest, which the deployment declares in the load-test namespace (the load-test Role
+# writes no ServiceAccount), and presents that account's projected token at the listener, which
+# lists it (manifests/listener.yaml); no shared token: Dispatch refuses an ENVOY_TOKEN.
 apiVersion: v1
 kind: Service
 metadata:
@@ -74,6 +77,7 @@ spec:
       annotations:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
     spec:
+      serviceAccountName: dispatch-loadtest
       automountServiceAccountToken: false
       enableServiceLinks: false
       # Production's: the 5 s preStop wait plus the 30 s Dispatch builds its shutdown for.
@@ -118,15 +122,11 @@ spec:
               value: "3"
             - name: ENVOY_URL
               value: http://listener.__NAMESPACE__.svc:9020
-            - name: ENVOY_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: listener-credentials
-                  key: ENVOY_API_TOKEN
             # Dispatch's identity at the listener, the one it takes a send's role mark from: the
-            # namespace's default ServiceAccount's token for the listener's audience, which the
-            # kubelet mints below and rewrites before it expires. Without it Dispatch refuses every
-            # send for a role route, which the replay's role-routed issues make.
+            # ServiceAccount dispatch-loadtest's token for the listener's audience, which the
+            # kubelet mints below and rewrites before it expires, and which Dispatch reads at each
+            # call. Without it Dispatch refuses every send for a role route, which the replay's
+            # role-routed issues make.
             - name: ENVOY_ACCOUNT_TOKEN_FILE
               value: /var/run/secrets/envoy-listener/token
           ports:

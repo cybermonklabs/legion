@@ -4,6 +4,7 @@ package gcp
 import (
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"strconv"
 	"time"
@@ -101,9 +102,6 @@ var (
 	// imageRule takes an image reference pinned by digest, with none of the characters that would
 	// split the unit's docker command or that systemd expands in it (whitespace, $, %).
 	imageRule = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:-]*@sha256:[0-9a-f]{64}$`)
-	// secretIDRule is Secret Manager's rule for a secret id (secrets.create), which also keeps it
-	// whole in the unit's command.
-	secretIDRule = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
 )
 
 // healthCheckRanges are the source ranges of Google Cloud's health checks.
@@ -121,16 +119,15 @@ type NatsHubArgs struct {
 	DiskSizeGb     *int               `pulumi:"diskSizeGb,optional"`  // default 20
 	NatsImage      string             `pulumi:"natsImage"`            // pinned: <name>@sha256:<digest>
 	TailscaleImage string             `pulumi:"tailscaleImage"`       // pinned: <name>@sha256:<digest>
-	// The tailnet's DNS name, which the hub's listener's served address is built from: MagicDNS
-	// gives the hub the name <hostname>.<tailnetDnsName>, and that is the address its listener
-	// answers on. It is held to tailnetDNSNameRule whenever it is set, and a hub that runs a
-	// listener must set it.
+	// The tailnet's DNS name, <tailnet>.ts.net. The hub runs no listener (refuseHubListener), so
+	// nothing reads it now; it is held to tailnetDNSNameRule whenever it is set.
 	TailnetDnsName string `pulumi:"tailnetDnsName,optional"`
 	// created, with a subnetwork per region, when absent; either may come from the consumer's own
 	// resources
 	Network    pulumi.StringPtrInput `pulumi:"network,optional"`
 	Subnetwork pulumi.StringPtrInput `pulumi:"subnetwork,optional"` // only with network
-	// The hub's own Envoy listener; see docs/nats-hub.md, "The hub's listener".
+	// The hub's own Envoy listener, which the hub refuses in every form (refuseHubListener): see
+	// docs/nats-hub.md, "The hub's listener".
 	Listener *HubListenerArgs `pulumi:"listener,optional"`
 	// The user a client presenting no credential becomes, granted core.SessionPermissions.
 	SessionUser *SessionUserArgs `pulumi:"sessionUser,optional"`
@@ -139,10 +136,7 @@ type NatsHubArgs struct {
 	// what it rendered before callouts existed.
 	AuthCallout *nats.AuthCalloutArgs `pulumi:"authCallout,optional"`
 	// The deployment may make a Dispatch project private (the private-projects work's R12): it needs
-	// authCallout and no user but authCallout.serviceUser, so no session user. The VM hub is never
-	// a private project's hub, so it is refused beside the hub's own listener
-	// (privateProjectsBesideListener): a private hub's listener reads each decision's privacy from
-	// the secrets broker, which is gcp:ClusteredNatsHub's listener's form.
+	// authCallout and no user but authCallout.serviceUser, so no session user.
 	PrivateProjects bool `pulumi:"privateProjects,optional"`
 }
 
@@ -173,45 +167,22 @@ type PermissionsArgs struct {
 // Annotate names the type gcp:Permissions in the schema, for the reason NATSUserArgs's gives.
 func (p *PermissionsArgs) Annotate(a infer.Annotator) { a.SetToken("gcp", "Permissions") }
 
-// HubListenerArgs are the hub's own Envoy listener: its image and the NATS identity it connects
-// with. Without authCallout that is a user with a seed: the Secret Manager secret in the hub's
-// project that holds the seed, and the seed's public key, from which the hub renders the user
-// itself, named after the hub's hostname, the listener's machine id, and granted
-// core.ListenerPermissions for that machine. With authCallout it is the VM's own Google identity
-// token for natsAudience, which the auth service admits it by: the hub
-// renders no user for the listener and fetches no seed, so seedSecret and nkey are refused.
+// HubListenerArgs are the hub's own Envoy listener as the inputs once took it, which the hub now
+// refuses in every form at preview (refuseHubListener, t-e-19): it ran the listener on the VM's
+// loopback behind a Tailscale Serve forward, where only a bearer kind closes /v1, and the hub
+// renders none. The fields stay, so a program that still sets the input is refused by name rather
+// than have it dropped, and none of them is read.
 type HubListenerArgs struct {
-	Image      string `pulumi:"image"`               // pinned: <name>@sha256:<digest>
-	SeedSecret string `pulumi:"seedSecret,optional"` // a secret id, never the seed: required without authCallout
-	NKey       string `pulumi:"nkey,optional"`       // the seed's public key, never the seed: required without authCallout
-	// NatsAudience is the audience of the Google identity token this VM's metadata server mints,
-	// which the listener presents to the auth service as its NATS credential
-	// (NATS_SERVICE_GOOGLE_AUDIENCE): the broker's BROKER_NATS_GOOGLE_AUDIENCE, whose
-	// BROKER_NATS_SERVICES lists this VM's account as a listener of machine id hostname. Required
-	// with authCallout and refused without.
-	NatsAudience string `pulumi:"natsAudience,optional"`
-	// Any further address a client dials this hub by, beyond the hub's own
-	// <hostname>.<tailnetDnsName>, which the hub always serves. Each entry is rendered as written,
-	// since the listener normalizes what it reads.
-	AllowedHosts []string `pulumi:"allowedHosts,optional"`
-	// The limit on the messages each agent session sends through this listener: how many a
-	// minute, from 1 to 60000, and how many at once, at least 1 and only with a rate. Unset, there
-	// is no limit, and a rate with no burst takes the rate as its burst.
-	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
-	SenderMessageBurst      *int `pulumi:"senderMessageBurst,optional"`
-	// AgentSecretsUrl, agentSecretsAudience and publicUrl turn on this listener's broker check
-	// together, as agentSecretsUrl and agentSecretsAudience turn on Dispatch's relay: the
-	// secrets broker a caller's broker access token is introspected at
-	// (ENVOY_AGENT_SECRETS_URL), the audience this VM's own Google identity token is minted
-	// for, which is the identity each introspection presents
-	// (ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE), and the origin a caller reaches this listener at,
-	// which a DPoP proof's target URI is checked against (ENVOY_PUBLIC_URL). Set all three or
-	// none: a hub that sets none renders none of them, and its listener takes no broker token
-	// at all. The hub is a VM, so the audience is its identity; the projected-token file a pod
-	// presents instead is no input here, since the listener refuses it beside the audience.
-	AgentSecretsUrl      string `pulumi:"agentSecretsUrl,optional"`
-	AgentSecretsAudience string `pulumi:"agentSecretsAudience,optional"`
-	PublicUrl            string `pulumi:"publicUrl,optional"`
+	Image                   string   `pulumi:"image"`
+	SeedSecret              string   `pulumi:"seedSecret,optional"`
+	NKey                    string   `pulumi:"nkey,optional"`
+	NatsAudience            string   `pulumi:"natsAudience,optional"`
+	AllowedHosts            []string `pulumi:"allowedHosts,optional"`
+	SenderMessagesPerMinute *int     `pulumi:"senderMessagesPerMinute,optional"`
+	SenderMessageBurst      *int     `pulumi:"senderMessageBurst,optional"`
+	AgentSecretsUrl         string   `pulumi:"agentSecretsUrl,optional"`
+	AgentSecretsAudience    string   `pulumi:"agentSecretsAudience,optional"`
+	PublicUrl               string   `pulumi:"publicUrl,optional"`
 }
 
 // Annotate names the type gcp:HubListener in the schema, for the reason NATSUserArgs's gives.
@@ -255,12 +226,14 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 	if input, ok := seededInput(args); ok {
 		return settings{}, seedRefused(input)
 	}
+	if args.Listener != nil {
+		return settings{}, refuseHubListener(args)
+	}
 	if !hostnameRule.MatchString(args.Hostname) {
 		return settings{}, fmt.Errorf("hostname %q must match %s", args.Hostname, hostnameRule)
 	}
-	// A hub without a listener reads no tailnet name, so an empty one passes here and
-	// resolveListener requires it of a hub that has one; a name that is set is held to the rule
-	// whether a listener reads it or not.
+	// Nothing reads the tailnet name now that the hub runs no listener; a name that is set is still
+	// held to the rule.
 	if args.TailnetDnsName != "" && !tailnetDNSNameRule.MatchString(args.TailnetDnsName) {
 		return settings{}, fmt.Errorf("tailnetDnsName %q must match %s", args.TailnetDnsName, tailnetDNSNameRule)
 	}
@@ -323,19 +296,7 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 	if args.Subnetwork != nil && args.Network == nil {
 		return settings{}, errors.New("subnetwork is set without network; the firewall needs the network the subnetwork belongs to")
 	}
-	if args.PrivateProjects && args.Listener != nil {
-		return settings{}, privateProjectsBesideListener()
-	}
-	var hubListener *listenerUser
-	if l := args.Listener; l != nil {
-		service := args.AuthCallout != nil
-		if err := listenerIdentity("listener.", service, l.NatsAudience, bus.ServiceGoogleAudienceEnvVar, "BROKER_NATS_GOOGLE_AUDIENCE",
-			[][2]string{{"nkey", l.NKey}, {"seedSecret", l.SeedSecret}}); err != nil {
-			return settings{}, err
-		}
-		hubListener = &listenerUser{machineID: args.Hostname, nkey: l.NKey}
-	}
-	auth, err := authorization(args.Users, hubListener, args.SessionUser, args.AuthCallout, args.PrivateProjects)
+	auth, err := authorization(args.Users, nil, args.SessionUser, args.AuthCallout, args.PrivateProjects)
 	if err != nil {
 		return settings{}, err
 	}
@@ -351,86 +312,33 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 		tailscaleImage: args.TailscaleImage,
 		natsConf:       conf,
 	}
-	if s.vm.listener, err = resolveListener(args); err != nil {
-		return settings{}, err
-	}
 	if s.userData, err = s.vm.userData(); err != nil {
 		return settings{}, fmt.Errorf("render the cloud-config: %w", err)
 	}
 	return s, nil
 }
 
-// resolveListener checks the hub's listener input and returns the listener it gives, or nil for a
-// hub without one. The listener runs as machine hostname, listens on the VM's loopback on the
-// listener's default port, and reaches NATS there too. It answers on the hub's own tailnet name,
-// which the tailnet's MagicDNS gives the VM, and on every further address the listener's
-// allowedHosts names, so a hub whose listener could serve nobody is refused before anything
-// registers. The operator's entries are checked as their own list, by the rule core owns, so a
-// refusal names listener.allowedHosts and the index the operator wrote, not the index of the
-// rendered list the hub's own address comes first in.
-//
-// Its broker check is checked the same way, by core's rule under the hub's own prefix, so a
-// refusal names listener.agentSecretsUrl, listener.agentSecretsAudience or listener.publicUrl.
-// The listener refuses a partial set when it boots, which the group would answer by recreating
-// the VM that cannot start, so the hub refuses one at preview, naming the input left out; a hub
-// that sets none renders none of the three. Its sender limit is core's rule too
-// (core.CheckSenderLimit), naming listener.senderMessagesPerMinute or listener.senderMessageBurst.
-//
-// Its NATS identity was checked against authCallout before the authorization was rendered
-// (listenerIdentity): without authCallout, the seed in listener.seedSecret, which the VM fetches
-// before each start; with it, the VM's Google identity token for listener.natsAudience
-// (NATS_SERVICE_GOOGLE_AUDIENCE), and no seed secret at all. A hub with privateProjects has no
-// listener here: newSettings refuses the two together (privateProjectsBesideListener).
-func resolveListener(args *NatsHubArgs) (*listener, error) {
-	l := args.Listener
-	if l == nil {
-		return nil, nil
-	}
-	if !imageRule.MatchString(l.Image) {
-		return nil, fmt.Errorf("listener.image %q must be pinned by digest, as <name>@sha256:<64 lowercase hex digits>", l.Image)
-	}
-	service := args.AuthCallout != nil
-	if !service {
-		if !secretIDRule.MatchString(l.SeedSecret) {
-			return nil, fmt.Errorf("listener.seedSecret %q must be a secret id in the hub's project, matching %s", l.SeedSecret, secretIDRule)
-		}
-		if l.SeedSecret == args.Hostname+tailnetAuthKeySuffix {
-			return nil, fmt.Errorf("listener.seedSecret %q is the hub's own tailnet auth key secret", l.SeedSecret)
-		}
-	}
-	if args.TailnetDnsName == "" {
-		return nil, errors.New("tailnetDnsName is required for a hub with a listener: the hub renders the " +
-			"address its listener answers on from it, so a client reaching the hub by its tailnet name is served")
-	}
-	if err := core.CheckAllowedHosts("listener.allowedHosts", l.AllowedHosts); err != nil {
-		return nil, err
-	}
-	if err := core.CheckBroker("listener.", l.AgentSecretsUrl, l.AgentSecretsAudience, "", l.PublicUrl); err != nil {
-		return nil, err
-	}
-	rate, burst, err := core.CheckSenderLimit("listener.", l.SenderMessagesPerMinute, l.SenderMessageBurst)
-	if err != nil {
-		return nil, err
-	}
-	config := core.ListenerConfig{
-		MachineID:               args.Hostname,
-		Port:                    core.DefaultListenerPort,
-		ListenHost:              "127.0.0.1",
-		AllowedHosts:            append([]string{core.TailnetHostName(args.Hostname, args.TailnetDnsName)}, l.AllowedHosts...),
-		SenderMessagesPerMinute: rate,
-		SenderMessageBurst:      burst,
-		AgentSecretsURL:         l.AgentSecretsUrl,
-		AgentSecretsAudience:    l.AgentSecretsAudience,
-		PublicURL:               l.PublicUrl,
-	}
-	if service {
-		config.ServiceGoogleAudience = l.NatsAudience
-	}
-	env, err := config.Env([]string{localNATS})
-	if err != nil {
-		return nil, err
-	}
-	return &listener{image: l.Image, seedSecret: l.SeedSecret, env: env}, nil
+// listenerBind is the address the hub's listener bound on the VM, its loopback, and
+// listenerForward the Tailscale Serve forward that reached it there from the tailnet, as the hub
+// wrote it: `TCPForward 127.0.0.1:9020`.
+const listenerBind = "127.0.0.1"
+
+var listenerForward = core.ForwardedToBind("TCPForward " + net.JoinHostPort(listenerBind, strconv.Itoa(core.DefaultListenerPort)))
+
+// refuseHubListener refuses the hub's own listener, whatever it holds, naming listener (t-e-19).
+// The hub ran it on the VM's loopback, listenerBind, and exposed it to the tailnet through Tailscale
+// Serve's forward, listenerForward. The listener judges loopback by its own bind and cannot see the
+// forward, so its /v1 served a request that presents nothing to every caller the forward admitted:
+// with its broker settings as well, since on loopback only a bearer kind closes /v1, and the hub
+// renders none. core.CheckBindCredential is that rule, and the hub passes it the bind and the
+// forward it would render, with no bearer kind; the refusal names gcp:ClusteredNatsHub, whose session
+// listener binds off loopback and takes its broker settings as its credential. The hub renders no
+// forward of its own (serveConfig), so a VM that held one from a prior render drops it.
+func refuseHubListener(args *NatsHubArgs) error {
+	err := core.CheckBindCredential("listener", core.ListenerConfig{
+		MachineID: args.Hostname, Port: core.DefaultListenerPort, ListenHost: listenerBind,
+	}, false, listenerForward)
+	return core.InputErrorf("listener", "%w. gcp:NatsHub renders no bearer kind for its listener, so it runs none: declare the session listener on gcp:ClusteredNatsHub instead", err)
 }
 
 // seededInput names the first plain input of args that the hub itself carries and that holds an
@@ -439,12 +347,9 @@ func resolveListener(args *NatsHubArgs) (*listener, error) {
 // tags, quoted by the hub's own refusals and written into the user data; the zone, the machine
 // type and the disk type, the group's and the template's inputs, the disk type also quoted by its
 // refusal; the images, written into the user data; the tailnet DNS name, which its own refusal
-// quotes and whose address the listener's environment carries, and each of the listener's further
-// allowed hosts, which that environment carries too; the listener's broker check, its
-// agentSecretsUrl, agentSecretsAudience and publicUrl, each rendered into that environment as one
-// variable of the listener's docker run command, and each named here by the hub's own path, since
-// core's refusal of a seed in one would name core's input and not the hub's; the authCallout's
-// issuer, xkey and serviceUser, for that reason too (calloutSeedFields); and each user's
+// quotes; the authCallout's issuer, xkey and serviceUser, each named here by the hub's own path,
+// since core's refusal of a seed in one would name core's field and not the hub's
+// (calloutSeedFields); and each user's
 // machine id, which the hub turns into that user's rules before core sees them, so core's refusal
 // would name a rule entry the user never wrote. A user's name and rule entries are core's:
 // core.Authorization refuses a seed in either before any refusal of its own quotes it, and the
@@ -470,16 +375,6 @@ func seededInput(args *NatsHubArgs) (string, bool) {
 			if kind.id != nil {
 				fields = append(fields, field{fmt.Sprintf("users[%d].%s", i, kind.input), *kind.id})
 			}
-		}
-	}
-	if args.Listener != nil {
-		fields = append(fields, field{"listener.image", args.Listener.Image}, field{"listener.seedSecret", args.Listener.SeedSecret},
-			field{"listener.natsAudience", args.Listener.NatsAudience},
-			field{"listener.agentSecretsUrl", args.Listener.AgentSecretsUrl},
-			field{"listener.agentSecretsAudience", args.Listener.AgentSecretsAudience},
-			field{"listener.publicUrl", args.Listener.PublicUrl})
-		for i, entry := range args.Listener.AllowedHosts {
-			fields = append(fields, field{fmt.Sprintf("listener.allowedHosts[%d]", i), entry})
 		}
 	}
 	for _, f := range calloutSeedFields(args.AuthCallout) {
@@ -508,15 +403,6 @@ func calloutSeedFields(callout *nats.AuthCalloutArgs) []struct{ path, value stri
 	return []struct{ path, value string }{
 		{"authCallout.issuer", callout.Issuer}, {"authCallout.xkey", callout.XKey}, {"authCallout.serviceUser", callout.ServiceUser},
 	}
-}
-
-// privateProjectsBesideListener refuses gcp:NatsHub's privateProjects beside the hub's own
-// listener, naming privateProjects. The VM hub is never a private project's hub: a listener of a
-// hub that may make a project private reads each decision's privacy from the secrets broker with
-// the projected token of its own account (core.CheckPrivacySource), which a VM's listener has no
-// form of, so a VM hub that may hold a private project runs no listener of its own.
-func privateProjectsBesideListener() error {
-	return core.InputErrorf("privateProjects", "privateProjects and listener: the VM hub is never private, and a listener of a hub that may make a project private reads each decision's privacy from the secrets broker as the projected token of its own account, which gcp:ClusteredNatsHub's session listener does; drop listener, or privateProjects")
 }
 
 // listenerIdentity refuses a hub's own listener's NATS identity where it does not fit the hub,
@@ -792,20 +678,7 @@ func NewNatsHub(ctx *pulumi.Context, name string, args *NatsHubArgs, opts ...pul
 	if err != nil {
 		return nil, err
 	}
-	// The listener's seed secret is the consumer's, as the seed in it is: the hub only reads it. A
-	// listener behind the auth service has no seed secret, and its account is granted none.
 	readsSecrets := []pulumi.Resource{version, accessor}
-	if l := s.vm.listener; l != nil && l.seedSecret != "" {
-		seedAccessor, err := secretmanager.NewSecretIamMember(ctx, hostname+"-listener-seed-accessor", &secretmanager.SecretIamMemberArgs{
-			SecretId: pulumi.String(l.seedSecret),
-			Role:     pulumi.String("roles/secretmanager.secretAccessor"),
-			Member:   account.Member,
-		}, child)
-		if err != nil {
-			return nil, err
-		}
-		readsSecrets = append(readsSecrets, seedAccessor)
-	}
 
 	var network pulumi.StringOutput
 	if args.Network == nil {
@@ -880,11 +753,10 @@ func NewNatsHub(ctx *pulumi.Context, name string, args *NatsHubArgs, opts ...pul
 		return nil, err
 	}
 
-	// The VM fetches the key at its first boot, and the listener's seed whenever the listener
-	// starts, so its group is created once the key's version and the account's access to both
-	// exist. pulumi up waits for the group to be stable, which it is once its VM is healthy, so a
-	// create or update may wait for the first boot's read of the data disk: its timeout is the
-	// initial delay after the provider's own (groupWait).
+	// The VM fetches the key at its first boot, so its group is created once the key's version and
+	// the account's access to it exist. pulumi up waits for the group to be stable, which it is once
+	// its VM is healthy, so a create or update may wait for the first boot's read of the data disk:
+	// its timeout is the initial delay after the provider's own (groupWait).
 	wait := (time.Duration(s.initialDelaySec)*time.Second + groupWait).String()
 	group, err := compute.NewInstanceGroupManager(ctx, hostname, &compute.InstanceGroupManagerArgs{
 		BaseInstanceName: pulumi.String(hostname),

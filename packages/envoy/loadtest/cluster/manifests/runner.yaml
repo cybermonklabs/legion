@@ -3,6 +3,14 @@
 # which it copies each step directory back, then removes it. loadgen runs detached inside it
 # through kubectl exec. A bare pod, so a crash is not hidden by a restart; activeDeadlineSeconds
 # ends it 12 hours after it starts. cluster.sh fills every placeholder from validated values.
+#
+# loadgen's credential at the listener is this pod's own: it runs as the ServiceAccount
+# loadgen-runner, which the deployment declares in the load-test namespace (the load-test Role writes
+# no ServiceAccount) and the listener lists (manifests/listener.yaml), and the kubelet keeps that
+# account's token for the listener's audience at /var/run/secrets/envoy-listener/token, rewriting
+# it before it expires. Every runner job reads it there at each request (-listener-token-file,
+# cluster.sh endpoints). That account's token marks no role: the listener takes a role mark from
+# Dispatch's account alone.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -15,6 +23,7 @@ metadata:
   annotations:
     cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
 spec:
+  serviceAccountName: loadgen-runner
   automountServiceAccountToken: false
   enableServiceLinks: false
   restartPolicy: Never
@@ -41,7 +50,17 @@ spec:
       volumeMounts:
         - name: work
           mountPath: /work
+        - name: envoy-listener-token
+          mountPath: /var/run/secrets/envoy-listener
+          readOnly: true
   volumes:
     - name: work
       emptyDir:
         sizeLimit: 4Gi
+    - name: envoy-listener-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: envoy-listener-loadtest
+              expirationSeconds: 3600
+              path: token

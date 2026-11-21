@@ -704,6 +704,22 @@ if absent=$(pod_connect absent); then echo "absent read: $absent"; fi`);
     );
   });
 
+  // The listener takes no shared token, and the daemon hands a role none: a role's one credential
+  // at the listener is the broker token it trades for its own session. A role that carries an Envoy
+  // bearer was handed a shared token from somewhere, named here by its variable, never its value.
+  test.each([
+    ["ENVOY_TOKEN_FILE", "/var/run/legion/providers/ENVOY_TOKEN"],
+    ["ENVOY_TOKEN", "shared-bearer-value"],
+  ])("a role that carries %s fails, naming the variable and not its value", (name, value) => {
+    const envs = { ...handed, "pod-a/tester": handedEnv({ [name]: value }) };
+    const { exitCode, out } = judge({ pods: { "pod-a": movedPod() }, envs, claims });
+    expect(exitCode).toBe(1);
+    expect(out).not.toContain(value);
+    expect(out).toEndWith(
+      `FAIL: claim-b's tester in pod pod-a has ${name} in its Oh My Pi's environment\n`
+    );
+  });
+
   test("after the respelling, a role still told the old spelling fails, naming the respelled input", () => {
     const respelled = "https://ENVOY.INTERNAL.EXAMPLE:8443";
     const envs = { ...handed, "pod-a/architect": handedEnv({ ENVOY_URL: respelled }) };

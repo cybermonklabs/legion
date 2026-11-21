@@ -185,9 +185,9 @@ func runNamed(t *testing.T, name string, args *gcp.NatsHubArgs, check func(*gcp.
 }
 
 // exampleArgs are a hub serving a host by its machine id, Dispatch by its listener's machine id, a
-// listener's own user by its listener machine id, and one user with explicit permissions, running
-// a listener of its own and admitting a client with no credential as the session user, on
-// placeholders.
+// listener's own user by its listener machine id, and one user with explicit permissions, admitting
+// a client with no credential as the session user, on placeholders. It runs no listener of its
+// own: the hub refuses one (TestAForwardedLoopbackListenerIsOffLoopback).
 func exampleArgs() *gcp.NatsHubArgs {
 	return &gcp.NatsHubArgs{
 		Users: []gcp.NATSUserArgs{
@@ -206,7 +206,6 @@ func exampleArgs() *gcp.NatsHubArgs {
 		Zone:           "us-central1-a",
 		NatsImage:      natsImage,
 		TailscaleImage: tailscaleImage,
-		Listener:       &gcp.HubListenerArgs{Image: listenerImage, SeedSecret: listenerSeed, NKey: keyListener},
 		SessionUser:    &gcp.SessionUserArgs{Name: "example-sessions", NKey: keySessions},
 	}
 }
@@ -255,11 +254,6 @@ func wantChildren(t *testing.T, network, subnetwork string) []child {
 		{versionType, "example-hub-tailnet-auth-key", map[string]any{"secret": "example-hub-tailnet-auth-key-id"}},
 		{accessorType, "example-hub-tailnet-auth-key-accessor", map[string]any{
 			"secretId": "example-hub-tailnet-auth-key-id",
-			"role":     "roles/secretmanager.secretAccessor",
-			"member":   "serviceAccount:" + email,
-		}},
-		{accessorType, "example-hub-listener-seed-accessor", map[string]any{
-			"secretId": listenerSeed,
 			"role":     "roles/secretmanager.secretAccessor",
 			"member":   "serviceAccount:" + email,
 		}},
@@ -501,8 +495,7 @@ func TestNatsHubGroupWaitsForTheKeyAndItsGrant(t *testing.T) {
 		"the VM is created after the key it fetches at boot")
 	require.Contains(t, deps, child+accessorType+"::example-hub-tailnet-auth-key-accessor",
 		"the VM is created after the grant that lets it read the key")
-	require.Contains(t, deps, child+accessorType+"::example-hub-listener-seed-accessor",
-		"the VM is created after the grant that lets its listener read its seed")
+	require.NotContains(t, strings.Join(deps, "\n"), "listener-seed-accessor", "the hub runs no listener, so it grants no seed")
 }
 
 func TestNatsHubMachineTypeAndDiskReachTheTemplate(t *testing.T) {

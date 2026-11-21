@@ -20,6 +20,9 @@ set -euo pipefail
 # pane seed (NATS_NKEY_SEED, NATS_NKEY_SEED_FILE) or daemon seed (NATS_DAEMON_NKEY_SEED,
 # NATS_DAEMON_NKEY_SEED_FILE).
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_SEED_FILE
+# The rig's listener takes no credential, and it refuses to start with a shared token
+# (ENVOY_API_TOKEN), so it inherits none an operator's shell may export.
+unset ENVOY_API_TOKEN
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d "/tmp/legion-e2e-controller.$$.XXXXXXXX")
@@ -93,7 +96,7 @@ trap 'exit 143' TERM
 legion() { "$work/legion" "$@"; }
 tm() { tmux -L accept "$@"; }
 state_json() { legion state --json --port "$daemon_port"; }
-envoy_role() { curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$envoy_port/v1/roles/$1"; }
+envoy_role() { curl -fsS "http://127.0.0.1:$envoy_port/v1/roles/$1"; }
 log_count() { jq -R --arg m "$1" 'fromjson? | select(.msg == $m)' "$daemon_log" | jq -s length; }
 # The operator's shell, less the running session's own OMP and Envoy variables (omp_session_unsets,
 # lib/omp-home.sh), with the run's own HOME for Oh My Pi: operator_env runs a command in it, and the
@@ -172,11 +175,11 @@ dsn="postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:${pg_port}/leg
 docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
 until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
-(umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
-  printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
-ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-controller-$$" NATS_URLS=$nats_url \
+# The listener is on loopback with no credential: the daemon, the controller, its Oh My Pi and this
+# script call it with none.
+ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-controller-$$" NATS_URLS=$nats_url \
   start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$work/envoy-listener"
-until_true 60 "the Envoy listener" curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$envoy_port/v1/sessions"
+until_true 60 "the Envoy listener" curl -fsS "http://127.0.0.1:$envoy_port/v1/sessions"
 note "listener port $envoy_port"
 
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
@@ -217,7 +220,6 @@ omp_invocation: mise x $pin -- omp
 envoy_url: http://127.0.0.1:$envoy_port
 nats_urls:
   - $nats_url
-envoy_token_file: $work/envoy-token
 probe_interval_seconds: 5
 # The wake pacing off (INFRA-976): this proof starts roles and waits on bounded times, and at the
 # default of 8 wakes a minute every wake after the first would spend those waits queueing. The two
@@ -234,7 +236,6 @@ project: $project
 daemon_url: http://127.0.0.1:$daemon_port
 operator_token_file: ./operator-token
 envoy_url: http://127.0.0.1:$envoy_port
-envoy_token_file: ./envoy-token
 nats_urls: [$nats_url]
 instructions: ./instructions.md
 omp_invocation: mise x $pin -- omp
@@ -342,7 +343,7 @@ jq -e --arg s "$session1" '.runtime == "tmux" and .external == true and .session
   fail "controllerLocator = $locator1"
 note "GET /legion/v1/state .controllerLocator = $locator1"
 role=legion-$ptoken-controller
-until_true 60 "the Envoy role $role to name $session1" sh -c "curl -fsS -H '@$work/envoy-auth-header' 'http://127.0.0.1:$envoy_port/v1/roles/$role' | jq -e --arg s '$session1' '.holder == \$s'"
+until_true 60 "the Envoy role $role to name $session1" sh -c "curl -fsS 'http://127.0.0.1:$envoy_port/v1/roles/$role' | jq -e --arg s '$session1' '.holder == \$s'"
 note "GET /v1/roles/$role → holder $(envoy_role "$role" | jq -r .holder)"
 registered=$(jq -R -c --arg s "$session1" 'fromjson? | select(.msg == "api: controller registered" and .session == $s) | {claim, generation, session, pluginContract}' "$daemon_log" | head -1)
 [ -n "$registered" ] || fail "the daemon logged no controller registration for $session1"
@@ -355,12 +356,13 @@ omp1=$(controller_omp "$ctl_state" "$cli1") || fail "legion controller start ($c
 env_of "$omp1" HOME >/dev/null || fail "omp $omp1's environment could not be read"
 for pair in LEGION_CONTROLLER=1 LEGION_ROLE=controller "LEGION_PROJECT=$ptoken" \
   "LEGION_CONTROLLER_SECRET_FILE=$ctl_state/secrets/$role" \
-  "ENVOY_TOKEN_FILE=$work/envoy-token" "ENVOY_NATS_URL=$nats_url" "HOME=$omp_home" "OMP_PROFILE=$profile"; do
+  "ENVOY_NATS_URL=$nats_url" "HOME=$omp_home" "OMP_PROFILE=$profile"; do
   [ "$(env_of "$omp1" "${pair%%=*}")" = "${pair#*=}" ] || fail "omp $omp1 has ${pair%%=*}=$(env_of "$omp1" "${pair%%=*}"), want ${pair#*=}"
 done
 # No grant file: the controller's `legion` tool (read_state, set_status) mints its grants
-# in-process, and no agent runs `legion` from bash.
-for absent in LEGION_GRANT_FILE LEGION_GRANT; do
+# in-process, and no agent runs `legion` from bash. No Envoy bearer either: the controller's
+# configuration names none, and the listener, on loopback, takes none.
+for absent in LEGION_GRANT_FILE LEGION_GRANT ENVOY_TOKEN_FILE ENVOY_TOKEN; do
   st=0
   env_has "$omp1" "$absent" || st=$?
   [ "$st" = 1 ] || fail "omp $omp1 carries $absent=$(env_of "$omp1" "$absent") (env_has status $st)"
@@ -447,7 +449,7 @@ until_true 180 "controllerLocator to name a second session" sh -c "'$work/legion
 locator2=$(state_json | jq -c .controllerLocator)
 session2=$(jq -r .sessionId <<<"$locator2")
 note "GET /legion/v1/state .controllerLocator = $locator2"
-until_true 60 "the Envoy role to move to $session2" sh -c "curl -fsS -H '@$work/envoy-auth-header' 'http://127.0.0.1:$envoy_port/v1/roles/$role' | jq -e --arg s '$session2' '.holder == \$s'"
+until_true 60 "the Envoy role to move to $session2" sh -c "curl -fsS 'http://127.0.0.1:$envoy_port/v1/roles/$role' | jq -e --arg s '$session2' '.holder == \$s'"
 note "GET /v1/roles/$role → holder $session2"
 mints=$(jq -R -c 'fromjson? | select(.msg | startswith("api: minted a controller capability")) | .generation' "$daemon_log" | tr '\n' ' ')
 [ "$mints" = "1 2 " ] || fail "capability mints logged: $mints"
@@ -464,6 +466,8 @@ note "the same grant, after the second start → $code $(cat "$evidence/checks/s
 pass
 
 begin liveness-probe-against-the-listener
+# The probe reads the listener as the controller's own liveness probe does, with no credential:
+# the listener is on loopback and takes none.
 cat >"$work/liveprobe.go" <<'GO'
 package main
 
@@ -471,22 +475,20 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/controller"
 )
 
 func main() {
-	token, _ := os.ReadFile(os.Args[2])
-	p := controller.NewProber(controller.ProberOptions{EnvoyURL: os.Args[1], EnvoyToken: strings.TrimSpace(string(token)), Project: os.Args[3]})
-	for _, session := range os.Args[4:] {
+	p := controller.NewProber(controller.ProberOptions{EnvoyURL: os.Args[1], Project: os.Args[2]})
+	for _, session := range os.Args[3:] {
 		fmt.Printf("%s=%s\n", session, p.Probe(context.Background(), session))
 	}
 }
 GO
 printf '{"Replace":{"%s":"%s"}}' "$root/packages/daemon/cmd/liveprobe-accept/main.go" "$work/liveprobe.go" >"$work/overlay.json"
 verdicts=$(cd "$root/packages/daemon" && go run -overlay "$work/overlay.json" ./cmd/liveprobe-accept \
-  "http://127.0.0.1:$envoy_port" "$work/envoy-token" "$ptoken" "$session2" "$session1" 2>"$evidence/checks/liveprobe.log" | tr '\n' ' ')
+  "http://127.0.0.1:$envoy_port" "$ptoken" "$session2" "$session1" 2>"$evidence/checks/liveprobe.log" | tr '\n' ' ')
 [ "$verdicts" = "$session2=live $session1=gone " ] || fail "verdicts: $verdicts; log $(cat "$evidence/checks/liveprobe.log")"
 note "controller.Prober on the live listener: $verdicts"
 note "$(grep -o 'controller liveness: .*' "$evidence/checks/liveprobe.log" | head -1)"

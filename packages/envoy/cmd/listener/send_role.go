@@ -73,8 +73,8 @@ func answerRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps,
 // the role moves - the listener copies a marked message to the role's next holder, and keeps one
 // whose role moved before it arrived - so it is taken from Dispatch's verified identity alone, and
 // never from the body's source, which is the caller's own word. Every other caller is refused: a
-// session's broker token, the shared token, another service's identity token, no credential, and
-// any caller of a listener that names no Dispatch principal.
+// session's broker token, another service's identity token, no credential, and any caller of a
+// listener that names no Dispatch principal.
 func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 	if dispatchPrincipal == "" {
 		return "role is taken from Dispatch's own principal alone, and this listener names none (ENVOY_DISPATCH_PRINCIPAL)"

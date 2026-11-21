@@ -227,17 +227,18 @@ to its clients as `PGPASSWORD` alone. `compose/dispatch.env.example`'s URL is in
 | `ENVOY_SENDER_MESSAGES_PER_MINUTE` | no | How many messages one agent session may send through this listener in a minute, `/v1/messages/send` and `/v1/messages/publish` together: a whole number from 0 to 60000. Unset, blank or `0` sets no limit, and the routes answer as they do without the setting. The listener keeps one count for each sending session. The count starts at the burst and gains one message every 60 seconds divided by the rate, up to the burst. The counts are this process's own: each listener, and each replica of one, keeps its own, and a restart fills each count again. A message that finds its sender's count at 0 is answered `429` before the listener reads a session, finds a role's holder, reports a wake or stores it. `Retry-After` gives the whole seconds, rounded up and at least 1, until the count holds one message again. The JSON body holds `reason: "sender_rate_limited"`, `retry_after_seconds` (the same seconds), `messages_per_minute`, `burst` and an `error` that is this sentence with the values filled in: `Your sending is rate limited. This message was not sent. This listener lets one session send <rate> messages a minute and <burst> at once. You can send it again after <seconds> seconds.` Where a value in the sentence is 1, its noun is singular: `1 message a minute`, `after 1 second`. The request's log line has the outcome `sender_rate_limited` and the field `sender`, the session the limit counted. The sender is the session a secrets-broker token proves, else the request's `source_session`. A caller that presents a token and names another session in the body gets `403`. A caller that the listener admits on a bearer, or with no credential where `/v1` is open, names the sender itself in `source_session`. Such a caller can send under another session's id and spend that session's count, which then takes up to `burst × 60 ÷ rate` seconds to fill again. That caller can already send messages as that session. A message with another `source`, such as `dispatch` or `envoy`, is not counted, with a token or without one, and neither is a message with no sender, which is how the Legion daemon sends its notices. The agents' own Envoy tools send the source `agent` and give the agent no argument for it, so the limit counts each of their messages that has a sender. A caller that writes its own request can give another source, so the limit is not a security boundary. A counted message costs one when the listener stores it, may have stored it (any answer after an earlier forward of the same role send, or a `503` after the listener sent the message to the stream and the write's acknowledgement did not arrive in time) or reports a wake for it. A role send's `504` costs one whether or not a forward went out, also when the window ended before the first forward. The listener does not tell a `504` that forwarded nothing from one whose forward the stream may hold. A refusal before any store or wake report, such as a `400`, `403`, `413` or a `503` before the listener sent anything (one while it waits for NATS to reconnect), costs nothing. A repeat the listener recognises costs nothing too: the stream's `duplicate` answer, a repeat of a role message kept for the role's next holder, and a repeat of a role forward the route made in the last 10 minutes. So does an echo, a role message from the session that holds the role. A `duplicate` that answers the listener's own second send, made after its connection to NATS closed under the first, costs one, since the first may have stored the message. A role send's echo, repeat or `403` costs nothing only while the send has made no forward, since an earlier forward may have stored the message. A repeat that finds the count at 0 is refused as a new message is. The clients show the sentence and do not send the message again by themselves, except the Legion stall notice, which waits the seconds and sends it again at most 3 times. The start log has one line: `listener sender limit: <rate> messages a minute, <burst> at once, for each agent session in this process`, or `listener sender limit: none`. Where the rate is 1, the line reads `1 message a minute`. Any other value refuses startup naming the variable and the value. |
 | `ENVOY_SENDER_MESSAGE_BURST` | no | How many of those messages one session may send at once: a whole number of 1 or more. Unset, it equals the rate. Set with no `ENVOY_SENDER_MESSAGES_PER_MINUTE`, or with a rate of `0`, it refuses startup naming the variable, and so does any other value. |
 | `ENVOY_LISTENER_PORT` | no | Defaults to `9020`. |
-| `ENVOY_LISTEN_HOST` | no | Defaults to `127.0.0.1`. |
+| `ENVOY_LISTEN_HOST` | no | Defaults to `127.0.0.1`. A listener bound to an address other than loopback (this, or the `ENVOY_LISTEN_FD` socket's) serves `/v1` only to a caller that presents a credential it verifies, and starts only with one: the OIDC pair, the Google pair, or the broker settings (`ENVOY_AGENT_SECRETS_URL`, with `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` or `ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE`, and `ENVOY_PUBLIC_URL`), which off loopback are a credential like either pair. With none it refuses startup naming the three, and with only the broker settings it answers a request that presents nothing `401`. A listener on loopback with neither pair serves a request that presents no credential, with or without the broker settings; with them it verifies a broker token that is presented. |
 | `ENVOY_LISTEN_FD` | no | An inherited listening TCP socket, by descriptor number, the listener serves on instead of binding, for a process a test harness starts: the harness opens the socket on port 0 and holds the port the kernel chose until the listener serves on it. Not for a container, since Docker cannot pass a host descriptor into one. `ENVOY_LISTEN_HOST` and the listener's `PORT` (which the compose files set from `ENVOY_LISTENER_PORT`), when set, must name the socket's address (`PORT=0` never does); a descriptor that is not a listening TCP socket, or a setting that names another address, refuses startup naming the variable, with nothing bound in its place. The API auth rule below judges the socket's own address. |
-| `ENVOY_API_TOKEN` | conditional | Required when the listen address (`ENVOY_LISTEN_HOST`, or the `ENVOY_LISTEN_FD` socket's) is not loopback and neither the OIDC pair nor the Google pair is set; matching bearer token for Listener API requests. Empty no longer opens `/v1` while a verifier is configured. Each request it admits is counted as `credential="shared_token"` in `envoy_listener_requests_total` and logs `listener: request admitted on the shared token` at most once a minute. |
-| `ENVOY_OIDC_ISSUER` | conditional | OIDC issuer whose projected service-account tokens authenticate to `/v1` beside `ENVOY_API_TOKEN`. Set with `ENVOY_OIDC_AUDIENCE` or not at all; half the pair refuses to boot naming the missing one, as does an issuer that does not answer discovery. |
+| `ENVOY_API_TOKEN` | no | No longer read: the listener takes no shared token. Set to anything, it refuses startup naming the variable and what replaces it: a caller presents a broker token or a platform identity token, which the broker settings, the OIDC pair or the Google pair verify, and a listener on loopback needs none of them. Unset it. |
+| `ENVOY_OIDC_ISSUER` | conditional | OIDC issuer whose projected service-account tokens authenticate to `/v1`. Set with `ENVOY_OIDC_AUDIENCE` or not at all; half the pair refuses to boot naming the missing one, as does an issuer that does not answer discovery. |
 | `ENVOY_OIDC_AUDIENCE` | conditional | Audience those tokens must carry (`envoy`). Set with `ENVOY_OIDC_ISSUER` or not at all. |
 | `ENVOY_OIDC_ACCOUNTS` | no | `system:serviceaccount:<namespace>:<name>` subjects separated by commas or spaces: the only accounts whose projected tokens the OIDC pair admits. Unset or empty admits every account the issuer signs for, which is any pod of the cluster. A value that names no account (only blanks or commas) refuses startup naming the setting, and so does a comma that leaves an entry empty (a leading or trailing comma, or two in a row), naming which entry. Set without `ENVOY_OIDC_ISSUER` it refuses startup naming the pair it needs, and with an entry of another shape it refuses startup naming the entry; an unlisted account is answered 401 and logged `listener: service-account token rejected` with `reason` `not_listed` and the subject. |
 | `ENVOY_OIDC_GOOGLE_AUDIENCE` | conditional | Audience a caller's Google identity token must carry, for a caller on Google Cloud that holds no Kubernetes token (a Cloud Run service). The issuer is Google's, read at boot; an issuer that does not answer discovery refuses to boot. Set with `ENVOY_OIDC_GOOGLE_ACCOUNTS` or not at all; half the pair refuses to boot naming the missing one. |
 | `ENVOY_OIDC_GOOGLE_ACCOUNTS` | conditional | Service account addresses the Google pair admits, separated by commas or spaces and compared in lower case; the token must name one in its `email` claim with `email_verified` true, so the caller fetches it with `format=full`. An entry that is not an address refuses startup naming it, and so does a comma that leaves an entry empty. A refused token is logged `listener: Google identity token rejected` with its `reason` and, for a token that verifies, the account it names. |
-| `ENVOY_DISPATCH_PRINCIPAL` | no | Dispatch's own verified principal: a `system:serviceaccount:<namespace>:<name>` subject the OIDC pair admits, or a Google service account address the Google pair admits. A `/v1/messages/send` request may carry `role`, the role a Dispatch message for a `role:` route is sent for, only when its identity token proves this principal; every other caller carrying it (a session's broker token, the shared token, another service's token, no credential) is refused `403` naming `role`, and with this unset every such send is. A marked send whose role's claim names another session than its target, or none, is kept on the role's kept lane, raises the role's wake report, and is answered `202` with `kept` and `kept_until`. A value of neither shape, or one no configured pair could prove (a subject with no OIDC pair or one `ENVOY_OIDC_ACCOUNTS` leaves out, an address with no Google pair or one it does not list), refuses startup naming the setting. The boot log names it on its `listener role marks:` line. |
-| `ENVOY_ALLOWED_HOSTS` | conditional | Comma-separated host names or addresses (no port) an unauthenticated listener serves `/v1` to beside loopback; required for each name clients reach it by when neither `ENVOY_API_TOKEN` nor an OIDC or Google pair is set and they do not dial loopback. Any other `Host` gets a JSON 421. Unused when a bearer is required. Each request such a listener admits with no broker token is counted as `credential="none"` in `envoy_listener_requests_total` and logs `listener: request admitted with no credential` at most once a minute. |
-| `ENVOY_API_ALLOW_UNAUTHENTICATED` | conditional | Set to `1` to start a listener whose address is not loopback with no `ENVOY_API_TOKEN`, OIDC pair or Google pair. Without it such a listener refuses to start. Set it only where something else fences the listener's port, because the flag itself admits every caller that reaches the port. The clustered hub's tailnet-only session listener (`envoy-infra:gcp:ClusteredNatsHub`'s `tailnet.listener` with no `clientNamespaces`) is the deployment that runs this way: it binds `0.0.0.0` in a pod of its own, and its NetworkPolicy admits TCP 9020 from the tailnet entry's pods alone. There that NetworkPolicy is what decides who may call `/v1`: the `Host` check admits a loopback name or address beside the names `ENVOY_ALLOWED_HOSTS` holds, so it stops a page that rebinds its own name and not a caller the policy already admits. This flag decides nothing. A hub listener that pods of the cluster reach sets the OIDC pair with `ENVOY_OIDC_ACCOUNTS` instead. |
+| `ENVOY_DISPATCH_PRINCIPAL` | no | Dispatch's own verified principal: a `system:serviceaccount:<namespace>:<name>` subject the OIDC pair admits, or a Google service account address the Google pair admits. A `/v1/messages/send` request may carry `role`, the role a Dispatch message for a `role:` route is sent for, only when its identity token proves this principal; every other caller carrying it (a session's broker token, another service's token, no credential) is refused `403` naming `role`, and with this unset every such send is. A marked send whose role's claim names another session than its target, or none, is kept on the role's kept lane, raises the role's wake report, and is answered `202` with `kept` and `kept_until`. A value of neither shape, or one no configured pair could prove (a subject with no OIDC pair or one `ENVOY_OIDC_ACCOUNTS` leaves out, an address with no Google pair or one it does not list), refuses startup naming the setting. The boot log names it on its `listener role marks:` line. |
+| `ENVOY_ALLOWED_HOSTS` | no | Comma-separated host names or addresses (no port) an open listener serves `/v1` to beside loopback: one bound to loopback that takes neither the OIDC pair nor the Google pair, which serves a request that presents no credential. Set it to each name other than a loopback one that its clients on the machine reach it by. Any other `Host` gets a JSON 421. Unused when a credential is required, which it is off loopback whatever the listener takes. Each request an open listener admits with no broker token is counted as `credential="none"` in `envoy_listener_requests_total` and logs `listener: request admitted with no credential` at most once a minute. Such a listener with no broker settings serves a request that presents a broker token unverified, counted as `credential="none_broker_token"`, and logs `listener: request admitted with a broker token this listener does not verify` at most once a minute. |
+| `ENVOY_API_ALLOW_UNAUTHENTICATED` | no | No longer read: `/v1` serves a request that presents no credential only on loopback. Set to anything, it refuses startup naming the variable, the loopback bind and the three credentials a listener off loopback verifies. Unset it. The clustered hub's session listener, which set it, takes the broker settings instead (`envoy-infra:gcp:ClusteredNatsHub` renders them from its listener args' `agentSecretsUrl`). |
+| `ENVOY_V1_OPEN_WITH_TOKEN_CHECKS` | no | No longer read: it kept `/v1` open to a request that presents no credential beside a token check, and `/v1` now serves such a request only on loopback. Set to anything, it refuses startup naming the variable, the loopback bind and the three credentials a listener off loopback verifies. Unset it. |
 | `ENVOY_WEBHOOKS` | no | Comma-separated enabled webhook providers. Without `github` the listener opens no CI store and publishes no CI settlements. |
 | `ENVOY_GITHUB_WEBHOOK_SECRET` | conditional | Required when GitHub webhooks are enabled. |
 | `ENVOY_GITHUB_MENTION_TRIGGER` | no | Defaults to `@legion`. |
@@ -310,9 +311,9 @@ The Dispatch service reads its public browser origin and NATS URLs from
 | `DISPATCH_DEFAULT_PROJECT` | no | Native Dispatch project for external repositories without a stored mapping. |
 | `DISPATCH_NATS_DISABLED` | no | Set to `1` to run database and live-socket paths without NATS. |
 | `ENVOY_URL` | no | Envoy listener base URL for live agent titles; defaults to `http://127.0.0.1:9020` (set it when `ENVOY_LISTENER_PORT` changes). |
-| `ENVOY_TOKEN` | conditional | Matching Listener API bearer token when `ENVOY_API_TOKEN` protects the listener. Beside Dispatch's identity (`ENVOY_ACCOUNT_TOKEN_FILE` or `ENVOY_ACCOUNT_GOOGLE_AUDIENCE`) it is sent only on a call with no role mark that the listener refused `401` on that identity twice. A send for a `role:` route is never made on it. |
-| `ENVOY_ACCOUNT_TOKEN_FILE` | conditional | File holding Dispatch's own service-account token for the listener's audience, presented on every listener call in `ENVOY_TOKEN`'s place and read at each call, and once more after a `401` (a token whose own expiry is under ten seconds away is not presented). With it set, a message or mention for a `role:` route carries its role, which the listener takes from the principal `ENVOY_DISPATCH_PRINCIPAL` names alone, so the session that takes the role from the one Dispatch sent to receives the message and may answer it. Set it or `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` for role routes to work. |
-| `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` | conditional | On Google Cloud: the audience of the identity token Dispatch's machine's service account presents in `ENVOY_TOKEN`'s place, the listener's `ENVOY_OIDC_GOOGLE_AUDIENCE` (with that account's address in the listener's `ENVOY_OIDC_GOOGLE_ACCOUNTS` and its `ENVOY_DISPATCH_PRINCIPAL`). The metadata server mints the token. A machine no metadata server answers for has no identity, and role routes are refused. Not with `ENVOY_ACCOUNT_TOKEN_FILE`: both refuse startup. |
+| `ENVOY_TOKEN` | removed | The listener's shared bearer, no longer read: a start that sets it is refused, naming `ENVOY_ACCOUNT_TOKEN_FILE` and `ENVOY_ACCOUNT_GOOGLE_AUDIENCE`, the identity Dispatch presents instead. `compose/dispatch.compose.yml` does not pass it. |
+| `ENVOY_ACCOUNT_TOKEN_FILE` | conditional | File holding Dispatch's own service-account token for the listener's audience, presented as the bearer of every listener call and read at each call, and once more after a `401` (a token whose own expiry is under ten seconds away is not presented). A call refused on both tries ends there: no call is made on another credential. With it set, a message or mention for a `role:` route carries its role, which the listener takes from the principal `ENVOY_DISPATCH_PRINCIPAL` names alone, so the session that takes the role from the one Dispatch sent to receives the message and may answer it. Set it or `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` for role routes to work; with neither, Dispatch presents no credential, which only a loopback listener with neither an OIDC nor a Google pair serves. |
+| `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` | conditional | On Google Cloud: the audience of the identity token Dispatch's machine's service account presents as the bearer of every listener call, the listener's `ENVOY_OIDC_GOOGLE_AUDIENCE` (with that account's address in the listener's `ENVOY_OIDC_GOOGLE_ACCOUNTS` and its `ENVOY_DISPATCH_PRINCIPAL`). The metadata server mints the token, and mints it again after a `401`; a call refused on both tries ends there. A machine no metadata server answers for has no identity, and role routes are refused. Not with `ENVOY_ACCOUNT_TOKEN_FILE`: both refuse startup. |
 | `DISPATCH_OIDC_ISSUER` | conditional | OIDC issuer whose projected service-account tokens authenticate as agents beside `DISPATCH_AGENT_TOKEN`. Set with `DISPATCH_OIDC_AUDIENCE` or not at all; half the pair refuses to boot naming the missing one. An issuer that does not answer discovery refuses no boot: Dispatch starts and serves, discovers the issuer in the background, and until then answers a JWT-shaped bearer `503 OIDC_ISSUER_UNAVAILABLE` (`/healthz` reports `service_tokens` false) while every other credential is served. |
 | `DISPATCH_OIDC_AUDIENCE` | conditional | Audience those tokens must carry (`dispatch`). Set with `DISPATCH_OIDC_ISSUER` or not at all. |
 | `DISPATCH_URL` | no | Host-adapter override for the Dispatch base URL; use with `DISPATCH_TOKEN`. |
@@ -325,10 +326,16 @@ The Dispatch signing material is a named volume; the database is external.
 ## Dispatch's identity at the Envoy listener
 
 The listener takes the role a send is for (its role mark) from Dispatch's own verified identity
-alone, and refuses it from the shared `ENVOY_TOKEN`. A send marked with its role reaches the
-session that takes the role from the one Dispatch sent to; an unmarked one would not. So
-Dispatch sends a message or mention for a `role:` route only on its identity, and with none it
-refuses the send: the attempt fails at once, and its recorded error names these settings.
+alone. A send marked with its role reaches the session that takes the role from the one Dispatch
+sent to; an unmarked one would not. So Dispatch sends a message or mention for a `role:` route
+only on its identity, and with none it refuses the send: the attempt fails at once, and its
+recorded error names these settings.
+
+That identity is the one credential Dispatch presents to the listener; the listener has no shared
+token. A call the listener answers `401` is made once more on a fresh token (the file read again,
+or a Google token minted again), and a call refused on both tries fails with that answer, logged
+at Error. A Dispatch with neither setting presents no credential at all, which only a loopback
+listener with neither an OIDC nor a Google pair serves.
 
 - **On Google Cloud:** set Dispatch's `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` to the listener's
   `ENVOY_OIDC_GOOGLE_AUDIENCE`, put the address of Dispatch's VM service account in the listener's
@@ -342,11 +349,19 @@ refuses the send: the attempt fails at once, and its recorded error names these 
 
 Messages and mentions to a `session:` route need neither.
 
-**Setting a verifier closes the listener to every caller with no bearer.** A listener with the
-OIDC pair or the Google pair set answers `401` to a request that presents no token, so the host's
-own agent sessions, which reach an open loopback listener with none, stop working unless they
-present the listener's shared token. Set `ENVOY_API_TOKEN` with the verifier, and give each host
-session that token: `ENVOY_TOKEN` in its environment, or `envoy.token` in its `envoy.json`.
+**Setting a verifier closes the listener to every caller with no token it verifies.** A listener
+with the OIDC pair or the Google pair set answers `401` to a request that presents no such token,
+on loopback too, so the host's own agent sessions, which reach an open loopback listener with
+none, need a credential the listener verifies. No shared token serves them: the listener refuses
+to start with `ENVOY_API_TOKEN` set. Give the listener its broker settings beside the verifier:
+`ENVOY_AGENT_SECRETS_URL`, the secrets broker's URL; the listener's own identity at the broker,
+`ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE` (on Google Cloud, the broker's `BROKER_GOOGLE_OIDC_AUDIENCE`)
+or `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` (a token file, which the compose file mounts); and
+`ENVOY_PUBLIC_URL`, the origin the sessions dial. List that identity in the broker's
+`BROKER_API_ACCOUNTS` as its `listener` caller. A session on a machine signed in to the broker then
+presents its broker token (DPoP), which the listener verifies; a session on a machine with no
+broker sign-in has no credential this listener takes. Remove `ENVOY_TOKEN` and `envoy.token` from
+the host's sessions: a session that still holds one presents it, and the listener refuses it.
 
 With the compose files, the Dispatch container's start is refused (exit 78), naming both of
 Dispatch's two settings, until one is set in `compose/.env`; under `restart: unless-stopped` the
@@ -356,33 +371,38 @@ backup and leaves the image that serves in place, when Compose resolves neither 
 the settings from `docker compose config`, so `NAME=""` and `NAME="${UNSET:-}"` count as unset, as
 the container would get them); started by hand,
 the refusal shows only in `docker compose ps` and `logs`. `listener.compose.yml` (or
-`single-node.compose.yml`) passes the listener's verifier, principal and shared token from the
-same file. On a Google Cloud VM, whose service account is Dispatch's identity:
+`single-node.compose.yml`) passes the listener's verifier, principal and broker settings from the
+same file; neither passes `ENVOY_API_TOKEN`, nor `dispatch.compose.yml` `ENVOY_TOKEN`, so delete
+both from an older `compose/.env`. On a Google Cloud VM, whose service account is Dispatch's
+identity and the listener's:
 
 ```bash
 cd packages/envoy/deploy
 account=$(curl -s -H 'Metadata-Flavor: Google' \
   http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email)
-token=$(openssl rand -hex 32)
+broker=https://broker.example        # the secrets broker's URL
+broker_audience=broker-audience      # the broker's BROKER_GOOGLE_OIDC_AUDIENCE
 cat >>compose/.env <<EOF
 ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener
 ENVOY_OIDC_GOOGLE_AUDIENCE=envoy-listener
 ENVOY_OIDC_GOOGLE_ACCOUNTS=$account
 ENVOY_DISPATCH_PRINCIPAL=$account
-ENVOY_API_TOKEN=$token
-ENVOY_TOKEN=$token
+ENVOY_AGENT_SECRETS_URL=$broker
+ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE=$broker_audience
+ENVOY_PUBLIC_URL=http://127.0.0.1:9020
 EOF
 scripts/up-listener.sh
 scripts/up-dispatch.sh
 ```
 
-Then give the host's sessions the same token (`ENVOY_TOKEN=$token`, or `"token"` under `envoy` in
-their `envoy.json`) before they next connect.
+Then list `$account` in the broker's `BROKER_API_ACCOUNTS` as its `listener` caller, so the broker
+answers the listener's reading of a session's token.
 
 Elsewhere, set `ENVOY_ACCOUNT_TOKEN_FILE` to the host path of Dispatch's token file (the compose
 file mounts it into the container, and refuses `up` when the path does not exist), and the
-listener's `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE`, `ENVOY_DISPATCH_PRINCIPAL` and
-`ENVOY_API_TOKEN` instead.
+listener's `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE`, `ENVOY_DISPATCH_PRINCIPAL`,
+`ENVOY_AGENT_SECRETS_URL`, `ENVOY_PUBLIC_URL` and `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` (the
+host path of the listener's own token for the broker, which the compose file mounts) instead.
 
 ## Backups and restore
 

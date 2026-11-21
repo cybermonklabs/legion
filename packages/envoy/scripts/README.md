@@ -596,7 +596,7 @@ for `/healthz` and `GET /v1/sessions`. It needs bash, curl, getent and sed only
 (no jq), so it also runs inside a listener task over `aws ecs execute-command`.
 
 ```bash
-ENVOY_TOKEN_FILE=<path to the listener bearer> \
+ENVOY_TOKEN_FILE=<path to a platform identity token the listener verifies> \
   packages/envoy/scripts/listener-deploy-probe.sh \
   --url http://envoy-listener.internal.example:9020 --duration 300
 ```
@@ -607,8 +607,13 @@ and let it run past the old task's exit. Options:
 - `--targets <ip,ip>` — probe these addresses instead of resolving the name,
   e.g. both tasks' addresses from `aws ecs describe-tasks`.
 - `--token-file <path>` — the listener's `/v1` bearer (default
-  `$ENVOY_TOKEN_FILE`, then `$ENVOY_TOKEN`). The bearer reaches curl in a header
-  file, never on its command line.
+  `$ENVOY_TOKEN_FILE`; otherwise none, which a loopback listener serves): a
+  platform identity token the listener verifies, such as a projected
+  service-account token for its audience. The probe reads the file again at each
+  tick, since its issuer rewrites it before it lapses. The listener takes no
+  shared token, so the probe reads no `ENVOY_TOKEN`: a run whose environment
+  sets it refuses with exit 2, naming `--token-file` and `ENVOY_TOKEN_FILE`. The
+  bearer reaches curl in a header file, never on its command line.
 - `--interval <s>` (default 1) and `--duration <s>` (default 300; `0` runs
   until Ctrl-C, which still prints the summary).
 - `--send-to <session>` — also `POST /v1/messages/send` to that session at every

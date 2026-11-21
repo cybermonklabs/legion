@@ -19,10 +19,6 @@
             "value": "0.0.0.0"
           },
           {
-            "name": "ENVOY_ALLOWED_HOSTS",
-            "value": "envoy-hub.example-tailnet.ts.net"
-          },
-          {
             "name": "ENVOY_MACHINE_ID",
             "value": "envoy-hub"
           },
@@ -69,10 +65,6 @@
           {
             "name": "ENVOY_ALL_PROJECTS_ACCOUNTS",
             "value": "system:serviceaccount:example-dispatch:example-dispatch"
-          },
-          {
-            "name": "ENVOY_V1_OPEN_WITH_TOKEN_CHECKS",
-            "value": "true"
           },
           {
             "name": "ENVOY_OIDC_ISSUER",

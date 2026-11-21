@@ -46,87 +46,73 @@ func TestAPIAuth(t *testing.T) {
 	const unauthorized = "{\"error\":\"unauthorized\"}\n"
 
 	cases := []struct {
-		name       string
-		token      string
-		oidc       bool
-		path       string
-		authorize  string
-		wantStatus int
-		wantBody   string
+		name string
+		// offLoopback is a listener bound off loopback, whose /v1 is closed whatever it takes.
+		offLoopback bool
+		oidc        bool
+		path        string
+		authorize   string
+		wantStatus  int
+		wantBody    string
 		// wantReason is the failure class the reject must log, empty when the
 		// request must produce no rejection line at all.
 		wantReason string
 	}{
 		{
-			name:       "allows v1 requests when neither token nor verifier is configured",
+			name:       "allows v1 requests on loopback when no bearer is configured",
 			path:       "/v1/sessions",
 			wantStatus: http.StatusNoContent,
 		},
 		{
-			name:       "rejects v1 requests without a bearer token",
-			token:      "expected-token",
-			path:       "/v1/sessions",
-			wantStatus: http.StatusUnauthorized,
-			wantBody:   unauthorized,
+			name:        "rejects v1 requests that present nothing off loopback",
+			offLoopback: true,
+			path:        "/v1/sessions",
+			wantStatus:  http.StatusUnauthorized,
+			wantBody:    unauthorized,
 		},
 		{
-			name:       "rejects v1 requests with a wrong bearer token",
-			token:      "expected-token",
-			path:       "/v1/sessions",
-			authorize:  "Bearer wrong-token",
-			wantStatus: http.StatusUnauthorized,
-			wantBody:   unauthorized,
+			name:        "rejects a bearer off loopback that the listener does not take",
+			offLoopback: true,
+			path:        "/v1/sessions",
+			authorize:   "Bearer wrong-token",
+			wantStatus:  http.StatusUnauthorized,
+			wantBody:    unauthorized,
 		},
 		{
-			name:       "allows v1 requests with the configured bearer token",
-			token:      "expected-token",
-			path:       "/v1/sessions",
-			authorize:  "Bearer expected-token",
-			wantStatus: http.StatusNoContent,
+			name:        "allows health checks off loopback with no credential",
+			offLoopback: true,
+			path:        "/healthz",
+			wantStatus:  http.StatusNoContent,
 		},
 		{
-			name:       "allows health checks without the bearer token",
-			token:      "expected-token",
-			path:       "/healthz",
-			wantStatus: http.StatusNoContent,
+			name:        "allows metrics off loopback with no credential",
+			offLoopback: true,
+			path:        "/metrics",
+			wantStatus:  http.StatusNoContent,
 		},
 		{
-			name:       "allows metrics without the bearer token",
-			token:      "expected-token",
-			path:       "/metrics",
-			wantStatus: http.StatusNoContent,
+			name:        "allows webhook ingress off loopback with no credential",
+			offLoopback: true,
+			path:        "/webhook/github",
+			wantStatus:  http.StatusNoContent,
 		},
 		{
-			name:       "allows webhook ingress without the bearer token",
-			token:      "expected-token",
-			path:       "/webhook/github",
-			wantStatus: http.StatusNoContent,
+			name:        "does not exempt the unused plural webhook path",
+			offLoopback: true,
+			path:        "/webhooks/github",
+			wantStatus:  http.StatusUnauthorized,
+			wantBody:    unauthorized,
 		},
 		{
-			name:       "does not exempt the unused plural webhook path",
-			token:      "expected-token",
-			path:       "/webhooks/github",
-			wantStatus: http.StatusUnauthorized,
-			wantBody:   unauthorized,
+			name:        "allows a verified service-account token off loopback",
+			offLoopback: true,
+			oidc:        true,
+			path:        "/v1/sessions",
+			authorize:   "Bearer " + serviceToken,
+			wantStatus:  http.StatusNoContent,
 		},
 		{
-			name:       "allows the shared token while a verifier is configured",
-			token:      "expected-token",
-			oidc:       true,
-			path:       "/v1/sessions",
-			authorize:  "Bearer expected-token",
-			wantStatus: http.StatusNoContent,
-		},
-		{
-			name:       "allows a verified service-account token beside the shared token",
-			token:      "expected-token",
-			oidc:       true,
-			path:       "/v1/sessions",
-			authorize:  "Bearer " + serviceToken,
-			wantStatus: http.StatusNoContent,
-		},
-		{
-			name:       "allows a verified service-account token when no shared token is set",
+			name:       "allows a verified service-account token on loopback",
 			oidc:       true,
 			path:       "/v1/sessions",
 			authorize:  "Bearer " + serviceToken,
@@ -134,7 +120,6 @@ func TestAPIAuth(t *testing.T) {
 		},
 		{
 			name:       "rejects a service-account token minted for another audience",
-			token:      "expected-token",
 			oidc:       true,
 			path:       "/v1/sessions",
 			authorize:  "Bearer " + otherAudienceToken,
@@ -202,7 +187,7 @@ func TestAPIAuth(t *testing.T) {
 				configured = verifier
 			}
 			var logged bytes.Buffer
-			apiAuth(listenerAPIAuth{token: tc.token, verifier: configured, logger: logging.NewWithWriter("test-machine", &logged)}, next).
+			apiAuth(listenerAPIAuth{offLoopback: tc.offLoopback, verifier: configured, logger: logging.NewWithWriter("test-machine", &logged)}, next).
 				ServeHTTP(recorder, request)
 
 			if recorder.Code != tc.wantStatus {
@@ -349,6 +334,9 @@ func assertRejectionLines(t *testing.T, logged, message, wantReason, wantAccount
 	}
 }
 
+// A listener off loopback starts only with a credential it verifies: either identity-token pair, or
+// its broker settings, which there are a credential like either bearer. With none, the refusal
+// names all three and neither setting the shared token's removal ended.
 func TestValidateListenerAPIAuth(t *testing.T) {
 	issuer := oidctest.New(t)
 	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
@@ -356,37 +344,37 @@ func TestValidateListenerAPIAuth(t *testing.T) {
 		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
 	}
 	google := newGoogleStandIn(t, listenerGoogleAccount)
+	brokers := newBrokerTokens(listenerBrokerConfig{BrokerURL: "https://broker.example", AccountTokenFile: "/var/run/secrets/broker/token", Origin: "https://listener.example"})
 
 	cases := []struct {
-		name                 string
-		listenHost           string
-		apiToken             string
-		allowUnauthenticated string
-		oidc                 bool
-		google               bool
-		wantError            bool
+		name       string
+		listenHost string
+		oidc       bool
+		google     bool
+		brokers    bool
+		wantError  bool
 	}{
 		{
-			name:       "allows loopback IPv4 without a token",
+			name:       "allows loopback IPv4 without a credential",
 			listenHost: "127.0.0.1",
 		},
 		{
-			name:       "allows loopback IPv6 without a token",
+			name:       "allows loopback IPv6 without a credential",
 			listenHost: "::1",
 		},
 		{
-			name:       "allows localhost without a token",
+			name:       "allows localhost without a credential",
 			listenHost: "localhost",
 		},
 		{
-			name:       "rejects wildcard bind without a token or a verifier",
+			name:       "rejects wildcard bind without a credential",
 			listenHost: "0.0.0.0",
 			wantError:  true,
 		},
 		{
-			name:       "allows non-loopback bind with a token",
+			name:       "allows non-loopback bind with only the broker settings",
 			listenHost: "0.0.0.0",
-			apiToken:   "expected-token",
+			brokers:    true,
 		},
 		{
 			name:       "allows non-loopback bind with only a configured verifier",
@@ -398,25 +386,34 @@ func TestValidateListenerAPIAuth(t *testing.T) {
 			listenHost: "0.0.0.0",
 			google:     true,
 		},
-		{
-			name:                 "allows explicit unauthenticated non-loopback bind",
-			listenHost:           "0.0.0.0",
-			allowUnauthenticated: "1",
-		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			auth := listenerAPIAuth{token: tc.apiToken}
+			var auth listenerAPIAuth
 			if tc.oidc {
 				auth.verifier = verifier
 			}
 			if tc.google {
 				auth.google = google.identities
 			}
-			err := validateListenerAPIAuth(config.Service{ListenHost: tc.listenHost}, auth, tc.allowUnauthenticated)
+			if tc.brokers {
+				auth.brokers = brokers
+			}
+			err := validateListenerAPIAuth(config.Service{ListenHost: tc.listenHost}, auth)
 			if (err != nil) != tc.wantError {
-				t.Fatalf("validateListenerAPIAuth(%q, token set: %t, allow unauthenticated: %q, verifier set: %t, google set: %t) error = %v, want error: %t", tc.listenHost, tc.apiToken != "", tc.allowUnauthenticated, tc.oidc, tc.google, err, tc.wantError)
+				t.Fatalf("validateListenerAPIAuth(%q, verifier set: %t, google set: %t, brokers set: %t) error = %v, want error: %t", tc.listenHost, tc.oidc, tc.google, tc.brokers, err, tc.wantError)
+			}
+			if err == nil {
+				return
+			}
+			for _, credential := range []string{"ENVOY_OIDC_ISSUER", "ENVOY_OIDC_GOOGLE_AUDIENCE", EnvBrokerURL, EnvPublicURL} {
+				if !strings.Contains(err.Error(), credential) {
+					t.Fatalf("the refusal %q does not name %s", err, credential)
+				}
+			}
+			if strings.Contains(err.Error(), "ENVOY_API_TOKEN") || strings.Contains(err.Error(), "ENVOY_API_ALLOW_UNAUTHENTICATED") {
+				t.Fatalf("the refusal %q names a setting the listener no longer reads", err)
 			}
 		})
 	}
@@ -480,7 +477,6 @@ func TestResolveListenerOIDCConfig(t *testing.T) {
 func TestDescribeListenerAPIAuth(t *testing.T) {
 	cases := []struct {
 		name     string
-		token    string
 		issuer   string
 		accounts []string
 		google   *googleIdentities
@@ -488,24 +484,13 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 		want     string
 	}{
 		{
-			name: "neither is disabled",
+			name: "none is disabled",
 			want: "disabled",
-		},
-		{
-			name:  "only the shared token",
-			token: "expected-token",
-			want:  "shared token",
 		},
 		{
 			name:   "only the verifier names its issuer",
 			issuer: "https://oidc.eks.example/id/CLUSTER",
 			want:   "oidc https://oidc.eks.example/id/CLUSTER",
-		},
-		{
-			name:   "both name both",
-			token:  "expected-token",
-			issuer: "https://oidc.eks.example/id/CLUSTER",
-			want:   "shared token and oidc https://oidc.eks.example/id/CLUSTER",
 		},
 		{
 			name:     "the verifier names the subjects ENVOY_OIDC_ACCOUNTS holds it to",
@@ -537,19 +522,17 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 			want: "broker tokens at https://broker.example as google audience legion-broker-pod",
 		},
 		{
-			name:   "all three name all three",
-			token:  "expected-token",
+			name:   "the verifier and the broker name both",
 			issuer: "https://oidc.eks.example/id/CLUSTER",
 			brokers: newBrokerTokens(listenerBrokerConfig{
 				BrokerURL:        "https://broker.example",
 				AccountTokenFile: "/var/run/secrets/broker/token",
 				Origin:           "https://listener.example",
 			}),
-			want: "shared token and oidc https://oidc.eks.example/id/CLUSTER and broker tokens at https://broker.example as projected token /var/run/secrets/broker/token",
+			want: "oidc https://oidc.eks.example/id/CLUSTER and broker tokens at https://broker.example as projected token /var/run/secrets/broker/token",
 		},
 		{
 			name:   "every credential names itself, the bearers first",
-			token:  "expected-token",
 			issuer: "https://oidc.eks.example/id/CLUSTER",
 			google: &googleIdentities{audience: "https://listener.example", accounts: []string{"example-sink@example-project.iam.gserviceaccount.com"}},
 			brokers: newBrokerTokens(listenerBrokerConfig{
@@ -557,15 +540,15 @@ func TestDescribeListenerAPIAuth(t *testing.T) {
 				GoogleAudience: "legion-broker-pod",
 				Origin:         "https://listener.example",
 			}),
-			want: "shared token and oidc https://oidc.eks.example/id/CLUSTER and google https://listener.example for example-sink@example-project.iam.gserviceaccount.com and broker tokens at https://broker.example as google audience legion-broker-pod",
+			want: "oidc https://oidc.eks.example/id/CLUSTER and google https://listener.example for example-sink@example-project.iam.gserviceaccount.com and broker tokens at https://broker.example as google audience legion-broker-pod",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			auth := listenerAPIAuth{token: tc.token, accounts: tc.accounts, google: tc.google, brokers: tc.brokers}
+			auth := listenerAPIAuth{accounts: tc.accounts, google: tc.google, brokers: tc.brokers}
 			if got := describeListenerAPIAuth(auth, tc.issuer); got != tc.want {
-				t.Fatalf("describeListenerAPIAuth(token set: %t, %q, accounts %q, google set: %t, brokers set: %t) = %q, want %q", tc.token != "", tc.issuer, tc.accounts, tc.google != nil, tc.brokers != nil, got, tc.want)
+				t.Fatalf("describeListenerAPIAuth(%q, accounts %q, google set: %t, brokers set: %t) = %q, want %q", tc.issuer, tc.accounts, tc.google != nil, tc.brokers != nil, got, tc.want)
 			}
 		})
 	}
@@ -575,13 +558,17 @@ func TestAPIAuthRefusesHostsAnUnauthenticatedListenerDoesNotServe(t *testing.T) 
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
+	cluster := newClusterIssuer(t)
 	allowed := []string{"hub.internal.example", "192.0.2.10"}
 	cases := []struct {
-		name       string
-		host       string
-		path       string
-		token      string
-		wantStatus int
+		name string
+		host string
+		path string
+		// bearer is a listener that takes projected tokens, called with one it admits.
+		bearer bool
+		// offLoopback is a listener bound off loopback, called with no credential.
+		offLoopback bool
+		wantStatus  int
 	}{
 		{name: "refuses a rebinding host with its port", host: "rebind.attacker.example:9020", path: "/v1/messages/publish", wantStatus: http.StatusMisdirectedRequest},
 		{name: "refuses a rebinding host without a port", host: "rebind.attacker.example", path: "/v1/sessions", wantStatus: http.StatusMisdirectedRequest},
@@ -604,7 +591,13 @@ func TestAPIAuthRefusesHostsAnUnauthenticatedListenerDoesNotServe(t *testing.T) 
 			// A bearer a rebinding page cannot hold already guards an authenticated listener, which
 			// clients reach by names it does not list.
 			name: "leaves an authenticated listener to its bearer", host: "listener.internal.example:9020",
-			path: "/v1/sessions", token: "expected-token", wantStatus: http.StatusNoContent,
+			path: "/v1/sessions", bearer: true, wantStatus: http.StatusNoContent,
+		},
+		{
+			// Off loopback /v1 is closed, so a request with no credential is refused as such,
+			// whatever Host it names.
+			name: "leaves a listener off loopback to its credential", host: "listener.internal.example:9020",
+			path: "/v1/sessions", offLoopback: true, wantStatus: http.StatusUnauthorized,
 		},
 	}
 
@@ -613,13 +606,15 @@ func TestAPIAuthRefusesHostsAnUnauthenticatedListenerDoesNotServe(t *testing.T) 
 			request := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{}`))
 			request.Header.Set("Content-Type", "application/json")
 			request.Host = tc.host
-			if tc.token != "" {
-				request.Header.Set("Authorization", "Bearer "+tc.token)
-			}
 			recorder := httptest.NewRecorder()
 			var logged bytes.Buffer
+			auth := listenerAPIAuth{offLoopback: tc.offLoopback, allowedHosts: allowed, logger: logging.NewWithWriter("test-machine", &logged)}
+			if tc.bearer {
+				auth.verifier = cluster.verifier
+				request.Header.Set("Authorization", "Bearer "+cluster.token(t, listenerListedSubject))
+			}
 
-			apiAuth(listenerAPIAuth{token: tc.token, allowedHosts: allowed, logger: logging.NewWithWriter("test-machine", &logged)}, next).ServeHTTP(recorder, request)
+			apiAuth(auth, next).ServeHTTP(recorder, request)
 
 			if recorder.Code != tc.wantStatus {
 				t.Fatalf("Host %q: status = %d, want %d; body = %s", tc.host, recorder.Code, tc.wantStatus, recorder.Body.String())
@@ -646,18 +641,17 @@ func TestAPIAuthRefusesHostsAnUnauthenticatedListenerDoesNotServe(t *testing.T) 
 // variable set, whose environment carries the four broker settings in their token-file form, as
 // the webhook listener envoy-listener renders them wherever the deployment names its broker,
 // answers a Legion daemon's POST /v1/messages/publish presented under the DPoP scheme, with its
-// proof for the listener's own URL, 2xx. That listener requires a bearer of every other caller, as
-// envoy-listener does, and it introspects the daemon's token as its own account: the broker is
-// presented the projected token the token file holds, which the broker resolves to its caller
-// listener. The daemon's request is the wire shape the Go client's DPoP transport produces
-// (ciphertokentest.Caller: Authorization: DPoP <token> and a DPoP proof for the method and the
-// listener's URL); the daemon's own sender is on no branch yet.
+// proof for the listener's own URL, 2xx. That listener binds off loopback, as envoy-listener does,
+// so it requires a credential of every caller, and it introspects the daemon's token as its own
+// account: the broker is presented the projected token the token file holds, which the broker
+// resolves to its caller listener. The daemon's request is the wire shape the Go client's DPoP
+// transport produces (ciphertokentest.Caller: Authorization: DPoP <token> and a DPoP proof for the
+// method and the listener's URL); the daemon's own sender is on no branch yet.
 //
 // Control: the same listener without the broker settings, the all-public render before them; it
 // answers the daemon 401, and the test fails naming the status.
 func TestAnAllPublicListenerAcceptsADaemonsDPoPToken(t *testing.T) {
 	const (
-		shared       = "shared-bearer-of-the-webhook-listener"
 		daemonToken  = "access-token-of-a-legion-daemon"
 		accountToken = "projected-token-of-the-listeners-own-account"
 	)
@@ -701,7 +695,7 @@ func TestAnAllPublicListenerAcceptsADaemonsDPoPToken(t *testing.T) {
 			}
 			tokens.verifier.Store(verifier)
 		}
-		auth := listenerAPIAuth{token: shared, brokers: tokens, logger: logging.NewWithWriter("test-machine", io.Discard)}
+		auth := listenerAPIAuth{brokers: tokens, offLoopback: true, logger: logging.NewWithWriter("test-machine", io.Discard)}
 		recorder := httptest.NewRecorder()
 		apiAuth(auth, next).ServeHTTP(recorder, brokerTokenRequest(t, daemon, http.MethodPost, "/v1/messages/publish", daemonToken, `{}`))
 		return recorder.Code

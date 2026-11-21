@@ -8,6 +8,7 @@ export interface Rig {
   readonly omp: string;
   readonly chromium: string;
   readonly dispatchUrl: string;
+  /** The sessions' listener, on loopback with no credential: it serves every caller with none. */
   readonly envoyUrl: string;
   readonly natsUrl: string;
   /** The two models the caller's keys serve: the profile's default and fallback target first. */
@@ -18,7 +19,6 @@ export interface Rig {
   readonly agentDir: string;
   readonly sessionCwd: string;
   readonly tmp: string;
-  readonly envoyTokenFile: string;
   readonly dispatchTokenFile: string;
   readonly pidFile: string;
   /** The profile's default thinking level (config.yml `defaultThinkingLevel`). */

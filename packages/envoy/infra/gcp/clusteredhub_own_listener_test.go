@@ -87,12 +87,14 @@ func withoutListenerDeployment(render string) (string, int) {
 	return strings.Join(kept, "\n"), removed
 }
 
-// A listener declared as the hub's own input beside the tailnet entry requires a credential, where
-// the same listener declared as tailnet.listener serves the tailnet hosts with none. Every object
-// the hub registers is the same but the listener's Deployment, and in that the container's
-// environment differs by exactly the token check in place of the open flag and the hosts it
-// serves with no credential. The controls feed the check an environment that forces the flag back
-// in, and one that drops a part of the token check, and require it to see each.
+// A listener declared as the hub's own input beside the tailnet entry requires a platform
+// identity of its callers besides its broker settings, where the same listener declared as
+// tailnet.listener takes their broker tokens alone. Every object the hub registers is the same
+// but the listener's Deployment, and in that the container's environment differs by exactly the
+// token check. Neither renders ENVOY_API_ALLOW_UNAUTHENTICATED or ENVOY_ALLOWED_HOSTS (t-e-19):
+// both bind off loopback, where the listener refuses the first and reads no second. The controls
+// feed the check an environment that forces the open flag back in, and one that drops a part of
+// the token check, and require it to see each.
 func TestClusteredNatsHubListenerOutsideTheTailnetEntryRequiresACredential(t *testing.T) {
 	insideHub := runClusteredHub(t, clusteredArgs())
 	args := clusteredArgs()
@@ -109,11 +111,10 @@ func TestClusteredNatsHubListenerOutsideTheTailnetEntryRequiresACredential(t *te
 	insideEnv := containerEnv(t, podContainer(t, deploymentPodTemplate(t, insideHub, clusteredListenerName), "listener"))
 	outsideEnv := containerEnv(t, podContainer(t, deploymentPodTemplate(t, outsideHub, clusteredListenerName), "listener"))
 	require.Empty(t, listenerCredentialProblem(outsideEnv, clusteredListenerAccount))
-	require.Equal(t, "1", insideEnv["ENVOY_API_ALLOW_UNAUTHENTICATED"], "tailnet.listener keeps serving the tailnet hosts with no credential")
-	require.Equal(t, "envoy-hub.example-tailnet.ts.net", insideEnv["ENVOY_ALLOWED_HOSTS"])
-	for _, name := range []string{"ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE", "ENVOY_OIDC_ACCOUNTS"} {
+	for _, name := range []string{"ENVOY_API_ALLOW_UNAUTHENTICATED", "ENVOY_ALLOWED_HOSTS", "ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE", "ENVOY_OIDC_ACCOUNTS"} {
 		require.NotContains(t, insideEnv, name)
 	}
+	require.Equal(t, clusteredBrokerURL, insideEnv["ENVOY_AGENT_SECRETS_URL"], "tailnet.listener takes its callers' broker tokens")
 	shared := func(env map[string]any, drop ...string) map[string]any {
 		kept := maps.Clone(env)
 		for _, name := range drop {
@@ -121,8 +122,7 @@ func TestClusteredNatsHubListenerOutsideTheTailnetEntryRequiresACredential(t *te
 		}
 		return kept
 	}
-	require.Equal(t, shared(insideEnv, "ENVOY_API_ALLOW_UNAUTHENTICATED", "ENVOY_ALLOWED_HOSTS"),
-		shared(outsideEnv, "ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE", "ENVOY_OIDC_ACCOUNTS"))
+	require.Equal(t, insideEnv, shared(outsideEnv, "ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE", "ENVOY_OIDC_ACCOUNTS"))
 
 	forced := maps.Clone(outsideEnv)
 	forced["ENVOY_API_ALLOW_UNAUTHENTICATED"] = "1"
@@ -166,11 +166,11 @@ func TestClusteredNatsHubRunsItsOwnListenerWithoutTailnet(t *testing.T) {
 	require.Nil(t, s.Tailnet)
 }
 
-// A tailnet.listener given client namespaces serves both, and so requires a credential of every
-// caller, the tailnet hosts' included: its policy takes the tailnet hosts' rule first, then the
-// namespaces', and its container renders the token check and no open flag. Without client
-// namespaces it renders what it always rendered (TestClusteredNatsHubListenerNetworkPolicy and
-// TestClusteredNatsHubListenerEnvironment).
+// A tailnet.listener given client namespaces serves both, and so requires a platform identity of
+// every caller besides its broker settings, the tailnet hosts' included: its policy takes the
+// tailnet hosts' rule first, then the namespaces', and its container renders the token check.
+// Without client namespaces it renders the broker settings alone
+// (TestClusteredNatsHubListenerNetworkPolicy and TestClusteredNatsHubListenerEnvironment).
 func TestClusteredNatsHubTailnetListenerWithClientNamespacesRequiresACredential(t *testing.T) {
 	args := clusteredArgs()
 	withCredential(listener(args)).ClientNamespaces = []string{"legion"}
@@ -182,12 +182,13 @@ func TestClusteredNatsHubTailnetListenerWithClientNamespacesRequiresACredential(
 	require.Empty(t, listenerCredentialProblem(env, clusteredListenerAccount))
 }
 
-// Whether the session listener requires a caller's token follows from where it is declared, the
-// hub's own listener input or the tailnet entry's, and from clientNamespaces, never from the name
-// its refusals give it: resolved with that name swapped for the other place's, or for a name
-// neither place has, each listener resolves the environment and the token check it resolves under
-// its own name. Control: under its own name the tailnet listener with no clientNamespaces
-// requires no token and the other two require one, so the comparison sees both outcomes.
+// Whether the session listener requires a caller's platform identity follows from where it is
+// declared, the hub's own listener input or the tailnet entry's, and from clientNamespaces, never
+// from the name its refusals give it: resolved with that name swapped for the other place's, or for
+// a name neither place has, each listener resolves the environment and the token check it resolves
+// under its own name. Control: under its own name the tailnet listener with no clientNamespaces
+// requires no platform identity and the other two require one, so the comparison sees both
+// outcomes.
 func TestClusteredNatsHubListenerTokenCheckFollowsWhereItIsDeclared(t *testing.T) {
 	type resolved struct {
 		env              []string
@@ -258,6 +259,9 @@ func TestConstructClusteredHubWithItsOwnListener(t *testing.T) {
 		"oidcIssuer":       property.New(clusteredListenerIssuer),
 		"oidcAudience":     property.New(clusteredListenerAudience),
 		"oidcAccounts":     stringArray(clusteredListenerAccount),
+		"agentSecretsUrl":  property.New(clusteredBrokerURL),
+		"publicUrl":        property.New(clusteredListenerOrigin),
+		"brokerAudience":   property.New(clusteredBrokerAudience),
 	}))
 	m, resp, err := constructClustered(t, inputs, false)
 	require.NoError(t, err)

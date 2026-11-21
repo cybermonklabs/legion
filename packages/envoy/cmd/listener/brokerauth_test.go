@@ -297,11 +297,10 @@ func TestAPIAuthBrokerToken(t *testing.T) {
 		},
 		{
 			// R9: with none of the broker variables set the listener takes no such credential,
-			// so the header is one it does not know and the open listener serves the request
-			// as it served every unauthenticated one before this credential existed. Refusing
-			// it would lock out every client that holds a broker route of its own — the
-			// no-bearer listeners a GCP VM and the clustered hub run, one on loopback and one
-			// off it behind its NetworkPolicy, are called by exactly those clients.
+			// so the header is one it does not know and the open loopback listener serves the
+			// request as it served every unauthenticated one before this credential existed.
+			// Refusing it would lock out every client that holds a broker route of its own, which
+			// the no-bearer listeners on loopback, a GCP VM's among them, are called by.
 			name:       "serves a DPoP presentation to a listener that takes none, as it always did",
 			token:      personToken,
 			wantStatus: http.StatusOK,
@@ -459,38 +458,41 @@ func TestAPIAuthAnswers503WhenTheSpentProofStoreCannotAnswer(t *testing.T) {
 }
 
 // RFC 9449 Section 7.2: a DPoP-bound token presented under any other scheme is refused, and a
-// token presented under the DPoP scheme is never retried as a bearer. So the shared token's own
-// value, sent as a DPoP presentation to a listener that holds it, is refused, and a listener
-// that takes broker tokens still serves its shared bearer.
+// token presented under the DPoP scheme is never retried as a bearer. So a projected
+// service-account token the listener's verifier admits, sent as a DPoP presentation to a listener
+// that takes both, is refused, and the same token presented as a bearer is admitted.
 func TestAPIAuthDoesNotRetryADPoPPresentationAsABearer(t *testing.T) {
-	const shared = "expected-token"
+	cluster := newClusterIssuer(t)
+	identity := cluster.token(t, listenerListedSubject)
 	broker := ciphertokentest.NewStubBroker(t)
 	tokens := listenerBrokerTokens(t, broker)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	handler := apiAuth(listenerAPIAuth{token: shared, brokers: tokens, logger: logging.NewWithWriter("test-machine", io.Discard)}, next)
+	handler := apiAuth(listenerAPIAuth{verifier: cluster.verifier, brokers: tokens, logger: logging.NewWithWriter("test-machine", io.Discard)}, next)
 
 	asDPoP := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	asDPoP.Host = "127.0.0.1:9020"
-	asDPoP.Header.Set("Authorization", "DPoP "+shared)
+	asDPoP.Header.Set("Authorization", "DPoP "+identity)
 	refused := httptest.NewRecorder()
 	handler.ServeHTTP(refused, asDPoP)
 	if refused.Code != http.StatusUnauthorized {
-		t.Fatalf("the shared token presented under the DPoP scheme: status = %d, want 401", refused.Code)
+		t.Fatalf("a projected token presented under the DPoP scheme: status = %d, want 401", refused.Code)
 	}
 
 	asBearer := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	asBearer.Host = "127.0.0.1:9020"
-	asBearer.Header.Set("Authorization", "Bearer "+shared)
+	asBearer.Header.Set("Authorization", "Bearer "+identity)
 	served := httptest.NewRecorder()
 	handler.ServeHTTP(served, asBearer)
 	if served.Code != http.StatusNoContent {
-		t.Fatalf("the shared bearer on a listener that also takes broker tokens: status = %d, want 204", served.Code)
+		t.Fatalf("the same projected token as a bearer on a listener that also takes broker tokens: status = %d, want 204", served.Code)
 	}
 }
 
-// Configuring broker tokens opens nothing and closes nothing: a request presenting no token at
-// all is judged exactly as it was before the credential existed. The open listener serves it,
-// and the Host fence it serves under still refuses a host it does not serve.
+// On loopback, configuring broker tokens opens nothing and closes nothing: a request presenting no
+// token at all is judged exactly as it was before the credential existed. The open listener serves
+// it, and the Host fence it serves under still refuses a host it does not serve. Off loopback the
+// broker settings are the credential the listener requires: it starts on them alone, and answers
+// the same request 401.
 func TestAPIAuthLeavesARequestWithNoTokenToTheRuleItAlwaysHad(t *testing.T) {
 	broker := ciphertokentest.NewStubBroker(t)
 	tokens := listenerBrokerTokens(t, broker)
@@ -513,11 +515,15 @@ func TestAPIAuthLeavesARequestWithNoTokenToTheRuleItAlwaysHad(t *testing.T) {
 		t.Fatalf("a rebinding host on a listener that takes broker tokens: status = %d, want 421", refused.Code)
 	}
 
-	// The fence that refuses a non-loopback listener with no bearer counts no broker token
-	// either, for the same reason: this credential says who is calling, never whether /v1 may be
-	// reached at all.
-	if err := validateListenerAPIAuth(config.Service{ListenHost: "0.0.0.0"}, listenerAPIAuth{brokers: tokens}, ""); err == nil {
-		t.Fatal("a non-loopback listener with no bearer was allowed to start")
+	// Off loopback /v1 is closed, so the broker settings are what the listener admits a caller
+	// on: the start's fence passes them, and a request that presents nothing is refused.
+	if err := validateListenerAPIAuth(config.Service{ListenHost: "0.0.0.0"}, listenerAPIAuth{brokers: tokens}); err != nil {
+		t.Fatalf("a non-loopback listener whose only credential is its broker settings was refused its start: %v", err)
+	}
+	closed := httptest.NewRecorder()
+	apiAuth(listenerAPIAuth{brokers: tokens, offLoopback: true, logger: logging.NewWithWriter("test-machine", io.Discard)}, next).ServeHTTP(closed, rebinding)
+	if closed.Code != http.StatusUnauthorized {
+		t.Fatalf("an unauthenticated request to a listener off loopback that takes broker tokens: status = %d, want 401", closed.Code)
 	}
 }
 
@@ -656,12 +662,11 @@ func TestAPIAuthReadsOnlyTheDPoPSchemeAsABrokerToken(t *testing.T) {
 // is the listener it was before this credential existed, whatever a client presents. A client
 // sends `Authorization: DPoP` whenever it has a broker and an identity to trade and no Envoy
 // bearer is set (packages/envoy-client/src/envoy-settings.ts), so it presents one to every
-// listener it is pointed at — including the no-bearer listeners a GCP VM and the clustered hub
-// run, one on loopback and one off it behind its NetworkPolicy, which take no broker token. Such
-// a listener reads that header as it read every Authorization header it did not know: the open
-// one serves the request, the one that requires a bearer answers the 401 it always answered. It
-// asks the broker nothing, binds no caller, and writes no refusal of a credential kind it does
-// not take.
+// listener it is pointed at — including the no-bearer listeners on loopback, which take no broker
+// token. Such a listener reads that header as it read every Authorization header it did not know:
+// the open one serves the request, and a closed one — one that requires a bearer, or any listener
+// off loopback — answers the 401 it answers every credential it does not take. It asks the broker
+// nothing, binds no caller, and writes no refusal of a credential kind it does not take.
 func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	broker := ciphertokentest.NewStubBroker(t)
 	caller := ciphertokentest.NewCaller(t)
@@ -681,19 +686,19 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	})
 
 	for _, tc := range []struct {
-		name       string
-		shared     string
-		verifier   *oidc.Verifier
-		wantStatus int
+		name        string
+		offLoopback bool
+		verifier    *oidc.Verifier
+		wantStatus  int
 	}{
 		{
 			name:       "an open listener serves it",
 			wantStatus: http.StatusNoContent,
 		},
 		{
-			name:       "a listener that requires the shared bearer answers its own 401",
-			shared:     "expected-token",
-			wantStatus: http.StatusUnauthorized,
+			name:        "a listener off loopback answers its own 401",
+			offLoopback: true,
+			wantStatus:  http.StatusUnauthorized,
 		},
 		{
 			name:       "a listener that requires a service-account token answers its own 401",
@@ -704,7 +709,7 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bound = false
 			var logged bytes.Buffer
-			handler := apiAuth(listenerAPIAuth{token: tc.shared, verifier: tc.verifier, logger: logging.NewWithWriter("test-machine", &logged)}, next)
+			handler := apiAuth(listenerAPIAuth{offLoopback: tc.offLoopback, verifier: tc.verifier, logger: logging.NewWithWriter("test-machine", &logged)}, next)
 			request := brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", token, `{}`)
 
 			recorder := httptest.NewRecorder()
@@ -727,9 +732,9 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 		})
 	}
 
-	// And the boot log says what it always said: this listener names the bearers it takes and
-	// no third credential.
-	if got := describeListenerAPIAuth(listenerAPIAuth{token: "expected-token"}, issuer.URL()); got != "shared token and oidc "+issuer.URL() {
-		t.Fatalf("describeListenerAPIAuth with no broker setting = %q, want the two bearers alone", got)
+	// And the boot log says what it always said: this listener names the bearer it takes and no
+	// broker credential.
+	if got := describeListenerAPIAuth(listenerAPIAuth{}, issuer.URL()); got != "oidc "+issuer.URL() {
+		t.Fatalf("describeListenerAPIAuth with no broker setting = %q, want the bearer alone", got)
 	}
 }

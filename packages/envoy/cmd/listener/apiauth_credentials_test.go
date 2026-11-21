@@ -306,13 +306,12 @@ func requestSeries(t *testing.T, met *metrics.Registry) map[[2]string]int64 {
 }
 
 // Every request /v1 admits is counted under the credential that admitted it and the route it
-// reached, which is what the shared token's removal waits on: shared_token and none must each
-// read zero on every deployed listener. The none row is driven by a credential-less call to an
-// open listener, the control that moves a series no request moved before. The path label is the
-// route's pattern, so a session id in a path never becomes a series of its own, and a refused
-// request counts nowhere.
+// reached; none and none_broker_token count what a loopback listener's open /v1 serves with no
+// credential it verifies. The none row is driven by a credential-less call to an open listener,
+// the control that moves a series no request moved before. The path label is the route's pattern,
+// so a session id in a path never becomes a series of its own, and a refused request counts
+// nowhere, a request that presents nothing to a listener off loopback among them.
 func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
-	const shared = "expected-token"
 	cluster := newClusterIssuer(t)
 	google := newGoogleStandIn(t, listenerGoogleAccount)
 	broker := ciphertokentest.NewStubBroker(t)
@@ -329,13 +328,13 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 	}
 	gate.open(routes)
 	closed := apiAuth(listenerAPIAuth{
-		token:    shared,
-		verifier: cluster.verifier,
-		google:   google.identities,
-		brokers:  listenerBrokerTokens(t, broker),
-		logger:   logger,
-		requests: requests,
-		route:    gate.route,
+		verifier:    cluster.verifier,
+		google:      google.identities,
+		brokers:     listenerBrokerTokens(t, broker),
+		offLoopback: true,
+		logger:      logger,
+		requests:    requests,
+		route:       gate.route,
 	}, gate)
 	open := apiAuth(listenerAPIAuth{logger: logger, requests: requests, route: gate.route}, gate)
 
@@ -347,7 +346,6 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 	}{
 		// The labels are written out rather than taken from the constants apiAuth counts with, so a
 		// renamed label, which every query on the series would stop matching, fails here.
-		{"shared_token", "/v1/sessions", closed, func() *http.Request { return bearerRequest("/v1/sessions", "Bearer "+shared) }},
 		{"oidc", "/v1/registry/", closed, func() *http.Request {
 			return bearerRequest("/v1/registry/ses_oidc", "Bearer "+cluster.token(t, listenerUnlistedSubject))
 		}},
@@ -358,6 +356,12 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 			return brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", "access-token-counted", `{}`)
 		}},
 		{"none", "/v1/registry/", open, func() *http.Request { return bearerRequest("/v1/registry/ses_anyone", "") }},
+		// An open listener takes no broker token, so it serves a DPoP presentation as it serves a
+		// request with no credential, unverified; the label keeps it apart from a bare request, so
+		// the census can see the callers that already hold a broker token.
+		{"none_broker_token", "/v1/messages/publish", open, func() *http.Request {
+			return brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", "access-token-counted", `{}`)
+		}},
 	}
 	for _, row := range rows {
 		before := requestSeries(t, met)
@@ -389,6 +393,7 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 		handler http.Handler
 		request *http.Request
 	}{
+		{"no credential to a listener off loopback", closed, bearerRequest("/v1/sessions", "")},
 		{"a wrong bearer", closed, bearerRequest("/v1/sessions", "Bearer wrong-token")},
 		{"an unlisted Google identity", closed, bearerRequest("/v1/sessions", "Bearer "+google.token(t, listenerGoogleOtherEmail, true, listenerGoogleAudience))},
 		{"an unverified Google identity", closed, bearerRequest("/v1/sessions", "Bearer "+google.token(t, listenerGoogleAccount, false, listenerGoogleAudience))},
@@ -404,12 +409,11 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 	}
 }
 
-// The two credentials the removal waits on, the shared token and none at all, each log one WARN
-// a minute naming the route and the caller's address, so an operator can find the callers the
-// series counts; a line says how many admissions it held back since the last. The others log
-// nothing when admitted.
-func TestTheSharedTokenAndTheOpenPathWarnOnceAMinute(t *testing.T) {
-	const shared = "expected-token"
+// The two credentials that name no caller, none at all and a broker token an open listener serves
+// unverified, each log one WARN a minute naming the route and the caller's address, so an operator
+// can find the callers the series counts; a line says how many admissions it held back since the
+// last. The others log nothing when admitted.
+func TestTheOpenPathWarnsOnceAMinute(t *testing.T) {
 	cluster := newClusterIssuer(t)
 	clock := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 	now := func() time.Time { return clock }
@@ -419,8 +423,16 @@ func TestTheSharedTokenAndTheOpenPathWarnOnceAMinute(t *testing.T) {
 	routes := http.NewServeMux()
 	routes.Handle("/v1/sessions", served)
 	gate.open(routes)
-	closed := apiAuth(listenerAPIAuth{token: shared, verifier: cluster.verifier, logger: logger, route: gate.route, now: now}, gate)
+	closed := apiAuth(listenerAPIAuth{verifier: cluster.verifier, logger: logger, route: gate.route, now: now}, gate)
 	open := apiAuth(listenerAPIAuth{logger: logger, route: gate.route, now: now}, gate)
+	caller := ciphertokentest.NewCaller(t)
+	unverified := func() *http.Request {
+		return brokerTokenRequest(t, caller, http.MethodGet, "/v1/sessions", "access-token-unverified", "")
+	}
+	warned := map[string]string{
+		openAdmittedMessage:             credentialNone,
+		unverifiedBrokerAdmittedMessage: credentialNoneBrokerToken,
+	}
 
 	lines := func(message string) []string {
 		var found []string
@@ -442,11 +454,11 @@ func TestTheSharedTokenAndTheOpenPathWarnOnceAMinute(t *testing.T) {
 	}
 
 	for range 3 {
-		serve(closed, bearerRequest("/v1/sessions", "Bearer "+shared))
 		serve(open, bearerRequest("/v1/sessions", ""))
+		serve(open, unverified())
 		serve(closed, bearerRequest("/v1/sessions", "Bearer "+cluster.token(t, listenerListedSubject)))
 	}
-	for message, credential := range map[string]string{sharedTokenAdmittedMessage: credentialSharedToken, openAdmittedMessage: credentialNone} {
+	for message, credential := range warned {
 		found := lines(message)
 		if len(found) != 1 {
 			t.Fatalf("%d lines %q within the minute, want 1; log: %s", len(found), message, logged.String())
@@ -463,17 +475,17 @@ func TestTheSharedTokenAndTheOpenPathWarnOnceAMinute(t *testing.T) {
 
 	// Inside the minute nothing more is logged, however close to its end.
 	clock = clock.Add(time.Minute - time.Second)
-	serve(closed, bearerRequest("/v1/sessions", "Bearer "+shared))
 	serve(open, bearerRequest("/v1/sessions", ""))
-	for _, message := range []string{sharedTokenAdmittedMessage, openAdmittedMessage} {
+	serve(open, unverified())
+	for message := range warned {
 		if found := lines(message); len(found) != 1 {
 			t.Fatalf("%d lines %q a second before the minute ends, want 1; log: %s", len(found), message, logged.String())
 		}
 	}
 	clock = clock.Add(time.Second)
-	serve(closed, bearerRequest("/v1/sessions", "Bearer "+shared))
 	serve(open, bearerRequest("/v1/sessions", ""))
-	for _, message := range []string{sharedTokenAdmittedMessage, openAdmittedMessage} {
+	serve(open, unverified())
+	for message := range warned {
 		found := lines(message)
 		if len(found) != 2 {
 			t.Fatalf("%d lines %q once a minute had passed, want 2; log: %s", len(found), message, logged.String())
@@ -582,10 +594,14 @@ func TestResolveListenerGoogleConfig(t *testing.T) {
 	}
 }
 
-// A listener that takes Google identities requires a bearer, so the boot log's hosts line says
-// /v1 is served to any Host, as it says for the other two bearers.
-func TestDescribeListenerAPIHostsCountsEveryBearer(t *testing.T) {
+// A listener that takes Google identities requires a bearer, as one that takes projected tokens
+// does, and a listener off loopback requires a credential whatever it takes, its broker settings
+// alone included, so the boot log's hosts line says /v1 is served to any Host. A loopback listener
+// with its broker settings and no bearer still serves a request with no credential, to loopback
+// and ENVOY_ALLOWED_HOSTS.
+func TestDescribeListenerAPIHostsCountsEveryCredential(t *testing.T) {
 	google := &googleIdentities{audience: listenerGoogleAudience, accounts: []string{listenerGoogleAccount}}
+	brokers := newBrokerTokens(listenerBrokerConfig{BrokerURL: "https://broker.example", AccountTokenFile: "/var/run/secrets/broker/token", Origin: "https://listener.example"})
 	for _, tc := range []struct {
 		name string
 		auth listenerAPIAuth
@@ -593,9 +609,10 @@ func TestDescribeListenerAPIHostsCountsEveryBearer(t *testing.T) {
 	}{
 		{name: "open", auth: listenerAPIAuth{}, want: "loopback"},
 		{name: "open with allowed hosts", auth: listenerAPIAuth{allowedHosts: []string{"hub.internal.example"}}, want: "loopback, hub.internal.example"},
-		{name: "the shared token", auth: listenerAPIAuth{token: "expected-token"}, want: "any (a bearer is required)"},
-		{name: "Google identities alone", auth: listenerAPIAuth{google: google}, want: "any (a bearer is required)"},
-		{name: "Google identities beside allowed hosts", auth: listenerAPIAuth{google: google, allowedHosts: []string{"hub.internal.example"}}, want: "any (a bearer is required, so ENVOY_ALLOWED_HOSTS is unused)"},
+		{name: "the broker settings on loopback", auth: listenerAPIAuth{brokers: brokers}, want: "loopback"},
+		{name: "the broker settings off loopback", auth: listenerAPIAuth{brokers: brokers, offLoopback: true}, want: "any (a credential is required)"},
+		{name: "Google identities alone", auth: listenerAPIAuth{google: google}, want: "any (a credential is required)"},
+		{name: "Google identities beside allowed hosts", auth: listenerAPIAuth{google: google, allowedHosts: []string{"hub.internal.example"}}, want: "any (a credential is required, so ENVOY_ALLOWED_HOSTS is unused)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := describeListenerAPIHosts(tc.auth); got != tc.want {
@@ -683,7 +700,7 @@ func TestAdmissionWarningsCountConcurrentAdmissions(t *testing.T) {
 	request := bearerRequest("/v1/sessions", "")
 	var workers sync.WaitGroup
 	for range 64 {
-		for _, credential := range []string{credentialSharedToken, credentialNone} {
+		for _, credential := range []string{credentialNoneBrokerToken, credentialNone} {
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
@@ -693,7 +710,7 @@ func TestAdmissionWarningsCountConcurrentAdmissions(t *testing.T) {
 	}
 	workers.Wait()
 	clock = clock.Add(time.Minute)
-	for _, credential := range []string{credentialSharedToken, credentialNone} {
+	for _, credential := range []string{credentialNoneBrokerToken, credentialNone} {
 		warnings.admitted(logger, credential, "/v1/sessions", request)
 	}
 	decoder := json.NewDecoder(&logged)
@@ -709,9 +726,9 @@ func TestAdmissionWarningsCountConcurrentAdmissions(t *testing.T) {
 		held[line.Credential] = append(held[line.Credential], line.Held)
 	}
 	if len(held) != 2 {
-		t.Fatalf("warning credentials = %v, want shared_token and none", held)
+		t.Fatalf("warning credentials = %v, want none_broker_token and none", held)
 	}
-	for _, credential := range []string{credentialSharedToken, credentialNone} {
+	for _, credential := range []string{credentialNoneBrokerToken, credentialNone} {
 		if got := held[credential]; len(got) != 2 || got[0] != 0 || got[1] != 63 {
 			t.Fatalf("%s held counts = %v, want [0 63]", credential, got)
 		}
@@ -722,11 +739,14 @@ func TestAdmissionWarningsCountConcurrentAdmissions(t *testing.T) {
 // every admitted request still uses one of the registered patterns, including slash redirects
 // and refusals while the gate is closed. An empty Host keeps the open listener's Host refusal.
 func TestTheRouteLabelStaysBoundedForUnusualRequests(t *testing.T) {
+	cluster := newClusterIssuer(t)
 	for _, tc := range []struct {
-		name, method, path, host, token string
-		closed                          bool
-		wantStatus                      int
-		wantPath                        string
+		name, method, path, host string
+		// bearer is a listener that takes projected tokens, called with one it admits.
+		bearer     bool
+		closed     bool
+		wantStatus int
+		wantPath   string
 	}{
 		{name: "a session path", method: http.MethodGet, path: "/v1/registry/ses_one", host: "localhost", wantStatus: http.StatusNoContent, wantPath: "/v1/registry/"},
 		{name: "a repeated slash redirects before admission", method: http.MethodGet, path: "/v1//registry/ses_one", host: "localhost", wantStatus: http.StatusTemporaryRedirect},
@@ -737,7 +757,7 @@ func TestTheRouteLabelStaysBoundedForUnusualRequests(t *testing.T) {
 		{name: "CONNECT leaves a repeated slash alone", method: http.MethodConnect, path: "/v1//registry/ses_one", host: "localhost", wantStatus: http.StatusNotFound, wantPath: "/v1/"},
 		{name: "CONNECT leaves a dot segment alone", method: http.MethodConnect, path: "/v1/registry/../ses_one", host: "localhost", wantStatus: http.StatusNoContent, wantPath: "/v1/registry/"},
 		{name: "an empty Host is refused when open", method: http.MethodGet, path: "/v1/registry/ses_one", wantStatus: http.StatusMisdirectedRequest},
-		{name: "an empty Host is unused beside a bearer", method: http.MethodGet, path: "/v1/registry/ses_one", token: "shared-example", wantStatus: http.StatusNoContent, wantPath: "/v1/registry/"},
+		{name: "an empty Host is unused beside a bearer", method: http.MethodGet, path: "/v1/registry/ses_one", bearer: true, wantStatus: http.StatusNoContent, wantPath: "/v1/registry/"},
 		{name: "a closed gate counts under the outer pattern", method: http.MethodGet, path: "/v1/registry/ses_one", host: "localhost", closed: true, wantStatus: http.StatusServiceUnavailable, wantPath: "/v1/"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -749,14 +769,18 @@ func TestTheRouteLabelStaysBoundedForUnusualRequests(t *testing.T) {
 				routes.Handle("/v1/registry/", served)
 				gate.open(routes)
 			}
-			handler := apiAuth(listenerAPIAuth{token: tc.token, logger: logger, requests: newListenerRequests(met), route: gate.route}, gate)
+			auth := listenerAPIAuth{logger: logger, requests: newListenerRequests(met), route: gate.route}
+			if tc.bearer {
+				auth.verifier = cluster.verifier
+			}
+			handler := apiAuth(auth, gate)
 			outer := http.NewServeMux()
 			outer.Handle("/v1", handler)
 			outer.Handle("/v1/", handler)
 			request := httptest.NewRequest(http.MethodGet, tc.path, nil)
 			request.Method, request.Host = tc.method, tc.host
-			if tc.token != "" {
-				request.Header.Set("Authorization", "Bearer "+tc.token)
+			if tc.bearer {
+				request.Header.Set("Authorization", "Bearer "+cluster.token(t, listenerListedSubject))
 			}
 			recorder := httptest.NewRecorder()
 			outer.ServeHTTP(recorder, request)
@@ -771,8 +795,8 @@ func TestTheRouteLabelStaysBoundedForUnusualRequests(t *testing.T) {
 				return
 			}
 			credential := credentialNone
-			if tc.token != "" {
-				credential = credentialSharedToken
+			if tc.bearer {
+				credential = credentialOIDC
 			}
 			if len(series) != 1 || series[[2]string{credential, tc.wantPath}] != 1 {
 				t.Fatalf("series = %v, want one request under %s and %s", series, credential, tc.wantPath)
@@ -791,7 +815,7 @@ func TestAPIAuthRefusesAnAuthItCannotServe(t *testing.T) {
 		auth listenerAPIAuth
 	}{
 		{name: "an open listener with no logger", auth: listenerAPIAuth{}},
-		{name: "the shared token with no logger", auth: listenerAPIAuth{token: "expected-token"}},
+		{name: "a listener off loopback with no logger", auth: listenerAPIAuth{offLoopback: true}},
 		{name: "Google identities with no verifier", auth: listenerAPIAuth{google: &googleIdentities{audience: listenerGoogleAudience, accounts: []string{listenerGoogleAccount}}, logger: logger}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -18,13 +18,15 @@ afterEach(() => {
   else process.env.LEGION_E2E_RUN = mark;
 });
 
-// A rig whose Oh My Pi is a stand-in: it writes the LEGION_E2E_RUN it was handed, prints Oh My Pi's
-// `ready` event, and waits.
+// A rig whose Oh My Pi is a stand-in: it writes the LEGION_E2E_RUN it was handed, and the Envoy
+// bearer variables it was handed, prints Oh My Pi's `ready` event, and waits.
 function rigOf(dir: string): Rig {
   const omp = join(dir, "omp");
   writeFileSync(
     omp,
-    `#!/bin/sh\nprintf '%s' "\${LEGION_E2E_RUN-unset}" >'${join(dir, "mark")}'\necho '{"type":"ready"}'\nexec sleep 60\n`,
+    `#!/bin/sh\nprintf '%s' "\${LEGION_E2E_RUN-unset}" >'${join(dir, "mark")}'\n` +
+      `printf '%s %s' "\${ENVOY_TOKEN_FILE-unset}" "\${ENVOY_TOKEN-unset}" >'${join(dir, "envoy-bearer")}'\n` +
+      `echo '{"type":"ready"}'\nexec sleep 60\n`,
     { mode: 0o755 }
   );
   for (const sub of ["evidence/logs", "home", "agent", "cwd", "tmp"]) {
@@ -42,7 +44,6 @@ function rigOf(dir: string): Rig {
     dispatchUrl: "http://127.0.0.1:1",
     envoyUrl: "http://127.0.0.1:1",
     natsUrl: "nats://127.0.0.1:1",
-    envoyTokenFile: join(dir, "envoy-token"),
     dispatchTokenFile: join(dir, "dispatch-token"),
   } as unknown as Rig;
 }
@@ -58,6 +59,18 @@ test("Omp.start hands the Oh My Pi it starts the run's mark, and records its pid
     .replace(/^[\s\S]*\) /, "")
     .split(" ")[19];
   expect(readFileSync(rig.pidFile, "utf8")).toBe(`${omp.pid} ${start}\n`);
+});
+
+// The run's listener takes no credential on loopback, as every session's listener there does, so
+// the Oh My Pi a check starts is handed no Envoy bearer at all: no ENVOY_TOKEN_FILE and no
+// ENVOY_TOKEN.
+test("Omp.start hands the Oh My Pi it starts no Envoy bearer", async () => {
+  const dir = dirs();
+  const rig = rigOf(dir);
+  process.env.LEGION_E2E_RUN = join(dir, "run");
+  const omp = await Omp.start(rig, {}, "bare", null);
+  pids.push(omp.pid);
+  expect(readFileSync(join(dir, "envoy-bearer"), "utf8")).toBe("unset unset");
 });
 
 test("Omp.start refuses to start an Oh My Pi without the run's mark, or with an empty one", async () => {

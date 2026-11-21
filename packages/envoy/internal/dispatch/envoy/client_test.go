@@ -165,22 +165,35 @@ func TestSessionsMapsListenerRowsAndDefaultsMissingSlices(t *testing.T) {
 	}
 }
 
-func TestSessionsSendsEnvoyToken(t *testing.T) {
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer listener-token" {
-			t.Errorf("Authorization = %q, want Bearer listener-token", got)
+// A list read presents Dispatch's identity token as its bearer, and a client with no identity
+// presents no credential at all: the loopback listener with no verifier pair it then calls takes
+// none, and there is no shared bearer to present instead.
+func TestSessionsPresentsDispatchsIdentityAndNoCredentialWithoutOne(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		options []Option
+		want    string
+	}{
+		{"Dispatch's identity", []Option{identityHolding(t, "listener-token")}, "Bearer listener-token"},
+		{"no identity", nil, ""},
+	} {
+		listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got, present := r.Header["Authorization"]; tc.want == "" && present {
+				t.Errorf("%s: Authorization = %q, want no header", tc.name, got)
+			} else if got := r.Header.Get("Authorization"); got != tc.want {
+				t.Errorf("%s: Authorization = %q, want %q", tc.name, got, tc.want)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[]`))
+		}))
+		sessions, err := New(listener.URL, tc.options...).Sessions(context.Background())
+		listener.Close()
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`[]`))
-	}))
-	defer listener.Close()
-
-	sessions, err := New(listener.URL, WithToken("listener-token")).Sessions(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sessions) != 0 {
-		t.Fatalf("sessions = %#v, want no sessions", sessions)
+		if len(sessions) != 0 {
+			t.Fatalf("%s: sessions = %#v, want no sessions", tc.name, sessions)
+		}
 	}
 }
 
@@ -377,9 +390,9 @@ func TestUnsubscribeReportsUnavailableListener(t *testing.T) {
 	}
 }
 func TestRoleAndSendPreserveTheListenerDeliveryContract(t *testing.T) {
-	// A non-loopback listener requires the bearer on every /v1 call; the send is the one that
-	// reaches a live agent, so an unauthenticated send fails delivery in production while
-	// every read succeeds.
+	// A listener with a verifier requires a credential on every /v1 call, and the client presents
+	// Dispatch's identity on each; the send is the one that reaches a live agent, so an
+	// unauthenticated send fails delivery in production while every read succeeds.
 	var sent map[string]any
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer listener-token" {
@@ -399,7 +412,7 @@ func TestRoleAndSendPreserveTheListenerDeliveryContract(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	client := New(listener.URL, WithToken("listener-token"))
+	client := New(listener.URL, identityHolding(t, "listener-token"))
 
 	holder, err := client.Role(context.Background(), "legion-planner")
 	if err != nil {
@@ -599,7 +612,7 @@ func TestSessionDecodesTheListenerRowAndFillsWhatItOmits(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(tc.body))
 		}))
-		session, err := New(listener.URL, WithToken("listener-token")).Session(context.Background(), "s1")
+		session, err := New(listener.URL, identityHolding(t, "listener-token")).Session(context.Background(), "s1")
 		listener.Close()
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
@@ -837,7 +850,7 @@ func wantLegionAgentRow(t *testing.T, got listenerwire.LegionAgentAnswer) {
 	}
 }
 
-// Agent asks the session's route with the listener's bearer and decodes its entry, ignoring a
+// Agent asks the session's route with Dispatch's identity token and decodes its entry, ignoring a
 // field it does not know.
 func TestAgentDecodesTheRegistryEntry(t *testing.T) {
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -850,7 +863,7 @@ func TestAgentDecodesTheRegistryEntry(t *testing.T) {
 		_, _ = w.Write([]byte(legionAgentRow))
 	}))
 	defer listener.Close()
-	agent, err := New(listener.URL, WithToken("listener-token")).Agent(context.Background(), "ses-old")
+	agent, err := New(listener.URL, identityHolding(t, "listener-token")).Agent(context.Background(), "ses-old")
 	if err != nil {
 		t.Fatalf("agent: %v", err)
 	}
@@ -919,7 +932,7 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 				}
 				_, _ = w.Write([]byte(listing.body))
 			}))
-			agents, err := tc.call(New(listener.URL, WithToken("listener-token")))
+			agents, err := tc.call(New(listener.URL, identityHolding(t, "listener-token")))
 			listener.Close()
 			if err != nil || agents == nil || len(agents) != listing.want {
 				t.Fatalf("%s: agents = %#v, %v; want %d", tc.name, agents, err, listing.want)

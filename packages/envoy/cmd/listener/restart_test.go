@@ -134,7 +134,6 @@ func listsInterest(t *testing.T, port int, sessionID string) bool {
 	if err != nil {
 		t.Fatalf("interests request: %v", err)
 	}
-	request.Header.Set("Authorization", "Bearer "+listenerTestToken)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return false

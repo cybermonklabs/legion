@@ -321,21 +321,12 @@ func TestNatsHubRefusesMachineIdsWhoseDurablesCollide(t *testing.T) {
 		{"a listenerMachineId repeating a machineId", "users[3].listenerMachineId",
 			"users[3]: listenerMachineId gives the same durable name as users[0].machineId",
 			func(a *gcp.NatsHubArgs) { a.Users[3].ListenerMachineID = pulumi.StringRef("example-host-a") }},
-		{"a listenerMachineId on the hub's own listener's durable", "users[3].listenerMachineId",
-			"users[3]: listenerMachineId gives the same durable name as the hub's own listener",
-			func(a *gcp.NatsHubArgs) { a.Users[3].ListenerMachineID = pulumi.StringRef("example-hub") }},
 		{"a space and a hyphen that hyphenate alike", "users[2].dispatchMachineId",
 			"users[2]: dispatchMachineId gives the same durable name as users[0].machineId",
 			func(a *gcp.NatsHubArgs) {
 				a.Users[0].MachineID = pulumi.StringRef("a b")
 				a.Users[2].DispatchMachineID = pulumi.StringRef("a-b")
 			}},
-		{"a machineId on the hub's own listener's durable", "users[0].machineId",
-			"users[0]: machineId gives the same durable name as the hub's own listener",
-			func(a *gcp.NatsHubArgs) { a.Users[0].MachineID = pulumi.StringRef("example-hub") }},
-		{"a dispatchMachineId on the hub's own listener's durable", "users[2].dispatchMachineId",
-			"users[2]: dispatchMachineId gives the same durable name as the hub's own listener",
-			func(a *gcp.NatsHubArgs) { a.Users[2].DispatchMachineID = pulumi.StringRef("example-hub") }},
 		{"a second Dispatch user", "users[4].dispatchMachineId",
 			"users[4]: dispatchMachineId gives the same durable name as users[2].dispatchMachineId",
 			func(a *gcp.NatsHubArgs) {
@@ -348,9 +339,8 @@ func TestNatsHubRefusesMachineIdsWhoseDurablesCollide(t *testing.T) {
 			requireMachineIDRefusal(t, args, row.input, row.want)
 		})
 	}
-	t.Run("the hostname is accepted without the hub's listener", func(t *testing.T) {
+	t.Run("the hostname is accepted as a machine id, since the hub runs no listener", func(t *testing.T) {
 		args := exampleArgs()
-		args.Listener = nil
 		args.Users[0].MachineID = pulumi.StringRef("example-hub")
 		require.NoError(t, gcp.ResolveNatsHub(args))
 	})
@@ -380,10 +370,11 @@ func TestNatsHubRefusesAnInvalidInputBeforeRegistering(t *testing.T) {
 // A seed in any input the hub itself renders, registers or quotes in a refusal is refused naming
 // the input by its path, never the value: the hostname and the tags, which the hub's own refusals
 // quote and the user data holds; the zone, machine type and disk type, which reach the group and
-// the template; the images, which reach the user data; the tailnet DNS name and the listener's
-// allowed hosts, which the addresses its environment carries are built from; and a user's machine
-// id, which the hub turns into that user's rules. The seed is found as bus.HoldsSeed finds it: any
-// type, either case, whole, inside a longer value, split by '.', '-', '_' or whitespace, or
+// the template; the images, which reach the user data; the tailnet DNS name; and a user's machine
+// id, which the hub turns into that user's rules. A seed in the listener's inputs reaches nothing,
+// since the hub refuses its listener whatever it holds (TestNatsHubRefusesASeedInTheListenersInputs).
+// The seed is found as bus.HoldsSeed finds it: any type, either case, whole, inside a longer value,
+// split by '.', '-', '_' or whitespace, or
 // percent-encoded. A user's name and rule entries are core's to refuse
 // (TestNatsHubPassesOnCoresSeedRefusalOfUsers); a seed as a user's nkey is core's to refuse,
 // unquoted (the resolver table's "a user whose public key is a seed"); and tailnetAuthKey, a
@@ -400,12 +391,6 @@ func TestNatsHubRefusesASeedInAnyPlainInput(t *testing.T) {
 		{"a seed inside the zone", "zone", func(a *gcp.NatsHubArgs) { a.Zone = inside }},
 		{"a seed inside the tailnet DNS name", "tailnetDnsName", func(a *gcp.NatsHubArgs) {
 			a.TailnetDnsName = lower + ".ts.net"
-		}},
-		{"a seed in a listener allowed host", "listener.allowedHosts[0]", func(a *gcp.NatsHubArgs) {
-			a.Listener.AllowedHosts = []string{lower + ".example.com"}
-		}},
-		{"a lowercase seed as the listener's NATS audience", "listener.natsAudience", func(a *gcp.NatsHubArgs) {
-			a.Listener.NatsAudience = lower
 		}},
 		{"a seed inside the machine type", "machineType", func(a *gcp.NatsHubArgs) { a.MachineType = pulumi.StringRef(inside) }},
 		{"a seed inside the disk type", "diskType", func(a *gcp.NatsHubArgs) { a.DiskType = pulumi.StringRef(inside) }},

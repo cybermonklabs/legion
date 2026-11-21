@@ -21,7 +21,7 @@ func TestCloudConfigMatchesTheGoldenByteForByte(t *testing.T) {
 
 func TestCloudConfigWithoutListenerOrSessionUserMatchesTheGoldenByteForByte(t *testing.T) {
 	args := exampleArgs()
-	args.Listener, args.SessionUser = nil, nil
+	args.SessionUser = nil
 	_, text, err := gcp.CloudConfigOf(args)
 	require.NoError(t, err)
 	require.Equal(t, readGolden(t, "cloud-config-without-listener-or-session-user.golden"), text)
@@ -135,10 +135,9 @@ func TestCloudConfigOpensTheHostFirewallToTheHealthChecksAndTheTailnet(t *testin
 
 // The configuration file is core's rendering of the users: each is a keyed user with a seed. A
 // machine id gives the host's permission set, a listener machine id gives the listener-host set, a
-// Dispatch machine id gives its set, and explicit permissions are taken as they are. The
-// listener's user follows them, named after the hub, with the listener's set and a seed; then the
+// Dispatch machine id gives its set, and explicit permissions are taken as they are; then the
 // session user, with the session's set and no seed, which a client presenting no credential
-// becomes.
+// becomes. The hub runs no listener of its own, so it renders no user for one.
 func TestCloudConfigNatsConfigurationIsCoresRenderingOfTheUsers(t *testing.T) {
 	doc, _, err := gcp.CloudConfigOf(exampleArgs())
 	require.NoError(t, err)
@@ -146,7 +145,6 @@ func TestCloudConfigNatsConfigurationIsCoresRenderingOfTheUsers(t *testing.T) {
 	host := core.HostPermissions("example-host-a")
 	dispatch := core.DispatchPermissions("example-dispatch")
 	listenerHost := core.ListenerHostPermissions("example-listener-a")
-	listener := core.ListenerPermissions("example-hub")
 	session := core.SessionPermissions()
 	want, err := core.Authorization{Users: []core.User{
 		{Name: "example-host-a", NKey: keyA, Publish: &host.Publish, Subscribe: &host.Subscribe, HasSeed: true},
@@ -157,18 +155,17 @@ func TestCloudConfigNatsConfigurationIsCoresRenderingOfTheUsers(t *testing.T) {
 		},
 		{Name: "example-dispatch", NKey: keyC, Publish: &dispatch.Publish, Subscribe: &dispatch.Subscribe, HasSeed: true},
 		{Name: "example-listener-a", NKey: keyD, Publish: &listenerHost.Publish, Subscribe: &listenerHost.Subscribe, HasSeed: true},
-		{Name: "example-hub", NKey: keyListener, Publish: &listener.Publish, Subscribe: &listener.Subscribe, HasSeed: true},
 		{Name: "example-sessions", NKey: keySessions, Publish: &session.Publish, Subscribe: &session.Subscribe},
 	}, NoAuthUser: "example-sessions"}.Render([]string{"Rendered by envoy-infra. Public keys only."})
 	require.NoError(t, err)
 	require.Equal(t, want, fileOf(t, doc, "/etc/nats/nats-server.conf"))
 }
 
-// Without a listener or a session user the configuration holds users alone, and a client
-// presenting no credential is no user at all.
+// Without a session user the configuration holds users alone, and a client presenting no
+// credential is no user at all.
 func TestCloudConfigNatsConfigurationWithUsersAlone(t *testing.T) {
 	args := exampleArgs()
-	args.Listener, args.SessionUser = nil, nil
+	args.SessionUser = nil
 	doc, _, err := gcp.CloudConfigOf(args)
 	require.NoError(t, err)
 
@@ -194,100 +191,14 @@ func TestCloudConfigUnitsFollowTheHostnameTagsAndImages(t *testing.T) {
 	require.Contains(t, tailscaled, " -e TS_EXTRA_ARGS=--advertise-tags=tag:example-host,tag:example-hub "+args.TailscaleImage+"\n")
 	nats := fileOf(t, doc, "/etc/systemd/system/nats.service")
 	require.Contains(t, nats, ":ro "+args.NatsImage+" -c /etc/nats/nats-server.conf -js --store_dir /data -m 8222 --server_name other-hub\n")
-	listener := fileOf(t, doc, "/etc/systemd/system/envoy-listener.service")
-	require.Contains(t, listener, " -e ENVOY_MACHINE_ID=other-hub ",
-		"the listener runs as the hub's machine, whose durable and queue its user's grant names")
-	require.Contains(t, listener, "\nExecStartPre=/etc/envoy/listener-seed-env /run/envoy/listener.env "+listenerSeed+"\n")
 }
 
-// The listener listens on the VM's loopback alone, where Tailscale Serve forwards the tailnet's
-// connections, reaches NATS there too, and needs no remote-NATS opt-in for it. It gets its seed
-// from the env file the unit writes before each start, never from its arguments, and starts
-// after NATS. Serve's configuration forwards the listener's port, sits in a directory of its own
-// that the Tailscale container mounts, and is the file TS_SERVE_CONFIG names.
-func TestCloudConfigRunsTheListenerBehindTailscaleServe(t *testing.T) {
+// Every hub writes an empty Serve configuration and starts no listener: the hub runs none
+// (TestAForwardedLoopbackListenerIsOffLoopback). Tailscale keeps its state on the data disk, so
+// TS_SERVE_CONFIG must name that empty configuration to clear the forward a hub that ran a listener
+// rendered.
+func TestCloudConfigClearsTailscaleServe(t *testing.T) {
 	doc, _, err := gcp.CloudConfigOf(exampleArgs())
-	require.NoError(t, err)
-
-	listener := fileOf(t, doc, "/etc/systemd/system/envoy-listener.service")
-	require.Contains(t, listener, " --env-file /run/envoy/listener.env ")
-	require.Contains(t, listener, " -e ENVOY_LISTEN_HOST=127.0.0.1 ")
-	require.Contains(t, listener, " -e NATS_URLS=nats://127.0.0.1:4222 ")
-	require.NotContains(t, listener, "ENVOY_ALLOW_REMOTE_NATS")
-	require.NotContains(t, listener, "NATS_NKEY_SEED", "the seed reaches the listener through the env file alone")
-	require.Contains(t, listener, "\nAfter=docker.service network-online.target nats.service\n")
-	require.Contains(t, listener, "\nTimeoutStartSec=600\n")
-	require.Equal(t, "systemctl start envoy-listener.service", doc.Runcmd[len(doc.Runcmd)-1],
-		"the listener starts after NATS")
-
-	require.JSONEq(t, `{"TCP":{"9020":{"TCPForward":"127.0.0.1:9020"}}}`, fileOf(t, doc, "/etc/tailscale-serve/serve.json"))
-	tailscaled := fileOf(t, doc, "/etc/systemd/system/tailscaled.service")
-	require.Contains(t, tailscaled, " -v /etc/tailscale-serve:/etc/tailscale-serve:ro ")
-	require.Contains(t, tailscaled, " -e TS_SERVE_CONFIG=/etc/tailscale-serve/serve.json ")
-}
-
-// Tailscale Serve answers at the hub's MagicDNS name, so that name is the address the listener
-// must serve for a client dialing the hub to be answered at all. The rendered entry is
-// core.TailnetHostName's, never a literal: a hostname and a tailnet name joined the other way
-// round, or without their dot, would read as plausibly in the golden and serve nobody. Every
-// further address the listener's allowedHosts names follows the hub's own, comma-joined and as
-// written.
-func TestCloudConfigServesTheHubsTailnetNameAndEveryFurtherAllowedHost(t *testing.T) {
-	args := exampleArgs()
-	own := core.TailnetHostName(args.Hostname, args.TailnetDnsName)
-	doc, _, err := gcp.CloudConfigOf(args)
-	require.NoError(t, err)
-	require.Contains(t, fileOf(t, doc, "/etc/systemd/system/envoy-listener.service"),
-		" -e ENVOY_ALLOWED_HOSTS="+own+" ")
-
-	args.Listener.AllowedHosts = []string{"hub.example.com", "192.0.2.7"}
-	doc, _, err = gcp.CloudConfigOf(args)
-	require.NoError(t, err)
-	require.Contains(t, fileOf(t, doc, "/etc/systemd/system/envoy-listener.service"),
-		" -e ENVOY_ALLOWED_HOSTS="+own+",hub.example.com,192.0.2.7 ")
-}
-
-// The listener's broker check reaches the VM as three variables of the listener's docker run
-// command, in the order core renders them, with each value as written: the broker the listener
-// introspects a caller's token at, the audience of the VM's own Google identity token, which is
-// the identity each introspection presents, and the origin a DPoP proof's target URI is checked
-// against. A hub that sets none of the three renders what it always rendered, byte for byte, so
-// this input replaces no existing hub's VM: the rest of the document is the golden's, the three
-// variables cut out.
-func TestCloudConfigRendersTheListenersBrokerCheck(t *testing.T) {
-	args := exampleArgs()
-	_, unset, err := gcp.CloudConfigOf(args)
-	require.NoError(t, err)
-	require.Equal(t, readGolden(t, "cloud-config.golden"), unset)
-	for _, name := range brokerCheckVars {
-		require.NotContains(t, unset, name, "a hub that sets no broker check renders none of it")
-	}
-
-	args.Listener.AgentSecretsUrl = "https://example-broker.internal.example"
-	args.Listener.AgentSecretsAudience = "example-broker-audience"
-	args.Listener.PublicUrl = "http://example-hub.example-tailnet.ts.net:9020"
-	doc, text, err := gcp.CloudConfigOf(args)
-	require.NoError(t, err)
-	rendered := " -e ENVOY_AGENT_SECRETS_URL=https://example-broker.internal.example" +
-		" -e ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE=example-broker-audience" +
-		" -e ENVOY_PUBLIC_URL=http://example-hub.example-tailnet.ts.net:9020"
-	require.Contains(t, fileOf(t, doc, "/etc/systemd/system/envoy-listener.service"),
-		" -e NATS_URLS=nats://127.0.0.1:4222"+rendered+" example.invalid/envoy@sha256:")
-	require.Equal(t, readGolden(t, "cloud-config.golden"), strings.Replace(text, rendered, "", 1),
-		"the broker check is all that is new in the document")
-}
-
-// brokerCheckVars are the three variables the listener's broker check renders, written out here
-// rather than taken from core, so a rename of one is seen in the cloud-config the VM boots on.
-var brokerCheckVars = []string{"ENVOY_AGENT_SECRETS_URL", "ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE", "ENVOY_PUBLIC_URL"}
-
-// A hub without a listener starts none and writes an empty Serve configuration. Tailscale keeps
-// its state on the data disk, so TS_SERVE_CONFIG must name that empty configuration to clear a
-// forward a prior listener rendered.
-func TestCloudConfigWithoutAListenerClearsTailscaleServe(t *testing.T) {
-	args := exampleArgs()
-	args.Listener = nil
-	doc, _, err := gcp.CloudConfigOf(args)
 	require.NoError(t, err)
 
 	for _, f := range doc.WriteFiles {

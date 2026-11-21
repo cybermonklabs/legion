@@ -1,6 +1,7 @@
 package aws_test
 
 import (
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -380,16 +381,6 @@ func listenerSeedRows() []seedRow[envoyaws.WebhookListenerArgs] {
 			a.NatsUrls = pulumi.ToStringArray([]string{v})
 			return v
 		}},
-		{input: "apiTokenSecretArn", set: func(a *A, s bool) string {
-			v := listenerSecretArn + pick(s, testSeed, "api-token-other")
-			a.ApiTokenSecretArn = pulumi.String(v)
-			return v
-		}},
-		{input: "apiTokenSecretVersionId", orders: true, set: func(a *A, s bool) string {
-			v := pick(s, testSeed, "example-other-version")
-			a.ApiTokenSecretVersionId = pulumi.String(v)
-			return v
-		}},
 		{input: "seedSecretArn", set: func(a *A, s bool) string {
 			v := listenerSecretArn + pick(s, testSeed, "nats-seed-other")
 			a.SeedSecretArn = pulumi.String(v)
@@ -475,13 +466,61 @@ func TestNatsServiceRefusesASeedInAnyInput(t *testing.T) {
 	requireNameRefused(t, natsServiceType, func(t *testing.T) map[string]property.Value { return inputs(t, exampleArgs(), fromUpstream) })
 }
 
-// The same for WebhookListener.
+// A seed in any of WebhookListener's string inputs, or in its name, reaches nothing. Through
+// Construct, where every configuration is refused (t-e-19), a seeded input is refused naming that
+// limit and never the value, and a seeded name is refused naming the name, before the limit, whose
+// refusal quotes the name; nothing is registered either way. The listener behind that refusal
+// (registerWebhookListener), which a broker path will build on, keeps NatsService's guard: a seed in
+// any input is refused naming the input by its path, before anything carries it, and each row's
+// clean value, which it accepts, reaches the run.
 func TestWebhookListenerRefusesASeedInAnyInput(t *testing.T) {
-	requireSeedRefused(t, webhookListenerType, "example-listener", listenerSeedRows(), exampleListenerArgs,
-		func(t *testing.T, a *envoyaws.WebhookListenerArgs) map[string]property.Value {
-			return listenerInputsOf(t, a, fromUpstream)
+	const limit = "aws:WebhookListener cannot verify a session's broker token; deploy a listener with broker settings"
+	requireNothingCarried := func(t *testing.T, err error, carries []string) {
+		t.Helper()
+		require.False(t, holdsTestSeed(err.Error()), "the refusal quotes the seed: %v", err)
+		for _, s := range carries {
+			require.False(t, holdsTestSeed(s), "the run carries the seed: %q", s)
+		}
+	}
+	for _, row := range listenerSeedRows() {
+		t.Run(row.input, func(t *testing.T) {
+			args := exampleListenerArgs()
+			row.set(args, true)
+			m, resp, err := construct(t, webhookListenerType, "example-listener", listenerInputsOf(t, args, fromUpstream), false)
+			require.ErrorContains(t, err, webhookListenerType+" example-listener: "+limit)
+			requireNothingCarried(t, err, carried(m, resp.State))
+			require.Empty(t, m.Types())
+
+			args = exampleListenerArgs()
+			row.set(args, true)
+			m, _, err = runListener(t, args, true)
+			require.ErrorContains(t, err, webhookListenerType+" example-listener: "+row.input+" holds an nkey seed (not echoed)")
+			requireNothingCarried(t, err, carried(m, property.Map{}))
+
+			args = exampleListenerArgs()
+			clean := row.set(args, false)
+			m, out, err := runListener(t, args, true)
+			require.NoError(t, err)
+			if !row.orders {
+				carries := append(carried(m, property.Map{}), slices.Collect(maps.Values(out))...)
+				require.True(t, slices.ContainsFunc(carries, func(s string) bool { return strings.Contains(s, clean) }),
+					"the clean value %q reaches the run", clean)
+			}
 		})
-	requireNameRefused(t, webhookListenerType, func(t *testing.T) map[string]property.Value { return listenerInputs(t, fromUpstream) })
+	}
+	for _, name := range []string{"example-" + testSeed, lowerSeed, splitSeed("-")} {
+		t.Run("the component's name", func(t *testing.T) {
+			m, resp, err := construct(t, webhookListenerType, name, listenerInputs(t, fromUpstream), false)
+			require.ErrorContains(t, err, webhookListenerType+": the component's name holds an nkey seed (not echoed)")
+			requireNothingCarried(t, err, carried(m, resp.State))
+			require.Empty(t, m.Types())
+		})
+	}
+	t.Run("the component's name, clean", func(t *testing.T) {
+		m, _, err := construct(t, webhookListenerType, "example-other-name", listenerInputs(t, fromUpstream), false)
+		require.ErrorContains(t, err, webhookListenerType+" example-other-name: "+limit)
+		require.Empty(t, m.Types())
+	})
 }
 
 // Every input of both components' schemas that can carry a string has a row in the tables above,

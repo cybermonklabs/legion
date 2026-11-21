@@ -40,7 +40,7 @@ func TestRedTeamUnlistedGoogleIdentityAsJWSJSON(t *testing.T) {
 		auth listenerAPIAuth
 	}{
 		{"Google identities alone", listenerAPIAuth{google: google.identities}},
-		{"beside a listed projected-token verifier and the shared token", listenerAPIAuth{token: "expected-token", verifier: cluster.verifier, accounts: []string{listenerListedSubject}, google: google.identities}},
+		{"beside a listed projected-token verifier", listenerAPIAuth{verifier: cluster.verifier, accounts: []string{listenerListedSubject}, google: google.identities}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logged bytes.Buffer

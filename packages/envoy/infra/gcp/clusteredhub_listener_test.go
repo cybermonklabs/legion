@@ -6,6 +6,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 )
@@ -140,29 +141,35 @@ func TestClusteredNatsHubListenerBudget(t *testing.T) {
 }
 
 // The listener container's environment in its own pod: its machine id on every address of that
-// pod at port 9020, the Service's tailnet name first among the hosts it answers, the hub's client
-// Service as its NATS URL, marked remote, its seed as a file from the operator's Secret, mounted
-// read-only, and the flag that lets /v1 serve with no credential. No ENVOY_API_TOKEN: what keeps
-// /v1 to its callers is the listener's NetworkPolicy.
+// pod at port 9020, the hub's client Service as its NATS URL, marked remote, its broker settings,
+// the credential every session presents (t-e-19), with the introspection limit every tailnet
+// session's host shares and the projected token of its own account mounted read-only, and its seed
+// as a file from the operator's Secret, mounted read-only. No
+// ENVOY_API_TOKEN, no ENVOY_API_ALLOW_UNAUTHENTICATED and no ENVOY_ALLOWED_HOSTS: off loopback the
+// listener refuses the first two and reads no third, and a request that presents nothing gets 401.
 func TestClusteredNatsHubListenerEnvironment(t *testing.T) {
-	args := clusteredArgs()
-	args.Tailnet.Listener.AllowedHosts = []string{"envoy.example.com"}
-	template := deploymentPodTemplate(t, runClusteredHub(t, args), clusteredListenerName)
+	template := deploymentPodTemplate(t, runClusteredHub(t, clusteredArgs()), clusteredListenerName)
 	listener := podContainer(t, template, "listener")
 
 	env := containerEnv(t, listener)
 	require.Equal(t, map[string]any{
-		"PORT":                            "9020",
-		"ENVOY_MACHINE_ID":                "envoy-hub",
-		"ENVOY_LISTEN_HOST":               "0.0.0.0",
-		"ENVOY_ALLOWED_HOSTS":             "envoy-hub.example-tailnet.ts.net,envoy.example.com",
-		"NATS_URLS":                       "nats://envoy-nats.envoy.svc.cluster.local:4222",
-		"ENVOY_ALLOW_REMOTE_NATS":         "1",
-		"NATS_NKEY_SEED_FILE":             "/var/run/secrets/envoy/nats-seed",
-		"ENVOY_API_ALLOW_UNAUTHENTICATED": "1",
+		"PORT":                                   "9020",
+		"ENVOY_MACHINE_ID":                       "envoy-hub",
+		"ENVOY_LISTEN_HOST":                      "0.0.0.0",
+		"NATS_URLS":                              "nats://envoy-nats.envoy.svc.cluster.local:4222",
+		"ENVOY_ALLOW_REMOTE_NATS":                "1",
+		"ENVOY_AGENT_SECRETS_URL":                clusteredBrokerURL,
+		"ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/secrets/envoy-broker/token",
+		"ENVOY_PUBLIC_URL":                       clusteredListenerOrigin,
+		"ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND": "50",
+		"ENVOY_AGENT_SECRETS_INTROSPECTION_BURST":       "200",
+		"NATS_NKEY_SEED_FILE":                           "/var/run/secrets/envoy/nats-seed",
 	}, env)
 
-	require.Equal(t, []any{map[string]any{"name": "nats-seed", "mountPath": "/var/run/secrets/envoy", "readOnly": true}}, listener["volumeMounts"])
+	require.Equal(t, []any{
+		map[string]any{"name": "nats-seed", "mountPath": "/var/run/secrets/envoy", "readOnly": true},
+		map[string]any{"name": "envoy-broker-token", "mountPath": "/var/run/secrets/envoy-broker", "readOnly": true},
+	}, listener["volumeMounts"])
 	volumes := template["spec"].(map[string]any)["volumes"].([]any)
 	var seed any
 	for _, v := range volumes {
@@ -286,4 +293,49 @@ func TestClusteredNatsHubWithoutTailnetRegistersNoListener(t *testing.T) {
 		require.NotEqual(t, clusteredListenerName, r.Name, "%s %s", r.Type, r.Name)
 	}
 	require.ElementsMatch(t, clusteredHubBaseTypes, m.Types())
+}
+
+// A session listener binds off loopback, where on an all-public hub its one credential is its
+// broker check (t-e-19): listener args that leave agentSecretsUrl unset would render a listener with
+// no credential, which refuses to start and crash-loops, so the hub refuses them at preview, naming
+// the input, before anything registers, wherever the listener is declared and whatever
+// privateProjects says. Negative control, run by hand: today's render, which renders that listener
+// without broker settings; the test fails naming the missing refusal.
+func TestTheClusteredHubRefusesASessionListenerWithoutTheBroker(t *testing.T) {
+	for _, row := range []struct {
+		name, input string
+		args        func() *gcp.ClusteredNatsHubArgs
+	}{
+		{"an all-public hub's tailnet.listener", "tailnet.listener.agentSecretsUrl", func() *gcp.ClusteredNatsHubArgs {
+			a := clusteredArgs()
+			a.Tailnet.Listener.AgentSecretsUrl = ""
+			return a
+		}},
+		{"an all-public hub's own listener", "listener.agentSecretsUrl", func() *gcp.ClusteredNatsHubArgs {
+			a := clusteredArgs()
+			ownListener(a).AgentSecretsUrl = ""
+			return a
+		}},
+		{"a private hub's listener", "listener.agentSecretsUrl", func() *gcp.ClusteredNatsHubArgs {
+			a := privateListenerHub()
+			a.Listener.AgentSecretsUrl = ""
+			return a
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			_, err := gcp.ResolveClusteredNatsHub(row.args())
+			require.ErrorContains(t, err, row.input+" is required", "the hub does not refuse the listener naming %s", row.input)
+			var input *core.InputError
+			require.ErrorAs(t, err, &input)
+			require.Equal(t, row.input, input.Input)
+			m := newMocks()
+			m.Preview = true
+			err = m.Run(func(ctx *pulumi.Context) error {
+				_, err := gcp.NewClusteredNatsHub(ctx, "example-clustered-hub", row.args())
+				return err
+			})
+			require.ErrorContains(t, err, row.input+" is required")
+			require.Empty(t, m.Registrations(), "nothing registered")
+		})
+	}
 }

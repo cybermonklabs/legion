@@ -1071,6 +1071,12 @@ type SuperviseRequest struct {
 	Kept *KeptDecisions `json:"kept,omitempty"`
 	// Generation is the issue generation the request serves. A request of an earlier generation
 	// finishes without acting: it must never suspend, stop, or start the next generation's worker.
+	// Three requests are not held to it. A production check's look start (CheckLook) is fenced on
+	// its check instead (the daemon outbox's checkLookHolds). A tree close of the issue's own tree
+	// whose cleanup is reserved still retires its claim and drives that cleanup, however stale its
+	// generation (reservedTreeClose). And a suspend or a tree close of a tree the issue has since
+	// left (Tree is not the issue's tree) still stops a claim that stands in that tree, which no
+	// worker of the issue's new tree is until that tree's start re-points it (stopInLeftTree).
 	Generation uint64 `json:"generation"`
 	// Phase is the phase a phase worker's start serves; a start for a phase the issue has left
 	// finishes without acting. It is empty for a root's architect, which serves every phase, for a

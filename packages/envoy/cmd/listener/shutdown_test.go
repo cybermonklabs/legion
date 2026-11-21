@@ -136,9 +136,6 @@ func TestASIGTERMWhileAnotherTaskHoldsTheDurableIsAnOrderedShutdown(t *testing.T
 	}
 }
 
-// listenerTestToken is the shared /v1 bearer every test-started listener is given.
-const listenerTestToken = "listener-test-token"
-
 // listenerProcess is a listener binary a test started, serving on the loopback port port.
 type listenerProcess struct {
 	*cmdtest.Process
@@ -159,7 +156,6 @@ func startListenerProcess(t *testing.T, binary, uri, machineID string, env ...st
 		"ENVOY_LISTEN_HOST=127.0.0.1",
 		"ENVOY_MACHINE_ID=" + machineID,
 		"NATS_URLS=" + uri,
-		"ENVOY_API_TOKEN=" + listenerTestToken,
 	}, env...)
 	held.Pass(cmd, "ENVOY_LISTEN_FD")
 	return &listenerProcess{Process: cmdtest.Start(t, "the listener "+machineID, cmd), port: held.Port}
@@ -175,7 +171,6 @@ func TestListenerServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T)
 	cmd.Env = []string{
 		"ENVOY_MACHINE_ID=listen-fd-unset-address",
 		"NATS_URLS=" + testnats.URL(t),
-		"ENVOY_API_TOKEN=" + listenerTestToken,
 	}
 	held.Pass(cmd, "ENVOY_LISTEN_FD")
 	listener := &listenerProcess{Process: cmdtest.Start(t, "the listener", cmd), port: held.Port}
@@ -193,7 +188,6 @@ func TestListenerOnPortZeroLogsThePortTheKernelChose(t *testing.T) {
 		"ENVOY_LISTEN_HOST=127.0.0.1",
 		"ENVOY_MACHINE_ID=listen-port-zero",
 		"NATS_URLS=" + testnats.URL(t),
-		"ENVOY_API_TOKEN=" + listenerTestToken,
 	}
 	process := cmdtest.Start(t, "the listener", cmd)
 	addr := listeningAddr(t, process)
@@ -209,8 +203,9 @@ func TestListenerOnPortZeroLogsThePortTheKernelChose(t *testing.T) {
 }
 
 // An inherited socket on every interface is judged by the API auth fence as ENVOY_LISTEN_HOST=0.0.0.0
-// is, though ENVOY_LISTEN_HOST is unset and would mean loopback: with no bearer, no OIDC pair and
-// no ENVOY_API_ALLOW_UNAUTHENTICATED, the listener refuses to start and serves nothing.
+// is, though ENVOY_LISTEN_HOST is unset and would mean loopback: with none of the three credentials
+// a listener verifies (the OIDC pair, the Google pair, the broker settings), the listener refuses to
+// start, naming them, and serves nothing.
 func TestListenerRefusesAnInheritedSocketOnEveryInterfaceWithoutCredentials(t *testing.T) {
 	wildcard, err := net.Listen("tcp4", "0.0.0.0:0")
 	if err != nil {
@@ -231,8 +226,17 @@ func TestListenerRefusesAnInheritedSocketOnEveryInterfaceWithoutCredentials(t *t
 	cmd.ExtraFiles = []*os.File{socket}
 	process := refusedStart(t, cmd)
 	refusal := "ENVOY_LISTEN_FD=3, a socket listening on " + wildcard.Addr().String() + ", is not on loopback"
-	if output := process.Output.String(); !strings.Contains(output, refusal) || !strings.Contains(output, "ENVOY_API_TOKEN") {
-		t.Errorf("the listener did not refuse its start with %q, naming the credentials it needs:\n%s", refusal, output)
+	output := process.Output.String()
+	if !strings.Contains(output, refusal) {
+		t.Errorf("the listener did not refuse its start with %q:\n%s", refusal, output)
+	}
+	for _, credential := range []string{"ENVOY_OIDC_ISSUER", "ENVOY_OIDC_GOOGLE_AUDIENCE", "ENVOY_AGENT_SECRETS_URL"} {
+		if !strings.Contains(output, credential) {
+			t.Errorf("the listener's refusal does not name %s, one of the credentials it needs:\n%s", credential, output)
+		}
+	}
+	if strings.Contains(output, "ENVOY_API_TOKEN") || strings.Contains(output, "ENVOY_API_ALLOW_UNAUTHENTICATED") {
+		t.Errorf("the listener's refusal names a setting it no longer reads:\n%s", output)
 	}
 }
 
@@ -252,7 +256,6 @@ func TestListenerRefusesAPortThatIsNotItsInheritedSocketsPort(t *testing.T) {
 				"ENVOY_LISTEN_HOST=127.0.0.1",
 				"ENVOY_MACHINE_ID=listen-fd-port-mismatch",
 				"NATS_URLS=nats://127.0.0.1:1",
-				"ENVOY_API_TOKEN=" + listenerTestToken,
 			}
 			held.Pass(cmd, "ENVOY_LISTEN_FD")
 			process := refusedStart(t, cmd)
@@ -283,7 +286,6 @@ func TestListenerRefusesAListenFDThatIsNotASocketAndBindsNothing(t *testing.T) {
 		"ENVOY_LISTEN_HOST=127.0.0.1",
 		"ENVOY_MACHINE_ID=listen-fd-not-a-socket",
 		"NATS_URLS=nats://127.0.0.1:1",
-		"ENVOY_API_TOKEN=" + listenerTestToken,
 		"ENVOY_LISTEN_FD=3",
 	}
 	cmd.ExtraFiles = []*os.File{notASocket}
@@ -330,7 +332,8 @@ func listeningAddr(t *testing.T, process *cmdtest.Process) string {
 	return ""
 }
 
-// postListener calls a listener /v1 route as the test's shared-token caller and requires a 200.
+// postListener calls a listener /v1 route with no credential, as a loopback listener serves it,
+// and requires a 200.
 func postListener(t *testing.T, port int, path, body string) {
 	t.Helper()
 	if status, answer := callListener(t, port, http.MethodPost, path, body); status != http.StatusOK {
@@ -339,14 +342,25 @@ func postListener(t *testing.T, port int, path, body string) {
 }
 
 // waitHealthy waits up to 30 s for the listener to log that it listens on its own loopback port,
-// then up to 30 s more for /healthz there to report "healthy", and kills the listener and fails
-// the test when it never does. The socket the listener inherited is not readiness: the kernel
-// queues connections on it from before the process starts, so a request there waits rather than
-// fails until the process serves, and only its listening line says it does. Each request has a
-// timeout, so one that waits on a socket nothing serves cannot outlast the deadline. /healthz
-// answers 200 with "starting" from the moment the listener serves, before NATS connects and
-// before the listener installs its SIGTERM handler, and a SIGTERM in that window kills the
-// process without an ordered shutdown.
+// then waits for it to report healthy (waitHealthz). The socket the listener inherited is not
+// readiness: the kernel queues connections on it from before the process starts, so a request
+// there waits rather than fails until the process serves, and only its listening line says it
+// does.
+func (p *listenerProcess) waitHealthy(t *testing.T) {
+	t.Helper()
+	if addr, own := listeningAddr(t, p.Process), "127.0.0.1:"+strconv.Itoa(p.port); addr != own {
+		_ = p.Cmd.Process.Kill()
+		t.Fatalf("the listener logged that it listens on %s, not on its own %s:\n%s", addr, own, p.Output.String())
+	}
+	p.waitHealthz(t)
+}
+
+// waitHealthz waits up to 30 s for /healthz at 127.0.0.1 on the listener's port to report
+// "healthy", and kills the listener and fails the test when it never does. A listener bound to
+// every interface answers there too. Each request has a timeout, so one that waits on a socket
+// nothing serves cannot outlast the deadline. /healthz answers 200 with "starting" from the moment
+// the listener serves, before NATS connects and before the listener installs its SIGTERM handler,
+// and a SIGTERM in that window kills the process without an ordered shutdown.
 //
 // A listener that exits during its start-up fails this wait at once, naming its exit status and
 // its last output line, rather than waiting the whole 30 s out: a process that has exited answers
@@ -354,12 +368,8 @@ func postListener(t *testing.T, port int, path, body string) {
 // would report names neither the exit nor its reason. Either failure also names the last /healthz
 // answer, so a listener still binding ("starting") reads differently from one whose dependency
 // is down ("unhealthy", with the error that endpoint reports).
-func (p *listenerProcess) waitHealthy(t *testing.T) {
+func (p *listenerProcess) waitHealthz(t *testing.T) {
 	t.Helper()
-	if addr, own := listeningAddr(t, p.Process), "127.0.0.1:"+strconv.Itoa(p.port); addr != own {
-		_ = p.Cmd.Process.Kill()
-		t.Fatalf("the listener logged that it listens on %s, not on its own %s:\n%s", addr, own, p.Output.String())
-	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	url := "http://127.0.0.1:" + strconv.Itoa(p.port) + "/healthz"
 	deadline := time.Now().Add(30 * time.Second)

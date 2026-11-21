@@ -234,17 +234,17 @@ type bootConfig struct {
 	SigningKey auth.SigningKeys
 	// InsecureCookie (DISPATCH_INSECURE_COOKIE set to anything) drops Secure from every cookie.
 	InsecureCookie bool
-	// EnvoyToken is ENVOY_TOKEN, the bearer every Envoy listener call sends.
-	EnvoyToken string
 	// EnvoyAccountTokenFile is ENVOY_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
 	// Kubernetes service-account token for the listener's audience, which every listener call
-	// reads and presents in EnvoyToken's place. The file is read by the listener client on each
-	// call, never here: a projected token rotates.
+	// reads and presents as its bearer. The file is read by the listener client on each call,
+	// never here: a projected token rotates.
 	EnvoyAccountTokenFile string
 	// EnvoyGoogleAudience is ENVOY_ACCOUNT_GOOGLE_AUDIENCE: on Google Cloud, the audience of the
 	// identity token the metadata server mints for Dispatch's machine's service account, which
-	// every listener call presents in EnvoyToken's place (envoy.WithGoogleIdentity); the listener's
-	// ENVOY_OIDC_GOOGLE_AUDIENCE. At most one of it and EnvoyAccountTokenFile is set.
+	// every listener call presents as its bearer (envoy.WithGoogleIdentity); the listener's
+	// ENVOY_OIDC_GOOGLE_AUDIENCE. At most one of it and EnvoyAccountTokenFile is set; with
+	// neither, a listener call presents no credential. The listener's shared token ENVOY_TOKEN is
+	// a removed setting (removedSettings).
 	EnvoyGoogleAudience string
 	// RoleHolderWindows are the session windows a role route's holder is judged by
 	// (ENVOY_SESSION_LIVE_WINDOW and ENVOY_SESSION_GONE_HORIZON, roleHolderWindows): what the
@@ -1305,7 +1305,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		FileStoreBucket:       strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")),
 		DevSignInSharedKey:    env.get("DISPATCH_DEV_SIGNIN_SHARED_KEY"),
 		InsecureCookie:        env.get("DISPATCH_INSECURE_COOKIE") != "",
-		EnvoyToken:            env.get("ENVOY_TOKEN"),
 		EnvoyAccountTokenFile: strings.TrimSpace(env.get("ENVOY_ACCOUNT_TOKEN_FILE")),
 		EnvoyGoogleAudience:   strings.TrimSpace(env.get("ENVOY_ACCOUNT_GOOGLE_AUDIENCE")),
 	}
@@ -1805,7 +1804,6 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.NewIssueSession = boot.NewIssueSession
 	built.InsecureCookie = boot.InsecureCookie
 	built.EnvoyURL = boot.EnvoyURL
-	built.EnvoyToken = boot.EnvoyToken
 	built.EnvoyAccountTokenFile = boot.EnvoyAccountTokenFile
 	built.EnvoyGoogleAudience = boot.EnvoyGoogleAudience
 	built.GitHubAPIBase = boot.GitHubAPIBase

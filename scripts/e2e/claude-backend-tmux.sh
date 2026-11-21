@@ -173,7 +173,7 @@ cleanup() {
   stop_pid "$daemon_pid"
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
-  stop_pid "$dispatch_identity_issuer_pid"
+  dispatch_identity_stop
   stop_pid "$daemon_keeper_pid"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
   stop_marked_processes "$work" || true
@@ -202,36 +202,35 @@ trap 'exit 143' TERM
 
 # ---- the scratch services ------------------------------------------------------------------------
 # Each serves on a port the kernel chose, held from that choice until it serves on it (lib/rig.sh's
-# start_held); the daemon's by a keeper, so legion.yaml can name it before the daemon starts.
+# start_held); the daemon's by a keeper, so legion.yaml can name it before the daemon starts. The
+# sessions' listener takes no credential: it is on loopback, where /v1 serves every caller, so the
+# daemon, every pane and this script call it with none. Dispatch calls a listener of its own, which
+# takes Dispatch's identity alone (dispatch_identity_start, lib/dispatch-identity.sh).
 start_listener() {
-  local token
-  token=$(cat "$work/envoy-token")
-  ENVOY_API_TOKEN="$token" ENVOY_LISTEN_HOST=127.0.0.1 \
+  ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="legion-e2ecc-$$" NATS_URLS="nats://127.0.0.1:$port_nats" \
     start_held listener port_listener ENVOY_LISTEN_FD --env 'PORT={port}' -- \
-    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
-    "${dispatch_identity_listener_env[@]}" "$work/envoy-listener"
+    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT -u ENVOY_API_TOKEN "${app_key_unsets[@]}" \
+    "$work/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
-    curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$port_listener/v1/sessions"
+    curl -fsS "http://127.0.0.1:$port_listener/v1/sessions"
 }
 
 start_dispatch() {
-  local dispatch_token envoy_token pg_password
+  local dispatch_token pg_password
   dispatch_token=$(cat "$work/dispatch-token")
-  envoy_token=$(cat "$work/envoy-token")
   pg_password=$(cat "$work/postgres-password")
   mkdir -p "$work/dispatch-home"
   chmod 0700 "$work/dispatch-home"
   # HOME and XDG_CONFIG_HOME are the scratch home, so the server reads no envoy.json of the
   # operator's. They are the server's alone, set by its env, not the held-port helper's that runs it.
   DATABASE_URL="postgres://legion:$pg_password@127.0.0.1:$port_pg/dispatch?sslmode=disable" \
-    DISPATCH_AGENT_TOKEN="$dispatch_token" ENVOY_TOKEN="$envoy_token" \
+    DISPATCH_AGENT_TOKEN="$dispatch_token" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
     DISPATCH_LISTEN_HOST=127.0.0.1 NATS_URLS="nats://127.0.0.1:$port_nats" \
-    ENVOY_URL="http://127.0.0.1:$port_listener" \
     start_held dispatch port_dispatch DISPATCH_LISTEN_FD \
     --env 'DISPATCH_PORT={port}' --env 'DISPATCH_SERVER_URL=http://127.0.0.1:{port}' -- \
-    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
+    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT -u ENVOY_TOKEN "${app_key_unsets[@]}" \
     HOME="$work/dispatch-home" XDG_CONFIG_HOME="$work/dispatch-home/.config" "${dispatch_identity_dispatch_env[@]}" \
     "$work/envoy-dispatch"
   await_start dispatch "$dispatch_pid" 60 "the scratch Dispatch server" \
@@ -252,7 +251,6 @@ state_dir: $state
 operator_token_file: $work/operator-token
 omp_invocation: mise x $pin -- omp
 envoy_url: http://127.0.0.1:$port_listener
-envoy_token_file: $work/envoy-token
 nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
@@ -381,12 +379,13 @@ claim_pane_pid() {
   incarnation_pid "$inc"
 }
 # endpoint_mismatch AGENT_PID checks the agent's environment, read once (read_environ), and
-# prints what it found: the first rig endpoint the agent does not carry, or a model credential
-# variable it must not carry, and returns 0; nothing, and returns 1, when the environment is clean;
-# why it could not be read, and returns 2, when it was not checked. Every agent's key is a key
-# command's, never its environment's. Beside ANTHROPIC_API_KEY, Oh My Pi reads
+# prints what it found: the first rig endpoint the agent does not carry, or a model credential or
+# Envoy bearer variable it must not carry, and returns 0; nothing, and returns 1, when the
+# environment is clean; why it could not be read, and returns 2, when it was not checked. Every
+# agent's key is a key command's, never its environment's. Beside ANTHROPIC_API_KEY, Oh My Pi reads
 # ANTHROPIC_OAUTH_TOKEN and ANTHROPIC_FOUNDRY_API_KEY, and Claude Code ANTHROPIC_AUTH_TOKEN and
-# CLAUDE_CODE_OAUTH_TOKEN.
+# CLAUDE_CODE_OAUTH_TOKEN. The run's listener takes no credential, and the daemon hands a pane no
+# Envoy bearer, so ENVOY_TOKEN_FILE and ENVOY_TOKEN are unset in every agent.
 endpoint_mismatch() {
   local agent=$1 name want
   local -A env=()
@@ -403,7 +402,8 @@ endpoint_mismatch() {
       return 0
     fi
   done
-  for name in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN ANTHROPIC_FOUNDRY_API_KEY CLAUDE_CODE_OAUTH_TOKEN; do
+  for name in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN ANTHROPIC_FOUNDRY_API_KEY CLAUDE_CODE_OAUTH_TOKEN \
+    ENVOY_TOKEN_FILE ENVOY_TOKEN; do
     if [ -n "${env[$name]+set}" ]; then
       printf '%s set, want unset\n' "$name"
       return 0
@@ -684,9 +684,7 @@ export TMUX_TMPDIR="$work/tmux"
 pass
 
 begin rig
-(umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
-  printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header" &&
-  head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/dispatch-token" &&
+(umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/dispatch-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/dispatch-token")" >"$work/dispatch-auth-header" &&
   printf 'X-Dispatch-User: %s\n' "$proof_human_user" >"$work/dispatch-human-header" &&
   head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/operator-token" &&
@@ -709,7 +707,7 @@ docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::422
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
-dispatch_identity_start
+dispatch_identity_start "$work/envoy-listener" "nats://127.0.0.1:$port_nats" "legion-e2ecc-dispatch-$$"
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Claude backend proof $project" '{key:$key,name:$name}')" >/dev/null

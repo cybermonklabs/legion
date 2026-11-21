@@ -129,6 +129,19 @@
 #   chosen route's pod fixture (lib/pod-service-account.sh).
 # - LEGION_E2E_POD_REACHABILITY (required, `aws-private-ip` or `bridge`, above) is how the pods
 #   reach the devbox's services.
+# - LEGION_E2E_AGENT_SECRETS_URL, LEGION_E2E_AGENT_SECRETS_TOKEN_FILE and
+#   LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE (all required), and LEGION_E2E_AGENT_SECRETS_AUDIENCE
+#   (optional) are the pods' broker route, the run's runtime.kubernetes.agent_secrets block
+#   (lib/broker-route.sh says what each is): the daemon enrols every pod with the deployment's
+#   secrets broker, and each role trades its pod's exchange token for a broker token naming its own
+#   session, its one credential at the scratch Envoy listener, which takes no shared token.
+#   LEGION_E2E_LISTENER_AGENT_SECRETS_TOKEN_FILE (required) is the scratch listener's own: a file
+#   only its owner can read, holding a projected ServiceAccount token for the broker's audience of
+#   an account the broker lets introspect (the caller "listener"), which the listener presents to
+#   check every broker token a pod sends it (ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE). Each token
+#   file must stay live for the whole run; the run reads them where they are, so a file the operator
+#   rewrites before its token lapses keeps working. A missing or wrong one is refused by name in
+#   prerequisites, before the run creates anything.
 # - LEGION_E2E_DAEMON_CONTAINER_MOUNTS (optional, bridge only) is a colon-separated list of absolute
 #   host paths the daemon's container mounts read-only at their own paths, for what the runtime
 #   kubeconfig's auth plugin reads beyond its own binary (a gcloud configuration directory, say).
@@ -497,8 +510,10 @@ assert_claim_endpoints() {
     fail "ABORT: $role pod $pod on $issue has $mismatch"
   fi
 }
-# pod_endpoint_mismatch POD ROLE prints the first endpoint ROLE's agent does not carry, and nothing
-# when it carries every one of them.
+# pod_endpoint_mismatch POD ROLE prints the first endpoint ROLE's agent does not carry, or the Envoy
+# bearer variable it must not carry, and nothing when it carries every endpoint and no bearer. The
+# listener takes no shared token and the daemon hands a role none: its one credential there is the
+# broker token it trades for its own session (runtime.kubernetes.agent_secrets).
 pod_endpoint_mismatch() {
   local pod=$1 role=$2 env name want got
   env=$(pod_env "$pod" "$role" 2>&1) || {
@@ -515,6 +530,12 @@ pod_endpoint_mismatch() {
     got=$(sed -n "s/^$name=//p" <<<"$env")
     if [ "$got" != "$want" ]; then
       printf '%s=%s, want %s\n' "$name" "${got:-<unset>}" "$want"
+      return 0
+    fi
+  done
+  for name in ENVOY_TOKEN_FILE ENVOY_TOKEN; do
+    if grep -q "^$name=" <<<"$env"; then
+      printf '%s in its environment, want none\n' "$name"
       return 0
     fi
   done
@@ -574,14 +595,36 @@ transcript_since() {
 # socket lib/rig.sh's start_held holds: held-port.py holds only a port the kernel chose, and only an
 # admitted or forwarded port is one a pod can dial. A service that cannot take its port has lost it
 # to another process since: it exits, and await_start fails naming the port and its log rather than
-# the run picking another.
+# the run picking another. Dispatch calls a listener of its own on the devbox's loopback, which
+# takes Dispatch's identity alone (dispatch_identity_start, lib/dispatch-identity.sh).
+#
+# The sessions' listener takes no shared token, and every pod reaches it: a role presents its own
+# broker token, which the listener checks at the deployment's broker (LEGION_E2E_AGENT_SECRETS_URL),
+# introspecting as the caller its own token file names, and holds each write that acts as a session
+# to the session the token names. So it binds off loopback in both modes, where /v1 is closed to a
+# caller that presents no credential: the private address under aws-private-ip, and every address
+# under bridge, since a loopback listener serves only a loopback Host and every pod names the
+# bridge's. Its public origin (ENVOY_PUBLIC_URL) is the address the pods dial, which each proof's
+# target URI names. Its start is judged by /healthz, and then by a request with no credential, which
+# it must answer 401: a listener that served it would be an open /v1 the pods reach.
 start_listener() {
-  ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$port_listener" ENVOY_LISTEN_HOST="$bind_host" \
+  local listen=$bind_host
+  [ "$pod_reachability" != bridge ] || listen=0.0.0.0
+  PORT="$port_listener" ENVOY_LISTEN_HOST="$listen" \
     ENVOY_MACHINE_ID="legion-e2eccs-$$" NATS_URLS="nats://$bind_host:$port_nats" \
-    start_process listener env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
-    "${dispatch_identity_listener_env[@]}" "$work/envoy-listener"
-  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions on its port $port_listener" \
-    curl -fsS -H "@$work/envoy-auth-header" "http://$bind_host:$port_listener/v1/sessions"
+    ENVOY_AGENT_SECRETS_URL="$broker_url" ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$listener_broker_token_file" \
+    ENVOY_PUBLIC_URL="http://$host:$port_listener" \
+    start_process listener env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT -u ENVOY_API_TOKEN \
+    -u ENVOY_API_ALLOW_UNAUTHENTICATED -u ENVOY_ALLOWED_HOSTS -u ENVOY_OIDC_ISSUER -u ENVOY_OIDC_AUDIENCE "${app_key_unsets[@]}" \
+    "$work/envoy-listener"
+  await_start listener "$listener_pid" 60 "the Envoy listener to answer /healthz on its port $port_listener" \
+    curl -fsS "http://$bind_host:$port_listener/healthz"
+  await_start listener "$listener_pid" 60 "the Envoy listener to refuse /v1/sessions with no credential (401) on its port $port_listener" \
+    listener_refuses_bare
+}
+# listener_refuses_bare: the sessions' listener answers a request that presents no credential 401.
+listener_refuses_bare() {
+  [ "$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' "http://$bind_host:$port_listener/v1/sessions")" = 401 ]
 }
 
 start_dispatch() {
@@ -589,13 +632,12 @@ start_dispatch() {
   chmod 0700 "$work/dispatch-home"
   # HOME and XDG_CONFIG_HOME are the scratch home, so the server reads no envoy.json of the operator's.
   DATABASE_URL="postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:$port_pg/dispatch?sslmode=disable" \
-    DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" ENVOY_TOKEN="$(cat "$work/envoy-token")" \
+    DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
     HOME="$work/dispatch-home" XDG_CONFIG_HOME="$work/dispatch-home/.config" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
     DISPATCH_LISTEN_HOST="$bind_host" DISPATCH_PORT="$port_dispatch" \
     DISPATCH_SERVER_URL="$pod_dispatch_url" NATS_URLS="nats://$bind_host:$port_nats" \
-    ENVOY_URL="http://$bind_host:$port_listener" \
-    start_process dispatch env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
+    start_process dispatch env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT -u ENVOY_TOKEN "${app_key_unsets[@]}" \
     "${dispatch_identity_dispatch_env[@]}" "$work/envoy-dispatch"
   dispatch_base="http://$bind_host:$port_dispatch"
   await_start dispatch "$dispatch_pid" 60 "the scratch Dispatch server on its port $port_dispatch" \
@@ -694,7 +736,6 @@ postgres_dsn: postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:$port
 state_dir: $state
 operator_token_file: $work/operator-token
 envoy_url: http://$host:$port_listener
-envoy_token_file: $work/envoy-token
 nats_urls:
   - nats://$host:$port_nats
 dispatch_url: $pod_dispatch_url
@@ -726,6 +767,7 @@ runtime:
     session_dsn_secret: $session_dsn_key
     kubeconfig: $runtime_kubeconfig
     context: $runtime_context
+$broker_block
     pod:
 $(sed 's/^/      /' "$work/pod.yml")
 EOF
@@ -854,7 +896,11 @@ prove_daemon_container() {
   [ -n "$app_tokens_dir" ] && [ -d "$app_tokens_dir" ] ||
     fail "the App credential directory is missing ('${app_tokens_dir:-unset}'): mint_app_tokens must run before the daemon's container is proved"
   daemon_mounts=()
-  for mount in "$runtime_kubeconfig" "$plugin" /etc/ssl/certs "$gac" "$app_tokens_dir" "${daemon_extra_mounts[@]}"; do
+  # The daemon's broker token is read where the operator keeps it, and its directory is mounted
+  # rather than the file, so a file the operator rewrites by a rename before its token lapses is the
+  # file the container reads too (a bind of the file would hold the old one).
+  for mount in "$runtime_kubeconfig" "$plugin" /etc/ssl/certs "$gac" "$app_tokens_dir" \
+    "$(dirname -- "$LEGION_E2E_AGENT_SECRETS_TOKEN_FILE")" "${daemon_extra_mounts[@]}"; do
     [ -z "$mount" ] || daemon_mount_add "$mount"
   done
   # A variable the container is passed by name whose value is a path (the gcloud config) is useless
@@ -1129,7 +1175,7 @@ cleanup() {
   bridge_stop
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
-  stop_pid "$dispatch_identity_issuer_pid"
+  dispatch_identity_stop
   stop_marked_processes "$work" || true
   docker rm -f "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
   [ -z "$snapshotted" ] || teardown
@@ -1175,6 +1221,13 @@ esac
   fail "LEGION_E2E_STORAGE_CLASS is unset: name the StorageClass of the issue pod's disk (the cluster has no default to fall back on)"
 pod_service_account=$(bash "$root/scripts/e2e/lib/pod-service-account.sh") ||
   fail "LEGION_E2E_POD_SERVICE_ACCOUNT is not a ServiceAccount name the operator route's pod.yml can carry (the reason is above)"
+# The pods' broker route and the scratch listener's own broker token (lib/broker-route.sh), each
+# missing or wrong input named at once; the block goes into legion.yaml as it is printed.
+broker_block=$(bash "$root/scripts/e2e/lib/broker-route.sh" LEGION_E2E_LISTENER_AGENT_SECRETS_TOKEN_FILE) ||
+  fail "the pods' broker route is not one the daemon's runtime.kubernetes.agent_secrets takes (each input is named above)"
+broker_url=$LEGION_E2E_AGENT_SECRETS_URL
+broker_url=${broker_url%/}
+listener_broker_token_file=$LEGION_E2E_LISTENER_AGENT_SECRETS_TOKEN_FILE
 [ -z "$priority_class" ] || [[ "$priority_class" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ && ${#priority_class} -le 253 ]] ||
   fail "LEGION_E2E_PRIORITY_CLASS must be a PriorityClass's name, not '$priority_class'"
 [ -n "$claude_key_file" ] ||
@@ -1347,9 +1400,7 @@ fi
 pass
 
 begin rig
-(umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
-  printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header" &&
-  head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/dispatch-token" &&
+(umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/dispatch-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/dispatch-token")" >"$work/dispatch-auth-header" &&
   printf 'X-Dispatch-User: %s\n' "$proof_human_user" >"$work/dispatch-human-header" &&
   head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/operator-token" &&
@@ -1384,7 +1435,7 @@ until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 # container (session_psql), so the devbox needs no URL of it.
 session_db_start "$bind_host" --cpus 1
 note "container $session_db_container: database sessions on $bind_host:$port_session_db ($session_db_image), which every pod reads at $host:$port_session_db through the providers Secret's $session_dsn_key (the URL is in an owner-only file, not printed)"
-dispatch_identity_start
+dispatch_identity_start "$work/envoy-listener" "nats://$bind_host:$port_nats" "legion-e2eccs-dispatch-$$"
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Claude backend sandbox proof $project" '{key:$key,name:$name}')" >/dev/null

@@ -74,10 +74,12 @@ chmod +x "${signal_bin_dir}/sleep"
 # handler panics, and slow answers after 4 s, past the probe's 3 s. held holds every /v1 request
 # past the probe's 3 s without answering, and once it holds one it writes a file named as the port
 # file plus .held, so a case knows a request is in flight. none binds the address without
-# listening, so it refuses every connection while no other process can take the port. Any /v1
-# request without the probe's bearer is 401 too, so a pass also proves the bearer was sent. Each
-# address keeps its own mode and request count and serves in its own thread, so a task that exits
-# closes only its own socket.
+# listening, so it refuses every connection while no other process can take the port. rotating
+# serves as ok does and takes the token the case rotates to (rotated-token) beside probe-token,
+# writing each /v1 request's Authorization to a file named as the port file plus .auth, so a case
+# knows which bearer each request carried. Any other /v1 request without the probe's bearer is 401
+# too, so a pass also proves the bearer was sent. Each address keeps its own mode and request count
+# and serves in its own thread, so a task that exits closes only its own socket.
 cat >"$server" <<'EOF'
 import errno
 import http.server
@@ -159,7 +161,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 task.v1_requests += 1
                 v1_requests = task.v1_requests
             mode = task.mode
-            if mode == "unauthorized" or self.headers.get("Authorization") != "Bearer probe-token":
+            authorization = self.headers.get("Authorization")
+            accepted = {"Bearer probe-token"}
+            if mode == "rotating":
+                accepted.add("Bearer rotated-token")
+                with task.lock, open(port_file + ".auth", "a") as out:
+                    out.write("%s\n" % authorization)
+            if mode == "unauthorized" or authorization not in accepted:
                 return self.answer(401, {"error": "unauthorized"})
             failing = v1_requests <= 2
             if mode == "held":
@@ -233,6 +241,11 @@ start_tasks() {
 }
 
 status=0
+# The probe's bearer as a deployment hands it one: a platform identity token in a file
+# (ENVOY_TOKEN_FILE), which the listener verifies. The listener takes no shared token, so no case
+# sets ENVOY_TOKEN but (o), which proves the probe refuses it.
+readonly listener_token_file="${temporary_dir}/listener-token"
+printf 'probe-token\n' >"$listener_token_file"
 # run_case FIRST_MODE SECOND_MODE [PROBE_OPTION...] runs the probe for three ticks against tasks on
 # 127.0.0.1 and 127.0.0.2 in those modes, leaving its output in $output_file and its exit code in
 # $status.
@@ -242,7 +255,7 @@ run_case() {
   stop_servers
   start_tasks "$first" "$second"
   status=0
-  env -u ENVOY_TOKEN_FILE PATH="${fake_bin_dir}:${PATH}" ENVOY_TOKEN=probe-token \
+  env -u ENVOY_TOKEN PATH="${fake_bin_dir}:${PATH}" ENVOY_TOKEN_FILE="$listener_token_file" \
     bash "$driver" --url "http://probe.test:${port}" --interval 1 --duration 3 "$@" >"$output_file" 2>&1 || status=$?
 }
 
@@ -322,6 +335,43 @@ expect_status 1 "a task whose /v1 never answers 200"
 expect_text 'target 127.0.0.1: fail - ' "a task whose /v1 never answers 200"
 expect_text '; /v1 never answered 200' "a task whose /v1 never answers 200"
 printf 'PASS: a task whose /v1 never answers 200 while /healthz answers fails the run (exit 1)\n'
+
+# (o) The listener takes no shared token, so the probe reads none: a run whose environment sets
+# ENVOY_TOKEN refuses before its first request, naming the variable and what replaces it, rather
+# than sending no bearer and calling every 401 the listener's.
+stop_servers
+start_tasks ok ok
+status=0
+env -u ENVOY_TOKEN_FILE PATH="${fake_bin_dir}:${PATH}" ENVOY_TOKEN=probe-token \
+  bash "$driver" --url "http://probe.test:${port}" --interval 1 --duration 3 >"$output_file" 2>&1 || status=$?
+expect_status 2 "a run given ENVOY_TOKEN"
+expect_text 'ERR: ENVOY_TOKEN is not read' "a run given ENVOY_TOKEN"
+expect_text '--token-file or ENVOY_TOKEN_FILE' "a run given ENVOY_TOKEN"
+printf 'PASS: a run given ENVOY_TOKEN refuses, naming --token-file and ENVOY_TOKEN_FILE (exit 2)\n'
+
+# (p) A platform identity token is rewritten before it lapses (a kubelet's projected token, a token
+# loop's Google identity token), so the probe reads the file at each tick: after the case rewrites it
+# between ticks, the next tick's /v1 requests carry the new token, and no tick is refused.
+stop_servers
+start_tasks rotating rotating
+rotating_token="${temporary_dir}/rotating-token"
+printf 'probe-token\n' >"$rotating_token"
+status=0
+env -u ENVOY_TOKEN PATH="${fake_bin_dir}:${PATH}" \
+  bash "$driver" --url "http://probe.test:${port}" --token-file "$rotating_token" --interval 1 --duration 3 \
+  >"$output_file" 2>&1 &
+probe_pid=$!
+wait_file "${listener_port_file}.auth" "$probe_pid" "the probe"
+printf 'rotated-token\n' >"${rotating_token}.new"
+mv "${rotating_token}.new" "$rotating_token"
+wait "$probe_pid" || status=$?
+probe_pid=""
+expect_status 0 "a token file rewritten mid-run"
+[[ "$(head -n 1 "${listener_port_file}.auth")" == "Bearer probe-token" ]] ||
+  fail "a token file rewritten mid-run: the first /v1 request carried $(head -n 1 "${listener_port_file}.auth"), not the file's first token"
+[[ "$(tail -n 1 "${listener_port_file}.auth")" == "Bearer rotated-token" ]] ||
+  fail "a token file rewritten mid-run: the last /v1 request carried $(tail -n 1 "${listener_port_file}.auth"), not the token the file was rewritten to"
+printf 'PASS: a token file rewritten between ticks is read again, and the next tick carries the new token (exit 0)\n'
 
 # (h) Dispatch messages during the run. A fake Dispatch takes only the request Dispatch's
 # POST /api/v1/issues/<KEY>/messages takes from a bearer (the session target, the mode, the bearer's
@@ -485,7 +535,7 @@ run_signal_case() {
   rm -f "$sleep_mark"
   status=0
   set -m
-  env -u ENVOY_TOKEN_FILE PATH="${signal_bin_dir}:${fake_bin_dir}:${PATH}" ENVOY_TOKEN=probe-token \
+  env -u ENVOY_TOKEN PATH="${signal_bin_dir}:${fake_bin_dir}:${PATH}" ENVOY_TOKEN_FILE="$listener_token_file" \
     PROBE_SLEEP_MARK="$sleep_mark" PROBE_REAL_SLEEP="$real_sleep" \
     bash "$driver" --url "http://probe.test:${port}" --interval 5 --duration 0 >"$output_file" 2>&1 &
   probe_pid=$!

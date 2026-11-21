@@ -91,65 +91,33 @@ func TestAHubWithoutTheCalloutRendersNoCalloutLine(t *testing.T) {
 // its BROKER_NATS_K8S_AUDIENCE for a pod's projected one.
 const calloutNatsAudience = "example-nats-audience"
 
-// calloutListener is exampleArgs' listener behind the auth service: no user, no seed, and the
-// audience of the VM's Google identity token it connects with instead.
+// calloutListener is a gcp:NatsHub listener behind the auth service, with its broker settings: no
+// user, no seed, and the audience of the VM's Google identity token it would connect with instead.
+// The hub refuses it as it refuses every listener of its own (TestAForwardedLoopbackListenerIsOffLoopback).
 func calloutListener() *gcp.HubListenerArgs {
-	return &gcp.HubListenerArgs{Image: listenerImage, NatsAudience: calloutNatsAudience}
+	return &gcp.HubListenerArgs{Image: listenerImage, NatsAudience: calloutNatsAudience,
+		AgentSecretsUrl: brokerURL, AgentSecretsAudience: brokerAudience, PublicUrl: listenerOrigin}
 }
 
 // calloutClusteredHubWithTailnet is clusteredArgs behind the auth service, its tailnet's listener
 // connecting by the projected token of its own ServiceAccount for calloutNatsAudience: no user and
-// no seed Secret.
+// no seed Secret, with clusteredArgs' broker settings.
 func calloutClusteredHubWithTailnet() *gcp.ClusteredNatsHubArgs {
 	args := clusteredArgs()
 	args.Users = append(args.Users, authServiceUser())
 	args.AuthCallout = authCallout()
-	args.Tailnet.Listener = &gcp.ClusteredHubListenerArgs{Image: listenerImage, NatsAudience: calloutNatsAudience}
+	args.Tailnet.Listener = withBroker(&gcp.ClusteredHubListenerArgs{Image: listenerImage, NatsAudience: calloutNatsAudience})
 	return args
 }
 
-// A hub behind the auth service runs its own listener by the listener's service identity, which
-// the auth service admits it by (t-e-13), and not as a user whose seed the
-// hub stores: the start is not refused, the authorization holds no user for the listener, so its
-// key is in no auth_users list, and the listener is handed no seed. gcp:NatsHub's VM listener
-// presents the VM's Google identity token for listener.natsAudience, with no env file and no
-// fetch of a seed before its start, and the hub's account is granted no seed secret;
-// gcp:ClusteredNatsHub's presents the projected token of its own ServiceAccount for
-// tailnet.listener.natsAudience, read from a file of the pod, which mounts no Secret. This is the
-// case PlanC's slice C1 refused, inverted.
+// A clustered hub behind the auth service runs its session listener by the listener's service
+// identity, which the auth service admits it by (t-e-13), and not as a user whose seed the hub
+// stores: the start is not refused, the authorization holds no user for the listener, so its key is
+// in no auth_users list, and the listener is handed no seed. It presents the projected token of its
+// own ServiceAccount for tailnet.listener.natsAudience, read from a file of the pod, which mounts no
+// Secret. This is the case PlanC's slice C1 refused, inverted. gcp:NatsHub runs no listener of its
+// own from t-e-19 on (TestAForwardedLoopbackListenerIsOffLoopback).
 func TestACalloutHubRunsItsListenerByServiceIdentity(t *testing.T) {
-	t.Run("gcp:NatsHub", func(t *testing.T) {
-		args := calloutNatsHub()
-		args.Listener = calloutListener()
-		doc, _, err := gcp.CloudConfigOf(args)
-		require.NoError(t, err)
-		unit := fileOf(t, doc, "/etc/systemd/system/envoy-listener.service")
-		require.Contains(t, unit, " -e NATS_SERVICE_GOOGLE_AUDIENCE="+calloutNatsAudience+" "+listenerImage+"\n",
-			"the listener presents the VM's Google identity token for natsAudience")
-		for _, absent := range []string{"--env-file", "listener-seed-env", "NATS_NKEY_SEED", "NATS_SERVICE_TOKEN_FILE"} {
-			require.NotContains(t, unit, absent, "the listener is handed no seed")
-		}
-		for _, f := range doc.WriteFiles {
-			require.NotEqual(t, "/etc/envoy/listener-seed-env", f.Path, "the VM writes no seed script")
-		}
-		conf, err := gcp.NatsHubAuthConf(args)
-		require.NoError(t, err)
-		withoutListener, err := gcp.NatsHubAuthConf(calloutNatsHub())
-		require.NoError(t, err)
-		require.Equal(t, withoutListener, conf, "the authorization holds no user for the listener")
-		require.NotContains(t, conf, keyListener)
-
-		m, err := run(t, args, nil, true)
-		require.NoError(t, err)
-		accessors := 0
-		for _, r := range m.Registrations() {
-			require.NotEqual(t, "example-hub-listener-seed-accessor", r.Name, "the hub's account is granted no seed secret")
-			if r.Type == accessorType {
-				accessors++
-			}
-		}
-		require.Equal(t, 1, accessors, "the tailnet auth key's accessor alone")
-	})
 	t.Run("gcp:ClusteredNatsHub", func(t *testing.T) {
 		args := calloutClusteredHubWithTailnet()
 		s, err := gcp.ResolveClusteredNatsHub(args)
@@ -166,77 +134,22 @@ func TestACalloutHubRunsItsListenerByServiceIdentity(t *testing.T) {
 		require.Equal(t, "/var/run/secrets/envoy/nats-token", env["NATS_SERVICE_TOKEN_FILE"])
 		require.NotContains(t, env, "NATS_NKEY_SEED_FILE", "the listener is handed no seed")
 		volumes := template["spec"].(map[string]any)["volumes"].([]any)
-		require.Len(t, volumes, 1, "the token's volume alone")
-		require.Equal(t, map[string]any{"name": "nats-token", "projected": map[string]any{"sources": []any{
-			map[string]any{"serviceAccountToken": map[string]any{"audience": calloutNatsAudience, "expirationSeconds": 3600.0, "path": "nats-token"}},
-		}}}, volumes[0], "a projected token of the listener's own ServiceAccount, and no Secret")
+		require.Equal(t, []any{
+			map[string]any{"name": "nats-token", "projected": map[string]any{"sources": []any{
+				map[string]any{"serviceAccountToken": map[string]any{"audience": calloutNatsAudience, "expirationSeconds": 3600.0, "path": "nats-token"}},
+			}}},
+			map[string]any{"name": "envoy-broker-token", "projected": map[string]any{"sources": []any{
+				map[string]any{"serviceAccountToken": map[string]any{"audience": clusteredBrokerAudience, "expirationSeconds": 3600.0, "path": "token"}},
+			}}},
+		}, volumes, "the projected tokens of the listener's own ServiceAccount, its NATS one and its broker one, and no Secret")
 	})
 }
 
-// systemd expands specifiers and environment references and parses quotes and backslashes in
-// ExecStart. The listener must receive natsAudience literally, not a different token audience or
-// a command systemd cannot start. Ordinary audiences retain the existing unit's bytes.
-func TestACalloutHubPreservesItsListenerAudienceInTheUnit(t *testing.T) {
-	for _, row := range []struct {
-		name, audience, argument string
-	}{
-		{"ordinary", "example-nats-audience", "NATS_SERVICE_GOOGLE_AUDIENCE=example-nats-audience"},
-		{"encoded URL", "https://broker.example/nats%2Flistener", `"NATS_SERVICE_GOOGLE_AUDIENCE=https://broker.example/nats%%2Flistener"`},
-		{"unit specifier", "nats-%n", `"NATS_SERVICE_GOOGLE_AUDIENCE=nats-%%n"`},
-		{"environment reference", "nats-${USER}", `"NATS_SERVICE_GOOGLE_AUDIENCE=nats-$${USER}"`},
-		{"quotes", `nats-'listener'"audience"`, `"NATS_SERVICE_GOOGLE_AUDIENCE=nats-'listener'\"audience\""`},
-		{"backslash", `nats-\x41`, `"NATS_SERVICE_GOOGLE_AUDIENCE=nats-\\x41"`},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			args := calloutNatsHub()
-			args.Listener = calloutListener()
-			args.Listener.NatsAudience = row.audience
-			doc, _, err := gcp.CloudConfigOf(args)
-			require.NoError(t, err)
-			unit := fileOf(t, doc, "/etc/systemd/system/envoy-listener.service")
-			require.Contains(t, unit, " -e "+row.argument+" "+listenerImage+"\n")
-		})
-	}
-}
-
-// Every value the listener's unit carries reaches it literally, not natsAudience alone: the broker
-// check's URL and audience and the public URL are inputs a consumer writes too, and an encoded
-// `%2F` or a `$` in one made systemd refuse the unit's load or change the value. A unit whose
-// values hold no such character is byte for byte what it was (the goldens).
-func TestTheHubListenerUnitCarriesEveryValueLiterally(t *testing.T) {
-	for _, callout := range []bool{false, true} {
-		args := exampleArgs()
-		if callout {
-			args = calloutNatsHub()
-			args.Listener = calloutListener()
-		}
-		args.Listener.AgentSecretsUrl = "https://broker.example/agent%2Fsecrets"
-		args.Listener.AgentSecretsAudience = "https://broker.example/aud%2F$USER"
-		args.Listener.PublicUrl = "https://envoy.example/v1%2Fx"
-		doc, _, err := gcp.CloudConfigOf(args)
-		require.NoError(t, err, "authCallout %t", callout)
-		unit := fileOf(t, doc, "/etc/systemd/system/envoy-listener.service")
-		for _, argument := range []string{
-			`"ENVOY_AGENT_SECRETS_URL=https://broker.example/agent%%2Fsecrets"`,
-			`"ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE=https://broker.example/aud%%2F$$USER"`,
-			`"ENVOY_PUBLIC_URL=https://envoy.example/v1%%2Fx"`,
-		} {
-			require.Contains(t, unit, " -e "+argument+" ", "authCallout %t", callout)
-		}
-	}
-}
-
-// A hub's own listener behind the auth service is no user of the hub, but it still binds the
-// durable and the queue group of its machine id, so a static user given that machine id is
-// refused on each hub as it is beside a seeded listener: two listeners would share one durable.
+// A clustered hub's session listener behind the auth service is no user of the hub, but it still
+// binds the durable and the queue group of its machine id, so a static user given that machine id
+// is refused as it is beside a seeded listener: two listeners would share one durable. gcp:NatsHub
+// runs no listener of its own from t-e-19 on.
 func TestACalloutHubReservesItsServiceListenersDurable(t *testing.T) {
-	t.Run("gcp:NatsHub", func(t *testing.T) {
-		args := calloutNatsHub()
-		args.Listener = calloutListener()
-		args.Users[3].ListenerMachineID = pulumi.StringRef("example-hub")
-		requireMachineIDRefusal(t, args, "users[3].listenerMachineId",
-			"users[3]: listenerMachineId gives the same durable name as the hub's own listener")
-	})
 	t.Run("gcp:ClusteredNatsHub", func(t *testing.T) {
 		args := calloutClusteredHubWithTailnet()
 		args.Tailnet.Listener.MachineID = pulumi.StringRef("example host a")
@@ -248,20 +161,10 @@ func TestACalloutHubReservesItsServiceListenersDurable(t *testing.T) {
 	})
 }
 
-// A control character that is no whitespace (NUL, DEL) in a hub listener's natsAudience is refused
-// as whitespace is: no environment line or unit can carry it.
+// A control character that is no whitespace (NUL, DEL) in a session listener's natsAudience is
+// refused as whitespace is: no environment line can carry it.
 func TestAHubListenersAudienceRefusesAControlCharacter(t *testing.T) {
 	for _, value := range []string{"nats\x00audience", "nats\x7faudience"} {
-		t.Run("gcp:NatsHub", func(t *testing.T) {
-			args := calloutNatsHub()
-			args.Listener = calloutListener()
-			args.Listener.NatsAudience = value
-			err := gcp.ResolveNatsHub(args)
-			var input *core.InputError
-			require.ErrorAs(t, err, &input)
-			require.Equal(t, "listener.natsAudience", input.Input, "%v", err)
-			require.ErrorContains(t, err, "whitespace or a control character")
-		})
 		t.Run("gcp:ClusteredNatsHub", func(t *testing.T) {
 			args := calloutClusteredHubWithTailnet()
 			args.Tailnet.Listener.NatsAudience = value
@@ -274,13 +177,13 @@ func TestAHubListenersAudienceRefusesAControlCharacter(t *testing.T) {
 	}
 }
 
-// Without authCallout a hub renders its listener exactly as before: the listener connects as the
-// user the hub renders for its seed, and the goldens the other tests pin are that text. So
-// natsAudience, which only the auth service reads, is refused without it, and with it the
-// listener's seed inputs are refused, since the listener connects as one identity: nkey and
-// seedSecret on gcp:NatsHub, nkey, seedSecretName and seedSecretKey on gcp:ClusteredNatsHub.
-// natsAudience is required with authCallout, and refused holding whitespace or a control
-// character. Each refusal is a core.InputError naming the input, and nothing registers.
+// Without authCallout a clustered hub renders its session listener as before: the listener
+// connects as the user the hub renders for its seed, and the goldens the other tests pin are that
+// text. So natsAudience, which only the auth service reads, is refused without it, and with it the
+// listener's seed inputs are refused, since the listener connects as one identity: nkey,
+// seedSecretName and seedSecretKey. natsAudience is required with authCallout, and refused holding
+// whitespace or a control character. Each refusal is a core.InputError naming the input, and
+// nothing registers. gcp:NatsHub runs no listener of its own from t-e-19 on.
 func TestAHubListenersIdentityFollowsTheCallout(t *testing.T) {
 	// row is one refusal: bare starts from the hub with no callout, and every other row from the
 	// hub behind the auth service whose listener connects by its service identity.
@@ -288,41 +191,6 @@ func TestAHubListenersIdentityFollowsTheCallout(t *testing.T) {
 		name, input, want string
 		bare              bool
 	}
-	t.Run("gcp:NatsHub", func(t *testing.T) {
-		for _, r := range []struct {
-			row
-			edit func(*gcp.HubListenerArgs)
-		}{
-			{row{"natsAudience without authCallout", "listener.natsAudience", "listener.natsAudience is set without authCallout", true},
-				func(l *gcp.HubListenerArgs) { l.NatsAudience = calloutNatsAudience }},
-			{row{"no natsAudience with authCallout", "listener.natsAudience", "listener.natsAudience is required with authCallout", false},
-				func(l *gcp.HubListenerArgs) { l.NatsAudience = "" }},
-			{row{"a listener nkey with authCallout", "listener.nkey", "listener.nkey is set beside authCallout", false},
-				func(l *gcp.HubListenerArgs) { l.NKey = keyListener }},
-			{row{"a listener seed secret with authCallout", "listener.seedSecret", "listener.seedSecret is set beside authCallout", false},
-				func(l *gcp.HubListenerArgs) { l.SeedSecret = listenerSeed }},
-			{row{"a natsAudience with a space", "listener.natsAudience",
-				"listener.natsAudience holds whitespace or a control character, which NATS_SERVICE_GOOGLE_AUDIENCE cannot carry", false},
-				func(l *gcp.HubListenerArgs) { l.NatsAudience = calloutNatsAudience + " --privileged" }},
-		} {
-			t.Run(r.name, func(t *testing.T) {
-				args := exampleArgs()
-				if !r.bare {
-					args = calloutNatsHub()
-					args.Listener = calloutListener()
-				}
-				r.edit(args.Listener)
-				err := gcp.ResolveNatsHub(args)
-				var input *core.InputError
-				require.ErrorAs(t, err, &input)
-				require.Equal(t, r.input, input.Input, "%v", err)
-				require.ErrorContains(t, err, r.want)
-				m, err := run(t, args, nil, true)
-				require.ErrorContains(t, err, r.want)
-				require.Equal(t, []string{gcpProviderType}, m.Types(), "nothing registered beyond the test's provider")
-			})
-		}
-	})
 	t.Run("gcp:ClusteredNatsHub", func(t *testing.T) {
 		for _, r := range []struct {
 			row

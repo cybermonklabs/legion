@@ -1,0 +1,5 @@
+kind: Added
+body: 'A listener that takes no broker token counts a request that presents one, which its open `/v1` serves unverified, as `credential="none_broker_token"` in `envoy_listener_requests_total` rather than `none`, and warns once a minute with `listener: request admitted with a broker token this listener does not verify`, naming the route and the caller''s address. A request that presents nothing is still `none`, and nothing is admitted or refused differently.'
+time: 2026-11-21T01:04:37.195422231Z
+custom:
+    Issue: pr4708

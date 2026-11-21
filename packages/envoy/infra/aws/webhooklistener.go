@@ -29,9 +29,7 @@ type WebhookListenerArgs struct {
 	Region    string                  `pulumi:"region"` // the container's awslogs-region
 
 	// The secrets the container reads, as ARNs: the execution role reads each one at task start.
-	ApiTokenSecretArn       pulumi.StringInput    `pulumi:"apiTokenSecretArn"`
-	ApiTokenSecretVersionId pulumi.StringInput    `pulumi:"apiTokenSecretVersionId"` // orders the task definition after the token's version
-	SeedSecretArn           pulumi.StringPtrInput `pulumi:"seedSecretArn,optional"`  // the NATS user's seed; unset injects none
+	SeedSecretArn pulumi.StringPtrInput `pulumi:"seedSecretArn,optional"` // the NATS user's seed; unset injects none
 	// The ENVOY_WEBHOOKS list; this version takes [] or exactly ["github", "slack"], and refuses it
 	// omitted. Each webhook's inputs are required while it is listed and refused while it is not.
 	Webhooks               []string              `pulumi:"webhooks"`
@@ -90,12 +88,32 @@ type WebhookListener struct {
 	InternalUrl       pulumi.StringOutput `pulumi:"internalUrl"` // http://<cloud map name>.<namespace>:9020
 }
 
-// NewWebhookListener registers the listener. Each child is named from name as the reference names
-// its root-level resource from envoy-listener, the Cloud Map service by cloudMapServiceLogicalName.
-// It resolves its inputs (validate), then requires an aws provider, and only then registers
-// anything. Each Input it registers from fails once it resolves to a value holding a seed
-// (refuseSeedInputs).
+// errNoBrokerVerifier is the refusal NewWebhookListener answers every configuration with (t-e-19).
+// The listener binds off loopback behind the consumer's target group and relays agent sessions, as
+// its sender limit says, and a session presents a broker token, which a listener verifies only by
+// introspecting it at the secrets broker as a platform identity the broker knows: a VM's Google
+// identity token or a pod's projected ServiceAccount token. An ECS task has neither, and the shared
+// ENVOY_API_TOKEN that admitted every caller before is gone, so a deployed listener would refuse
+// every session. Until a broker path is built for ECS, an AWS deployment has no session listener.
+var errNoBrokerVerifier = errors.New("aws:WebhookListener cannot verify a session's broker token; deploy a listener with broker settings")
+
+// NewWebhookListener refuses every configuration, at preview as at update, before it requires a
+// provider or registers anything: errNoBrokerVerifier, after the component's type and name. A name
+// holding a seed is refused first, by refuseSeededName, since that refusal quotes the name.
 func NewWebhookListener(ctx *pulumi.Context, name string, args *WebhookListenerArgs, opts ...pulumi.ResourceOption) (*WebhookListener, error) {
+	if err := refuseSeededName(webhookListenerType, name); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("%s %s: %w", webhookListenerType, name, errNoBrokerVerifier)
+}
+
+// registerWebhookListener registers the listener NewWebhookListener registered before t-e-19, which
+// a broker path for ECS will build on; until then nothing but its tests (export_test.go) reaches it.
+// Each child is named from name as the reference names its root-level resource from
+// envoy-listener, the Cloud Map service by cloudMapServiceLogicalName. It resolves its inputs
+// (validate), then requires an aws provider, and only then registers anything. Each Input it
+// registers from fails once it resolves to a value holding a seed (refuseSeedInputs).
+func registerWebhookListener(ctx *pulumi.Context, name string, args *WebhookListenerArgs, opts ...pulumi.ResourceOption) (*WebhookListener, error) {
 	if err := refuseSeededName(webhookListenerType, name); err != nil {
 		return nil, err
 	}
@@ -149,8 +167,8 @@ func NewWebhookListener(ctx *pulumi.Context, name string, args *WebhookListenerA
 		return nil, err
 	}
 
-	// The execution role reads the token and, when there is one, the seed into the container. The
-	// seed's ARN is resolved once, for its policy and for the container.
+	// The execution role reads the seed, when there is one, into the container. The seed's ARN is
+	// resolved once, for its policy and for the container.
 	var policies []pulumi.Resource
 	readPolicy := func(suffix string, arn pulumi.StringOutput) error {
 		policy, err := iam.NewRolePolicy(ctx, name+suffix, &iam.RolePolicyArgs{
@@ -162,9 +180,6 @@ func NewWebhookListener(ctx *pulumi.Context, name string, args *WebhookListenerA
 		}
 		policies = append(policies, policy)
 		return nil
-	}
-	if err := readPolicy("-execution-api-token-read", args.ApiTokenSecretArn.ToStringOutput()); err != nil {
-		return nil, err
 	}
 	seedArn := pulumi.String("").ToStringOutput() // unset: the container injects no seed
 	if args.SeedSecretArn != nil {
@@ -184,17 +199,14 @@ func NewWebhookListener(ctx *pulumi.Context, name string, args *WebhookListenerA
 	definitions := pulumi.All(
 		args.NatsUrls.ToStringArrayOutput(),
 		logGroup.Name,
-		args.ApiTokenSecretArn.ToStringOutput(),
 		webhookArns.ToStringMapOutput(),
 		seedArn,
 	).ApplyT(func(v []any) (string, error) {
-		natsUrls, logGroupName, tokenArn, webhookSecretArns, seed := v[0].([]string), v[1].(string), v[2].(string),
-			v[3].(map[string]string), v[4].(string)
+		natsUrls, logGroupName, webhookSecretArns, seed := v[0].([]string), v[1].(string), v[2].(map[string]string), v[3].(string)
 		c := rendering.ListenerContainer{
 			Image:             args.Image,
 			Env:               args.environment(natsUrls),
 			WebhookSecretArns: webhookSecretArns,
-			ApiTokenSecretArn: tokenArn,
 			LogGroup:          logGroupName,
 			Region:            args.Region,
 		}
@@ -207,13 +219,12 @@ func NewWebhookListener(ctx *pulumi.Context, name string, args *WebhookListenerA
 		}
 		return definitions, nil
 	}).(pulumi.StringOutput)
-	// A task must not start before the token's version exists or before its execution role may
-	// read what the container names.
+	// A task must not start before its execution role may read what the container names.
 	task, err := ecs.NewTaskDefinition(ctx, name+"-task", fargateTask{
 		family: args.Family, cpu: args.Cpu, memory: args.Memory,
 		executionRoleArn: args.ExecutionRoleArn, taskRoleArn: args.TaskRoleArn,
 		containerDefinitions: definitions, tags: tags,
-	}.args(), append(slices.Clip(child), pulumi.DependsOn(policies), dependsOnInput(args.ApiTokenSecretVersionId))...)
+	}.args(), append(slices.Clip(child), pulumi.DependsOn(policies))...)
 	if err != nil {
 		return nil, err
 	}

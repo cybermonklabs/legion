@@ -3,7 +3,7 @@
   "zone": "us-west1-a",
   "ssh_command": "ssh",
   "login_service_account": "lt-oslogin@example-project.iam.gserviceaccount.com",
-  "dispatch_service_account": "lt-dispatch@example-project.iam.gserviceaccount.com",
+  "listener_audience": "envoy-listener-loadtest",
   "pprof_url": "http://10.138.0.21:6060",
   "pprof_tunnel_command": "ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes",
   "embed_tokens_per_minute": 1000000,
@@ -13,9 +13,9 @@
   "iamcredentials": "https://iamcredentials.googleapis.com",
   "oslogin": "https://oslogin.googleapis.com",
   "vms": {
-    "app": { "host": "10.138.0.21", "instance": "lt-app" },
-    "generator": { "host": "10.138.0.22", "instance": "lt-gen" },
-    "nats": { "host": "10.138.0.23", "instance": "lt-nats" }
+    "app": { "host": "10.138.0.21", "instance": "lt-app", "service_account": "lt-app@example-project.iam.gserviceaccount.com" },
+    "generator": { "host": "10.138.0.22", "instance": "lt-gen", "service_account": "lt-gen@example-project.iam.gserviceaccount.com" },
+    "nats": { "host": "10.138.0.23", "instance": "lt-nats", "service_account": "lt-nats@example-project.iam.gserviceaccount.com" }
   },
   "load_vm": "generator",
   "containers": {
@@ -67,7 +67,6 @@
   },
   "secrets": {
     "dispatch_token": "...",
-    "listener_token": "...",
     "embed_key": "..."
   },
   "paths": {
@@ -78,6 +77,7 @@
     "remote_loadgen": "/var/lib/dispatch-loadtest/loadgen",
     "remote_work": "/var/lib/dispatch-loadtest/work",
     "loadgen": "/tmp/dispatch-loadtest/bin/loadgen",
+    "listener_token": "/run/envoy-listener/token",
     "cgroup": "/sys/fs/cgroup/system.slice/docker-%s.scope"
   },
   "production_addresses": ["10.139.0.2:5432", "10.138.0.10:4222"],

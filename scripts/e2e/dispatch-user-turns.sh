@@ -82,6 +82,8 @@ fail() { echo "FAIL $check: $*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
 # Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
 # carries it and nothing else (marked_processes, lib/process-tree.sh); a start that clears its
 # environment (`env -i`) names the mark itself, and a fork of this shell that execs nothing carries
@@ -98,6 +100,7 @@ cleanup() {
   tm kill-server >/dev/null 2>&1
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
+  dispatch_identity_stop
   stop_marked_processes "$work"
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
   rm -rf "$work"
@@ -190,7 +193,9 @@ human() { curl -fsS -H "X-Dispatch-User: $login" -H 'Content-Type: application/j
 # bearer sends the run's Dispatch token on curl's standard input, in no command line; its callers
 # give their bodies with -d.
 bearer() { printf 'Authorization: Bearer %s' "$(cat "$work/dispatch-token")" | curl -fsS -H @- -H 'Content-Type: application/json' "$@"; }
-listener() { curl -fsS -H "@$work/envoy-auth-header" -H 'Content-Type: application/json' "$@"; }
+# The sessions' listener is on loopback with no credential: the session and this script call it with
+# none.
+listener() { curl -fsS -H 'Content-Type: application/json' "$@"; }
 page() { bun "$root/scripts/e2e/lib/dispatch-user-turns.ts" "$@"; }
 
 # The operator's shell less the running session's own Oh My Pi variables (omp_session_unsets,
@@ -201,7 +206,7 @@ launch_session() {
   local command
   command=$(printf '%q ' sh -c "$record_pid_sh" record-pid "$work/session.pid" env "${omp_session_unsets[@]}" \
     HOME="$omp_home" OMP_PROFILE="$profile" \
-    ENVOY_URL="http://127.0.0.1:$envoy_port" ENVOY_TOKEN_FILE="$work/envoy-token" ENVOY_NATS_URL="$nats_url" \
+    ENVOY_URL="http://127.0.0.1:$envoy_port" ENVOY_NATS_URL="$nats_url" \
     DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
     mise x "$omp_tool" -- omp "$@")
   tm new-session -d -s user -x 200 -y 50 -c "$session_cwd" "$command"
@@ -234,28 +239,26 @@ docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222
 until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 
-(umask 077 &&
-  od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/envoy-token" &&
-  od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/dispatch-token" &&
-  printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
+(umask 077 && od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/dispatch-token")
 # Neither service inherits this shell: an operator's ENVOY_NATS_URL names production NATS, and a
 # HOME or XDG_CONFIG_HOME holding legion/envoy.json would hand Dispatch a production configuration.
 # Each serves on a port the kernel chose, held from that choice until it serves on it (lib/rig.sh's
 # start_held); `env -i` clears the descriptor's variable the helper sets, so each names its own: the
-# helper hands the socket over as descriptor 3.
+# helper hands the socket over as descriptor 3. Dispatch calls a listener of its own on the same
+# NATS, which takes Dispatch's identity alone (lib/dispatch-identity.sh), as a deployment gives it.
 start_held listener envoy_port ENVOY_LISTEN_FD -- \
-  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT='{port}' \
+  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_LISTEN_FD=3 PORT='{port}' \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-user-turns-$$" NATS_URLS="$nats_url" \
   "$work/envoy-listener"
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
+dispatch_identity_start "$work/envoy-listener" "$nats_url" "legion-e2e-user-turns-dispatch-$$"
 start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
   env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
   DATABASE_URL="postgres://dispatch:dispatch@127.0.0.1:$pg_port/dispatch?sslmode=disable" \
   DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" DISPATCH_LISTEN_FD=3 \
   DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT='{port}' \
   DISPATCH_SERVER_URL='http://127.0.0.1:{port}' DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
-  DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port" \
-  ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" \
+  DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
   "$work/dispatch"
 until_true 90 "Dispatch to serve, with NATS" sh -c "curl -fsS http://127.0.0.1:$dispatch_port/healthz | jq -e '.ok and .nats'"
 note "listener port $envoy_port; Dispatch port $dispatch_port"

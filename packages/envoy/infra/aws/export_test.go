@@ -9,5 +9,9 @@ func (args *NatsServiceArgs) Validate() error {
 	return err
 }
 
-// Validate refuses what NewWebhookListener refuses before it requires a provider.
+// Validate refuses what registerWebhookListener refuses before it requires a provider.
 func (args *WebhookListenerArgs) Validate() error { return args.validate() }
+
+// RegisterWebhookListener is the listener NewWebhookListener refuses to register (t-e-19), which
+// the component's tests still hold, since a broker path for ECS will build on it.
+var RegisterWebhookListener = registerWebhookListener

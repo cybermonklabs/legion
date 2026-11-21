@@ -12,8 +12,8 @@ import (
 
 // apiAuth hands every handler the principal the request's identity token proved: a projected
 // service-account token's subject, a Google identity token's account. No other credential proves
-// one, so a request on the shared token, on a broker token, or on none carries none. The send
-// route reads it to take a role mark from Dispatch's own principal alone.
+// one, so a request on a broker token, or on none, carries none. The send route reads it to take a
+// role mark from Dispatch's own principal alone.
 func TestAPIAuthCarriesTheVerifiedPrincipalOfAnIdentityTokenAndOfNoOtherCredential(t *testing.T) {
 	cluster := newClusterIssuer(t)
 	google := newGoogleStandIn(t, listenerGoogleAccount)
@@ -23,7 +23,7 @@ func TestAPIAuthCarriesTheVerifiedPrincipalOfAnIdentityTokenAndOfNoOtherCredenti
 		principal, reached = verifiedPrincipal(r), true
 		w.WriteHeader(http.StatusNoContent)
 	})
-	closed := apiAuth(listenerAPIAuth{token: "expected-token", verifier: cluster.verifier, google: google.identities, logger: logging.NewWithWriter("test-machine", &bytes.Buffer{})}, recording)
+	closed := apiAuth(listenerAPIAuth{verifier: cluster.verifier, google: google.identities, logger: logging.NewWithWriter("test-machine", &bytes.Buffer{})}, recording)
 	open := apiAuth(listenerAPIAuth{logger: logging.NewWithWriter("test-machine", &bytes.Buffer{})}, recording)
 	for _, tc := range []struct {
 		name      string
@@ -33,7 +33,6 @@ func TestAPIAuthCarriesTheVerifiedPrincipalOfAnIdentityTokenAndOfNoOtherCredenti
 	}{
 		{"a projected service-account token proves its subject", closed, "Bearer " + cluster.token(t, listenerListedSubject), listenerListedSubject},
 		{"a Google identity token proves its account, in lower case", closed, "Bearer " + google.token(t, strings.ToUpper(listenerGoogleAccount), true, listenerGoogleAudience), listenerGoogleAccount},
-		{"the shared token proves nobody", closed, "Bearer expected-token", ""},
 		{"no credential proves nobody", open, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

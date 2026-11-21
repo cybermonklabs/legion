@@ -139,6 +139,17 @@ func bootEnvironment(overrides map[string]string) settingValues {
 // stand-in that answers 401 to every bearer but taken, and returns every Authorization it received.
 func listenerBearers(t *testing.T, overrides map[string]string, taken string) []string {
 	t.Helper()
+	got, response := listenerCalls(t, overrides, taken)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/agents: %d %s", response.Code, response.Body.String())
+	}
+	return got
+}
+
+// listenerCalls is listenerBearers whatever GET /api/v1/agents answers: every Authorization the
+// listener stand-in received, and Dispatch's answer.
+func listenerCalls(t *testing.T, overrides map[string]string, taken string) ([]string, *httptest.ResponseRecorder) {
+	t.Helper()
 	authorizations := make(chan string, 8)
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authorizations <- r.Header.Get("Authorization")
@@ -154,15 +165,12 @@ func listenerBearers(t *testing.T, overrides map[string]string, taken string) []
 	request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/agents", nil), "alice")
 	response := httptest.NewRecorder()
 	routerFor(t, resolveWith(t, overrides), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET /api/v1/agents: %d %s", response.Code, response.Body.String())
-	}
 	close(authorizations)
 	var got []string
 	for authorization := range authorizations {
 		got = append(got, authorization)
 	}
-	return got
+	return got, response
 }
 
 func resolveWith(t *testing.T, overrides map[string]string) bootConfig {
@@ -1025,52 +1033,28 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"ENVOY_SESSION_GONE_HORIZON": "-1m"}, "ENVOY_SESSION_GONE_HORIZON")
 		},
-		"ENVOY_TOKEN": func(t *testing.T) {
-			// The bearer the Envoy listener receives when a signed-in human's GET /api/v1/agents
-			// reads its sessions.
-			sent := func(overrides map[string]string) string {
-				t.Helper()
-				authorization := make(chan string, 1)
-				listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					authorization <- r.Header.Get("Authorization")
-					_, _ = w.Write([]byte("[]"))
-				}))
-				defer listener.Close()
-				overrides["ENVOY_URL"] = listener.URL
-				request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/agents", nil), "alice")
-				response := httptest.NewRecorder()
-				routerFor(t, resolveWith(t, overrides), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
-				if response.Code != http.StatusOK {
-					t.Fatalf("GET /api/v1/agents: %d %s", response.Code, response.Body.String())
-				}
-				select {
-				case got := <-authorization:
-					return got
-				default:
-					t.Fatal("GET /api/v1/agents answered without calling the listener")
-					return ""
-				}
-			}
-			if got := sent(map[string]string{"ENVOY_TOKEN": "listener-token"}); got != "Bearer listener-token" {
-				t.Errorf("ENVOY_TOKEN=listener-token: the listener received Authorization %q", got)
-			}
-			if got := sent(map[string]string{}); got != "" {
-				t.Errorf("unset: the listener received Authorization %q, want none", got)
-			}
-		},
 		"ENVOY_ACCOUNT_TOKEN_FILE": func(t *testing.T) {
 			// The bearer the Envoy listener receives on GET /api/v1/agents's read of its sessions:
-			// what the file holds when the call is made, trimmed, in ENVOY_TOKEN's place; beside
-			// ENVOY_TOKEN, the file's token, again after the listener's 401 (the file read once
-			// more), and the shared token only once the listener has refused it twice, as a
-			// listener of the release before refuses it.
+			// what the file holds when the call is made, trimmed; with neither it nor
+			// ENVOY_ACCOUNT_GOOGLE_AUDIENCE set, no credential at all, as a loopback listener with
+			// no verifier takes. A listener that refuses the file's token gets it twice (the file
+			// read once more after the 401) and nothing else: no call falls back to a shared
+			// bearer, and the shared ENVOY_TOKEN beside the file refuses the start.
 			tokenFile := writeFile(t, "listener-account-token", "account-token\n")
 			if got := listenerBearers(t, map[string]string{"ENVOY_ACCOUNT_TOKEN_FILE": " " + tokenFile + " "}, "Bearer account-token"); strings.Join(got, ",") != "Bearer account-token" {
 				t.Errorf("ENVOY_ACCOUNT_TOKEN_FILE: the listener received Authorization %q, want the file's token alone", got)
 			}
-			if got := listenerBearers(t, map[string]string{"ENVOY_ACCOUNT_TOKEN_FILE": tokenFile, "ENVOY_TOKEN": "listener-token"}, "Bearer listener-token"); strings.Join(got, ",") != "Bearer account-token,Bearer account-token,Bearer listener-token" {
-				t.Errorf("both set: the listener received Authorization %q, want the file's token twice, then on its second 401 the shared token", got)
+			if got := listenerBearers(t, map[string]string{}, ""); len(got) != 1 || got[0] != "" {
+				t.Errorf("unset: the listener received Authorization %q, want one call carrying none", got)
 			}
+			got, response := listenerCalls(t, map[string]string{"ENVOY_ACCOUNT_TOKEN_FILE": tokenFile}, "Bearer listener-token")
+			if strings.Join(got, ",") != "Bearer account-token,Bearer account-token" {
+				t.Errorf("a listener that refuses the file's token received Authorization %q, want the file's token twice and no other call", got)
+			}
+			if response.Code == http.StatusOK {
+				t.Errorf("GET /api/v1/agents with the file's token refused twice answered 200 %s, want the listener's refusal", response.Body.String())
+			}
+			refusedWith(t, map[string]string{"ENVOY_ACCOUNT_TOKEN_FILE": tokenFile, "ENVOY_TOKEN": "listener-token"}, "ENVOY_TOKEN is no longer read")
 		},
 		"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": func(t *testing.T) {
 			// The bearer the Envoy listener receives is the identity token the metadata server

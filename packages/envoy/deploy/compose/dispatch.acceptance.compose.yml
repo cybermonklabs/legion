@@ -2,12 +2,11 @@ services:
   # Acceptance run of the Playwright suite against a deployed image, isolated from production. The
   # suite signs in through the fenced dev sign-in route, so it uses cookie identity, loopback
   # listener, origin, and database, and no signing key is passed or mounted. The server generates
-  # one key for its process alone. ENVOY_URL derives from the harness port, and no Envoy token is
-  # set, so this server reaches only the fake listener Playwright starts. It presents the suite's
-  # stand-in identity token (packages/dispatch/e2e/fake-listener-account-token) to that listener,
-  # which checks no bearer: a Dispatch with no identity refuses every send for a role: route. The
-  # acceptance service builds its own image, so the recipe needs none of the production service's
-  # variables.
+  # one key for its process alone. ENVOY_URL derives from the harness port, so this server reaches
+  # only the fake listener Playwright starts. It presents the suite's stand-in identity token
+  # (packages/dispatch/e2e/fake-listener-account-token) to that listener, which checks no bearer: a
+  # Dispatch with no identity refuses every send for a role: route. The acceptance service builds
+  # its own image, so the recipe needs none of the production service's variables.
   postgres-acceptance:
     image: mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
     network_mode: host

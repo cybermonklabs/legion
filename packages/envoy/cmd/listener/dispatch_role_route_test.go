@@ -37,18 +37,14 @@ import (
 // verifies; the listener takes a send's role mark from that principal alone. The reply routes'
 // rows are TestAReplyToARoleRouteAttemptComesFromTheRolesHolder in internal/dispatch/api.
 
-const (
-	// rigDispatchPrincipal is Dispatch's own service account, the principal the listener takes a
-	// role mark from (ENVOY_DISPATCH_PRINCIPAL).
-	rigDispatchPrincipal = "system:serviceaccount:dispatch:example-dispatch"
-	// rigSharedToken is the listener's shared bearer, ENVOY_API_TOKEN.
-	rigSharedToken = "listener-shared-token"
-)
+// rigDispatchPrincipal is Dispatch's own service account, the principal the listener takes a role
+// mark from (ENVOY_DISPATCH_PRINCIPAL).
+const rigDispatchPrincipal = "system:serviceaccount:dispatch:example-dispatch"
 
-// roleRouteRig is the dispatchRig with the listener Dispatch calls behind apiAuth: the shared
-// token, a projected-token verifier over a local issuer admitting Dispatch's account and one
-// other service's, and broker tokens over a stub broker. Dispatch presents its account token from
-// tokenFile. Every send that reaches the listener passes sends first.
+// roleRouteRig is the dispatchRig with the listener Dispatch calls behind apiAuth: a projected-token
+// verifier over a local issuer admitting Dispatch's account and one other service's, and broker
+// tokens over a stub broker. Dispatch presents its account token from tokenFile. Every send that
+// reaches the listener passes sends first.
 type roleRouteRig struct {
 	*dispatchRig
 	issuer clusterIssuer
@@ -137,7 +133,6 @@ func newRoleRouteRig(t *testing.T) *roleRouteRig {
 	routes := http.NewServeMux()
 	registerV1Routes(routes, cold, rigMachineID, listenerRigLogger(t, "cold listener"))
 	listener := apiAuth(listenerAPIAuth{
-		token:    rigSharedToken,
 		verifier: issuer.verifier,
 		accounts: []string{rigDispatchPrincipal, listenerListedSubject},
 		brokers:  tokens,
@@ -503,7 +498,6 @@ func TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole(t *testing.T)
 		fromSession := httptest.NewRecorder()
 		rig.listener.ServeHTTP(fromSession, dpop)
 		refusedForRole(t, "a send with role from a session's broker token", fromSession)
-		refusedForRole(t, "a send with role on the shared token", listenerSend(rig.listener, holder.id, role, "principal-shared", "Bearer "+rigSharedToken, false))
 		refusedForRole(t, "a send with role from another service's principal",
 			listenerSend(rig.listener, holder.id, role, "principal-other", "Bearer "+rig.issuer.token(t, listenerListedSubject), false))
 		open := apiAuth(listenerAPIAuth{logger: listenerRigLogger(t, "open listener")}, v1Routes(t, rig.cold))
@@ -578,14 +572,21 @@ func TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole(t *testing.T)
 		const role = "route-no-identity"
 		holder := rig.register(t, "ses_route_no_identity", "Holder")
 		rig.claim(t, holder.id, role)
-		shared := roleRouteDispatchMux(t, rig.database, rig.url, rig.warm.client, func(input *dispatchapi.DepsInput) {
-			input.EnvoyToken = rigSharedToken
-		})
-		refused := dispatchRoleMessage(t, shared, key, role, "No-identity message")
+		// A Dispatch with no identity presents no credential, which only a loopback listener's
+		// open /v1 serves: there its lookup of the role's holder is answered, so what refuses the
+		// send is Dispatch's own rule, not the listener's 401 of a bare call.
+		open := httptest.NewServer(apiAuth(listenerAPIAuth{logger: listenerRigLogger(t, "open listener")}, v1Routes(t, rig.cold)))
+		t.Cleanup(open.Close)
+		noIdentity := roleRouteDispatchMux(t, rig.database, open.URL, rig.warm.client, func(*dispatchapi.DepsInput) {})
+		refused := dispatchRoleMessage(t, noIdentity, key, role, "No-identity message")
 		got := refused.Deliveries[0]
 		if got.State != "failed" || got.Error == nil || !strings.Contains(*got.Error, "ENVOY_ACCOUNT_TOKEN_FILE") ||
 			!strings.Contains(*got.Error, "Dispatch's identity at the Envoy listener") {
-			t.Fatalf("the send for %s from a Dispatch with no identity = %+v, want failed, its reason naming ENVOY_ACCOUNT_TOKEN_FILE and the README section", role, got)
+			reason := "<none>"
+			if got.Error != nil {
+				reason = *got.Error
+			}
+			t.Fatalf("the send for %s from a Dispatch with no identity = %+v with reason %q, want failed, its reason naming ENVOY_ACCOUNT_TOKEN_FILE and the README section", role, got, reason)
 		}
 		if frames := received(holder, 3*time.Second, "No-identity message")["No-identity message"]; len(frames) != 0 {
 			t.Fatalf("the holder received %d copies of a send Dispatch refused, the first marked %q; want none", len(frames), roleOf(frames))

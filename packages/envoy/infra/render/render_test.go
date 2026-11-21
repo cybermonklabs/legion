@@ -172,52 +172,6 @@ func natsArgs() *envoyaws.NatsServiceArgs {
 	}
 }
 
-// listenerArgs are placeholder inputs of a WebhookListener.
-func listenerArgs() *envoyaws.WebhookListenerArgs {
-	return &envoyaws.WebhookListenerArgs{
-		MachineID: "example-machine",
-		NatsUrls:  pulumi.ToStringArray([]string{"nats://example-bus.example-namespace.internal.example:4222"}),
-		Image:     "example.registry/envoy@sha256:" + strings.Repeat("0", 64),
-		Region:    "example-region-1",
-
-		ApiTokenSecretArn:       pulumi.String(placeholderArn + "api-token"),
-		ApiTokenSecretVersionId: pulumi.String("example-token-version"),
-		SeedSecretArn:           pulumi.String(placeholderArn + "nats-seed"),
-		Webhooks:                []string{"github", "slack"},
-		GitHubWebhookSecretArn:  pulumi.String(placeholderArn + "github-webhook"),
-		SlackSigningSecretArn:   pulumi.String(placeholderArn + "slack-signing"),
-		ReviewerAppId:           pulumi.StringRef("1234567"),
-
-		ClusterArn:        pulumi.String("example-cluster-arn"),
-		ExecutionRoleArn:  pulumi.String("example-execution-role-arn"),
-		ExecutionRoleName: pulumi.String("example-execution-role"),
-		TaskRoleArn:       pulumi.String("example-task-role-arn"),
-		SubnetIds:         []pulumi.StringInput{pulumi.String("example-subnet-a")},
-		SecurityGroupId:   pulumi.String("example-listener-sg"),
-		TargetGroupArn:    pulumi.String("example-target-group-arn"),
-
-		CloudMapNamespaceId:        pulumi.String("example-namespace-id"),
-		CloudMapNamespaceName:      pulumi.String("example-namespace.internal.example"),
-		CloudMapServiceName:        "example-hooks",
-		CloudMapServiceLogicalName: "example-listener-cloudmap",
-
-		Family:           "example-listener-family",
-		LogGroupName:     "/ecs/example-listener",
-		LogRetentionDays: 7,
-		Cpu:              "256",
-		Memory:           "512",
-
-		ListenHost:     "0.0.0.0",
-		NatsReplicas:   1,
-		MentionTrigger: pulumi.StringRef("@legion"),
-
-		AlarmTopicArn:   pulumi.String("arn:aws:sns:example-region-1:000000000000:example-alarms"),
-		BaseTags:        map[string]string{"project": "example-project"},
-		MetricNamespace: "example/EnvoyListener",
-		NatsServiceArn:  pulumi.String("example-nats-service-arn"),
-	}
-}
-
 // flags returns the flags that set each value, a repeatable flag once per value.
 func flags(name string, values ...string) []string {
 	var args []string
@@ -283,9 +237,11 @@ func TestNatsStartScriptIsTheScriptNatsServiceLaunches(t *testing.T) {
 	}
 }
 
-// The lines are the listener container's environment as WebhookListener registers it, in its
-// order. The secrets ECS injects are in the container's secrets, not its environment, so none is
-// printed.
+// The lines are the listener container's environment, in its order, derived by hand from the
+// listener's environment rules. The secrets ECS injects are in the container's secrets, not its
+// environment, so none is printed. aws:WebhookListener refuses every configuration (t-e-19), so
+// that these are the lines the listener behind its refusal registers is held in package aws
+// (TestRenderPrintsWhatTheListenerBehindTheRefusalRegisters), the one package that reaches it.
 func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T) {
 	for _, c := range []struct {
 		name           string
@@ -351,36 +307,14 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 			require.Equal(t, 0, code, stderr)
 			require.Empty(t, stderr)
 			require.Equal(t, c.want, stdout)
-
-			in := listenerArgs()
-			in.NatsUrls = pulumi.ToStringArray(c.natsUrls)
-			in.ListenHost, in.NatsReplicas = c.listenHost, c.replicas
-			in.Webhooks = c.webhooks
-			in.MentionTrigger, in.ReviewerAppId = pulumi.StringRef(c.trigger), pulumi.StringRef(c.appID)
-			if !github {
-				in.GitHubWebhookSecretArn, in.MentionTrigger, in.ReviewerAppId = nil, nil, nil
-			}
-			if !slices.Contains(c.webhooks, "slack") {
-				in.SlackSigningSecretArn = nil
-			}
-			m := registered(t, func(ctx *pulumi.Context, opts pulumi.ResourceOption) error {
-				_, err := envoyaws.NewWebhookListener(ctx, "example-listener", in, opts)
-				return err
-			})
-			var env strings.Builder
-			for _, v := range container(t, m, "envoy-listener")["environment"].([]any) {
-				variable := v.(map[string]any)
-				env.WriteString(variable["name"].(string) + "=" + variable["value"].(string) + "\n")
-			}
-			require.Equal(t, env.String(), stdout)
 		})
 	}
 }
 
 // --sender-messages-per-minute and --sender-message-burst set the sender limit as the component's
-// two inputs do: the lines are the environment WebhookListener registers for the same values, each
-// variable printed exactly when its flag is given, and a value the component refuses is refused
-// naming the flag that set it.
+// two inputs do: each variable printed exactly when its flag is given, and a value the component
+// refuses is refused naming the flag that set it. Package aws holds the lines against the
+// environment the listener behind the component's refusal registers.
 func TestWebhookListenerEnvSenderMessageFlags(t *testing.T) {
 	for _, c := range []struct {
 		name        string
@@ -409,19 +343,6 @@ func TestWebhookListenerEnvSenderMessageFlags(t *testing.T) {
 				}
 			}
 			require.Equal(t, c.want, printed)
-
-			in := listenerArgs()
-			in.SenderMessagesPerMinute, in.SenderMessageBurst = c.rate, c.burst
-			m := registered(t, func(ctx *pulumi.Context, opts pulumi.ResourceOption) error {
-				_, err := envoyaws.NewWebhookListener(ctx, "example-listener", in, opts)
-				return err
-			})
-			var env strings.Builder
-			for _, v := range container(t, m, "envoy-listener")["environment"].([]any) {
-				variable := v.(map[string]any)
-				env.WriteString(variable["name"].(string) + "=" + variable["value"].(string) + "\n")
-			}
-			require.Equal(t, env.String(), stdout)
 		})
 	}
 	requireRefused(t, []refusal{
@@ -457,8 +378,9 @@ type filter struct {
 }
 
 // The filters are the log metric filters each component registers, by logical name: a
-// NatsService names its filters from metricFilterLogicalNamePrefix, a WebhookListener from its
-// own name.
+// NatsService names its filters from metricFilterLogicalNamePrefix. A WebhookListener's, named
+// from its own name, are held in package aws against the listener behind the component's refusal,
+// the one package that reaches it.
 func TestMetricFiltersAreTheFiltersEachComponentRegisters(t *testing.T) {
 	for _, c := range []struct {
 		component, prefix, namespace string
@@ -471,15 +393,6 @@ func TestMetricFiltersAreTheFiltersEachComponentRegisters(t *testing.T) {
 				in := natsArgs()
 				in.MetricFilterLogicalNamePrefix, in.MetricNamespace = "example-bus", "example/NATS"
 				_, err := envoyaws.NewNatsService(ctx, "example-nats", in, opts)
-				return err
-			},
-		},
-		{
-			component: "webhook-listener", prefix: "example-hooks", namespace: "example/EnvoyListener", count: 9,
-			construct: func(ctx *pulumi.Context, opts pulumi.ResourceOption) error {
-				in := listenerArgs()
-				in.MetricNamespace = "example/EnvoyListener"
-				_, err := envoyaws.NewWebhookListener(ctx, "example-hooks", in, opts)
 				return err
 			},
 		},

@@ -23,9 +23,19 @@ const (
 	kubeconfig    = "apiVersion: v1\nkind: Config\n"
 )
 
+// The broker settings of clusteredArgs' session listener, the credential every session presents
+// to it (t-e-19): the secrets broker's base URL, the origin tailnet clients reach the listener at,
+// which their DPoP proofs name, and the audience of the projected token of the listener's own
+// account it introspects with, the broker's BROKER_K8S_OIDC_AUDIENCE.
+const (
+	clusteredBrokerURL      = "https://example-broker.example-dispatch.svc.cluster.local:8443"
+	clusteredListenerOrigin = "http://envoy-hub.example-tailnet.ts.net:9020"
+	clusteredBrokerAudience = "example-broker-audience"
+)
+
 // clusteredArgs are a clustered hub serving exampleArgs' users and session user, with a tailnet
 // entry whose listener takes the machine id envoy-hub by default, as the VM hub's listener named
-// envoy-hub does, on placeholders.
+// envoy-hub did, and its broker settings, on placeholders.
 func clusteredArgs() *gcp.ClusteredNatsHubArgs {
 	return &gcp.ClusteredNatsHubArgs{
 		Kubeconfig:       pulumi.String(kubeconfig),
@@ -43,12 +53,18 @@ func clusteredArgs() *gcp.ClusteredNatsHubArgs {
 			TailnetDnsName: "example-tailnet.ts.net",
 			Tags:           []string{"tag:envoy-hub-host"},
 			TailscaleImage: tailscaleImage,
-			Listener: &gcp.ClusteredHubListenerArgs{
+			Listener: withBroker(&gcp.ClusteredHubListenerArgs{
 				Image: listenerImage, NKey: keyListener, SeedSecretName: "envoy-hub-listener-seed", SeedSecretKey: "seed",
-			},
+			}),
 		},
 		TailnetAuthKey: pulumi.String(authKey),
 	}
+}
+
+// withBroker gives l clusteredArgs' broker settings and returns it.
+func withBroker(l *gcp.ClusteredHubListenerArgs) *gcp.ClusteredHubListenerArgs {
+	l.AgentSecretsUrl, l.PublicUrl, l.BrokerAudience = clusteredBrokerURL, clusteredListenerOrigin, clusteredBrokerAudience
+	return l
 }
 
 // withoutTailnet is args with no tailnet entry, and so no tailnetAuthKey.
@@ -127,47 +143,75 @@ func TestClusteredNatsHubOutputs(t *testing.T) {
 	}
 }
 
-// The hub's auth.conf is what gcp:NatsHub renders for the same users, listener and session user:
-// the one authorization both hubs call, under the same header. With machine id envoy-hub the
-// listener user is the VM hub's own listener user, named after its hostname envoy-hub, so the
-// restored durable listener-envoy-hub and the listener's grants carry over the move. Without
-// tailnet there is no listener user, as gcp:NatsHub renders none without a listener.
+// withoutListenerUser splits auth.conf auth at its listener user: the entry, the line after the
+// comment # <machineID> that carries the listener's nkey, and auth without those two lines.
+func withoutListenerUser(t *testing.T, auth, machineID string) (entry, rest string) {
+	t.Helper()
+	before, after, found := strings.Cut(auth, "    # "+machineID+"\n")
+	require.True(t, found, "auth.conf has no user %s:\n%s", machineID, auth)
+	entry, after, found = strings.Cut(after, "\n")
+	require.True(t, found)
+	require.Contains(t, entry, `"nkey": "`+keyListener+`"`, "the user %s is not the listener's", machineID)
+	return entry, before + after
+}
+
+// The hub's auth.conf is what gcp:NatsHub renders for the same users and session user, the one
+// authorization both hubs call under the same header, with the session listener's user added
+// before the session user. gcp:NatsHub runs no listener of its own from t-e-19 on, so its rendering
+// holds no listener user. With machine id envoy-hub the listener user's grants name the durable
+// listener-envoy-hub, which the VM hub's own listener, named after its hostname envoy-hub, used,
+// so the restored durable and the listener's grants carry over the move. Without tailnet there is
+// no listener user.
 func TestClusteredNatsHubRendersTheVMHubsAuthorization(t *testing.T) {
 	hub := exampleArgs()
 	hub.Hostname = "envoy-hub"
-	want, err := gcp.NatsHubAuthConf(hub)
+	vm, err := gcp.NatsHubAuthConf(hub)
 	require.NoError(t, err)
-	require.Contains(t, want, keyListener, "the VM hub renders its listener's user")
+	require.NotContains(t, vm, keyListener, "the VM hub runs no listener, so it renders no listener user")
+	requireDurable := func(t *testing.T, entry, machineID string) {
+		t.Helper()
+		for _, grant := range []string{
+			`"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.listener-` + machineID + `"`,
+			`"$JS.ACK.ENVOY_NOTIFICATIONS.listener-` + machineID + `.>"`,
+		} {
+			require.Contains(t, entry, grant, "the listener user's grants name its durable listener-%s", machineID)
+		}
+	}
 
 	t.Run("the default machine id", func(t *testing.T) {
 		s, err := gcp.ResolveClusteredNatsHub(clusteredArgs())
 		require.NoError(t, err)
 		require.Equal(t, "envoy-hub", s.Listener.MachineID)
-		require.Equal(t, want, s.AuthConf)
+		entry, rest := withoutListenerUser(t, s.AuthConf, "envoy-hub")
+		require.Equal(t, vm, rest)
+		requireDurable(t, entry, "envoy-hub")
 	})
 	t.Run("an explicit machine id", func(t *testing.T) {
 		args := clusteredArgs()
 		args.Tailnet.ServiceName = "envoy-nats-tailnet"
 		args.Tailnet.Listener.MachineID = pulumi.StringRef("envoy-hub")
+		args.Tailnet.Listener.PublicUrl = ""
 		s, err := gcp.ResolveClusteredNatsHub(args)
 		require.NoError(t, err)
-		require.Equal(t, want, s.AuthConf)
+		entry, rest := withoutListenerUser(t, s.AuthConf, "envoy-hub")
+		require.Equal(t, vm, rest)
+		requireDurable(t, entry, "envoy-hub")
 	})
 	t.Run("another machine id renders another listener user", func(t *testing.T) {
 		args := clusteredArgs()
 		args.Tailnet.Listener.MachineID = pulumi.StringRef("envoy-hub-b")
 		s, err := gcp.ResolveClusteredNatsHub(args)
 		require.NoError(t, err)
-		require.NotEqual(t, want, s.AuthConf)
+		entry, rest := withoutListenerUser(t, s.AuthConf, "envoy-hub-b")
+		require.Equal(t, vm, rest)
+		requireDurable(t, entry, "envoy-hub-b")
+		require.NotContains(t, entry, "listener-envoy-hub\"")
 	})
 	t.Run("without tailnet", func(t *testing.T) {
-		hub.Listener = nil
-		want, err := gcp.NatsHubAuthConf(hub)
-		require.NoError(t, err)
 		s, err := gcp.ResolveClusteredNatsHub(withoutTailnet(clusteredArgs()))
 		require.NoError(t, err)
 		require.Nil(t, s.Tailnet)
-		require.Equal(t, want, s.AuthConf)
+		require.Equal(t, vm, s.AuthConf)
 		require.NotContains(t, s.AuthConf, keyListener)
 	})
 }
@@ -310,20 +354,25 @@ func TestClusteredNatsHubDefaults(t *testing.T) {
 }
 
 // The listener runs as its machine id on every address of its own pod at the listener's port,
-// serves the Service's tailnet name before the operator's further hosts, and reaches NATS through
-// the in-cluster Service, which Env marks remote. ENVOY_NATS_REPLICAS and ENVOY_STREAM_MAX_BYTES
-// are rendered exactly when natsReplicas and streamMaxBytes are given. This is
-// core.ListenerConfig.Env's whole output: NATS_NKEY_SEED_FILE and
-// ENVOY_API_ALLOW_UNAUTHENTICATED are the container's, added by clusteredHubListenerEnv
-// (TestClusteredNatsHubListenerEnvironment, the pod's).
+// reaches NATS through the in-cluster Service, which Env marks remote, and checks a session's
+// broker token with its broker settings, in their token-file form, with the introspection limit
+// the tailnet hosts' shared addresses need (50 a second, a burst of 200). ENVOY_NATS_REPLICAS and
+// ENVOY_STREAM_MAX_BYTES are rendered exactly when natsReplicas and streamMaxBytes are given.
+// This is core.ListenerConfig.Env's whole output: NATS_NKEY_SEED_FILE is the container's, added by
+// clusteredHubListenerEnv (TestClusteredNatsHubListenerEnvironment, the pod's). No
+// ENVOY_ALLOWED_HOSTS: the listener binds off loopback and reads none.
 func TestClusteredNatsHubResolvesTheListenerEnvironment(t *testing.T) {
 	base := []string{
 		"ENVOY_MACHINE_ID=envoy-hub",
 		"PORT=9020",
 		"ENVOY_LISTEN_HOST=0.0.0.0",
-		"ENVOY_ALLOWED_HOSTS=envoy-hub.example-tailnet.ts.net,envoy.example.com",
 		"NATS_URLS=nats://envoy-nats.envoy.svc.cluster.local:4222",
 		"ENVOY_ALLOW_REMOTE_NATS=1",
+		"ENVOY_AGENT_SECRETS_URL=" + clusteredBrokerURL,
+		"ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/var/run/secrets/envoy-broker/token",
+		"ENVOY_PUBLIC_URL=" + clusteredListenerOrigin,
+		"ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND=50",
+		"ENVOY_AGENT_SECRETS_INTROSPECTION_BURST=200",
 	}
 	for _, row := range []struct {
 		name                         string
@@ -337,13 +386,12 @@ func TestClusteredNatsHubResolvesTheListenerEnvironment(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			args := clusteredArgs()
-			args.Tailnet.Listener.AllowedHosts = []string{"envoy.example.com"}
 			args.NatsReplicas, args.StreamMaxBytes = row.natsReplicas, row.streamMaxBytes
 			s, err := gcp.ResolveClusteredNatsHub(args)
 			require.NoError(t, err)
 			env := s.Listener.Env
 			require.ElementsMatch(t, append(slices.Clone(base), row.want...), env)
-			for _, name := range []string{"ENVOY_NATS_REPLICAS=", "ENVOY_STREAM_MAX_BYTES=", "ENVOY_API_TOKEN="} {
+			for _, name := range []string{"ENVOY_NATS_REPLICAS=", "ENVOY_STREAM_MAX_BYTES=", "ENVOY_API_TOKEN=", "ENVOY_ALLOWED_HOSTS="} {
 				present := slices.ContainsFunc(row.want, func(e string) bool { return strings.HasPrefix(e, name) })
 				require.Equal(t, present, slices.ContainsFunc(env, func(e string) bool { return strings.HasPrefix(e, name) }), name)
 			}

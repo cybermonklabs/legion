@@ -69,7 +69,8 @@
 #   AGENT_SECRETS_STATE_FILE              this run's own session records, in the work directory
 #   AGENT_SECRETS_KEY_DIR                 a session key directory of this run's own
 #   DISPATCH_URL, DISPATCH_TOKEN          Dispatch and its shared agent token
-#   ENVOY_URL                             the listener
+#   ENVOY_URL                             the listener, which takes no shared token: a session
+#                                         presents its own broker token there
 #   NATS_URLS                             this run's NATS
 #   DEV_STACK_DIR                         the work directory (logs, tokens, fake secrets)
 #   DEV_STACK_PID                         this script, which SIGUSR1 and SIGUSR2 restart natsd and
@@ -81,6 +82,10 @@
 #   DEV_STACK_LISTENER_TOKEN_FILE         the caller "listener", which may introspect alone: the
 #                                         listener of this run presents it to check an access
 #                                         token a session sends /v1 under
+#   DEV_STACK_ENVOY_CALLER_TOKEN_FILE     the caller account's projected token for the listener's
+#                                         audience, which a shell that acts as no session presents
+#                                         to /v1 as its bearer (the issuer rewrites it before it
+#                                         lapses, so read it at each call)
 #
 # One stack, two boxes. The exports above are the first box, this machine: a helper and a
 # metadata stand-in started from them act for it. Beside it the script lays out a second box, for
@@ -330,6 +335,13 @@ POD_TOKEN_FILE="$WORK_DIR/pod-token"
 # as the cluster's projected token is; without it Dispatch refuses every send for a `role:` route.
 LISTENER_AUDIENCE="legion-envoy-listener"
 DISPATCH_LISTENER_TOKEN_FILE="$WORK_DIR/dispatch-listener-token"
+# A caller of the listener that acts as no session — a second shell's read of /v1/sessions, a
+# proof's own send — presents a projected token of an account of its own for the listener's
+# audience, as a service in the cluster does: the listener's verifier closes /v1 to a caller that
+# presents nothing, and the listener takes no shared token. The banner exports its file
+# (DEV_STACK_ENVOY_CALLER_TOKEN_FILE).
+CALLER_ACCOUNT="system:serviceaccount:example-ns:example-caller"
+CALLER_LISTENER_TOKEN_FILE="$WORK_DIR/caller-listener-token"
 APPROVER_LOGIN="ada@example.com"
 OPERATOR_FILE="$WORK_DIR/operator"
 FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
@@ -608,6 +620,7 @@ env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" "${callout_issuer_args[@]}" \
   --token "$BROKER_AUDIENCE=$EXCHANGE_ACCOUNT=$POD_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$REGISTRAR_ACCOUNT=$REGISTRAR_TOKEN_FILE" \
   --token "$LISTENER_AUDIENCE=$API_ACCOUNT=$DISPATCH_LISTENER_TOKEN_FILE" \
+  --token "$LISTENER_AUDIENCE=$CALLER_ACCOUNT=$CALLER_LISTENER_TOKEN_FILE" \
   --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE" \
   --device-flow "$DEVICE_CLIENT_ID=$DEVICE_SECRET_FILE" \
   --device-flow "$MACHINE_CLIENT_ID=$MACHINE_SECRET_FILE" \
@@ -737,20 +750,24 @@ if ! curl -sf -X POST "$BROKER_URL/v1/oauth/exchange/pod-sessions" \
   exit 1
 fi
 
-# --- The listener, on that bus. ENVOY_HOST_BRIDGE=127.0.0.1 because every session of this stack
-# runs on this machine. It serves on a copy of a socket a keeper opened on a port the kernel chose
-# and holds for the whole run (ENVOY_LISTEN_FD=3) rather than on PORT=0, for the reason Dispatch
-# does: the listener has to be told its own public origin before it starts, since a DPoP proof's
-# target URI is checked against that origin and nothing else, and `{port}` below is the port of
-# that very socket (held-port.py exec substitutes it). The keeper is why a restart (SIGUSR2)
-# serves the same port: every session of the stack was told it. The listener still reports the
-# address it serves on in its own listening line, and that line is what this script reads.
+# --- The listener, on that bus. It serves on a copy of a socket a keeper opened on a port the
+# kernel chose and holds for the whole run (ENVOY_LISTEN_FD=3) rather than on PORT=0, for the
+# reason Dispatch does: the listener has to be told its own public origin before it starts, since
+# a DPoP proof's target URI is checked against that origin and nothing else, and `{port}` below is
+# the port of that very socket (held-port.py exec substitutes it). The keeper is why a restart
+# (SIGUSR2) serves the same port: every session of the stack was told it. The listener still
+# reports the address it serves on in its own listening line, and that line is what this script
+# reads.
 #
-# It takes three credentials: none, which is what every session of this stack uses and what the
-# listener allows on loopback; and a broker access token, which it checks at this run's broker
-# (ENVOY_AGENT_SECRETS_URL) as the caller "listener", presenting the projected token the issuer
-# wrote for it. A session holding such a token is bound to the session the broker named: it may
-# subscribe, claim a role, send and publish as that session and as no other.
+# It takes two credentials, and no shared token. A broker access token, which it checks at this
+# run's broker (ENVOY_AGENT_SECRETS_URL) as the caller "listener", presenting the projected token
+# the issuer wrote for it: every session of this stack trades its identity for one and presents it,
+# and a session holding one is bound to the session the broker named, so it may subscribe, claim a
+# role, send and publish as that session and as no other. And a projected token for the listener's
+# audience (ENVOY_OIDC_ISSUER, ENVOY_OIDC_AUDIENCE): Dispatch's own, the identity it takes a send's
+# role mark from (ENVOY_DISPATCH_PRINCIPAL), as a deployment's listener does, and the caller
+# account's, which a shell that acts as no session presents (DEV_STACK_ENVOY_CALLER_TOKEN_FILE).
+# The verifier closes /v1 to a caller that presents nothing, on loopback as anywhere.
 #
 # start_listener starts it on the keeper's socket and sets LISTENER_PID, and LISTENER_ADDRESS to
 # the address it reported once its health check answers. ---
@@ -760,23 +777,16 @@ python3 "$HELD_PORT" keep --host 127.0.0.1 --port-file "$LISTENER_KEEPER_PORT_FI
 LISTENER_KEEPER_PID=$!
 await 'the listener port keeper' "$LISTENER_KEEPER_PID" "$LISTENER_KEEPER_LOG" \
   "$LISTENER_KEEPER_PORT_FILE" 'the port it holds' kept_port_in
-# The listener takes a bearer: the shared token every session and the banner's shell present, and
-# Dispatch's own account token for its audience, the identity it takes a send's role mark from
-# (ENVOY_DISPATCH_PRINCIPAL), as a deployment's listener does. A verifier closes /v1 to a caller
-# with no bearer, so the shared token is exported in the banner (ENVOY_TOKEN).
-LISTENER_API_TOKEN="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
 start_listener() {
   : >"$LISTENER_LOG"
   python3 "$HELD_PORT" exec --from "$LISTENER_KEEPER_SOCKET" --fd-env ENVOY_LISTEN_FD -- \
     env -i PATH="$PATH" \
     ENVOY_LISTEN_FD=3 \
     ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_API_TOKEN="$LISTENER_API_TOKEN" \
     ENVOY_OIDC_ISSUER="$ISSUER_URL" \
     ENVOY_OIDC_AUDIENCE="$LISTENER_AUDIENCE" \
     ENVOY_DISPATCH_PRINCIPAL="$API_ACCOUNT" \
     ENVOY_MACHINE_ID="$LISTENER_MACHINE_ID" \
-    ENVOY_HOST_BRIDGE=127.0.0.1 \
     ENVOY_PUBLIC_URL="http://127.0.0.1:{port}" \
     ENVOY_AGENT_SECRETS_URL="$BROKER_URL" \
     ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$LISTENER_TOKEN_FILE" \
@@ -820,7 +830,6 @@ python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD --
   DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$ACCOUNT_TOKEN_FILE" \
   DISPATCH_WEB_DIST="$REPO_ROOT/packages/dispatch/web/dist" \
   ENVOY_URL="$LISTENER_URL" \
-  ENVOY_TOKEN="$LISTENER_API_TOKEN" \
   ENVOY_ACCOUNT_TOKEN_FILE="$DISPATCH_LISTENER_TOKEN_FILE" \
   NATS_URLS="$NATS_URL" \
   "${callout_dispatch_env[@]}" \
@@ -972,7 +981,6 @@ dev-stack: ready.
   export DISPATCH_URL=$DISPATCH_URL
   export DISPATCH_TOKEN=$DISPATCH_TOKEN_VALUE
   export ENVOY_URL=$LISTENER_URL
-  export ENVOY_TOKEN=$LISTENER_API_TOKEN
   export NATS_URLS=$NATS_URL
   export DEV_STACK_DIR=$WORK_DIR
   export DEV_STACK_PID=$$
@@ -981,6 +989,7 @@ dev-stack: ready.
   export DEV_STACK_POD_TOKEN_FILE=$POD_TOKEN_FILE
   export DEV_STACK_REGISTRAR_TOKEN_FILE=$REGISTRAR_TOKEN_FILE
   export DEV_STACK_LISTENER_TOKEN_FILE=$LISTENER_TOKEN_FILE
+  export DEV_STACK_ENVOY_CALLER_TOKEN_FILE=$CALLER_LISTENER_TOKEN_FILE
   export DEV_STACK_MACHINE_ACCOUNT=$FLEET_ACCOUNT
   export DEV_STACK_PERSON_MACHINE_ACCOUNT=$PERSON_FLEET_ACCOUNT
   export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT$callout_exports

@@ -1,7 +1,6 @@
 {
   "metadata": {
     "annotations": {
-      "checksum/example-dispatch-listener": "example-dispatch-listener-resource-version",
       "cluster-autoscaler.kubernetes.io/safe-to-evict": "false"
     },
     "labels": {
@@ -53,15 +52,6 @@
           {
             "name": "NATS_NKEY_SEED_FILE",
             "value": "/var/run/secrets/envoy/nats-seed"
-          },
-          {
-            "name": "ENVOY_API_TOKEN",
-            "valueFrom": {
-              "secretKeyRef": {
-                "key": "ENVOY_API_TOKEN",
-                "name": "example-dispatch-listener"
-              }
-            }
           },
           {
             "name": "ENVOY_OIDC_ISSUER",

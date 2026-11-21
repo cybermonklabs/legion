@@ -1,7 +1,6 @@
 package gcp_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
@@ -48,48 +47,6 @@ func senderVars(env map[string]any) []string {
 		}
 	}
 	return vars
-}
-
-// senderArgs are the sender limit's variables anywhere in text, a VM's user data, as the listener
-// unit's docker run arguments carry them, in their order.
-func senderArgs(text string) []string {
-	var vars []string
-	for _, field := range strings.Fields(text) {
-		if strings.HasPrefix(field, "ENVOY_SENDER_") {
-			vars = append(vars, field)
-		}
-	}
-	return vars
-}
-
-// gcp:NatsHub renders its listener's sender limit into the user data its instance template
-// registers, as the listener unit's docker run arguments, exactly as listener gives it. A limit
-// core.CheckSenderLimit refuses stops the constructor with the InputError naming listener's input,
-// before anything but the test's provider registers.
-func TestNatsHubListenerSenderMessageLimit(t *testing.T) {
-	for _, row := range senderLimitRenderings {
-		t.Run("gcp:NatsHub renders "+row.name, func(t *testing.T) {
-			args := exampleArgs()
-			args.Listener.SenderMessagesPerMinute, args.Listener.SenderMessageBurst = row.rate, row.burst
-			m, err := run(t, args, nil, true)
-			require.NoError(t, err)
-			userData := inputsOf(m.One(t, templateType))["metadata"].(map[string]any)["user-data"].(string)
-			require.Equal(t, row.want, senderArgs(userData))
-		})
-	}
-	for _, row := range senderLimitRefusals {
-		t.Run("gcp:NatsHub refuses "+row.name, func(t *testing.T) {
-			args := exampleArgs()
-			args.Listener.SenderMessagesPerMinute, args.Listener.SenderMessageBurst = row.rate, row.burst
-			var refused *core.InputError
-			require.ErrorAs(t, gcp.ResolveNatsHub(args), &refused)
-			require.Equal(t, "listener."+row.input, refused.Input)
-
-			m, err := run(t, args, nil, true)
-			require.ErrorContains(t, err, "envoy-infra:gcp:NatsHub example-hub: listener."+row.input+" ")
-			require.Equal(t, []string{gcpProviderType}, m.Types(), "nothing registered beyond the test's provider")
-		})
-	}
 }
 
 // gcp:ClusteredNatsHub renders its session listener's sender limit into the listener container's

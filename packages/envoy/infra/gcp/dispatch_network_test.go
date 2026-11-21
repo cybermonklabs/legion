@@ -299,23 +299,22 @@ func TestDispatchNetworkPlanExistingClusterToAnother(t *testing.T) {
 // existingDatabaseInstance, a promoted replica of that instance, say: the component stops
 // registering its DatabaseInstance, Database and User, which the engine then deletes unless the
 // consumer keeps them in state first, and keeps every generated password, so DATABASE_URL keeps
-// the password login dispatch holds. The table holds the network half and the four
+// the password login dispatch holds. The table holds the network half and the three
 // RandomPasswords same, and the component's own instance, its database and its login delete.
 func TestDispatchNetworkPlanOwnInstanceToExistingInstance(t *testing.T) {
 	requireDispatchPlan(t, deriveDispatchPlan(t, dispatchArgs(), existingDatabaseInstanceArgs()), map[dispatchResourceName]string{
-		{networkType, "example-dispatch-network"}:               stepSame,
-		{subnetworkType, "example-dispatch"}:                    stepSame,
-		{routerType, "example-dispatch"}:                        stepSame,
-		{routerNatType, "example-dispatch"}:                     stepSame,
-		{globalAddressType, "example-dispatch-services"}:        stepSame,
-		{connectionType, "example-dispatch-services"}:           stepSame,
-		{randomPasswordType, "example-dispatch-password"}:       stepSame,
-		{randomPasswordType, "example-dispatch-signing-key"}:    stepSame,
-		{randomPasswordType, "example-dispatch-agent-token"}:    stepSame,
-		{randomPasswordType, "example-dispatch-listener-token"}: stepSame,
-		{sqlInstanceType, "example-dispatch"}:                   stepDelete,
-		{sqlDatabaseType, "example-dispatch"}:                   stepDelete,
-		{sqlUserType, "example-dispatch"}:                       stepDelete,
+		{networkType, "example-dispatch-network"}:            stepSame,
+		{subnetworkType, "example-dispatch"}:                 stepSame,
+		{routerType, "example-dispatch"}:                     stepSame,
+		{routerNatType, "example-dispatch"}:                  stepSame,
+		{globalAddressType, "example-dispatch-services"}:     stepSame,
+		{connectionType, "example-dispatch-services"}:        stepSame,
+		{randomPasswordType, "example-dispatch-password"}:    stepSame,
+		{randomPasswordType, "example-dispatch-signing-key"}: stepSame,
+		{randomPasswordType, "example-dispatch-agent-token"}: stepSame,
+		{sqlInstanceType, "example-dispatch"}:                stepDelete,
+		{sqlDatabaseType, "example-dispatch"}:                stepDelete,
+		{sqlUserType, "example-dispatch"}:                    stepDelete,
 	})
 }
 

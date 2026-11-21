@@ -104,10 +104,10 @@ export class Services {
     });
   }
 
+  /** `path` on the sessions' listener, which takes no credential on loopback, so none is sent. */
   async #listener(path: string, body?: object): Promise<unknown> {
-    const token = readFileSync(this.#rig.envoyTokenFile, "utf8").trim();
     const answer = await this.#json(`${this.#rig.envoyUrl}${path}`, {
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body), method: "POST" }),
     });
     expect(

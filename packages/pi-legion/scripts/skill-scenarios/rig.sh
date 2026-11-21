@@ -732,20 +732,14 @@ cmd_live_read() {
 services_env=$work/services/env
 
 # start_listener serves the Envoy listener on a port the kernel chose, held from that choice until
-# the listener serves on it (lib/rig.sh's start_held), and sets envoy_port.
+# the listener serves on it (lib/rig.sh's start_held), and sets envoy_port. It is on loopback with
+# no credential, so every pane and this rig call it with none.
 start_listener() {
-  ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
+  ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://127.0.0.1:$nats_port" \
-    start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
-  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" listener_answers
-}
-
-# listener_answers reads the listener's /v1/sessions with the rig's bearer, which reaches curl on
-# standard input from printf, a shell builtin, so it is in no command line.
-# shellcheck disable=SC2329 # await_start in start_listener runs it
-listener_answers() {
-  printf 'Authorization: Bearer %s' "$(<"$S/envoy-token")" |
-    curl -fsS -o /dev/null -H @- "http://127.0.0.1:$envoy_port/v1/sessions"
+    start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- env -u ENVOY_API_TOKEN "$S/envoy-listener"
+  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
+    curl -fsS -o /dev/null "http://127.0.0.1:$envoy_port/v1/sessions"
 }
 
 # start_dispatch DATABASE_URL starts the e2e harness's Dispatch server on that database. The
@@ -798,12 +792,11 @@ services_up() {
   until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
   until_true 60 "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
   (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
-  (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
+  (umask 077 && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
   {
     echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
     echo "ENVOY_NATS_URL=nats://127.0.0.1:$nats_port"
-    echo "ENVOY_TOKEN_FILE=$S/envoy-token"
   } >"$services_env"
   note "services up: listener :$envoy_port, NATS :$nats_port, Postgres :$pg_port"
 }

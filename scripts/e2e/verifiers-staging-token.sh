@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # LEGION-208's live proof of the OIDC verifiers: the branch's own `dispatch` and `listener`
 # binaries authenticate a real projected service-account token minted by the staging EKS
-# cluster, refuse a token minted for the other binary's audience, refuse a request with no
-# bearer, and still accept their shared tokens. It also proves what keeps the feature honest: a
-# half-configured OIDC pair stops either boot, naming the missing variable; an issuer that does
-# not answer stops the listener's boot, naming that issuer; and Dispatch, which reads no issuer at
-# boot, starts and serves against one that does not answer, answering a JWT-shaped bearer
-# 503 OIDC_ISSUER_UNAVAILABLE until it has discovered it.
+# cluster, refuse a token minted for the other binary's audience, and refuse a request with no
+# bearer; Dispatch still accepts its own shared agent token, and the listener takes none: it
+# refuses to start with one (ENVOY_API_TOKEN) and answers that old bearer 401, and Dispatch refuses
+# to start with the listener's old bearer (ENVOY_TOKEN). It also proves what keeps the feature
+# honest: a half-configured OIDC pair stops either boot, naming the missing variable; an issuer
+# that does not answer stops the listener's boot, naming that issuer; and Dispatch, which reads no
+# issuer at boot, starts and serves against one that does not answer, answering a JWT-shaped
+# bearer 503 OIDC_ISSUER_UNAVAILABLE until it has discovered it.
 #
 # Every step is fatal and names itself — no `|| true` outside the cleanup a trap must never
 # fail on, and every wait is bounded. The run leaves no container, no process, and nothing in
@@ -107,7 +109,7 @@ expect_refusal() {
   echo "  $what → refused, naming $*"
 }
 
-for tool in go docker kubectl jq curl python3 base64; do
+for tool in go docker kubectl jq curl python3 base64 timeout; do
   command -v "$tool" >/dev/null || fail "$tool is required and is not on PATH"
 done
 
@@ -160,6 +162,8 @@ echo "  postgres 127.0.0.1:$pg_port, nats 127.0.0.1:$nats_port"
 
 database_url="postgres://dispatch:dispatch@127.0.0.1:$pg_port/dispatch"
 shared_dispatch_token="dispatch-shared-$RANDOM$RANDOM"
+# The listener's shared token as it was before the listener took none: the boot refusal below starts
+# a listener with it, and the listener answers it as a bearer 401.
 shared_listener_token="listener-shared-$RANDOM$RANDOM"
 
 # The environment each binary boots with. HOME is the scratch dir so the signing key and app
@@ -180,7 +184,6 @@ listener_env=(
   ENVOY_MACHINE_ID=verifiers-e2e
   NATS_URLS="nats://127.0.0.1:$nats_port"
   ENVOY_LISTEN_HOST=127.0.0.1
-  ENVOY_API_TOKEN="$shared_listener_token"
 )
 
 echo "== the boot refusals"
@@ -199,6 +202,18 @@ expect_refusal "listener, audience without issuer" "$work/refusal-listener-pair.
   "$work/listener" >"$work/refusal-listener-issuer.log" 2>&1 &&
   fail "the listener booted against an issuer that does not answer"
 expect_refusal "listener, issuer that does not answer" "$work/refusal-listener-issuer.log" "$absent_issuer"
+# The listener takes no shared token: one set refuses the boot, naming the variable. Each of these
+# two boots is bounded, so one that serves instead of refusing ends in timeout's exit and fails on
+# the refusal its log does not hold, rather than holding the run.
+timeout 60 "${listener_env[@]}" ENVOY_API_TOKEN="$shared_listener_token" \
+  "$work/listener" >"$work/refusal-listener-shared-token.log" 2>&1 &&
+  fail "the listener booted with ENVOY_API_TOKEN set"
+expect_refusal "listener, a shared token" "$work/refusal-listener-shared-token.log" "ENVOY_API_TOKEN"
+# Nor does Dispatch present one: the listener's old bearer set refuses its boot, naming it.
+timeout 60 "${dispatch_env[@]}" ENVOY_TOKEN="$shared_listener_token" \
+  "$work/dispatch" >"$work/refusal-dispatch-envoy-token.log" 2>&1 &&
+  fail "dispatch booted with ENVOY_TOKEN set"
+expect_refusal "dispatch, the listener's old bearer" "$work/refusal-dispatch-envoy-token.log" "ENVOY_TOKEN"
 
 # Every boot below serves on a port the kernel chose, held from that choice until it serves on it
 # (lib/held-port.py, which writes the port to a file and becomes the binary).
@@ -317,8 +332,8 @@ for i in $(seq 1 100); do
 done
 grep -qF "$issuer" "$work/dispatch.log" ||
   fail "dispatch's boot log does not name the issuer it verifies against" "$work/dispatch.log"
-grep -qF "listener API auth: shared token and oidc $issuer" "$work/listener.log" ||
-  fail "the listener's boot log does not name both credentials it accepts" "$work/listener.log"
+grep -qF "listener API auth: oidc $issuer" "$work/listener.log" ||
+  fail "the listener's boot log does not name the one credential it accepts" "$work/listener.log"
 echo "  dispatch on $dispatch_port, listener on $listener_port, both naming the issuer at boot"
 
 echo "== dispatch: GET /api/v1/whoami"
@@ -346,7 +361,7 @@ expect_status "the dispatch-audience token" 401 "$status"
 status=$(request "$listener_url/v1/sessions")
 expect_status "no bearer" 401 "$status"
 status=$(request "$listener_url/v1/sessions" "$shared_listener_token")
-expect_status "the shared token" 200 "$status"
+expect_status "the listener's old shared token" 401 "$status"
 
 echo "== each refusal leaves the operator the class, and only in the log"
 # Dispatch names the class in its 401 body as well; the listener does not. That

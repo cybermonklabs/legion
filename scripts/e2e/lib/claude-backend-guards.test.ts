@@ -345,6 +345,21 @@ printf 'status %s: %s\\n' "$status" "$found"`;
     slow
   );
 
+  // The run's listener takes no credential on loopback, and the daemon hands a pane no Envoy
+  // bearer, so a pane that carries one was given a shared token from somewhere.
+  test(
+    "reports an Envoy bearer variable as a mismatch",
+    () => {
+      expect(run(agent([...rig, "ENVOY_TOKEN_FILE=/rig/secrets/envoy-token"])).out.trim()).toBe(
+        "status 0: ENVOY_TOKEN_FILE set, want unset"
+      );
+      expect(run(agent([...rig, "ENVOY_TOKEN=dummy"])).out.trim()).toBe(
+        "status 0: ENVOY_TOKEN set, want unset"
+      );
+    },
+    slow
+  );
+
   test.skipIf(withoutPython)(
     "reports an environment it cannot read as not checked, never clean, while the agent still runs with a credential variable in it",
     () => {

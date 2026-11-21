@@ -1,6 +1,6 @@
 package gcp
 
-// The Dispatch deployment's listener container: its NATS, seed and API-token environment
+// The Dispatch deployment's listener container: its NATS and seed environment
 // (dispatchListenerEnv), the part of it that verifies Dispatch's own identity and takes a send's
 // role mark from it alone, and the app's projected token for the listener's audience.
 
@@ -27,9 +27,10 @@ import (
 // bounds them more tightly (1 to bus.MaxReplicas, at least 1, and core.CheckSenderLimit) before
 // anything registers, which is why every refusal that is not socks5Proxy's is natsUrl's.
 // The listener serves on every address of its pod, and its API refuses to start on a non-loopback
-// listen host without a bearer (packages/envoy/cmd/listener/apiauth.go), so the environment names
-// the bearer in Secret listenerSecret.
-func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1.EnvVarArray, error) {
+// listen host without a credential it verifies (packages/envoy/cmd/listener/apiauth.go): that is
+// the projected-token verifier dispatchListenerIdentityEnv renders beside this environment. It
+// takes no shared token (t-e-19).
+func dispatchListenerEnv(s dispatchSettings, url string) (corev1.EnvVarArray, error) {
 	if s.natsInCluster && bus.LocalNATSURL(url) {
 		return nil, core.InputErrorf("natsUrl", "natsUrl names a local NATS server; with natsInCluster the pods dial it directly, so the URL must name the hub's in-cluster Service")
 	}
@@ -52,7 +53,6 @@ func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1
 	}
 	values := envVars(env)
 	values = append(values, valueEnv("NATS_NKEY_SEED_FILE", "/var/run/secrets/envoy/nats-seed"))
-	values = append(values, secretEnv("ENVOY_API_TOKEN", listenerSecret, "ENVOY_API_TOKEN"))
 	return values, nil
 }
 

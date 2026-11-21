@@ -272,15 +272,15 @@ type SendResult struct {
 
 // Client reads live session metadata from the Envoy listener.
 type Client struct {
-	baseURL  string
-	apiToken string
+	baseURL string
 	// identity is Dispatch's own identity at the listener (listenerIdentity): the token file
-	// WithAccountTokenFile names, or the Google identity WithGoogleIdentity names; nil presents
-	// apiToken alone. The last of the two options given wins; cmd/dispatch refuses both.
+	// WithAccountTokenFile names, or the Google identity WithGoogleIdentity names; nil presents no
+	// credential, which only a loopback listener with no verifier pair serves. The last of the two
+	// options given wins; cmd/dispatch refuses both.
 	identity   listenerIdentity
 	httpClient *http.Client
-	// logger takes the line a call made again on the shared token writes (do); slog.Default()
-	// unless WithLogger names another.
+	// logger takes the line a call whose identity token the listener did not take on two tries
+	// writes (do); slog.Default() unless WithLogger names another.
 	logger *slog.Logger
 }
 
@@ -297,22 +297,14 @@ func WithTimeout(timeout time.Duration) Option {
 	return func(c *Client) { c.httpClient.Timeout = timeout }
 }
 
-// WithToken sets the bearer every listener call sends (cmd/dispatch: ENVOY_TOKEN). Without it, or
-// with an empty token, a call sends no Authorization header.
-func WithToken(token string) Option {
-	return func(c *Client) { c.apiToken = token }
-}
-
 // WithAccountTokenFile makes every listener call present Dispatch's own identity (cmd/dispatch:
 // ENVOY_ACCOUNT_TOKEN_FILE): the projected Kubernetes service-account token the kubelet writes into
 // the file at path for the listener's audience and rewrites before it expires. Each call reads the
 // file when it is made, so the call after a rotation presents the new token, and judges the token
 // by its own exp before presenting it, so a token the kubelet did not rewrite in time is never
 // sent to earn a 401 (accountTokenFromFile). A call whose token could not be read, or that the
-// listener answered 401, reads the file again and is made once more (do). It is presented in
-// WithToken's bearer's place, which is then presented only on a call that carries no role mark
-// and whose account token the listener did not take on two tries, and it is what lets a send
-// carry its role mark (SendInput.Role).
+// listener answered 401, reads the file again and is made once more, and ends there (do). It is
+// what lets a send carry its role mark (SendInput.Role).
 func WithAccountTokenFile(path string) Option {
 	return func(c *Client) { c.identity = tokenFile(path) }
 }
@@ -360,22 +352,21 @@ func New(baseURL string, options ...Option) *Client {
 // the call on its identity token. A try whose token could not be presented, or that the listener
 // answered 401, is made once more on a fresh token: the token file read again, where the kubelet
 // rewrites a projected token in place, or a Google token minted again, the refused one dropped
-// (listenerIdentity.forget). A call that still has no token the listener takes is made on the
-// shared token (WithToken), with a WARN line, when the client holds one and the call carries no
-// role mark (marked unset): a listener that does not verify Dispatch's identity yet - one of the
-// release before, still serving while a deploy rolls - takes the shared token, and nothing of such
-// a call needs Dispatch's identity. A marked call - a send for a role (Send) - is never made on the
-// shared token, since the listener takes the role mark from Dispatch's identity alone and a send
-// without it is not copied when the role moves: it ends with the second try's answer, logged at
-// Error, and the delivery records that failure. A 401 is answered before the listener's route runs
-// (cmd/listener, apiAuth), so a try it answered did nothing and the next is no repeat.
+// (listenerIdentity.forget). A call whose second try fails the same way ends with that try's
+// answer, logged at Error, whether or not it carries a role mark (marked): the listener verifies
+// Dispatch's identity, and no other credential stands behind it, so the call is never made a third
+// time, on a shared bearer or on none. Any other answer of either try, a 503 included, is the
+// call's answer, which the caller reads as it reads every answer (ErrUnreachable for a 502, 503 or
+// 504), so a delivery tries it again later. A client with no identity makes the call once with no
+// credential, and a 401 to it is its answer. A 401 is answered before the listener's route runs
+// (cmd/listener, apiAuth), so a try it answered did nothing and the second is no repeat.
 func (c *Client) do(route string, marked bool, build func() (*http.Request, error), transport func(error) error) (*http.Response, error) {
-	try := func(shared bool) (*http.Response, error) {
+	try := func() (*http.Response, error) {
 		request, err := build()
 		if err != nil {
 			return nil, err
 		}
-		if err := c.authorize(request, shared); err != nil {
+		if err := c.authorize(request); err != nil {
 			return nil, fmt.Errorf("%s: %w", route, err)
 		}
 		response, err := c.httpClient.Do(request)
@@ -384,24 +375,17 @@ func (c *Client) do(route string, marked bool, build func() (*http.Request, erro
 		}
 		return response, nil
 	}
-	response, err := try(false)
+	response, err := try()
 	if !c.presentsIdentity() || !identityNotTaken(response, err) {
 		return response, err
 	}
 	closeBody(response)
 	c.identity.forget()
-	if response, err = try(false); !identityNotTaken(response, err) {
-		return response, err
-	}
-	if marked || c.apiToken == "" {
+	if response, err = try(); identityNotTaken(response, err) {
 		c.logger.Error("dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is not made on any other credential",
 			"route", route, "role_mark", marked, "refusal", identityRefusal(response, err))
-		return response, err
 	}
-	closeBody(response)
-	c.logger.Warn("dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is made again on the shared token",
-		"route", route, "refusal", identityRefusal(response, err))
-	return try(true)
+	return response, err
 }
 
 // identityNotTaken reports whether a try on Dispatch's identity ended without the listener taking
@@ -819,9 +803,9 @@ func (input SendInput) EnvelopeMessage() contracts.Message {
 // for the role's next holder is its 202, which names the kept copy (keptSend).
 //
 // A send for a role carries its role mark, which the listener takes from Dispatch's own identity
-// alone, so it is made on that identity and never on the shared token (do, marked): a send the
-// listener's authentication refused on two tries fails here, naming the role, and the delivery
-// records it. A client that presents no identity (neither WithAccountTokenFile nor
+// alone, so it is made on that identity (do, marked), as every call of a client with one is: a
+// send the listener's authentication refused on two tries fails here, naming the role, and the
+// delivery records it. A client that presents no identity (neither WithAccountTokenFile nor
 // WithGoogleIdentity) cannot mark the send, so it refuses it (ErrNoListenerIdentity, logged at Error)
 // rather than make it unmarked: the session that takes the role from the target would not
 // receive an unmarked one.

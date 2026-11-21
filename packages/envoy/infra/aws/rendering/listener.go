@@ -169,8 +169,7 @@ type ListenerContainer struct {
 	Env   ListenerEnv
 
 	WebhookSecretArns map[string]string // each listed webhook's secret ARN, by its name
-	ApiTokenSecretArn string
-	SeedSecretArn     *string // nil injects no seed
+	SeedSecretArn     *string           // nil injects no seed
 
 	LogGroup string
 	Region   string
@@ -202,7 +201,6 @@ func ListenerContainerDefinitions(c ListenerContainer) (string, error) {
 		}
 		secrets = append(secrets, secret(w.SecretEnv, arn))
 	}
-	secrets = append(secrets, secret("ENVOY_API_TOKEN", c.ApiTokenSecretArn))
 	if c.SeedSecretArn != nil {
 		secrets = append(secrets, secret(core.EnvNATSSeed, *c.SeedSecretArn))
 	}

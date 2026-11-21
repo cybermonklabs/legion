@@ -197,7 +197,7 @@ Each item below names a script, then what it proves.
 - `verifiers-staging-token.sh`
 
   `dispatch` and the Envoy listener authenticate a projected service-account token the staging EKS cluster actually minted
-  — the right audience is accepted, the other binary's audience and a missing bearer are refused, each shared token still works, half an OIDC pair refuses either boot, an issuer that does not answer refuses the listener's boot, Dispatch starts and serves against such an issuer (`/healthz` `service_tokens` false, a JWT-shaped bearer `503 OIDC_ISSUER_UNAVAILABLE` until it discovers it in the background), and a refused token leaves its failure class in the log and nowhere else
+  — the right audience is accepted, the other binary's audience and a missing bearer are refused, Dispatch's own shared agent token still works, the listener takes no shared token (a boot with `ENVOY_API_TOKEN` refuses naming it, and the old token is answered 401), Dispatch refuses to boot with the listener's old bearer `ENVOY_TOKEN`, half an OIDC pair refuses either boot, an issuer that does not answer refuses the listener's boot, Dispatch starts and serves against such an issuer (`/healthz` `service_tokens` false, a JWT-shaped bearer `503 OIDC_ISSUER_UNAVAILABLE` until it discovers it in the background), and a refused token leaves its failure class in the log and nowhere else
 
 - `burstable-kind.sh`
 
@@ -695,7 +695,7 @@ What it stands up, all of it the run's own:
   — tmpfs rather than the image's anonymous volume, which a box whose docker volume subsystem stalls would hang on.
 
 - **NATS and the Envoy listener** on the host:
-  a JetStream container of the hub's nats-server (`legion-e2e2-nats-<pid>`; [`lib/nats-image.sh`](#libnats-imagesh) names the image), and `packages/envoy`'s `cmd/listener` built into the work directory and started with a fresh API bearer, which reaches every pane as the 0600 file `envoy_token_file` names, on a socket [`lib/held-port.py`](#libheld-portpy) opened on a port the kernel chose (`ENVOY_LISTEN_FD`).
+  a JetStream container of the hub's nats-server (`legion-e2e2-nats-<pid>`; [`lib/nats-image.sh`](#libnats-imagesh) names the image), and `packages/envoy`'s `cmd/listener` built into the work directory and started on loopback with no credential, so the daemon, every pane and the script call it with none, on a socket [`lib/held-port.py`](#libheld-portpy) opened on a port the kernel chose (`ENVOY_LISTEN_FD`).
 
 - **The plugins**: this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion`, each packed as the release packs it, installed into the OMP profile `legion-e2e2-<pid>-<epoch>` by `lib/install-plugin-profile.sh` (`--package pi-envoy`, then `--package pi-legion`), under the run's own Oh My Pi home `<work>/omp-home` ([`lib/omp-home.sh`](#libomp-homesh)).
   The daemons run with that `HOME` and with `OMP_PROFILE` naming the profile, so the gate and every pane load both, and the operator's `~/.omp/profiles` holds none of the run;
@@ -1153,6 +1153,8 @@ LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> \
 LEGION_E2E_DAEMON_PORT=<port> LEGION_E2E_WORKER_STREAM_PORT=<port> \
 LEGION_E2E_DISPATCH_PORT=<port> LEGION_E2E_ENVOY_PORT=<port> LEGION_E2E_NATS_PORT=<port> \
 LEGION_E2E_SESSION_DB_PORT=<port> \
+LEGION_E2E_AGENT_SECRETS_URL=https://<broker> LEGION_E2E_AGENT_SECRETS_TOKEN_FILE=<0600 file> \
+LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE=<exchange audience> LEGION_E2E_LISTENER_AGENT_SECRETS_TOKEN_FILE=<0600 file> \
 LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/claude-backend-sandbox.sh     # → "claude backend sandbox e2e: PASS", exit 0
 
@@ -1175,6 +1177,8 @@ LEGION_E2E_MODEL_ROUTE=key-file \
 LEGION_E2E_DAEMON_PORT=<port> LEGION_E2E_WORKER_STREAM_PORT=<port> \
 LEGION_E2E_DISPATCH_PORT=<port> LEGION_E2E_ENVOY_PORT=<port> LEGION_E2E_NATS_PORT=<port> \
 LEGION_E2E_SESSION_DB_PORT=<port> \
+LEGION_E2E_AGENT_SECRETS_URL=https://<broker> LEGION_E2E_AGENT_SECRETS_TOKEN_FILE=<0600 file> \
+LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE=<exchange audience> LEGION_E2E_LISTENER_AGENT_SECRETS_TOKEN_FILE=<0600 file> \
 LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/claude-backend-sandbox.sh     # the same, through the bridge; needs docker
 ```
@@ -1263,6 +1267,12 @@ under `key-file`, `{pod,models}-key-file.yml`, which carry no projected token an
 `LEGION_E2E_POD_SERVICE_ACCOUNT` (required, under both routes) is the ServiceAccount the deployment's pods run as, checked by [`lib/pod-service-account.sh`](#libpod-service-accountsh).
 The run puts it in place of the `${POD_SERVICE_ACCOUNT}` placeholder in its copy of the chosen route's pod fixture, `pod.yml` or `pod-key-file.yml`.
 `LEGION_E2E_POD_REACHABILITY` (required, `aws-private-ip` or `bridge`) is how the pods reach the run's services on the devbox ([Pod reachability](#pod-reachability), below), and `LEGION_E2E_DAEMON_CONTAINER_MOUNTS` (optional, `bridge` only) the extra read-only mounts of the daemon's container there.
+`LEGION_E2E_AGENT_SECRETS_URL`, `LEGION_E2E_AGENT_SECRETS_TOKEN_FILE` and `LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE` (required, with the optional `LEGION_E2E_AGENT_SECRETS_AUDIENCE`) are the pods' broker route, the run's `runtime.kubernetes.agent_secrets` block ([`lib/broker-route.sh`](#libbroker-routesh)):
+the daemon enrols every pod with the deployment's secrets broker, and each role trades its pod's exchange token for a broker token naming its own session, its one credential at the scratch Envoy listener, which takes no shared token.
+`LEGION_E2E_LISTENER_AGENT_SECRETS_TOKEN_FILE` (required) is the scratch listener's own projected ServiceAccount token for the broker's audience, of an account the broker lets introspect, which the listener presents to check every broker token a pod sends it.
+The listener binds off loopback in both modes, the private address under `aws-private-ip` and every address under `bridge`, where `/v1` is closed to a caller that presents no credential, and its start is judged by `/healthz` and by a request with no credential, which it must answer 401;
+Dispatch calls a listener of its own on the devbox's loopback ([`lib/dispatch-identity.sh`](#libdispatch-identitysh)).
+Under `bridge` the daemon's container also mounts, read-only, the directory of the daemon's broker token file, so a file the operator rewrites before its token lapses is the file the container reads.
 The App inputs ([`lib/github-apps.sh`](#libgithub-appssh)) name the two role Apps:
 `LEGION_E2E_IMPLEMENT_APP_ID`, `LEGION_E2E_IMPLEMENT_APP_SECRET` and `LEGION_E2E_REVIEW_APP_ID` are optional, and a run here sets none of them and takes this deployment's own;
 `LEGION_E2E_REVIEW_APP_KEY_COMMAND`, shell text that prints the review App's PEM private key on stdout, is required and has no default.
@@ -2194,7 +2204,8 @@ LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=ghcr.io/cybermo
   LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> \
   LEGION_E2E_DISPATCH_URL=https://<dispatch> LEGION_E2E_ENVOY_URL=http://<listener>:<port> LEGION_E2E_NATS_URL=nats://<nats>:4222 \
   LEGION_E2E_DISPATCH_TOKEN_FILE=<0600 file> LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE=<email of a person signed in to Dispatch> \
-  LEGION_E2E_ENVOY_TOKEN_SECRET_ID=<secret id> \
+  LEGION_E2E_AGENT_SECRETS_URL=https://<broker> LEGION_E2E_AGENT_SECRETS_TOKEN_FILE=<0600 file> \
+  LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE=<exchange audience> \
   LEGION_E2E_SESSION_DB_PORT=<port> \
   LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/stage4b-sandbox-tree.sh        # → "stage 4b e2e: PASS", exit 0
@@ -2223,8 +2234,11 @@ the default assignee the run's project names when `prerequisites` creates it (`e
 Every project names the person its unowned work lands on, and the agents' bearer acts for nobody, so Dispatch refuses that create naming none (400 `INVALID_PROJECT`) or naming somebody who never signed in (400 `ASSIGNEE_NOT_ALLOWED`), for a project that already exists too.
 `prerequisites` refuses the variable unset or not shaped as an email, naming the variable and never its value;
 the repository carries no person's email.
-`LEGION_E2E_ENVOY_TOKEN_SECRET_ID` is the Secrets Manager id of the production Envoy listener's API token, which `prerequisites` reads with the devbox admin role.
-Both bearers land in 0600 files under the run's scratch directory.
+`LEGION_E2E_AGENT_SECRETS_URL`, `LEGION_E2E_AGENT_SECRETS_TOKEN_FILE` and `LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE` (and the optional `LEGION_E2E_AGENT_SECRETS_AUDIENCE`) are the pods' broker route, the run's `runtime.kubernetes.agent_secrets` block ([`lib/broker-route.sh`](#libbroker-routesh)):
+the daemon enrols every pod with the production secrets broker, and each role trades its pod's exchange token for a broker token naming its own session, its one credential at the production listener, which takes no shared token.
+The run's own reads of that listener (the interests sampler, the controller-role lookup) present the devbox's own broker token, which the operator's `AGENT_SECRETS_*` environment trades, through [`lib/listener-get.ts`](#liblistener-getts);
+`prerequisites` reads an unheld role with it, requires 404, and refuses a devbox with no broker route, naming what it lacks.
+The Dispatch bearer lands in a 0600 file under the run's scratch directory.
 `prerequisites` refuses the token file when the variable is unset, or names something that is not a readable regular file, whose group or others have any permission bit (read through a symlink, from the file it names), or that holds only whitespace;
 each refusal names the variable and the path, never what the file holds.
 It refuses the other three when they are unset or malformed (the audience through [`lib/model-gateway-audience.sh`](#libmodel-gateway-audiencesh)), naming the variable and never its value.
@@ -2517,8 +2531,8 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   no image row `unchecked`): every image row (`eval-js`, `eval-python`, `browser`, `lsp`, `codegraph`, `skills`, `toolchain`) is `present`, codegraph included;
   every live row (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) is `unchecked` with a detail starting `no session has reported yet (`, since the live rows render from the live sessions' reports (LEGION-663) and boot's own empty Postgres holds none yet
   — the first comes with the first admitted root's architect;
-  and the open rows are `secrets`, and `pool-capacity` when the pool scaled for the probe (the pool's to decide, not the configuration's:
-  the row is open when the image probe pod was Unschedulable before a node came up for it, which a run that starts on an empty pool meets), since the proof's `legion.yaml` configures no `runtime.kubernetes.agent_secrets` and decides nothing, while `model-fallback` and `resource-limits` read `present` (the fixture overlay's `retry.modelFallback` and the issue and controller pods' reservations);
+  and no row is open but `pool-capacity`, when the pool scaled for the probe (the pool's to decide, not the configuration's:
+  the row is open when the image probe pod was Unschedulable before a node came up for it, which a run that starts on an empty pool meets), since the proof's `legion.yaml` configures the pods' broker route (`runtime.kubernetes.agent_secrets`), so `secrets` reads `present` once the daemon's broker login is issued, and decides nothing, while `model-fallback` and `resource-limits` read `present` (the fixture overlay's `retry.modelFallback` and the issue and controller pods' reservations);
   `pool-capacity`'s row is recorded either way.
   A row that reads otherwise fails by name with its status and detail
 
@@ -2858,9 +2872,9 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
 - The daemon's tick (`controller_wake_interval_seconds: 60`) reaches that session too, and every tick delivery in it so far
   — this window is before `full-agent-negative`, the first checkpoint that opens a live row
-  — carries the daemon's capability report as its payload's `openCapabilities`, rendered by pi-envoy into the card's `message` block (`openCapabilities[1]: secrets`;
+  — carries the daemon's capability report as its payload's `openCapabilities`, rendered by pi-envoy into the card's `message` block (`openCapabilities[1]: pool-capacity`, or no such line;
   [`lib/controller-ticks.jq`](lib/controller-ticks.jq)), and each tick's list is judged on its own:
-  as a set it must be `["secrets"]` or `["secrets","pool-capacity"]`, the two lists the proof's deployment can leave open.
+  as a set it must be `[]` or `["pool-capacity"]`, the two lists the proof's deployment can leave open; a tick naming `secrets` says the daemon's broker login was not issued.
   Each tick alone, since every `legion start` between `boot` and here re-probes the image and `pool-capacity` is that probe's own verdict, so one session's ticks can carry either;
   any other name, a live row included, fails with the tick quoted.
   The ticks are kept as `controller-ticks.json`, and `boot`'s set is in the note for context;
@@ -2958,7 +2972,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   the check's bound (`production_check_hours: 0.25`, 15 minutes after the close) starts its last look, the only wake left after the first look asked for one past that bound:
   `last_look_started` reads a look open with `lookOpen: true`, `lastWake.kind: bound`, `last: true` (or the check already closed by a tester that reported it first) within 900 s of the checkpoint's start (what remains of the 15 minutes after `done`;
   a bound deferred by a look still open when it came due, by the look's own two-hour bound, fails here by name rather than hanging), the root's Sandbox, made afresh by the wake, reads `Running` and a pod of tree 1 is back within 900 s (the relaunch took 1 to 3 minutes in acceptance runs), and the tester is resumed on its kept session, in a pod whose disk is that pod's own.
-  Its task names the last look and its rule, which leaves that look's `pending` to production not carrying the merge alone, as here, and makes a requirement still unobserved a `fail` only where production carries the merge (the proof sends the closed issue nothing), so it writes on the pull request that the check did not run because production did not carry the merge within the bound and reports `pending`:
+  Its task names the last look and its rule, which keeps that look's `pending` only for an issue with no requirement that only the deploy can show, as here, and makes a requirement still unobserved at the last look a `fail` whether or not production carries the merge (the proof sends the closed issue nothing), so it writes on the pull request why the check did not run within the bound and reports `pending`:
   the check closes as `not_run` within 600 s (`check_closed`:
   the state omits `check`, the issue `done`;
   `last_look_logged` finds `workflow: production check look started` with `cause: bound`, `last: true` and `check_closed_as` finds `workflow: production check closed` with `outcome: not_run` in the daemon log), the tester's claim is `retired` beside the five `suspended` claims (`claim_states_are`), and within 600 s the root again has no Sandbox, no pod and no disk, the disk read inside the same wait.
@@ -3342,12 +3356,12 @@ a run that finds another's leftovers refuses to start ([`lib/leftovers.sh`](#lib
 | `send-is-the-persons-own-turn` | the page's composer opens on Send and offers Send, Aside and BTW; a Send typed there is one user message in the session's transcript that is exactly the body, and no card; the session answers it |
 | `aside-is-the-persons-own-turn` | the same for an Aside |
 | `btw-is-a-side-question` | a BTW is answered in Dispatch and is no user message |
-| `a-session-forging-a-person-gets-a-card` | holding the listener token and a Dispatch bearer, as any session does, the driver stores a session's message on an issue and publishes a frame naming it that claims a person wrote it, on no issue: a card, no user message |
+| `a-session-forging-a-person-gets-a-card` | holding what any session holds — a Dispatch bearer, and the loopback listener, which takes no credential — the driver stores a session's message on an issue and publishes a frame naming it that claims a person wrote it, on no issue: a card, no user message |
 | `a-broadcast-gets-a-card` | a person's broadcast to the session: a card, no user message |
 | `an-issue-message-gets-a-card` | a person's issue message targeted at the session: a card, no user message |
 | `a-legion-notice-gets-a-card` | the Go daemon's `phase-finished` notice on a role topic the session holds: a card, no user message |
 | `a-session-re-sending-a-persons-btw-gets-a-card` | as any bearer may, the driver retries the person's BTW to the session as a steer (`POST /api/v1/messages/{id}/deliveries` with a session actor), an attempt whose `requested_by` is that session: it arrives as a card, no user message (the refusal itself is `message_accept_test.go`'s) |
-| `a-carded-send-and-a-frame-forged-for-it-inside-the-minute-get-cards` | with the session's Dispatch token file made wrong, the person's Send arrives as a card, since the session cannot accept it; with the token restored, a frame forged with the listener token names that attempt within 45 s of the Send, while Dispatch would still accept it: the session's own record of the attempts it delivered keeps it a card, with neither the Send's text nor the forged text a user message, and Dispatch records no acceptance |
+| `a-carded-send-and-a-frame-forged-for-it-inside-the-minute-get-cards` | with the session's Dispatch token file made wrong, the person's Send arrives as a card, since the session cannot accept it; with the token restored, a frame forged through the listener names that attempt within 45 s of the Send, while Dispatch would still accept it: the session's own record of the attempts it delivered keeps it a card, with neither the Send's text nor the forged text a user message, and Dispatch records no acceptance |
 | `a-persons-retry-of-a-carded-send-is-their-turn` | the person retries that Send as an Aside (`POST /api/v1/messages/{id}/deliveries`, attempt 2), an attempt the session never delivered: one user message that is exactly the body, and Dispatch records attempt 2 accepted |
 | `the-composer-lists-the-sessions-commands` | typed key by key in the composer, `/rig` lists the rig's template, file command and extension command, `/skill:rig` its skill, and `/sess`, `/comp` and `/new` the built-ins `session`, `compact` and `new`, `new` alone marked terminal only; nothing is sent |
 | `a-forged-command-list-changes-nothing-on-the-page` | with a page open, a bare bus client publishes five malformed `commands` frames on `agentstream.<session>.frames`, each at a sequence number far above the session's own (an unknown `source`, `commands` not a list, an empty name, a whitespace name, `v` 2): the page's list stays the session's and no error screen shows; a well-formed list published after them replaces it, so the frames reached the page; a fresh page lists the session's own again |
@@ -3363,7 +3377,7 @@ a run that finds another's leftovers refuses to start ([`lib/leftovers.sh`](#lib
 | `the-session-stops` | the Send's own envelope is read back from the notification stream; Oh My Pi is killed and the listener drops the session |
 | `a-send-while-the-session-is-down-fails` | the person sends the stopped session a Send, which Dispatch records as one failed attempt naming it |
 | `a-replay-after-restart-gets-a-card` | once Oh My Pi is continued (`--continue`, the same session), the Send's own envelope is sent again: a card, and the Send is still one user message |
-| `a-frame-forged-after-the-restart-naming-an-old-send-gets-a-card` | once the Send made while the session was down, which Dispatch recorded as failed, is more than a minute old, a frame forged with the listener token names it as a person's steer: it arrives as a card, with neither its stored nor its forged text a user message |
+| `a-frame-forged-after-the-restart-naming-an-old-send-gets-a-card` | once the Send made while the session was down, which Dispatch recorded as failed, is more than a minute old, a frame forged through the listener names it as a person's steer: it arrives as a card, with neither its stored nor its forged text a user message |
 | `a-frame-forged-for-a-failed-send-inside-the-minute-gets-a-card` | the listener drops the session's registration (`DELETE /v1/sessions/{id}`), so the person's Send to it fails with no frame sent, and within 45 s a bare bus client publishes a frame naming that failed attempt straight onto the session's agent subject: it arrives as a card, with neither text a user message |
 | `dispatch-records-only-the-turns-the-session-took` | Dispatch's thread read, which the Agents page reads, records the Send and the Aside accepted at attempt 1 and the carded Send at its retry, attempt 2, and never the BTW, the Send made while the session was down or the Send made while the listener listed no session |
 
@@ -3555,7 +3569,7 @@ Each item below names a check, then what it holds.
 - `forged-switch-changes-nothing`
 
   two sends to the session.
-  First, a frame forged with the listener token, in `dispatch-user-turns.sh`'s forged-frame shape:
+  First, a frame forged through the session's listener, which takes no credential on loopback, in `dispatch-user-turns.sh`'s forged-frame shape:
   a person-shaped steer naming a message Dispatch never stored, with the body `/model <the other model>`.
   Second, an Envoy message `/effort <another level>` from a second client registered with the listener.
   The session file records the forged attempt as handled (`envoy-dispatch-handled-attempt`), and both arrive as cards.
@@ -5943,6 +5957,42 @@ pod_service_account=$(bash scripts/e2e/lib/pod-service-account.sh)
 A ServiceAccount's name is a DNS-1123 subdomain, so the helper exits 1 when the variable is unset or holds anything else: lowercase letters, digits, `-` and `.` alone, beginning and ending with a letter or a digit, at most 253 characters.
 Its refusal names the variable on stderr and never prints the value.
 
+## lib/broker-route.sh
+
+Prints the `runtime.kubernetes.agent_secrets` block of a proof whose daemon runs the Kubernetes runtime ([`claude-backend-sandbox.sh`](#claude-backend-sandboxsh), [`stage4b-sandbox-tree.sh`](#stage4b-sandbox-treesh)), indented to sit under `kubernetes:`, from `LEGION_E2E_AGENT_SECRETS_URL` (an `https://` URL with no path), `LEGION_E2E_AGENT_SECRETS_TOKEN_FILE` (an absolute path to a file only its owner can read, holding the daemon's own projected ServiceAccount token for the broker's audience), the optional `LEGION_E2E_AGENT_SECRETS_AUDIENCE` and `LEGION_E2E_AGENT_SECRETS_EXCHANGE_AUDIENCE` (which must differ from the enrolment's audience).
+The block is the pods' broker route: every role trades its pod's exchange token for a broker token naming its own session, its one credential at an Envoy listener now that the listener takes no shared token.
+
+```sh
+broker_block=$(bash scripts/e2e/lib/broker-route.sh [TOKEN_FILE_VARIABLE...])
+```
+
+Each variable named after it is another token file the proof needs, checked as the daemon's is and printed nowhere (`claude-backend-sandbox.sh`'s `LEGION_E2E_LISTENER_AGENT_SECRETS_TOKEN_FILE`).
+It exits 1 naming every missing or wrong input on stderr in one run, never a value or what a file holds, and prints nothing on stdout, so a proof calls it in `prerequisites`, before it creates anything.
+
+## lib/dispatch-identity.sh
+
+Dispatch's own identity and its own Envoy listener, for a proof that runs Dispatch, as a deployment gives Dispatch both.
+Sourced after [`lib/rig.sh`](#librigsh), never run.
+`dispatch_identity_start LISTENER NATS_URL MACHINE_ID [NAME=VALUE]...` builds `packages/envoy/cmd/dev-oidc-issuer`, the local stand-in for a cluster's ServiceAccount token issuer, which writes Dispatch's projected token into a file and rewrites it before it lapses, and starts `LISTENER` on loopback on a port the kernel chose, under `env -i` with the verifier of that issuer's tokens (`ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE`, `ENVOY_OIDC_ACCOUNTS` naming Dispatch's subject alone), `ENVOY_DISPATCH_PRINCIPAL`, `NATS_URL`, `MACHINE_ID` and each `NAME=VALUE` given (a proof's session windows).
+It waits until the listener admits Dispatch's token, fails unless a request with no credential is answered 401, and sets `dispatch_identity_dispatch_env` (`ENVOY_URL` of that listener and `ENVOY_ACCOUNT_TOKEN_FILE`), which the caller adds to Dispatch's command line; Dispatch is never given `ENVOY_TOKEN`, which it refuses.
+The listener is Dispatch's alone because a verifier closes `/v1` to a caller with no credential, on loopback as anywhere:
+the proof's sessions, its daemon and its own reads call the sessions' listener, which takes no credential on loopback, and both listeners are on the proof's one NATS.
+`dispatch_identity_stop`, which each proof's cleanup calls, stops the listener and then the issuer.
+`lib/dispatch-identity.test.ts` runs it against this checkout's listener and a real nats-server.
+
+## lib/listener-get.ts
+
+One GET of an Envoy listener that takes no shared token, presented as every session's client presents itself: this machine's own broker token under DPoP, traded at the broker the `AGENT_SECRETS_*` environment names (the operator's `agent-secrets login`, or a pod's projected token), with a fresh proof of the token's key naming the request's method and URL (`packages/envoy-client`'s `brokerCredential` over `packages/cipher-client`).
+Stage 4b's interests sampler and controller-role lookup, and its `prerequisites` read of an unheld role, go through it.
+
+```sh
+status=$(bun scripts/e2e/lib/listener-get.ts --out <file> [--max-time <seconds>] <url>)
+```
+
+It prints the HTTP status, as `curl -w '%{http_code}'` does, writes the body to the file (0600), follows no redirect, and exits 0 for any answer;
+1 when no answer came or the token could not be made, and 2, sending nothing, when this machine has no broker route.
+A line it prints names the request's path, never its host or a token.
+
 ## lib/install-model-gateway.sh
 
 Routes a named OMP profile's model turns to the Hawk model gateway (middleman) on the operator's own hawk login, the route a devbox's agent sessions use when it is configured for the gateway (`~/.omp/agent/models.yml`:
@@ -6685,8 +6735,8 @@ A named profile's own settings file is its `agent/config.yml`, and it inherits n
 Only the working directory's project settings and `PI_CONFIG_FILES` overlays merge over it, so each profile the run writes carries the line itself.
 
 `omp_session_unsets` is the one list of the operator's own Oh My Pi session variables that no Oh My Pi a rig starts from that session may inherit, as `env` options:
-`-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH -u OMP_SESSION_EXCLUSIVE`.
-They are that session's id, the mark Oh My Pi puts on the shells its bash tool spawns, its settings overlays (laid over every profile Oh My Pi opens), the NATS its Envoy plugin dials, the Oh My Pi binary that `legion controller start` and the daemon would run in place of `omp_invocation`, and the variable the runtime sets to `1` in a pane or pod that resumes a recorded Oh My Pi session, under which an Oh My Pi a rig resumes (`--continue`) exits rather than moving where another live process holds the session, and which `legion controller start` also drops from what it inherits.
+`-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u ENVOY_TOKEN_FILE -u ENVOY_TOKEN -u LEGION_OMP_PATH -u OMP_SESSION_EXCLUSIVE`.
+They are that session's id, the mark Oh My Pi puts on the shells its bash tool spawns, its settings overlays (laid over every profile Oh My Pi opens), the NATS its Envoy plugin dials, an Envoy bearer that session may hold (a rig's listener, on loopback with no credential, takes none), the Oh My Pi binary that `legion controller start` and the daemon would run in place of `omp_invocation`, and the variable the runtime sets to `1` in a pane or pod that resumes a recorded Oh My Pi session, under which an Oh My Pi a rig resumes (`--continue`) exits rather than moving where another live process holds the session, and which `legion controller start` also drops from what it inherits.
 `legion controller start` hands Oh My Pi its caller's environment, so the four rigs that run it or an interactive `omp` from the operator's shell (`controller-start-tmux.sh`, `parked-decision-devbox.sh`, `stage4b-sandbox-tree.sh`, `dispatch-user-turns.sh`) put the list in front of each launch: `env "${omp_session_unsets[@]}" …` in an argv, and `env ${omp_session_unsets[*]} …` in a pane's shell command.
 
 ## lib/leftovers.sh

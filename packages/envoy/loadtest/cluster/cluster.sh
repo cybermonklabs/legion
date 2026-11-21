@@ -141,8 +141,9 @@
 # reads a person from (manifests/dispatch.yaml's DISPATCH_IDENTITY), since Dispatch admits only
 # a person into a document room (sjawhar/legion#2541). browsertype is given no token of the
 # copy: its peers are the people the header names, and all it holds of the step is the document
-# list under /work/typing, removed when typing stops. (The runner does hold the copy's tokens:
-# loadgen run is given them on its command line.) A
+# list under /work/typing, removed when typing stops. (The runner does hold the copy's agent token
+# and Postgres URL, in the files loadgen run is given, and its own projected token for the
+# listener.) A
 # replay's documents are the artifacts with the most agent
 # writes (artifact.version events the replay sends) in the bundle's window.jsonl over the
 # sub-window, mapped to the copy's ids through public.loadtest_replay_ids; a load step's are the K
@@ -232,12 +233,14 @@
 # No credential of the copy is an argument of anything, here or in the runner pod, where every
 # argument of every process is readable by every user of the machine (/proc/<pid>/cmdline). up
 # makes them (random_hex) and gives each to the jq that writes state.json as a file it reads
-# (--rawfile from a pipe), never as a value. The Dispatch agent token, the listener token and the
-# Postgres URL with its password reach the runner on the standard input of the kubectl exec that
-# starts the loadgen job reading them (runner_start -c, replay_checksum), whose sh writes them
-# into /work/secrets/<job>.<random>, a directory of mode 700 that one start alone claims (mkdir
-# fails on one that is there) with each file mode 600, and loadgen is given their -…-file forms
-# (endpoints). Once the job has ended, however it ended, the sh that waits on it removes that
+# (--rawfile from a pipe), never as a value. The Dispatch agent token and the Postgres URL with
+# its password reach the runner on the standard input of the kubectl exec that starts the loadgen
+# job reading them (runner_start -c, replay_checksum), whose sh writes them into
+# /work/secrets/<job>.<random>, a directory of mode 700 that one start alone claims (mkdir fails on
+# one that is there) with each file mode 600, and loadgen is given their -…-file forms
+# (endpoints). The listener takes no shared token: loadgen presents the runner pod's own projected
+# token, which the kubelet keeps in the pod (RUNNER_LISTENER_TOKEN_FILE), and Dispatch its own
+# (manifests/dispatch.yaml). Once the job has ended, however it ended, the sh that waits on it removes that
 # directory, and on a HUP or TERM of that sh too, so none outlives the job that read it and no
 # start removes another's (a detached job's sh ignores INT, as sh does in every background job, so
 # an INT leaves it running with its job); loadgen refuses -token, -listener-token and a -pg that
@@ -604,7 +607,7 @@ declare -A PLACEHOLDER_KIND=(
   [PG_TIER]=tier [PG_CPU]=cpu [PG_MEMORY]=memory [PG_VOLUME]=volume
   [PG_MAX_CONNECTIONS]=pg_setting [PG_SHARED_BUFFERS]=pg_setting [PG_EFFECTIVE_CACHE_SIZE]=pg_setting
   [PG_WORK_MEM]=pg_setting [PG_MAINTENANCE_WORK_MEM]=pg_setting [PG_MAX_WAL_SIZE]=pg_setting
-  [PG_PASSWORD]=hex [DISPATCH_TOKEN]=hex [LISTENER_TOKEN]=hex [SIGNING_KEY]=hex
+  [PG_PASSWORD]=hex [DISPATCH_TOKEN]=hex [SIGNING_KEY]=hex
 )
 
 # render_manifest FILE KEY=VALUE...: FILE with each __KEY__ replaced by its VALUE, which must have
@@ -643,7 +646,7 @@ manifest_values() {
     "PG_MAINTENANCE_WORK_MEM=\(.postgres.settings.maintenance_work_mem)",
     "PG_MAX_WAL_SIZE=\(.postgres.settings.max_wal_size)",
     "PG_PASSWORD=\(.secrets.pg_password)", "DISPATCH_TOKEN=\(.secrets.dispatch_token)",
-    "LISTENER_TOKEN=\(.secrets.listener_token)", "SIGNING_KEY=\(.secrets.signing_key)"' "$STATE"
+    "SIGNING_KEY=\(.secrets.signing_key)"' "$STATE"
 }
 
 # apply_manifest NAME [KUBECTL ARGS...]: manifests/NAME rendered from state.json, applied
@@ -848,26 +851,33 @@ loadgen_local() { LOADTEST_ROOT=$RUN_DIR "$LOADGEN" "$@"; }
 # endpoints JOB: every endpoint flag of loadgen seed and run (guard.go), into ENDPOINTS, and the
 # directory in the runner that the job's credentials go in, into JOB_SECRETS: RUNNER_SECRETS/
 # JOB.<random>, so two starts of one job name, of this command or of another one of the run, never
-# share one. The three credentials are their -…-file forms, naming the files runner_start -c and
-# replay_checksum write there (RUNNER_CREDENTIALS), so no credential is an argument of kubectl here
-# or of anything in the runner pod.
+# share one. The agent token and the Postgres URL are their -…-file forms, naming the files
+# runner_start -c and replay_checksum write there (RUNNER_CREDENTIALS), so no credential is an
+# argument of kubectl here or of anything in the runner pod. The listener token is the runner
+# pod's own projected token (RUNNER_LISTENER_TOKEN_FILE), which no job is given and every job reads at
+# each request.
 endpoints() {
   JOB_SECRETS=$RUNNER_SECRETS/$1.$(random_hex 8)
   [[ $JOB_SECRETS =~ ^/work/secrets/[A-Za-z0-9._-]+$ ]] || die "the runner job name '$1' is not letters, digits, '.', '_' and '-' alone"
   ENDPOINTS=(
     -url "http://dispatch.$NS.svc:8766" -token-file "$JOB_SECRETS/dispatch-token"
-    -listener "http://listener.$NS.svc:9020" -listener-token-file "$JOB_SECRETS/listener-token"
+    -listener "http://listener.$NS.svc:9020" -listener-token-file "$RUNNER_LISTENER_TOKEN_FILE"
     -nats "nats://nats.$NS.svc:4222" -nats-mon "http://nats-0.nats-headless.$NS.svc:8222"
     -pprof "http://dispatch-pprof.$NS.svc:6061" -pg-file "$JOB_SECRETS/pg-url" -nats-server-name nats-0
   )
 }
 
+# RUNNER_LISTENER_TOKEN_FILE is where the kubelet keeps the runner pod's own token for the
+# listener's audience, a token of the ServiceAccount loadgen-runner that the copy's listener lists
+# (manifests/runner.yaml, manifests/listener.yaml), and rewrites before it expires.
+RUNNER_LISTENER_TOKEN_FILE=/var/run/secrets/envoy-listener/token
+
 pg_url() { printf 'postgres://dispatch:%s@postgres.%s.svc:5432/dispatch?sslmode=disable\n' "$(state .secrets.pg_password)" "$NS"; }
 
-# credentials: the copy's Dispatch agent token, listener token and Postgres URL, one a line, in the
-# order RUNNER_CREDENTIALS writes them: the standard input of the runner call that writes them.
+# credentials: the copy's Dispatch agent token and Postgres URL, one a line, in the order
+# RUNNER_CREDENTIALS writes them: the standard input of the runner call that writes them.
 credentials() {
-  state .secrets.dispatch_token && state .secrets.listener_token && pg_url
+  state .secrets.dispatch_token && pg_url
 }
 
 # RUNNER_SECRETS is where the runner jobs' credentials live: one directory per start under it
@@ -875,8 +885,8 @@ credentials() {
 RUNNER_SECRETS=/work/secrets
 
 # RUNNER_CREDENTIALS: the runner sh's own lines that claim the directory $secrets names and write
-# the three lines of its standard input (credentials) into it, at mode 700, each file mode 600:
-# dispatch-token, listener-token and pg-url, the files endpoints names. The claim is one mkdir,
+# the two lines of its standard input (credentials) into it, at mode 700, each file mode 600:
+# dispatch-token and pg-url, the files endpoints names. The claim is one mkdir,
 # which fails on a directory that is there, so a start never writes into, or removes, another
 # start's. Only sh builtins (read, printf) touch a credential, so none is an argument of a process
 # there either. A claim that fails ends the sh with 1 and removes nothing; a read or a write that
@@ -884,7 +894,7 @@ RUNNER_SECRETS=/work/secrets
 # before anything is started (a signal that comes while read waits on standard input is taken once
 # that read returns).
 # shellcheck disable=SC2016 # expanded by the runner's sh
-RUNNER_CREDENTIALS='(umask 077 && mkdir -p -- "${secrets%/*}" && mkdir -- "$secrets") || exit 1; trap "rm -rf -- \"\$secrets\"; exit 143" HUP INT TERM; (umask 077 && for f in dispatch-token listener-token pg-url; do IFS= read -r v && printf "%s\n" "$v" >"$secrets/$f" || exit 1; done) || { rm -rf -- "$secrets"; exit 1; }'
+RUNNER_CREDENTIALS='(umask 077 && mkdir -p -- "${secrets%/*}" && mkdir -- "$secrets") || exit 1; trap "rm -rf -- \"\$secrets\"; exit 143" HUP INT TERM; (umask 077 && for f in dispatch-token pg-url; do IFS= read -r v && printf "%s\n" "$v" >"$secrets/$f" || exit 1; done) || { rm -rf -- "$secrets"; exit 1; }'
 
 # RUNNER_SECRETS_CLEANUP: the traps of the runner sh that waits on a job given credentials: its
 # EXIT removes the directory $secrets names, and a HUP, INT or TERM exits through that EXIT, which
@@ -1704,7 +1714,7 @@ put_loadgen() { put_executable "$LOADGEN" /work/loadgen; }
 # runner_start [-c DIR] NAME CMD...: CMD detached in the runner pod, its output in
 # /work/logs/NAME.log, its pid in NAME.pid and its exit status in NAME.rc. It goes through
 # runner_exec, so no job of this run is started in a runner pod the lock gives another run. With
-# -c, the copy's three credentials go to the runner on the exec's standard input and are written
+# -c, the copy's two credentials go to the runner on the exec's standard input and are written
 # into DIR, the JOB_SECRETS endpoints gave CMD's -…-file flags, before CMD starts
 # (RUNNER_CREDENTIALS); the shell that waits on CMD removes DIR once CMD has ended, whatever ended
 # it (a SIGTERM or SIGKILL runner_stop sends goes to CMD alone), and on a HUP or TERM of its own
@@ -3551,7 +3561,7 @@ up_run() {
   local tier
   tier=$(pg_tier 16 60)
   tier=$(jq -c --arg v "$pg_volume" '. + {volume: $v}' <<<"$tier")
-  # The four credentials are files jq reads (--rawfile from a pipe random_hex writes, which ends in
+  # The three credentials are files jq reads (--rawfile from a pipe random_hex writes, which ends in
   # no newline), never arguments: an argument of jq is readable by every user of this pod while it
   # runs (/proc/<pid>/cmdline).
   (umask 077 && jq -n --arg ns "$NS" --arg run "$RUN" --arg sc "$sc" --arg commit "$commit" --arg major "$major" \
@@ -3560,12 +3570,12 @@ up_run() {
     --arg repo "$PRODUCTION_REPO" --arg created "$(utc_now)" --arg holder "$HOLDER_POD" --arg pidns "$(pid_ns)" \
     --arg dispatch "$dispatch_image" --arg listener "$listener_image" --arg listener_ref "$listener_ref" \
     --arg pg "$pg_image" --arg socat "$socat_image" --arg runner "$runner_image" --argjson nats "$nats_images" \
-    --argjson tier "$tier" --rawfile pgpw <(random_hex 24) --rawfile dt <(random_hex 32) --rawfile lt <(random_hex 32) \
+    --argjson tier "$tier" --rawfile pgpw <(random_hex 24) --rawfile dt <(random_hex 32) \
     --rawfile sk <(random_hex 32) '{namespace: $ns, run: $run, storage_class: $sc, dispatch_commit: $commit, oidc_issuer: $issuer,
       pg_major: $major, production_repo: $repo, created: $created, holder_pod: $holder, pid_ns: $pidns,
       images: ({dispatch: $dispatch, listener: $listener, postgres: $pg, socat: $socat, runner: $runner} + $nats),
       image_sources: {listener: $listener_ref}, postgres: $tier, stored_order: $stored_order, browsertype: null,
-      secrets: {pg_password: $pgpw, dispatch_token: $dt, listener_token: $lt, signing_key: $sk}}' >"$STATE")
+      secrets: {pg_password: $pgpw, dispatch_token: $dt, signing_key: $sk}}' >"$STATE")
   chmod 600 "$STATE"
   start_daemon heartbeat
 

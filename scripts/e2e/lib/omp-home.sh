@@ -89,14 +89,17 @@ omp_setup_wizard_off() {
 # OMPCODE, the mark Oh My Pi puts on the shells its bash tool spawns (buildSpawnEnv in
 # @oh-my-pi/pi-utils procmgr.ts); PI_CONFIG_FILES, that session's settings overlays, which Oh My Pi
 # lays over the profile it opens; ENVOY_NATS_URL, the NATS that session's Envoy plugin dials;
-# LEGION_OMP_PATH, the Oh My Pi binary that `legion controller start` and the daemon run in place
-# of omp_invocation (ResolveInvocation, packages/daemon/internal/omplaunch); and
-# OMP_SESSION_EXCLUSIVE, the variable the runtime sets to 1 in a pane or pod that resumes a
-# recorded Oh My Pi session, under which an Oh My Pi a rig resumes (--continue) exits rather than
-# moving where another live process holds the session, and which `legion controller start` also
-# drops from what it inherits (packages/daemon/cmd/legion/controller.go). `legion controller
-# start` hands Oh My Pi its caller's environment, so every rig that runs it, or an interactive omp,
-# from the operator's shell drops these first: `env "${omp_session_unsets[@]}" …` in an argv, and
-# `env ${omp_session_unsets[*]} …` in a pane's shell command, which no name here needs quoted in.
+# ENVOY_TOKEN_FILE and ENVOY_TOKEN, an Envoy bearer that session may hold, which a rig's listener,
+# on loopback with no credential, takes none of; LEGION_OMP_PATH, the Oh My Pi binary that `legion
+# controller start` and the daemon run in place of omp_invocation (ResolveInvocation,
+# packages/daemon/internal/omplaunch); and OMP_SESSION_EXCLUSIVE, the variable the runtime sets to
+# 1 in a pane or pod that resumes a recorded Oh My Pi session, under which an Oh My Pi a rig resumes
+# (--continue) exits rather than moving where another live process holds the session, and which
+# `legion controller start` also drops from what it inherits (packages/daemon/cmd/legion/
+# controller.go). `legion controller start` hands Oh My Pi its caller's environment, so every rig
+# that runs it, or an interactive omp, from the operator's shell drops these first: `env
+# "${omp_session_unsets[@]}" …` in an argv, and `env ${omp_session_unsets[*]} …` in a pane's shell
+# command, which no name here needs quoted in.
 # shellcheck disable=SC2034 # the scripts that source this file read it
-omp_session_unsets=(-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH -u OMP_SESSION_EXCLUSIVE)
+omp_session_unsets=(-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u ENVOY_TOKEN_FILE -u ENVOY_TOKEN
+  -u LEGION_OMP_PATH -u OMP_SESSION_EXCLUSIVE)

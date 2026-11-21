@@ -205,7 +205,7 @@ func testLoopSessions(t *testing.T, ls *loopSeed, fl *fakeListener, b sessionBus
 	cfg := runConfig{
 		loop: ls, loopListeners: []string{fl.server.URL, fl.server.URL},
 		unitStarts: 2, unitLife: 200 * time.Millisecond, driverTopics: 2,
-		receiptDeadline: time.Second, rngSeed: 1, ep: endpoints{listenerToken: "listener-token"},
+		receiptDeadline: time.Second, rngSeed: 1, ep: endpoints{listenerTokenFile: credentialFileAt(t, "listener-token", "listener-token\n")},
 	}
 	lp := newLoopSessions(cfg, log.New(io.Discard, "", 0), 7, b, newCollector[receipt](16))
 	lp.heartbeat = 10 * time.Millisecond

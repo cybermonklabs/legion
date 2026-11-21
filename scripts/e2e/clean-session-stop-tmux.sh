@@ -407,14 +407,15 @@ wait_until() {
 }
 
 # ---- the listener's HTTP surface ------------------------------------------------------------------
-# api sets api_status and writes the body to $answer rather than printing either: a caller that read
-# the status out of a command substitution would lose the body with the subshell.
+# The listener is on loopback with no credential, so every call here sends none. api sets
+# api_status and writes the body to $answer rather than printing either: a caller that read the
+# status out of a command substitution would lose the body with the subshell.
 api() { # api METHOD PATH
   local method=$1 path=$2 slug
   slug=$(printf '%s' "$path" | tr -c '[:alnum:]' '_' | cut -c1-48)
   answer=$evidence/answers/$check$slug.$RANDOM.json
   api_status=$(curl -sS --max-time 20 -o "$answer" -w '%{http_code}' -X "$method" \
-    -H "@$work/envoy-auth-header" "http://127.0.0.1:$listener_port$path" 2>>"$evidence/logs/curl.log") || api_status=000
+    "http://127.0.0.1:$listener_port$path" 2>>"$evidence/logs/curl.log") || api_status=000
   [ "$api_status" = 200 ]
 }
 
@@ -440,7 +441,7 @@ last_seen() {
   jq -er '.last_seen' "$answer"
 }
 
-serving() { curl -fsS --max-time 3 -H "@$work/envoy-auth-header" "http://127.0.0.1:$1/v1/sessions"; }
+serving() { curl -fsS --max-time 3 "http://127.0.0.1:$1/v1/sessions"; }
 
 # ---- the kill, and the measurement ----------------------------------------------------------------
 
@@ -680,9 +681,7 @@ mkdir -p "$work/bin" "$work/tmp" "$work/tmux" "$work/xdg" "$omp_home/.omp" "$sta
 chmod 0700 "$work/tmux" "$state_dir"
 (
   umask 077
-  od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/envoy-token"
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/operator-token"
-  printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header"
   tr -d '[:space:]' <"$model_key_file" >"$work/model-key"
 )
 [ -s "$work/model-key" ] || fail "LEGION_E2E_MODEL_KEY_FILE ($model_key_file) holds no key"
@@ -798,7 +797,7 @@ note "NATS on $nats_url, its JetStream store in $work/nats-store"
 
 keep_port listener_keeper listener_port
 start_kept listener listener_keeper ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
-  ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
+  ENVOY_LISTEN_FD=3 \
   ENVOY_MACHINE_ID="clean-session-stop-$$" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
   ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
   ENVOY_SESSION_REAP_INTERVAL="$reap_interval" "$work/bin/envoy-listener"
@@ -831,7 +830,6 @@ postgres_dsn: '$daemon_dsn'
 state_dir: $state_dir
 operator_token_file: $work/operator-token
 envoy_url: http://127.0.0.1:$listener_port
-envoy_token_file: $work/envoy-token
 nats_urls:
   - $nats_url
 probe_interval_seconds: 5
@@ -942,7 +940,7 @@ check_unseen_kill_waits_out_the_horizon() {
   own_session "$work/control.pid" \
     env -i PATH="$PATH" HOME="$work/control-home" TMPDIR="$work/tmp" LEGION_E2E_RUN="$work" \
     PI_CODING_AGENT_DIR="$work/control-agent" \
-    ENVOY_URL="http://127.0.0.1:$listener_port" ENVOY_TOKEN_FILE="$work/envoy-token" \
+    ENVOY_URL="http://127.0.0.1:$listener_port" \
     ENVOY_NATS_URL="$nats_url" ENVOY_HEARTBEAT_MS="$heartbeat_ms" \
     ENVOY_MACHINE_ID="clean-session-stop-control-$$" \
     "$omp_bin" --extension "$work/pi-envoy" --mode rpc \

@@ -48,6 +48,16 @@ func writeAccountToken(t *testing.T, path, token string) {
 	}
 }
 
+// identityHolding makes a client present token as Dispatch's identity: the account token file
+// WithAccountTokenFile names, holding token. A token that is not a compact JWT is presented as it
+// is, so a test names the bearer the listener stand-in expects.
+func identityHolding(t *testing.T, token string) Option {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "listener-account-token")
+	writeAccountToken(t, path, token)
+	return WithAccountTokenFile(path)
+}
+
 // authorizations is a listener stand-in that records the Authorization of every send it is made
 // and answers each as a send the stream stored.
 type authorizations struct {
@@ -122,15 +132,16 @@ func TestEachCallPresentsTheAccountTokenTheFileHoldsWhenTheCallIsMade(t *testing
 
 // The listener takes a send's role mark from Dispatch's own identity alone and refuses it from
 // every other credential (cmd/listener, sendHandler). So a client that presents that identity
-// marks a send for a role with the role, and a client that presents the shared token, or none,
-// refuses a send for a role (ErrNoListenerIdentity) rather than make it unmarked, since the session that
-// takes the role from the target would not receive an unmarked one: the refusal makes no listener
-// call, names the setting that gives Dispatch an identity and the README section, and writes one
-// Error line naming the role. The control is each client's send with no role, which every client
-// makes, unmarked.
+// marks a send for a role with the role, and a client that presents none refuses a send for a role
+// (ErrNoListenerIdentity) rather than make it unmarked, since the session that takes the role from
+// the target would not receive an unmarked one: the refusal makes no listener call, names the
+// setting that gives Dispatch an identity and the README section, and writes one Error line naming
+// the role. The control is each client's send with no role, which every client makes, unmarked,
+// and which the client with no identity makes with no credential at all.
 func TestASendForARoleIsMadeOnlyOnDispatchsOwnIdentity(t *testing.T) {
 	var mu sync.Mutex
 	var bodies []map[string]any
+	var presented []string
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -138,6 +149,7 @@ func TestASendForARoleIsMadeOnlyOnDispatchsOwnIdentity(t *testing.T) {
 		}
 		mu.Lock()
 		bodies = append(bodies, body)
+		presented = append(presented, r.Header.Get("Authorization"))
 		mu.Unlock()
 		_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
 	}))
@@ -147,7 +159,7 @@ func TestASendForARoleIsMadeOnlyOnDispatchsOwnIdentity(t *testing.T) {
 	var logs bytes.Buffer
 	logger := WithLogger(slog.New(slog.NewJSONHandler(&logs, nil)))
 
-	for i, client := range []*Client{New(listener.URL, WithAccountTokenFile(path), logger), New(listener.URL, WithToken("shared"), logger), New(listener.URL, logger)} {
+	for i, client := range []*Client{New(listener.URL, WithAccountTokenFile(path), logger), New(listener.URL, logger)} {
 		_, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"})
 		if identity := i == 0; identity && err != nil {
 			t.Fatalf("the identity client's send for a role: %v", err)
@@ -161,8 +173,8 @@ func TestASendForARoleIsMadeOnlyOnDispatchsOwnIdentity(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(bodies) != 4 {
-		t.Fatalf("the listener was sent %d sends, want 4: the identity client's two and each other client's send with no role: %v", len(bodies), bodies)
+	if len(bodies) != 3 {
+		t.Fatalf("the listener was sent %d sends, want 3: the identity client's two and the other client's send with no role: %v", len(bodies), bodies)
 	}
 	for i, body := range bodies {
 		role, marked := body["role"]
@@ -170,8 +182,11 @@ func TestASendForARoleIsMadeOnlyOnDispatchsOwnIdentity(t *testing.T) {
 			t.Fatalf("send %d carried role %v (present %t), want role reviewer on the identity client's role send alone: %v", i, role, marked, bodies)
 		}
 	}
-	if n := logLines(&logs, "ERROR", refusedRoleSendLine, map[string]any{"role": "reviewer"}); n != 2 {
-		t.Fatalf("the clients with no identity wrote %d Error lines %q for their two refused sends for a role, want two:\n%s", n, refusedRoleSendLine, logs.String())
+	if presented[2] != "" {
+		t.Fatalf("the client with no identity sent Authorization %q, want none", presented[2])
+	}
+	if n := logLines(&logs, "ERROR", refusedRoleSendLine, map[string]any{"role": "reviewer"}); n != 1 {
+		t.Fatalf("the client with no identity wrote %d Error lines %q for its refused send for a role, want one:\n%s", n, refusedRoleSendLine, logs.String())
 	}
 }
 
@@ -261,25 +276,23 @@ func (s *identityStand) taken() []identityCall {
 // A call the listener answered 401 on the account token is made once more on the token the file
 // holds then, since the kubelet rewrites a projected token in place: a token rotated between the
 // two tries is taken, and a send for a role keeps its mark. A token the listener refuses on both
-// tries ends there for a send for a role, which carries its role mark and is made on Dispatch's
-// identity alone: it fails naming the role, with one Error line, and is never made on the shared
-// token. A call that carries no mark (a send to a session, a read) is made on the shared token
-// after the two tries, with one WARN line, as a listener of the release before verifies no account
-// token while a deploy rolls; the control is such a call by a client holding no shared token,
-// which makes no third call, writes no WARN line, and reports the 401.
+// tries ends there for every call, with one Error line: a send for a role fails naming the role,
+// and a call that carries no mark (a send to a session, a read) reports the listener's 401. No
+// call is made a third time, on another credential or on none: the listener verifies Dispatch's
+// identity, and no shared bearer stands behind it. A token file that cannot be read on either try
+// makes no call at all.
 func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnAFreshToken(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "listener-account-token")
 	account := accountToken(t, "system:serviceaccount:dispatch:example-dispatch", time.Now().Add(time.Hour))
 	rotated := accountToken(t, "system:serviceaccount:dispatch:example-dispatch", time.Now().Add(2*time.Hour))
-	stand := &identityStand{takes: map[string]bool{"Bearer shared": true}}
+	stand := &identityStand{takes: map[string]bool{}}
 	listener := httptest.NewServer(http.HandlerFunc(stand.serve))
 	defer listener.Close()
 	marked := SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"}
 	unmarked := SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k"}
-	const sharedLine = "dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is made again on the shared token"
 	const refusedLine = "dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is not made on any other credential"
-	client := func(logs *bytes.Buffer, options ...Option) *Client {
-		return New(listener.URL, append(options, WithAccountTokenFile(path), WithLogger(slog.New(slog.NewJSONHandler(logs, nil))))...)
+	client := func(logs *bytes.Buffer) *Client {
+		return New(listener.URL, WithAccountTokenFile(path), WithLogger(slog.New(slog.NewJSONHandler(logs, nil))))
 	}
 
 	t.Run("a token rotated after a 401 is taken on the second try, with its role mark", func(t *testing.T) {
@@ -294,7 +307,7 @@ func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnAFreshToken(t *tes
 		stand.mu.Unlock()
 		t.Cleanup(func() { stand.mu.Lock(); stand.before = nil; stand.mu.Unlock() })
 		var logs bytes.Buffer
-		if _, err := client(&logs, WithToken("shared")).Send(context.Background(), marked); err != nil {
+		if _, err := client(&logs).Send(context.Background(), marked); err != nil {
 			t.Fatalf("a send whose token was rotated after its 401: %v", err)
 		}
 		got := stand.taken()
@@ -303,71 +316,55 @@ func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnAFreshToken(t *tes
 		}
 	})
 
-	t.Run("a send for a role refused on two tries fails naming the role and is never made on the shared token", func(t *testing.T) {
+	t.Run("a send for a role refused on two tries fails naming the role and is made no third time", func(t *testing.T) {
 		writeAccountToken(t, path, account)
 		var logs bytes.Buffer
-		_, err := client(&logs, WithToken("shared")).Send(context.Background(), marked)
+		_, err := client(&logs).Send(context.Background(), marked)
 		if err == nil || !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "for role reviewer") {
 			t.Fatalf("a send for a role refused on two tries = %v, want ErrUnavailable naming role reviewer", err)
 		}
 		got := stand.taken()
 		if len(got) != 2 || got[0].authorization != "Bearer "+account || got[1].authorization != "Bearer "+account || got[0].role != "reviewer" || got[1].role != "reviewer" {
-			t.Fatalf("the listener was called %+v, want two tries on the account token with the role mark and none on the shared token", got)
+			t.Fatalf("the listener was called %+v, want two tries on the account token with the role mark and no third call", got)
 		}
 		if n := logLines(&logs, "ERROR", refusedLine, map[string]any{"role_mark": true}); n != 1 {
 			t.Fatalf("the client wrote %d Error lines %q, want one:\n%s", n, refusedLine, logs.String())
 		}
-		if n := logLines(&logs, "WARN", sharedLine, nil); n != 0 {
-			t.Fatalf("the client wrote %d WARN lines %q for a send for a role, want none", n, sharedLine)
-		}
 	})
 
-	t.Run("a call with no role mark refused on two tries is made on the shared token", func(t *testing.T) {
+	t.Run("a call with no role mark refused on two tries reports the 401 and is made no third time", func(t *testing.T) {
 		writeAccountToken(t, path, account)
 		var logs bytes.Buffer
-		if _, err := client(&logs, WithToken("shared")).Send(context.Background(), unmarked); err != nil {
-			t.Fatalf("a send with no role mark refused on the account token, with the shared token held: %v", err)
+		_, err := client(&logs).Send(context.Background(), unmarked)
+		if err == nil || errors.Is(err, ErrUnreachable) || err.Error() != "unauthorized" {
+			t.Fatalf("a send with no role mark refused on two tries = %v, want the listener's own 401 reason, not ErrUnreachable", err)
 		}
 		got := stand.taken()
-		if len(got) != 3 || got[2].authorization != "Bearer shared" || got[2].role != nil {
-			t.Fatalf("the listener was called %+v, want two tries on the account token, then the shared token", got)
+		if len(got) != 2 || got[0].authorization != "Bearer "+account || got[1].authorization != "Bearer "+account || got[0].role != nil || got[1].role != nil {
+			t.Fatalf("the listener was called %+v, want two tries on the account token, unmarked, and no third call", got)
 		}
-		if n := logLines(&logs, "WARN", sharedLine, nil); n != 1 {
-			t.Fatalf("the client wrote %d WARN lines %q, want one:\n%s", n, sharedLine, logs.String())
-		}
-	})
-
-	t.Run("control: with no shared token held, a call with no role mark refused on two tries reports the 401", func(t *testing.T) {
-		writeAccountToken(t, path, account)
-		var logs bytes.Buffer
-		if _, err := client(&logs).Send(context.Background(), unmarked); err == nil || !strings.Contains(err.Error(), "unauthorized") {
-			t.Fatalf("a send refused on the account token with no shared token held = %v, want the listener's 401", err)
-		}
-		if got := stand.taken(); len(got) != 2 {
-			t.Fatalf("the client with no shared token called %d times, want two", len(got))
-		}
-		if n := logLines(&logs, "WARN", sharedLine, nil); n != 0 {
-			t.Fatalf("the client with no shared token wrote %d WARN lines %q, want none", n, sharedLine)
+		if n := logLines(&logs, "ERROR", refusedLine, map[string]any{"role_mark": false}); n != 1 {
+			t.Fatalf("the client wrote %d Error lines %q, want one:\n%s", n, refusedLine, logs.String())
 		}
 	})
 
-	t.Run("an account token that cannot be read on two tries makes a read on the shared token, and a send for a role on none", func(t *testing.T) {
+	t.Run("an account token that cannot be read on two tries makes no call, for a read or a send for a role", func(t *testing.T) {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			t.Fatalf("remove the token file: %v", err)
 		}
 		var logs bytes.Buffer
-		shared := client(&logs, WithToken("shared"))
-		if _, err := shared.Send(context.Background(), unmarked); err != nil {
-			t.Fatalf("a send with no role mark and no readable account token, with the shared token held: %v", err)
+		unreadable := client(&logs)
+		if _, err := unreadable.Send(context.Background(), unmarked); !errors.Is(err, ErrAccountToken) {
+			t.Fatalf("a send with no role mark and no readable account token = %v, want ErrAccountToken", err)
 		}
-		if got := stand.taken(); len(got) != 1 || got[0].authorization != "Bearer shared" {
-			t.Fatalf("the listener was called %+v, want one call on the shared token", got)
-		}
-		if _, err := shared.Send(context.Background(), marked); !errors.Is(err, ErrAccountToken) {
+		if _, err := unreadable.Send(context.Background(), marked); !errors.Is(err, ErrAccountToken) {
 			t.Fatalf("a send for a role with no readable account token = %v, want ErrAccountToken", err)
 		}
 		if got := stand.taken(); len(got) != 0 {
-			t.Fatalf("the listener was called %+v for a send for a role with no readable account token, want no call", got)
+			t.Fatalf("the listener was called %+v with no readable account token, want no call", got)
+		}
+		if n := logLines(&logs, "ERROR", refusedLine, nil); n != 2 {
+			t.Fatalf("the client wrote %d Error lines %q for its two calls, want two:\n%s", n, refusedLine, logs.String())
 		}
 	})
 }
@@ -399,7 +396,7 @@ func TestASecondTryThatWasNeverWrittenIsNoReceiptTimeout(t *testing.T) {
 	writeAccountToken(t, path, accountToken(t, "system:serviceaccount:dispatch:example-dispatch", time.Now().Add(time.Hour)))
 	input := SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"}
 
-	client := New("http://listener.invalid", WithToken("shared"), WithAccountTokenFile(path), WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	client := New("http://listener.invalid", WithAccountTokenFile(path), WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	transport := &writeFailingTransport{}
 	client.httpClient.Transport = transport
 	_, err := client.Send(context.Background(), input)

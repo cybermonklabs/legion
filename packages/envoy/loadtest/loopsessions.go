@@ -361,13 +361,15 @@ type natsSub struct{ sub *nats.Subscription }
 
 func (s natsSub) unsubscribe() error { return s.sub.Unsubscribe() }
 
-// newLoopListener is one loop session's listener: the endpoint it registers, heartbeats,
-// unsubscribes and publishes on, with the run's listener bearer. A refusal names the endpoint and
-// route it came from, the status and what the listener said (listenerclient.Refusal): five
-// endpoints and three routes share it, and the log lines that print it carry only the session id,
-// so the URL is what attributes a 401 to one of them.
-func newLoopListener(url, token string) *listenerclient.Client {
-	return &listenerclient.Client{URL: url, Token: token, HTTP: &http.Client{Timeout: loopCallTimeout}}
+// newLoopListener is one loop session's listener: the endpoint url it registers, heartbeats,
+// unsubscribes and publishes on, with the run's listener bearer as ep presents it to the step's
+// own listener (endpoints.listenerClient). A refusal names the endpoint and route it came from,
+// the status and what the listener said (listenerclient.Refusal): five endpoints and three routes
+// share it, and the log lines that print it carry only the session id, so the URL is what
+// attributes a 401 to one of them.
+func newLoopListener(url string, ep endpoints) *listenerclient.Client {
+	ep.listener = url
+	return ep.listenerClient(&http.Client{Timeout: loopCallTimeout})
 }
 
 // loopRelay is one loop session's consumer delivery: the epoch it registers with, its resume
@@ -511,7 +513,7 @@ func newLoopSessions(cfg runConfig, lg *log.Logger, nonce int64, b sessionBus, r
 		concurrent:    newCollector[float64](1 << 10),
 	}
 	for _, ep := range cfg.loopListeners {
-		lp.listeners = append(lp.listeners, newLoopListener(ep, cfg.ep.listenerToken))
+		lp.listeners = append(lp.listeners, newLoopListener(ep, cfg.ep))
 	}
 	return lp
 }

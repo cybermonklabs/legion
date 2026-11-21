@@ -216,20 +216,16 @@ func (c *Client) presentsIdentity() bool {
 	return c.identity != nil
 }
 
-// authorize sets the bearer a call presents: Dispatch's identity token (listenerIdentity), or the
-// shared token, or none; the shared token alone when shared is set (do's fallback). A failure is
-// ErrAccountToken, and the call is not made.
-func (c *Client) authorize(request *http.Request, shared bool) error {
-	if c.identity != nil && !shared {
-		token, err := c.identity.token(request.Context(), time.Now())
-		if err != nil {
-			return err
-		}
-		request.Header.Set("Authorization", "Bearer "+token)
+// authorize sets the bearer a call presents: Dispatch's identity token (listenerIdentity), or none
+// for a client with no identity. A failure is ErrAccountToken, and the call is not made.
+func (c *Client) authorize(request *http.Request) error {
+	if c.identity == nil {
 		return nil
 	}
-	if c.apiToken != "" {
-		request.Header.Set("Authorization", "Bearer "+c.apiToken)
+	token, err := c.identity.token(request.Context(), time.Now())
+	if err != nil {
+		return err
 	}
+	request.Header.Set("Authorization", "Bearer "+token)
 	return nil
 }

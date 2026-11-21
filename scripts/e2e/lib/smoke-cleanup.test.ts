@@ -133,7 +133,7 @@ const guard4b = nameMissingHelpers(stage4bScript, rig, workflowLib);
 const guard3 = nameMissingHelpers(stage3Script, rig, workflowLib);
 const libs = `. "$root/scripts/e2e/lib/rig.sh"
 . "$root/scripts/e2e/lib/workflow.sh"
-stop_tree() { :; }; stop_pid() { :; }; run_processes() { :; }; stop_marked_processes() { :; }
+stop_tree() { :; }; stop_pid() { :; }; run_processes() { :; }; stop_marked_processes() { :; }; dispatch_identity_stop() { :; }
 proof_human='sjawhar-agent[bot]'`;
 
 // Stage 4b's driver from the start of `done`'s checkpoint: tree 1 merged, the proof human

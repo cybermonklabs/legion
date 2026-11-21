@@ -17,12 +17,17 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// Client is one listener: its base URL, the bearer a call sends when it is not empty, and the HTTP
-// client whose timeout bounds each call.
+// Client is one listener: its base URL, the bearer a call presents, and the HTTP client whose
+// timeout bounds each call. Bearer is asked at every call, never once for the client, because the
+// harness's bearer is a platform identity token in a file its writer replaces before it expires (a
+// projected service-account token the kubelet rotates, a Google identity token a loop on the
+// machine renews): a call presents what the file holds when the call is made. A nil Bearer, or an
+// empty answer, sends no Authorization header, which a loopback listener with no credential
+// takes. An error of Bearer refuses the call before anything is sent.
 type Client struct {
-	URL   string
-	Token string
-	HTTP  *http.Client
+	URL    string
+	Bearer func() (string, error)
+	HTTP   *http.Client
 }
 
 // Refusal is an answer outside 2xx: the URL of the route that refused, the status and what the
@@ -86,7 +91,9 @@ func (c *Client) Sessions(ctx context.Context) (int, []byte, error) {
 		return 0, nil, err
 	}
 	request.Header.Set("Accept", "application/json")
-	c.authorize(request)
+	if err := c.authorize(request); err != nil {
+		return 0, nil, err
+	}
 	response, err := c.HTTP.Do(request)
 	if err != nil {
 		return 0, nil, err
@@ -108,7 +115,9 @@ func (c *Client) post(ctx context.Context, path string, body any) ([]byte, error
 		return nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	c.authorize(request)
+	if err := c.authorize(request); err != nil {
+		return nil, err
+	}
 	response, err := c.HTTP.Do(request)
 	if err != nil {
 		return nil, err
@@ -121,12 +130,20 @@ func (c *Client) post(ctx context.Context, path string, body any) ([]byte, error
 	return answer, nil
 }
 
-// authorize sets the request's bearer when the client holds one, and no Authorization header when
-// it holds none: every call of the client goes through it, so each route sends the same.
-func (c *Client) authorize(request *http.Request) {
-	if c.Token != "" {
-		request.Header.Set("Authorization", "Bearer "+c.Token)
+// authorize sets the request's bearer to what Bearer answers now, and no Authorization header when
+// it answers none: every call of the client goes through it, so each route sends the same.
+func (c *Client) authorize(request *http.Request) error {
+	if c.Bearer == nil {
+		return nil
 	}
+	token, err := c.Bearer()
+	if err != nil {
+		return err
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	return nil
 }
 
 // truncate is b cut to its first 300 bytes, marked as cut, as the harness's log lines cut an

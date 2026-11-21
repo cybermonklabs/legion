@@ -96,7 +96,6 @@ export class Omp {
       DISPATCH_URL: rig.dispatchUrl,
       ENVOY_MACHINE_ID: "legion-e2e-session-settings",
       ENVOY_NATS_URL: rig.natsUrl,
-      ENVOY_TOKEN_FILE: rig.envoyTokenFile,
       ENVOY_URL: rig.envoyUrl,
       HOME: rig.home,
       // The run's mark, which the rig's teardown checks a pid for before it signals it (stop_omp,

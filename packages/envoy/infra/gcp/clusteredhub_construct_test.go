@@ -59,10 +59,13 @@ func clusteredPlainInputs() map[string]property.Value {
 			"tags":           stringArray("tag:envoy-hub-host"),
 			"tailscaleImage": property.New(tailscaleImage),
 			"listener": property.New(property.NewMap(map[string]property.Value{
-				"image":          property.New(listenerImage),
-				"nkey":           property.New(keyListener),
-				"seedSecretName": property.New("envoy-hub-listener-seed"),
-				"seedSecretKey":  property.New("seed"),
+				"image":           property.New(listenerImage),
+				"nkey":            property.New(keyListener),
+				"seedSecretName":  property.New("envoy-hub-listener-seed"),
+				"seedSecretKey":   property.New("seed"),
+				"agentSecretsUrl": property.New(clusteredBrokerURL),
+				"publicUrl":       property.New(clusteredListenerOrigin),
+				"brokerAudience":  property.New(clusteredBrokerAudience),
 			})),
 		})),
 	}

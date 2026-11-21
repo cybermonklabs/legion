@@ -563,10 +563,10 @@ func (s *serverChangeSoak) publish(message *soakMessage) {
 	}
 }
 
-// call sends one request to a listener's /v1 as the test's shared-token caller, bounded by timeout,
-// and returns its status and body, or the transport error. Unlike callListener it fails no test, so
-// the senders, the heartbeat and the sweeper call it from their own goroutines and count a failure
-// as an outcome.
+// call sends one request to a listener's /v1 with no credential, as a loopback listener serves it,
+// bounded by timeout, and returns its status and body, or the transport error. Unlike callListener
+// it fails no test, so the senders, the heartbeat and the sweeper call it from their own goroutines
+// and count a failure as an outcome.
 func (s *serverChangeSoak) call(port int, method, path string, body any, timeout time.Duration) (int, []byte, error) {
 	var reader io.Reader
 	if body != nil {
@@ -582,7 +582,6 @@ func (s *serverChangeSoak) call(port int, method, path string, body any, timeout
 	if err != nil {
 		return 0, nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+listenerTestToken)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

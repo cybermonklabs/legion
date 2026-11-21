@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,49 +25,40 @@ import (
 
 const bearerPrefix = "Bearer "
 
-// EnvV1OpenWithTokenChecks keeps /v1 open to a request that presents no credential on a
-// listener that has a token check (the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair or the Google
-// pair): a token that is presented is still verified and refused when it does not verify, and a
-// verified one is admitted as itself, but a request that presents none is served as the open
-// listener serves it, at a Host it serves (ENVOY_ALLOWED_HOSTS). It is how a listener whose
-// callers have not all moved to a credential yet learns a caller's principal without narrowing
-// the ones that have not: a private hub's tailnet-only session listener sets it, so Dispatch's
-// readiness route knows Dispatch's own account while every credential-less tailnet session is
-// served as before, until the open /v1 itself is removed, and this setting with it. Its one value
-// is "true".
-const EnvV1OpenWithTokenChecks = "ENVOY_V1_OPEN_WITH_TOKEN_CHECKS"
-
 // The credential label of envoy_listener_requests_total: which credential admitted a request.
-// none is the open /v1, which admits a request that presents no credential it knows.
+// none is the open /v1, which only a listener on loopback serves (requiresCredential), admitting a
+// request that presents no credential it knows, and none_broker_token is that open /v1 admitting a
+// request that presents a broker token on a listener that takes none (brokers is nil), so serves it
+// unverified: the series counts it apart from a bare request, since a caller that already holds a
+// broker token is served as one only once its listener takes that credential.
 const (
-	credentialSharedToken = "shared_token"
-	credentialNone        = "none"
-	credentialOIDC        = "oidc"
-	credentialGoogle      = "google"
-	credentialBroker      = "broker"
+	credentialNone            = "none"
+	credentialNoneBrokerToken = "none_broker_token"
+	credentialOIDC            = "oidc"
+	credentialGoogle          = "google"
+	credentialBroker          = "broker"
 )
 
-// The warnings an admission on one of the two credentials the shared token's removal waits on
-// logs, and how often each logs at most (admissionWarnings).
+// The warnings an admission on one of the credentials that name no caller logs, and how often each
+// logs at most (admissionWarnings).
 const (
-	sharedTokenAdmittedMessage = "listener: request admitted on the shared token"
-	openAdmittedMessage        = "listener: request admitted with no credential"
-	admissionWarnEvery         = time.Minute
+	openAdmittedMessage             = "listener: request admitted with no credential"
+	unverifiedBrokerAdmittedMessage = "listener: request admitted with a broker token this listener does not verify"
+	admissionWarnEvery              = time.Minute
 )
 
-// newListenerRequests registers envoy_listener_requests_total, the census the removal of the
-// shared token and of the open /v1 is gated on: both credential="shared_token" and
-// credential="none" must read zero on every deployed listener for 72 hours before they go.
+// newListenerRequests registers envoy_listener_requests_total, the census of which credential
+// admitted each /v1 request. Its none and none_broker_token series count the callers a loopback
+// listener's open /v1 serves with no credential it verifies; every listener off loopback reads
+// zero on both, since its /v1 is closed to such a caller.
 func newListenerRequests(met *metrics.Registry) *metrics.Counter {
 	return met.NewCounter("envoy_listener_requests_total",
-		"Requests /v1 admitted, by the credential that admitted each (shared_token, none, oidc, google, broker) and the route it reached")
+		"Requests /v1 admitted, by the credential that admitted each (none, none_broker_token, oidc, google, broker) and the route it reached")
 }
 
 // listenerAPIAuth is everything apiAuth admits a /v1 caller with, and where it records each caller
 // it admits.
 type listenerAPIAuth struct {
-	// token is ENVOY_API_TOKEN, the shared bearer; empty takes none.
-	token string
 	// verifier is the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair's, nil when the pair is unset.
 	verifier *oidc.Verifier
 	// accounts is ENVOY_OIDC_ACCOUNTS, the subjects the projected-token branch admits. Empty admits
@@ -78,6 +68,10 @@ type listenerAPIAuth struct {
 	google *googleIdentities
 	// brokers takes access tokens the secrets broker issued; nil on a listener that takes none.
 	brokers *brokerTokens
+	// offLoopback is whether the listener binds an address other than loopback: main sets it from
+	// config.Service.ListenHost, which with ENVOY_LISTEN_FD is the inherited socket's own address.
+	// Off loopback /v1 is closed to a caller that presents no credential (requiresCredential).
+	offLoopback bool
 	// allowedHosts is ENVOY_ALLOWED_HOSTS, the names an open /v1 serves beside loopback.
 	allowedHosts []string
 	// logger takes every refusal and every warned admission; apiAuth refuses an auth without one.
@@ -87,32 +81,50 @@ type listenerAPIAuth struct {
 	// route names the route a request reaches, the counter's path label (startingGate.route);
 	// nil names the pattern the request was routed by (http.Request.Pattern).
 	route func(*http.Request) string
-	// openWithTokenChecks is EnvV1OpenWithTokenChecks: /v1 stays open to a request that presents
-	// no credential although the listener has a token check. validateListenerAPIAuth refuses it
-	// on a listener with no token check, where /v1 is open anyway.
-	openWithTokenChecks bool
 	// now is the clock the once-a-minute warnings read; nil is time.Now.
 	now func() time.Time
 }
 
-// resolveListenerV1OpenWithTokenChecks reads EnvV1OpenWithTokenChecks: unset is off, "true" is on,
-// and any other value is a refusal naming the variable, so a misspelling stops the start rather
-// than closing /v1 to the callers it was meant to keep.
-func resolveListenerV1OpenWithTokenChecks(getenv func(string) string) (bool, error) {
-	switch value := strings.TrimSpace(getenv(EnvV1OpenWithTokenChecks)); value {
-	case "":
-		return false, nil
-	case "true":
-		return true, nil
-	default:
-		return false, fmt.Errorf("%s=%q: its one value is true, which keeps /v1 open to a caller that presents no credential beside the token check", EnvV1OpenWithTokenChecks, value)
-	}
+// requiresCredential reports whether /v1 is closed to a caller that presents no credential: on a
+// listener off loopback, whatever it takes, and on loopback once it takes one of the two bearers, a
+// projected service-account token or a Google identity token. A loopback listener with neither is
+// the one open /v1 left: it serves a caller with no credential, and with its broker settings it
+// still verifies a broker token that is presented. Off loopback the broker settings are a
+// credential like the bearers (validateListenerAPIAuth counts them), so the clustered session
+// listener, whose only credential they are, answers a request that presents nothing 401.
+func (a listenerAPIAuth) requiresCredential() bool {
+	return a.offLoopback || a.verifier != nil || a.google != nil
 }
 
-// requiresBearer reports whether /v1 takes a bearer, which is what closes it to a caller that
-// presents none.
-func (a listenerAPIAuth) requiresBearer() bool {
-	return a.token != "" || a.verifier != nil || a.google != nil
+// listenerCredentials names the three credentials a listener verifies, for the refusals that tell
+// an operator what to set: the two identity-token pairs a caller's platform identity is checked
+// against, and the broker settings a session's broker token is checked with.
+const listenerCredentials = "the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair, the ENVOY_OIDC_GOOGLE_AUDIENCE/ENVOY_OIDC_GOOGLE_ACCOUNTS pair, or the broker settings (" +
+	EnvBrokerURL + " with " + EnvBrokerAccountTokenFile + " or " + EnvBrokerGoogleAudience + ", and " + EnvPublicURL + ")"
+
+// refuseRemovedAPISettings refuses the three settings the shared token's removal ended, each when
+// it is set to anything at all, naming it and what replaces it. ENVOY_API_TOKEN was the shared
+// bearer: a caller now presents a broker token or a platform identity token, which the listener
+// verifies, and a loopback listener needs neither. ENVOY_API_ALLOW_UNAUTHENTICATED opened /v1 off
+// loopback, and ENVOY_V1_OPEN_WITH_TOKEN_CHECKS kept /v1 open to a caller with no credential
+// beside a token check: the open /v1 is now a loopback listener's alone. A listener that read any
+// of them as before would serve callers its deployment meant to fence, or turn away callers it
+// meant to serve, so each refuses the start rather than being ignored. Set empty, as a render
+// writes a variable it no longer fills, each is unset.
+func refuseRemovedAPISettings(getenv func(string) string) error {
+	var refusals []error
+	if getenv("ENVOY_API_TOKEN") != "" {
+		refusals = append(refusals, fmt.Errorf("ENVOY_API_TOKEN is set, and the listener takes no shared token; unset it. "+
+			"A caller presents a broker token or a platform identity token in its place, which this listener verifies with %s; "+
+			"a listener on loopback needs none of them", listenerCredentials))
+	}
+	for _, open := range []string{"ENVOY_API_ALLOW_UNAUTHENTICATED", "ENVOY_V1_OPEN_WITH_TOKEN_CHECKS"} {
+		if getenv(open) != "" {
+			refusals = append(refusals, fmt.Errorf("%s is set, and /v1 serves a caller with no credential only on loopback; unset it. "+
+				"Bind ENVOY_LISTEN_HOST to loopback for a listener that serves such callers, or set %s for one off loopback", open, listenerCredentials))
+		}
+	}
+	return errors.Join(refusals...)
 }
 
 // googleIdentities admits a caller by its own Google identity token, the credential of a caller
@@ -198,11 +210,11 @@ func identityRefusal(err error, reason string) error {
 // reached no verdict on, because the issuer's discovery or key set could not be read
 // (oidc.ErrIssuerUnavailable), is the 503 with Retry-After: 1 a broker token the broker could not
 // check gets (refuseBrokerToken): the listener could not run the check, which is its own failure
-// rather than the token's. A 401 would tell Dispatch's client its account token was refused, and
-// that client makes a refused call again on the shared token with no role mark (cmd/dispatch's
-// listener client), so an issuer outage would send Dispatch's role-route messages unmarked, where
-// no takeover copies them for the role's next holder. Every other outcome is the 401 every other
-// refused credential gets here.
+// rather than the token's. A 401 would tell Dispatch's client its account token was refused: it
+// tries the call once more on a fresh token and then ends the call with that refusal
+// (cmd/dispatch's listener client), so an issuer outage would fail Dispatch's sends for good,
+// role-route messages among them, where a 503 leaves each to be retried. Every other outcome is
+// the 401 every other refused credential gets here.
 func refuseIdentityToken(w http.ResponseWriter, err error) {
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
 		w.Header().Set("Retry-After", "1")
@@ -219,8 +231,8 @@ type verifiedPrincipalKey struct{}
 
 // withVerifiedPrincipal carries the principal an identity token proved to every handler behind
 // apiAuth: the subject of a projected service-account token, or the account a Google identity
-// token names. No other credential proves one: the shared token is any holder's, a broker token
-// names a session (brokerCaller), and a request with no credential names nobody.
+// token names. No other credential proves one: a broker token names a session (brokerCaller), and
+// a request with no credential names nobody.
 func withVerifiedPrincipal(ctx context.Context, principal string) context.Context {
 	return context.WithValue(ctx, verifiedPrincipalKey{}, principal)
 }
@@ -232,11 +244,12 @@ func verifiedPrincipal(r *http.Request) string {
 	return principal
 }
 
-// admissionWarnings logs an admission on the shared token or on no credential at all once a
-// minute for each, naming the route and the caller's address, so an operator can find the callers
-// envoy_listener_requests_total counts there before those two credentials go. Each line says how
-// many admissions of its credential it held back since the last line. The other credentials stay
-// out of the log: they are the ones a caller is meant to hold.
+// admissionWarnings logs an admission on no credential at all, or on a broker token this listener
+// serves unverified, once a minute for each, naming the route and the caller's address, so an
+// operator can find the callers envoy_listener_requests_total counts under none and
+// none_broker_token, which only a loopback listener's open /v1 admits. Each line says how many
+// admissions of its credential it held back since the last line. The other credentials stay out of
+// the log: they are the ones a caller is meant to hold.
 type admissionWarnings struct {
 	now func() time.Time
 	mu  sync.Mutex
@@ -256,10 +269,10 @@ func newAdmissionWarnings(now func() time.Time) *admissionWarnings {
 func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path string, r *http.Request) {
 	var message string
 	switch credential {
-	case credentialSharedToken:
-		message = sharedTokenAdmittedMessage
 	case credentialNone:
 		message = openAdmittedMessage
+	case credentialNoneBrokerToken:
+		message = unverifiedBrokerAdmittedMessage
 	default:
 		return
 	}
@@ -280,17 +293,19 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 		slog.Int("held", held))
 }
 
-// apiAuth requires JSON bodies for /v1, then authenticates it with the shared ENVOY_API_TOKEN
-// bearer, with an access token the secrets broker issued when one is presented under the DPoP
-// scheme (brokers, brokerauth.go), when a verifier is configured with a projected service-account
-// token issued to its issuer and audience, of a subject ENVOY_OIDC_ACCOUNTS lists when it lists
-// any, and when Google identities are configured with a Google identity token of a listed account
-// (googleIdentities). Exempt paths pass in every configuration; /v1 is open only when no bearer
-// kind is configured, so an empty shared token beside a configured verifier requires a token
-// rather than opening the tree. An open /v1 serves only a request whose Host names this listener
-// (servesHost: a loopback name or address, or one of allowedHosts), so a page that rebinds its own
-// name to an address reaching the listener cannot use it; a listener that requires a bearer
-// checks no Host, since such a page holds no bearer. A bearer the verifier rejects is answered
+// apiAuth requires JSON bodies for /v1, then authenticates it with an access token the secrets
+// broker issued when one is presented under the DPoP scheme (brokers, brokerauth.go), when a
+// verifier is configured with a projected service-account token issued to its issuer and audience,
+// of a subject ENVOY_OIDC_ACCOUNTS lists when it lists any, and when Google identities are
+// configured with a Google identity token of a listed account (googleIdentities). It takes no
+// shared token: ENVOY_API_TOKEN refuses the listener's start (refuseRemovedAPISettings). Exempt
+// paths pass in every configuration. /v1 is open, serving a request that presents no credential,
+// only on a listener bound to loopback that takes neither bearer (requiresCredential); off loopback
+// it is closed whatever the listener takes, so a listener whose only credential is its broker
+// settings answers a request that presents nothing 401. An open /v1 serves only a request whose
+// Host names this listener (servesHost: a loopback name or address, or one of allowedHosts), so a
+// page that rebinds its own name to an address reaching the listener cannot use it; a closed /v1
+// checks no Host, since such a page holds no credential. A bearer the verifier rejects is answered
 // 401 and never falls back to another authentication path; the failure class goes to the log and
 // never to the caller, since naming it would tell an unauthenticated client which credential the
 // listener is configured for.
@@ -302,50 +317,38 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // no token is judged twice.
 //
 // Every request it admits is counted in envoy_listener_requests_total under the credential that
-// admitted it and the route it reached (route), and an admission on the shared token or on none
-// at all also logs a warning once a minute (admissionWarnings): those two are what the removal of
-// the shared token and of the open /v1 is gated on. A request admitted on an identity token
-// carries the principal that token proved to the handler (withVerifiedPrincipal, verifiedPrincipal),
-// which is how the send route tells Dispatch's own sends from every other caller's.
+// admitted it and the route it reached (route), and an admission on no credential at all or on a
+// broker token this listener does not verify also logs a warning once a minute
+// (admissionWarnings): those two are the callers a loopback listener's open /v1 serves with no
+// credential it verifies. A request admitted on an identity token carries the principal that token
+// proved to the handler (withVerifiedPrincipal, verifiedPrincipal), which is how the send route
+// tells Dispatch's own sends from every other caller's.
 //
 // The broker-token branch is taken only on a listener that takes this credential (brokers is
 // nil on one that does not), and there the scheme alone decides it, before every bearer one:
 // RFC 9449 Section 7.2 refuses a DPoP-bound token presented under any other scheme, so a DPoP
 // presentation is this credential whatever the listener's other settings are, and is never
 // retried as a bearer. It comes before the open pass-through too, which is what binds a session
-// on an open listener: a caller that presents a broker token is held to the session it names
-// even where /v1 would have served the request with no credential at all.
+// on an open loopback listener: a caller that presents a broker token is held to the session it
+// names even where /v1 would have served the request with no credential at all.
 //
 // A listener with none of the broker variables set reads that header as it read every
-// Authorization header it did not know before this credential existed: the open listener serves
-// the request, and a listener that requires a bearer answers it the same 401 it always did.
-// That is what keeps the no-bearer listeners the GCP VMs and the clustered hub run serving the
-// clients that hold a broker route of their own. A VM's listener is on loopback, and the clustered
-// hub's tailnet-only listener (a tailnet.listener with no clientNamespaces) serves off loopback
-// behind its NetworkPolicy; neither takes a bearer. A clustered hub listener that pods of the
-// cluster reach takes the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair, so a caller that presents
-// only DPoP gets its 401 there unless the listener also takes broker tokens, as a private hub's
-// session listener does, whose release enforces the private required mode on those callers
-// (infra/gcp's privateModeListenerFloor). A client sends Authorization: DPoP whenever it has a
-// broker and an identity to trade and no Envoy bearer is set, whatever the listener it is calling
-// takes.
+// Authorization header it did not know before this credential existed: the open loopback listener
+// serves the request, and a closed listener answers it the same 401 it answers every credential it
+// does not take. A client sends Authorization: DPoP whenever it has a broker and an identity to
+// trade and no Envoy bearer is set, whatever the listener it is calling takes. The open listener
+// counts such a request as none_broker_token rather than none, so the census sees which of its
+// callers already present a broker token it does not verify; the listeners that serve such
+// clients off loopback, the clustered session listener among them, take the broker settings and
+// verify it. A private hub's session listener's release enforces the private required mode on the
+// callers whose broker token it verifies (infra/gcp's privateModeListenerFloor).
 //
-// Configuring it opens nothing and closes nothing. A request presenting no token is judged
-// exactly as it was before this credential existed — the open listener still serves it, the Host
-// and Content-Type fences still apply, and validateListenerAPIAuth still refuses a non-loopback
-// listener with no bearer and no ENVOY_API_ALLOW_UNAUTHENTICATED — because a broker token is a
-// credential a caller may hold rather than one this listener can require: every client of /v1
-// that holds none would be locked out by a setting whose purpose is to tell callers apart.
-//
-// With openWithTokenChecks (EnvV1OpenWithTokenChecks) a listener that has a token check keeps /v1
-// open to a request that presents no credential it can verify: a DPoP broker token and a
-// JWT-shaped bearer are judged as above, and refused when they do not verify, but a request that
-// presents neither — no Authorization header, or a bearer that is no JWT and not the shared token
-// (an Envoy bearer this listener does not hold) — reaches the open pass-through, after every
-// credential branch, under the same Host fence the open listener applies and counted as none. So
-// a caller that proves its principal is admitted as itself, and one that proves nothing is served
-// as it was before the token check existed, with no principal (verifiedPrincipal and brokerCaller
-// name nobody), which a listener in the private required mode answers with no private project.
+// On loopback the broker settings open nothing and close nothing. A request presenting no token is
+// judged exactly as it was before this credential existed — the open listener still serves it, and
+// the Host and Content-Type fences still apply — because there a broker token is a credential a
+// caller may hold rather than one this listener requires. Off loopback the broker settings are the
+// credential the listener requires, as either bearer is: validateListenerAPIAuth counts them, and a
+// request that presents nothing is refused.
 //
 // An auth without its logger, or with Google identities that carry no verifier, is a programming
 // error, refused here at construction rather than at the first request that would reach either:
@@ -358,7 +361,7 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 	if auth.google != nil && auth.google.verifier == nil {
 		panic("listener API auth built with Google identities but no verifier for them")
 	}
-	open := !auth.requiresBearer()
+	open := !auth.requiresCredential()
 	warnings := newAdmissionWarnings(auth.now)
 	admit := func(w http.ResponseWriter, r *http.Request, credential string) {
 		path := r.Pattern
@@ -399,19 +402,15 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			return
 		}
 		if open {
+			if _, presented := ciphertoken.Presented(r); presented {
+				admit(w, r, credentialNoneBrokerToken)
+				return
+			}
 			admit(w, r, credentialNone)
 			return
 		}
 
 		authorization := r.Header.Get("Authorization")
-		if auth.token != "" && subtle.ConstantTimeCompare(
-			[]byte(authorization),
-			[]byte(bearerPrefix+auth.token),
-		) == 1 {
-			admit(w, r, credentialSharedToken)
-			return
-		}
-
 		if raw, ok := strings.CutPrefix(authorization, bearerPrefix); ok && oidc.LooksLikeJWT(raw) {
 			switch {
 			case auth.google != nil && (auth.verifier == nil || auth.google.verifier.Issues(raw)):
@@ -433,18 +432,6 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			}
 		}
 
-		if auth.openWithTokenChecks {
-			if !servesHost(r.Host, auth.allowedHosts) {
-				auth.logger.Warn("listener: request for a host it does not serve",
-					slog.String("host", r.Host),
-					slog.String("path", r.URL.Path))
-				writeJSONError(w, http.StatusMisdirectedRequest,
-					fmt.Sprintf("request Host %q is not a host this listener serves; a request with no credential is served at loopback and the names in ENVOY_ALLOWED_HOSTS", r.Host))
-				return
-			}
-			admit(w, r, credentialNone)
-			return
-		}
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	})
 }
@@ -676,17 +663,14 @@ func splitAccountList(setting, value string) ([]string, error) {
 	return entries, nil
 }
 
-// describeListenerAPIAuth names the credentials /v1 accepts, for the boot log: the shared token,
-// the projected-token issuer with the subjects ENVOY_OIDC_ACCOUNTS holds it to, the Google
-// audience with its accounts, and the broker. Broker tokens are named beside the bearers, and an
-// operator reading the line beside the `listener API hosts:` one below gets the whole picture: a
-// listener that accepts only broker tokens still serves /v1 with no credential, since that
-// credential says who is calling rather than whether they may.
+// describeListenerAPIAuth names the credentials /v1 accepts, for the boot log: the projected-token
+// issuer with the subjects ENVOY_OIDC_ACCOUNTS holds it to, the Google audience with its accounts,
+// and the broker. Broker tokens are named beside the bearers, and an operator reading the line
+// beside the `listener API hosts:` one below gets the whole picture: a loopback listener that
+// accepts only broker tokens still serves /v1 with no credential, since there that credential says
+// who is calling rather than whether they may, while off loopback it is the credential required.
 func describeListenerAPIAuth(auth listenerAPIAuth, issuer string) string {
-	named := make([]string, 0, 4)
-	if auth.token != "" {
-		named = append(named, "shared token")
-	}
+	named := make([]string, 0, 3)
 	if issuer != "" {
 		described := "oidc " + issuer
 		if len(auth.accounts) > 0 {
@@ -703,30 +687,18 @@ func describeListenerAPIAuth(auth listenerAPIAuth, issuer string) string {
 	if len(named) == 0 {
 		return "disabled"
 	}
-	described := strings.Join(named, " and ")
-	if auth.openWithTokenChecks {
-		described += ", and none (" + EnvV1OpenWithTokenChecks + ")"
-	}
-	return described
+	return strings.Join(named, " and ")
 }
 
 // describeListenerAPIHosts names the Hosts /v1 is served to, for the boot log: any Host when a
-// bearer is required, loopback and ENVOY_ALLOWED_HOSTS otherwise. A list set beside a bearer is
-// said to be unused rather than left to look as if it applied. With openWithTokenChecks a request
-// with a verified credential is served at any Host and one with none at loopback and the list.
+// credential is required (requiresCredential), loopback and ENVOY_ALLOWED_HOSTS otherwise. A list
+// set beside a required credential is said to be unused rather than left to look as if it applied.
 func describeListenerAPIHosts(auth listenerAPIAuth) string {
-	if auth.openWithTokenChecks {
-		hosts := "loopback"
+	if auth.requiresCredential() {
 		if len(auth.allowedHosts) > 0 {
-			hosts += ", " + strings.Join(auth.allowedHosts, ", ")
+			return "any (a credential is required, so ENVOY_ALLOWED_HOSTS is unused)"
 		}
-		return "any with a credential; " + hosts + " with none (" + EnvV1OpenWithTokenChecks + ")"
-	}
-	if auth.requiresBearer() {
-		if len(auth.allowedHosts) > 0 {
-			return "any (a bearer is required, so ENVOY_ALLOWED_HOSTS is unused)"
-		}
-		return "any (a bearer is required)"
+		return "any (a credential is required)"
 	}
 	if len(auth.allowedHosts) == 0 {
 		return "loopback"
@@ -734,37 +706,28 @@ func describeListenerAPIHosts(auth listenerAPIAuth) string {
 	return "loopback, " + strings.Join(auth.allowedHosts, ", ")
 }
 
-// validateListenerAPIAuth refuses a listener that would serve /v1 with no credential on an address
-// other than loopback. It judges cfg.ListenHost, which with ENVOY_LISTEN_FD is the inherited
-// socket's own address, so a socket on every interface is refused as ENVOY_LISTEN_HOST=0.0.0.0 is.
+// validateListenerAPIAuth refuses a listener on an address other than loopback that takes none of
+// the three credentials it verifies (listenerCredentials): the OIDC pair, the Google pair, or the
+// broker settings, which off loopback are a credential like either bearer. Off loopback /v1 is
+// closed to a caller that presents no credential (requiresCredential), so such a listener would
+// admit nobody. It judges cfg.ListenHost, which with ENVOY_LISTEN_FD is the inherited socket's own
+// address, so a socket on every interface is refused as ENVOY_LISTEN_HOST=0.0.0.0 is; main judges
+// the same address into listenerAPIAuth.offLoopback.
 //
-// ENVOY_API_ALLOW_UNAUTHENTICATED=1 passes such a listener, and it is how an operator states that
-// something else fences the port. The clustered hub's tailnet-only session listener (a
-// tailnet.listener with no clientNamespaces) is the one deployment here that sets it: it binds
-// 0.0.0.0 in a pod of its own, and its NetworkPolicy admits TCP 9020 from the tailnet entry's pods
-// alone (infra/gcp/clusteredhub_listener.go). On a private hub the same listener has a token check
-// and sets EnvV1OpenWithTokenChecks in its place. A hub listener that pods of the cluster reach
-// sets the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair and ENVOY_OIDC_ACCOUNTS instead. The flag
-// opens nothing else: an open /v1 still serves only the Hosts servesHost admits, and answers 421
-// to the rest.
-//
-// EnvV1OpenWithTokenChecks on a listener with no token check (neither the ENVOY_OIDC_ISSUER/
-// ENVOY_OIDC_AUDIENCE pair nor the Google pair) is refused: /v1 is open there anyway, so the
-// setting would say a token check exists where none does. Beside one it is the operator's
-// statement, as ENVOY_API_ALLOW_UNAUTHENTICATED=1 is, that the port's fence bounds who reaches
-// the open path.
-func validateListenerAPIAuth(cfg config.Service, auth listenerAPIAuth, allowUnauthenticated string) error {
-	if auth.openWithTokenChecks && auth.verifier == nil && auth.google == nil {
-		return fmt.Errorf("%s=true needs a token check to keep /v1 open beside, the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair or the ENVOY_OIDC_GOOGLE_AUDIENCE/ENVOY_OIDC_GOOGLE_ACCOUNTS pair: without one /v1 is open anyway", EnvV1OpenWithTokenChecks)
-	}
-	if auth.requiresBearer() || allowUnauthenticated == "1" || isLoopbackHost(cfg.ListenHost) {
+// Nothing else passes such a listener: ENVOY_API_ALLOW_UNAUTHENTICATED, which once did, refuses
+// the start (refuseRemovedAPISettings). The clustered hub's session listener, which it opened,
+// takes the broker settings instead, and a hub listener that pods of the cluster reach takes the
+// ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair with ENVOY_OIDC_ACCOUNTS.
+func validateListenerAPIAuth(cfg config.Service, auth listenerAPIAuth) error {
+	if isLoopbackHost(cfg.ListenHost) || auth.verifier != nil || auth.google != nil || auth.brokers != nil {
 		return nil
 	}
 	listen := fmt.Sprintf("ENVOY_LISTEN_HOST=%q is not loopback", cfg.ListenHost)
 	if cfg.ListenSocket != nil {
 		listen = cfg.ListenSocket.String() + ", is not on loopback"
 	}
-	return fmt.Errorf("ENVOY_API_TOKEN, the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair or the ENVOY_OIDC_GOOGLE_AUDIENCE/ENVOY_OIDC_GOOGLE_ACCOUNTS pair is required when %s. Set ENVOY_API_ALLOW_UNAUTHENTICATED=1 only where something else fences the port. The clustered hub's tailnet-only session listener sets it, behind a NetworkPolicy that admits the tailnet entry's pods alone; one that pods of the cluster reach takes the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair with ENVOY_OIDC_ACCOUNTS", listen)
+	return fmt.Errorf("%s is required when %s: off loopback /v1 serves only a caller that presents a credential this listener verifies. "+
+		"Bind ENVOY_LISTEN_HOST to loopback for a listener that serves callers with no credential", listenerCredentials, listen)
 }
 
 func isLoopbackHost(host string) bool {

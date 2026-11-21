@@ -17,13 +17,12 @@ import (
 
 // An identity token the listener reaches no verdict on, because its issuer's key set cannot be
 // read, is answered 503 with Retry-After: 1, and not 401: a 401 is the listener's refusal of
-// Dispatch's identity, which Dispatch's client meets by a second try and then, for a call that
-// carries no role mark, by the shared token, and a send for a role it refused twice fails for good
-// rather than go out unmarked. The real Dispatch client, holding its account token and the shared
-// token, sends a marked message to the role's old holder A after B took the role. With the keys
-// unavailable the send fails as unavailable, to be retried, after one call, and neither A nor B
-// receives a copy. The control is the same send with the keys served: kept for the role, marked,
-// and B receives it.
+// Dispatch's identity, which Dispatch's client meets by one more try on a fresh token and then
+// ends the call with that refusal, so a send for a role the issuer's outage refused would fail for
+// good rather than wait to be retried. The real Dispatch client, holding its account token, sends a
+// marked message to the role's old holder A after B took the role. With the keys unavailable the
+// send fails as unavailable, to be retried, after one call, and neither A nor B receives a copy.
+// The control is the same send with the keys served: kept for the role, marked, and B receives it.
 func TestAnIdentityTokenTheListenerCouldNotCheckIsNoRefusal(t *testing.T) {
 	warm, cold := trailingListeners(t)
 	startListenerDelivery(t, warm)
@@ -44,7 +43,7 @@ func TestAnIdentityTokenTheListenerCouldNotCheckIsNoRefusal(t *testing.T) {
 			}
 			var statuses []int
 			listener := apiAuth(listenerAPIAuth{
-				token: rigSharedToken, verifier: issuer.verifier,
+				verifier: issuer.verifier,
 				accounts: []string{rigDispatchPrincipal},
 				logger:   listenerRigLogger(t, "listener auth "+tag),
 			}, v1Routes(t, cold))
@@ -62,8 +61,7 @@ func TestAnIdentityTokenTheListenerCouldNotCheckIsNoRefusal(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 			client := dispatchenvoy.New(server.URL,
-				dispatchenvoy.WithAccountTokenFile(rig.accountTokenFile(t, issuer.token(t, rigDispatchPrincipal))),
-				dispatchenvoy.WithToken(rigSharedToken))
+				dispatchenvoy.WithAccountTokenFile(rig.accountTokenFile(t, issuer.token(t, rigDispatchPrincipal))))
 
 			a := rig.register(t, "ses_issuer_a_"+tag, "A")
 			rig.claim(t, a.id, role)
@@ -91,7 +89,7 @@ func TestAnIdentityTokenTheListenerCouldNotCheckIsNoRefusal(t *testing.T) {
 				t.Fatalf("the send while the key set cannot be read = %+v, %v; want unavailable, to be retried", result, err)
 			}
 			if len(statuses) != 1 || statuses[0] != http.StatusServiceUnavailable {
-				t.Fatalf("the listener answered the sends %v; want one 503 and no retry on the shared token", statuses)
+				t.Fatalf("the listener answered the sends %v; want one 503 and no second try", statuses)
 			}
 			for _, s := range []*rigSession{a, b} {
 				if frames := received(s, 3*time.Second, text)[text]; len(frames) != 0 {

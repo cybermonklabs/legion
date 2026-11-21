@@ -827,14 +827,40 @@ func newStartingGate(name string, logger *logging.Logger) *startingGate {
 
 func (g *startingGate) open(mux *http.ServeMux) { g.mux.Store(mux) }
 
+// v1RegisteredPatterns is every pattern registerV1Routes registers on the /v1 mux, a fixed set:
+// route answers one of these, or the gate's own /v1 or /v1/, and nothing else, whatever a caller
+// sends. TestTheRouteLabelSetIsEveryV1Route holds it to the patterns registerV1Routes registers, so
+// a route added there without its pattern here fails that test rather than being counted under
+// /v1/.
+var v1RegisteredPatterns = map[string]bool{
+	"/v1":                         true,
+	"/v1/":                        true,
+	"/v1/interests/subscribe":     true,
+	"/v1/interests/unsubscribe":   true,
+	"/v1/interests/":              true,
+	"/v1/roles/set":               true,
+	"/v1/roles/":                  true,
+	"/v1/registry/":               true,
+	"/v1/legion/agents":           true,
+	"/v1/legion/agents/sessions/": true,
+	"/v1/legion/agents/roles/":    true,
+	"/v1/sessions":                true,
+	"/v1/sessions/":               true,
+	"/v1/messages/send":           true,
+	"/v1/messages/publish":        true,
+}
+
 // route names the /v1 route r reaches, envoy_listener_requests_total's path label: once the gate
 // is open, the pattern of the route that serves it ((*http.ServeMux).Handler, which routes as
-// ServeHTTP does and changes nothing on r), and before then, or for a path no route matches, the
-// pattern that routed it to the gate (/v1 or /v1/). It is always a pattern and never the path, so
-// a session id, or any other text a caller writes into a path, never becomes a series of its own.
+// ServeHTTP does and changes nothing on r) when that pattern is one registerV1Routes registers
+// (v1RegisteredPatterns), and otherwise, as before the gate opens or for a path no route matches,
+// the pattern that routed it to the gate (/v1 or /v1/). The set is what keeps the label a pattern:
+// for a CONNECT that needs the trailing-slash redirect, Handler answers the redirect's own path,
+// the caller's text (net/http/server.go, findHandler), so a wildcard route ending in / would put
+// each caller's path, session ids among them, into a series of its own.
 func (g *startingGate) route(r *http.Request) string {
 	if mux := g.mux.Load(); mux != nil {
-		if _, pattern := mux.Handler(r); pattern != "" {
+		if _, pattern := mux.Handler(r); v1RegisteredPatterns[pattern] {
 			return pattern
 		}
 	}
@@ -1011,7 +1037,12 @@ func main() {
 	// meets them.
 	warnIgnoredEnv(logger, "ENVOY_HOST_BRIDGE", "the listener no longer pushes a message to a session's serve port, so it opens no connection this would address")
 	warnIgnoredEnv(logger, "ENVOY_SUBSCRIBE_ALL_TOPICS", "the listener no longer holds a live topics subscription, so there is no such subscription to turn on")
-	apiToken := os.Getenv("ENVOY_API_TOKEN")
+	// The shared token and the two flags that kept /v1 open to a caller with no credential are gone,
+	// and a deployment that still sets any of them refuses the start before any credential is read,
+	// naming what replaces it.
+	if err := refuseRemovedAPISettings(os.Getenv); err != nil {
+		log.Fatal(err)
+	}
 	oidcIssuer, oidcAudience, err := resolveListenerOIDCConfig(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -1052,21 +1083,19 @@ func main() {
 		log.Fatal(err)
 	}
 	brokerTokenAuth := newBrokerTokens(brokerConfig)
-	openWithTokenChecks, err := resolveListenerV1OpenWithTokenChecks(os.Getenv)
-	if err != nil {
-		log.Fatal(err)
-	}
+	// The bind is judged here, from the address that serves (cfg.ListenHost is the inherited
+	// socket's own with ENVOY_LISTEN_FD), by the same rule validateListenerAPIAuth judges it by:
+	// off loopback /v1 is closed to a caller that presents no credential.
 	apiAuthConfig := listenerAPIAuth{
-		token:               apiToken,
-		verifier:            apiVerifier,
-		accounts:            oidcAccounts,
-		google:              googleCallers,
-		brokers:             brokerTokenAuth,
-		allowedHosts:        cfg.AllowedHosts,
-		logger:              logger,
-		openWithTokenChecks: openWithTokenChecks,
+		verifier:     apiVerifier,
+		accounts:     oidcAccounts,
+		google:       googleCallers,
+		brokers:      brokerTokenAuth,
+		offLoopback:  !isLoopbackHost(cfg.ListenHost),
+		allowedHosts: cfg.AllowedHosts,
+		logger:       logger,
 	}
-	if err := validateListenerAPIAuth(cfg, apiAuthConfig, os.Getenv("ENVOY_API_ALLOW_UNAUTHENTICATED")); err != nil {
+	if err := validateListenerAPIAuth(cfg, apiAuthConfig); err != nil {
 		log.Fatal(err)
 	}
 	logger.Info("listener API auth: " + describeListenerAPIAuth(apiAuthConfig, oidcIssuer))

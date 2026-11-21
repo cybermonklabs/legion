@@ -19,21 +19,34 @@ services:
       start_period: 5s
     environment:
       PORT: ${ENVOY_LISTENER_PORT:-9020}
+      # Host networking, so this is an address of the host itself. On loopback, the default, the
+      # listener serves the host's own sessions with no credential while neither pair below is
+      # set. Any other address (the tailnet's, say) starts only with a credential the listener
+      # verifies, a pair or the broker settings below, and otherwise refuses to start; the shared
+      # token that once stood in for one is gone.
       ENVOY_LISTEN_HOST: ${ENVOY_LISTEN_HOST:-127.0.0.1}
-      ENVOY_API_TOKEN: ${ENVOY_API_TOKEN:-}
       # Dispatch's identity, which this listener takes a send's role mark from alone
       # (ENVOY_DISPATCH_PRINCIPAL): the verifier of a service-account token (the OIDC pair) or of a
       # Google identity token (the Google pair), and the principal. A listener Dispatch sends role
       # routes through sets one pair and the principal (deploy/README.md, "Dispatch's identity at
-      # the Envoy listener"); one no Dispatch calls leaves them empty. Setting a pair closes /v1 to
-      # every caller with no bearer, the host's own sessions included: set ENVOY_API_TOKEN with it
-      # and give those sessions that token (ENVOY_TOKEN, or envoy.token in their envoy.json).
+      # the Envoy listener"); one no Dispatch calls leaves them empty. A pair closes /v1, on
+      # loopback too, to every caller that presents no token this listener verifies, the host's
+      # own sessions included: set the broker settings below with it, and those sessions reach it
+      # on their machine's broker credential.
       ENVOY_OIDC_ISSUER: ${ENVOY_OIDC_ISSUER:-}
       ENVOY_OIDC_AUDIENCE: ${ENVOY_OIDC_AUDIENCE:-}
       ENVOY_OIDC_ACCOUNTS: ${ENVOY_OIDC_ACCOUNTS:-}
       ENVOY_OIDC_GOOGLE_AUDIENCE: ${ENVOY_OIDC_GOOGLE_AUDIENCE:-}
       ENVOY_OIDC_GOOGLE_ACCOUNTS: ${ENVOY_OIDC_GOOGLE_ACCOUNTS:-}
       ENVOY_DISPATCH_PRINCIPAL: ${ENVOY_DISPATCH_PRINCIPAL:-}
+      # The secrets broker this listener verifies a session's broker token (DPoP) with: the
+      # broker's URL, this listener's own identity there (the Google audience on a Google Cloud VM,
+      # or the token file mounted below), and the origin its callers reach it at, which each proof
+      # names (cmd/listener/brokerauth.go). Set the URL, one identity and the origin, or none.
+      ENVOY_AGENT_SECRETS_URL: ${ENVOY_AGENT_SECRETS_URL:-}
+      ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE: ${ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE:-}
+      ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE: ${ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE:+/run/envoy-broker/token}
+      ENVOY_PUBLIC_URL: ${ENVOY_PUBLIC_URL:-}
       ENVOY_MACHINE_ID: ${ENVOY_MACHINE_ID}
       NATS_URLS: ${NATS_URLS}
       # This listener owns ENVOY_NOTIFICATIONS on the NATS above, which is the fleet's shared
@@ -47,3 +60,15 @@ services:
       ENVOY_REVIEWER_APP_ID: ${ENVOY_REVIEWER_APP_ID:-}
       ENVOY_SLACK_SIGNING_SECRET: ${ENVOY_SLACK_SIGNING_SECRET:-}
       ENVOY_GHOSTWISPR_SIGNING_SECRET: ${ENVOY_GHOSTWISPR_SIGNING_SECRET:-}
+    volumes:
+      # The token file ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names on the host, when set; /dev/null
+      # otherwise, which the listener does not read. A path that does not exist refuses `up` rather
+      # than becoming an empty directory. A bind of one file keeps the file it found at start, so
+      # the token must be rewritten in place; a writer that replaces it by rename needs the
+      # container restarted.
+      - type: bind
+        source: ${ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE:-/dev/null}
+        target: /run/envoy-broker/token
+        read_only: true
+        bind:
+          create_host_path: false
