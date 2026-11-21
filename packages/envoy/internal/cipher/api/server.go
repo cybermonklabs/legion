@@ -809,7 +809,8 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 type signInStatusResponse struct {
 	// What the last check of the broker's client at its sign-in provider found: "ready" (the
 	// provider accepted the client), "client_rejected" (it refused it, so nobody can sign in)
-	// or "issuer_unreachable" (it could not be asked, which says nothing about the client).
+	// or "issuer_unreachable" (it could not be asked or gave no verdict, which says nothing about
+	// the client).
 	ClientCheck *string `json:"client_check"`
 	// When that check was taken (RFC 3339).
 	ClientCheckedAt *time.Time `json:"client_checked_at"`

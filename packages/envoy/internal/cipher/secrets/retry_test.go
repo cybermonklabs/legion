@@ -246,10 +246,11 @@ func TestMintCallRetriesA503TwiceAndMintsAtTheThird(t *testing.T) {
 	}
 }
 
-// TestMintCallRetriesWhatItsClassifierRetries: the one classifier retries a 5xx and a rate limit,
-// and nothing else: not a 4xx that is no rate limit, an answer of a status the call did not want,
-// or an answer past its size cap. The failure of a call is its last attempt's, naming how many
-// attempts it made; a mint that fails before it calls anything made none.
+// TestMintCallRetriesWhatItsClassifierRetries: the one classifier retries a 5xx, a 408 and a rate
+// limit, and nothing else: not a 4xx that is no rate limit and no 408, an answer of a status the
+// call did not want, or an answer past its size cap. A 408 is a server that timed the request out,
+// an outage, as a 5xx is. The failure of a call is its last attempt's, naming how many attempts it
+// made; a mint that fails before it calls anything made none.
 func TestMintCallRetriesWhatItsClassifierRetries(t *testing.T) {
 	past := reply{status: http.StatusOK, body: "[" + strings.Repeat(" ", 1<<20) + "]"}
 	for _, tc := range []struct {
@@ -261,6 +262,7 @@ func TestMintCallRetriesWhatItsClassifierRetries(t *testing.T) {
 		outcomes []string
 	}{
 		{name: "a 500, then a 201", replies: []reply{installed, answered(http.StatusInternalServerError, nil), tokenMinted}, outcomes: []string{"upstream", "ok"}},
+		{name: "a 408, then a 201", replies: []reply{installed, answered(http.StatusRequestTimeout, nil), tokenMinted}, outcomes: []string{"upstream", "ok"}},
 		{name: "a 502 three times", replies: []reply{installed, answered(http.StatusBadGateway, nil), answered(http.StatusBadGateway, nil), answered(http.StatusBadGateway, nil)}, class: "upstream", attempts: 3, outcomes: []string{"upstream", "upstream", "upstream"}},
 		{name: "a 429 asking a second, then a 201", replies: []reply{installed, answered(http.StatusTooManyRequests, http.Header{"Retry-After": {"1"}}), tokenMinted}, outcomes: []string{"rate_limited", "ok"}},
 		{name: "a 403 that is no rate limit", replies: []reply{installed, reply{status: http.StatusForbidden, body: `{"message":"Resource not accessible by integration"}`}}, class: "refused", attempts: 1, outcomes: []string{"refused"}},

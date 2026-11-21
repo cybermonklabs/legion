@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -84,15 +84,15 @@ func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 	if d.config != nil {
 		return d.config, nil
 	}
-	answered := &statusOf{}
-	provider, err := gooidc.NewProvider(withStatusOf(d.context(ctx), answered), d.Issuer)
-	readErr := answered.readErr()
+	answered := &oauthrefusal.Recorder{}
+	provider, err := gooidc.NewProvider(oauthrefusal.Record(d.context(ctx), answered), d.Issuer)
+	readErr := answered.ReadErr()
 	switch {
 	case err != nil && readErr != nil:
 		return nil, fmt.Errorf("read %s: %w", d.issuer(), redact.Masked(errors.Join(err, readErr), redact.Class(readErr).Error()))
-	case err != nil && answered.status/100 > 2:
-		return nil, fmt.Errorf("read %s: %w", d.issuer(), redact.Masked(err, redact.Answered(answered.status, nil)))
-	case err != nil && answered.status != 0:
+	case err != nil && answered.Status/100 > 2:
+		return nil, fmt.Errorf("read %s: %w", d.issuer(), redact.Masked(err, redact.Answered(answered.Status, nil)))
+	case err != nil && answered.Status != 0:
 		return nil, fmt.Errorf("read %s: its discovery document names another issuer or is not one", d.issuer())
 	case err != nil:
 		return nil, fmt.Errorf("read %s: %w", d.issuer(), redact.Class(err))
@@ -119,88 +119,6 @@ func (d *DeviceFlow) context(ctx context.Context) context.Context {
 		return ctx
 	}
 	return context.WithValue(ctx, oauth2.HTTPClient, d.HTTP)
-}
-
-// withStatusOf is ctx carrying a copy of the client x/oauth2 and go-oidc send their requests
-// with - the one ctx carries (oauth2.HTTPClient), else http.DefaultClient, as every other call
-// of a DeviceFlow resolves it - timeout and all, with its transport wrapped so answered records
-// the status of each answer it carries and how a read of its body failed. A library whose error
-// quotes an answer's body is printed by that status (redact.Answered), or by that read failure's
-// class, instead.
-func withStatusOf(ctx context.Context, answered *statusOf) context.Context {
-	wrapped := *oauth2.NewClient(ctx, nil)
-	answered.base = wrapped.Transport
-	if answered.base == nil {
-		answered.base = http.DefaultTransport
-	}
-	wrapped.Transport = answered
-	return context.WithValue(ctx, oauth2.HTTPClient, &wrapped)
-}
-
-// statusOf is a transport that records what became of the last request it carried, which is all a
-// refusal may say of an answer whose library error quotes its body: the host it went to, the
-// answer's status, or 0 where the request got no answer, so a redirect whose target fails is not
-// read as the redirect; and its body, which records how a read of it failed (readErr), so an
-// answer the client could not read whole is not read as a document it read and refused, and keeps
-// what was read of it (answer) for redact.Answered, which prints a registered code alone. One call
-// at a time uses it.
-type statusOf struct {
-	base   http.RoundTripper
-	host   string
-	status int
-	body   *readOf
-}
-
-func (s *statusOf) RoundTrip(request *http.Request) (*http.Response, error) {
-	response, err := s.base.RoundTrip(request)
-	s.host, s.status, s.body = request.URL.Host, 0, nil
-	if err == nil {
-		s.status = response.StatusCode
-		s.body = &readOf{ReadCloser: response.Body}
-		response.Body = s.body
-	}
-	return response, err
-}
-
-// readErr is the first error other than io.EOF a read of the last answer's body ended in, and nil
-// where that body read whole, or so far, or there was no answer.
-func (s *statusOf) readErr() error {
-	if s.body == nil {
-		return nil
-	}
-	return s.body.err
-}
-
-// answer is what was read of the last answer's body, at most answerKept bytes, for
-// redact.Answered alone: it is the server's text, and prints in no other way.
-func (s *statusOf) answer() []byte {
-	if s.body == nil {
-		return nil
-	}
-	return s.body.kept
-}
-
-// answerKept is how much of an answer's body a statusOf keeps: an error body is short, and a
-// longer one is no refusal redact.Answered reads.
-const answerKept = 64 << 10
-
-// readOf is an answer's body that keeps the first error other than io.EOF a read of it ends in,
-// and the first answerKept bytes read of it.
-type readOf struct {
-	io.ReadCloser
-	err  error
-	kept []byte
-}
-
-func (r *readOf) Read(p []byte) (int, error) {
-	n, err := r.ReadCloser.Read(p)
-	if room := answerKept - len(r.kept); room > 0 {
-		r.kept = append(r.kept, p[:min(n, room)]...)
-	}
-	if err != nil && err != io.EOF && r.err == nil {
-		r.err = err
-	}
-	return n, err
 }
 
 // Start asks the issuer for a device code and a user code: what the person types in, and where.

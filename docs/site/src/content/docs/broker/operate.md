@@ -1034,23 +1034,36 @@ deployment whose sign-in broke. What an operator reads from each field:
 
 - `client_check` and `client_checked_at`: what the broker's own client was found to be at the
   provider, and when. Each pod checks it at startup and every hour after, by asking the token
-  endpoint to redeem an invalid code with the broker's client credentials. `ready` is the provider
-  accepting the client, `client_rejected` is the provider refusing it (nobody can sign in: the
-  client id, its secret or its registration is wrong), and `issuer_unreachable` is a provider that
-  could not be asked, which says nothing about the client. A check neither answers a person nor
-  stops the broker: it writes this row, and it logs only a change. When it finds `client_rejected`
-  or `issuer_unreachable` and its pod did not log that state last, it logs `broker: the sign-in
-  client check`. When it finds `ready` after such a line, it logs `broker: the sign-in client
-  check finds the client ready again` ([Health and logs](#health-and-logs)). So a provider that
-  stays away for a day is one line, not one each hour.
+  endpoint to redeem an invalid code with the broker's client credentials. The status of the
+  answer alone decides. `ready` is the provider refusing that code (`invalid_grant` at a refusal's
+  status, a `4xx` that is no `408` or `429`), which it does only for a client it accepts.
+  `client_rejected` is the provider refusing the check's request (a random code, no redirect URI,
+  no verifier) at a refusal's status for any other reason or none (`invalid_client`, another OAuth
+  error, or no error at all); a wrong client id or secret is the usual cause, and the log line
+  names the status and the error. `issuer_unreachable` is a check with no verdict on the client:
+  an outage (`408`, `429` or a `5xx`, whatever OAuth error its body named, an answer cut off before
+  its body arrived whole, or no answer), or an answer that is no refusal (a `2xx` naming an error,
+  or a `3xx`). The check's log line says which. A check neither answers a person nor stops
+  the broker: it writes this row, and it logs only a change. When it finds `client_rejected` or
+  `issuer_unreachable` and its pod did not log that state last, it logs `broker: the sign-in client
+  check`. When it finds `ready` after such a line, it logs `broker: the sign-in client check finds
+  the client ready again` ([Health and logs](#health-and-logs)). So a provider that stays away for
+  a day is one line, not one each hour.
 - `last_sign_in_at`: when a person last finished signing in. Long silence on a deployment people
   use is the signal, read beside `last_decision_at`.
 - `last_failed_sign_in_at` and `last_failed_sign_in_reason`: when a sign-in last failed at the code
   exchange or at the ID-token check, and why, as one of `invalid_client`, `unauthorized_client`,
   `redirect_uri_mismatch`, `invalid_grant`, `issuer_unreachable`, `bad_issuer`, `bad_audience`,
-  `bad_signature`, `bad_nonce`, `not_in_domain` and `email_not_verified`. The first three are the
-  client's registration, `not_in_domain` and `email_not_verified` are the person rather than the
-  deployment, and a failure none of the eleven names leaves the row alone and is logged instead.
+  `bad_signature`, `bad_nonce`, `not_in_domain` and `email_not_verified`. The status of the token
+  endpoint's answer alone decides whether it answered, once the answer arrived whole: a code
+  exchange it answers `408`, `429` or `5xx`, whatever error its body names, answers with a body cut
+  off before it arrives whole, or does not answer, is `issuer_unreachable`, as is a discovery
+  document that could not be read; every other answer is the endpoint answering, a failed sign-in
+  refused `403`. The first four are that answer's own error, written only from a `4xx`; a `4xx`
+  naming no error or another, and a `2xx` naming one, write nothing. The first three
+  are the client's registration, `not_in_domain` and `email_not_verified` are the person rather
+  than the deployment, and a failure none of the eleven names leaves the row alone and is logged
+  instead.
 - `last_decision_at`: when a person last approved or denied a request on the page.
 
 ### Ending a person's sessions
@@ -1227,7 +1240,7 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | Google Workspace groups (optional) | To serve a secret whose `owner` or `requesters` names a group, outbound HTTPS access to `admin.googleapis.com` (or the base URL `BROKER_DIRECTORY_URL` names) and to `iamcredentials.googleapis.com`, and the reader account `BROKER_DIRECTORY_ACCOUNT` names, with Workspace's Groups Reader admin role assigned to it, `roles/iam.serviceAccountTokenCreator` on it for the broker's own Google identity, and the IAM Service Account Credentials API turned on in its project. The broker reads each group a served secret names when a five-minute read of the namespace first names it and once an hour after that, and a group it has not read for 2 hours admits nobody. So a Directory or IAM outage, a missing grant or a missing role leaves every group's requests with nobody to decide them, and every grant that rests on a group without a release, within 2 hours; each read's `group members read` line names the cause ([Health and logs](#health-and-logs)). |
 | A local stand-in (development only) | `BROKER_FAKE_SECRETS_FILE` names a JSON file the broker reads in place of the store, in Secrets Manager's shape whatever `BROKER_SECRETS_STORE` says, each secret's `kms_key_id` naming the agent-secrets key as the selected store configures it (`BROKER_SECRETS_KMS_KEY_ARN`, or `BROKER_SECRETS_KMS_KEY_NAME` with the GCP store); the [configuration reference](/legion/broker/reference/config/#variables-the-broker-reads) gives its format. |
 | Dispatch | Dispatch's server calls the broker's account routes as its own ServiceAccount: it lists the requests and machine logins waiting on the signed-in person, each secret request with its page on the broker (`approve_url`), which its Inbox links to, and relays a person's machine-login decisions and revokes. Set Dispatch's `DISPATCH_AGENT_SECRETS_URL` to the broker's URL and `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to the path of its projected token for `BROKER_K8S_OIDC_AUDIENCE`, and list that account in the broker's `BROKER_API_ACCOUNTS`. Without the URL, Dispatch hides its credential pages. Deploy a broker with the approval page before a Dispatch whose Inbox links it ([Approval sign-in](#approval-sign-in)). |
-| The sign-in provider | A person's browser signs in to the broker at the provider (Google, under the Workspace's internal consent screen), and the broker reaches its token endpoint and keys over HTTPS at a sign-in, and its discovery document at the first sign-in each process serves (kept once a read succeeds) and at the client check it takes at startup and every hour after. A discovery that could not be read answers the page `503` naming the issuer and logs `approval sign-in: reach the provider`; machines are served as before, and `GET /signin/status` reports `issuer_unreachable` ([What the sign-in is doing](#what-the-sign-in-is-doing)). |
+| The sign-in provider | A person's browser signs in to the broker at the provider (Google, under the Workspace's internal consent screen), and the broker reaches its token endpoint and keys over HTTPS at a sign-in, and its discovery document at the first sign-in each process serves (kept once a read succeeds) and at the client check it takes at startup and every hour after. A discovery that could not be read, or a code exchange the token endpoint answers `408`, `429` or `5xx`, answers with a body cut off before it arrives whole, or does not answer, answers the page `503` naming the issuer and logs `approval sign-in: reach the provider`; machines are served as before, and `GET /signin/status` reports `issuer_unreachable`: in `last_failed_sign_in_reason` for a failure at the sign-in's callback, and in `client_check` once a client check finds the provider down, which is the only field that shows a failure at the sign-in's start ([What the sign-in is doing](#what-the-sign-in-is-doing)). |
 | Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE` name the cluster's service-account token issuer and the audience the pods' and the services' projected tokens carry. The broker fetches the issuer's discovery document at startup and refuses to start if it cannot. |
 | Google Cloud (optional) | To let machines trade their Google identity tokens, `BROKER_GOOGLE_OIDC_AUDIENCE` names the audience of those tokens, and `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES` and `BROKER_VM_EXCHANGE_ACCOUNTS` describe each fleet. The broker fetches Google's discovery document at startup and refuses to start if it cannot. |
 | Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. It calls the listener with its own projected ServiceAccount token, which `BROKER_ENVOY_ACCOUNT_TOKEN_FILE` names and which it reads for each notice, so the listener must admit that account. The shared bearer `BROKER_ENVOY_TOKEN` is removed, and a broker started with it refuses to start. |
@@ -1629,14 +1642,14 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `secret store store=<store> credentials=<source>` | At startup, once the store is built: `aws-secrets-manager` under the AWS SDK's credential chain (`aws-sdk`), `gcp-secret-manager` under Application Default Credentials (`application-default`), or either name over `BROKER_FAKE_SECRETS_FILE` (`fake secrets file`). |
 | `approval sign-in on issuer=<issuer> client_id=<client id> domain=<domain>` | At startup: the approval page signs people in through that client, holding each person to that Workspace domain ([Approval sign-in](#approval-sign-in)). The client's secret is never logged. |
 | `approval sign-in off detail=…` | At startup, in place of the line above: `BROKER_SIGNIN=off`, so the broker serves no approval page and denies at once a request a person would approve ([A broker that signs nobody in](#a-broker-that-signs-nobody-in)). No sign-in client check runs. |
-| `broker: the sign-in client check state=<state> issuer=<issuer> error=…` | At WARN, from the check each pod takes at startup and every hour after, when it finds a state other than `ready` that the pod did not log last: the provider refused the broker's client (`state=client_rejected`, so nobody can sign in) or could not be asked (`state=issuer_unreachable`). A check that finds the state the pod logged last, or finds the client ready with no such line before it, logs nothing, so a provider that stays away for a day is one line. Every check writes its answer to `GET /signin/status`. |
+| `broker: the sign-in client check state=<state> issuer=<issuer> error=…` | At WARN, from the check each pod takes at startup and every hour after, when it finds a state other than `ready` that the pod did not log last: the provider refused the check's request (`state=client_rejected`; a wrong client id or secret is the usual cause, and `error` names the status and the OAuth error), or the check got no verdict (`state=issuer_unreachable`: an outage, a `5xx`, `408`, `429`, an answer cut off before its body arrived whole, or no answer, or an answer that is no refusal, a `2xx` or `3xx`). A check that finds the state the pod logged last, or finds the client ready with no such line before it, logs nothing, so a provider that stays away for a day is one line. Every check writes its answer to `GET /signin/status`. |
 | `broker: the sign-in client check finds the client ready again issuer=<issuer> was=<state>` | At INFO: the first check that finds the client ready after the line above. `was` is the state that line named. |
 | `broker: the sign-in client check was not written state=<state> error=…` | At WARN: a check could not write its answer to Postgres after the check before it wrote, so `GET /signin/status` answers the last answer written. The checks after it log nothing more until one writes. |
 | `broker: the sign-in client check is written again state=<state>` | At INFO: the first check that writes its answer after the line above. |
 | `approval sign-in login=<email>` / `approval sign-out login=<email>` | A person signed in to, or out of, the approval page. |
 | `approval sign-in refused …` | At WARN: a sign-in made no session, the line saying why: the provider refused it, its state or return path was not the sign-in's, the code exchange or ID token failed, or the person is outside `BROKER_SIGNIN_DOMAIN` or unverified. |
 | `approval page decision login=<email> record=<record id> decision=<approve or deny> outcome=<outcome>` | A person decided a secret request on the page; `outcome` is what became of it (`granted`, for one). |
-| `approval sign-in: reach the provider issuer=<issuer> error=…` | At ERROR: the provider's discovery document could not be read at a sign-in, and the page answered `503` naming the issuer. |
+| `approval sign-in: reach the provider issuer=<issuer> error=…` | At ERROR, and the page answered `503` naming the issuer: at the start of a sign-in, the provider's discovery document could not be read; at its callback, the discovery document could not be read, or the token endpoint answered the code exchange `408`, `429` or a `5xx`, answered with a body cut off before it arrived whole, or did not answer. That closed set is the provider down; every other answer of the token endpoint is the provider answering, which this line never logs: the sign-in is refused `403` and logs `approval sign-in refused`. A failure at the callback writes `issuer_unreachable` to `last_failed_sign_in_reason` in `GET /signin/status`; one at the start writes no status, and `client_check` says `issuer_unreachable` once a client check, at startup or on the hour, finds the provider down ([What the sign-in is doing](#what-the-sign-in-is-doing)). A callback whose browser left during the exchange is not this line: it logs `approval sign-in refused`, and writes no status. |
 | `broker listening addr=<host:port>` | Startup finished: configuration, migrations and the first read of the namespace all succeeded, and every port is bound: the API's, at this address; the airlock's proxy port, where the deployment has one (`airlock proxy listening addr=<host:port>`, just after); and the metrics port (the line below). |
 | `broker metrics listening addr=<host:port>` | After `broker listening`, and after `airlock proxy listening` where the deployment has an airlock: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
 | `session account pairs state=on pairs=<pairs>` / `session account pairs state=off detail=…` | At INFO, at startup, after `broker metrics listening` and before the broker serves its first request: `state=on` names each pair `BROKER_SESSION_ACCOUNT_PAIRS` gives, as `<account>=<account>` in the setting's order, joined by one space, and `state=off` says the setting is unset, so an account is refused a session name another account holds. |
@@ -1961,18 +1974,21 @@ lines name is the store's own: Secrets Manager's version id, Secret Manager's ve
 ### The mint retry
 
 A minter's call to GitHub or Google is made again when another attempt can succeed: an answer of
-500 or above, a rate limit (a `429`, GitHub's `X-RateLimit-Remaining: 0`, or a body naming a rate
-limit), or a call or a read of its answer that failed while the caller's request was still open.
-The broker does not retry a `4xx` that is no rate limit, a call whose request its caller ended, an
-answer larger than the minter reads, or a `2xx` or `3xx` answer other than the one the call asked
-for. One more call is not retried: the GitHub token request that the check of a `github_app`
-narrowing before the approval request makes, once it failed in any way but one known to come
-before a connection, since GitHub may have received it whole and minted a token that the check
-will never hold, whatever the broker's own write reported. The same call that failed before a
-connection, because its name did not resolve, its connection or a proxy's tunnel could not be
-made, or the broker did not trust GitHub's certificate, minted nothing and is retried as any other
-call is. A TLS record error or alert after the handshake counts as a failure after the request
-went out; a TLS failure during the handshake comes before a connection, so the call is retried.
+500 or above, a `408` (the upstream timed the request out), a rate limit (a `429`, GitHub's
+`X-RateLimit-Remaining: 0`, or a body naming a rate limit), or a call or a read of its answer that
+failed while the caller's request was still open. The broker does not retry a `4xx` that is no
+`408` and no rate limit, a call whose request its caller ended, an answer larger than the minter
+reads, or a `2xx` or `3xx` answer other than the one the call asked for. One more call is not
+retried: the GitHub token request that the check of a `github_app` narrowing before the approval
+request makes, once it was sent and got no answer, since GitHub may have received it whole and
+minted a token that the check will never hold, whatever the broker's own write reported. The same
+call that GitHub answered, a `5xx`, a `408` or a rate limit, is retried as any other call is: its
+answer names no token, and the check revokes the token a later attempt mints, as it revokes every
+token it gets. The same call that failed before a connection, because its name did not resolve,
+its connection or a proxy's tunnel could not be made, or the broker did not trust GitHub's
+certificate, minted nothing and is retried too. A TLS record error or alert after the handshake
+counts as a failure after the request went out; a TLS failure during the handshake comes before
+a connection, so the call is retried.
 The revokes of a give-back, which return to GitHub a token a release minted and handed to nobody
 (after a release that failed, and after every session release of a github-app name behind the
 airlock), are made once each and never retried, so they take nothing from the retry budget below.
@@ -2019,7 +2035,7 @@ own listing.
 | Metric | Type | Labels | What it holds |
 | --- | --- | --- | --- |
 | `broker_answers_total` | counter | `outcome`, `code`, `caller_class` | Each answer the broker's code writes on the API port and on the airlock's proxy port; the answers Go's HTTP server writes itself before that code runs are not counted ([Refusals and the answer id](#refusals-and-the-answer-id)). `outcome` is `served` (below 400), `refused` (a refusal the `broker: answer refused` line records), `rate_limited` (a `429`, and the device grant's `slow_down`), `pending` (the device grant's `authorization_pending`, a machine's poll while its person has not decided), `cancelled` (a held read of a request, `GET /v1/requests/{id}?wait=`, whose caller went away before its wait ran out or in the half second after it, which writes no line; a read with no wait is never counted here, and one whose caller left while the broker looked its enrollment up or recorded its proof's jti is `failed`, under `caller_class` `unauthenticated`, with the `verify proof failed` line) or `failed` (500 and above, but a `cancelled` one). `code` is a refusal's code, as its line names it, or the code the airlock's proxy port names for a failure of its own, such as `UPSTREAM_UNREACHABLE`. Every other answer's `code` is `HTTP_<status>`. `caller_class` is as the refusal line names it. A call the proxy carried to a service counts as `served`, with the service's own status as its `HTTP_<status>`. |
-| `broker_mint_attempts_total` | counter | `type`, `outcome`, `attempt` | Each attempt of each call a minter makes to GitHub or Google ([the mint retry](#the-mint-retry)). `type` is the secret's type. `outcome` is `ok`, `upstream` (an answer of 500 or above, no answer, or an answer it could not use), `rate_limited`, `refused` (a `4xx` that is no rate limit) or `cancelled` (the caller's request ended). `attempt` is `1`, `2` or `3`. |
+| `broker_mint_attempts_total` | counter | `type`, `outcome`, `attempt` | Each attempt of each call a minter makes to GitHub or Google ([the mint retry](#the-mint-retry)). `type` is the secret's type. `outcome` is `ok`, `upstream` (an answer of 500 or above, a `408`, no answer, or an answer it could not use), `rate_limited`, `refused` (a `4xx` that is no `408` and no rate limit) or `cancelled` (the caller's request ended). `attempt` is `1`, `2` or `3`. |
 | `broker_unservable_secrets` | gauge | `secret`, `reason`, `owner` | One series of value 1 for each secret the broker refuses to serve now. `secret` is the secret's whole name in the store, as the `agent secret policy refused` line names it, `reason` is that line's reason, and `owner` its owner tag, empty for `owner-tag-missing` and `owner-tag-malformed`. A secret that becomes servable, or leaves the store, is gone from the next scrape, and a reread of a name nobody created adds no series. Nor does a secret waiting for its value in the ten minutes after its creation (`agent secret policy waiting for a value`), which is no refusal. |
 | `broker_policy_store_reads_total` | counter | `read` | Each call the policy makes to the secret store, a failed one too: `list` for a load of the whole namespace, `describe` for one secret's reread, and `value` for one type secret's value ([the value read](#the-value-read)). It is how to see that this pod read the store: the broker logs no line for a read whose secrets it serves. On Secret Manager each of them spends the project's read quota. A `list` is one `ListSecrets` for each page and one `GetSecretVersion` for each secret, and a `describe` is one `GetSecret` and one `GetSecretVersion`. A `value` is one `GetSecret`, or none when this pod read that secret in the 30 seconds before, and then the `AccessSecretVersion` that reads the value, which counts against Secret Manager's separate access quota. |
 | `broker_nats_callout_decisions_total` | counter | `kind`, `outcome`, `reason` | Each NATS connection the auth service answered, where the broker runs it. `kind` is the credential the connection presented: `session`, `service` or `none`. `outcome` is `admitted` or `refused`, and `reason` is a refusal's one fixed word (empty when admitted), such as `waiting_bound` for one refused at once because the replica already held 1024 requests waiting for a decision. |

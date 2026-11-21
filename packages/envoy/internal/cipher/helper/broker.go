@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/ctxlock"
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 	"github.com/sjawhar/envoy/internal/serverwait"
@@ -592,8 +593,12 @@ func (b *Broker) installCredential(cred *machineCredential, issued *loginState) 
 // pollLogin polls the token endpoint for a pending machine login until a human decides it, at the
 // interval the broker named. On approval it keeps the login (keepLogin). access_denied records
 // "denied"; expired_token, a device code the broker no longer knows (invalid_grant) and the
-// code's own lifetime passing record "expired". A poll that does not reach the broker, or that it
-// answers with anything else, polls again.
+// code's own lifetime passing record "expired", each error only from a refusal, a 4xx that is no
+// outage (oauthrefusal.Refusal). The status alone decides refused or down: a poll that does not
+// reach the broker, or that it answers a 5xx, a 408 or a 429 (oauthrefusal.Outage) naming one of
+// those errors included, is the broker down and polls again; a refusal naming no error or another
+// one is the broker answering with no decision, and polls again too, until the code's lifetime
+// records "expired".
 func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2.DeviceAuthResponse, operator string) {
 	ctx := b.tokenContext(context.Background(), key)
 	settle := func(state string) { b.recordLogin(&loginState{Code: da.UserCode, State: state}) }
@@ -603,16 +608,13 @@ func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2
 			b.keepLogin(key, tok, da.UserCode, operator)
 			return
 		}
-		var re *oauth2.RetrieveError
-		if errors.As(err, &re) {
-			switch re.ErrorCode {
-			case "access_denied":
-				settle("denied")
-				return
-			case "expired_token", "invalid_grant":
-				settle("expired")
-				return
-			}
+		switch oauthrefusal.Refusal(err) {
+		case "access_denied":
+			settle("denied")
+			return
+		case "expired_token", "invalid_grant":
+			settle("expired")
+			return
 		}
 		if !da.Expiry.IsZero() && !time.Now().Before(da.Expiry) {
 			settle("expired")
@@ -991,18 +993,19 @@ func (b *Broker) refreshLoop(ctx context.Context, first time.Duration, sched ret
 	}
 }
 
-// retrySchedule is the refresh loop's wait after a refresh that failed (next). A refresh the
-// broker did not answer, or answered 5xx, waits retry (15 s), and sets unknown: the broker may
-// have rotated the token and lost its answer, and the token the helper still holds is redeemable
-// again only inside the broker's five-minute rotation grace, whose start the helper cannot know.
-// While unknown is set, every failure waits retry, an answered 4xx or 429 among them, until a
-// refresh the broker settles (a success or invalid_grant, reset) clears it, so no run of answered
-// refusals after a lost answer backs a retry past the grace. An outage longer than the grace
-// right after a lost answer still ends in a reuse, which revokes the machine. Otherwise a 429
-// waits its Retry-After, at least retry and at most maxRetryAfter, and any other error the broker
-// answered waits backoff, from backoffStart doubling to maxRefreshRetry, until reset. An error
-// that is no answer of the broker's (a token answer the helper cannot keep, a save that failed)
-// waits retry too.
+// retrySchedule is the refresh loop's wait after a refresh that failed (next). The status alone
+// decides whether the broker answered (oauthrefusal.Outage). A refresh the broker did not answer,
+// or answered 5xx or 408, waits retry (15 s), and sets unknown: the broker may have rotated the
+// token and lost its answer, and the token the helper still holds is redeemable again only inside
+// the broker's five-minute rotation grace, whose start the helper cannot know. While unknown is
+// set, every failure waits retry, an answered 4xx or 429 among them, until a refresh the broker
+// settles (a success or invalid_grant, reset) clears it, so no run of answered refusals after a
+// lost answer backs a retry past the grace. An outage longer than the grace right after a lost
+// answer still ends in a reuse, which revokes the machine. Otherwise a 429, the outage that names
+// its own wait, waits its Retry-After, at least retry and at most maxRetryAfter, and any other
+// answer, a refusal with or without an OAuth error that ends no grant (redeem), waits backoff, from
+// backoffStart doubling to maxRefreshRetry, until reset. An error that is no answer of the
+// broker's (a token answer the helper cannot keep, a save that failed) waits retry too.
 type retrySchedule struct {
 	retry, backoffStart, backoff time.Duration
 	unknown                      bool
@@ -1010,7 +1013,7 @@ type retrySchedule struct {
 
 func (s *retrySchedule) next(err error) time.Duration {
 	var re *oauth2.RetrieveError
-	if !errors.As(err, &re) || re.Response == nil || re.Response.StatusCode >= http.StatusInternalServerError {
+	if !errors.As(err, &re) || re.Response == nil || (oauthrefusal.Outage(re.Response.StatusCode) && re.Response.StatusCode != http.StatusTooManyRequests) {
 		s.unknown = true
 		return s.retry
 	}
@@ -1050,13 +1053,17 @@ func (s *retrySchedule) after(err error, nextRefresh func() time.Duration) time.
 }
 
 // redeem spends cred's refresh token for the rotated login: the machine file the broker's answer
-// names, or refusal, the broker's invalid_grant code, when it has ended the login (revoked, lapsed
-// or reused), or another error, logged, when the helper did not learn the outcome or cannot keep
-// the answer. The broker's 429 (its token endpoint's rate limit) is one of those: the login is
-// kept and retried after its Retry-After (retryAfter). An answer naming no new refresh token is
-// another: x/oauth2 copies the presented token into an answer without a refresh_token field, and
-// saving that would keep a token the broker may have rotated away, so the presented login is kept
-// and the refresh retried. The caller holds credMu.
+// names, or refusal, the broker's invalid_grant code in a 400 or 401 answer
+// (oauthrefusal.EndsGrant), when it has ended the login (revoked, lapsed or reused), or another
+// error, logged, when the helper did not learn the outcome or cannot keep the answer. A 5xx
+// naming invalid_grant is one of those, and so is the broker's 429 (its token endpoint's rate
+// limit): the login is kept and retried after its Retry-After (retryAfter). A refusal that ends no
+// grant - a 4xx with no OAuth error, another error, or invalid_grant at another status than 400 or
+// 401 - is the broker answering, not down (oauthrefusal.Outage): the login is kept and the
+// refresh backs off (retrySchedule). An answer naming no new refresh token is another: x/oauth2
+// copies the presented token into an answer without a refresh_token field, and saving that would
+// keep a token the broker may have rotated away, so the presented login is kept and the refresh
+// retried. The caller holds credMu.
 func (b *Broker) redeem(ctx context.Context, cred *machineCredential) (next *MachineFile, refusal string, err error) {
 	tok, err := b.oauthConfig().TokenSource(b.tokenContext(ctx, cred.key),
 		&oauth2.Token{RefreshToken: cred.refreshToken, Expiry: time.Unix(1, 0)}).Token()
@@ -1068,8 +1075,8 @@ func (b *Broker) redeem(ctx context.Context, cred *machineCredential) (next *Mac
 			b.logger().Warn("the broker rate-limited the machine login's refresh; retrying after its Retry-After",
 				"credential_id", cred.id, "retry_after", retryAfter(err), "error", err)
 			return nil, "", err
-		case errors.As(err, &re) && re.ErrorCode == "invalid_grant":
-			return nil, re.ErrorCode, err
+		case oauthrefusal.EndsGrant(err):
+			return nil, "invalid_grant", err
 		}
 		b.logger().Warn("the machine login's refresh did not reach the broker; retrying", "credential_id", cred.id, "error", err)
 		return nil, "", err

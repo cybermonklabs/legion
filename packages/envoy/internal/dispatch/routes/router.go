@@ -414,8 +414,11 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // state was used, yet each completes at most once: the callback clears the cookie before anything
 // else, the issuer's authorization code is single-use, and Exchange accepts only an ID token
 // carrying the nonce the cookie bound the sign-in to. An exchange that meets an issuer this
-// process has not discovered (another process started the sign-in) is answered 503
-// SIGNIN_UNAVAILABLE; any other failed exchange 502.
+// process has not discovered (another process started the sign-in), or a token endpoint that
+// cannot answer it (a 5xx, a 408 or a 429, an answer whose body was cut off, or no answer:
+// oidc.ErrIssuerUnavailable), is answered 503 SIGNIN_UNAVAILABLE. Every other answer of the token
+// endpoint - a 4xx with or without an OAuth error, a 2xx that names an error or holds no token, a
+// 3xx - and every other failure of the sign-in is answered 502.
 func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)
@@ -439,7 +442,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	}
 	session, err := r.ctx.SignIn.Exchange(req.Context(), callbackURL(r.ctx.ServerURL, req), code, pending.Nonce)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
-		slog.Warn("dispatch: sign-in code exchange failed: the sign-in issuer is not discovered", "error", err)
+		slog.Warn("dispatch: sign-in code exchange failed: the sign-in issuer is undiscovered or could not answer", "error", err)
 		identity.WriteError(w, fmt.Errorf("%w: %w", identity.ErrSignInUnavailable, err))
 		return
 	}

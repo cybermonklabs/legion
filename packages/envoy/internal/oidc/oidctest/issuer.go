@@ -139,13 +139,28 @@ type codeFlow struct {
 }
 
 // tokenFailure is how the token endpoint answers every grant instead of
-// granting it, when FailToken or DropToken set it: status with code as the
-// body's OAuth error, or, with drop, closing the connection unanswered.
+// granting it, when FailToken, DropToken, CutToken, ResetToken or StallToken
+// set it: status with code as the body's OAuth error; with drop, closing the
+// connection unanswered; or, with cut, answering status and a body it breaks
+// off part of the way through, by closing the connection (cutClose),
+// resetting it (cutReset) or sending nothing more (cutStall).
 type tokenFailure struct {
 	status int
 	code   string
 	drop   bool
+	cut    cutAnswer
 }
+
+// cutAnswer is how the token endpoint breaks off a body it promised 200 bytes
+// of, after sending 10: none is a whole answer.
+type cutAnswer int
+
+const (
+	cutNone cutAnswer = iota
+	cutClose
+	cutReset
+	cutStall
+)
 
 // revocation is the state of the revocation endpoint: every token the client
 // sent it, in order, whatever it answered; the status and OAuth error code it
@@ -406,7 +421,7 @@ func (i *Issuer) AdvertiseTokenAuthMethods(methods ...string) {
 // FailToken makes the token endpoint answer every grant, a code exchange or a
 // refresh, with status instead of granting it, with code as the body's OAuth
 // error when code is not empty: 400 invalid_grant is an issuer refusing the
-// refresh token, a 5xx or a 429 one that cannot answer now. A status of 0
+// refresh token, a 5xx, a 408 or a 429 one that cannot answer now. A status of 0
 // makes it grant again, and undoes DropToken too.
 func (i *Issuer) FailToken(status int, code string) {
 	i.mu.Lock()
@@ -421,6 +436,33 @@ func (i *Issuer) DropToken() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.codeFlow.token = tokenFailure{drop: true}
+}
+
+// CutToken makes the token endpoint answer every grant with status and a body
+// cut off: it promises 200 bytes, sends 10 and closes the connection, as an
+// issuer does that fails part of the way through its answer. A client reads the
+// status and then fails to read the body. FailToken(0, "") undoes it.
+func (i *Issuer) CutToken(status int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.codeFlow.token = tokenFailure{status: status, cut: cutClose}
+}
+
+// ResetToken is CutToken with the connection reset (a TCP RST) after the 10
+// bytes, where CutToken closes it. FailToken(0, "") undoes it.
+func (i *Issuer) ResetToken(status int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.codeFlow.token = tokenFailure{status: status, cut: cutReset}
+}
+
+// StallToken is CutToken with nothing more sent after the 10 bytes until the
+// client hangs up, so the client's own timeout ends its read of the body.
+// FailToken(0, "") undoes it.
+func (i *Issuer) StallToken(status int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.codeFlow.token = tokenFailure{status: status, cut: cutStall}
 }
 
 // DelayToken makes the token endpoint wait d before it answers each grant, or until the client
