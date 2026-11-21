@@ -12,7 +12,6 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
-import { runFocusFixup } from "../../__tests__/focus-fixup";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -47,6 +46,7 @@ import "../agent-view/AgentConversationPage";
 import "../margin/Margin";
 import "./BroadcastPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
@@ -4084,7 +4084,7 @@ test("a send from an Agents row's Send gives the focus to the row's box once it 
   const sent = Promise.withResolvers<Message>();
   const page = renderAgents({ issues: [coreIssue] });
   page.createAgentMessage.mockImplementationOnce(() => sent.promise);
-  const stopFocusFixup = runFocusFixup();
+  const stopFocusFixup = emulateChromiumFocusFixup();
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });

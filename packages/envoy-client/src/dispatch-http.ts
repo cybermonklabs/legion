@@ -2683,9 +2683,9 @@ export class DispatchClient {
    * times out, answers no JSON or leaves the field out is false: the write is reported as it
    * stands rather than resent, since a Dispatch without the layer would run a repeat as a second
    * write. It presents no credential: Dispatch mounts `/healthz` above its API chain
-   * (`dispatchHandler`, packages/envoy/cmd/dispatch/main.go), so the route reads none, and a
-   * credential failing at that moment (a fail-fast trade, a pending registration) would otherwise
-   * end a write the layer could take again under its key.
+   * (`routes.Process`, packages/envoy/internal/dispatch/routes/process.go), so the route reads
+   * none, and a credential failing at that moment (a fail-fast trade, a pending registration)
+   * would otherwise end a write the layer could take again under its key.
    */
   async #probeKeyedLayer(): Promise<boolean> {
     try {

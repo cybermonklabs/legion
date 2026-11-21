@@ -34,6 +34,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -634,10 +636,12 @@ func (p *Population) readObservations(ctx context.Context, tx pgx.Tx, project st
 // readReported reads the issues of the project the daemon reports, against the `tree` it names
 // for each: legion.ReadCurrent's Reported, the read the Legion board makes too, of the whole
 // project rather than the window's keys (legion.TreeNode). The read's Newest, the board's cards,
-// go unused here: that is the cost of one read answering the rule for both readers.
+// go unused here: that is the cost of one read answering the rule for both readers. No route
+// serves the metrics, which read for no caller, so it reads as the server's own viewer, which
+// sees every project, as every other read of the population does.
 // readObservations takes the history of the issues whose timelines the metrics measure.
 func (p *Population) readReported(ctx context.Context, tx pgx.Tx, project string) error {
-	current, err := legion.ReadCurrent(ctx, tx, project)
+	current, err := legion.ReadCurrent(ctx, tx, project, refs.VisibilityArg(model.ServerReader))
 	if err != nil {
 		return err
 	}

@@ -829,7 +829,7 @@ func (s *server) loadBroadcastRecipients(ctx context.Context, who model.Actor, b
 	for index, message := range messages {
 		ids[index] = message.ID
 	}
-	deliveries, err := s.loadMessageDeliveries(ctx, s.deps.Store.Pool, ids)
+	deliveries, err := s.loadMessageDeliveries(ctx, s.deps.Store.Pool, who, ids)
 	if err != nil {
 		return nil, err
 	}

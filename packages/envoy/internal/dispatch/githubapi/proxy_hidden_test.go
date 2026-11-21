@@ -25,7 +25,9 @@ import (
 // reads nothing.
 func TestTheGitHubProxyAnswersAHiddenRepositoryAsUninstalled(t *testing.T) {
 	const hiddenRepository, uninstalled = "acme/web", "acme/elsewhere"
-	hides := func(owner, repo string) (bool, error) { return owner+"/"+repo == hiddenRepository, nil }
+	hides := func(owner, repo string) (Gate, error) {
+		return Gate{Hidden: owner+"/"+repo == hiddenRepository, Held: true}, nil
+	}
 	for _, test := range []struct {
 		name   string
 		client func(t *testing.T) (*githubapp.Client, *fakeGitHub)

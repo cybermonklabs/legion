@@ -41,7 +41,7 @@ func TestMarkQuoteWritesMarkAndReturnsCoveredText(t *testing.T) {
 	if attrs["by"] != "session:s1" {
 		t.Fatalf("by = %v", attrs["by"])
 	}
-	if text, _ := service.Text(context.Background(), artifactID); text != "The quick brown fox\n" {
+	if text, _ := service.Text(context.Background(), serverReader, artifactID); text != "The quick brown fox\n" {
 		t.Fatalf("marks must not render: %q", text)
 	}
 
@@ -354,7 +354,7 @@ func TestRejectSuggestionRefusesARemovalTheDocumentCannotHold(t *testing.T) {
 					"id": "ins", "by": "user:bob", "kind": "insert",
 				})
 			}
-			before, err := service.Text(context.Background(), artifactID)
+			before, err := service.Text(context.Background(), serverReader, artifactID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -363,7 +363,7 @@ func TestRejectSuggestionRefusesARemovalTheDocumentCannotHold(t *testing.T) {
 			if !errors.As(err, &invalid) || invalid.Field != "anchor" || !strings.Contains(invalid.Reason, test.says) || !strings.Contains(invalid.Reason, "accept the suggestion") {
 				t.Fatalf("reject: %v, want an invalid anchor saying %q and offering to accept the suggestion", err, test.says)
 			}
-			if after, err := service.Text(context.Background(), artifactID); err != nil || after != before {
+			if after, err := service.Text(context.Background(), serverReader, artifactID); err != nil || after != before {
 				t.Fatalf("after the refused reject = %q (%v), want unchanged %q", after, err, before)
 			}
 		})
@@ -786,7 +786,7 @@ func TestCompactionRetainsContentClassificationAcrossMarkUpdates(t *testing.T) {
 			if err := service.Evict(context.Background(), artifactID); err != nil {
 				t.Fatalf("evict compacted document: %v", err)
 			}
-			if got, err := service.Text(context.Background(), artifactID); err != nil || got != "after\n" {
+			if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != "after\n" {
 				t.Fatalf("reload compacted text = %q (%v), want after", got, err)
 			}
 			settleCurrentGeneration(t, service, artifactID)
@@ -815,7 +815,7 @@ func TestCompactionDoesNotCarryCoveredContentClassificationPastCursor(t *testing
 	if err := service.Evict(context.Background(), artifactID); err != nil {
 		t.Fatalf("evict compacted document: %v", err)
 	}
-	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "| header |\n| :--- |\n| `one\\|two` |\n" {
+	if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != "| header |\n| :--- |\n| `one\\|two` |\n" {
 		t.Fatalf("reload compacted text = %q (%v)", got, err)
 	}
 	settleCurrentGeneration(t, service, artifactID)
@@ -852,7 +852,7 @@ func TestCompactionRetainsUncoveredContentBeyondVersionCursor(t *testing.T) {
 	if err := service.Evict(context.Background(), artifactID); err != nil {
 		t.Fatalf("evict compacted document: %v", err)
 	}
-	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "after\n" {
+	if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != "after\n" {
 		t.Fatalf("reload compacted text = %q (%v), want after", got, err)
 	}
 	settleCurrentGeneration(t, service, artifactID)
@@ -1477,7 +1477,7 @@ func TestAcceptSuggestionRefusesCodeWithAPipeAfterABackslashInATableCell(t *test
 				if err != nil {
 					t.Fatalf("accept: %v", err)
 				}
-				text, err := service.Text(context.Background(), artifactID)
+				text, err := service.Text(context.Background(), serverReader, artifactID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1540,7 +1540,7 @@ func TestWritesBesideALiveRepeatedBlockIDAreTaken(t *testing.T) {
 			return joinedRejectSuggestion(service, artifactID, "ins", alice)
 		}, want: func(before string) string { return strings.Replace(before, "quick brown", "brown", 1) }},
 		{name: "an upload of the document's own text", act: func(t *testing.T, service *Service, artifactID string) error {
-			current, err := service.Text(context.Background(), artifactID)
+			current, err := service.Text(context.Background(), serverReader, artifactID)
 			if err != nil {
 				return err
 			}
@@ -1558,7 +1558,7 @@ func TestWritesBesideALiveRepeatedBlockIDAreTaken(t *testing.T) {
 			service.settle = time.Hour
 			seedServiceText(t, service, artifactID, seed)
 			repeatLiveBlockID(t, service, artifactID)
-			before, err := service.Text(context.Background(), artifactID)
+			before, err := service.Text(context.Background(), serverReader, artifactID)
 			if err != nil {
 				t.Fatal(err)
 			}

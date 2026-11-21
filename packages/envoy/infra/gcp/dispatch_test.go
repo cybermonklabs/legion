@@ -2792,7 +2792,10 @@ func TestDispatchRendersTheProjectOwnerFallbackOnlyWhenSet(t *testing.T) {
 // privateProjects is the keys of the projects whose private namespace, stores and grants the
 // deployment has provisioned. It renders DISPATCH_PRIVATE_PROJECTS sorted and each key once, and
 // nothing at all when it is empty or unset, so a stack that never sets it renders the pod it always
-// had. A key that is not a project key is an input error naming it, caught at preview.
+// had. An entry that is not a project key is ignored and printed at preview, as Dispatch's boot
+// ignores and logs one: the key beside it still renders, and the program does not fail. Ignoring it
+// fails closed, since the project it meant is never provisioned. Control: a component that refused
+// the entry, or rendered it.
 func TestDispatchRendersItsPrivateProjects(t *testing.T) {
 	for _, row := range []struct {
 		name  string
@@ -2802,6 +2805,9 @@ func TestDispatchRendersItsPrivateProjects(t *testing.T) {
 		{name: "unset"},
 		{name: "empty", value: []string{}},
 		{name: "a list", value: []string{"PRIV", "ALPHA", "PRIV"}, want: "ALPHA,PRIV"},
+		{name: "ignores 1", value: []string{"ALPHA", "1"}, want: "ALPHA"},
+		{name: "ignores priv", value: []string{"priv", "ALPHA"}, want: "ALPHA"},
+		{name: "ignores every entry", value: []string{"1"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			args := dispatchArgs()
@@ -2812,13 +2818,17 @@ func TestDispatchRendersItsPrivateProjects(t *testing.T) {
 			requireOptionalEnv(t, env, "DISPATCH_PRIVATE_PROJECTS", row.want)
 		})
 	}
-	for _, key := range []string{"1", "priv"} {
-		t.Run("refuses "+key, func(t *testing.T) {
-			args := dispatchArgs()
-			args.PrivateProjects = []string{"ALPHA", key}
-			_, err := runDispatch(t, args, true)
-			require.ErrorContains(t, err, fmt.Sprintf("privateProjects[1] %q", key))
-		})
+}
+
+// The warning preview prints for an ignored entry names the entry and what ignoring it means, so a
+// reader of the preview can fix the stack: the entry, that it is ignored, and that it provisions
+// nothing.
+func TestDispatchNamesAnIgnoredPrivateProjectsEntry(t *testing.T) {
+	for _, entry := range []string{"1", "priv"} {
+		message := gcp.PrivateProjectsIgnoredMessage(entry)
+		for _, want := range []string{fmt.Sprintf("%q is not a project key", entry), "it is ignored", "no project is provisioned by it"} {
+			require.Contains(t, message, want, "the preview warning for %q", entry)
+		}
 	}
 }
 

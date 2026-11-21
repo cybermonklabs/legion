@@ -10,8 +10,9 @@
  *  answer apart is held to each one's own value and dropped before the compare.
  *
  *  Each row sources the library alone in bash, with a work directory of its own and no server, and
- *  reads the count of answers that differed. The rows of `event_log_reaches` and `indexed`, the
- *  library's two waits on a server, answer from a Bun server the row starts. */
+ *  reads the count of answers that differed. The row of `event_log_reaches`, the library's wait on
+ *  a server's event log, answers from a Bun server the row starts; the rows of its wait on a
+ *  server's meaning index are `access-lib-index-settled.test.ts`'s. */
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -214,10 +215,9 @@ test(
   rowLimit("short")
 );
 
-/** What the stand-in server answers GET /api/v1/events/log and GET /api/v1/search/coverage with,
- *  which each row sets, and the requests it took. */
+/** What the stand-in server answers GET /api/v1/events/log with, which each row sets, and the
+ *  requests it took. */
 let eventLog: { status: number; body: unknown } = { status: 200, body: [] };
-let coverage: unknown = {};
 const asked: string[] = [];
 let server: Server<undefined> | undefined;
 
@@ -231,7 +231,6 @@ beforeAll(() => {
       if (url.pathname === "/api/v1/events/log") {
         return Response.json(eventLog.body, { status: eventLog.status });
       }
-      if (url.pathname === "/api/v1/search/coverage") return Response.json(coverage);
       return new Response("not found", { status: 404 });
     },
   });
@@ -279,25 +278,6 @@ test(
     expect(await holds("event_log_reaches main carol 5")).toBe(true);
     eventLog = { status: 500, body: [{ id: 9 }] };
     expect(await holds("event_log_reaches main carol 5")).toBe(false);
-  },
-  rowLimit("short", "short", "short")
-);
-
-test(
-  "indexed holds only once the build's meaning index counts items and owes none a vector",
-  async () => {
-    // The shape a build serves: a kind no search leg indexes is in not_indexed and never in the
-    // totals, so it decides nothing.
-    const counts = (items: number, lacking: number) => ({
-      total: { items, current: items - lacking, lacking, failed: 0 },
-      not_indexed: [{ kind: "handoff", items: 1 }],
-    });
-    coverage = counts(3, 1);
-    expect(await holds("indexed main")).toBe(false);
-    coverage = counts(3, 0);
-    expect(await holds("indexed main")).toBe(true);
-    coverage = counts(0, 0);
-    expect(await holds("indexed main")).toBe(false);
   },
   rowLimit("short", "short", "short")
 );

@@ -610,7 +610,7 @@ func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time
 	}
 	for _, document := range drifted {
 		var excerpts map[refs.Target]model.GraphExcerpt
-		markdown, blocks, err := s.TextWithBlocks(ctx, document.FromID)
+		markdown, blocks, err := s.TextWithBlocks(ctx, model.ServerReader, document.FromID)
 		switch {
 		case ctx.Err() != nil:
 			return documents, false, ctx.Err()

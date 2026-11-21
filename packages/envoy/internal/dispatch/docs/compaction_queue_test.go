@@ -100,7 +100,7 @@ func TestTheCompactionQueueCompactsALoadedDocumentOnlyWhenItIsDue(t *testing.T) 
 	loads := map[string]func(t *testing.T, artifactID string){
 		"a room load": func(t *testing.T, artifactID string) { liveTree(t, service, artifactID) },
 		"a cold read": func(t *testing.T, artifactID string) {
-			if _, err := service.Text(context.Background(), artifactID); err != nil {
+			if _, err := service.Text(context.Background(), serverReader, artifactID); err != nil {
 				t.Fatalf("read the document: %v", err)
 			}
 		},

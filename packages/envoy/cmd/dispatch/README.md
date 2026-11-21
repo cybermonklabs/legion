@@ -168,7 +168,9 @@ An issue created through the default also gets a `repo:owner/name` label.
 Every project has an owner, and a boot over a project with none refuses to serve until `DISPATCH_PROJECT_OWNER_FALLBACK` names a full member to own it, or an operator gives it one (Giving a project to another owner, below).
 
 `DISPATCH_PRIVATE_PROJECTS` names, comma-separated, the projects this deployment has provisioned as private: their namespaces, stores and grants exist (the infrastructure repository's `privateprojects.Projects()`).
-Only these projects can be made private, and an entry that is not a project key, the old value `1` included, refuses startup; unset or empty, no project can be made private, as before the setting existed.
+Only these projects can be made private.
+An entry that is not a project key, the old value `1` included, is ignored with one ERROR line at boot naming it, and the keys beside it still count: ignoring it fails closed, since the project it meant is never provisioned and its switch to private stays `409 PRIVATE_PROJECT_NOT_PROVISIONED`.
+Unset or empty, no project can be made private, as before the setting existed.
 An owner's switch of a project to private (`PATCH /api/v1/projects/{key}/access`) is refused `409 PRIVATE_PROJECTS_OFF` with no list, `409 PRIVATE_PROJECT_NOT_PROVISIONED` for a project the list does not name, `409 PRIVATE_PROJECTS_INCOMPLETE` until that project's rows all have their nodes and both `envoy-dispatch backfill-session-projects` and `envoy-dispatch scrub-access-events` have run, naming each such row with the cure the project census prints for it, or the command not run, and `409 PRIVATE_PROJECTS_UNAVAILABLE` while the hub does not take the project's key in its `envoy_private_projects` bucket.
 This build has no writer of that bucket (`cmd/dispatch` leaves `api.Deps.BusProjects` nil), so a switch that passes every other check is always `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project can be made private through the server until a build carries the writer.
 A switch to public is never refused by any of them.
@@ -262,7 +264,8 @@ A credential carries a list of the projects it may use (`model.Credential.Projec
 A personal token's list is its row's `projects`, which Settings and `POST` and `PATCH /api/v1/me/agent-tokens` write:
 at most 16, each a project the caller sees (`400 TOKEN_PROJECTS_INPUT` otherwise), defaulting to the list of the caller's own credential, so a credential that lists projects gives a token only some of its own.
 A broker-issued token's list is the one project the broker scoped it to, and a broker token acting as its person carries its person's trade list too; every other credential lists none.
-While no project is private a broker token's list holds no read, and a person-scope token's no write, as before projects could be private; once one is private it holds both.
+While every project is public, a full member's broker token reads what its person reads, and a full member's person-scope token writes wherever its person may, as before projects could be private.
+A restricted member's broker token is held to its list for reads and writes whatever the deployment holds, and once a project is private every broker token is.
 
 - A person at a browser sees every project they own, that lists them or a group they are a full member of, or that is public while they are a full member.
 
@@ -279,6 +282,7 @@ A session that has acted in no project is judged, while a project is private, by
 While a project is private and `session_projects_filled` holds no row, an open viewer reads no session but its own (Filling the sessions' projects, below).
 Any other caller reads, of what belongs to no project, only the people of the projects it sees, the sessions that have acted in one of them (or, while a project is private, have acted in none and are listed with a list that is not empty and names only projects it sees), its own, and the roles those sessions hold (`access.PersonClause`, `access.SessionClause`, `access.RoleClause`);
 every read of the whole deployment (`readclass.Deployment`: the priorities, the Pipeline page and a delivery run's jobs, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`), while the delivery timeline and measures answer it the pull requests whose issue it sees and the deploy runs that shipped one of them.
+While a project is private, a pull request that names no issue, and a run that shipped none, is shown to an open viewer only when no private project hidden from that viewer owns its repository (`refs.RepositoryClause`).
 A direct conversation is read by its parties and by an open viewer, each only when it may read every session in the conversation (`access.PartyClause`), so a restricted member or a credential that lists projects reads only its own, and only with sessions of its projects.
 While a project is private, a direct conversation that names no party (no node, or a node with none) is read by no caller but the server, and the switch to private refuses while one exists.
 A project the caller does not see, and every object in it, answers exactly as one no row holds.
@@ -307,6 +311,8 @@ A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential whose 
 what it writes belongs to no project such a viewer could be held to.
 A restricted member still revokes their own credential grants and ends their own sign-ins (`POST /api/v1/credential-grants/{id}/revoke`, `POST /api/v1/signins/{id}/revoke`): the secrets broker decides whose each one is, as it does for a full member, and only a credential that lists projects is refused those two.
 `POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so a credential that lists projects is refused one outside its list, `403 PROJECT_SCOPE`, naming its list and the project the body named, before anything is read.
+`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` refuse a restricted member's `repo`, a string or `null`, with `403 RESTRICTED_MEMBER`: an issue's own repository makes its project own that repository (`refs.ProjectRepositoriesSQL`), which the GitHub proxy, the App-installation route and the Delivery views then show the people of that project (`refs.RepositoryClause`), so only a full member names one.
+Any other caller's `repo`, and a mapping `PUT` that leaves the mapping its project's default, is `403 REPOSITORY_NOT_AVAILABLE` (`this repository is not available to the caller: an issue's repo or a project's default repository must be one the caller can read through Dispatch`) when the GitHub proxy would hide that repository from the caller (`refs.RepositoryHidden`, with the caller as the viewer): a repository an issue the caller sees already resolves to stays open to the write, and with no private project nothing is refused.
 
 The session check holds the rows classed *the calling session's* whose path names a session
 — the `agents/{session_id}` writes and `PUT /api/v1/me/agents/{session_id}/state` — to the session the caller's credential proved:
@@ -4414,9 +4420,14 @@ Each item below names a path with its method and identity, then its purpose.
   and a repository the App is not installed on, or no App key, `503 GITHUB_TOKEN_UNAVAILABLE`.
   A GitHub rate limit is `503 GITHUB_RATE_LIMITED` with `Retry-After` the whole seconds GitHub asked for (at least one), never `502 GITHUB_UPSTREAM` or GitHub's own `403`:
   GitHub's answer to the token mint or to the read, or a limit any process already met under the App or the installation, when GitHub is not asked at all (Running more than one process, above).
-  A person reads a repository unless a private project the person does not see owns it: an issue of that project resolves to it (its own repository, its nearest parent's, else its project's default, whether open or done), or the project maps it, under any name a recorded rename gives it (`refs.ProjectRepositoriesSQL`, `refs.RepositoryClause`).
-  A person who is not an open viewer reads only a repository a project the person sees owns.
+  A person reads a repository when an issue of a project the person sees resolves to it (its own repository, its nearest parent's, else its project's default, whether open or done); an open viewer also reads one that no private project the person does not see owns (`refs.ProjectRepositoriesSQL`, `refs.RepositoryClause`).
+  A repository mapping and a recorded rename give no project a repository.
+  An issue whose parent chain loops or runs deeper than 32 links resolves to no repository: it neither gives a repository to the people who see its project nor hides one from those who do not.
+  A repository is held by its name alone: once GitHub renames a private project's repository or moves it to another owner, an open viewer reads it under the new name until an issue of that project resolves to the new name.
+  A person who is not an open viewer reads only a repository an issue of a project the person sees resolves to.
   Every other repository answers, step for step, what one the App is not installed on answers, and GitHub is asked nothing for it: no App key still answers that, and a rate limit already held still answers the rate limit.
+  While a project is private, a read GitHub redirects to any repository but the one its path names, as GitHub answers a renamed or transferred repository's old name, is not followed and answers `503 GITHUB_TOKEN_UNAVAILABLE`, as a repository the App is not installed on; a redirect to the same repository in another case is followed.
+  With no private project the proxy follows GitHub's redirects as it always did.
 
 - `/healthz` (GET; none)
 
@@ -4637,7 +4648,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   A person's document socket.
   A room the person may not read, a document of a project they do not see, is refused exactly as a room no document holds is (`404`).
-  Once an owner, a visibility, an access list, a group or a person's member kind changes, every process closes each document socket whose person no longer reads its room, and each socket of a person whose access that re-check cannot read, with `4412` (`DOC_ADMISSION_REVOKED`), on which the provider reconnects and the reconnect's admission reads the person again; a person who no longer reads the room gets that refusal (`docs.Service.recheckAccess`, on the room-sync channel `dispatch_access_changed`, `store.AccessChangedChannel`).
+  Once an owner, a visibility, an access list, a group or a person's member kind changes, every process closes each document socket whose person no longer reads its room, and each socket of a person whose access that re-check cannot read, with `4412` (`DOC_ADMISSION_REVOKED`), on which the provider reconnects and the reconnect's admission reads the person again; a person who no longer reads the room gets that refusal (`docs.Service.recheckAccess`, on the room-sync channel `dispatch_access_changed`, `store.AccessChangedChannel`, after each LISTEN, and on every socket heartbeat, `StreamHeartbeat`'s 15 s, which `api.Register` runs it on, `docs.Service.RunAccessRecheck`: a change made by SQL alone announces nothing, and that pass closes its sockets within a heartbeat).
   A member kind changes when a sign-in or the hourly confirmation writes a kind the row did not hold (`PgPeopleStore.SignIn`, `SignInSubject` and `ConfirmSubject` announce it in their own transaction), such as a member whose account left the Workspace and whom some project's list names, who stays signed in as a restricted member and no longer reads a public project that does not name them.
   A socket still being admitted when its person loses the room is refused before its upgrade with that same `404`, never upgraded onto the room.
 
@@ -4747,6 +4758,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/settings/repo-projects/{owner}/{repo}` (PUT, DELETE; cookie, trusted header, or bearer)
 
   Create or replace, or remove, a repository mapping; PUT takes `{project, default?, renamed_to?}`, and `default: true` moves the project's one default to it.
+  A `PUT` that leaves the mapping its project's default is `403 REPOSITORY_NOT_AVAILABLE` when the caller cannot read the repository through the GitHub proxy.
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
@@ -4771,8 +4783,9 @@ Each item below names a path with its method and identity, then its purpose.
   Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository:
   `200 {installed}`, `false` when GitHub answers 404.
   `503 GITHUB_APP_UNCONFIGURED` when Dispatch holds no App key, `502 GITHUB_UNREADABLE` naming the repository and GitHub's error on any other failure.
-  Every caller reads the same answer, whatever projects it sees: a repository's name is no project's content.
-  The Legion daemon asks it for every repository it serves, for `legion state`.
+  A repository the GitHub proxy would not show the caller (the GitHub proxy, below: no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly what one the App is not installed on answers, and GitHub is asked nothing for it: a rate limit already held on the App answers that limit.
+  With no private project every open viewer reads every repository's answer from GitHub, as before.
+  The Legion daemon asks it for every repository it serves, for `legion state`, so a daemon whose credential does not see a private project reads that project's repositories as not installed.
 
 - `/api/v1/ci-reconcile/passes` (GET; cookie, trusted header, or bearer)
 
@@ -5038,6 +5051,8 @@ Each item below names a path with its method and identity, then its purpose.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
   `repo` (`owner/name`) is the issue's own repository, any repository at all, one its project maps, one another project maps, or one no project maps:
   `400 INVALID_ISSUE` when it is not `owner/name`.
+  A restricted member, or a credential acting for one, names no `repo`: a create that names it, a string or `null`, is `403 RESTRICTED_MEMBER` (`a restricted member cannot set or clear an issue's repo; only a full member names an issue's own repository`) before the body's project, parent or external ref is read and before anything is written, so their issue takes the repository it resolves to, its nearest parent's or its project's default.
+  A `repo` the caller cannot read through the GitHub proxy is `403 REPOSITORY_NOT_AVAILABLE`, once the body's project is read as the caller reads it, so a hidden project still answers `404`; `null` is never refused.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
   a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
@@ -5052,6 +5067,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   Update an issue's `title`, `status`, `priority`, `labels` (or `labels_add`, which adds to the labels the issue holds when the write commits;
   not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); `AGENTS.md` gives each field's rules.
+  A restricted member, or a credential acting for one, sets, changes and clears no issue's `repo`: a patch that names it, a string or `null`, is `403 RESTRICTED_MEMBER` in the create's words, before the issue is read and before anything is written, so it answers alike for an issue the caller does not see and for one nobody holds.
+  A `repo` the caller cannot read through the GitHub proxy is `403 REPOSITORY_NOT_AVAILABLE`, once the issue is read as the caller reads it, so a hidden issue still answers `404`; `null` is never refused.
   A title is trimmed, and one over 1,000 characters is `400 CAP_EXCEEDED`, as on creation.
   `expected_sequence` makes the write conditional: `409 ISSUE_CHANGED` when the issue's last event is no longer that sequence.
   A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:

@@ -332,10 +332,11 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	ctx, done := context.WithDeadline(r.Context(), until)
 	defer done()
 	for {
-		frames, state, err := s.readGoingStream(ctx, id, after)
+		frames, state, err := s.readGoingStream(ctx, who, id, after)
 		if err != nil {
 			// pgx.ErrNoRows is the sweep having deleted the run under this reader
-			// (contracts.GoingRequestTTL); either way there is nothing left to read.
+			// (contracts.GoingRequestTTL), or the run having become one this reader may not
+			// read (goingRunSeen); either way there is nothing left to read.
 			return
 		}
 		for _, frame := range frames {

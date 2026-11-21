@@ -2541,19 +2541,31 @@ func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *tes
 
 // DISPATCH_PRIVATE_PROJECTS is the comma-separated keys of the projects the deployment has
 // provisioned as private: each entry trimmed, empty ones dropped, the list deduplicated and sorted.
-// An entry that is no project key refuses the boot naming it, the old on/off value 1 included,
-// which is never read as a list.
+// An entry that is no project key, the old on/off value 1 included, is never read as a key: the
+// boot keeps the keys beside it, ignores that entry and logs one ERROR line naming it, so the
+// project it meant is never provisioned and its switch to private stays 409
+// PRIVATE_PROJECT_NOT_PROVISIONED (it fails closed). Control: a setting that read the entry would
+// put it on the list.
 func TestThePrivateProjectsSettingIsAListOfKeys(t *testing.T) {
-	if boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": " PRIV, ALPHA ,PRIV,"}); !slices.Equal(boot.PrivateProjects, []string{"ALPHA", "PRIV"}) {
-		t.Errorf(`DISPATCH_PRIVATE_PROJECTS=" PRIV, ALPHA ,PRIV,": PrivateProjects = %q, want [ALPHA PRIV]`, boot.PrivateProjects)
+	if boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": " PRIV, ALPHA ,PRIV,"}); !slices.Equal(boot.PrivateProjects, []string{"ALPHA", "PRIV"}) || len(boot.PrivateProjectsIgnored) != 0 {
+		t.Errorf(`DISPATCH_PRIVATE_PROJECTS=" PRIV, ALPHA ,PRIV,": PrivateProjects = %q, ignored %q; want [ALPHA PRIV], none ignored`, boot.PrivateProjects, boot.PrivateProjectsIgnored)
 	}
 	for name, overrides := range map[string]map[string]string{"unset": {}, "empty": {"DISPATCH_PRIVATE_PROJECTS": ""}} {
-		if boot := resolveWith(t, overrides); len(boot.PrivateProjects) != 0 {
-			t.Errorf("%s: PrivateProjects = %q, want no project", name, boot.PrivateProjects)
+		if boot := resolveWith(t, overrides); len(boot.PrivateProjects) != 0 || len(boot.PrivateProjectsIgnored) != 0 {
+			t.Errorf("%s: PrivateProjects = %q, ignored %q; want no project and nothing ignored", name, boot.PrivateProjects, boot.PrivateProjectsIgnored)
 		}
 	}
 	for _, entry := range []string{"1", "priv"} {
-		refusedWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "ALPHA," + entry},
-			`DISPATCH_PRIVATE_PROJECTS names project keys; "`+entry+`" is not a project key`)
+		boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "ALPHA," + entry + ",PRIV"})
+		if !slices.Equal(boot.PrivateProjects, []string{"ALPHA", "PRIV"}) || !slices.Equal(boot.PrivateProjectsIgnored, []string{entry}) {
+			t.Errorf("DISPATCH_PRIVATE_PROJECTS=ALPHA,%s,PRIV: PrivateProjects = %q, ignored %q; want [ALPHA PRIV], %q ignored", entry, boot.PrivateProjects, boot.PrivateProjectsIgnored, entry)
+		}
+		var logged cmdtest.LockedBuffer
+		logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+		reportIgnoredPrivateProjects(boot.PrivateProjectsIgnored)
+		lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+		if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], `entry=`+entry) || !strings.Contains(lines[0], "PRIVATE_PROJECT_NOT_PROVISIONED") {
+			t.Errorf("the boot's report of the ignored entry %q logged %q, want one ERROR line naming it and the switch's refusal", entry, logged.String())
+		}
 	}
 }

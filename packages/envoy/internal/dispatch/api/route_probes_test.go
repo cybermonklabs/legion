@@ -2,11 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 )
 
 // TestRouteProbesNameEveryRowAndFillEveryGETWildcard holds api.RouteProbes, which the
@@ -74,4 +77,63 @@ func TestRouteProbesNameEveryRowAndFillEveryGETWildcard(t *testing.T) {
 	if err != nil || !strings.Contains(string(empty), `"probe":{}`) {
 		t.Errorf("a row that names no wildcard encodes as %s (%v), want \"probe\":{}", empty, err)
 	}
+}
+
+// TestRouteProbesNameEachGETRowsReadClasses holds the JSON cmd/routeprobes prints, which the
+// c-private-unseen driver reads, to readClasses: each GET row names its read classes in the
+// table's order, and a write names none. The driver compares a GET row whose only class is none
+// beside the twin, filled with PRIV's objects, rather than beside a missing object, since such a
+// row answers every caller alike and its answer for PRIV's object can differ from its answer for
+// an id nobody holds: the App-installation route, while it was of class none, answered
+// installed:true for PRIV's repository and installed:false for a repository nobody holds, to
+// whoever asked. The driver reads the class as the word none, so the JSON must spell it so.
+func TestRouteProbesNameEachGETRowsReadClasses(t *testing.T) {
+	printed, err := json.Marshal(RouteProbes())
+	if err != nil {
+		t.Fatalf("encode RouteProbes: %v", err)
+	}
+	var rows []struct {
+		Method  string    `json:"method"`
+		Pattern string    `json:"pattern"`
+		Classes *[]string `json:"classes"`
+	}
+	if err := json.Unmarshal(printed, &rows); err != nil {
+		t.Fatalf("decode RouteProbes' JSON: %v", err)
+	}
+	classed, wrong := 0, []string{}
+	for _, row := range rows {
+		name := row.Method + " " + row.Pattern
+		entry, read := readClasses[name]
+		var want []string
+		for _, class := range entry.Classes {
+			want = append(want, string(class))
+		}
+		switch {
+		case read && row.Classes == nil:
+			wrong = append(wrong, fmt.Sprintf("%s names no classes, readClasses %v", name, want))
+		case read && !slices.Equal(*row.Classes, want):
+			wrong = append(wrong, fmt.Sprintf("%s names classes %v, readClasses %v", name, *row.Classes, want))
+		case !read && row.Classes != nil:
+			wrong = append(wrong, fmt.Sprintf("%s, which readClasses does not class, names classes %v", name, *row.Classes))
+		case read:
+			classed++
+		}
+	}
+	if len(wrong) > 0 {
+		t.Fatalf("%d of %d rows name their read classes otherwise than readClasses, the first %s",
+			len(wrong), len(rows), strings.Join(wrong[:min(3, len(wrong))], "; "))
+	}
+	if classed == 0 {
+		t.Fatalf("no row of %d names its read classes, so the rule above held of nothing", len(rows))
+	}
+	// The spelling the driver compares a row's classes to (project-access-walk.sh's walk_rows).
+	for _, row := range rows {
+		if row.Method == http.MethodGet && row.Pattern == "/api/v1/limits" {
+			if row.Classes == nil || !slices.Equal(*row.Classes, []string{"none"}) || readclass.None != "none" {
+				t.Errorf("GET %s names classes %v, want [none], the word the driver reads", row.Pattern, row.Classes)
+			}
+			return
+		}
+	}
+	t.Fatalf("RouteProbes holds no GET /api/v1/limits, which the check above reads")
 }

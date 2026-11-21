@@ -346,9 +346,9 @@ func TestABrokerBackupWrittenWithinTheHourAfterTheResetRepeatsItsBlocks(t *testi
 }
 
 // TestABrokerBackupTakenDuringTheResetRepeatsItsBlocks: a broker backup taken while the reset runs,
-// after its first credentials run and more than an hour after its start, but before its second
-// run, holds a sign-in A traded during that hour with a Google ID token issued before B replaced
-// it. The second run ends it and the reset closes. Restored to that backup, the broker serves the
+// after its first credentials run and past the close's wait since its start, but before its second
+// run, holds a sign-in A traded during the wait with a Google ID token issued before B replaced it.
+// The second run ends it and the reset closes. Restored to that backup, the broker serves the
 // sign-in again. The read compares the backup with the reset's end, not its start, so it says the
 // backup may predate the end, and the credentials block run again ends the sign-in.
 //
@@ -371,8 +371,8 @@ func TestABrokerBackupTakenDuringTheResetRepeatsItsBlocks(t *testing.T) {
 	if output, err := r.clearHoldersRefusals(t, directory); err != nil {
 		t.Fatalf("the reset's directory block: %v\n%s", err, output)
 	}
-	r.ageReset(t, time.Hour+time.Minute)
 	traded := r.signInMachine(t, email, "a-during", strings.Repeat("u", 43))
+	r.ageReset(t, resetWait+time.Minute)
 	backup := time.Now()
 	if left := r.endBrokerCredentials(t); len(left) != 0 || r.machineSignInLive(t, traded) {
 		t.Fatalf("the reset's second credentials run leaves %v and the traded sign-in live %t; want nothing", left, r.machineSignInLive(t, traded))
@@ -390,6 +390,25 @@ func TestABrokerBackupTakenDuringTheResetRepeatsItsBlocks(t *testing.T) {
 	}
 	if r.machineSignInLive(t, traded) {
 		t.Error("after the broker-alone recovery, the sign-in traded during the reset is live; want it ended before Dispatch starts")
+	}
+}
+
+// TestABrokerBackupAfterAnUnclosedResetRepeatsItsBlocks is the same-family review's R27-1 row: a
+// reset was started and never closed, so it is still running, and a broker backup of any moment
+// may hold what its broker steps ended or have yet to end. The read answers `run the reset's blocks
+// again` for a backup taken two hours after the start.
+//
+// Control in the runbook: an unclosed reset counted as closed long ago (`'-infinity'` for its end)
+// answers `the backup holds the last reset`.
+func TestABrokerBackupAfterAnUnclosedResetRepeatsItsBlocks(t *testing.T) {
+	r := newRecoveryRig(t)
+	r.resetSessions(t)
+	starts := r.resetMarks(t, "start")
+	if len(starts) != 1 || len(r.resetMarks(t, "end")) != 0 {
+		t.Fatalf("after step 1 deployment_resets holds starts %v and ends %v; want one start and no end", starts, r.resetMarks(t, "end"))
+	}
+	if answer := r.resetBlocksAgain(t, starts[0].Add(2*time.Hour), nil); answer != "run the reset's blocks again" {
+		t.Errorf("the read for a backup two hours after an unclosed reset's start answered %q; want the reset's blocks run again", answer)
 	}
 }
 

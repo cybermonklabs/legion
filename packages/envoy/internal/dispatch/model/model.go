@@ -112,16 +112,17 @@ type Credential struct {
 	// every other credential.
 	ReadOnly bool
 	// ListHoldsWhileNoPrivate is what Projects holds this credential to while the deployment
-	// holds no private project, which is what decides whether a list that existed before projects
-	// could be private changes what its credential reads (R9): once a project is private every list
-	// holds reads and writes alike (R3). Its zero value holds both, which is every credential that
-	// names no other. access.Resolve and api's writesHeldTo read it; brokerTokenActor sets it. A
-	// fact of the request, never written to a row or an answer.
+	// holds no private project and its person is a full member (or it names none), which is what
+	// decides whether a list that existed before projects could be private changes what its
+	// credential reads (R9): once a project is private, and for a restricted member whatever the
+	// deployment holds, every list holds reads and writes alike (R3). Its zero value holds both,
+	// which is every credential that names no other. access.Resolve and api's writesHeldTo read it;
+	// brokerTokenActor sets it. A fact of the request, never written to a row or an answer.
 	ListHoldsWhileNoPrivate ListHold `json:"-"`
 }
 
 // ListHold is what a credential's list of projects (Credential.Projects) holds it to while the
-// deployment holds no private project.
+// deployment holds no private project and its person is not a restricted member.
 type ListHold uint8
 
 const (

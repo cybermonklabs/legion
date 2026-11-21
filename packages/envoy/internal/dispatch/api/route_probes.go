@@ -1,11 +1,16 @@
 package api
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
+)
 
 // RouteProbe is one route-table row as e2e/acceptance/project-access.sh (c-private-unseen) probes
 // it: the object each wildcard of its pattern is filled with, once with the private project's own
 // object of that kind and once with an id of that kind nobody holds, and the body a write sends
-// with both fills.
+// with both fills; or, for a row that reads no row a caller's access decides, the private
+// project's own objects alone, read beside a server that never held the project.
 type RouteProbe struct {
 	Method  string `json:"method"`
 	Pattern string `json:"pattern"`
@@ -23,6 +28,14 @@ type RouteProbe struct {
 	// and empty for every other row. Such a row has no Probe; the driver holds it to its class's
 	// refusal of every caller that is not open, sending Body.
 	NoProject string `json:"no_project,omitempty"`
+	// Classes is a GET row's read classes, as readClasses gives them, and absent for a write. A
+	// row whose only class is none reads no row a caller's access decides, so it answers every
+	// caller alike, and the answer for the private project's own object can rightly differ from
+	// the answer for an id nobody holds (GET /api/v1/github/app-installation/{owner}/{repo}
+	// answers installed:true for a repository the App is installed on, whoever asks): the driver
+	// fills it with the private project's objects and holds each caller's answer to the answer of
+	// a server that never held the project.
+	Classes []readclass.Class `json:"classes,omitempty"`
 }
 
 // RouteProbes is every row of the route table, test hooks included, in table order, with its
@@ -42,6 +55,7 @@ func RouteProbes() []RouteProbe {
 		row := RouteProbe{Method: route.Method, Pattern: route.Pattern, TestHook: !deployed[name]}
 		if entry, ok := readClasses[name]; ok {
 			row.Probe = probeMap(entry.Probe)
+			row.Classes = entry.Classes
 		}
 		if probe, ok := writeProbes[name]; ok {
 			row.Probe = probeMap(probe.Probe)

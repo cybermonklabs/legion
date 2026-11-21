@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -80,9 +81,13 @@ func ListSettings(ctx context.Context, pool *store.Pool) ([]Settings, error) {
 	return listed, nil
 }
 
-// GetSettings is one project's setting, or ErrNoSettings when it has none.
-func GetSettings(ctx context.Context, pool *store.Pool, project string) (Settings, error) {
-	settings, err := scanSettings(pool.QueryRow(ctx, `select `+settingsColumns+` from legion_settings where project = $1`, project))
+// GetSettings is one project's setting, or ErrNoSettings when it has none, as the reader whose
+// visibility argument viewer binds (refs.VisibilityArg) reads it: a project that reader does not
+// see has none (access.ProjectClause, in the statement itself), whatever the caller's own read of
+// the project answered before.
+func GetSettings(ctx context.Context, pool *store.Pool, project string, viewer any) (Settings, error) {
+	settings, err := scanSettings(pool.QueryRow(ctx, `select `+settingsColumns+` from legion_settings where project = $1 and `+
+		access.ProjectClause("$1", "$2"), project, viewer))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Settings{}, ErrNoSettings
@@ -274,7 +279,9 @@ type Current struct {
 // ReadCurrent reads project's legion_current in one statement, one row per field and none of the
 // history: every row that holds a value, and every `phase` row. A field the newest good read no
 // longer carries, and every field of an issue gone from the daemon's state, has a `null` newest
-// row (recordObservations), so it is in no Newest.
+// row (recordObservations), so it is in no Newest. It reads as the reader whose visibility
+// argument viewer binds (refs.VisibilityArg): a project that reader does not see holds no row here
+// (access.ProjectClause, in the statement itself).
 //
 // Reported is the daemon's half of what makes an issue a Legion issue (TreeNode), which the Legion
 // board and the metrics both read here, so the two place an issue in one tree. The daemon reports
@@ -286,12 +293,12 @@ type Current struct {
 // it climbs through it to the tree above, while it carries no card and no tree, since its `tree`
 // was written `null` with the rest. The rows under AdmissionKey belong to no issue — the admission
 // block and the daemon's settings — so they report nothing.
-func ReadCurrent(ctx context.Context, db Queryer, project string) (Current, error) {
+func ReadCurrent(ctx context.Context, db Queryer, project string, viewer any) (Current, error) {
 	rows, err := db.Query(ctx, `
 		select issue_key, field, nullif(value, 'null'::jsonb), observed_at
 		from legion_current
-		where project = $1 and (value <> 'null'::jsonb or field = $2)
-	`, project, FieldPhase)
+		where project = $1 and (value <> 'null'::jsonb or field = $2) and `+access.ProjectClause("$1", "$3")+`
+	`, project, FieldPhase, viewer)
 	if err != nil {
 		return Current{}, fmt.Errorf("read the current Legion state of %s: %w", project, err)
 	}

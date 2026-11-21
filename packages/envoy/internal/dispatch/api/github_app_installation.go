@@ -24,12 +24,17 @@ type appInstallationResponse struct {
 // App key answers 503 GITHUB_APP_UNCONFIGURED; any other failed lookup 502 GITHUB_UNREADABLE,
 // naming the repository and GitHub's error.
 //
-// A repository the caller may not see (repositoriesHidden) answers exactly what one the App is
-// not installed on answers, as the GitHub proxy answers it (githubapi.ProxyREST), and GitHub is
-// asked nothing about it: while a rate limit is in force on the App's scope, the lookup of an
-// uninstalled repository is held unsent and answers that limit (githubapp.Client.HeldLimit), so a
-// hidden one answers the same limit; otherwise it is not installed. No App key answers every
-// repository alike, so it is answered before the repository is read.
+// A repository the caller may not see by the GitHub proxy's rule (repositoriesHidden, over
+// refs.RepositoryClause) answers exactly what one the App is not installed on answers, as the
+// proxy answers it (githubapi.ProxyREST), and GitHub is asked nothing about it: that the App is
+// installed on a repository a private project's issues name would tell a caller who does not see
+// the project that the repository is served. While a rate limit is in force on the App's scope,
+// the lookup of an uninstalled repository is held unsent and answers that limit
+// (githubapp.Client.HeldLimit), so a hidden one answers the same limit; otherwise it is not
+// installed. No App key answers every repository alike, so it is answered before the repository is
+// read. A reader that sees every object, as every open viewer of a deployment with no private
+// project does, reads no statement for it and is answered as before any project could be private
+// (R9).
 func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 	reader, ok := s.readerOf(w, r)
 	if !ok {
@@ -71,9 +76,9 @@ var repositoriesHiddenQuery = `select asked.repo, not ` + refs.RepositoryClause(
 // repositoriesHidden answers, for each of repositories (owner/name), whether reader may not see it:
 // whether it fails refs.RepositoryClause, read in one statement and keyed by the name as given. A
 // reader that sees every object (seesEveryObject) sees every repository, and nothing is read for
-// it (R9); nothing is read for no repository either. The App-installation route and delivery's
-// pull requests that name no issue (deliveryPopulation.cutTo) hold a repository to it, as the GitHub
-// proxy does (routes' repositoryHidden).
+// it (R9); nothing is read for no repository either. The App-installation route, and delivery's
+// pull requests that name no issue and its runs that ship none (deliveryPopulation.cutTo), hold a
+// repository to it, as the GitHub proxy does (routes' repositoryHidden).
 func (s *server) repositoriesHidden(ctx context.Context, reader model.Actor, repositories []string) (map[string]bool, error) {
 	hidden := make(map[string]bool, len(repositories))
 	if len(repositories) == 0 || seesEveryObject(reader) {

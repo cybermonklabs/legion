@@ -26,11 +26,13 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // getLegionSetting answers GET /api/v1/projects/{key}/legion/daemon with the project's daemon,
 // or null when it names none, as GET /api/v1/settings/delivery answers a setting nobody wrote. An
-// unknown project is 404 PROJECT_NOT_FOUND.
+// unknown project is 404 PROJECT_NOT_FOUND. The setting is read as the caller reads the project
+// (legion.GetSettings binds the project's clause itself).
 func (s *server) getLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -39,7 +41,11 @@ func (s *server) getLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	settings, err := legion.GetSettings(r.Context(), s.deps.Store.Pool, project)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	settings, err := legion.GetSettings(r.Context(), s.deps.Store.Pool, project, refs.VisibilityArg(who))
 	if err != nil {
 		if errors.Is(err, legion.ErrNoSettings) {
 			WriteJSON(w, http.StatusOK, nil)

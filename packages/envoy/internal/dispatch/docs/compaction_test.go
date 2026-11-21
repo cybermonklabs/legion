@@ -97,7 +97,7 @@ func TestARoomCloseCompactionFoldsOnlyTheRowsOlderThanTheTail(t *testing.T) {
 	if got := storedReading(t, NewPgVersioned(service.store), artifactID); got != reading {
 		t.Fatalf("the compacted document reads\n%s\nwant\n%s", got, reading)
 	}
-	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "First.\n\nSecond.\n\nThird.\n" {
+	if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != "First.\n\nSecond.\n\nThird.\n" {
 		t.Fatalf("text after the room's close = %q (%v), want the three paragraphs", got, err)
 	}
 }
@@ -152,7 +152,7 @@ func TestAFailedRoomsEvictionCompactionWaitsForTheLockAndFoldsOnlyOldRows(t *tes
 	if got := storedReading(t, NewPgVersioned(service.store), artifactID); got != reading {
 		t.Fatalf("the compacted document reads\n%s\nwant\n%s", got, reading)
 	}
-	if got, err := service.Text(ctx, artifactID); err != nil || got != "First.\n\nSecond.\n\nThird.\n" {
+	if got, err := service.Text(ctx, serverReader, artifactID); err != nil || got != "First.\n\nSecond.\n\nThird.\n" {
 		t.Fatalf("text after the room's recovery = %q (%v), want the three paragraphs", got, err)
 	}
 }
@@ -356,7 +356,7 @@ func TestACompactionReadsTheCursorASettlementMovedInsideIt(t *testing.T) {
 	if err := service.Evict(context.Background(), artifactID); err != nil {
 		t.Fatalf("evict the compacted document: %v", err)
 	}
-	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "Second.\n" {
+	if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != "Second.\n" {
 		t.Fatalf("text after compaction = %q (%v), want the replacement", got, err)
 	}
 	settleCurrentGeneration(t, service, artifactID)

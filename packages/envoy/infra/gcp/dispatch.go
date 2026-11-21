@@ -303,7 +303,8 @@ type DispatchArgs struct {
 	// PrivateProjects are the keys of the projects whose private namespace, stores and grants the
 	// deployment has provisioned (the infrastructure repository passes privateprojects.Projects()); only these can be
 	// made private. It renders DISPATCH_PRIVATE_PROJECTS, sorted and each key once; empty or unset
-	// renders nothing. A key that is not a project key is an input error naming it.
+	// renders nothing. An entry that is not a project key is ignored, with a warning at preview naming
+	// it, as Dispatch's boot ignores and logs one.
 	PrivateProjects []string `pulumi:"privateProjects,optional"`
 
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's
@@ -741,7 +742,7 @@ type dispatchSettings struct {
 	oidcAudience, oidcIssuer                    string
 	oidcAccounts, accessAccounts                []string
 	projectOwnerFallback                        string
-	privateProjects                             []string
+	privateProjects, privateProjectsIgnored     []string
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
@@ -1784,9 +1785,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.oidcAccounts = args.OidcAccounts
 	s.accessAccounts = args.AccessAccounts
 	s.projectOwnerFallback = args.ProjectOwnerFallback
-	if s.privateProjects, err = dispatchPrivateProjects(args.PrivateProjects); err != nil {
-		return dispatchSettings{}, err
-	}
+	s.privateProjects, s.privateProjectsIgnored = dispatchPrivateProjects(args.PrivateProjects)
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName
@@ -1884,15 +1883,27 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 }
 
 // dispatchPrivateProjects is privateProjects as DISPATCH_PRIVATE_PROJECTS renders it: sorted and
-// each key once. A key that is not a project key is an input error naming it, raised at preview,
-// since Dispatch refuses to start on it.
-func dispatchPrivateProjects(keys []string) ([]string, error) {
-	for i, key := range keys {
-		if !contracts.ValidProjectKey(key) {
-			return nil, core.InputErrorf("privateProjects", "privateProjects[%d] %q is not a project key: %s", i, key, contracts.ProjectKeyRule)
+// each key once. An entry that is not a project key is never rendered: it is answered in ignored,
+// in the order given, and NewDispatch prints it at preview (privateProjectsIgnoredMessage), as
+// Dispatch's boot ignores and logs one. Ignoring it fails closed, since the project it meant is
+// never provisioned and its switch to private stays 409 PRIVATE_PROJECT_NOT_PROVISIONED.
+func dispatchPrivateProjects(entries []string) (keys, ignored []string) {
+	for _, entry := range entries {
+		if !contracts.ValidProjectKey(entry) {
+			ignored = append(ignored, entry)
+			continue
 		}
+		keys = append(keys, entry)
 	}
-	return slices.Compact(slices.Sorted(slices.Values(keys))), nil
+	return slices.Compact(slices.Sorted(slices.Values(keys))), ignored
+}
+
+// privateProjectsIgnoredMessage is the diagnostic NewDispatch prints at preview for an entry of
+// privateProjects that is not a project key. It is a warning, not an error: the Pulumi SDK reads an
+// error as a fatal condition (pulumi.Context.Log.Error), and the entry is ignored, not refused.
+func privateProjectsIgnoredMessage(entry string) string {
+	return fmt.Sprintf("privateProjects: %q is not a project key (%s), so it is ignored: no project is provisioned by it, and Dispatch logs the same ERROR at boot",
+		entry, contracts.ProjectKeyRule)
 }
 
 // dnsLabel reports whether value is a DNS-1123 label: namespaceRule's shape, at most 63 characters.
@@ -2252,6 +2263,11 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	s, err := newDispatchSettings(args)
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+	}
+	for _, entry := range s.privateProjectsIgnored {
+		if err := ctx.Log.Warn(privateProjectsIgnoredMessage(entry), nil); err != nil {
+			return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+		}
 	}
 	if err := providers.Require(ctx.Context(), dispatchType, "gcp", opts...); err != nil {
 		return nil, err

@@ -301,7 +301,7 @@ func (s *server) recordResultWithFreshWords(
 				resolved = true
 				return check.checkResolution, nil
 			}
-			attributes, err := s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID)
+			attributes, err := s.checkBlockAttributes(ctx, who, check.ArtifactID, check.BlockID)
 			if err != nil {
 				return checkResolution{}, err
 			}
@@ -709,7 +709,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, who model.Actor, i
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
 	check := found[0]
-	if check.Attributes, err = s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID); err != nil {
+	if check.Attributes, err = s.checkBlockAttributes(ctx, who, check.ArtifactID, check.BlockID); err != nil {
 		return resolvedCheck{}, err
 	}
 	return check, nil
@@ -762,14 +762,14 @@ func indexedCheckBlock(ctx context.Context, q queryer, who model.Actor, check ch
 	return indexed, nil
 }
 
-// checkBlockAttributes reads the attributes of one check block out of the live document. The
-// index holds a block's type and digest but not its attributes, so the document itself is the one
-// place they are written.
-func (s *server) checkBlockAttributes(ctx context.Context, artifactID, blockID string) (docs.CheckAttributes, error) {
+// checkBlockAttributes reads the attributes of one check block out of the live document, as who
+// reads it. The index holds a block's type and digest but not its attributes, so the document
+// itself is the one place they are written.
+func (s *server) checkBlockAttributes(ctx context.Context, who model.Actor, artifactID, blockID string) (docs.CheckAttributes, error) {
 	// The index holds the block, so the live document has it too unless a write landed between
 	// the two reads; such a block carries the schema's defaults alone, `when` before_merge.
 	attributes := docs.CheckAttributes{When: docs.CheckWhenBeforeMerge}
-	err := s.typedBlocksIn(ctx, artifactID, "check", false, func(node *pmdoc.Node, id, _ string) {
+	err := s.typedBlocksIn(ctx, who, artifactID, "check", false, func(node *pmdoc.Node, id, _ string) {
 		if id == blockID {
 			attributes = docs.CheckAttributesOf(node)
 		}
@@ -807,12 +807,12 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 		check.BlockID, check.Attributes.CICheck)
 }
 
-// typedBlocksIn walks the live markdown of one document and hands visit each block of blockType
-// in document order, with its block id. The markdown is read live and parsed; nothing is
-// written. A rendering can repeat an id; the block index keys one row per id, and so does this,
-// so only the first holder of an id is visited. Both readers of a live document's typed blocks
-// come through here: the checks of a Verification document (checkBlocksIn) and the requirements
-// of a spec (requirementBlocksIn).
+// typedBlocksIn walks the live markdown of one document, as who reads it, and hands visit each
+// block of blockType in document order, with its block id. The markdown is read live and parsed;
+// nothing is written. A rendering can repeat an id; the block index keys one row per id, and so
+// does this, so only the first holder of an id is visited. Both readers of a live document's
+// typed blocks come through here: the checks of a Verification document (checkBlocksIn) and the
+// requirements of a spec (requirementBlocksIn).
 //
 // When trees is true, visit is handed as content the markdown the block's text_tree is read
 // from, and "" otherwise. That markdown is blockTextContent of the block's text as the block
@@ -824,8 +824,8 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 // The ranges come with the markdown from that one read, which serves both from the read cache
 // without a render where it can (typedBlockMarkdown); a block the read gives no range for answers
 // the block's own content (blockContent).
-func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, trees bool, visit func(node *pmdoc.Node, id, content string)) error {
-	markdown, texts, err := s.typedBlockMarkdown(ctx, artifactID, blockType, trees)
+func (s *server) typedBlocksIn(ctx context.Context, who model.Actor, artifactID, blockType string, trees bool, visit func(node *pmdoc.Node, id, content string)) error {
+	markdown, texts, err := s.typedBlockMarkdown(ctx, who, artifactID, blockType, trees)
 	if err != nil {
 		return err
 	}
@@ -860,19 +860,20 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 	return nil
 }
 
-// typedBlockMarkdown is the live markdown of one document and, when trees is true, the text the
-// block index stores for each block of blockType in it, by id: the block's slice of that markdown
-// between the byte range the same read gives for it (docs.Service.TextWithBlocks). The read lists
-// blocks in document order, so the text kept for an id is its first holder's, the block
-// typedBlocksIn visits. When trees is false the document is read with Text alone.
+// typedBlockMarkdown is the live markdown of one document as who reads it and, when trees is
+// true, the text the block index stores for each block of blockType in it, by id: the block's
+// slice of that markdown between the byte range the same read gives for it
+// (docs.Service.TextWithBlocks). The read lists blocks in document order, so the text kept for an
+// id is its first holder's, the block typedBlocksIn visits. When trees is false the document is
+// read with Text alone.
 //
 // A read with blocks that fails is logged, and the document is read again with Text and given no
 // text at all, so every block answers its own content: a value inside a block that no block token
 // can encode refuses TextWithBlocks and not Text, and such a document still answers its blocks'
 // words. A failure Text meets as well is answered with Text's error.
-func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType string, trees bool) (string, map[string]string, error) {
+func (s *server) typedBlockMarkdown(ctx context.Context, who model.Actor, artifactID, blockType string, trees bool) (string, map[string]string, error) {
 	if trees {
-		markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, artifactID)
+		markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, who, artifactID)
 		if err == nil {
 			texts := map[string]string{}
 			for _, block := range blocks {
@@ -887,7 +888,7 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 		}
 		slog.Warn("dispatch: read a document's blocks for its typed blocks' trees", "artifact", artifactID, "type", blockType, "error", err)
 	}
-	markdown, err := s.deps.Docs.Text(ctx, artifactID)
+	markdown, err := s.deps.Docs.Text(ctx, who, artifactID)
 	return markdown, nil, err
 }
 
@@ -896,10 +897,10 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 // for no tree: each check registers with it, as its text_tree, the markdown typedBlocksIn reads
 // the block's tree from (the rule GET /api/v1/reference-targets reads the same block by), once
 // the slice has stopped growing, since what is registered is a pointer into the row.
-func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
+func (s *server) checkBlocksIn(ctx context.Context, who model.Actor, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	var checks []model.CheckBlock
 	var contents []string
-	err := s.typedBlocksIn(ctx, artifactID, "check", trees != nil, func(node *pmdoc.Node, _, content string) {
+	err := s.typedBlocksIn(ctx, who, artifactID, "check", trees != nil, func(node *pmdoc.Node, _, content string) {
 		check := docs.CheckBlockOf(node)
 		check.ArtifactID, check.Text, check.Results = artifactID, blockWords(node), []model.CheckResult{}
 		checks = append(checks, check)
@@ -922,7 +923,7 @@ func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *di
 // does not hold yet still answers a reference every check can be addressed by. The index is read
 // as who reads it.
 func (s *server) checkBlocksOf(ctx context.Context, q queryer, who model.Actor, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
-	checks, err := s.checkBlocksIn(ctx, artifact.ID, trees)
+	checks, err := s.checkBlocksIn(ctx, who, artifact.ID, trees)
 	if err != nil {
 		return nil, err
 	}
