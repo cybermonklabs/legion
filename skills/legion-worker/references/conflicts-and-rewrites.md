@@ -16,16 +16,16 @@ A tree is a root issue and the issues beneath it. When another tree's open pull 
    jj -R "$LEGION_WORKSPACE" rebase -r @ -o <merge>
    ```
 
-   `jj new --no-edit` prints `<merge>`, its id. After the rebase, an `@` line the base also changed leaves its file on disk in conflict markers, its text still in `@`: tell the phase's role.
+   `jj new --no-edit` prints `<merge>`, its id. After the rebase, an `@` line the base also changed leaves its file on disk in conflict markers, its text still in `@`.
 
    Write `<message>` in the repository's own commit convention, read from the repository itself: its commit-message check (a commitlint configuration or the workflow that lints commits) where it has one, else its recent commits on the base. Where it uses Conventional Commits, that is a listed type and the merge in words, such as `chore(<scope>): merge <base> into <branch>`; where neither shows a convention, the merge in words alone, such as `Merge <base> into <branch>`. Never a fixed prefix of this skill's own: a check that lints every commit of the pull request refuses a type its list does not hold, and `merge` is in no Conventional Commits list.
-2. Resolve any conflict in `@`. Then list what `@` holds beyond the merge: `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only`. Your resolutions are expected there; any other path is another role's write, or an edit of yours outside `implementing`. Move your resolutions into the merge:
+2. Resolve only the merge's conflicts in `@`. Then list what `@` holds beyond the merge: `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only`. Your resolutions are expected there; any other path is another role's write, or an edit of yours outside `implementing`. Move your resolutions into the merge:
 
    ```bash
    jj -R "$LEGION_WORKSPACE" squash --into @- <your resolution paths…>
    ```
 
-   Skip it when there is nothing to resolve. `@-` is then the merge, with its message and your resolutions, which step 4 pushes. When `@` still holds a path, leave it there, tell the architect each such path and `@`'s change id, and run your role prompt's turn-start rule before your next commit. `@` has no description, so the daemon's adoption before a phase task keeps it as `@`, and the next role that commits sets it aside at its turn start.
+   Skip it when there is nothing to resolve. `@-` is then the merge, with its message and your resolutions, which step 4 pushes. When `@` still holds a path, leave it there, tell the architect and the phase's role each such path and `@`'s change id, and run your role prompt's turn-start rule before your next commit. `@` has no description, so the daemon's adoption before a phase task keeps it as `@` for the next role that commits to set aside.
 
    When one path holds both your resolution and an edit the merge must not carry, push nothing, and tell the architect.
 3. A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round. A finding's class is the defect it named wherever the head holds it, not the one line it cited: search the whole head, not the lines the merge changed alone.
