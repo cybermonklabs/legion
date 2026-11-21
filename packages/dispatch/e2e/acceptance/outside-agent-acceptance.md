@@ -20,7 +20,7 @@ The gate must pass before the deployment names a real person from outside on any
 | `../__tests__/outside-agent-public.test.ts` | The test that the public leg's own judgments (P6, P7, P10 and T5's agent part) hold against stand-ins. |
 | `../__tests__/outside-agent-fixture.ts` | What the two test files share: where the legs are, the rows each prints, and the helpers that copy a leg and read its TSV. |
 | `../__tests__/outside-agent-tailnet-stand-ins.ts` | The stand-ins the tailnet leg's tests run it against: the checkout, the deployment repository and workflow behind a stand-in `gh`, the broker's tools, Dispatch, the sweep and the public leg. |
-| `../__tests__/outside-agent-stand-in-dispatch.ts` | The stand-in Dispatch those tests run in a process of its own, so no test worker's busy event loop holds its answers. |
+| `../__tests__/outside-agent-stand-in-dispatch.ts` | The stand-in Dispatch those tests run in a process of its own, so no test worker's busy event loop holds its answers. It binds a port of the kernel's choosing and writes it to its state directory, and answers `/_ready` with a nonce the test passed it, so no other process can take its port first and no other run's stand-in passes for it. The closed ports the tests name come from the reserved range of `outside-path-reach-fixtures.ts`'s `closedPort`. |
 
 ## What each leg prints
 
@@ -337,6 +337,10 @@ P10 pass on the edge's own refusals and fail on an accepted send or another refu
 agent part passes on refused trades and a 4401 close, fails on a trade answered after the refusal,
 and reads UNKNOWN for a later trade with no readable answer, a removal before any socket opened
 and a 1006 close.
+
+The stand-in Dispatch's port is its own: under a squat that takes over any port a listener of the
+test process closes, a prepared run's origin still serves that run's stand-in, and the squat
+takes nothing (its control: the squat does take a port a listener closed there).
 
 It runs the tailnet leg against stand-ins of the broker's helper, Dispatch, the deployment
 repository, the workflow, the sweep and the public leg: with the full member's browser answered,

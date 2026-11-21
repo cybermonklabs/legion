@@ -18,9 +18,11 @@
  *
  *  The blocks after those run the background shapes the legs start their children in, stopped by
  *  the shared `reap`, beside the shapes `reap` cannot stop and a pid that is no child of the leg,
- *  which `reap` must leave alone; and the tailnet leg against stand-ins of what it drives, reading
- *  the rows it judges by its own controls PASS where those controls answer and not PASS where they
- *  do not. The public leg's own judgments are `outside-agent-public.test.ts`'s.
+ *  which `reap` must leave alone; the stand-in Dispatch's port and readiness under a squat, which
+ *  takes over any port a listener of this process closed; and the tailnet leg against stand-ins of
+ *  what it drives, reading the rows it judges by its own controls PASS where those controls answer
+ *  and not PASS where they do not. The public leg's own judgments are
+ *  `outside-agent-public.test.ts`'s.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -32,7 +34,6 @@ import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporar
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import {
   acceptance,
-  closedPort,
   copyLeg,
   type LegRun,
   publicLeg,
@@ -58,6 +59,7 @@ import {
   workflowRepository,
   writeIds,
 } from "./outside-agent-tailnet-stand-ins";
+import { closedPort } from "./outside-path-reach-fixtures";
 
 const { c1, m1, c2, m2 } = writeIds;
 
@@ -158,11 +160,11 @@ function noInput(): Record<string, string> {
   };
 }
 
-function publicInputs(): Record<string, string> {
-  const origin = `http://127.0.0.1:${closedPort()}`;
+async function publicInputs(): Promise<Record<string, string>> {
+  const origin = `http://127.0.0.1:${await closedPort()}`;
   const inputs = scratch("inputs");
   const targets = join(inputs, "targets.txt");
-  writeFileSync(targets, `hub 127.0.0.1 ${closedPort()}\n`);
+  writeFileSync(targets, `hub 127.0.0.1 ${await closedPort()}\n`);
   const approve = script(
     join(inputs, "approve"),
     '#!/bin/sh\necho "UNKNOWN: $1 no browser"\nexit 2\n'
@@ -187,8 +189,8 @@ function publicInputs(): Record<string, string> {
   };
 }
 
-function tailnetInputs(): Record<string, string> {
-  const origin = `http://127.0.0.1:${closedPort()}`;
+async function tailnetInputs(): Promise<Record<string, string>> {
+  const origin = `http://127.0.0.1:${await closedPort()}`;
   const inputs = scratch("inputs");
   const pins = join(inputs, "pins.txt");
   writeFileSync(
@@ -241,7 +243,7 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
   test(
     "the public leg reads UNKNOWN for every row and exits 2 when nothing answers behind its inputs",
     async () => {
-      const env = publicInputs();
+      const env = await publicInputs();
       const run = await runLeg(publicLeg, [], env);
       expect(unknownProblems(run, publicLegRows)).toEqual([]);
       expect(run.stdout).toContain("omp");
@@ -274,7 +276,7 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
   test(
     "the tailnet leg reads UNKNOWN for every row and exits 2 when nothing answers behind its inputs",
     async () => {
-      const env = tailnetInputs();
+      const env = await tailnetInputs();
       const run = await runLeg(tailnetLeg, ["EXAMPLE"], env);
       expect(unknownProblems(run, tailnetRows)).toEqual([]);
       expect(readFileSync(env.OUTSIDE_TAILNET_TSV as string, "utf8")).toBe(run.stdout);
@@ -288,9 +290,9 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
     async () => {
       const runs = [
         await runLeg(passingCopy(publicLeg), [], noInput()),
-        await runLeg(passingCopy(publicLeg), [], publicInputs()),
+        await runLeg(passingCopy(publicLeg), [], await publicInputs()),
         await runLeg(passingCopy(tailnetLeg), [], noInput()),
-        await runLeg(passingCopy(tailnetLeg), ["EXAMPLE"], tailnetInputs()),
+        await runLeg(passingCopy(tailnetLeg), ["EXAMPLE"], await tailnetInputs()),
       ];
       const rowsOfRun = [publicLegRows, publicLegRows, tailnetRows, tailnetRows];
       runs.forEach((run, index) => {
@@ -411,13 +413,99 @@ async function runStandIn(prepared: PreparedStandIn): Promise<StandInRun> {
 async function runStandIns(...standIns: StandIns[]): Promise<StandInRun[]> {
   const prepared: PreparedStandIn[] = [];
   try {
-    for (const each of standIns) prepared.push(prepareStandIn(scratch, each));
+    for (const each of standIns) prepared.push(await prepareStandIn(scratch, each));
   } catch (error) {
     for (const done of prepared) done.dispatch.stop();
     throw error;
   }
   return Promise.all(prepared.map(runStandIn));
 }
+
+/** Runs `body` with the next loopback listener this process stops taken over at once by another
+ *  process, one that answers as another run's stand-in Dispatch does (`/_ready` "ready", /healthz
+ *  commit `another-run`): the race a port chosen by binding and closing a listener, and bound by
+ *  a child later, is open to on a box where other runs start servers. Returns what `body` returned
+ *  and the ports taken over; the squatters are stopped by their pids before it returns. */
+async function withSquat<T>(body: () => Promise<T>): Promise<{ result: T; squatted: number[] }> {
+  const listen = Bun.listen;
+  const squatted: number[] = [];
+  const squatters: number[] = [];
+  let armed = true;
+  Bun.listen = ((options: Parameters<typeof Bun.listen>[0]) => {
+    const listener = listen(options);
+    if (!armed || !("port" in listener)) return listener;
+    armed = false;
+    const port = Number(listener.port);
+    const stop = listener.stop.bind(listener);
+    listener.stop = (closeActiveConnections?: boolean) => {
+      stop(closeActiveConnections);
+      const server = `Bun.serve({ hostname: "127.0.0.1", port: ${port}, fetch: (r) => new URL(r.url).pathname === "/_ready" ? new Response("ready") : Response.json({ ok: true, commit: "another-run", fleet_commit: "another-run" }) })`;
+      const started = Bun.spawnSync([
+        "bash",
+        "-c",
+        `nohup "$0" -e "$1" >/dev/null 2>&1 & echo $!; i=0; while [ "$i" -lt 200 ]; do curl -q -s -o /dev/null --max-time 1 "http://127.0.0.1:${port}/_ready" && exit 0; sleep 0.05; i=$((i + 1)); done; exit 1`,
+        process.execPath,
+        server,
+      ]);
+      squatters.push(Number(started.stdout.toString().trim().split("\n")[0]));
+      if (!started.success) throw new Error(`the squatter did not take port ${port}`);
+      squatted.push(port);
+    };
+    return listener;
+  }) as typeof Bun.listen;
+  try {
+    return { result: await body(), squatted };
+  } finally {
+    Bun.listen = listen;
+    for (const pid of squatters) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {}
+    }
+  }
+}
+
+describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
+  "the stand-in Dispatch's port and readiness",
+  () => {
+    test("control: the squat takes a port a listener of this process closed, and answers there as another run's stand-in", async () => {
+      const { result, squatted } = await withSquat(async () => {
+        const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+        const { port } = listener;
+        listener.stop(true);
+        return { port, ready: await (await fetch(`http://127.0.0.1:${port}/_ready`)).text() };
+      });
+      expect({ squatted, ready: result.ready }).toEqual({
+        squatted: [result.port],
+        ready: "ready",
+      });
+    });
+
+    test("a prepared run's origin serves its own stand-in Dispatch under the squat: no port of it is one this process chose and closed", async () => {
+      const { result, squatted } = await withSquat(async () => {
+        let prepared: PreparedStandIn;
+        try {
+          prepared = await prepareStandIn(scratch, passingControls);
+        } catch (error) {
+          return { thrown: String(error) };
+        }
+        try {
+          const answer = (await (await fetch(`${prepared.dispatch.origin}/healthz`)).json()) as {
+            commit?: string;
+          };
+          return { built: prepared.repo.built, served: answer.commit };
+        } finally {
+          prepared.dispatch.stop();
+        }
+      });
+      expect({ ...result, squatted }).toEqual({
+        built: expect.any(String),
+        served: "built" in result ? result.built : "the run's own build",
+        squatted: [],
+      });
+    });
+  }
+);
 
 describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
   "the tailnet leg's own controls, against stand-ins",

@@ -7,12 +7,12 @@
  *  makes a directory takes the test file's own `scratch`, whose directories that file's hooks
  *  remove. */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  closedPort,
   copyLeg,
   type LegRun,
   publicRows,
@@ -22,6 +22,7 @@ import {
   tailnetLeg,
   textToolPath,
 } from "./outside-agent-fixture";
+import { closedPort } from "./outside-path-reach-fixtures";
 
 /* The tailnet leg against stand-ins of what it drives, so the rows it judges by its own controls
  * can be read PASS, FAIL and UNKNOWN: a git checkout whose commits the pins name; a deployment
@@ -326,22 +327,25 @@ export function liveStandInDispatches(): number {
 
 /** The stand-in Dispatch (`outside-agent-stand-in-dispatch.ts`) as a process of its own, its
  *  /healthz naming the commit `serving` says: no event loop of a test worker holds its answers,
- *  the bounded runner's synchronous stop of a sibling run included. It answers before this
- *  returns. */
+ *  the bounded runner's synchronous stop of a sibling run included. The child binds a port of the
+ *  kernel's choosing and writes it to `<state>/dispatch-port`, so no port chosen here and closed
+ *  can be taken by another process before the child binds it; and it answers `/_ready` with a
+ *  nonce made here, so another run's stand-in on that port can never pass for this one. It
+ *  answers before this returns. */
 function standInDispatch(
   state: string,
   controls: StandIns["controls"],
   repo: Checkout,
   serving: NonNullable<StandIns["serving"]>
 ): StandInDispatch {
-  const port = closedPort();
-  const origin = `http://127.0.0.1:${port}`;
+  const nonce = randomUUID();
+  const portFile = join(state, "dispatch-port");
   const commit = serving === "other" ? repo.apart : repo.built;
   const child = Bun.spawn([process.execPath, standInDispatchFile], {
     env: {
       PATH: process.env.PATH ?? "",
       OUTSIDE_STAND_IN_DISPATCH: JSON.stringify({
-        port,
+        nonce,
         state,
         controls,
         commit,
@@ -355,18 +359,24 @@ function standInDispatch(
     stderr: "inherit",
   });
   liveDispatches.add(child.pid);
-  // Its readiness, read as the rest of the preparation is, before any leg starts: at most 10 s.
+  // Its readiness, read as the rest of the preparation is, before any leg starts: the port the
+  // child bound, answering this nonce at /_ready, within 10 s.
   const ready = Bun.spawnSync([
     "bash",
     "-c",
-    'i=0; while [ "$i" -lt 200 ]; do curl -q -sf -o /dev/null --max-time 1 "$0/_ready" && exit 0; sleep 0.05; i=$((i + 1)); done; exit 1',
-    origin,
+    'i=0; while [ "$i" -lt 200 ]; do if [ -s "$0" ]; then p=$(cat "$0"); [ "$(curl -q -sf --max-time 1 "http://127.0.0.1:$p/_ready")" = "$1" ] && { echo "$p"; exit 0; }; fi; sleep 0.05; i=$((i + 1)); done; exit 1',
+    portFile,
+    nonce,
   ]);
-  if (!ready.success) {
+  const port = ready.stdout.toString().trim();
+  if (!ready.success || !/^[0-9]+$/.test(port)) {
     child.kill();
     liveDispatches.delete(child.pid);
-    throw new Error(`the stand-in Dispatch did not answer at ${origin} within 10 s`);
+    throw new Error(
+      "the stand-in Dispatch did not answer its own nonce at the port it wrote within 10 s"
+    );
   }
+  const origin = `http://127.0.0.1:${port}`;
   const seenFile = join(state, "dispatch-seen");
   return {
     origin,
@@ -416,7 +426,14 @@ if (command === "peer") {
 `;
 }
 
-export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedStandIn {
+export async function prepareStandIn(
+  scratch: Scratch,
+  standIns: StandIns
+): Promise<PreparedStandIn> {
+  // The ports the broker and the listener are named at: refused, from the range the kernel hands
+  // no `port: 0` listener and reserved for this process, so no other run's server can take one.
+  const brokerPort = await closedPort();
+  const listenerPort = await closedPort();
   const state = scratch("state");
   writeFileSync(join(state, "canary-refusal"), `${standIns.canaryRefusal}\n`);
   if (standIns.approve === false) writeFileSync(join(state, "login-expires"), "");
@@ -591,7 +608,7 @@ exit ${standIns.publicExit ?? 0}
         blank: "  ",
         malformed: `${repo.held} HEAD`,
       }[standIns.dispatchCommits],
-      OUTSIDE_TAILNET_BROKER_URL: `http://127.0.0.1:${closedPort()}`,
+      OUTSIDE_TAILNET_BROKER_URL: `http://127.0.0.1:${brokerPort}`,
       OUTSIDE_TAILNET_DISPATCH_URL: dispatch.origin,
       ...(standIns.cookie === "absent" ? {} : { OUTSIDE_FULL_COOKIE_FILE: join(inputs, "cookie") }),
       OUTSIDE_PERSON: "outside-e2e@example.com",
@@ -611,7 +628,7 @@ exit ${standIns.publicExit ?? 0}
         ? {}
         : {
             OUTSIDE_PEER: "probe",
-            OUTSIDE_LISTENER_URL: `http://127.0.0.1:${closedPort()}`,
+            OUTSIDE_LISTENER_URL: `http://127.0.0.1:${listenerPort}`,
             OUTSIDE_OWNER_REMOVE_COMMAND: `sh ${remove}`,
           }),
     };
