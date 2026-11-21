@@ -116,7 +116,7 @@ func readAnswer(body []byte, project string) ([]string, error) {
 			}
 			repositories = &list
 		default:
-			return nil, refused(fmt.Sprintf("holds the key %q, which is neither project nor repositories or is written twice", clip(key)))
+			return nil, refused(fmt.Sprintf("holds the key %q, which is neither project nor repositories or is written twice", dispatchread.Clip(key)))
 		}
 	}
 	if closing, err := decoder.Token(); err != nil || closing != json.Delim('}') {
@@ -129,17 +129,17 @@ func readAnswer(body []byte, project string) ([]string, error) {
 	case answered == nil:
 		return nil, refused("names no project")
 	case *answered != project:
-		return nil, fmt.Errorf("projectrepos: dispatch answered about %q, asked about %s", clip(*answered), project)
+		return nil, fmt.Errorf("projectrepos: dispatch answered about %q, asked about %s", dispatchread.Clip(*answered), project)
 	case repositories == nil:
 		return nil, refused("carries no list of repositories")
 	}
 	list := *repositories
 	for index, repository := range list {
 		if !ownerName(repository) {
-			return nil, refused(fmt.Sprintf("lists %q, which is no owner/name", clip(repository)))
+			return nil, refused(fmt.Sprintf("lists %q, which is no owner/name", dispatchread.Clip(repository)))
 		}
 		if index > 0 && list[index-1] >= repository {
-			return nil, refused(fmt.Sprintf("lists %q after %q: the list is sorted byte-wise and names each repository once", clip(repository), clip(list[index-1])))
+			return nil, refused(fmt.Sprintf("lists %q after %q: the list is sorted byte-wise and names each repository once", dispatchread.Clip(repository), dispatchread.Clip(list[index-1])))
 		}
 	}
 	return list, nil
@@ -153,16 +153,4 @@ func ownerName(repository string) bool {
 		return false
 	}
 	return !strings.ContainsFunc(repository, func(r rune) bool { return r <= ' ' || r == 0x7f })
-}
-
-// maxQuoted bounds how much of a string from Dispatch's answer an error quotes, so that a key or a
-// value as long as the answer itself is never logged whole.
-const maxQuoted = 64
-
-// clip is text, or its first maxQuoted bytes when it is longer.
-func clip(text string) string {
-	if len(text) > maxQuoted {
-		return text[:maxQuoted]
-	}
-	return text
 }

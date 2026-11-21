@@ -101,13 +101,26 @@ func (r Reader) Get(ctx context.Context, path string, query url.Values) (Answer,
 	return Answer{Status: response.StatusCode, Body: body}, nil
 }
 
-// RefusalCode is the code a refusal's body names, empty for a body that is cut short, holds more
-// than one value or names none: the status has already decided what the answer is, and the code
-// only adds to its error.
+// RefusalCode is the code a refusal's body names, cut by Clip, and empty for a body that is cut
+// short, holds more than one value or names none: the status has already decided what the answer
+// is, and the code only adds to its error.
 func RefusalCode(body []byte) string {
 	var refusal struct {
 		Code string `json:"code"`
 	}
 	_ = json.Unmarshal(body, &refusal)
-	return refusal.Code
+	return Clip(refusal.Code)
+}
+
+// MaxQuoted bounds how much of a string from Dispatch's answer an error quotes, so that a code, a
+// key or a value as long as the answer itself is never logged whole.
+const MaxQuoted = 64
+
+// Clip is text, or its first MaxQuoted bytes when it is longer: the most of a string from
+// Dispatch's answer that an error of the broker's quotes.
+func Clip(text string) string {
+	if len(text) > MaxQuoted {
+		return text[:MaxQuoted]
+	}
+	return text
 }
