@@ -1,0 +1,76 @@
+{
+  "id": 318442,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 4906,
+  "type": "issue.updated",
+  "actor": {
+    "kind": "session",
+    "id": "lorem ipsum dolor s"
+  },
+  "notify": false,
+  "created_at": "2026-11-09T23:30:10.514496Z",
+  "payload": {
+    "key": "ACME-1",
+    "rank": "lorem ipsum ",
+    "repo": "lorem ipsum dolor sit am",
+    "claim": {
+      "at": "2026-11-04T19:11:01.124828Z",
+      "actor": {
+        "id": "01a1a7f8-551c-7529-a258-c8d4cc77620b",
+        "kind": "session",
+        "origin": {
+          "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet ",
+          "host": "lor",
+          "machine": "lorem ipsum dolor s",
+          "session_title": "lorem ipsum dolor sit amet lo"
+        }
+      }
+    },
+    "route": null,
+    "title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor s",
+    "labels": [
+      "lorem "
+    ],
+    "number": 1192,
+    "parent": null,
+    "status": "in_progress",
+    "changed": [
+      "status"
+    ],
+    "project": "ACME",
+    "assignee": "alice@example.com",
+    "last_seq": 4906,
+    "priority": 0,
+    "ancestors": [],
+    "closed_at": null,
+    "blocked_by": [],
+    "components": {
+      "ids": [],
+      "mode": "inherit",
+      "reason": null,
+      "unknown": [],
+      "inherited_from": null
+    },
+    "created_at": "2026-11-04T18:05:47.024747Z",
+    "created_by": {
+      "id": "01a17552-e0de-7007-aa66-3a2088e7dbc6",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor s",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit a",
+        "session_title": "lorem ipsum dolor sit ame"
+      }
+    },
+    "updated_at": "2026-11-09T23:30:10.525626Z",
+    "resolved_repo": "lorem ipsum dolor sit am",
+    "thread_logins": [],
+    "external_links": [],
+    "plan_artifact_id": "fd5d8b9e-1b92-4bf1-92e9-0eca7b52d05e",
+    "primary_artifact_id": "11e27de4-e765-4e19-9391-ce79e93f1d98",
+    "decisions_artifact_id": "3fce6691-cc48-4c4c-90fc-a66a3960fb0e",
+    "verification_artifact_id": "07a6cf8f-f5f8-4911-a48d-ef307ba8a1ba"
+  }
+}

@@ -317,8 +317,9 @@ func (kv KeyValue) write(key string) error {
 // jetstream.ErrInvalidKey on a watch through the jetstream handle) as the ErrInvalidKey it is,
 // naming key. nats.go checks the alphabet before it sends anything (an exact key on a read, write
 // or delete, a search key on a watch), so every call through the handle reads its answer rather
-// than repeat its check. RefusesRead is the one exception: it answers without calling nats.go, so
-// it repeats the check as natsKeyValid, which must follow nats.go's validKeyRe on every upgrade.
+// than repeat its check. RefusesRead and RefusesWrite are the exceptions: they answer without
+// calling nats.go, so they repeat the check as natsKeyValid, which must follow nats.go's validKeyRe
+// on every upgrade.
 func invalidKey(key any, err error) error {
 	if errors.Is(err, nats.ErrInvalidKey) || errors.Is(err, jetstream.ErrInvalidKey) {
 		return fmt.Errorf("%w: key %q: %w", ErrInvalidKey, key, err)
@@ -385,11 +386,35 @@ func (kv KeyValue) RefusesRead(key string) error {
 	return nil
 }
 
+// RefusesWrite answers the refusal a Put, PutString, Create or Update of key through this handle
+// would answer before anything is sent, and nil when a write of key would reach the bucket. It
+// sends nothing itself.
+//
+// It is for a caller that builds a key from text it does not control and must know, before it
+// acts, whether this build can ever write that key, rather than meet the refusal partway through
+// its writes: the webhook redelivery sweep keys a delivery by the GUID GitHub gave it, and leaves
+// out a delivery whose keys the bucket refuses. What it answers is exactly the refusal a write
+// answers before sending, so the two cannot drift silently: the writes' own check first (write),
+// then nats.go's key alphabet (natsKeyValid), as RefusesRead answers for a read. A write's bound
+// is tighter than a read's (watchOverhead against getOverhead), so a key RefusesRead takes may be
+// one RefusesWrite refuses. TestRefusesWriteAnswersTheSameRefusalAPutOfTheKeyAnswers is what pins
+// it, against the refusal a real Put answers.
+func (kv KeyValue) RefusesWrite(key string) error {
+	if err := kv.write(key); err != nil {
+		return err
+	}
+	if !natsKeyValid(key) {
+		return invalidKey(key, nats.ErrInvalidKey)
+	}
+	return nil
+}
+
 // natsKeyValid copies nats.go's keyValid, which every KV call there runs on
 // an exact key, refusing it locally without sending anything: a key is valid when it is not empty,
 // neither starts nor ends in a dot, and holds only `-`, `/`, `_`, `=`, `.`, a letter or a digit
 // (its `validKeyRe`). The copy exists because keyValid is unexported, so a caller that asks
-// what a read would be refused for (RefusesRead) cannot ask nats.go itself.
+// what a read or a write would be refused for (RefusesRead, RefusesWrite) cannot ask nats.go
+// itself.
 func natsKeyValid(key string) bool {
 	if key == "" || key[0] == '.' || key[len(key)-1] == '.' {
 		return false
