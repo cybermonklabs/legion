@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -278,9 +279,14 @@ func (r *displayTreeReader) storedTrees(sums [][32]byte) map[[32]byte]json.RawMe
 // A caller still holding a pooled connection stores nothing, which is decided here, while that
 // connection is still held: a document load and a compaction shape their answers inside
 // read-only transactions (docs/persistence.go, docs/compaction.go), and the fresh mark the
-// goroutine takes cannot see the connection those hold.
+// goroutine takes cannot see the connection those hold. A read at a cut stores nothing either:
+// the store refuses each write under a cut (asof.Bind), and the present read stores the same
+// trees, which are keyed by their text alone.
 func (r *displayTreeReader) storeOf(missing []int) {
 	if r.server == nil || len(missing) == 0 || store.HoldsPooledConnection(r.ctx) {
+		return
+	}
+	if _, atCut := asof.CutFrom(r.ctx); atCut {
 		return
 	}
 	built := make([]texttrees.Tree, 0, len(missing))

@@ -10,7 +10,7 @@ import type {
 import { typedBlockIdAttribute } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import { commandName } from "../dispatch-command";
-import type { DispatchClient } from "../dispatch-http";
+import type { AsOfRead, DispatchClient } from "../dispatch-http";
 import {
   dispatchChildRef,
   dispatchDocumentRef,
@@ -29,6 +29,7 @@ import {
 import { decisionBlockLines, declinedAskLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
+import { leftOutAt } from "./as-of";
 import {
   type CommandContext,
   type DispatchToolResult,
@@ -37,6 +38,7 @@ import {
   optionalNumber,
   optionalPrecondition,
   optionalString,
+  type ReadingContext,
   type ResolvedArtifact,
   stringArg,
 } from "./context";
@@ -86,7 +88,7 @@ async function blockAsks(
  * other file comes back as text when it is UTF-8, and is described with the route that serves its
  * bytes when it is not. A file carries no token, anchors or approval, so nothing else is read. A
  * picture is shown whatever `shown` holds, and joins it under its address, so the session's later
- * reads name it instead of sending it.
+ * reads name it instead of sending it. At `read`'s cut, the version is the one that stood then.
  */
 async function readUploadedFile(
   client: DispatchClient,
@@ -94,7 +96,8 @@ async function readUploadedFile(
   details: Record<string, unknown>,
   requested: number | undefined,
   owner: string,
-  shown: Set<string> | undefined
+  shown: Set<string> | undefined,
+  read: AsOfRead = {}
 ): Promise<DispatchToolResult> {
   const versions = artifact.versions ?? [];
   const latest = Math.max(0, ...versions.map((version) => version.number));
@@ -115,7 +118,7 @@ async function readUploadedFile(
   ) {
     return tooLarge(stated.mime ?? "image", stated.size);
   }
-  const file = await client.fileVersion(artifact.id, number);
+  const file = await client.fileVersion(artifact.id, number, read);
   const size = `${file.bytes.length.toLocaleString("en-US")} bytes`;
   if (artifact.kind === "image") {
     const image = toolImage(file.bytes);
@@ -167,9 +170,10 @@ const BLOCK_OPENING_CHARS = 60;
  */
 async function listDocumentBlocks(
   client: DispatchClient,
-  artifact: Artifact
+  artifact: Artifact,
+  read: AsOfRead = {}
 ): Promise<{ text: string; token: string | undefined; version: number | null }> {
-  const live = await liveBlocks(client, artifact);
+  const live = await liveBlocks(client, artifact, read);
   const { bytes, blocks } = live;
   const decoder = new TextDecoder();
   const lines = [
@@ -187,8 +191,15 @@ async function listDocumentBlocks(
         ? `${points.slice(0, BLOCK_OPENING_CHARS).join("")}…`
         : flat;
     const { comments, asks } = block.references;
+    // At a cut a block's token is left out, and so is the id of an untyped block of a version no
+    // index holds: neither prints as a value, nor as "no token".
+    const id: string | undefined = block.id;
+    const shownId =
+      id === undefined && read.asOf !== undefined ? `(id ${leftOutAt(read.asOf)})` : id;
+    const token =
+      block.token ?? (read.asOf === undefined ? "no token" : `token ${leftOutAt(read.asOf)}`);
     lines.push(
-      `${indent}${block.id} ${block.type} (${block.token ?? "no token"}; ${comments} comment${comments === 1 ? "" : "s"}, ${asks} ask${asks === 1 ? "" : "s"}): ${opening}`
+      `${indent}${shownId} ${block.type} (${token}; ${comments} comment${comments === 1 ? "" : "s"}, ${asks} ask${asks === 1 ? "" : "s"}): ${opening}`
     );
     // Every pointer a typed block holds, in the order its type declares them: a reader follows
     // these between documents, and a `block[]` attribute a type declares later must not go
@@ -485,13 +496,17 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
-/** `dispatch doc-read`: a document's markdown, its blocks, or an uploaded file's content. */
-export async function docReadCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, ownerArguments, shown, documentOwner, resolveDocument } = context;
+/** `dispatch doc-read`: a document's markdown, its blocks, or an uploaded file's content; at a
+ *  cut, each of them as it stood then. */
+export async function docReadCommand(
+  context: ReadingContext<CommandContext>
+): Promise<DispatchToolResult> {
+  const { args, client, ownerArguments, shown, documentOwner, resolveDocument, reading } = context;
+  const { cut } = reading;
   const { agentArtifact } = ownerArguments;
   if (agentArtifact !== undefined) {
     // A conversation's upload is a file or picture; Dispatch keeps no document there.
-    const artifact = await client.getAgentArtifact(agentArtifact.session, agentArtifact.slug);
+    const artifact = await client.getAgentArtifact(agentArtifact.session, agentArtifact.slug, cut);
     if (optionalBoolean(args, "blocks") === true) {
       throw new Error(
         `${artifact.name} is an uploaded ${artifact.kind}, not a document, so it has no blocks. Read it with dispatch doc-read without --blocks.`
@@ -503,7 +518,8 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
       { session: agentArtifact.session, artifact: artifact.slug },
       optionalNumber(args, "version") ?? agentArtifact.version,
       `agent/${agentArtifact.session}`,
-      shown
+      shown,
+      cut
     );
   }
   const artifactReference =
@@ -519,7 +535,7 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
         `${resolved.artifact.name} is an uploaded ${resolved.artifact.kind}, not a document, so it has no blocks. Read it with dispatch doc-read without --blocks.`
       );
     }
-    const listed = await listDocumentBlocks(client, resolved.artifact);
+    const listed = await listDocumentBlocks(client, resolved.artifact, cut);
     // The token and the version come from the one answer the blocks came from, so the
     // trailer names the document this listing was read from and nothing else.
     const trailer = [
@@ -550,11 +566,12 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
         : { issue: resolved.issue?.key },
       version,
       resolved.owner.kind === "project" ? resolved.owner.project : resolved.owner.issue,
-      shown
+      shown,
+      cut
     );
   }
-  const documentPromise = client.docRead(resolved.artifact.id, version);
-  const threadsPromise = openAnchoredThreads(client, resolved);
+  const documentPromise = client.docRead(resolved.artifact.id, version, cut);
+  const threadsPromise = openAnchoredThreads(client, resolved, cut);
   const threadsResultPromise = threadsPromise.then(
     (value) => ({ status: "fulfilled" as const, value }),
     (reason) => ({ status: "rejected" as const, reason })

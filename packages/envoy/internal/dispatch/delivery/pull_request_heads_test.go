@@ -291,12 +291,12 @@ func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 		t.Fatalf("store a head row under GitHub's spelling of the repository: %v", err)
 	}
 
-	stored, err := HeadStoredAt(ctx, pool, "acme/widgets", sha)
+	stored, err := HeadStoredAt(ctx, pool, "acme/widgets", sha, HeadAnswers{})
 	if err != nil || !stored {
 		t.Fatalf("HeadStoredAt(acme/widgets) = %v, %v; want true: the row is that repository's, spelt as GitHub spells it",
 			stored, err)
 	}
-	elsewhere, err := HeadStoredAt(ctx, pool, "acme/gadgets", sha)
+	elsewhere, err := HeadStoredAt(ctx, pool, "acme/gadgets", sha, HeadAnswers{})
 	if err != nil || elsewhere {
 		t.Fatalf("HeadStoredAt(acme/gadgets) = %v, %v; want false: another repository's commit is not this one's",
 			elsewhere, err)
@@ -385,7 +385,7 @@ func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
 	}
 	newest := func(issueKey string) (NewestHead, bool) {
 		t.Helper()
-		head, found, err := NewestPullRequestHead(ctx, pool, issueKey)
+		head, found, err := NewestPullRequestHead(ctx, pool, issueKey, HeadAnswers{})
 		if err != nil {
 			t.Fatalf("NewestPullRequestHead(%s): %v", issueKey, err)
 		}

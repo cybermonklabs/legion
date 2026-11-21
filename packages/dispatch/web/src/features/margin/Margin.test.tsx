@@ -98,7 +98,14 @@ function answerAskThreads(...asks: Ask[]) {
   });
 }
 
-const markComposerAnchor = { artifact: "artifact-1", mark_id: "m-1", quote: "selected" };
+/** The words a margin compose is anchored to, as the selection bar hands them over: words in no
+ *  pending insert, which it names by an empty list (`ComposerAnchor.insertMarks`). */
+const markComposerAnchor = {
+  artifact: "artifact-1",
+  insertMarks: [],
+  mark_id: "m-1",
+  quote: "selected",
+};
 
 /** A margin ask card by its ask, in the group it is listed under: open and waiting on the reader,
  *  or decided. Both groups are one keyed list, so the group is the card's own attribute. */
@@ -131,7 +138,10 @@ function MarkComposerProbe(): ReactNode {
       </button>
       <button
         onClick={() =>
-          compose({ artifact: "artifact-1", mark_id: "m-2", quote: "second" }, setSecondOutcome)
+          compose(
+            { artifact: "artifact-1", insertMarks: [], mark_id: "m-2", quote: "second" },
+            setSecondOutcome
+          )
         }
         type="button"
       >
@@ -1349,7 +1359,7 @@ function SecondDocumentCompose(): ReactNode {
       <button
         onClick={() => {
           void composeForMark({
-            anchor: { artifact: "artifact-2", mark_id: "m-3", quote: "elsewhere" },
+            anchor: { artifact: "artifact-2", insertMarks: [], mark_id: "m-3", quote: "elsewhere" },
             kind: "comment",
           }).then(
             () => setOutcome("saved"),

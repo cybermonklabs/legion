@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -145,10 +146,17 @@ func (s *server) loadAskThreads(ctx context.Context, askIDs []string, reader *di
 // with a null holder and never fails the read, since the ask itself was read. A route whose
 // holder has missed its heartbeats reads holder_unresponsive, naming that holder: the ask still
 // reaches it, since what is sent to it waits for it.
+//
+// A read at a cut, which ctx carries, reads the claimant and the route at the cut and no roster,
+// which keeps no past state: each reach holds no status and no holder, and the answer leaves both
+// out where the ask has a route (leaveOutRouteReach).
 func (s *server) loadAskReaches(ctx context.Context, askIDs []string) (map[string]askReach, error) {
 	reaches, err := scanAskReaches(ctx, s.deps.Store.Pool, askIDs)
 	if err != nil {
 		return nil, err
+	}
+	if _, atCut := asof.CutFrom(ctx); atCut {
+		return reaches, nil
 	}
 	routed := false
 	for _, reach := range reaches {

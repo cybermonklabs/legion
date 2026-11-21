@@ -1,0 +1,51 @@
+-- pgmigrate:non-transactional
+-- 20261120140002_events_issue_activity.up.sql: the index on events through which a read at a cut
+-- finds when each issue last changed, built concurrently.
+--
+-- Why it exists. A read at a cut gives an issue's updated_at as the latest created_at of the
+-- issue's events at or before the cut, and its last_seq as the largest seq of them
+-- (internal/dispatch/asof, issuesShadow). Without this index each of the two reads events of the
+-- issue from the table, through events_issue_key_seq_key, since that index holds no created_at.
+-- On a copy of production's event log (843,238 events, 12,112 issues, 2026-11-20), the issue
+-- listing at a cut spent 12.4 s in the read of updated_at, 1 ms for each issue, and a search at a
+-- cut read it again for each comment it found. This index holds each event of an issue that is
+-- not a whole-issue event in created_at order, with its seq, so the latest created_at at the cut
+-- is one entry of the index and the largest seq a read of the index alone; the whole-issue events
+-- are read from events_issue_state. It leaves those events out so that the read of an issue's
+-- newest state cannot take it: an index of every event keyed (issue_key, created_at) served
+-- updated_at as well, but the planner then read the newest state of an issue at an early cut from
+-- it, sorting the issue's events, rather than through events_issue_state. On the copy it was
+-- 34 MB.
+--
+-- The predicate must stay the shadow's word for word. The types are asof.IssueStateTypes
+-- (internal/dispatch/asof/shadows_issues.go), in its order, named as `type not in`, and the
+-- shadow writes its type list from them (issueActivityAt). When the two lists do not agree, the
+-- answer stays correct, but the read does not use this index.
+-- asof.TestEachEventIndexNamesTheTypesItsShadowReads reads this file and compares the two lists,
+-- and asof.TestTheShadowsUseTheirIndexes reads the plan.
+--
+-- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment
+-- runs one replica under a Kubernetes Deployment's `strategy: Recreate`
+-- (packages/envoy/infra/README.md). So the build's time is downtime. The build reads all of
+-- events two times; on the copy, events and its indexes were 1,459 MB, and a plain build of this
+-- index took 4.7 s on the pod. Each write of an event but a whole-issue one writes this index too.
+--
+-- Why it is exempt from the census's size limit. events is larger than the 1 GiB that a
+-- migration may touch (pgmigrate.CensusTableLimit). A migration whose first line is
+-- `-- pgmigrate:non-transactional` and that holds exactly one non-unique
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS - this one - runs outside the runner's transaction, and
+-- the census does not apply its size limit to it (pgmigrate/nontransactional.go, concurrentIndex,
+-- and pgmigrate/census.go, Census). The build takes SHARE UPDATE EXCLUSIVE on events, which no
+-- ordinary read or write of events waits on. It waits for each older snapshot between its two
+-- reads of the table.
+--
+-- What a failed build leaves. A build that fails, or that is cancelled or killed, leaves an index
+-- of this name that is marked invalid. The planner does not use an invalid index, and PostgreSQL
+-- can go on updating it on each write. Reads at a cut stay correct, but slow, until the index is
+-- built. The runner records the version only after a build that finished. At the next boot it
+-- drops the invalid index with DROP INDEX CONCURRENTLY and builds it again
+-- (pgmigrate/nontransactional.go, ExecNonTransactional and dropOwnLeftover). Do not drop it by
+-- hand.
+create index concurrently if not exists events_issue_activity
+    on events (issue_key, created_at) include (seq)
+    where type not in ('issue.created', 'issue.updated', 'issue.closed');

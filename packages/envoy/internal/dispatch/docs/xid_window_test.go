@@ -367,7 +367,7 @@ func TestXidWindowReconcileTaskProgress(t *testing.T) {
 	})
 	var drifted int
 	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from issues i where `+taskProgressDrift).Scan(&drifted); err != nil {
+		`select count(*) from issues i where `+TaskProgressDrift).Scan(&drifted); err != nil {
 		t.Fatalf("count drifted issues: %v", err)
 	}
 	if drifted != 0 {

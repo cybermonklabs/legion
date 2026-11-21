@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+  New commands: dispatch edit-comment, dispatch delete-comment, dispatch edit-message and dispatch
+  delete-message, and dispatch read --history; each one's help states what it does. A read prints an
+  edited post's edit time and a deleted post as deleted, with no body. The four corrections and the
+  history read need a Dispatch of this release: where an older Dispatch has no route for one, or
+  refuses its call in a way only an older build does, the command says that this Dispatch predates
+  post corrections, and it passes on every other answer of an older Dispatch as it is. A repeated
+  call whose answer Dispatch kept no copy of says what the call did: a write says it was made and
+  how to read it back, and a call that writes nothing (dispatch related, the round trip an upload
+  runs) is asked once more under a new key, and says so if Dispatch keeps no answer again.
+  A picture uploaded before a call's own write whose answer is lost that way is named uploaded,
+  where it was named "may or may not have been uploaded". A graph row, a block read, a search hit,
+  an Inbox thread line and a reply's quote of an edited post carry the edited mark, as does a
+  delivery card that reads a cut post again whole; a card that prints only what its frame carried
+  keeps it as sent.
+time: 2026-11-11T07:23:34.685796308Z
+custom:
+    Issue: pr3512

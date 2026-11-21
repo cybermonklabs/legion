@@ -47,6 +47,15 @@ export type ActorOrigin = z.output<typeof ActorOriginSchema>;
 export const DISPATCH_SCOPES = ["person", "approve"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 
+/** The scope words a Dispatch token can carry where its scopes are listed: the agent token list,
+ *  and `scopes` in `GET /api/v1/whoami`. They are the two of `DISPATCH_SCOPES` and `read`. A
+ *  token that holds `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it
+ *  alone or beside `person`, never beside `approve`. `read` is a mark on the token and not a
+ *  scope a credential acts under, so no act records it, and `DISPATCH_SCOPES` and
+ *  `ActorActSchema` keep `person` and `approve` alone. */
+export const DISPATCH_TOKEN_SCOPES = ["person", "approve", "read"] as const;
+export type DispatchTokenScope = (typeof DISPATCH_TOKEN_SCOPES)[number];
+
 /** The agent that made an act for the person it acts for: the session a broker-issued token
  *  proved, and the personal token presented, by id and name. It is absent wherever the person
  *  acted themselves, which is every act made at a browser.
@@ -104,6 +113,20 @@ export const ActorSchema = z.union([
    *  (`{kind: "system", id: "architecture-importer"}`). */
   z.strictObject({ kind: z.literal("system"), id: z.string() }).readonly(),
 ]);
+
+/**
+ * The actor and the act exactly as Dispatch writes them: what `ActorSchema` and `ActorActSchema`
+ * parse, which is what every `DispatchEvent` payload of this package carries.
+ *
+ * They are deliberately not the contract's `Actor` and `ActorAct`, which are the OpenAPI
+ * document's reading and keep the plain names: that reading's `kind` is a `string` and its
+ * optional fields do not carry `undefined`, so neither type is assignable to the other
+ * (`dispatch-api-spellings.test.ts`). A renderer handed an actor from a payload names these, as
+ * one handed an actor from a served row names `Actor`.
+ */
+export type WrittenActorAct = z.output<typeof ActorActSchema>;
+
+export type WrittenActor = z.output<typeof ActorSchema>;
 
 /**
  * An actor as a bus frame carries it, in the three readings the inbound parsers need.

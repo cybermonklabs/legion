@@ -49,7 +49,11 @@ var queryKeyExceptions = map[string]string{
 // `limit`, `offset` and `max_chars`, and parseQueryBool with `keywords_only`, which both
 // searchResultsRouteQuery and the related route's query struct declare. searchRouteQuery, the
 // other search route's, declares it no longer: the five members a build released before them
-// drops are declared on GET /api/v1/search/results alone (routes_shapes.go).
+// drops are declared on GET /api/v1/search/results alone (routes_shapes.go). server.go also reads
+// one key through a constant, asOfGate's `query[asOfParameter]`, which the last entry pins.
+// issue_as_of.go holds refuseParameterAtCut, which reads its key as `Has(parameter)`: it is
+// called with `route_status` and `pinned`, which issueListQuery declares, and with `at`, which
+// issueResultsQuery declares (results_as_of.go).
 var queryKeysReadThroughAHelper = []string{
 	// multipartJSONField reads one named JSON field of an upload's form: `actor` and
 	// `precondition`, each a field of the multipart body the upload routes declare.
@@ -58,6 +62,12 @@ var queryKeysReadThroughAHelper = []string{
 	`delivery.go: Has(name)`,
 	`server.go: query[field]`,
 	`server.go: query[field]`,
+	`issue_as_of.go: Has(parameter)`,
+	// asOfGate reads as_of on every row through the constant asOfParameter. The query struct of
+	// each GET route that answers as_of names it, but GET /api/v1/search's (searchRouteQuery), and
+	// no other GET route's struct does, as TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument
+	// holds.
+	`server.go: query[asOfParameter]`,
 }
 
 func TestEveryQueryKeyAHandlerReadsIsNamedByItsParameters(t *testing.T) {
@@ -290,29 +300,13 @@ func queryValueNames(file *ast.File) map[string]bool {
 func stringSlices(file *ast.File) (byName map[string][]string, rangedOver map[string][]string) {
 	byName = map[string][]string{}
 	rangedOver = map[string][]string{}
-	elementsOf := func(literal *ast.CompositeLit) []string {
-		var elements []string
-		for _, element := range literal.Elts {
-			basic, ok := element.(*ast.BasicLit)
-			if !ok || basic.Kind != token.STRING {
-				return nil
-			}
-			text, err := strconv.Unquote(basic.Value)
-			if err != nil {
-				return nil
-			}
-			elements = append(elements, text)
-		}
-		return elements
-	}
 	ast.Inspect(file, func(node ast.Node) bool {
 		if spec, ok := node.(*ast.ValueSpec); ok {
 			for index, value := range spec.Values {
-				literal, ok := value.(*ast.CompositeLit)
-				if !ok || index >= len(spec.Names) {
+				if index >= len(spec.Names) {
 					continue
 				}
-				if elements := elementsOf(literal); len(elements) > 0 {
+				if elements := stringLiterals(value); len(elements) > 0 {
 					byName[spec.Names[index].Name] = elements
 				}
 			}
@@ -332,7 +326,7 @@ func stringSlices(file *ast.File) (byName map[string][]string, rangedOver map[st
 		case *ast.Ident:
 			rangedOver[variable.Name] = append(rangedOver[variable.Name], over.Name)
 		case *ast.CompositeLit:
-			if elements := elementsOf(over); len(elements) > 0 {
+			if elements := stringLiterals(over); len(elements) > 0 {
 				inline := "\x00inline " + variable.Name
 				byName[inline] = elements
 				rangedOver[variable.Name] = append(rangedOver[variable.Name], inline)

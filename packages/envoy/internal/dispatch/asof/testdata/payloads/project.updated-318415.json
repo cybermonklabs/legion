@@ -1,0 +1,23 @@
+{
+  "id": 318415,
+  "issue_key": null,
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 381,
+  "type": "project.updated",
+  "actor": {
+    "kind": "session",
+    "id": "lorem ipsum dolor "
+  },
+  "notify": false,
+  "created_at": "2026-11-09T23:29:42.944623Z",
+  "payload": {
+    "key": "lore",
+    "name": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo",
+    "open_asks": 0,
+    "created_at": "2026-10-17T19:14:13.807073Z",
+    "gated_steps": [
+      "lore"
+    ]
+  }
+}

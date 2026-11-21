@@ -1,0 +1,48 @@
+-- pgmigrate:non-transactional
+-- 20261120140003_events_comment_state.up.sql: the index on events through which a read at a cut
+-- finds the events of each comment, built concurrently.
+--
+-- Why it exists. A read at a cut reads a comment from its own events at or before the cut: the
+-- event that created it, its newest event whose payload is the whole comment, and its first edit
+-- or delete after the cut (internal/dispatch/asof, commentsShadow), and the ask reads read a
+-- reply's creating event the same way (asksShadow, askFollowersShadow). Each read finds the
+-- comment's events by the comment's id in their payload. Without this index the only index that
+-- narrows such a read is the owner's, so it read every event of the comment's issue from the
+-- table: on a copy of production's event log (843,238 events, 118,520 comments, 2026-11-20), 4 to
+-- 13 ms for each comment of a busy issue, and an issue's asks with their threads took 19 s at a
+-- cut. The index holds only the events of those types, keyed by the comment's id in the payload
+-- and in id order for each comment. So each read finds its event with no sort. The index includes
+-- created_at, which the reads compare with the cut. On the copy it was 9.1 MB.
+--
+-- The predicate must stay the shadow's word for word. The types are asof.CommentStateTypes
+-- (internal/dispatch/asof/shadows_posts.go), in its order. Each read names these types or some
+-- of them, and the planner proves that a list of some of them implies the predicate. When the
+-- two lists do not agree, the answer stays correct, but a read does not use this index, or the
+-- index holds events that no read uses. asof.TestEachEventIndexNamesTheTypesItsShadowReads reads
+-- this file and compares the two lists, and asof.TestTheShadowsUseTheirIndexes reads the plan.
+--
+-- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment
+-- runs one replica under a Kubernetes Deployment's `strategy: Recreate`
+-- (packages/envoy/infra/README.md). So the build's time is downtime. The build reads all of
+-- events two times; on the copy, events and its indexes were 1,459 MB, and a plain build of this
+-- index took 5.7 s on the pod.
+--
+-- Why it is exempt from the census's size limit. events is larger than the 1 GiB that a
+-- migration may touch (pgmigrate.CensusTableLimit). A migration whose first line is
+-- `-- pgmigrate:non-transactional` and that holds exactly one non-unique
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS - this one - runs outside the runner's transaction, and
+-- the census does not apply its size limit to it (pgmigrate/nontransactional.go, concurrentIndex,
+-- and pgmigrate/census.go, Census). The build takes SHARE UPDATE EXCLUSIVE on events, which no
+-- ordinary read or write of events waits on. It waits for each older snapshot between its two
+-- reads of the table.
+--
+-- What a failed build leaves. A build that fails, or that is cancelled or killed, leaves an index
+-- of this name that is marked invalid. The planner does not use an invalid index, and PostgreSQL
+-- can go on updating it on each write. Reads at a cut stay correct, but slow, until the index is
+-- built. The runner records the version only after a build that finished. At the next boot it
+-- drops the invalid index with DROP INDEX CONCURRENTLY and builds it again
+-- (pgmigrate/nontransactional.go, ExecNonTransactional and dropOwnLeftover). Do not drop it by
+-- hand.
+create index concurrently if not exists events_comment_state
+    on events ((payload->>'id'), id desc) include (created_at)
+    where type in ('comment.created', 'comment.answered', 'comment.edited', 'comment.deleted', 'comment.resolved', 'comment.reopened', 'comment.anchor_refreshed', 'suggestion.accepted', 'suggestion.rejected');

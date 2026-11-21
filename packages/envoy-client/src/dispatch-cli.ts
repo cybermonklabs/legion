@@ -358,7 +358,8 @@ export async function runDispatchCli(
     const settings =
       file.path === null
         ? null
-        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId }).dispatch;
+        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId, tokenFiles: true })
+            .dispatch;
     const { problems } = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
@@ -376,10 +377,12 @@ export async function runDispatchCli(
     return refuse(`dispatch: ${file.error}`, USAGE, parsed.tool);
   }
   // The session this call acts as is the session a broker trade writes under, so the token this
-  // call presents names it rather than naming none or another of this machine's.
+  // call presents names it rather than naming none or another of this machine's. The command is
+  // the one caller that takes the token files (`tokenFilesTarget`, dispatch-config.ts).
   const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
     cwd: io.cwd,
     session: sessionId,
+    tokenFiles: true,
   });
   // A checkout's OpenCode-era file, which is not read, is said on every call while it is there.
   for (const warning of warnings) print(`dispatch: ${warning}`);
@@ -610,7 +613,9 @@ export async function runDispatchCli(
     text = messageFor(error);
     // The command's write landed but its answer was lost: it is done, so the call succeeded, and
     // its one line says to read back what it made. The executor turns a landing of a write that
-    // was only a step of its command (a picture, a closing reason) into a failure of its own.
+    // was only a step of its command (a picture, a closing reason) into a failure of its own. A
+    // call that writes nothing whose answer Dispatch kept no copy of (`DispatchAnswerNotKeptError`)
+    // made nothing, so it is no landing: it exits 1 below, its line saying to run it again.
     if (error instanceof DispatchWriteLandedError) {
       entry = { tool, details: { landed_without_answer: error.code } };
       code = OK;

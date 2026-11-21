@@ -1,0 +1,76 @@
+{
+  "id": 27,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 10,
+  "type": "ask.resolved",
+  "actor": {
+    "kind": "session",
+    "id": "01a13c57-d826-7242-80fe-5f0670188b11",
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-16T06:53:17.693954Z",
+  "payload": {
+    "anchor": null,
+    "answer": null,
+    "artifact_id": null,
+    "author": {
+      "id": "01a14374-cfa9-7543-a55a-bad410b85d58",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor si",
+        "host": "lor",
+        "machine": "lorem ipsum dolor si",
+        "session_title": "lorem ipsum dolor sit amet"
+      },
+      "owner": "alice@example.com"
+    },
+    "block_artifact": {
+      "id": "4ea7c7c8-c108-4565-a672-7ff8b3da12e8",
+      "primary": true,
+      "slug": "lore"
+    },
+    "block_id": "27064577-3502-4e45-9bb9-82192b1b9fe5",
+    "created_at": "2026-10-16T06:52:06.515517Z",
+    "edited_at": null,
+    "id": "d4ebc79e-c1e6-4638-b01f-24062b69bc45",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 25,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit a",
+        "id": "b2",
+        "label": "lorem ipsum dolor sit amet"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ips",
+        "id": "b3",
+        "label": "lorem ipsum dolo"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ",
+        "id": "b4",
+        "label": "lorem ipsum dolor sit ame"
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ",
+    "referenced_by_count": 0,
+    "resolution": {
+      "actor": {
+        "id": "01a13c57-d826-7242-80fe-5f0670188b11",
+        "kind": "session",
+        "owner": "alice@example.com"
+      },
+      "at": "2026-10-16T06:53:17.722831243Z",
+      "kind": "resolved",
+      "reason": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem"
+    },
+    "revision": 1,
+    "state": "resolved",
+    "urgency": "high"
+  }
+}

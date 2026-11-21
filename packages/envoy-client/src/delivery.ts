@@ -7,6 +7,7 @@ import {
   AskEventPayloadSchema as AskPayloadSchema,
   ChildStatusEventPayloadSchema as ChildStatusPayloadSchema,
   CommentEventPayloadSchema as CommentPayloadSchema,
+  type CommentRead,
   DELIVERY_DUPLICATE_WINDOW_MS,
   type DeliveryCapability,
   DISPATCH_DOCUMENT_TOPIC_PREFIX,
@@ -26,16 +27,18 @@ import {
   legacyAgentSubject,
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
+  type MessageRead,
   type SessionAnswerRelation,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
   topicForms,
 } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
+import { deletedMark, withEditedMark } from "./actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
-import { DispatchClient } from "./dispatch-http";
+import { type AsOfRead, DispatchClient } from "./dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "./dispatch-owner";
 import { pictureAddresses } from "./dispatch-pictures";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
@@ -577,30 +580,43 @@ function carriedBodyNote(event: DispatchEvent): string | undefined {
   return item === undefined ? what : `${what}; read it whole with ${wholeItemRoute(item)}`;
 }
 
-/** The whole body of a comment or message, read from the server. Undefined when the read fails
+/** The whole body of a comment or message, read from the server, at `read`'s cut where it names
+ *  one. Undefined when the read fails
  *  or its answer does not hold the item, so the caller keeps the part its event carried: a body
  *  the server will not answer is still better read in part than not at all. A direct message,
- *  which belongs to no issue, is read through the session it was delivered to. */
+ *  which belongs to no issue, is read through the session it was delivered to. An item its
+ *  author deleted since answers the deleted line every read prints for one (`deletedMark`) in
+ *  place of the body the delete cleared. An item its author edited answers its current body
+ *  followed by the mark every line prints for one (` · edited <time>`, `editedMark`): the card a
+ *  host renders with this body re-read the post, so it prints the words the post holds now, which
+ *  an edit since the event may have changed. A card that prints only what its frame carried reads
+ *  nothing here, and keeps the delivery Dispatch sent as it was sent. A read at a cut whose answer
+ *  leaves out the body (`Dispatch-As-Of-Absent`) answers undefined as well, so the caller keeps
+ *  the part its event carried. */
 export async function wholeCarriedBody(
   client: DispatchClient,
   item: CarriedItem,
-  session?: string
+  session?: string,
+  read: AsOfRead = {}
 ): Promise<string | undefined> {
   try {
+    let posts: readonly (CommentRead["comment"] | MessageRead["message"])[];
     if (item.resource === "comment") {
-      const read = await client.getComment(item.id);
-      return [read.comment, ...(read.replies ?? [])].find((comment) => comment.id === item.id)
-        ?.body;
+      const answer = await client.getComment(item.id, read);
+      posts = [answer.comment, ...(answer.replies ?? [])];
+    } else {
+      if (item.issueKey === null && session === undefined) return undefined;
+      const answer =
+        item.issueKey === null
+          ? await client.getMessageThread(item.id, session, read)
+          : await client.getMessage(item.issueKey, item.id, read);
+      posts = [answer.message, ...(answer.replies ?? [])];
     }
-    const read =
-      item.issueKey === null
-        ? session === undefined
-          ? undefined
-          : await client.getMessageThread(item.id, session)
-        : await client.getMessage(item.issueKey, item.id);
-    return read === undefined
-      ? undefined
-      : [read.message, ...(read.replies ?? [])].find((message) => message.id === item.id)?.body;
+    const post = posts.find((candidate) => candidate.id === item.id);
+    if (post === undefined) return undefined;
+    if (post.deleted_at != null) return deletedMark(post.deleted_at, post.deleted_by);
+    const body: string | undefined = post.body;
+    return body === undefined ? undefined : withEditedMark(body, post.edited_at);
   } catch {
     return undefined;
   }
@@ -663,11 +679,14 @@ const DISPATCH_PAYLOAD_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   "comment.resolved": CommentPayloadSchema,
   "comment.reopened": CommentPayloadSchema,
   "comment.edited": CommentPayloadSchema,
+  "comment.deleted": CommentPayloadSchema,
   "suggestion.accepted": CommentPayloadSchema,
   "suggestion.rejected": CommentPayloadSchema,
   "message.created": MessagePayloadSchema,
   "message.delivery": MessageDeliveryPayloadSchema,
   "message.answered": MessagePayloadSchema,
+  "message.edited": MessagePayloadSchema,
+  "message.deleted": MessagePayloadSchema,
   "child.status": ChildStatusPayloadSchema,
 };
 function topicDocument(
@@ -988,8 +1007,10 @@ function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
 }
 
 /** `event` with the whole body of the item it carried only the first part of, or none of: the
- *  body the server answered, and neither flag that said the body on the event was not the
- *  item's own (`bodyWasCut`). The event is left as it arrived when the caller read no body. */
+ *  body the server answered, with the edited mark after it for an item edited since, or the
+ *  deleted line for an item deleted since (`wholeCarriedBody`), and neither flag that said the
+ *  body on the event was not the item's own (`bodyWasCut`). The event is left as it arrived when
+ *  the caller read no body. */
 function withWholeBody(event: DispatchEvent, body: string | undefined): DispatchEvent {
   if (body === undefined || !isObject(event.payload) || !bodyWasCut(event.payload)) return event;
   const { body_truncated: _cut, payload_omitted: _omitted, ...carried } = event.payload;

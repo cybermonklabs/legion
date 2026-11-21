@@ -1,0 +1,55 @@
+{
+  "id": 322664,
+  "issue_key": null,
+  "artifact_id": "892d69fc-b036-4755-9b31-9ac1f621a8cc",
+  "project": "ACME",
+  "seq": 4,
+  "type": "comment.anchor_refreshed",
+  "actor": {
+    "kind": "session",
+    "id": "cbe0aea0-879a-49e2-90c7-e2065c39e73f",
+    "origin": {
+      "host": "lorem ",
+      "machine": "lorem ipsum dolor ",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor si"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-11-10T00:58:36.21417Z",
+  "payload": {
+    "id": "d045dae5-1e6e-40e8-9d9f-9abb59d1e0ba",
+    "body": "lorem ",
+    "turn": null,
+    "anchor": {
+      "quote": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet ",
+      "mark_id": "lorem ipsum dolo",
+      "version": 1,
+      "block_id": null,
+      "orphaned": true,
+      "artifact_id": "892d69fc-b036-4755-9b31-9ac1f621a8cc"
+    },
+    "ask_id": null,
+    "author": {
+      "id": "alice@example.com",
+      "kind": "user"
+    },
+    "answers": null,
+    "mentions": [],
+    "reply_to": null,
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": null,
+    "created_at": "2026-11-10T00:50:18.05243Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": "892d69fc-b036-4755-9b31-9ac1f621a8cc",
+    "project_key": "ACME",
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "lorem ipsum dolo",
+    "artifact_slug": "lorem ipsum dolo",
+    "suppress_route": false
+  }
+}

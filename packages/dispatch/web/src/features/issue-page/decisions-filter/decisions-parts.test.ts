@@ -331,6 +331,7 @@ test("a decision the reader asked to change leaves the review list and carries t
     author: READER_ACTOR,
     body: `Change ${block}, please.`,
     created_at: at,
+    deleted_at: null,
     id,
   });
   const parts = partsOf(

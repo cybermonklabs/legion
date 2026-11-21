@@ -31,13 +31,14 @@ package api
 //     writeNeedsASignedInPerson refuses below. The third is the `named` token of an account
 //     entry that names no project (`<service account>==<person>`, the shared public-session
 //     account's), which names its person and writes wherever Dispatch's own rules let it
-//     (brokerTokenActor). The fourth is a read-only token, which carries `project_scope` `none`
-//     and the scope `read` alone, names a service and no person, and never reaches this check:
-//     the read-only gate register puts outside it answers that token
-//     403 READ_ONLY_TOKEN on every route the read list does not name, every write among them
-//     (refuseReadOnlyToken, readScopeRoutes). That is the rule and not a transitional measure:
-//     every caller that exists today writes exactly what it wrote before, which is what lets
-//     this deploy before anything presents a broker token.
+//     (brokerTokenActor). The fourth is the read entry's token, which carries `project_scope`
+//     `none` and the scope `read` alone and names a service and no person. It never reaches
+//     this check, and nor does any other read-only credential (a token narrowed to reading,
+//     which may name the project it reads as): the read-only gate register puts outside it
+//     answers every such credential 403 READ_ONLY_TOKEN on every route outside the read class,
+//     every write among them (refuseReadOnlyToken, readClasses). That is the rule and not a
+//     transitional measure: every caller that exists today writes exactly what it wrote before,
+//     which is what lets this deploy before anything presents a broker token.
 //
 // For a credential that does name a project, the check fails closed: only a target that
 // resolves to that credential's own project reaches the handler. A target that resolves to
@@ -407,10 +408,10 @@ func addressesOneSession(route apiRoute) bool {
 // refusal's message names `agent-secrets login`, the command that signs a person in on that
 // machine, since running it is the whole remedy.
 //
-// A read-only token names a service and no person too, but it is no such caller: it reads only
-// what the read list names, and signing a person in is no remedy for it. It never reaches this
-// check, since the read-only gate register puts outside it has already answered it 403
-// READ_ONLY_TOKEN (refuseReadOnlyToken).
+// A read-only token may name a service and no person too, but it is no such caller: it may only
+// read, and signing a person in is no remedy for it. It never reaches this check, since the
+// read-only gate register puts outside it has already answered it 403 READ_ONLY_TOKEN, as it
+// answers a read-only token on every write (refuseReadOnlyToken).
 //
 // Every other credential is unaffected: a cookie, a personal token, a service-account token, the
 // shared token and a broker token that does name a person each reach the handler as before, at

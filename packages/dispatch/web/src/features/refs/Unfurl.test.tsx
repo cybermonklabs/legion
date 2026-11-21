@@ -1,12 +1,14 @@
 import { expect, spyOn, test } from "bun:test";
 import { DISPATCH_BLOCK_UNITS } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { insertDeleted } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
 import { ApiError, api } from "../../api/client";
+import { markCorrectedPost } from "../../api/corrected-post";
 import type {
   AskRead,
   CommentRead,
@@ -137,6 +139,60 @@ test("Unfurl reads the immutable document version named by a reference", async (
     getArtifactVersion.mockRestore();
     getArtifactText.mockRestore();
     getIssue.mockRestore();
+    getIssueSummary.mockRestore();
+  }
+});
+
+// Census row V.40 of dispatch://INFRA-1523: the card of a reference to a document that pins no
+// version draws the document's live text, from the page's read of it. A pending insert's comment
+// is deleted, which takes the insert's words out of the document; the read the page holds gives
+// them with no mark to tell them by, and here the read the card asks again fails. The delete's
+// correction drops the read: the card draws none of the words straight away, and says the text
+// could not load while the read fails.
+test("Unfurl draws none of a deleted insert's words in a document's card whose text read fails again, and says its text could not load", async () => {
+  const inserted = "cleared by the security review";
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(coreSummary);
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: `Ship it in two steps, ${inserted}.`,
+    token: "sha256:design",
+    version: null,
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <Unfurl body="dispatch://CORE-1/artifact/design" />
+    </QueryClientProvider>
+  );
+  try {
+    const card = await within(view.container).findByRole("link", { name: /design\.md/ });
+    // The control: while the insert stands, its words are the document's, and the card draws them.
+    await waitFor(() => expect(card.textContent).toContain(inserted));
+
+    getArtifactText.mockRejectedValue(
+      new ApiError(503, {
+        code: "DOC_SERVICE_UNAVAILABLE",
+        error: "document service is unavailable",
+      })
+    );
+    act(() =>
+      markCorrectedPost(
+        queryClient,
+        insertDeleted("artifact-1", "p1", 3, { artifact_slug: "design" })
+      )
+    );
+    const straightAfter = card.textContent;
+
+    await waitFor(() => expect(card.textContent).toContain("Could not load this document's text."));
+    expect({
+      drawn: card.textContent?.includes(inserted),
+      drawnStraightAfter: straightAfter?.includes(inserted),
+      read: queryClient.getQueryState(["artifact", "artifact-1", "text"])?.status,
+      title: card.textContent?.includes("design.md"),
+    }).toEqual({ drawn: false, drawnStraightAfter: false, read: "error", title: true });
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    getArtifactText.mockRestore();
     getIssueSummary.mockRestore();
   }
 });
@@ -605,4 +661,113 @@ test("Unfurl renders a GitHub issue's body formatted, on one run of text, with n
     githubRest.mockRestore();
     view.unmount();
   }
+});
+
+test("Unfurl says a referenced comment was deleted and gives no part of its body", async () => {
+  const commentRead: CommentRead = {
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "",
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+      deleted_at: "2026-09-09T01:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    },
+    replies: [],
+  };
+  const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <Unfurl body="dispatch://CORE-1/comment/comment-1" />
+    </QueryClientProvider>
+  );
+
+  try {
+    await within(view.container).findByText(/Deleted by/);
+  } finally {
+    getComment.mockRestore();
+    view.unmount();
+  }
+});
+
+// A card for a post prints the post, so an edited one carries ` · edited` after its title, as
+// its byline does, and one nobody edited carries none. A deleted one has no title left: the
+// deleted line is its title, and the card never falls back to the reference the body wrote.
+test("Unfurl marks an edited comment, and a deleted one's title is the deleted line, not the body's words", async () => {
+  const read = (overrides: Partial<CommentRead["comment"]>): CommentRead => ({
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "Looks good.",
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+      ...overrides,
+    },
+    replies: [],
+  });
+  const card = async (answer: CommentRead, settled: string) => {
+    const getComment = spyOn(api, "getComment").mockResolvedValue(answer);
+    const view = renderUnfurl("dispatch://CORE-1/comment/comment-1");
+    try {
+      const link = await waitFor(() => {
+        const found = view.container.querySelector("a");
+        if (found?.textContent?.includes(settled) !== true) throw new Error("not read yet");
+        return found;
+      });
+      return link.textContent;
+    } finally {
+      view.unmount();
+      getComment.mockRestore();
+    }
+  };
+  /** The read with no `body` key: the one answer whose card has no title, so it falls back to
+   *  the reference the body wrote. */
+  const bodiless = (overrides: Partial<CommentRead["comment"]>): CommentRead => {
+    const { body: _body, ...comment } = read(overrides).comment;
+    return { comment, replies: [] } as unknown as CommentRead;
+  };
+
+  expect(await card(read({ edited_at: "2026-09-09T01:00:00Z" }), "Looks good.")).toBe(
+    "Looks good. · edited"
+  );
+  expect(await card(read({}), "Looks good.")).toBe("Looks good.");
+  // The positive control of the last two lines: that answer of a comment that stands, with no
+  // body and an edit, settles on the reference the body wrote and ` · edited`.
+  const edit = { edited_at: "2026-09-09T01:00:00Z" };
+  expect(await card(bodiless(edit), "· edited")).toBe(
+    "dispatch://CORE-1/comment/comment-1 · edited"
+  );
+  const deleted = await card(
+    bodiless({
+      ...edit,
+      deleted_at: "2026-09-09T02:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    }),
+    "Deleted by alice"
+  );
+  expect(deleted).not.toContain("dispatch://");
+  expect(deleted).not.toContain("edited");
 });

@@ -69,14 +69,25 @@ func (s *server) queueStampedEvent(ledger *docs.Ledger, event model.Event, fromK
 func (s *server) queueLoggedEvent(ledger *docs.Ledger, event model.Event, logins *events.Logins, fromKind, fromID string) (*model.Event, error) {
 	appended := new(model.Event)
 	return appended, ledger.Queue(func(b *store.WriteBatch) error {
-		if err := s.deps.Events.QueueAppendWithLogins(b, event, logins, func(written model.Event) { *appended = written }); err != nil {
-			return err
-		}
-		if fromKind != "" {
-			refs.QueueStamp(b, fromKind, fromID)
-		}
-		return nil
+		return s.queueLoggedEventOn(b, event, logins, fromKind, fromID, func(written model.Event) { *appended = written })
 	})
+}
+
+// queueLoggedEventOn is queueLoggedEvent's step on b itself, for a route that runs its write
+// phase as a batch of its own (store.RunWrite: createStoredMessage, editMessage, deleteMessage):
+// the event's insert with the thread_logins it reads, then the stamp of fromKind/fromID's new
+// reference edges with the event's id, none for an empty fromKind. appended receives the event
+// once the batch has run it, for the route to publish after its commit.
+func (s *server) queueLoggedEventOn(
+	b *store.WriteBatch, event model.Event, logins *events.Logins, fromKind, fromID string, appended func(model.Event),
+) error {
+	if err := s.deps.Events.QueueAppendWithLogins(b, event, logins, appended); err != nil {
+		return err
+	}
+	if fromKind != "" {
+		refs.QueueStamp(b, fromKind, fromID)
+	}
+	return nil
 }
 
 // queueNewAskReferences reconciles, in the route's two phases, everything the ask whose insert
@@ -158,18 +169,31 @@ func (s *server) planPendingItem(
 
 // queueEditedItemReferences is queueItemReferences for an edit of a comment from previous to
 // body, written at `at`, with the block ids the editor carried (carried; nil: the ids follow the
-// text, refs.IndexItem). The counted targets also name every target the comment still cites when
-// the edit moves the head of its text, which each of its edges shows (refs.EditedTargets). A
-// carried id the index refuses returns its *itemblocks.CarriedError.
+// text, refs.IndexItem): planEditedItem, read under the ledger the write queues on and queued on
+// it. A carried id the index refuses returns its *itemblocks.CarriedError.
 func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, kind refs.ItemKind, itemID, previous, body string, at time.Time, carried *refs.CarriedEdit) (model.ReferenceChanges, error) {
-	ctx = ledger.ReadContext(ctx)
-	changes, write, err := s.planItemWrite(ctx, tx, kind, itemID, body, nil, at, true, carried, func(found []text.Ref) []refs.Target {
-		return refs.EditedTargets(previous, body, found)
-	})
+	changes, write, err := s.planEditedItem(ledger.ReadContext(ctx), tx, kind, itemID, previous, body, at, carried)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
 	return changes, ledger.Queue(write)
+}
+
+// planEditedItem is planItemWrite for a rewrite of a stored comment's or issue message's body
+// from previous to body, at `at`, with the block ids the editor carried (carried; nil: the ids
+// follow the text): an edit of either kind, and a delete's clear, whose body is empty
+// (clearDeletedPostBody). Both kinds it rewrites cite what they mention, and the counted targets
+// also name every target the item still cites when the rewrite moves the head of its text, which
+// each of its edges shows (refs.EditedTargets). It is the one plan of every such rewrite, which
+// its caller queues where it makes the write: on a comment's ledger (queueEditedItemReferences,
+// and deleteComment's through clearDeletedPostBody) or on the batch a message's route runs
+// itself (editMessage, and deleteMessage's through clearDeletedPostBody).
+func (s *server) planEditedItem(
+	ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, previous, body string, at time.Time, carried *refs.CarriedEdit,
+) (model.ReferenceChanges, docs.WriteStep, error) {
+	return s.planItemWrite(ctx, tx, kind, itemID, body, nil, at, true, carried, func(found []text.Ref) []refs.Target {
+		return refs.EditedTargets(previous, body, found)
+	})
 }
 
 // planItemWrite plans the item's index and, when the item cites its mentions, the reconciliation

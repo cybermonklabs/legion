@@ -39,6 +39,12 @@ export interface AwayDraft {
    *  them: the draft comes back in the field only at those words, and beside a compose at other
    *  words it waits until the reader takes it or drops it (`useKeptDrafts`'s `offered`). */
   readonly anchor?: ComposerAnchor;
+  /** When the compose took those words (`anchor`), in milliseconds since the epoch, which a held
+   *  send's draft takes from the send (`awayDraftOf`): a read of the document's text from before
+   *  then can lack words the reader had just typed, so only a later read that lacks them says they
+   *  left the document (`useQuoteInDocument`). A draft an older release kept has none, and counts
+   *  as taken before every read. */
+  readonly anchoredAt?: number;
   /** An ask's settings and options, which a compose of the ask kind keeps with its question. */
   readonly ask?: SentRequest["ask"];
   /** For an edit, the comment's body it was written over, as the editor last saw it: the edit is
@@ -65,11 +71,20 @@ export interface AwayAddress {
 
 /** What a held send's draft is kept as once the send is gone (`AwayDraft`): its text, its
  *  accepted mentions and a suggestion's replacement, and an ask's fields, for the address it went
- *  to - its owner, the reply it answered and a margin compose's words - in the kind it went out
- *  as. */
+ *  to - its owner, the reply it answered and a margin compose's words, with the time its composer
+ *  took them (`HeldSend.anchoredAt`) - in the kind it went out as. A send an older release kept
+ *  holds no such time, and is timed by its last press (`pressedAt`), which came after. */
 export function awayDraftOf(held: HeldSend): AwayDraft {
   const { anchor, kind, owner, replyTo } = held.request;
-  return { anchor, ask: held.draft.ask, draft: held.draft.draft, kind, owner, replyTo };
+  return {
+    anchor,
+    anchoredAt: held.anchoredAt ?? held.pressedAt,
+    ask: held.draft.ask,
+    draft: held.draft.draft,
+    kind,
+    owner,
+    replyTo,
+  };
 }
 
 /** Whether two drafts answer the same reply, or both answer none. */
@@ -113,6 +128,9 @@ export interface UnsentDrafts {
   /** Whether a draft is kept under `name`, re-rendering whenever that changes: a thread card
    *  whose reply composer is off the page says it keeps the reply's draft. */
   useKept(name: string): boolean;
+  /** The draft kept under `name`, re-rendering whenever it changes and read once each time it
+   *  does: a host that draws a kept reply itself draws its words (`KeptReplyToDeleted`). */
+  useUnsent(name: string): SentDraft | undefined;
   /** Who is signed in now: another person's sign-in forgets every draft in both stores, the
    *  drafts kept by address with them, in the page and in the tab, since each is the person's who
    *  typed it (`DraftStore.signedIn`); the first sign-in takes up the drafts the tab kept for that
@@ -143,6 +161,7 @@ export interface UnsentDrafts {
 /** A draft kept by address, as the tab keeps it for a reload (`AwayDraft`). */
 const keptAway = shape.record({
   anchor: shape.optional(keptAnchor),
+  anchoredAt: shape.optional(shape.number),
   ask: shape.optional(keptAsk),
   base: shape.optional(shape.string),
   draft: keptDraft,
@@ -188,9 +207,12 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
   if (unsent === undefined) {
     const store = createDraftStore("unsent");
     const awayStore = createDraftStore("away");
-    function useKept(name: string): boolean {
+    function useUnsent(name: string): SentDraft | undefined {
       const [kept] = store.useDraft(name);
-      return useMemo(() => parseSent(kept) !== undefined, [kept]);
+      return useMemo(() => parseSent(kept), [kept]);
+    }
+    function useKept(name: string): boolean {
+      return useUnsent(name) !== undefined;
     }
     function useAway(name: string): readonly AwayDraft[] {
       const [kept] = awayStore.useDraft(name);
@@ -225,6 +247,7 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
       },
       useAway,
       useKept,
+      useUnsent,
       write: (name, draft) => store.set(name, draft === undefined ? "" : JSON.stringify(draft)),
     };
     drafts.set(client, unsent);

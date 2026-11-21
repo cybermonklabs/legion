@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  The bundled `dispatch` command's `read`, `doc-read`, `search`, `answers`, `open-asks`, `inbox`
+  and `results` take `--as-of <text>`, an RFC 3339 time, and read Dispatch as it stood at that
+  time. The first line of the output names each part and each field that the command left out at
+  that time. A token that carries a cut reads at its cut. They need a Dispatch of this release: an
+  older Dispatch answers the present, and the command then uses nothing of that answer and exits 1.
+time: 2026-11-20T19:00:04Z
+custom:
+  Issue: pr4639

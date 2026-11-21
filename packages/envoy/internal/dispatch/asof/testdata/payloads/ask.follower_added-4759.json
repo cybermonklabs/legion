@@ -1,0 +1,40 @@
+{
+  "id": 4759,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 92,
+  "type": "ask.follower_added",
+  "actor": {
+    "kind": "session",
+    "id": "01a14bc2-bed5-712f-afc4-4cc4c2df0c9c",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum ",
+      "tmux": "lorem ipsum dolor",
+      "pane": "lor",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-19T14:34:30.285951Z",
+  "payload": {
+    "by": {
+      "id": "01a14bc2-bed5-712f-afc4-4cc4c2df0c9c",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum ",
+        "host": "lor",
+        "pane": "lor",
+        "tmux": "lorem ipsum dolor",
+        "machine": "lorem ipsum d",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum"
+      }
+    },
+    "ask_id": "be6ee1ca-d00b-4e00-b31b-e051cf2bcb6e",
+    "session_id": "01a14bc2-bed5-712f-afc4-4cc4c2df0c9c"
+  }
+}

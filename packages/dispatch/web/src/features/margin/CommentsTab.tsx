@@ -17,6 +17,7 @@ import { MentionComposer } from "../conversation/MentionComposer";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import type { AwayDraft } from "../conversation/unsent-drafts";
 import { type OfferedDraft, stoppedOfferOf } from "../conversation/useKeptDrafts";
+import { UNDRAWN_QUOTE_WORDS, useQuoteInDocument } from "../doc/quote-in-document";
 import { AskCard } from "../inbox/AskCard";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
@@ -122,8 +123,9 @@ export function MarginComposerSlot({
   );
   const { sending } = useSending(sendKey);
   // That stopped compose as this compose offers it, with the presses that move it: Use my draft
-  // carries it into this compose's own name at its words and in its kind, and Discard my draft
-  // drops it where it waits. Built once per held send, so its words are worked out once.
+  // carries it into this compose's own name at its words and in its kind, with the time this
+  // compose took them, and Discard my draft drops it where it waits. Built once per held send, so
+  // its words are worked out once.
   const store = useHeldSends();
   const keptAside = useHeldSend(keptKey);
   const owner = composer.owner;
@@ -133,7 +135,8 @@ export function MarginComposerSlot({
     return {
       ...offer,
       drop: () => store.discard(keptKey),
-      take: (at) => store.carryInto(keptKey, sendKey, { owner, replyTo: null }, at),
+      take: (at, anchoredAt) =>
+        store.carryInto(keptKey, sendKey, { owner, replyTo: null }, at, anchoredAt),
     };
   }, [keptAside, keptKey, owner, sendKey, store]);
   return (
@@ -165,6 +168,22 @@ export function MarginComposerSlot({
   );
 }
 
+/** The line a draft the margin kept is led by: the kind it was written as, and the words it was
+ *  written for, while the page's text of the document still holds them (`useQuoteInDocument`, as
+ *  of a read from after the draft's compose took them); otherwise it says they are no longer in
+ *  the document, still loading, or cannot be checked now, and draws none of them, since words a
+ *  delete took out are a deleted post's. */
+function KeptDraftLead({ away }: { away: AwayDraft & { anchor: ComposerAnchor } }): ReactNode {
+  const inDocument = useQuoteInDocument(away.anchor, away.anchoredAt, away.owner);
+  const asKind =
+    away.kind === undefined || away.kind === "comment" ? "" : ` as ${KIND_WORDS[away.kind]},`;
+  const words =
+    inDocument === "held"
+      ? `for the words “${away.anchor.quote}”`
+      : `for words that ${UNDRAWN_QUOTE_WORDS[inDocument]}`;
+  return `You wrote this draft${asKind} ${words}. It is kept here, and offered in the next compose you open on this document:`;
+}
+
 /**
  * What the margin's compose kept for words of the open document (`AwayDraft.anchor`), while no
  * compose is open on it (`useMarginSheet`'s `keptDrafts`). A reload, a sign-in after a lapse and
@@ -193,7 +212,7 @@ export function MarginKeptDrafts({
           body={away.draft.body}
           drop={{ label: "Discard my draft", press: () => onDiscard(away) }}
           key={`${away.anchor.mark_id ?? ""}:${away.anchor.occurrence ?? ""}:${away.anchor.quote}`}
-          lead={`You wrote this draft${away.kind === undefined || away.kind === "comment" ? "" : ` as ${KIND_WORDS[away.kind]},`} for the words “${away.anchor.quote}”. It is kept here, and offered in the next compose you open on this document:`}
+          lead={<KeptDraftLead away={away} />}
           replacement={away.draft.replacement}
         />
       ))}

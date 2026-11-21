@@ -1,3 +1,4 @@
+import { readAtCut, withLeftOut } from "./dispatch-commands/as-of";
 import { checkDispatchCall, dispatchServerUrls } from "./dispatch-commands/check";
 import { commandContext } from "./dispatch-commands/command-context";
 import {
@@ -57,9 +58,19 @@ export async function executeDispatchTool(
   const command: DispatchCommand | undefined = dispatchCommands[input.tool as DispatchToolName];
   if (command === undefined) throw new Error(`Unknown Dispatch tool: ${input.tool}`);
   const session = sessionContext(input, checked);
-  // `dispatch_open_asks`, `dispatch_answers` and `dispatch_whoami` answer from the session alone;
-  // every other command is handed the context that resolves this call's origin.
-  return command.origin === "none"
-    ? command.run(session)
-    : command.run(await commandContext(session));
+  // `dispatch_whoami` and `dispatch_limits` answer from the session alone; every other command
+  // that reads no cut is handed the context that resolves this call's origin.
+  if (!command.reads) {
+    return command.origin === "none"
+      ? command.run(session)
+      : command.run(await commandContext(session));
+  }
+  // A read command reads whoami before any other request: a token's cut replaces `--as-of`
+  // (dispatch://INFRA-4620). The owner a call names resolves at the cut too.
+  const reading = await readAtCut(session);
+  const result =
+    command.origin === "none"
+      ? await command.run({ ...session, reading })
+      : await command.run({ ...(await commandContext(session, reading.cut)), reading });
+  return withLeftOut(result, reading.cut);
 }

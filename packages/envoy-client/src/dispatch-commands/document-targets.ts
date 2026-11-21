@@ -1,7 +1,7 @@
 import type { Artifact, ArtifactBlock } from "@legion/contracts";
 import { commandLine } from "../dispatch-command";
 import { defaultExec } from "../dispatch-cwd";
-import type { DispatchClient } from "../dispatch-http";
+import type { AsOfRead, DispatchClient } from "../dispatch-http";
 import type { Owner } from "../dispatch-owner";
 import { ToolInputError } from "../tool-input-errors";
 import { ownerConflictProblems, resolveOwnerArguments } from "./check";
@@ -14,12 +14,7 @@ import {
   stringArg,
   type ToolArguments,
 } from "./context";
-import { dispatchAnswered } from "./failures";
-
-/** A document reference that names no document of its owner. Its message is the hint the Dispatch
- * tools give; `readDocumentBlocks` tells it apart from every other refusal, as the first upload of
- * a file. */
-class DocumentNotFoundError extends Error {}
+import { DocumentNotFoundError, dispatchAnswered } from "./failures";
 
 /** The document `artifactReference` names among `artifacts`. A bare reference is an id, a slug,
  * then a filename; a `canonical` one, the document part of a dispatch:// reference, is a slug by
@@ -51,11 +46,13 @@ function artifactByReference(
   return artifact;
 }
 
+/** The document `artifactReference` names under `owner`, read at `read`'s cut where it names
+ *  one. `canonical` reads the reference as a slug first, as a dispatch:// reference means. */
 export async function resolveArtifact(
   client: DispatchClient,
   owner: Owner,
   artifactReference: string | undefined,
-  { canonical = false }: { readonly canonical?: boolean } = {}
+  { canonical = false, read = {} }: { readonly canonical?: boolean; readonly read?: AsOfRead } = {}
 ): Promise<ResolvedArtifact> {
   if (owner.kind === "project") {
     if (artifactReference === undefined) {
@@ -64,7 +61,7 @@ export async function resolveArtifact(
     // Project artifact routes resolve a slug, then a filename no other document shares, which is
     // what a dispatch:// reference means.
     const routed = await client
-      .getProjectArtifact(owner.project, artifactReference)
+      .getProjectArtifact(owner.project, artifactReference, read)
       .catch((error: unknown) => {
         if (!dispatchAnswered(error, 404)) throw error;
         return undefined;
@@ -74,7 +71,7 @@ export async function resolveArtifact(
     // route's answer among them: an id outranks another document's slug, and a slug another
     // document's filename. The unlinked-only collection keeps an issue-attached artifact of the
     // same name from becoming the document owner.
-    const unlinked = await client.listProjectArtifacts(owner.project, true);
+    const unlinked = await client.listProjectArtifacts(owner.project, true, read);
     const artifacts =
       routed === undefined
         ? unlinked
@@ -84,7 +81,7 @@ export async function resolveArtifact(
       artifact: artifactByReference(artifacts, artifactReference, owner, canonical),
     };
   }
-  const issue = await client.getIssue(owner.issue);
+  const issue = await client.getIssue(owner.issue, read);
   const issueArtifacts = issue.artifacts ?? [];
   let artifact: Artifact | undefined;
   if (artifactReference === undefined || artifactReference === "spec") {
@@ -124,17 +121,19 @@ export interface DocumentTargets {
  * The owner a call's resolved arguments name, its issue reference resolved to the key, and how its
  * document references resolve: the document part of the call's dispatch:// reference is a slug by
  * definition (`canonical`), and a document argument the reference does not supply is a bare one, an
- * id, slug or filename. The executor and `readDocumentBlocks` resolve documents through it.
+ * id, slug or filename. The executor and `readDocumentBlocks` resolve documents through it. With
+ * `read`'s cut, every read of it is a read at that cut.
  */
 export async function documentTargets(
   client: DispatchClient,
-  resolution: OwnerResolution
+  resolution: OwnerResolution,
+  read: AsOfRead = {}
 ): Promise<DocumentTargets> {
   const refDocument =
     resolution.ref?.kind === "artifact" ? resolution.ref.id : resolution.ref?.artifact;
   const owner: Owner | null =
     resolution.owner?.kind === "issue"
-      ? { kind: "issue", issue: await resolveExistingIssue(client, resolution.owner.issue) }
+      ? { kind: "issue", issue: await resolveExistingIssue(client, resolution.owner.issue, read) }
       : resolution.owner;
   return {
     owner,
@@ -145,6 +144,7 @@ export async function documentTargets(
     resolveDocument: (documentOwner, reference) =>
       resolveArtifact(client, documentOwner, reference, {
         canonical: reference !== undefined && reference === refDocument,
+        read,
       }),
   };
 }
@@ -372,21 +372,26 @@ export interface LiveBlocks {
  * with `?blocks=true`: Dispatch renders the markdown, the blocks, the token and the version from
  * one tree, so a write by another session cannot leave the offsets slicing text they were not
  * computed over. A Dispatch older than that parameter answers the text with no blocks at all,
- * which is said rather than listed as a document with none.
+ * which is said rather than listed as a document with none. At `read`'s cut, the version that
+ * stood then and its blocks.
  */
-export async function liveBlocks(client: DispatchClient, artifact: Artifact): Promise<LiveBlocks> {
-  const read = await client.docReadWithBlocks(artifact.id);
-  if (read.blocks === undefined) {
+export async function liveBlocks(
+  client: DispatchClient,
+  artifact: Artifact,
+  read: AsOfRead = {}
+): Promise<LiveBlocks> {
+  const text = await client.docReadWithBlocks(artifact.id, read);
+  if (text.blocks === undefined) {
     throw new Error(
       `${artifact.name} was read from a Dispatch older than this command: it serves a document's blocks only on their own route, not beside the text they index, so nothing was listed.`
     );
   }
   return {
-    bytes: new TextEncoder().encode(read.markdown),
-    token: read.token,
+    bytes: new TextEncoder().encode(text.markdown),
+    token: text.token,
     // A Dispatch that names no version at all reads as a document with none.
-    version: read.version ?? null,
-    blocks: read.blocks,
+    version: text.version ?? null,
+    blocks: text.blocks,
   };
 }
 /** A document as a Dispatch call names it: `dispatch doc-edit`'s owner and document arguments. */
@@ -476,10 +481,11 @@ export async function readDocumentBlocks(
 }
 async function resolveExistingIssue(
   client: DispatchClient,
-  issueReference: string
+  issueReference: string,
+  read: AsOfRead
 ): Promise<string> {
   try {
-    return await client.resolveIssue(issueReference);
+    return await client.resolveIssue(issueReference, read);
   } catch (error) {
     if (dispatchAnswered(error, 404)) {
       throw new Error(
@@ -489,4 +495,18 @@ async function resolveExistingIssue(
     }
     throw error;
   }
+}
+
+/**
+ * How `refuseMissingOfRef` reads the owner a `dispatch://` reference names, on the failing path
+ * of a read of its item: the issue by its key, at `read`'s cut where it names one, or the project
+ * document through `readDocument`, which the caller passes (dispatch://INFRA-1523).
+ */
+export function readRefOwner(
+  client: DispatchClient,
+  owner: Owner,
+  readDocument: () => Promise<unknown>,
+  read: AsOfRead = {}
+): () => Promise<unknown> {
+  return async () => (owner.kind === "issue" ? client.getIssue(owner.issue, read) : readDocument());
 }

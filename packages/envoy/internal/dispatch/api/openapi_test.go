@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // openAPIDocumentForTest is as much of the document as these tests read: the operations by path
@@ -202,6 +206,92 @@ func committedOpenAPI(t testing.TB) []byte {
 		t.Fatalf("read the committed document: %v", err)
 	}
 	return committed
+}
+
+// Each route that answers as_of (asOfAnswers) declares the query parameter as_of in the committed
+// OpenAPI document, which every generated client is written from, and no other GET operation
+// declares it. A client written from the document would otherwise send no cut to a route that
+// answers one, or offer a cut to a route that refuses it 400 AS_OF_NOT_SERVED. The read class
+// gives each row its kind, so a row that later joins the routes that answer as_of fails here until
+// its query struct declares the parameter. Each such operation's description also holds the
+// sentence asOfAtACut gives the route, and asOfAtACut gives no sentence to a row of another kind.
+//
+// GET /api/v1/search answers as_of and does not declare it, on purpose: searchRouteQuery names
+// only the four members every build has served. A build released before GET /api/v1/search/results
+// answers GET /api/v1/search 200 with a member it does not know dropped, and the second path 404
+// no route. So a client sends every other member, as_of among them, to the second path
+// (everyBuildReadsSearch in packages/contracts), and the second path declares as_of.
+func TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument(t *testing.T) {
+	type parameter struct {
+		Name string `json:"name"`
+		In   string `json:"in"`
+	}
+	type operation struct {
+		Description string      `json:"description"`
+		Parameters  []parameter `json:"parameters"`
+	}
+	var document struct {
+		Paths map[string]struct {
+			Get *operation `json:"get"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(committedOpenAPI(t), &document); err != nil {
+		t.Fatalf("decode the committed document: %v", err)
+	}
+	get := func(name string) *operation {
+		return document.Paths[strings.TrimPrefix(name, http.MethodGet+" ")].Get
+	}
+	// declaredElsewhere names, for a route that answers as_of and does not declare it, the route
+	// whose operation declares it for the same handler.
+	declaredElsewhere := map[string]string{"GET /api/v1/search": "GET /api/v1/search/results"}
+	asOf := parameter{Name: asOfParameter, In: "query"}
+	answers := 0
+	for _, name := range slices.Sorted(maps.Keys(readClasses)) {
+		read := get(name)
+		if read == nil {
+			t.Errorf("the document has no %s", name)
+			continue
+		}
+		declared := slices.Contains(read.Parameters, asOf)
+		kind := readClasses[name].AsOf
+		note, noted := asOfAtACut[name]
+		switch {
+		case kind == asOfAnswers && (!noted || !strings.Contains(read.Description, note)):
+			t.Errorf("%s answers as_of, and its description in the document does not say what it answers at a cut: write it in asOfAtACut (routes_table.go)",
+				name)
+		case kind != asOfAnswers && noted:
+			t.Errorf("asOfAtACut says what %s answers at a cut, and the row refuses as_of", name)
+		}
+		if kind == asOfAnswers {
+			answers++
+		}
+		if sibling, elsewhere := declaredElsewhere[name]; elsewhere {
+			if kind != asOfAnswers || declared {
+				t.Errorf("%s is to answer as_of and leave its declaration to %s: its kind is %s and it declares as_of %v",
+					name, sibling, asOfKindName(kind), declared)
+			}
+			if other := get(sibling); other == nil || !slices.Contains(other.Parameters, asOf) {
+				t.Errorf("%s answers as_of, and neither it nor %s declares the parameter", name, sibling)
+			}
+			continue
+		}
+		switch {
+		case kind == asOfAnswers && !declared:
+			t.Errorf("%s answers as_of, and its operation declares no query parameter %s: add it to the route's query struct (routes_shapes.go)",
+				name, asOfParameter)
+		case kind != asOfAnswers && declared:
+			t.Errorf("%s refuses as_of 400 %s, and its operation declares the query parameter %s",
+				name, contracts.DispatchAsOfNotServed, asOfParameter)
+		}
+	}
+	for name := range asOfAtACut {
+		if _, classed := readClasses[name]; !classed {
+			t.Errorf("asOfAtACut names %s, which is no GET row of the read class", name)
+		}
+	}
+	if answers == 0 {
+		t.Fatal("no row of the read class answers as_of, so this test would pass on anything")
+	}
 }
 
 // A request body's required set is what its own Go fields tag `required:"true"`, and nothing

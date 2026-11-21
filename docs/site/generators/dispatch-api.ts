@@ -84,9 +84,13 @@ function render(routes: Route[]): string {
     "",
     ...Object.entries(SCOPES).map(([scope, meaning]) => `- \`${scope}\`: ${meaning}`),
     "",
-    "A read-only token the secrets broker issued holds neither scope. Dispatch serves it only on the routes `readScopeRoutes` in the source lists, and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. The route index does not carry that list, so this page does not mark those routes.",
+    "A read-only token is any token that holds `read`: one the secrets broker minted from a read entry or narrowed because its trade asked for `read`, or a personal token minted with `read`. It holds `person` at most, never `approve`. Dispatch serves it only on the GET routes it classes as reads (`readClasses` in the source), and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. A read-only token that carries a cut reads as of its cut on each route that answers `as_of`, and `GET /api/v1/whoami` names the cut. Every other read refuses it `403 AS_OF_TOKEN_NOT_SERVED`. The route index does not carry the read class, so this page does not mark those routes.",
     "",
     "Path parameters are the `{name}` segments of a path.",
+    "",
+    "## Reads at a past time",
+    "",
+    "A GET route that answers `as_of` takes an RFC 3339 time and answers what existed at that time, the cut. Its answer names the cut in the `Dispatch-As-Of` header, and names each member that it leaves out in `Dispatch-As-Of-Absent` where it leaves out any. Every other route below refuses `as_of` `400 AS_OF_NOT_SERVED`. The description of each GET route below says which of the two it does, and how it answers a read-only token that carries a cut.",
     "",
   ];
   for (const resource of [...groups.keys()].sort()) {

@@ -374,11 +374,12 @@ func approvalMoves(current, next []model.AskApprovalDocument) bool {
 // (api.movedApprovalRequestAdvice).
 //
 // It is the Go twin of the SQL approvalMoved in packages/envoy/internal/dispatch/api/
-// ask_rows.go, which asks the same of a stored row rather than of an ask already read. The two
-// are the server's only places `requested_version < version` is spelled, so nobody spells it a
-// third time here: a reader looking for the rule finds one of them and the other named beside
-// it. The client reads the same rule on its side, of the documents a report hands it
-// (packages/envoy-client/src/dispatch-execute.ts).
+// ask_rows.go, which asks the same of a stored row rather than of an ask already read, and also
+// of an approval as a build before requests held their documents wrote it, which only a read at a
+// past time meets. The two are the server's only places `requested_version < version` is
+// spelled, so nobody spells it a third time here: a reader looking for the rule finds one of them
+// and the other named beside it. The client reads the same rule on its side, of the documents a
+// report hands it (packages/envoy-client/src/dispatch-execute.ts).
 func ApprovalAwaitsHandBack(documents []model.AskApprovalDocument) bool {
 	for _, document := range documents {
 		if document.RequestedVersion < document.Version {

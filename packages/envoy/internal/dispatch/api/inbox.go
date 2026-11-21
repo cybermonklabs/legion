@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -107,12 +108,24 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	// i, its own document as ar and their project as p - so this read joins none of them itself
 	// and reads the document's columns off the shared join. `unassigned` is left standing for
 	// the caller that sends it: every question reaches a person now, so it answers nothing.
+	//
+	// At a cut the inbox applies the same rule to the records at the cut (decision 10 of
+	// INFRA-4620's plan). The caller's snoozes keep no history, so the read joins none and each
+	// row leaves its snooze out (inboxAtTheCut). An ask whose person rests on a project default
+	// that the records at the cut do not give has no person at the cut, which is neither the
+	// filter's person nor nobody, so it is in no ?assignee= answer.
+	_, atCut := asof.CutFrom(r.Context())
+	snoozeColumn, snoozeJoin := `sn.snoozed_until`, `
+		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $4`
+	args := []any{project, assigneeMode, assigneeLogin, model.CanonicalLogin(caller.ID)}
+	if atCut {
+		snoozeColumn, snoozeJoin, args = `null::timestamptz`, ``, args[:3]
+	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select `+askReadColumns+`,
 		       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
-		       sn.snoozed_until
-		`+askReadFrom+`
-		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $4
+		       `+snoozeColumn+`
+		`+askReadFrom+snoozeJoin+`
 		where a.state = 'open'
 		  and (i.key is null or i.closed_at is null)
 		  and ($1 = '' or coalesce(i.project_key, ar.project_key) = $1)
@@ -121,7 +134,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		       or ($2 = 'login' and `+askedOfPersonExpression+` = $3))
 		order by i.priority asc nulls last, waiting_on desc,
 		         coalesce(lr.created_at, a.created_at) desc, a.id desc
-	`, project, assigneeMode, assigneeLogin, model.CanonicalLogin(caller.ID))
+	`, args...)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -136,6 +149,9 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
+		}
+		if atCut && assigneeMode != "" && row.WaitingOnPerson == "" {
+			continue
 		}
 		ask.Ask = row
 		ask.LastReply = reply
@@ -181,5 +197,9 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		asks[index].shape(reader)
 	}
 	reader.resolve()
+	if err := s.inboxAtTheCut(r.Context(), asks); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, asks)
 }

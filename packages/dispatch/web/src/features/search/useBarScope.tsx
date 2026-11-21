@@ -1,4 +1,10 @@
-import { type KeyboardEvent, type ReactNode, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useCallback,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useLocation } from "react-router-dom";
 
 import { borderDefault, textMutedOnSurface, textSecondaryOnSurface } from "../../theme/classes";
@@ -9,10 +15,11 @@ import {
   type BarScopeLevel,
   type BarTargets,
   barTargets,
+  blockAtCursor,
   documentRouteOf,
   issueOfPage,
   readSelectedIssues,
-  scopeAtCursor,
+  scopeOfBlock,
   scopeOfPage,
   scopeOfProject,
 } from "./bar-scope";
@@ -40,7 +47,10 @@ export interface BarScope {
  * Every value the page itself gives is read on the first render, the cursor because `useDialog`
  * takes the focus a frame later and the document's selection is no longer the page's once it
  * has, and the rest so that a hit the reader arrows past or opens cannot move what the chip
- * says and what an offer would act on before the bar closes.
+ * says and what an offer would act on before the bar closes. The one exception is the words of
+ * the block the cursor was in, which are the block's own and are read from the editor each time
+ * the chip is drawn: a pending insert's delete takes words out of the block while the bar is
+ * open, and the chip, and the message it hands on, name the block by the text it holds now.
  */
 export function useBarScope(
   /** What is in the box, as the person typed it: `Backspace` widens the chip on an empty box
@@ -53,7 +63,20 @@ export function useBarScope(
   // anywhere does. The route reads it to tell which issue a query that is a bare number names,
   // and a reader who wants this project alone adds its chip.
   const [pageProject] = useState(() => routeProjectOf(location.pathname));
-  const [blockScope] = useState(scopeAtCursor);
+  const [cursorBlock] = useState(blockAtCursor);
+  // Every change of the writing surface draws the chip again, with the block's text as it is now.
+  const watchSurface = useCallback(
+    (changed: () => void) => {
+      if (cursorBlock === undefined) {
+        return () => {};
+      }
+      const watcher = new MutationObserver(changed);
+      watcher.observe(cursorBlock.surface, { characterData: true, childList: true, subtree: true });
+      return () => watcher.disconnect();
+    },
+    [cursorBlock]
+  );
+  const blockScope = useSyncExternalStore(watchSurface, () => scopeOfBlock(cursorBlock));
   const [projectScope] = useState(() => scopeOfProject(location.pathname));
   const [scopeLevel, setScopeLevel] = useState<BarScopeLevel>("page");
   // The issues the issue list had selected as this open was made, so no render of the list

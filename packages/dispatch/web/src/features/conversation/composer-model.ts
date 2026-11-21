@@ -1,5 +1,8 @@
+import type { QueryKey } from "@tanstack/react-query";
+
 import type { Actor, DeliveryCapability } from "../../api/types";
 import type { RecordMarkPlacement } from "../doc/editor";
+import type { DeletablePost } from "../refs/post-marks";
 
 /** The composer's data model: where a draft goes, what kind it is, and what it carries. The
  *  composer (`MentionComposer.tsx`), the request it freezes (`send-request.ts`) and every host read
@@ -9,6 +12,14 @@ export type ComposerOwner =
   | { readonly kind: "issue"; readonly issueKey: string }
   | { readonly kind: "artifact"; readonly artifactId: string; readonly project: string }
   | { readonly kind: "session"; readonly sessionId: string };
+
+/** The key of the comment list a draft's `owner` reads: an issue's (`["comments", key]`) or a
+ *  project document's (`["artifact", id, "comments"]`). */
+export function commentListKey(owner: Exclude<ComposerOwner, { kind: "session" }>): QueryKey {
+  return owner.kind === "issue"
+    ? ["comments", owner.issueKey]
+    : ["artifact", owner.artifactId, "comments"];
+}
 
 export type ComposerKind = "ask" | "comment" | "suggestion";
 
@@ -20,6 +31,16 @@ export type ComposerKind = "ask" | "comment" | "suggestion";
 export type ComposerAnchor =
   | {
       readonly artifact: string;
+      /** The ids of the pending insert suggestions whose marks lie on any of `quote`'s words, as
+       *  the editor held them when the selection bar named the words (`insertMarksIn`). An
+       *  insert's words are its comment's own, and the comment's delete takes them out of the
+       *  document: once the page holds that comment deleted, they are a deleted post's words, which
+       *  no surface draws (`useQuoteInDocument`). Empty where the words lie in no insert. Absent
+       *  where nothing named them: a draft or held send an older build kept, or a selection the
+       *  editor held no document for. Absent is not empty, and nothing reads it as empty: words
+       *  that name no list may lie in an insert whose comment is deleted, which no comment list
+       *  can show, so only a read of the document's text checks them. */
+      readonly insertMarks?: readonly string[];
       readonly mark_id: string;
       readonly occurrence?: never;
       /** The words the editor read on each side of `quote`, in the block it wrote the mark in, and
@@ -34,6 +55,9 @@ export type ComposerAnchor =
     }
   | {
       readonly artifact: string;
+      /** As a mark's anchor keeps them, empty and absent each saying what they say there: the
+       *  pending inserts the words lie in. */
+      readonly insertMarks?: readonly string[];
       readonly mark_id?: never;
       readonly occurrence: number;
       /** The server anchors a quote-anchored comment itself, so there is no mark to write again. */
@@ -68,22 +92,63 @@ export interface ReplyTarget {
   readonly to?: string;
 }
 
+/** The post a reply quotes as the host's read of it stands now: the marks its author's
+ *  corrections leave on it, its deletion and the time of its last edit. `ReplyTarget` is taken
+ *  when Reply is pressed and kept with the send (`held-sends.ts`), so a draft open when the
+ *  author deletes or edits the post learns it from here: its quote then says the post is deleted
+ *  and gives no part of the excerpt it took, or marks the post edited (`ReplyQuote`). */
+export type ReplyParent = DeletablePost & { readonly edited_at?: string | null };
+
+/** A post a host's read holds, by its id. */
+type ReadPost = ReplyParent & { readonly id: string };
+
+/** The post `target` quotes among a host's reads, as they hold it now: a comment among
+ *  `comments`, a message among the roots and replies of `messages`. Undefined with no target, and
+ *  where the reads do not hold the post. */
+export function replyParentOf(
+  target: ReplyTarget | null,
+  comments: readonly ReadPost[],
+  messages: readonly { readonly message: ReadPost; readonly replies: readonly ReadPost[] | null }[]
+): ReplyParent | undefined {
+  if (target === null) return undefined;
+  if (target.parentKind === "comment") {
+    return comments.find((comment) => comment.id === target.id);
+  }
+  for (const read of messages) {
+    if (read.message.id === target.id) return read.message;
+    const reply = read.replies?.find((message) => message.id === target.id);
+    if (reply !== undefined) return reply;
+  }
+  return undefined;
+}
+
 /**
  * Which replies a composer's host lists now (`MentionComposer`'s `listed`), so that a draft the
  * composer keeps for a reply it does not show (`useKeptDrafts`' `keptAway`) is said to be kept
- * with the way back its line names - that comment's or message's Reply - only while that Reply is
- * there. A draft kept for a reply the host no longer lists is drawn itself, with its own presses
- * (`KeptDraftOffers`).
+ * with the way back its line names - that comment's or message's Reply - only while that Reply
+ * goes somewhere. A draft kept for a reply the host no longer lists is drawn itself, with its own
+ * presses (`KeptDraftOffers`), and so is one kept for a comment or message its author deleted
+ * (`"deleted"`): the post keeps its place, but Dispatch takes no reply to it (`409
+ * POST_DELETED`), so no Reply goes on with the draft, and the words say the post was deleted.
  *
- * A host that can lose a reply its composer's drafts answer passes the ids of every comment and
- * message its reads hold, whatever its filter, a fold or a Clear shows of them, since the host's
- * own controls reach the Reply of each (`listedReplies`). Every other host passes none, and every
- * kept reply is said to be kept as before: one whose composer answers no reply, one whose reads
- * have not answered yet, and one whose composer answers only the reply drawn with it - a thread
- * card's own reply - which leaves the page with the composer, so no line of the composer's can
- * outlive it.
+ * A host that can lose a reply its composer's drafts answer passes every comment and message its
+ * reads hold, by id, each as it stands, whatever its filter, a fold or a Clear shows of them,
+ * since the host's own controls reach the Reply of each (`listedReplies`). Every other host
+ * passes none, and every kept reply is said to be kept as before: one whose composer answers no
+ * reply, one whose reads have not answered yet, and one whose composer answers only the reply
+ * drawn with it - a thread card's own reply - which leaves the page with the composer, so no
+ * line of the composer's can outlive it.
  */
-export type ListedReplies = ReadonlySet<string>;
+export type ListedReplies = ReadonlyMap<string, ListedReply>;
+
+/** How a host lists a comment or message a draft answers (`ListedReplies`): standing, or deleted
+ *  by its author. */
+export type ListedReply = "deleted" | "standing";
+
+/** How the comment or message a kept draft answers is listed for its composer
+ *  (`ListedReplies`): standing, with a Reply that goes on with the draft, deleted by its author,
+ *  or no longer listed (`"gone"`). A host that passes no list lists every reply as standing. */
+export type ReplyListing = ListedReply | "gone";
 
 /** One accepted mention: the target, and the span of the body that names it. */
 export interface AcceptedMention {

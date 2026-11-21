@@ -466,7 +466,12 @@ named a sender session, the walk sends that session a dead letter. The walk also
 session a dead letter for such a copy inside its hour whose live holder does not take the copy's
 delivery mode, and `envoy_role_dead_letters_total` counts both. The dead letter is a stored
 envelope from source `envoy` on the sender's agent subject, and it names the role, the copy's
-event id, its first line, why Envoy dropped it, and when Envoy kept it and dropped it. The stream
+event id, its first line, why Envoy dropped it, and when Envoy kept it and dropped it. The summary
+of a copy from source `dispatch` is the head of a Dispatch comment's or message's body, which its
+author can edit or delete before the copy's hour ends, so that copy's dead letter quotes none of
+it: it names the post by its id and its `dispatch://` reference, read from the Dispatch event the
+copy's payload holds, or by the copy's event id alone where that event names no post
+(`keptCopyNamed`). The stream
 holds one dead letter for each copy, however many walks send it. A copy whose hour ended more
 than an hour before the walk, and that no walk has claimed, is dropped as stale with no dead
 letter. While a lane holds a copy the listener kept with at least twenty minutes of its hour

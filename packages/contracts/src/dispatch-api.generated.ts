@@ -8,7 +8,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description This index: every route with its method, auth, and purpose. */
+    /** @description This index: every route with its method, auth, and purpose. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1"];
     put?: never;
     post?: never;
@@ -25,7 +25,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old. */
+    /** @description Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1Agents"];
     put?: never;
     post?: never;
@@ -42,7 +42,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's message deliveries the listener took (targeted and broadcast messages, handed to the running session or queued for it) and its comment deliveries (mentions) in those same two states; of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session. A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own: for a comment, replied_on_your_ask (a reply in the thread of an ask the session owns) over mentioned_you over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue; for a message, replied_to_your_message over sent_you_a_message; for an answer, answered_your_ask for an owner and answered_an_ask for any other session; for a decline, declined_your_ask for an owner and declined_an_ask for any other session. A session that does not own the ask reads a reply in its thread by the reason that delivered it: the issue's route, its claim, a credit on its primary document, or a mention. Each item carries the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, whoever asked it, and its owner, dispatch:// ref and href (null owner and ref, and /agents/<session_id>/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and, on declined_your_ask alone, dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline that carries them, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list. */
+    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message at its current body (edited_at when edited), a deleted comment or message in its place with deleted_at and deleted_by and an empty text, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's message deliveries the listener took (targeted and broadcast messages, handed to the running session or queued for it) and its comment deliveries (mentions) in those same two states; of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session. A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own: for a comment, replied_on_your_ask (a reply in the thread of an ask the session owns) over mentioned_you over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue; for a message, replied_to_your_message over sent_you_a_message; for an answer, answered_your_ask for an owner and answered_an_ask for any other session; for a decline, declined_your_ask for an owner and declined_an_ask for any other session. A session that does not own the ask reads a reply in its thread by the reason that delivered it: the issue's route, its claim, a credit on its primary document, or a mention. Each item carries the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, whoever asked it, and its owner, dispatch:// ref and href (null owner and ref, and /agents/<session_id>/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and, on declined_your_ask alone, dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline that carries them, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list. At a cut the window counts from the cut: since defaults to 72 hours before the cut, a since more than 7 days before the cut is 400 INVALID_QUERY, and a since after the cut answers no items. Each item has its words at the cut. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer leaves out no member. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1AgentsBySessionIdAnswers"];
     put?: never;
     post?: never;
@@ -76,7 +76,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read an agent's conversation's file or image and its versions by slug. */
+    /** @description Read an agent's conversation's file or image and its versions by slug. At a cut the route reads the conversation's file or image as it stood at the cut: its name and the versions made by then. One made after the cut, or removed after it, is 404 ARTIFACT_NOT_FOUND: a removal keeps no row of it. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /approval/documents. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1AgentsBySessionIdArtifactsBySlug"];
     put?: never;
     post?: never;
@@ -93,7 +93,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Download one version of an agent's conversation's file or image, as the issue form serves it: its bytes under its own content type, with Content-Disposition: attachment naming the file's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true the answer carries Content-Disposition: attachment with that name and Cache-Control: private, no-cache. A conversation holds no document, so no version here answers Markdown. */
+    /** @description Download one version of an agent's conversation's file or image, as the issue form serves it: its bytes under its own content type, with Content-Disposition: attachment naming the file's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true the answer carries Content-Disposition: attachment with that name and Cache-Control: private, no-cache. A conversation holds no document, so no version here answers Markdown. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1AgentsBySessionIdArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -110,7 +110,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A session's targeted messages, newest first. */
+    /** @description A session's targeted messages, newest first. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1AgentsBySessionIdMessages"];
     put?: never;
     /** @description Send an issue-less targeted message to a session: {body, delivery, in_reply_to?, connected_only?}, answered once its own delivery attempt has settled, on past a client that gives up. A session the Envoy listener knows and that is not running is a recipient: the listener stores the message and hands it over when that session runs again, and the attempt is recorded queued rather than sent. A session the listener knows nothing about ("no live session <id>") is queued too: Dispatch publishes the message on that session's own subject itself, and the attempt fails with "no live session <id>" only where Dispatch has no NATS to publish on or the publish fails. connected_only asks for a session that is running now and fails the attempt with "the session is stopped", nothing stored; every later attempt of the message asks what its first asked. A model or thinking switch the session would run as its own turn - a person's own Send or Aside, not one an agent wrote for them, whose whole body is one /model or /effort line, which would otherwise apply at an unknown later time - is held to a running session at every send whether or not the request set connected_only. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 with the message the key made and its deliveries as they stand, Idempotency-Replayed: ?1, first sending the one attempt it still owes (none yet, or one stranded past its claim) and nothing else; a listener it cannot reach is recorded on the attempt, so a repeat is answered while the listener is down. An attempt a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not. */
@@ -162,7 +162,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Test hook: list the documents this process holds a room of. */
+    /** @description Test hook: list the documents this process holds a room of. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ArtifactsTestRooms"];
     put?: never;
     post?: never;
@@ -179,7 +179,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read a document's metadata and current version. */
+    /** @description Read a document's metadata and current version. At a cut the route reads the document as it stood at the cut: its name, its versions made by then and its approval at the cut. A document made after the cut, or removed after it, is 404 ARTIFACT_NOT_FOUND: a removal keeps no row of the document. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /approval/documents. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1ArtifactsById"];
     put?: never;
     post?: never;
@@ -215,7 +215,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Test hook: wait until a live write parks at the armed pause. */
+    /** @description Test hook: wait until a live write parks at the armed pause. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ArtifactsByIdTestLiveWritePausesByPoint"];
     /** @description Test hook: park the document's next live write at a point (after-first-append, after-commit). */
     put: operations["putApiV1ArtifactsByIdTestLiveWritePausesByPoint"];
@@ -268,7 +268,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, time its settlement resumptions of it, and read the awareness client entries its room holds now. */
+    /** @description Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, time its settlement resumptions of it, and read the awareness client entries its room holds now. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ArtifactsByIdTestRoomCounters"];
     put?: never;
     post?: never;
@@ -302,7 +302,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List a document's asks. */
+    /** @description List a document's asks. At a cut the route lists the document's asks that existed then, each at its newest state event at or before the cut. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/referenced_by_count, /*\/revision, /*\/options/*\/id, /*\/answer/id, /*\/waiting_on_person, /*\/approval/documents. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1ArtifactsByIdAsks"];
     put?: never;
     /** @description Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. */
@@ -320,7 +320,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A document's blocks with markdown ranges, tokens, reference counts and each block's embedding, where meaning search stands on it (embedded, pending, or none while no window covers it); a typed block carries attributes, its type's attributes in declaration order as its opening line writes them ({name, value, kind}, the value unescaped and unquoted and the kind the one the block schema declares it, so a reader follows a block[] value as the pointers it holds and reads every other kind as text), and a table block lists its rows and cells by the indexes delete_row and delete_column take. */
+    /** @description A document's blocks with markdown ranges, tokens, reference counts and each block's embedding, where meaning search stands on it (embedded, pending, or none while no window covers it); a typed block carries attributes, its type's attributes in declaration order as its opening line writes them ({name, value, kind}, the value unescaped and unquoted and the kind the one the block schema declares it, so a reader follows a block[] value as the pointers it holds and reads every other kind as text), and a table block lists its rows and cells by the indexes delete_row and delete_column take. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ArtifactsByIdBlocks"];
     put?: never;
     post?: never;
@@ -337,7 +337,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Where one block stands in a document: its path from the top-level block down (type, id, child index), and for a table block, row or cell the table's id, the row index (0 is the header), the cell's column index, the text of the header cell drawn above it and the row's cells; 404 TARGET_NOT_FOUND for an id the live document does not hold. */
+    /** @description Where one block stands in a document: its path from the top-level block down (type, id, child index), and for a table block, row or cell the table's id, the row index (0 is the header), the cell's column index, the text of the header cell drawn above it and the row's cells; 404 TARGET_NOT_FOUND for an id the live document does not hold. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ArtifactsByIdBlocksByBlockId"];
     put?: never;
     post?: never;
@@ -371,10 +371,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
+    /** @description List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. At a cut the route lists the comments that existed then, each with its body, its edited_at and its resolution at the cut. The answer goes out under an ETag over the cut and its own bytes. A comment deleted after the cut reads as deleted, with its deleted_at, and the answer leaves out its body and names it in Dispatch-As-Of-Absent. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/body, /*\/reply_block/text, /*\/reply_block/removed, /*\/deliveries/*\/state, /*\/deliveries/*\/reply_id, /*\/deliveries/*\/envelope_id, /*\/deliveries/*\/resolve_error, /*\/deliveries/*\/created_at, /*\/deliveries/*\/delivery, /*\/deliveries/*\/session_id. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1ArtifactsByIdComments"];
     put?: never;
-    /** @description Comment on a document or one of its quotes. */
+    /** @description Comment on a document or one of its quotes. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. */
     post: operations["postApiV1ArtifactsByIdComments"];
     delete?: never;
     options?: never;
@@ -406,7 +406,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Page a document's event log. */
+    /** @description Page a document's event log. At a cut the route pages only the events written at or before the cut. A post deleted after the cut answers its own events with no body, as it does now. A preview of it that another post's event holds keeps its text. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/payload/referenced_by_count, /*\/payload/revision, /*\/payload/options/*\/id, /*\/payload/answer/id, /*\/payload/body. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1ArtifactsByIdEvents"];
     put?: never;
     post?: never;
@@ -457,7 +457,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Cross-references to and from a document. */
+    /** @description Cross-references to and from a document. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ArtifactsByIdReferences"];
     put?: never;
     post?: never;
@@ -474,7 +474,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List a document's approval reviews. */
+    /** @description List a document's approval reviews. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ArtifactsByIdReviews"];
     put?: never;
     /** @description Approve or request changes on a document's latest settled version; answers the open approval ask when present, preserving its thread, and reviews every document that ask named. */
@@ -492,7 +492,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Sessions subscribed to a document's topics. */
+    /** @description Sessions subscribed to a document's topics. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ArtifactsByIdSubscribers"];
     put?: never;
     post?: never;
@@ -526,7 +526,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write. */
+    /** @description A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write. At a cut the route answers the markdown and the document token of the document's newest version at the cut, and with ?blocks=true the blocks of that version. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /token, /blocks/*\/token, /blocks/*\/embedding, /blocks/*\/id, /blocks/*\/table/rows/*\/id, /blocks/*\/table/rows/*\/cells/*\/id, /blocks/*\/references. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1ArtifactsByIdText"];
     put?: never;
     post?: never;
@@ -560,7 +560,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it. */
+    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it. A document version that holds the words of a pending insert suggestion whose comment its author deleted, and that no accept made document text, answers its Markdown without them, as JSON and as the download alike: the version still stores them, and its sha256 and size are the stored text's, so a masked answer's text no longer hashes to sha256, nor to the document_token the version was written with. At a cut a version made after the cut is 404, as JSON and as a download. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer leaves out no member. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1ArtifactsByIdVersionsByNumber"];
     put?: never;
     post?: never;
@@ -594,7 +594,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Open asks in one scope, with counts: ?author_session= for one session's own, or ?project= for every open ask on a project's issues and documents; exactly one is required. */
+    /** @description Open asks in one scope, with counts: ?author_session= for one session's own, or ?project= for every open ask on a project's issues and documents; exactly one is required. At a cut the route lists the asks that were open at the cut. The answer's as_of is the cut, and each age_seconds counts from the cut. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /asks/*\/waiting_on_person. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1AsksOpen"];
     put?: never;
     post?: never;
@@ -611,7 +611,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read one ask with its replies, edit history, answers and followers, plus claimant (the session holding its issue's claim) and route (its issue's route), whom a person's answer and replies also reach, and route_holder (the live session that route reaches now: the session itself or the role's holder); each is null when absent, route_holder also when nobody holds the route or the Envoy listener did not answer, and all are null on a project document's ask. */
+    /** @description Read one ask with its replies, edit history, answers and followers, plus claimant (the session holding its issue's claim) and route (its issue's route), whom a person's answer and replies also reach, and route_holder (the live session that route reaches now: the session itself or the role's holder); each is null when absent, route_holder also when nobody holds the route or the Envoy listener did not answer, and all are null on a project document's ask. At a cut the route reads the ask at its newest state event at or before the cut, with the replies, the edits, the answers and the followers that it had then. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /ask/referenced_by_count, /ask/revision, /ask/options/*\/id, /ask/answer/id, /ask/waiting_on_person, /ask/approval/documents, /route_status, /route_holder, /route_status_reason, /replies/*\/body, /replies/*\/reply_block/text, /replies/*\/reply_block/removed, /replies/*\/deliveries/*\/state, /replies/*\/deliveries/*\/reply_id, /replies/*\/deliveries/*\/envelope_id, /replies/*\/deliveries/*\/resolve_error, /replies/*\/deliveries/*\/created_at, /replies/*\/deliveries/*\/delivery, /replies/*\/deliveries/*\/session_id, /ask/anchor_block. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1AsksById"];
     put?: never;
     post?: never;
@@ -680,7 +680,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the sessions an ask's answer and replies reach. */
+    /** @description List the sessions an ask's answer and replies reach. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1AsksByIdFollowers"];
     put?: never;
     post?: never;
@@ -732,7 +732,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Links from blocks of one document to blocks of another: ?from=<document ref>&to=<document ref>; both block nodes, the edge kind, and when and in which version the source wrote each, newest first. */
+    /** @description Links from blocks of one document to blocks of another: ?from=<document ref>&to=<document ref>; both block nodes, the edge kind, and when and in which version the source wrote each, newest first. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1BlockLinks"];
     put?: never;
     post?: never;
@@ -749,7 +749,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Recent broadcasts, newest first, with their recipient and reply counts. */
+    /** @description Recent broadcasts, newest first, with their recipient and reply counts. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1Broadcasts"];
     put?: never;
     /** @description Send one message to many sessions: {body, delivery, session_ids}, one targeted message per recipient under a shared broadcast, answered once it is committed while each recipient's delivery runs behind the answer. A selected session the Envoy listener knows and that is not running is a recipient like any other, its copy stored for it and its attempt recorded queued; one the listener knows nothing about, or that does not advertise the mode, is excluded and named in the response, never switched to another mode. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 at once with the broadcast the key made, every recipient's attempts as they stand and the first answer's exclusions, Idempotency-Replayed: ?1, and puts every recipient it still owes on its way behind the answer. A recipient a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not. */
@@ -767,7 +767,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One broadcast with every recipient's delivery attempts and replies, recipients in the order the send named them; a broadcast from before that order was stored falls back to created_at, id. */
+    /** @description One broadcast with every recipient's delivery attempts and replies, recipients in the order the send named them; a broadcast from before that order was stored falls back to created_at, id. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1BroadcastsById"];
     put?: never;
     post?: never;
@@ -784,7 +784,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The CI reconcile passes of the last 24 hours, newest first: each one's id, the server process that ran it, when it started and ended, what it did (graphql_queries, graphql_points, rest_requests, rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is where the pass after it takes the order up: the repository, from (the number naming the page of its open pull requests, one above the last head of the page before it), number (the first pull request of that page the pass did not finish, 0 for the whole page), rest (the page is read from the repository's REST listing rather than from a query) and counted (its heads are already among the heads the cycle knows the repository has). Both the counts and the cursor are null until the pass ends. state is running, complete, deadline (its own five-minute bound cut it short), rate_limit (a shared GitHub limit ended it), cancelled (its process shut down under it) or ended_without_completing, which is a pass whose process died before it could record its end. Rows are kept for 48 hours and pruned by the pass that ends. */
+    /** @description The CI reconcile passes of the last 24 hours, newest first: each one's id, the server process that ran it, when it started and ended, what it did (graphql_queries, graphql_points, rest_requests, rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is where the pass after it takes the order up: the repository, from (the number naming the page of its open pull requests, one above the last head of the page before it), number (the first pull request of that page the pass did not finish, 0 for the whole page), rest (the page is read from the repository's REST listing rather than from a query) and counted (its heads are already among the heads the cycle knows the repository has). Both the counts and the cursor are null until the pass ends. state is running, complete, deadline (its own five-minute bound cut it short), rate_limit (a shared GitHub limit ended it), cancelled (its process shut down under it) or ended_without_completing, which is a pass whose process died before it could record its end. Rows are kept for 48 hours and pruned by the pass that ends. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1CiReconcilePasses"];
     put?: never;
     post?: never;
@@ -801,14 +801,15 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read one comment with its thread. */
+    /** @description Read one comment with its thread. At a cut the route reads the comment and its thread as they stood at the cut. A comment deleted after the cut reads as deleted, with its deleted_at, and the answer leaves out its body and names it in Dispatch-As-Of-Absent. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /comment/body, /comment/reply_block/text, /comment/reply_block/removed, /comment/deliveries/*\/state, /comment/deliveries/*\/reply_id, /comment/deliveries/*\/envelope_id, /comment/deliveries/*\/resolve_error, /comment/deliveries/*\/created_at, /comment/deliveries/*\/delivery, /comment/deliveries/*\/session_id, /replies/*\/body, /replies/*\/reply_block/text, /replies/*\/reply_block/removed, /replies/*\/deliveries/*\/state, /replies/*\/deliveries/*\/reply_id, /replies/*\/deliveries/*\/envelope_id, /replies/*\/deliveries/*\/resolve_error, /replies/*\/deliveries/*\/created_at, /replies/*\/deliveries/*\/delivery, /replies/*\/deliveries/*\/session_id, /comment/anchor_block. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1CommentsById"];
     put?: never;
     post?: never;
-    delete?: never;
+    /** @description Delete a comment: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The comment keeps its row and its place in its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, and GET /api/v1/comments/{id}/history reads the mark in its place. A suggestion of it still pending is rejected out of the document before the body goes, so an insert suggestion's text leaves the document with it; the suggestion's replacement text goes from the comment with the body, and the document version an accepted suggestion made, which the accept named after the comment's body, is renamed to the change it made (its artifact.version event keeps the name it carried); each block is removed with its excerpt cleared and the text every revision recorded of it cleared too, the margin mark is projected again with no text, and every mention attempt still pending is failed, 'ended by the post's delete', which says nothing of whether its frame had already reached the session. A mention attempt its own sender moves while the delete is being written is 409 DELETE_CONTENDED with Retry-After: 1 and nothing written: send the same delete again. A comment of a closed issue is deleted too; a second delete is 409 POST_DELETED. */
+    delete: operations["deleteApiV1CommentsById"];
     options?: never;
     head?: never;
-    /** @description Edit a comment's body. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text. */
+    /** @description Edit a comment's body: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The body it replaces is kept and GET /api/v1/comments/{id}/history reads it. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text. A comment of a closed issue is edited too, and a deleted one is 409 POST_DELETED. */
     patch: operations["patchApiV1CommentsById"];
     trace?: never;
   };
@@ -836,7 +837,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A comment's current blocks in body order: {item, revision, indexed, blocks: [{id, type, text, ref, from, to, changed_revision, changed_at, embedding}]}, item the comment's graph node, revision its indexed revision, from and to UTF-16 code units into its stored body, changed_revision and changed_at the revision its block's text last changed in, embedding where meaning search stands on the block (embedded, pending, or none while no window covers it). While the comment is owed a block index, or was indexed from another body than it stores, indexed is false and blocks empty; the read writes nothing. An id written short - 8 characters or more of the hex digits and hyphens an id starts with - names the one comment that carries it, is 409 ID_AMBIGUOUS where two or more do, and is 404 NOT_FOUND where none does; any other non-uuid id is 400 COMMENT_ID_INPUT. */
+    /** @description A comment's current blocks in body order: {item, revision, indexed, blocks: [{id, type, text, ref, from, to, changed_revision, changed_at, embedding}]}, item the comment's graph node, revision its indexed revision, from and to UTF-16 code units into its stored body, changed_revision and changed_at the revision its block's text last changed in, embedding where meaning search stands on the block (embedded, pending, or none while no window covers it). While the comment is owed a block index, or was indexed from another body than it stores, indexed is false and blocks empty; the read writes nothing. An id written short - 8 characters or more of the hex digits and hyphens an id starts with - names the one comment that carries it, is 409 ID_AMBIGUOUS where two or more do, and is 404 NOT_FOUND where none does; any other non-uuid id is 400 COMMENT_ID_INPUT. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1CommentsByIdBlocks"];
     put?: never;
     post?: never;
@@ -857,6 +858,23 @@ export interface paths {
     put?: never;
     /** @description Retry a comment mention delivery; target is required when it has multiple mentions. */
     post: operations["postApiV1CommentsByIdDeliveries"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/comments/{id}/history": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every body an edit or a delete of this comment replaced, newest first, each with the actor that replaced it and the time: {deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}. Read by whoever reads the comment, which is any authenticated caller. At most 200 rows in one answer; ?before=<RFC3339 time> answers the page after, the rows written before it. A comment nobody edited or deleted answers an empty list; a delete writes an entry of its own, so a comment deleted with no edit lists one, and a deleted comment answers the mark with every body empty, since no read of a deleted post gives its text. At a cut the route answers only the entries that the comment's edits and deletes at or before the cut wrote, newest first, paged by ?before= as now. deleted_at and deleted_by are the comment's present values, so a comment deleted after the cut answers as a deleted comment answers now. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer leaves out no member. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
+    get: operations["getApiV1CommentsByIdHistory"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -938,7 +956,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the live credential grants of the caller's Live grants page (?approver=me only): those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a person's pod the broker no longer maps), which nobody may revoke. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot. */
+    /** @description List the live credential grants of the caller's Live grants page (?approver=me only): those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a person's pod the broker no longer maps), which nobody may revoke. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1CredentialGrants"];
     put?: never;
     post?: never;
@@ -972,7 +990,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List credential requests the caller may decide (?approver=me only), and the expired ones nobody has dismissed: those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides. Each row's state is pending (a decision may still settle it) or expired (its deadline, expires_at, passed before anybody decided it, and an expired row stays until somebody dismisses it); the pending rows come first and then the expired, each newest first, and a row with no state, from a secrets broker older than states, is pending. Each secret request carries approve_url, the secrets broker's page where it is decided; null without a configured secrets broker. */
+    /** @description List credential requests the caller may decide (?approver=me only), and the expired ones nobody has dismissed: those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides. Each row's state is pending (a decision may still settle it) or expired (its deadline, expires_at, passed before anybody decided it, and an expired row stays until somebody dismisses it); the pending rows come first and then the expired, each newest first, and a row with no state, from a secrets broker older than states, is pending. Each secret request carries approve_url, the secrets broker's page where it is decided; null without a configured secrets broker. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1CredentialRequests"];
     put?: never;
     post?: never;
@@ -1057,7 +1075,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What the credential pages may offer against this deployment's secrets broker, relayed from the broker's own RFC 8414 metadata rather than from any Dispatch setting: machine_code_page says whether the broker still serves the device grant, so whether a machine ever prints a code for a person to type. */
+    /** @description What the credential pages may offer against this deployment's secrets broker, relayed from the broker's own RFC 8414 metadata rather than from any Dispatch setting: machine_code_page says whether the broker still serves the device grant, so whether a machine ever prints a code for a person to type. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1CredentialsCapabilities"];
     put?: never;
     post?: never;
@@ -1074,7 +1092,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Which dashboard builds are served: {serving, live}, serving the entry chunk (/assets/index-*.js) of the build this process serves (empty when none), live the distinct entry chunks of the builds every live server process serves, sorted. A tab offers its reload notice only when live holds exactly one entry and it is not the tab's own. */
+    /** @description Which dashboard builds are served: {serving, live}, serving the entry chunk (/assets/index-*.js) of the build this process serves (empty when none), live the distinct entry chunks of the builds every live server process serves, sorted. A tab offers its reload notice only when live holds exactly one entry and it is not the tab's own. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1DashboardBuilds"];
     put?: never;
     post?: never;
@@ -1091,7 +1109,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED. As a GET that writes, it refuses every read-only token with 403 READ_ONLY_TOKEN, a token that carries a cut too. */
     get: operations["getApiV1DeliveryMeasures"];
     put?: never;
     post?: never;
@@ -1108,7 +1126,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets; not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets; not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED. As a GET that writes, it refuses every read-only token with 403 READ_ONLY_TOKEN, a token that carries a cut too. */
     get: operations["getApiV1DeliveryPipeline"];
     put?: never;
     post?: never;
@@ -1125,7 +1143,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One deploy-repository run with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description One deploy-repository run with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1DeliveryRunsById"];
     put?: never;
     post?: never;
@@ -1177,7 +1195,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED. As a GET that writes, it refuses every read-only token with 403 READ_ONLY_TOKEN, a token that carries a cut too. */
     get: operations["getApiV1DeliveryTimeline"];
     put?: never;
     post?: never;
@@ -1194,7 +1212,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Page the whole event log by id, whatever owns each event (an issue, a document, a project or none): the events with id > after (default 0), oldest first, at most limit (1 to 1000, default 1000). An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
+    /** @description Page the whole event log by id, whatever owns each event (an issue, a document, a project or none): the events with id > after (default 0), oldest first, at most limit (1 to 1000, default 1000). An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. At a cut the route pages only the events written at or before the cut, and no page reaches past the largest id among them. A post deleted after the cut answers its own events with no body, as it does now. A preview of it that another post's event holds keeps its text. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/payload/referenced_by_count, /*\/payload/revision, /*\/payload/options/*\/id, /*\/payload/answer/id, /*\/payload/body. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1EventsLog"];
     put?: never;
     post?: never;
@@ -1211,7 +1229,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 400 INVALID_REPO_PROJECT, before GitHub is asked anything, when the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer than 100 characters (a trailing .git trimmed); 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. */
+    /** @description Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 400 INVALID_REPO_PROJECT, before GitHub is asked anything, when the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer than 100 characters (a trailing .git trimmed); 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1GithubAppInstallationByOwnerByRepo"];
     put?: never;
     post?: never;
@@ -1228,7 +1246,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Whether this deployment has a text model configured: {model_configured} and nothing else, so no endpoint, deployment name or credential can appear in it. Any caller Dispatch admits reads it, a pod's own agent token included. */
+    /** @description Whether this deployment has a text model configured: {model_configured} and nothing else, so no endpoint, deployment name or credential can appear in it. Any caller Dispatch admits reads it, a pod's own agent token included. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1GoingCapability"];
     put?: never;
     post?: never;
@@ -1245,7 +1263,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-seven tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: 24 of the 41 tool specs agents operate Dispatch with, every one that writes but dispatch_review, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. It leaves dispatch_review out on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. The catalogue is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -1279,7 +1297,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (text, item, cut, changed, none, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know. */
+    /** @description One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (text, item, cut, changed, none, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. Once a comment or an issue message whose text the run gave its model is deleted, every read of the stream gives none of the run's frames and only the error ANSWER_WITHDRAWN, under the id of the run's ending, and nothing to a reader that already holds that id. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED. As a GET that writes, it refuses every read-only token with 403 READ_ONLY_TOKEN, a token that carries a cut too. */
     get: operations["getApiV1GoingRequestsByIdStream"];
     put?: never;
     post?: never;
@@ -1296,7 +1314,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One handoff by id with its body, the exact text written; 404 HANDOFF_NOT_FOUND when there is none, 400 HANDOFF_ID_INPUT for an id that is not a uuid. */
+    /** @description One handoff by id with its body, the exact text written; 404 HANDOFF_NOT_FOUND when there is none, 400 HANDOFF_ID_INPUT for an id that is not a uuid. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1HandoffsById"];
     put?: never;
     post?: never;
@@ -1313,7 +1331,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter on the person each ask waits on, which is three steps resolved as the ask is read: the person the question was handed to, then the issue's assignee, then the project's default assignee (unassigned is every ask nobody waits on; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
+    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter on the person each ask waits on, which is three steps resolved as the ask is read: the person the question was handed to, then the issue's assignee, then the project's default assignee (unassigned is every ask nobody waits on; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). At a cut the route lists the asks open at the cut, on an issue open then or on a project document, that waited on the person at the cut by the same three steps. Snoozes keep no history, so the answer leaves out snoozed_until. An ask whose person is a project default that the records at the cut do not give matches no ?assignee=. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/snoozed_until, /*\/referenced_by_count, /*\/revision, /*\/options/*\/id, /*\/answer/id, /*\/waiting_on_person, /*\/approval/documents, /*\/thread/route_status, /*\/thread/route_holder, /*\/thread/route_status_reason, /*\/thread/replies/*\/body, /*\/thread/replies/*\/reply_block/text, /*\/thread/replies/*\/reply_block/removed, /*\/thread/replies/*\/deliveries/*\/state, /*\/thread/replies/*\/deliveries/*\/reply_id, /*\/thread/replies/*\/deliveries/*\/envelope_id, /*\/thread/replies/*\/deliveries/*\/resolve_error, /*\/thread/replies/*\/deliveries/*\/created_at, /*\/thread/replies/*\/deliveries/*\/delivery, /*\/thread/replies/*\/deliveries/*\/session_id. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1Inbox"];
     put?: never;
     post?: never;
@@ -1330,7 +1348,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
+    /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. At a cut the route lists the issues that existed then, each as it stood, under the same filters, order and pages as now. At a cut, from as_of or from a token, route_status and pinned are 400 AS_OF_NOT_SERVED whatever their value, because the route roster and a person's pins keep no history. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/route_status, /*\/route_holder, /*\/route_status_reason, /*\/components/ids, /*\/components/unknown, /issues/*\/route_status, /issues/*\/route_holder, /issues/*\/route_status_reason, /issues/*\/components/ids, /issues/*\/components/unknown. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1Issues"];
     put?: never;
     /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
@@ -1348,7 +1366,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Resolve ?ref=<KEY | owner/repo#n> to an issue key. */
+    /** @description Resolve ?ref=<KEY | owner/repo#n> to an issue key. At a cut the route resolves owner/repo#n by the external links that the issues held at the cut. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer leaves out no member. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1IssuesResolve"];
     put?: never;
     post?: never;
@@ -1365,7 +1383,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. */
+    /** @description Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. At a cut the route reads the issue from its newest state event at or before the cut, with the asks, the documents and the children that existed then. progress.tasks counts the task items of the primary document's newest version at the cut. An issue made after the cut is 404. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /route_status, /route_holder, /route_status_reason, /holder_state, /last_seen, /takeable_at, /design_gates, /referenced_by_count, /open_asks/*\/referenced_by_count, /components/ids, /components/unknown, /open_asks/*\/revision, /open_asks/*\/options/*\/id, /open_asks/*\/answer/id, /open_asks/*\/waiting_on_person, /open_asks/*\/approval/documents, /artifacts/*\/approval/documents. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1IssuesByKey"];
     put?: never;
     post?: never;
@@ -1383,7 +1401,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's documents and files. */
+    /** @description List an issue's documents and files. At a cut the route lists the documents and files that the issue held then, each with its name, its versions and its approval at the cut. A document removed after the cut is not listed: a removal keeps no row of the document. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/approval/documents. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1IssuesByKeyArtifacts"];
     put?: never;
     /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. */
@@ -1401,7 +1419,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read an issue document by slug or unambiguous filename. */
+    /** @description Read an issue document by slug or unambiguous filename. At a cut the route reads the document as it stood at the cut: its name, its versions made by then and its approval at the cut. A document made after the cut, or removed after it, is 404 ARTIFACT_NOT_FOUND: a removal keeps no row of the document. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /approval/documents. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlug"];
     put?: never;
     post?: never;
@@ -1418,7 +1436,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description An issue document's blocks and tokens, by slug or unambiguous filename. */
+    /** @description An issue document's blocks and tokens, by slug or unambiguous filename. At a cut the route answers the blocks of the document's newest version at the cut. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/token, /*\/embedding, /*\/id, /*\/table/rows/*\/id, /*\/table/rows/*\/cells/*\/id, /*\/references. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugBlocks"];
     put?: never;
     post?: never;
@@ -1452,7 +1470,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description An issue document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
+    /** @description An issue document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;
@@ -1486,7 +1504,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. */
+    /** @description One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. A document version that holds the words of a pending insert suggestion whose comment its author deleted, and that no accept made document text, answers its Markdown without them: its sha256 and size are the stored text's, so a masked answer's text no longer hashes to sha256, nor to the document_token the version was written with. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -1503,7 +1521,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's asks, each with its newest reply; ?state= filters, and ?thread=1 adds each ask's thread (replies, rewordings, answers, followers, claimant, route, route_holder). */
+    /** @description List an issue's asks, each with its newest reply; ?state= filters, and ?thread=1 adds each ask's thread (replies, rewordings, answers, followers, claimant, route, route_holder). At a cut the route lists the asks that existed then, each at its newest state event at or before the cut, with its newest reply at the cut. ?thread=1 gives each thread as it stood at the cut. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/referenced_by_count, /*\/revision, /*\/options/*\/id, /*\/answer/id, /*\/waiting_on_person, /*\/approval/documents, /*\/thread/route_status, /*\/thread/route_holder, /*\/thread/route_status_reason, /*\/thread/replies/*\/body, /*\/thread/replies/*\/reply_block/text, /*\/thread/replies/*\/reply_block/removed, /*\/thread/replies/*\/deliveries/*\/state, /*\/thread/replies/*\/deliveries/*\/reply_id, /*\/thread/replies/*\/deliveries/*\/envelope_id, /*\/thread/replies/*\/deliveries/*\/resolve_error, /*\/thread/replies/*\/deliveries/*\/created_at, /*\/thread/replies/*\/deliveries/*\/delivery, /*\/thread/replies/*\/deliveries/*\/session_id. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1IssuesByKeyAsks"];
     put?: never;
     /** @description Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. */
@@ -1539,7 +1557,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Everyone who worked an issue, running or not, as {issue_key, people, agents, legion_registry}. people (kind user) is one row per canonical login: the assignee, everyone who claimed it, posted a comment, message, ask or document version on it or its documents, or answered one of its asks. agents (kind session) is one row per session id: the same event actors that are sessions (the Legion daemon's legion-daemon:<PROJECT> writer left out), merged with every session the listener's Legion agent registry records for the issue, which adds legion {role, role_token, started_at, replaced_by, replaced_at} and its title. Each row carries reasons (assignee, claimed, posted, answered) and last_at; no running state. legion_registry is unavailable when the listener did not answer, and the rest still answers. */
+    /** @description Everyone who worked an issue, running or not, as {issue_key, people, agents, legion_registry}. people (kind user) is one row per canonical login: the assignee, everyone who claimed it, posted a comment, message, ask or document version on it or its documents, or answered one of its asks. agents (kind session) is one row per session id: the same event actors that are sessions (the Legion daemon's legion-daemon:<PROJECT> writer left out), merged with every session the listener's Legion agent registry records for the issue, which adds legion {role, role_token, started_at, replaced_by, replaced_at} and its title. Each row carries reasons (assignee, claimed, posted, answered) and last_at; no running state. legion_registry is unavailable when the listener did not answer, and the rest still answers. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1IssuesByKeyCollaborators"];
     put?: never;
     post?: never;
@@ -1556,10 +1574,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
+    /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. At a cut the route lists the comments that existed then, each with its body, its edited_at and its resolution at the cut. The answer goes out under an ETag over the cut and its own bytes. A comment deleted after the cut reads as deleted, with its deleted_at, and the answer leaves out its body and names it in Dispatch-As-Of-Absent. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/body, /*\/reply_block/text, /*\/reply_block/removed, /*\/deliveries/*\/state, /*\/deliveries/*\/reply_id, /*\/deliveries/*\/envelope_id, /*\/deliveries/*\/resolve_error, /*\/deliveries/*\/created_at, /*\/deliveries/*\/delivery, /*\/deliveries/*\/session_id. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
-    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. */
+    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. */
     post: operations["postApiV1IssuesByKeyComments"];
     delete?: never;
     options?: never;
@@ -1574,7 +1592,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What each requirement of the issue's spec lacks: {issue, spec_artifact_id, has_plan, requirements, gaps}. A requirement is a `requirement` block of the spec; requirements lists them in document order, each with its reference, its words, and how many `check` and `plan_task` blocks of any document of the issue or of any descendant issue, at any status, name it in serves. A requirement's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the requirement's whole content as the tree a reader is shown, links and references kept. gaps is one line per gap - `<block id> has no check`, and `<block id> has no plan task` only once the issue has a plan document - or the single line `the spec marks no requirements` for a spec that marks none. Nothing is ever refused for a gap. This is not GET /api/v1/search/coverage, which reports how much of what meaning search ranks carries a vector. */
+    /** @description What each requirement of the issue's spec lacks: {issue, spec_artifact_id, has_plan, requirements, gaps}. A requirement is a `requirement` block of the spec; requirements lists them in document order, each with its reference, its words, and how many `check` and `plan_task` blocks of any document of the issue or of any descendant issue, at any status, name it in serves. A requirement's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the requirement's whole content as the tree a reader is shown, links and references kept. gaps is one line per gap - `<block id> has no check`, and `<block id> has no plan task` only once the issue has a plan document - or the single line `the spec marks no requirements` for a spec that marks none. Nothing is ever refused for a gap. This is not GET /api/v1/search/coverage, which reports how much of what meaning search ranks carries a vector. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1IssuesByKeyCoverage"];
     put?: never;
     post?: never;
@@ -1591,7 +1609,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The issue's decision records: {document, open_questions, decisions}. document is the dispatch:// address of its decisions.md, null (with no decisions) when it has none. open_questions are the issue's open asks whose block is in its spec, oldest first. Each decision is one `##` section of decisions.md in document order - a `###` section under `## Replaced` for a replaced one - with its heading block and markdown, the ask ids its blocks mention (kind person when it has any, agent otherwise), whether a paragraph of it starts `Unsure:`, the version its text last changed in, the Keep a person recorded, and one entry per link from its blocks to a spec block, each stale when the decision changed after it first linked that block and the block has not changed since. */
+    /** @description The issue's decision records: {document, open_questions, decisions}. document is the dispatch:// address of its decisions.md, null (with no decisions) when it has none. open_questions are the issue's open asks whose block is in its spec, oldest first. Each decision is one `##` section of decisions.md in document order - a `###` section under `## Replaced` for a replaced one - with its heading block and markdown, the ask ids its blocks mention (kind person when it has any, agent otherwise), whether a paragraph of it starts `Unsure:`, the version its text last changed in, the Keep a person recorded, and one entry per link from its blocks to a spec block, each stale when the decision changed after it first linked that block and the block has not changed since. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1IssuesByKeyDecisions"];
     put?: never;
     post?: never;
@@ -1625,7 +1643,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
+    /** @description Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. At a cut the route pages only the events written at or before the cut, under an ETag over the cut and the answer's own bytes. A post deleted after the cut answers its own events with no body, as it does now. A preview of it that another post's event holds keeps its text. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/payload/referenced_by_count, /*\/payload/revision, /*\/payload/options/*\/id, /*\/payload/answer/id, /*\/payload/body. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1IssuesByKeyEvents"];
     put?: never;
     post?: never;
@@ -1642,7 +1660,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's handoffs, newest first, each {id, issue_key, phase, version, author, created_at} without its body; a closed issue's read too. */
+    /** @description List an issue's handoffs, newest first, each {id, issue_key, phase, version, author, created_at} without its body; a closed issue's read too. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1IssuesByKeyHandoffs"];
     put?: never;
     post?: never;
@@ -1676,7 +1694,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The newest handoff of one phase of an issue with its body, the exact text written; 404 HANDOFF_NOT_FOUND when the phase has none. A closed issue's read too. */
+    /** @description The newest handoff of one phase of an issue with its body, the exact text written; 404 HANDOFF_NOT_FOUND when the phase has none. A closed issue's read too. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1IssuesByKeyHandoffsByPhaseLatest"];
     put?: never;
     post?: never;
@@ -1693,10 +1711,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's message threads: every root message, oldest first, each with its deliveries and its replies. */
+    /** @description List an issue's message threads: every root message, oldest first, each with its deliveries and its replies. At a cut the route lists the message threads that existed then, each message with the text that it had at the cut. A message deleted after the cut reads as deleted, with its deleted_at, and the answer leaves out its body and names it in Dispatch-As-Of-Absent. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/message/body, /*\/message/reply_block/text, /*\/message/reply_block/removed, /*\/message/deliveries/*\/state, /*\/message/deliveries/*\/reply_id, /*\/message/deliveries/*\/envelope_id, /*\/message/deliveries/*\/created_at, /*\/message/deliveries/*\/requested_by, /*\/message/deliveries/*\/delivery, /*\/message/deliveries/*\/session_id, /*\/replies/*\/body, /*\/replies/*\/reply_block/text, /*\/replies/*\/reply_block/removed, /*\/replies/*\/deliveries/*\/state, /*\/replies/*\/deliveries/*\/reply_id, /*\/replies/*\/deliveries/*\/envelope_id, /*\/replies/*\/deliveries/*\/created_at, /*\/replies/*\/deliveries/*\/requested_by, /*\/replies/*\/deliveries/*\/delivery, /*\/replies/*\/deliveries/*\/session_id. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1IssuesByKeyMessages"];
     put?: never;
-    /** @description Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. */
+    /** @description Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. A reply to a deleted message is 409 POST_DELETED: a withdrawn post takes no new text. */
     post: operations["postApiV1IssuesByKeyMessages"];
     delete?: never;
     options?: never;
@@ -1711,7 +1729,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read one message with its deliveries and replies. */
+    /** @description Read one message with its deliveries and replies. At a cut the route reads the message and its replies as they stood at the cut, each with the text that it had then. A message deleted after the cut reads as deleted, with its deleted_at, and the answer leaves out its body and names it in Dispatch-As-Of-Absent. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /message/body, /message/reply_block/text, /message/reply_block/removed, /message/deliveries/*\/state, /message/deliveries/*\/reply_id, /message/deliveries/*\/envelope_id, /message/deliveries/*\/created_at, /message/deliveries/*\/requested_by, /message/deliveries/*\/delivery, /message/deliveries/*\/session_id, /replies/*\/body, /replies/*\/reply_block/text, /replies/*\/reply_block/removed, /replies/*\/deliveries/*\/state, /replies/*\/deliveries/*\/reply_id, /replies/*\/deliveries/*\/envelope_id, /replies/*\/deliveries/*\/created_at, /replies/*\/deliveries/*\/requested_by, /replies/*\/deliveries/*\/delivery, /replies/*\/deliveries/*\/session_id. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1IssuesByKeyMessagesById"];
     put?: never;
     post?: never;
@@ -1745,7 +1763,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. The closure's walk runs under a 2 s statement_timeout, and a walk past it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. */
+    /** @description The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. The closure's walk runs under a 2 s statement_timeout, and a walk past it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1IssuesByKeyReferences"];
     put?: never;
     post?: never;
@@ -1762,7 +1780,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept, and each result's observed_tree, the tree its observed text is shown as. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. Those are the open and merged pull requests attributed to the check's issue, and the open and merged pull requests its external links name (https://github.com/<owner>/<repo>/pull/<n>) in a repository it does not resolve to, each at the head its stored row holds now; the head of a linked one also carries that repository as repo (owner/name), so a reader can tell it from a pull request of the same number in the issue's own repository. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason, repo} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit; a basis in a repository the issue links a pull request in, rather than its own, carries that repository as repo, owner/name, whether it is the head of a pull request linked there, as in compared_with, or a branch of that repository, which a result whose commit is taken to be of it is compared with), other_commit, or unknown with the reason (repository_unreadable, read_failed). An other_commit or unknown answer that a repository the issue links a pull request in decided, the one the result's commit is taken to be of, carries that repository as repo (owner/name), so a reader can tell it from an answer about the issue's own repository, which carries none. check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:<check run id>, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session "", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
+    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept, and each result's observed_tree, the tree its observed text is shown as. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. Those are the open and merged pull requests attributed to the check's issue, and the open and merged pull requests its external links name (https://github.com/<owner>/<repo>/pull/<n>) in a repository it does not resolve to, each at the head its stored row holds now; the head of a linked one also carries that repository as repo (owner/name), so a reader can tell it from a pull request of the same number in the issue's own repository. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason, repo} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit; a basis in a repository the issue links a pull request in, rather than its own, carries that repository as repo, owner/name, whether it is the head of a pull request linked there, as in compared_with, or a branch of that repository, which a result whose commit is taken to be of it is compared with), other_commit, or unknown with the reason (repository_unreadable, read_failed). An other_commit or unknown answer that a repository the issue links a pull request in decided, the one the result's commit is taken to be of, carries that repository as repo (owner/name), so a reader can tell it from an answer about the issue's own repository, which carries none. check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:<check run id>, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session "", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. At a cut the route reads the checks of the Verification document's newest version at the cut, with the results and the retractions recorded by then. It reads nothing from GitHub and writes nothing. So it leaves out the GitHub currency of each check and result, and the result that CI derives (ci-run:…). At a cut, from as_of or from a token, ?at= is 400 AS_OF_NOT_SERVED. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /checks/*\/compared_with, /checks/*\/compared_nothing, /checks/*\/pass_stands, /checks/*\/ci, /checks/*\/results/*\/commit_stands, /checks/*\/results/*\/currency, /checks/*\/version, /checks/*\/sha256, /checks/*\/results/*\/check_words_moved. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1IssuesByKeyResults"];
     put?: never;
     /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. The commit must be held by the repository the check's issue resolves to, or by a repository in which the external links of the check's issue name a GitHub pull request (https://github.com/<owner>/<repo>/pull/<n>) that is open or merged, in a repository Dispatch's GitHub App is installed on and can read; a commit no such repository holds is 400 RESULT_COMMIT_UNKNOWN, naming the commit, each owner/repo asked, each linked pull request Dispatch could not read as owner/repo#n (repository_unreadable), at most 10 and a count of the rest, and every linked pull request in whose repository it could not read the commit, named the same way, since each spent one of the record's 10 reads, with how to mend those: grant Dispatch's GitHub App that repository, or link a readable pull request. A link names a pull request only where its owner is a login GitHub serves and its name holds only letters, digits, ., - and _ and is not . or ..; any other link spends no read, and no refusal names it. A linked pull request whose repository's name GitHub's naming rule then refuses, such as one of acme/.git, which is empty once .git is trimmed, counts for nothing and spends one of the 10 reads, and the refusal names that repository as one whose links Dispatch set aside, which no grant of the App mends. One record reads at most 10 linked pull requests, and a refusal says how many it left unread past that bound. A linked repository the App is not installed on or cannot read (GitHub's 403 that is no rate limit) does not count. A read of a linked pull request or of a linked repository that does not answer (a rate limit, a 5xx, a transport failure), where no repository is shown to hold the commit, is 502 GITHUB_UNREADABLE naming that repository, the commit and GitHub's error, and stores nothing: record the result again, after the wait a rate limit names, which Retry-After carries too. No repository at all stores the result as before. A repository the check's issue resolves to that Dispatch cannot read stores the result as before only where every linked read answered and no linked repository holds the commit: a linked read that did not answer is the 502 GITHUB_UNREADABLE above, and stores nothing. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. A check reworded by a document version at each of the two attempts this write makes is 409 CHECK_CONTENDED with Retry-After: 1, the second the version that moved it needs to land, and nothing recorded: read the check and retry. The answer is {result, line}, line being the pull-request body line the result implies: its reading keeps only plain words, every rune a visible letter, a digit or one of . , ; : ! ? ' " - ( ) /, and of those leaves out every one that holds a link (://), a host below or ending in .internal, a Tailscale MagicDNS host (.ts.net), this Dispatch's own host, or an issue key of a project this Dispatch holds, in any case, and judges the 80-rune cut again, so the line carries no link to Dispatch, no private host, no issue key and no markup. */
@@ -1797,7 +1815,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The session that holds each Legion role of this issue, as the Legion daemon last published it: {issue, holders}, each {role, session, recorded_at} in workflow order, [] when no session holds a role. A closed issue's read too. An issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
+    /** @description The session that holds each Legion role of this issue, as the Legion daemon last published it: {issue, holders}, each {role, session, recorded_at} in workflow order, [] when no session holds a role. A closed issue's read too. An issue Dispatch does not know is 404 ISSUE_NOT_FOUND. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1IssuesByKeyRoleHolders"];
     /** @description Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:<project>, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. */
     put: operations["putApiV1IssuesByKeyRoleHolders"];
@@ -1815,7 +1833,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, its attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it. */
+    /** @description Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, its attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1IssuesByKeySteps"];
     put?: never;
     post?: never;
@@ -1866,7 +1884,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Sessions subscribed to an issue's topics. */
+    /** @description Sessions subscribed to an issue's topics. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1IssuesByKeySubscribers"];
     put?: never;
     post?: never;
@@ -1900,7 +1918,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What a reference to an issue shows, read without the full issue: {key, project, title, status, documents}, documents every artifact of the issue in the order the issue read lists them, each {id, slug, name, kind, latest_version, primary}, primary whether the document is the issue's spec; 404 NOT_FOUND for no such issue. */
+    /** @description What a reference to an issue shows, read without the full issue: {key, project, title, status, documents}, documents every artifact of the issue in the order the issue read lists them, each {id, slug, name, kind, latest_version, primary}, primary whether the document is the issue's spec; 404 NOT_FOUND for no such issue. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1IssuesByKeySummary"];
     put?: never;
     post?: never;
@@ -1917,7 +1935,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The bounds a write is held to: how long one block of a body may be and how many blocks a body may hold, how many options an ask may have and how long its question and options are together, how long a body an event carries whole may be, and the bytes a request, a document and a handoff body may hold. */
+    /** @description The bounds a write is held to: how long one block of a body may be and how many blocks a body may hold, how many options an ask may have and how long its question and options are together, how long a body an event carries whole may be, and the bytes a request, a document and a handoff body may hold. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1Limits"];
     put?: never;
     post?: never;
@@ -1968,7 +1986,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. */
+    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1MachineLogins"];
     put?: never;
     post?: never;
@@ -2019,10 +2037,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the caller's personal agent tokens, each with the scopes it holds. */
+    /** @description List the caller's personal agent tokens, newest first, each with the scopes it holds: a read-only token's scopes hold read. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1MeAgentTokens"];
     put?: never;
-    /** @description Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A scope this deployment does not know, or approve without person, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. The answer is the one time the token's plaintext is shown. */
+    /** @description Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A set holding read mints a read-only token, which Dispatch answers on the GET routes it classes as reads and refuses every other route, 403 READ_ONLY_TOKEN: read alone, or read beside person. A scope this deployment does not know, approve without person, or read beside approve, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED, and read needs none. The answer is the one time the token's plaintext is shown. */
     post: operations["postApiV1MeAgentTokens"];
     delete?: never;
     options?: never;
@@ -2040,11 +2058,11 @@ export interface paths {
     get?: never;
     put?: never;
     post?: never;
-    /** @description Revoke a personal agent token. */
+    /** @description Revoke a personal agent token, read-only or not; a revoked token answers 401 TOKEN_REVOKED. */
     delete: operations["deleteApiV1MeAgentTokensById"];
     options?: never;
     head?: never;
-    /** @description Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. A token of another person's, or none, is 404 NOT_FOUND. */
+    /** @description Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. No token changes to or from read only: a set holding read, and any set for a read-only token, is 400 TOKEN_SCOPES_INPUT, since a person makes a new token for that. A token of another person's, or none, is 404 NOT_FOUND. */
     patch: operations["patchApiV1MeAgentTokensById"];
     trace?: never;
   };
@@ -2055,7 +2073,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's per-agent conversation state: cleared_before, read_through, unread_replies (the session's replies to the caller's direct messages newer than both and not read by id), and pinned_at (when the caller pinned the session, which puts it in their sidebar's Agents list). */
+    /** @description The caller's per-agent conversation state: cleared_before, read_through, unread_replies (the session's replies to the caller's direct messages newer than both and not read by id), and pinned_at (when the caller pinned the session, which puts it in their sidebar's Agents list). This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1MeAgentsState"];
     put?: never;
     post?: never;
@@ -2089,7 +2107,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's own answers and replies on asks across issues and project documents, newest first: each row is an answer (the ask.answered event's answer, and whether it is still the ask's current one) or a reply, with the ask's question, state, owner and deep link; pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
+    /** @description The caller's own answers and replies on asks across issues and project documents, newest first: each row is an answer (the ask.answered event's answer, and whether it is still the ask's current one) or a reply, with the ask's question, state, owner and deep link; pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1MeAnswers"];
     put?: never;
     post?: never;
@@ -2124,7 +2142,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's last read version of a document {artifact_id, version, read_at}; version and read_at are null when they have read none. */
+    /** @description The caller's last read version of a document {artifact_id, version, read_at}; version and read_at are null when they have read none. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1MeDocumentsByIdRead"];
     /** @description Record the caller's last read version of a document {version}: the Spec tab marks each block that changed since it. Answers the stored read; a version that is missing or negative is 400 INVALID_STATE. */
     put: operations["putApiV1MeDocumentsByIdRead"];
@@ -2193,7 +2211,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask on an open issue that waits on them, which the Inbox already lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark. */
+    /** @description The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask on an open issue that waits on them, which the Inbox already lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1MeReplies"];
     put?: never;
     post?: never;
@@ -2210,7 +2228,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's per-issue read state. */
+    /** @description The caller's per-issue read state. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1MeState"];
     put?: never;
     post?: never;
@@ -2244,7 +2262,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Test hook: list the targeted messages this process queued itself for a session neither the listener's registry nor its known-session store held, each as the envelope its session's subject would hold: {queued: [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}, oldest first; 404 QUEUED_ON_BUS on a process that publishes them to NATS. */
+    /** @description Test hook: list the targeted messages this process queued itself for a session neither the listener's registry nor its known-session store held, each as the envelope its session's subject would hold: {queued: [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}, oldest first; 404 QUEUED_ON_BUS on a process that publishes them to NATS. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1MessagesTestQueued"];
     put?: never;
     post?: never;
@@ -2261,14 +2279,16 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read the conversation a message belongs to by any message id in it, issue-less or not: the thread root with its deliveries and every reply, oldest first. An issue thread follows the issue's rule. A direct (issue-less) thread is read whole by a credential holding the person scope, since the conversation is that person's own; every other credential names its session in ?session= and reads only one whose root targets that session or that it replied in (403 THREAD_FORBIDDEN), a guard against reading another session's conversation by mistake, not an authorization boundary. Direct-conversation text also reaches every authenticated caller through that caller's events view on GET /ws/live; nothing in Dispatch restricts it by session. */
+    /** @description Read the conversation a message belongs to by any message id in it, issue-less or not: the thread root with its deliveries and every reply, oldest first. An issue thread follows the issue's rule. A direct (issue-less) thread is read whole by a credential holding the person scope, since the conversation is that person's own; every other credential names its session in ?session= and reads only one whose root targets that session or that it replied in (403 THREAD_FORBIDDEN), a guard against reading another session's conversation by mistake, not an authorization boundary. Direct-conversation text also reaches every authenticated caller through that caller's events view on GET /ws/live; nothing in Dispatch restricts it by session. At a cut the route reads the conversation as it stood at the cut, each message with the text that it had then. A message deleted after the cut reads as deleted, with its deleted_at, and the answer leaves out its body and names it in Dispatch-As-Of-Absent. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /message/body, /message/reply_block/text, /message/reply_block/removed, /message/deliveries/*\/state, /message/deliveries/*\/reply_id, /message/deliveries/*\/envelope_id, /message/deliveries/*\/created_at, /message/deliveries/*\/requested_by, /message/deliveries/*\/delivery, /message/deliveries/*\/session_id, /replies/*\/body, /replies/*\/reply_block/text, /replies/*\/reply_block/removed, /replies/*\/deliveries/*\/state, /replies/*\/deliveries/*\/reply_id, /replies/*\/deliveries/*\/envelope_id, /replies/*\/deliveries/*\/created_at, /replies/*\/deliveries/*\/requested_by, /replies/*\/deliveries/*\/delivery, /replies/*\/deliveries/*\/session_id. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1MessagesById"];
     put?: never;
     post?: never;
-    delete?: never;
+    /** @description Delete an issue message: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The message keeps its row and its place in its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, and GET /api/v1/messages/{id}/history reads the mark in its place. Each block is removed with its excerpt cleared, and every send still pending is failed, 'ended by the post's delete', which says nothing of whether its frame had already reached the session. A send its own sender moves while the delete is being written is 409 DELETE_CONTENDED with Retry-After: 1 and nothing written: send the same delete again. A message of a closed issue is deleted too. A message of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a second delete is 409 POST_DELETED. */
+    delete: operations["deleteApiV1MessagesById"];
     options?: never;
     head?: never;
-    patch?: never;
+    /** @description Edit an issue message's body: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing, as the comment edit reads it. The body it replaces is kept and GET /api/v1/messages/{id}/history reads it; the block ids follow the text, since no editor carries them through the edit. A message of a closed issue is edited too. A message of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a deleted message 409 POST_DELETED. */
+    patch: operations["patchApiV1MessagesById"];
     trace?: never;
   };
   "/api/v1/messages/{id}/blocks": {
@@ -2278,7 +2298,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A message's current blocks in body order: {item, indexed, blocks: [{id, type, text, ref, from, to, embedding}]}, item the message's graph node, from and to UTF-16 code units into its stored body, ref absent for a direct message's block (it has no address), embedding where meaning search stands on the block (embedded, pending, or none while no window covers it). Read under GET /api/v1/messages/{id}'s rule: a credential without the person scope reading a direct message names its session in ?session= (400 SESSION_REQUIRED, 403 THREAD_FORBIDDEN). While the message is owed a block index, indexed is false and blocks empty; the read writes nothing. */
+    /** @description A message's current blocks in body order: {item, indexed, blocks: [{id, type, text, ref, from, to, embedding}]}, item the message's graph node, from and to UTF-16 code units into its stored body, ref absent for a direct message's block (it has no address), embedding where meaning search stands on the block (embedded, pending, or none while no window covers it). Read under GET /api/v1/messages/{id}'s rule: a credential without the person scope reading a direct message names its session in ?session= (400 SESSION_REQUIRED, 403 THREAD_FORBIDDEN). While the message is owed a block index, indexed is false and blocks empty; the read writes nothing. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1MessagesByIdBlocks"];
     put?: never;
     post?: never;
@@ -2322,6 +2342,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/messages/{id}/history": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every body an edit or a delete of this message replaced, newest first, each with the actor that replaced it and the time: {deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}. Read under GET /api/v1/messages/{id}'s rule: a credential without the person scope reading a direct message names its session in ?session= (400 SESSION_REQUIRED, 403 THREAD_FORBIDDEN). At most 200 rows in one answer; ?before=<RFC3339 time> answers the page after, the rows written before it. A message nobody edited or deleted answers an empty list; a delete writes an entry of its own, so a message deleted with no edit lists one, and a deleted message answers the mark with every body empty, since no read of a deleted post gives its text. At a cut the route answers only the entries that the message's edits and deletes at or before the cut wrote, newest first, paged by ?before= as now. deleted_at and deleted_by are the message's present values, so a message deleted after the cut answers as a deleted message answers now. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer leaves out no member. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
+    get: operations["getApiV1MessagesByIdHistory"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/messages/{id}/reply": {
     parameters: {
       query?: never;
@@ -2346,7 +2383,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to 1000, default 1000), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most 5, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to 1s, and tried once more in the background for up to 30s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged. */
+    /** @description List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to 1000, default 1000), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most 5, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to 1s, and tried once more in the background for up to 30s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1NearCopyChecks"];
     put?: never;
     post?: never;
@@ -2363,7 +2400,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One near-copy gate answer by id: the row GET /api/v1/near-copy-checks lists, with spec, the spec as sent, on a refused row alone (absent on every other, whose issue holds it; empty for a refused create that sent none); 404 NEAR_COPY_CHECK_NOT_FOUND when there is none, 400 NEAR_COPY_CHECK_ID_INPUT for an id that is not a uuid. */
+    /** @description One near-copy gate answer by id: the row GET /api/v1/near-copy-checks lists, with spec, the spec as sent, on a refused row alone (absent on every other, whose issue holds it; empty for a refused create that sent none); 404 NEAR_COPY_CHECK_NOT_FOUND when there is none, 400 NEAR_COPY_CHECK_ID_INPUT for an id that is not a uuid. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1NearCopyChecksById"];
     put?: never;
     post?: never;
@@ -2380,7 +2417,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads. */
+    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1Priorities"];
     put?: never;
     /** @description Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single hyphens, one over 200 characters, the ids none and any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any), and a title no slug can be written from are each 400 PRIORITY_INPUT, an id derived from the title as much as one given; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none. */
@@ -2416,7 +2453,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One priority's own history, newest first: every act stated about it as {field, value, issue, asserted, actor, at}. field is what was stated — title, description, owner and rank, the four a person writes, state (live when it was made, gone when it was deleted) and visibility; advances is the relation an issue states on it. value is what an attribute write wrote and is empty on an advances act; issue is the issue at the other end of an advances act and is empty on an attribute write; asserted is false on the act that retracted an advances and true on every other. A priority belongs to no project, so any authenticated caller reads this, the shared token every pod carries included. A deleted priority still answers its history, the delete its newest act; an id no priority carries is 404 PRIORITY_NOT_FOUND. */
+    /** @description One priority's own history, newest first: every act stated about it as {field, value, issue, asserted, actor, at}. field is what was stated — title, description, owner and rank, the four a person writes, state (live when it was made, gone when it was deleted) and visibility; advances is the relation an issue states on it. value is what an attribute write wrote and is empty on an advances act; issue is the issue at the other end of an advances act and is empty on an attribute write; asserted is false on the act that retracted an advances and true on every other. A priority belongs to no project, so any authenticated caller reads this, the shared token every pod carries included. A deleted priority still answers its history, the delete its newest act; an id no priority carries is 404 PRIORITY_NOT_FOUND. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1PrioritiesByIdHistory"];
     put?: never;
     post?: never;
@@ -2433,7 +2470,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List projects. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope. */
+    /** @description List projects. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1Projects"];
     put?: never;
     /** @description Create a project {key, name, default_assignee}: any signed-in person or agent session; a bearer names its session in actor. Every project names the person its unowned work lands on, the last step of the chain that decides who a question reaches: default_assignee is the email of a person who has signed in, and a call that names none takes the person creating the project, else the person its credential acts for. A credential that acts for nobody and names no default_assignee is 400 INVALID_PROJECT; a login nobody has signed in with, the one the call names or the one its credential acts for, is 400 ASSIGNEE_NOT_ALLOWED. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. The answer is the project with the default_assignee the create stored. */
@@ -2451,7 +2488,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A project's component tree with the work attached: its sources' sync bookkeeping, each component with its source repository, per-component counts and issue rows, plus unassigned, not-architectural, and retired-link issues; 404 SOURCE_NOT_FOUND without a source. */
+    /** @description A project's component tree with the work attached: its sources' sync bookkeeping, each component with its source repository, per-component counts and issue rows, plus unassigned, not-architectural, and retired-link issues; 404 SOURCE_NOT_FOUND without a source. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ProjectsByKeyArchitecture"];
     put?: never;
     post?: never;
@@ -2468,7 +2505,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Kept for dispatch clients older than this release, logged at warn: the project's first architecture source, or null when it has none. GET /api/v1/projects/{key}/architecture-sources replaces it. */
+    /** @description Kept for dispatch clients older than this release, logged at warn: the project's first architecture source, or null when it has none. GET /api/v1/projects/{key}/architecture-sources replaces it. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ProjectsByKeyArchitectureSource"];
     put?: never;
     post?: never;
@@ -2502,7 +2539,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A project's architecture sources, one per repository, in the order they were added; [] when it has none. The project's component model is every source's components together. */
+    /** @description A project's architecture sources, one per repository, in the order they were added; [] when it has none. The project's component model is every source's components together. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ProjectsByKeyArchitectureSources"];
     put?: never;
     post?: never;
@@ -2571,7 +2608,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List a project's documents. */
+    /** @description List a project's documents. At a cut the route lists the documents that the project held then, each with its name, its versions and its approval at the cut. A document removed after the cut is not listed: a removal keeps no row of the document. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/approval/documents. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1ProjectsByKeyArtifacts"];
     put?: never;
     /** @description Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. */
@@ -2589,7 +2626,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read a project document by slug or unambiguous filename. */
+    /** @description Read a project document by slug or unambiguous filename. At a cut the route reads the document as it stood at the cut: its name, its versions made by then and its approval at the cut. A document made after the cut, or removed after it, is 404 ARTIFACT_NOT_FOUND: a removal keeps no row of the document. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /approval/documents. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlug"];
     put?: never;
     post?: never;
@@ -2606,7 +2643,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A project document's blocks and tokens, by slug or unambiguous filename. */
+    /** @description A project document's blocks and tokens, by slug or unambiguous filename. At a cut the route answers the blocks of the document's newest version at the cut. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*\/token, /*\/embedding, /*\/id, /*\/table/rows/*\/id, /*\/table/rows/*\/cells/*\/id, /*\/references. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugBlocks"];
     put?: never;
     post?: never;
@@ -2640,7 +2677,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What a reference to a project document shows, read without its versions: {id, project, slug, name, kind, latest_version}, the slug or unambiguous filename resolved as the project document read resolves it (404 ARTIFACT_NOT_FOUND, 400 ARTIFACT_REFERENCE_AMBIGUOUS). */
+    /** @description What a reference to a project document shows, read without its versions: {id, project, slug, name, kind, latest_version}, the slug or unambiguous filename resolved as the project document read resolves it (404 ARTIFACT_NOT_FOUND, 400 ARTIFACT_REFERENCE_AMBIGUOUS). This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugSummary"];
     put?: never;
     post?: never;
@@ -2657,7 +2694,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A project document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
+    /** @description A project document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;
@@ -2691,7 +2728,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of a project's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. */
+    /** @description One version of a project's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. A document version that holds the words of a pending insert suggestion whose comment its author deleted, and that no accept made document text, answers its Markdown without them: its sha256 and size are the stored text's, so a masked answer's text no longer hashes to sha256, nor to the document_token the version was written with. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -2742,7 +2779,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ProjectsByKeyLegionBoard"];
     put?: never;
     post?: never;
@@ -2759,7 +2796,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ProjectsByKeyLegionDaemon"];
     /** @description Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
     put: operations["putApiV1ProjectsByKeyLegionDaemon"];
@@ -2778,7 +2815,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until. */
+    /** @description Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ProjectsByKeyPlans"];
     put?: never;
     post?: never;
@@ -2795,7 +2832,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to 50 issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query and related, with up to 3 open issues before any item of another kind and everything a done issue owns last. This form answers no other_projects: its caller is the dashboard's new-issue dialog, which runs the check for each burst of typing and draws the items of the asking project alone. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND. */
+    /** @description Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to 50 issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query and related, with up to 3 open issues before any item of another kind and everything a done issue owns last. This form answers no other_projects: its caller is the dashboard's new-issue dialog, which runs the check for each burst of typing and draws the items of the asking project alone. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ProjectsByKeyRelated"];
     put?: never;
     /** @description The GET form of this route with its fields in a JSON body {title, text, exclude_issue, exclude_issues, keywords_only}, exclude_issues a list of issue keys: the related-item check over a title and a text as long as an issue's spec (the body's 1 MiB bound; a title over 1000 characters is 400 CAP_EXCEEDED), writing nothing and waiting at most 5 seconds. The two forms do not answer alike. This one is the check an agent runs to ask a question, so it answers other_projects beside related: at most 2 answered question asks of other projects, each with its ask state, its answer and the project it stands in (owner.project), ranked by meaning alone and offered with no claim that they answer the question. The GET form answers none. */
@@ -2813,7 +2850,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What many dispatch:// references point at, in one read: ?ref=<dispatch ref> once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. The lines between a typed block's fences are read by the block's kind: a document's block has the closing fence's indentation taken out of each line, which a block in a list item or a footnote definition carries, and a block of a comment, a message or an ask, stored from the start of its line, has its opening line's indentation, up to three spaces, taken off before the directive is read and up to as many columns taken off each later line, as its own text's parse reads them, the indentation left on a line, and the spaces or tabs after a list marker or a quote marker, written as spaces with each tab counted to the next multiple of four from its own column. With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text is given the tree of its whole stored text. A typed block in a quote is given the tree of its whole stored text, its opening line included, and so is a block of a comment, a message or an ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its text. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v1/references resolves its ?to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; GET /api/v1/references refuses such a prefix with 409 ID_AMBIGUOUS, and this read refuses none. Under an ETag over the whole answer, each tree and each ambiguous included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges. */
+    /** @description What many dispatch:// references point at, in one read: ?ref=<dispatch ref> once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A member naming a comment or a message, or a block of one, also carries edited_at where the post's author edited it, and deleted_at and deleted_by where its author deleted it: a deleted post's member is not gone and its name is "", and a member naming a block of it is gone, with no name and no text_tree. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. The lines between a typed block's fences are read by the block's kind: a document's block has the closing fence's indentation taken out of each line, which a block in a list item or a footnote definition carries, and a block of a comment, a message or an ask, stored from the start of its line, has its opening line's indentation, up to three spaces, taken off before the directive is read and up to as many columns taken off each later line, as its own text's parse reads them, the indentation left on a line, and the spaces or tabs after a list marker or a quote marker, written as spaces with each tab counted to the next multiple of four from its own column. With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text is given the tree of its whole stored text. A typed block in a quote is given the tree of its whole stored text, its opening line included, and so is a block of a comment, a message or an ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its text. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v1/references resolves its ?to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; GET /api/v1/references refuses such a prefix with 409 ID_AMBIGUOUS, and this read refuses none. Under an ETag over the whole answer, each tree and each ambiguous included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ReferenceTargets"];
     put?: never;
     post?: never;
@@ -2830,7 +2867,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Edges of one node in the reference graph: ?to=<dispatch ref> backlinks or ?from= links; ?kind=, ?since=<events.id> (mentions only, read up to the event log's safe horizon: every mention committed before the read, unless an open transaction holds the horizon back past 1 s, when the read answers the mentions at or below it and a later read the rest). A caller with no cursor starts from since=0, which lists every mention committed before the read that carries a source_seq, and after that reads again from the highest source_seq an answer showed it. A mention written with no event (a rebuild, a backfill, an older build) carries no source_seq until a later write of its source stamps it with that write's event, and until then only a read without since lists it. A signed-in page may start from GET /auth/whoami's event_head instead, which takes a cookie or a trusted header and not a bearer, so a bearer caller starts from 0. Never take a since from max(events.id) read straight from the database: event ids are not commit order, and an id taken that way can stand above an edge that commits later. An empty answer is not proof that nothing is new, so the caller reads again with the id it holds. A ?to= reference whose item id or block id is written short (8 characters or more, never a whole uuid) names the one item of the owner the reference names that carries it: the issue of dispatch://<KEY>/ask/<prefix>, the document of a #b-<prefix>; the node answered carries the whole id, a prefix two of them carry is 409 ID_AMBIGUOUS listing both, and one nothing carries is the 404 the reference as written always gave. A whole id is read whatever owner the reference names, as it always was. */
+    /** @description Edges of one node in the reference graph: ?to=<dispatch ref> backlinks or ?from= links; ?kind=, ?since=<events.id> (mentions only, read up to the event log's safe horizon: every mention committed before the read, unless an open transaction holds the horizon back past 1 s, when the read answers the mentions at or below it and a later read the rest). A caller with no cursor starts from since=0, which lists every mention committed before the read that carries a source_seq, and after that reads again from the highest source_seq an answer showed it. A mention written with no event (a rebuild, a backfill, an older build) carries no source_seq until a later write of its source stamps it with that write's event, and until then only a read without since lists it. A signed-in page may start from GET /auth/whoami's event_head instead, which takes a cookie or a trusted header and not a bearer, so a bearer caller starts from 0. Never take a since from max(events.id) read straight from the database: event ids are not commit order, and an id taken that way can stand above an edge that commits later. An empty answer is not proof that nothing is new, so the caller reads again with the id it holds. A ?to= reference whose item id or block id is written short (8 characters or more, never a whole uuid) names the one item of the owner the reference names that carries it: the issue of dispatch://<KEY>/ask/<prefix>, the document of a #b-<prefix>; the node answered carries the whole id, a prefix two of them carry is 409 ID_AMBIGUOUS listing both, and one nothing carries is the 404 the reference as written always gave. A whole id is read whatever owner the reference names, as it always was. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1References"];
     put?: never;
     post?: never;
@@ -2847,7 +2884,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The question map of one reference source's document: ?kind= one of artifact, ask, comment or message and ?id= that source's whole uuid or a unique prefix of 8 characters or more. Answers {document, questions}: document the uuid of the document the source's text belongs to - its own for a document version, the document an ask or a comment is written on or anchored to, its issue's spec for an issue message - and questions each `:::ask{#id}` block that document's latest version declares, by block id, with the whole id of the ask settlement made for it and that ask's `dispatch://` address, which is what a `#id` in the source's text names and the address its edge is stored under (empty for an ask on an agent conversation's document, which no address names). A block no ask is settled for yet is absent, and a document declaring none answers []. A source whose text belongs to no document - a direct message, an id nothing holds - is 404 NOT_FOUND; a kind that is none of the four is 400 INVALID_KIND; a missing id is 400 INVALID_QUERY; an id prefix two sources carry is 409 ID_AMBIGUOUS. */
+    /** @description The question map of one reference source's document: ?kind= one of artifact, ask, comment or message and ?id= that source's whole uuid or a unique prefix of 8 characters or more. Answers {document, questions}: document the uuid of the document the source's text belongs to - its own for a document version, the document an ask or a comment is written on or anchored to, its issue's spec for an issue message - and questions each `:::ask{#id}` block that document's latest version declares, by block id, with the whole id of the ask settlement made for it and that ask's `dispatch://` address, which is what a `#id` in the source's text names and the address its edge is stored under (empty for an ask on an agent conversation's document, which no address names). A block no ask is settled for yet is absent, and a document declaring none answers []. A source whose text belongs to no document - a direct message, an id nothing holds - is 404 NOT_FOUND; a kind that is none of the four is 400 INVALID_KIND; a missing id is 400 INVALID_QUERY; an id prefix two sources carry is 409 ID_AMBIGUOUS. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1ReferencesQuestions"];
     put?: never;
     post?: never;
@@ -2864,7 +2901,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Count the related-item checks recorded when an issue, an ask or a new decision block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), other_project_offers, and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms. other_project_offers is how many ask creates of the window offered at least one answered question of another project (other_projects), a count of writes and not of items, read from write_suggestions over the same window and under the same filters, and zero for a source kind no such row carries; the two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total. The meaning_ms recorded for such a check holds the whole meaning stage, the wait for the other projects' answers with it, which is at most 300 ms after the asking project's own query answered. */
+    /** @description Count the related-item checks recorded when an issue, an ask or a new decision block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), other_project_offers, and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms. other_project_offers is how many ask creates of the window offered at least one answered question of another project (other_projects), a count of writes and not of items, read from write_suggestions over the same window and under the same filters, and zero for a source kind no such row carries; the two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total. The meaning_ms recorded for such a check holds the whole meaning stage, the wait for the other projects' answers with it, which is at most 300 ms after the asking project's own query answered. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1RelatedChecks"];
     put?: never;
     post?: never;
@@ -2898,7 +2935,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The typed document block schema as JSON. */
+    /** @description The typed document block schema as JSON. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1SchemaBlocks"];
     put?: never;
     post?: never;
@@ -2915,7 +2952,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all nine: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. This route still reads all nine, so a page served by an earlier release that sends one of the five here is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all nine and as_of: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. A client sends a search at a past time (as_of) there too. This route still reads all nine and as_of, so a page served by an earlier release that sends one of the five here is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. At a cut the search reads the text that each item had at the cut: the keyword legs read the keyword table of past text, and the document leg reads each document's newest version at the cut. The meaning legs use the window of an item only when the item did not change after the cut, and the window was embedded by then with the query's model. A post deleted after the cut gives no hit and no snippet. A search at a cut does not broaden a query that matches nothing. Until the fill of the keyword table reaches the cut, a search at the cut is 409 AS_OF_SEARCH_NOT_FILLED. Its Dispatch-As-Of-Filled-Through header names the time that the fill reached, where the fill reached a time. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /query/broadened, /results/*\/href. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1Search"];
     put?: never;
     post?: never;
@@ -2932,7 +2969,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds, counted from the table that holds it; such a kind is named rather than left out, so a reader never reads it as a covered kind with nothing lacking, and it is in no total. Every number is counted in one statement under a 10 s statement_timeout, and a statement that runs past it counts nothing and answers 503 SEARCH_COVERAGE_TIMEOUT, to be asked again later. */
+    /** @description Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds, counted from the table that holds it; such a kind is named rather than left out, so a reader never reads it as a covered kind with nothing lacking, and it is in no total. Every number is counted in one statement under a 10 s statement_timeout, and a statement that runs past it counts nothing and answers 503 SEARCH_COVERAGE_TIMEOUT, to be asked again later. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1SearchCoverage"];
     put?: never;
     post?: never;
@@ -2949,7 +2986,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all nine members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all nine members and as_of, and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. A client sends a search at a past time (as_of) here too. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. At a cut the search reads the text that each item had at the cut: the keyword legs read the keyword table of past text, and the document leg reads each document's newest version at the cut. The meaning legs use the window of an item only when the item did not change after the cut, and the window was embedded by then with the query's model. A post deleted after the cut gives no hit and no snippet. A search at a cut does not broaden a query that matches nothing. Until the fill of the keyword table reaches the cut, a search at the cut is 409 AS_OF_SEARCH_NOT_FILLED. Its Dispatch-As-Of-Filled-Through header names the time that the fill reached, where the fill reached a time. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /query/broadened, /results/*\/href. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id. */
     get: operations["getApiV1SearchResults"];
     put?: never;
     post?: never;
@@ -2966,7 +3003,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List every project's architecture sources, by project and then in the order each project added them. */
+    /** @description List every project's architecture sources, by project and then in the order each project added them. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1SettingsArchitectureSources"];
     put?: never;
     post?: never;
@@ -2983,7 +3020,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The delivery timeline's one configuration record (deploy repository, workflow paths, production job names, optional production apply step, population authors, excluded repositories, and the Pipeline page's optional staging end-to-end, staging deploy and PR-checks roll-up job names), or null when it has not been set. */
+    /** @description The delivery timeline's one configuration record (deploy repository, workflow paths, production job names, optional production apply step, population authors, excluded repositories, and the Pipeline page's optional staging end-to-end, staging deploy and PR-checks roll-up job names), or null when it has not been set. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1SettingsDelivery"];
     /** @description Set the delivery timeline's configuration after proving the GitHub App can read the deploy repository; 409 DELIVERY_SETTINGS_ACCESS a credential or repository problem. */
     put: operations["putApiV1SettingsDelivery"];
@@ -3001,7 +3038,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What the dashboard's search bar files a person's unmatched typed words as: {label, session}, the label that new issue carries and the session it is routed to and its first message goes to, as this deployment configured them (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is "" where it configured none: no label on the issue, and no conversation started on it. The bar writes the issue itself, through POST /api/v1/issues and the issue's own artifact, patch and message routes. */
+    /** @description What the dashboard's search bar files a person's unmatched typed words as: {label, session}, the label that new issue carries and the session it is routed to and its first message goes to, as this deployment configured them (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is "" where it configured none: no label on the issue, and no conversation started on it. The bar writes the issue itself, through POST /api/v1/issues and the issue's own artifact, patch and message routes. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1SettingsNewIssue"];
     put?: never;
     post?: never;
@@ -3035,7 +3072,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List every project with the person it defaults to, by project key: every project names one, and that person is the last step of the chain that decides who a question reaches. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. */
+    /** @description List every project with the person it defaults to, by project key: every project names one, and that person is the last step of the chain that decides who a question reaches. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1SettingsProjectDefaultAssignees"];
     put?: never;
     post?: never;
@@ -3052,7 +3089,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List GitHub repository to project mappings, each marked whether it is its project's default and what repository it was renamed to, null for one that was never renamed. */
+    /** @description List GitHub repository to project mappings, each marked whether it is its project's default and what repository it was renamed to, null for one that was never renamed. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1SettingsRepoProjects"];
     put?: never;
     post?: never;
@@ -3087,7 +3124,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the caller's own sign-ins on their machines (`agent-secrets login`), one per box key they have not revoked, each naming the machine's account, the key's thumbprint, when the person signed in there and when that machine last used it. Nobody lists another person's: Dispatch names the person from its own session. */
+    /** @description List the caller's own sign-ins on their machines (`agent-secrets login`), one per box key they have not revoked, each naming the machine's account, the key's thumbprint, when the person signed in there and when that machine last used it. Nobody lists another person's: Dispatch names the person from its own session. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1Signins"];
     put?: never;
     post?: never;
@@ -3121,7 +3158,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Everyone who has signed in, by lowercase email: the assignee picker's options. */
+    /** @description Everyone who has signed in, by lowercase email: the assignee picker's options. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1Users"];
     put?: never;
     post?: never;
@@ -3138,7 +3175,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. */
+    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes, cut} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none; cut is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles; a read-only credential, which may call only the GET routes Dispatch classes as reads, is answered read after them. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. This route describes the caller now and keeps no history. It refuses as_of with 400 AS_OF_NOT_SERVED, except from a read-only token that carries a cut, whose as_of Dispatch does not read. It answers a read-only token that carries a cut, and its cut member names that cut. A route that answers as_of answers such a token as of its cut. Every other read of the read class, and GET /ws/live, refuse it with 403 AS_OF_TOKEN_NOT_SERVED. */
     get: operations["getApiV1Whoami"];
     put?: never;
     post?: never;
@@ -3186,6 +3223,9 @@ export interface components {
       };
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -4119,6 +4159,9 @@ export interface components {
       body: string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -4181,6 +4224,9 @@ export interface components {
       };
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -4212,6 +4258,9 @@ export interface components {
       };
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
       edited_at: null | string;
       id: string;
@@ -4234,7 +4283,7 @@ export interface components {
     };
     CreateAgentTokenInput: {
       name: string;
-      scopes?: null | string[];
+      scopes?: null | ("person" | "approve" | "read")[];
     };
     CreateArtifactReviewInput: {
       reason?: null | string;
@@ -4875,6 +4924,7 @@ export interface components {
       token: string;
     };
     EditCommentInput: {
+      actor?: components["schemas"]["Actor"] | null;
       base_revision?: null | number;
       blocks?: components["schemas"]["CarriedBlock"][] | null;
       body: string;
@@ -4885,6 +4935,10 @@ export interface components {
       lost_ops?: number[];
       participants: components["schemas"]["Actor"][] | null;
       suggestion?: string;
+    };
+    EditMessageInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      body: string;
     };
     EditOp: {
       after?: string;
@@ -5010,7 +5064,12 @@ export interface components {
       changed_at: null | string;
       changed_by: components["schemas"]["Actor"][] | null;
       changed_version?: number;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       document?: string;
+      /** Format: date-time */
+      edited_at?: string;
       id: string;
       issue_key?: string;
       kind: string;
@@ -5035,7 +5094,12 @@ export interface components {
       changed_at: null | string;
       changed_by: components["schemas"]["Actor"][] | null;
       changed_version?: number;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       document?: string;
+      /** Format: date-time */
+      edited_at?: string;
       id: string;
       issue_key?: string;
       kind: string;
@@ -5663,6 +5727,24 @@ export interface components {
     MarkdownRoundTripResponse: {
       markdown: string;
     };
+    Message: {
+      author: components["schemas"]["Actor"];
+      body: string;
+      broadcast_id: null | string;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
+      deliveries: components["schemas"]["MessageDelivery"][] | null;
+      /** Format: date-time */
+      edited_at: null | string;
+      id: string;
+      in_reply_to: null | string;
+      issue_key: null | string;
+      reply_block: components["schemas"]["ReplyBlock"] | null;
+      target: null | string;
+    };
     MessageDelivery: {
       accepted_as: null | string;
       /** Format: date-time */
@@ -5704,8 +5786,13 @@ export interface components {
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["MessageDelivery"][] | null;
       duplicate?: boolean;
+      /** Format: date-time */
+      edited_at: null | string;
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
@@ -5724,7 +5811,12 @@ export interface components {
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
       deliveries: components["schemas"]["MessageDelivery"][] | null;
+      /** Format: date-time */
+      edited_at: null | string;
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
@@ -5753,6 +5845,11 @@ export interface components {
       } & {
         [key: string]: unknown;
       };
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       id: string;
     };
     MyAnswerRow: {
@@ -5795,6 +5892,9 @@ export interface components {
       author: components["schemas"]["Actor"];
       /** Format: date-time */
       created_at: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       first_line: string;
       id: string;
       kind: string;
@@ -5802,8 +5902,13 @@ export interface components {
     MyReplyRow: {
       anchor?: components["schemas"]["Anchor"];
       /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
       dismissed_at?: string;
       document?: components["schemas"]["OpenAskDocument"];
+      /** Format: date-time */
+      edited_at?: string;
       issue?: components["schemas"]["OpenAskIssue"];
       kind: string;
       priority?: number;
@@ -6008,6 +6113,18 @@ export interface components {
       id: string;
       steps: string[] | null;
     };
+    PostHistoryEntry: {
+      body: string;
+      /** Format: date-time */
+      edited_at: string;
+      edited_by: components["schemas"]["Actor"];
+    };
+    PostHistoryRead: {
+      /** Format: date-time */
+      deleted_at: null | string;
+      deleted_by: components["schemas"]["Actor"] | null;
+      entries: components["schemas"]["PostHistoryEntry"][] | null;
+    };
     Priorities: {
       empty?: string;
       priorities: components["schemas"]["PriorityRow"][] | null;
@@ -6198,6 +6315,11 @@ export interface components {
     };
     ReferenceTarget: {
       ambiguous?: boolean;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       gone: boolean;
       kind: string;
       name: string;
@@ -6269,6 +6391,11 @@ export interface components {
     };
     ReplyBlock: {
       block_id: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       node: string;
       ref?: string;
       removed: boolean;
@@ -6276,6 +6403,11 @@ export interface components {
     };
     ReplyBlockWithTrees: {
       block_id: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       node: string;
       ref?: string;
       removed: boolean;
@@ -6430,6 +6562,11 @@ export interface components {
       artifact?: components["schemas"]["SearchArtifactRef"];
       ask?: components["schemas"]["SearchAsk"];
       block_id?: string;
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       href: string;
       id: string;
       issue?: components["schemas"]["SearchIssue"];
@@ -6450,6 +6587,9 @@ export interface components {
       /** Format: date-time */
       at: string;
       author: components["schemas"]["Actor"];
+      /** Format: date-time */
+      deleted_at?: string;
+      deleted_by?: components["schemas"]["Actor"];
       dispatch_words?: string;
       /** Format: date-time */
       edited_at?: string;
@@ -6653,7 +6793,7 @@ export interface components {
       examples: string[] | null;
     };
     UpdateAgentTokenScopesInput: {
-      scopes: null | string[];
+      scopes: null | ("person" | "approve")[];
     };
     UpdateDeliverySessionGroupInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -6729,6 +6869,7 @@ export interface components {
       summary: null | string;
     };
     WhoamiAgent: {
+      cut: null | string;
       /** @enum {string} */
       kind: "agent";
       owner: null | string;
@@ -6852,6 +6993,7 @@ export interface operations {
       query?: {
         since?: string;
         max_chars?: number;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -6939,6 +7081,7 @@ export interface operations {
   getApiV1AgentsBySessionIdArtifactsBySlug: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -7189,6 +7332,7 @@ export interface operations {
   getApiV1ArtifactsById: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -7579,6 +7723,7 @@ export interface operations {
     parameters: {
       query?: {
         state?: string;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -7761,6 +7906,7 @@ export interface operations {
   getApiV1ArtifactsByIdComments: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -7892,6 +8038,7 @@ export interface operations {
         ids?: string;
         order?: string;
         limit?: number;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -8176,6 +8323,7 @@ export interface operations {
     parameters: {
       query?: {
         blocks?: boolean;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -8249,6 +8397,7 @@ export interface operations {
     parameters: {
       query?: {
         download?: boolean;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -8328,6 +8477,7 @@ export interface operations {
         author_session?: string;
         project?: string;
         since?: string;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -8360,6 +8510,7 @@ export interface operations {
   getApiV1AsksById: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -8860,6 +9011,7 @@ export interface operations {
   getApiV1CommentsById: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -8878,6 +9030,44 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CommentRead"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1CommentsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ActorInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Comment"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9026,6 +9216,42 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CommentDelivery"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1CommentsByIdHistory: {
+    parameters: {
+      query?: {
+        before?: string;
+        as_of?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PostHistoryRead"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9776,6 +10002,7 @@ export interface operations {
       query?: {
         after?: number;
         limit?: number;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -10013,6 +10240,7 @@ export interface operations {
       query?: {
         project?: string;
         assignee?: string;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -10060,6 +10288,7 @@ export interface operations {
         open?: boolean;
         limit?: number;
         offset?: number;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -10151,6 +10380,7 @@ export interface operations {
     parameters: {
       query?: {
         ref?: string;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -10183,6 +10413,7 @@ export interface operations {
   getApiV1IssuesByKey: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -10257,6 +10488,7 @@ export interface operations {
   getApiV1IssuesByKeyArtifacts: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -10346,6 +10578,7 @@ export interface operations {
   getApiV1IssuesByKeyArtifactsBySlug: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -10381,6 +10614,7 @@ export interface operations {
   getApiV1IssuesByKeyArtifactsBySlugBlocks: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -10585,6 +10819,7 @@ export interface operations {
       query?: {
         state?: string;
         thread?: "1";
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -10788,6 +11023,7 @@ export interface operations {
     parameters: {
       query?: {
         artifact?: string;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -10973,6 +11209,7 @@ export interface operations {
         ids?: string;
         order?: string;
         limit?: number;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -11115,6 +11352,7 @@ export interface operations {
   getApiV1IssuesByKeyMessages: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -11189,6 +11427,7 @@ export interface operations {
   getApiV1IssuesByKeyMessagesById: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -11306,6 +11545,7 @@ export interface operations {
     parameters: {
       query?: {
         at?: string;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -12541,6 +12781,7 @@ export interface operations {
   getApiV1MessagesById: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -12559,6 +12800,82 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["MessageRead"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1MessagesById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ActorInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Message"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  patchApiV1MessagesById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["EditMessageInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Message"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12670,6 +12987,42 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AcceptedMessageDelivery"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1MessagesByIdHistory: {
+    parameters: {
+      query?: {
+        before?: string;
+        as_of?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PostHistoryRead"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13338,6 +13691,7 @@ export interface operations {
     parameters: {
       query?: {
         unlinked?: boolean;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -13427,6 +13781,7 @@ export interface operations {
   getApiV1ProjectsByKeyArtifactsBySlug: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -13462,6 +13817,7 @@ export interface operations {
   getApiV1ProjectsByKeyArtifactsBySlugBlocks: {
     parameters: {
       query?: {
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -14319,6 +14675,7 @@ export interface operations {
         keywords_only?: boolean;
         limit?: number;
         offset?: number;
+        as_of?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -15004,6 +15361,7 @@ export type EditAskInput = components["schemas"]["EditAskInput"];
 export type EditBlockPrecondition = components["schemas"]["EditBlockPrecondition"];
 export type EditCommentInput = components["schemas"]["EditCommentInput"];
 export type EditLostError = components["schemas"]["EditLostError"];
+export type EditMessageInput = components["schemas"]["EditMessageInput"];
 export type EditOp = components["schemas"]["EditOp"];
 export type EditPrecondition = components["schemas"]["EditPrecondition"];
 export type EditPreconditionCurrent = components["schemas"]["EditPreconditionCurrent"];
@@ -15084,6 +15442,7 @@ export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
 export type MarkdownRoundTripInput = components["schemas"]["MarkdownRoundTripInput"];
 export type MarkdownRoundTripResponse = components["schemas"]["MarkdownRoundTripResponse"];
+export type Message = components["schemas"]["Message"];
 export type MessageDelivery = components["schemas"]["MessageDelivery"];
 export type MessageRead = components["schemas"]["MessageRead"];
 export type MessageReplyInput = components["schemas"]["MessageReplyInput"];
@@ -15122,6 +15481,8 @@ export type PlanRecord = components["schemas"]["PlanRecord"];
 export type PlanRecordInput = components["schemas"]["PlanRecordInput"];
 export type PlanTask = components["schemas"]["PlanTask"];
 export type PlanTaskInput = components["schemas"]["PlanTaskInput"];
+export type PostHistoryEntry = components["schemas"]["PostHistoryEntry"];
+export type PostHistoryRead = components["schemas"]["PostHistoryRead"];
 export type Priorities = components["schemas"]["Priorities"];
 export type Priority = components["schemas"]["Priority"];
 export type PriorityAct = components["schemas"]["PriorityAct"];

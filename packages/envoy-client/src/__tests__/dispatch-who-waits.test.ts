@@ -6,6 +6,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory } from "../dispatch-http";
+import { asksWhoami, WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 // Who a question reaches, from the command line and from the texts that state the rule.
 //
@@ -86,6 +87,8 @@ const server = Bun.serve({
   port: 0,
   async fetch(request) {
     const { pathname } = new URL(request.url);
+    // Every read command reads whoami first (`whoami-stand-in.ts`); it is not recorded.
+    if (asksWhoami(pathname)) return Response.json(WHOAMI_NO_CUT);
     const text = await request.text();
     const body: unknown = text === "" ? undefined : JSON.parse(text);
     requests.push({ method: request.method, path: pathname, body });

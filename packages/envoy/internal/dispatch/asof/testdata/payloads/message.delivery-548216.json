@@ -1,0 +1,24 @@
+{
+  "id": 548216,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 785,
+  "type": "message.delivery",
+  "actor": {
+    "kind": "session",
+    "id": "lorem ipsum dolor sit "
+  },
+  "notify": false,
+  "created_at": "2026-11-14T22:50:48.933169Z",
+  "payload": {
+    "state": "sent",
+    "title": "lorem ipsum dolor sit ame",
+    "target": "role:lorem ipsum dolor sit a",
+    "attempt": 3,
+    "delivery": "btw",
+    "duplicate": true,
+    "message_id": "45d28b71-2ac9-40f2-a970-e5cbddadcc37",
+    "session_id": "01a1bcac-dd96-74fc-9a20-4fc75e8968ca"
+  }
+}

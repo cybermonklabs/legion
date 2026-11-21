@@ -11,8 +11,9 @@ import {
   type SearchResultsPageAbsentAs,
   snippetText,
 } from "@legion/contracts";
-import { actorText } from "./actor-text";
+import { actorText, deletedMark, withEditedMark } from "./actor-text";
 import { dispatchWordsText } from "./ask-answer";
+import { leftOutAt } from "./dispatch-commands/as-of";
 import { linkFor } from "./dispatch-commands/links";
 import { dispatchDocumentRef } from "./dispatch-owner";
 
@@ -21,16 +22,34 @@ export function pageSummaryText(offset: number, count: number, total: number): s
   return `showing ${offset + 1}-${offset + count} of ${total}`;
 }
 
-function searchHitLine(result: SearchResult, linkBase: string | undefined): string {
-  const href = linkFor(result.href, linkBase);
+/** One hit's line. A delete takes the post's windows with its body, so a deleted post is no hit
+ *  once the delete commits. The mark is the backstop for a hit of one all the same, whose
+ *  snippet is empty: the deleted line every read prints for one (`deletedMark`) stands where
+ *  the snippet would. A hit of a post its author edited carries the mark every line prints for
+ *  one (`editedMark`) after its snippet. A search at a cut (`asOf`) leaves out the link of an ask
+ *  hit whose block's document changed after the cut, and the line says so in its place. */
+function searchHitLine(
+  result: SearchResult,
+  linkBase: string | undefined,
+  asOf: string | undefined
+): string {
+  const link: string | undefined = result.href;
+  const href =
+    link === undefined && asOf !== undefined
+      ? `link ${leftOutAt(asOf)}`
+      : linkFor(result.href, linkBase);
+  const text =
+    result.deleted_at == null
+      ? withEditedMark(snippetText(result.snippet), result.edited_at)
+      : deletedMark(result.deleted_at, result.deleted_by);
   const { owner } = result;
   if (owner.kind === "document") {
     const reference = dispatchDocumentRef(owner.project ?? "", owner.slug ?? "");
-    return `${reference} [document] ${owner.name} - ${result.kind}: ${snippetText(result.snippet)} -> ${href}`;
+    return `${reference} [document] ${owner.name} - ${result.kind}: ${text} -> ${href}`;
   }
   const artifactName = result.artifact ? ` ${result.artifact.name}` : "";
   const label = `${owner.key} [${owner.status}] ${owner.title} - ${result.kind}${artifactName}`;
-  return `${label}: ${snippetText(result.snippet)} -> ${href}`;
+  return `${label}: ${text} -> ${href}`;
 }
 
 /** Free text on a line under a hit, every later line of it indented four spaces so it stays
@@ -101,8 +120,12 @@ export function askStateLines(ask: SearchAsk | undefined): string[] {
 }
 
 /** One hit as text: its line, then, for an ask, where the ask stands. */
-function searchResultLine(result: SearchResult, linkBase: string | undefined): string {
-  const line = searchHitLine(result, linkBase);
+function searchResultLine(
+  result: SearchResult,
+  linkBase: string | undefined,
+  asOf: string | undefined
+): string {
+  const line = searchHitLine(result, linkBase, asOf);
   return result.kind === "ask" ? [line, ...askStateLines(result.ask)].join("\n") : line;
 }
 
@@ -120,17 +143,19 @@ export type SearchAnswerRead =
  * legacy Dispatch that predates paging and always answers its first page regardless of offset,
  * names a kind's cap when it keeps some matches unreachable, and names the next offset when more
  * remain. `offset` is the offset the caller requested (possibly undefined), used only for the
- * legacy-Dispatch refusal message; `search.offset` is the server's own answer.
+ * legacy-Dispatch refusal message; `search.offset` is the server's own answer. `asOf` is the cut
+ * of a search at a past time.
  */
 export function searchAnswer(
   search: SearchAnswerRead,
   query: string,
   offset: number | undefined,
-  linkBase: string | undefined
+  linkBase: string | undefined,
+  asOf?: string
 ): { readonly text: string; readonly details: Record<string, unknown> } {
   const results = search.results ?? [];
   const count = results.length;
-  const lines = results.map((result) => searchResultLine(result, linkBase));
+  const lines = results.map((result) => searchResultLine(result, linkBase, asOf));
   const noun = count === 1 ? "result" : "results";
   const noResults = `No results for "${query}".`;
   // Meaning search is off for this request (no Bedrock credentials, a timed-out or failing query

@@ -1036,7 +1036,8 @@ reason names one other issue that covers it: `Duplicate of`, `Duplicate:`, `Fold
 The close reason is the issue's last top-level message posted at or before its close, the message
 `dispatch issue-update --status done --reason` posts just before the close; the `issue.closed`
 event carries no reason. A reason naming only a pull request, several issues or the issue itself
-is not a pair. Two closes naming the same two issues make one pair, by the first close.
+is not a pair. A reason its author deleted since has no words left and is counted as deleted,
+never as no reason. Two closes naming the same two issues make one pair, by the first close.
 
 Each pair's query is its later-filed issue as filed: its first title and first spec version. That
 is the closed issue when the issue its reason names came first (forward), and the named issue
@@ -1044,9 +1045,10 @@ when that came later (reversed). The target, the issue the check should list, is
 its title and spec as of the query's filing. Pairs naming another project's issue, or one that
 does not exist, are counted and left out. It reads with the caller's own token, sends only
 `GET`s, one at a time, and prints counts only: done issues read, close reasons with a wording,
-those that are not a pair by what they name (`no_reference` is a wording followed by no issue or
-pull request), pairs found and kept per wording with forward and reversed, pairs left out by
-reason, chains (a pair's named issue itself closed into another), and issues copied.
+close reasons deleted since, those that are not a pair by what they name (`no_reference` is a
+wording followed by no issue or pull request), pairs found and kept per wording with forward and
+reversed, pairs left out by reason, chains (a pair's named issue itself closed into another), and
+issues copied.
 
 ```bash
 DISPATCH_URL=<server> DISPATCH_TOKEN_FILE=<token file> \

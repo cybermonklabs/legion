@@ -22,10 +22,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -42,11 +44,18 @@ import (
 //     instead: a different request under the key is 422 KEY_REUSED, naming the request that used
 //     it; a first request still running (its lease, IdempotencyLease, renewed every
 //     keyedLeaseRenewal while it runs) is 409 KEY_IN_FLIGHT with Retry-After: 1; a finished one is
-//     replayed, its stored status and body with Idempotency-Replayed: ?1, and the handler does not
-//     run again. A repeat that arrives while its first request still runs is never spooled
-//     (requestKeyInFlight): its body is read off the connection and discarded, and the repeat is
-//     judged by its digest once that body has arrived, by what the key holds then
-//     (answerDrainedRepeat).
+//     answered with Idempotency-Replayed: ?1, and the handler does not run again. A route that
+//     commits a recovery point answers what it made, read now (keyedReplays); a route whose answer
+//     is one comment or issue message answers that post, read now (keyedRereads); any other
+//     answers its stored status and body - unless that answer is a success holding a comment or
+//     a message that is deleted now or a document version a delete renamed, or a related-item hit
+//     for a document in which a comment's insert suggestion, deleted since, was made at any time,
+//     so it may hold that suggestion's words (answerEndedByDelete), whenever the delete began, and
+//     is then never replayed: a delete is timed from before it waited for the lock a keyed write
+//     may hold, so no time says which of the two read the post first. A repeat that
+//     arrives while its first request still runs is never spooled (requestKeyInFlight): its body
+//     is read off the connection and discarded, and the repeat is judged by its digest once that
+//     body has arrived, by what the key holds then (answerDrainedRepeat).
 //   - The handler finishes whatever its client does: it runs on the request's context with the
 //     client's cancellation taken off, bounded by keyedHandlerLimit and counted in the server's
 //     background wait, so a client that gives up and asks again waits on the first run rather than
@@ -149,15 +158,68 @@ func (s *server) keyedReplays() map[string]keyedReplay {
 	}
 }
 
+// keyedReread answers a repeat of a keyed write whose first answer the key kept and which is a
+// post, a comment or a message: it reads that post again, id, the one the stored answer names,
+// and answers it as it stands now in the first answer's shape and under its status (status),
+// keeping the replayKeptMembers of stored, the first answer's body (writeRefreshed). A post
+// deleted since its first answer is answered as every read of it gives it, with no body and
+// with its mark, and never as the stored answer holds it.
+type keyedReread func(s *server, w http.ResponseWriter, r *http.Request, id string, status int, stored []byte)
+
+// keyedRereads is every keyed route whose kept answer is one comment or one issue message, the
+// post the write acted on or made, by method and pattern, with the reread a repeat of its key is
+// answered by: an edit, the resolve, reopen, accept and reject of a comment, and a mentioned or
+// targeted session's reply. Such a post can be edited or deleted after the answer was kept, so the
+// bytes the key holds are not what a read of the post gives any more. Other routes' kept answers
+// can carry a post's text too - a related-item check's snippet, a write's advice, a document
+// version an accept named - and are never replayed once the post is deleted or the version
+// renamed (answerEndedByDelete). The creates are not here: each commits a recovery point and is
+// answered from it (keyedReplays). An answer that is no post - a delivery attempt, which a
+// delivery retry answers and a reply route answers for an error report - names its post by
+// comment_id or message_id and holds no body, and is replayed as it was kept (keyedAnswerPost),
+// its post deleted or not. So is the accept of a delivery, which holds the body of a direct
+// message: only a message on an issue is edited or deleted (lockedMessageForCorrection), so that
+// body is the one the message holds. Each key names a registered route
+// (TestEveryKeyedRouteTableNamesARoute).
+var keyedRereads = map[string]keyedReread{
+	http.MethodPatch + " /api/v1/comments/{id}":        (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/resolve": (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/reopen":  (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/accept":  (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/reject":  (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/reply":   (*server).rereadCommentReply,
+	http.MethodPatch + " /api/v1/messages/{id}":        (*server).rereadMessage,
+	http.MethodPost + " /api/v1/messages/{id}/reply":   (*server).rereadMessageReply,
+}
+
+// keyedAnswerPost is the id of the post a kept success answer is, and "" for any other answer:
+// none kept, or a delivery attempt, which names its post by comment_id or message_id and holds no
+// body. A post's answer carries both its id and its body, the empty body of a deleted post
+// included.
+func keyedAnswerPost(stored []byte) string {
+	var post struct {
+		ID   string          `json:"id"`
+		Body json.RawMessage `json:"body"`
+	}
+	if len(stored) == 0 || json.Unmarshal(stored, &post) != nil || post.Body == nil {
+		return ""
+	}
+	return post.ID
+}
+
 // replayKeptMembers are the members of a write's first answer a replay keeps beside the resource
-// as it stands now: what the write's answer carried that a read of the resource does not.
-var replayKeptMembers = []string{"advice", "ask_waiting_on"}
+// as it stands now: what the write's answer carried that a read of the resource does not - a
+// write's advice, a reply's ask_waiting_on, whether an accept's text was already gone from the
+// live document (lost), and whether a reply route posted nothing (duplicate). A recovery replay
+// keeps none of them from an answer a delete ended (answerHeldKey); a reread keeps them
+// from any, as none of a reread route's holds the text of a post.
+var replayKeptMembers = []string{"advice", "ask_waiting_on", "lost", "duplicate"}
 
 // writeRefreshed answers a keyed replay with fresh, the resource as it stands now, in the first
-// answer's shape: the replayKeptMembers stored holds and fresh does not (a write's advice, a reply's
-// ask_waiting_on) kept, and nothing else of stored, so a member the fresh read leaves out is never
-// answered stale. With no stored answer it answers fresh alone. Its status is the write's own 201.
-func (s *server) writeRefreshed(w http.ResponseWriter, stored []byte, fresh any) {
+// answer's shape: the replayKeptMembers stored holds and fresh does not kept, and nothing else of
+// stored, so a member the fresh read leaves out is never answered stale. With no stored answer it
+// answers fresh alone. Its status is the write's own, status.
+func (s *server) writeRefreshed(w http.ResponseWriter, status int, stored []byte, fresh any) {
 	encoded, err := json.Marshal(fresh)
 	if err != nil {
 		s.writeHandlerError(w, fmt.Errorf("encode a replayed resource: %w", err))
@@ -178,7 +240,7 @@ func (s *server) writeRefreshed(w http.ResponseWriter, stored []byte, fresh any)
 			}
 		}
 	}
-	WriteJSON(w, http.StatusCreated, current)
+	WriteJSON(w, status, current)
 }
 
 // keyedMethod reports whether register keys a route of this method: a POST or a PATCH. A PUT and a
@@ -222,8 +284,22 @@ type resolvedCaller struct {
 	err   error
 }
 
+// readOnlyCredential is the credential of the caller ctx carries (resolvedCallerKey) where that
+// caller resolved and its credential is read-only (model.Credential.ReadOnly), and nil otherwise,
+// as it is for a context that carries no caller. The read-only gate (refuseReadOnlyToken) and a
+// results read (newComparisonReader) both read the caller by it: the one the gate found decided
+// or resolved itself.
+func readOnlyCredential(ctx context.Context) *model.Credential {
+	caller, _ := ctx.Value(resolvedCallerKey{}).(resolvedCaller)
+	if caller.err != nil || caller.actor.Credential == nil || !caller.actor.Credential.ReadOnly {
+		return nil
+	}
+	return caller.actor.Credential
+}
+
 // keyedWrites wraps the handler of a POST or PATCH route, method and pattern, in the keyed path
-// above. replay is the route's keyedReplay, nil for a route that commits no recovery point.
+// above. replay is the route's keyedReplay, nil for a route that commits no recovery point; the
+// route's keyedReread, if it has one, is its row of keyedRereads.
 //
 // A keyed request's handler finishes on the server whatever its client does: it runs on its
 // request's context with the client's cancellation taken off (context.WithoutCancel), bounded by
@@ -238,6 +314,7 @@ type resolvedCaller struct {
 func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, replay keyedReplay) http.HandlerFunc {
 	wildcards := patternWildcards(pattern)
 	keepsAnswer := !answerHoldsSecret[method+" "+pattern]
+	reread := keyedRereads[method+" "+pattern]
 	bodyLimit, tooLarge := routeBody(method, pattern)
 	run := handler
 	if s.deps.TestHooksEnabled {
@@ -278,7 +355,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 			if s.repeatFoundInFlight != nil {
 				s.repeatFoundInFlight()
 			}
-			s.answerDrainedRepeat(w, r, method, pattern, wildcards, login, key, replay)
+			s.answerDrainedRepeat(w, r, method, pattern, wildcards, login, key, replay, reread)
 			return
 		}
 		digest := sha256.New()
@@ -316,7 +393,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		// header, and retries a 5xx under the key only against the first: an earlier Dispatch would
 		// run the write again.
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
-		claim, answered := s.claimRequestKey(w, r, login, key, hex.EncodeToString(digest.Sum(nil)), replay)
+		claim, answered := s.claimRequestKey(w, r, login, key, hex.EncodeToString(digest.Sum(nil)), replay, reread)
 		if answered {
 			return
 		}
@@ -799,7 +876,7 @@ func (s *server) requestKeyAnswersItself(ctx context.Context, login, key string)
 // read, would leave the key in flight with no handler behind it, and every repeat told
 // KEY_IN_FLIGHT until its lease lapsed.
 func (s *server) claimRequestKey(
-	w http.ResponseWriter, r *http.Request, login, key, digest string, replay keyedReplay,
+	w http.ResponseWriter, r *http.Request, login, key, digest string, replay keyedReplay, reread keyedReread,
 ) (claim requestKeyClaim, answered bool) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), keyedBookkeeping)
 	defer cancel()
@@ -828,7 +905,7 @@ func (s *server) claimRequestKey(
 			continue
 		}
 		state := held.state(digest, replay != nil)
-		if answerHeldKey(w, r, key, held, state, replay) {
+		if s.answerHeldKey(w, r, key, held, state, replay, reread) {
 			return claim, true
 		}
 		if state == keyExpired {
@@ -884,20 +961,39 @@ func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (hel
 
 // answerHeldKey answers a repeat from the row its key holds, in state, and reports that it did: a
 // different request under the key is refused, a recovery point replayed by its route, an answer
-// replayed, a first request still running told so, and a write that landed and lost its answer said
-// to have landed. A key past its window and one whose holder died with nothing committed answer
-// nothing: the repeat runs the request there.
-func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held heldRequestKey, state keyState, replay keyedReplay) bool {
+// replayed - the post it is read again where its route rereads one (replayAnswer) - a first
+// request still running told so, and a write that landed and lost its answer said to have landed.
+// A key past its window and one whose holder died with nothing committed answer nothing: the
+// repeat runs the request there.
+//
+// A recovery replay answers what the write made as it stands now and keeps beside it the
+// replayKeptMembers of the stored answer (writeRefreshed). An answer a delete ended
+// (answerEndedByDelete) lends it none of them: the replay is handed no stored answer, as when
+// the first request never answered.
+func (s *server) answerHeldKey(
+	w http.ResponseWriter, r *http.Request, key string, held heldRequestKey, state keyState, replay keyedReplay, reread keyedReread,
+) bool {
 	switch state {
 	case keyReused:
 		writeError(w, contracts.IdempotencyKeyReused, http.StatusUnprocessableEntity, fmt.Sprintf(
 			"%s %q was already used for %s %s with different content; this request was not run: a changed request needs a new key",
 			contracts.IdempotencyKeyHeader, key, held.method, held.path))
 	case keyRecovered:
+		stored := held.storedSuccess()
+		if stored != nil {
+			ended, err := s.answerEndedByDelete(r.Context(), held)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return true
+			}
+			if ended {
+				stored = nil
+			}
+		}
 		w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
-		replay(w, r, held.recovery, held.storedSuccess())
+		replay(w, r, held.recovery, stored)
 	case keyAnswered:
-		replayStoredAnswer(w, held)
+		s.replayAnswer(w, r, held, reread)
 	case keyInFlight:
 		writeKeyInFlight(w, key)
 	case keyCommitted:
@@ -931,7 +1027,7 @@ func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held held
 // Either keeps the read's deadline for net/http's own reads after the answer; only a body read to
 // its end lifts it.
 func (s *server) answerDrainedRepeat(
-	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, replay keyedReplay,
+	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, replay keyedReplay, reread keyedReread,
 ) {
 	if expectsContinue(r) {
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
@@ -962,7 +1058,7 @@ func (s *server) answerDrainedRepeat(
 		s.writeHandlerError(w, err)
 		return
 	}
-	if found && answerHeldKey(w, r, key, held, held.state(hex.EncodeToString(digest.Sum(nil)), replay != nil), replay) {
+	if found && s.answerHeldKey(w, r, key, held, held.state(hex.EncodeToString(digest.Sum(nil)), replay != nil), replay, reread) {
 		return
 	}
 	writeKeyFreed(w, key)
@@ -995,19 +1091,254 @@ func writeKeyCommitted(w http.ResponseWriter, key string, held heldRequestKey) {
 		contracts.IdempotencyKeyHeader, key, held.method, held.path))
 }
 
-// replayStoredAnswer answers a repeat with the first request's stored answer: its status, every
-// header its handler set, and its body. held is keyAnswered, so its status is set.
-func replayStoredAnswer(w http.ResponseWriter, held heldRequestKey) {
-	w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
-	if !held.kept {
-		writeError(w, contracts.IdempotencyAnswerNotKept, *held.status, fmt.Sprintf(
-			"Dispatch ran this request and answered %d, but its answer was larger than the %d bytes a key keeps, so it is not replayed: read what the request wrote to see it",
-			*held.status, keyedAnswerKept))
+// replayAnswer answers a repeat whose key holds its first request's answer (keyAnswered). A kept
+// success that is a post, on a route that rereads one (keyedRereads), is answered by that
+// reread: every header the handler set, then the post as it stands now under the first
+// answer's status. Every other answer is replayed as it was kept (replayStoredAnswer), unless it
+// is a success a delete ended (answerEndedByDelete).
+func (s *server) replayAnswer(w http.ResponseWriter, r *http.Request, held heldRequestKey, reread keyedReread) {
+	if reread != nil {
+		if id := keyedAnswerPost(held.storedSuccess()); id != "" {
+			w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
+			maps.Copy(w.Header(), held.headers)
+			reread(s, w, r, id, *held.status, held.response)
+			return
+		}
+	}
+	ended, err := s.answerEndedByDelete(r.Context(), held)
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
-	maps.Copy(w.Header(), held.headers)
-	w.WriteHeader(*held.status)
-	_, _ = w.Write(held.response)
+	replayStoredAnswer(w, held, ended)
+}
+
+// replayStoredAnswer answers a repeat with the first request's stored answer: its status, every
+// header its handler set, and its body. held is keyAnswered, so its status is set. An answer the
+// key did not keep, and one a delete ended (ended, answerEndedByDelete), is answered
+// ANSWER_NOT_KEPT under the first answer's status instead, saying which of the two it is and
+// what the request did as its key records it (committed, markRequestKeyCommitted): a request that
+// wrote ran, and its caller reads what it wrote to see the answer, where one that wrote nothing
+// can be sent again under a new key and answered afresh. A client takes a replayed 2xx reading
+// that code for a write that ran, and asks a call that wrote nothing again under a new key
+// (answerNotKept, packages/contracts).
+func replayStoredAnswer(w http.ResponseWriter, held heldRequestKey, ended bool) {
+	w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
+	if held.kept && !ended {
+		maps.Copy(w.Header(), held.headers)
+		w.WriteHeader(*held.status)
+		_, _ = w.Write(held.response)
+		return
+	}
+	cause := fmt.Sprintf("it was larger than the %d bytes a key keeps", keyedAnswerKept)
+	if ended {
+		cause = "it holds a comment or a message that was deleted, a document version name a delete replaced, " +
+			"or a related-item hit for a document in which a comment's insert suggestion, deleted since, was made " +
+			"at any time, so the answer may hold its words"
+	}
+	if held.committed {
+		writeError(w, contracts.IdempotencyAnswerNotKept, *held.status, fmt.Sprintf(
+			"Dispatch ran this request and answered %d, but that answer is not replayed, since %s: read what the request wrote to see it",
+			*held.status, cause))
+		return
+	}
+	writeError(w, contracts.IdempotencyAnswerNotKept, *held.status, fmt.Sprintf(
+		"Dispatch answered %d to this request, but that answer is not kept, since %s: the request wrote nothing, so it may be sent again under a new %s",
+		*held.status, cause, contracts.IdempotencyKeyHeader))
+}
+
+// answerEndedQuery is answerEndedByDelete's statement: $1 is the id of every object the kept
+// answer holds, $2 and $3, pairwise, the document and the number of every version it lists, and
+// $4 the document every document hit in it names (answerHoldings); $5 is docs.InsertMarkPath.
+// None of its four arms reads a time: a post deleted now, a version a delete renamed, and a
+// document hit on which a deleted insert's comment was made end the answer whenever the delete
+// began, and the last whenever the comment was made (answerEndedByDelete says why). The fourth
+// gathers the mark ids of each hit document's deleted comments first, so it walks each stored
+// insert tree of that document once for all of them (docs.InsertMarkPath), not once a comment.
+// Each arm reads by an index: the two primary keys, artifact_versions' unique (artifact_id,
+// number), and the comments of a document by their anchor's (comments_anchor_artifact), whose
+// versions are read by that same unique key.
+const answerEndedQuery = `
+	select exists (select 1 from comments where id = any($1::uuid[]) and deleted_at is not null)
+	    or exists (select 1 from messages where id = any($1::uuid[]) and deleted_at is not null)
+	    or exists (
+	        select 1 from unnest($2::uuid[], $3::bigint[]) held (artifact_id, number)
+	        join artifact_versions v on v.artifact_id = held.artifact_id and v.number = held.number
+	        where v.renamed_by_delete is not null
+	    )
+	    or exists (
+	        select 1 from (
+	            select (c.anchor->>'artifact_id')::uuid as artifact_id, jsonb_agg(c.anchor->>'mark_id') as ids
+	            from comments c
+	            where (c.anchor->>'artifact_id')::uuid = any($4::uuid[]) and c.deleted_at is not null
+	            group by 1
+	        ) deleted
+	        join artifact_versions v on v.artifact_id = deleted.artifact_id
+	        where v.insert_tree is not null
+	          and jsonb_path_exists(v.insert_tree, $5::jsonpath, jsonb_build_object('ids', deleted.ids))
+	    )
+`
+
+// answerEndedByDelete reports whether a delete ended the answer held's key kept. R3 of
+// dispatch://INFRA-1523 holds every read of a deleted comment or issue message, and every read
+// that quotes one, to no part of its body, and a replay answers its caller as a read does; so an
+// answer that holds text a delete withdrew is never replayed (replayStoredAnswer, answerHeldKey),
+// whatever route kept it.
+//
+// Only a kept success can end. A refusal names a post by its id at most, in its words, and is
+// replayed as it was given. A success is read as JSON (answerHoldingsOf) at the repeat itself,
+// so a delete that commits after the first answer was kept ends it all the same and the delete
+// writes nothing to any key. It is ended when it holds:
+//
+//   - an object whose own id is a comment or a message that is deleted: the post itself, or a
+//     related-item check's hit standing for it with its snippet (model.WriteSuggestion), in a
+//     check of its own or in a write's advice;
+//   - a version, listed in its document's versions, that a delete renamed
+//     (artifact_versions.renamed_by_delete, renameAcceptedVersion): an accept named it after the
+//     suggestion's body (acceptedVersionName), and the answer holds that name;
+//   - a hit standing for a document (a related-item hit of kind document, with its snippet) on
+//     which an insert suggestion's comment was made, the comment now deleted, whenever it was
+//     made and whenever the delete came. The insert is the mark a stored version's insert tree
+//     holds as one (docs.InsertMarkPath, the rule the version's mask finds it by), named by the
+//     comment's anchor. The hit's snippet is cut from the document's latest version, which held
+//     the insert's words while it stood: the pending insert's words are the comment's own
+//     (docs.MaskedVersionText), and the delete takes them out of every later version
+//     (docs.SettleVersion).
+//
+// An id that stands only in a text - a citation in markdown, a link - or in a member that names a
+// post from another object (reply_to, comment_id) holds no part of the post, and ends nothing; a
+// document named anywhere but in a hit ends nothing either. The block text a reply carries of the
+// post it answers (reply_block) is left out: every keyed route whose answer can hold one answers a
+// repeat with the post read again (keyedRereads, keyedReplays;
+// TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh).
+//
+// The first two read no time, neither the delete's nor the key's. A delete's deleted_at is when its
+// transaction began (clearDeletedPostBody), before it waited for the owner's lock
+// (lockedCommentForCorrection, lockedMessageForCorrection), so a keyed write that claimed its key
+// after that, took the lock first and read the post before the delete committed keeps the body
+// under a key newer than the delete. An answer kept after a delete committed holds the post
+// without its body, or the version under its new name, so ending it as well costs only its
+// replay: the stored answer is answered ANSWER_NOT_KEPT, and a recovery replay keeps none of its
+// replayKeptMembers.
+//
+// The third reads no time either, though a document hit is no post: its snippet holds the
+// insert's words only where the answer was cut while the insert stood, and no fact kept with the
+// answer says from which version it was cut. It has no end at the delete, for the same race as
+// the first two: deleted_at is when the delete's transaction began, so a check that claimed its
+// key after that and read the document before the delete committed holds the words under a key
+// newer than deleted_at (census v20 of dispatch://INFRA-1523, V.22). Nor has it a start at the
+// key's claim: a comment made after the key was claimed and before the answer was stored can be
+// in that answer, and a takeover runs the request again under the key's first claim
+// (request_keys.created_at). What would bound it is when the answer was stored, and no column
+// holds that time: the statement that stores the answer stores no time (settleRequestKey), and
+// committed_at is when the request's first transaction that wrote began
+// (markRequestKeyCommitted), never set for a related-item check, which writes nothing. So every
+// answer holding a hit for the document ends, whenever the comment was made, which reaches wider
+// than the snippets that hold the words - a check kept before the insert existed, one that read
+// the version the delete wrote, or the document after the delete committed - and the architect
+// ruled for that reach (his rulings of 2026-11-20 22:18Z and 2026-11-21 00:17Z): ending an answer
+// only makes its caller read again, as a write that landed with no copy of its answer does, and
+// never takes away text a reader still needs, which the next read gives as it stands. Its bound
+// is the key's own life: a key keeps its answer for contracts.IdempotencyKeyTTL, 24 hours
+// (IDEMPOTENCY_KEY_TTL_MS, packages/contracts), and a repeat after that runs as a new request
+// (keyExpired), so an answer ended that need not have been costs one read more inside its day and
+// nothing else.
+func (s *server) answerEndedByDelete(ctx context.Context, held heldRequestKey) (bool, error) {
+	holdings := answerHoldingsOf(held.storedSuccess())
+	if len(holdings.ids) == 0 {
+		return false, nil
+	}
+	var ended bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, answerEndedQuery,
+		holdings.ids, holdings.versionDocuments, holdings.versionNumbers,
+		holdings.hitDocuments, docs.InsertMarkPath,
+	).Scan(&ended); err != nil {
+		return false, fmt.Errorf("read whether a delete ended a kept answer: %w", err)
+	}
+	return ended, nil
+}
+
+// answerHoldings is what a kept answer holds that a delete can withdraw text from
+// (answerEndedByDelete): the own id of every object in it, every version a document in it lists,
+// by the document's id and the version's number, pairwise, and the document every hit of kind
+// document in it stands for.
+type answerHoldings struct {
+	ids              []string
+	versionDocuments []string
+	versionNumbers   []int64
+	hitDocuments     []string
+}
+
+// answerHoldingsOf is what stored, a kept answer's bytes, holds, read as JSON. An answer that is
+// no JSON, none kept included, holds no object, and so no post and no version.
+func answerHoldingsOf(stored []byte) answerHoldings {
+	var holdings answerHoldings
+	decoder := json.NewDecoder(bytes.NewReader(stored))
+	decoder.UseNumber()
+	var answer any
+	if decoder.Decode(&answer) == nil {
+		holdings.hold(answer)
+	}
+	return holdings
+}
+
+// hold adds what value, a part of the answer decoded with json.Decoder.UseNumber, holds. An
+// object's own id is its `id` - a comment's, a message's, a related-item hit's - except for the
+// accept of a delivery (acceptedDelivery), which carries a message's `body` beside its attempt
+// and names the message by `message_id`. A document lists its versions in `versions`, each by
+// its `number`. A hit carries its `snippet`, and one of kind `document` stands for the document
+// its own id is (model.WriteSuggestion, model.SearchResult). A value that is no uuid is the id of
+// nothing a delete reaches, and is left out.
+func (h *answerHoldings) hold(value any) {
+	switch value := value.(type) {
+	case []any:
+		for _, item := range value {
+			h.hold(item)
+		}
+	case map[string]any:
+		id, named := answerID(value["id"])
+		if _, carriesBody := value["body"]; !named && carriesBody {
+			id, named = answerID(value["message_id"])
+		}
+		if named {
+			h.ids = append(h.ids, id)
+			versions, _ := value["versions"].([]any)
+			for _, version := range versions {
+				if number, numbered := versionNumber(version); numbered {
+					h.versionDocuments = append(h.versionDocuments, id)
+					h.versionNumbers = append(h.versionNumbers, number)
+				}
+			}
+			if _, hit := value["snippet"]; hit && value["kind"] == "document" {
+				h.hitDocuments = append(h.hitDocuments, id)
+			}
+		}
+		for _, member := range value {
+			h.hold(member)
+		}
+	}
+}
+
+// answerID is value as the uuid it spells, and whether it spells one.
+func answerID(value any) (string, bool) {
+	text, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	id, err := uuid.Parse(text)
+	return id.String(), err == nil
+}
+
+// versionNumber is the number of version, one entry of a document's versions, and whether it
+// carries one.
+func versionNumber(version any) (int64, bool) {
+	fields, _ := version.(map[string]any)
+	number, ok := fields["number"].(json.Number)
+	if !ok {
+		return 0, false
+	}
+	value, err := number.Int64()
+	return value, err == nil
 }
 
 // storedStatus reports whether an answer of this status is a key's answer. A 5xx says nothing of

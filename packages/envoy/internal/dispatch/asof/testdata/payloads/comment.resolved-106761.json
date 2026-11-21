@@ -1,0 +1,66 @@
+{
+  "id": 106761,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 212,
+  "type": "comment.resolved",
+  "actor": {
+    "kind": "session",
+    "id": "01a17df7-445c-75d0-9748-aabbea8917f6",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit ",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolo",
+      "session_title": "lorem ipsum dolor sit amet lor"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-29T08:28:36.166125Z",
+  "payload": {
+    "id": "0f0182a8-4d7f-477e-884a-a2582af402f9",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum d",
+    "turn": null,
+    "anchor": {
+      "quote": "lorem ipsum dolor sit amet lorem ipsum dolor sit",
+      "mark_id": "0f0182a8-4d7f-477e-884a-a2582af402f9",
+      "version": 21,
+      "block_id": "ba9c55b2-5efd-45b2-bca4-c22f31ce958d",
+      "orphaned": false,
+      "artifact_id": "e6eef9ea-c2e7-481f-8b86-12e825ab5de2"
+    },
+    "ask_id": null,
+    "author": {
+      "id": "01a17df7-445c-75d0-9748-aabbea8917f6",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor s",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit ",
+        "session_title": "lorem ipsum dolor sit amet lor"
+      }
+    },
+    "mentions": [],
+    "reply_to": null,
+    "resolved": true,
+    "edited_at": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-10-29T08:27:52.983212Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": null,
+    "resolved_at": "2026-10-29T08:28:36.166125Z",
+    "resolved_by": {
+      "id": "01a17df7-445c-75d0-9748-aabbea8917f6",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolo",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit ",
+        "session_title": "lorem ipsum dolor sit amet lor"
+      }
+    },
+    "artifact_name": "lorem i",
+    "suppress_route": false
+  }
+}

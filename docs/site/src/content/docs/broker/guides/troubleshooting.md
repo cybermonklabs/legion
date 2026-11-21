@@ -314,6 +314,7 @@ grants, and it registers no pod's session.
 | `no pending machine login has this code` (`NO_SUCH_CODE`) | The code is mistyped, already decided, or expired. | Check the code on the machine's terminal; start a new login if it expired. |
 | `confirmation code does not match` (`CODE_MISMATCH`) | The decision carried a different code from the login it names. | Look the code up again and decide from that page. |
 | `this machine login's key already holds a live launcher credential` (`KEY_HOLDS_LIVE_CREDENTIAL`) | The machine signed two logins with one key, and one is already approved. | Deny this one; the machine is already logged in. |
+| `a live read token is bound to this machine login's key, …` (`KEY_BINDS_READ_TOKEN`) | A read token is bound to the key the machine signed this login with, and a key that signs launcher proofs is bound to no read token. | Deny this one, and log the machine in again with a new key. |
 | No **Credential requests** section and no **Live grants** | Dispatch has no broker connected (`DISPATCH_AGENT_SECRETS_URL` is unset). | See [Operating the broker](/legion/broker/operate/#what-it-depends-on). |
 
 A secret request is decided on the broker's own page, signed in to the broker; these are what

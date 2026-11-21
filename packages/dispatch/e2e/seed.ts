@@ -15,6 +15,9 @@ import { sql } from "./psql";
 // boot, and GET /api/v1/dashboard/builds reads the builds the live ones serve from it.
 const tables = [
   "agent_tokens",
+  // The read-only personal tokens (migration 20261120023712), a table of their own beside
+  // agent_tokens that no foreign key reaches.
+  "agent_read_tokens",
   "repo_projects",
   "architecture_sources",
   "legion_current",
@@ -70,6 +73,13 @@ const tables = [
   // the issue key the next row's issue takes again.
   "workflow_tuples",
   "workflow_nodes",
+  // The keyword table of each past version of the searchable text, and its fill's cursor row
+  // (the `search_text_versions` migration). No foreign key reaches either table, so the closure
+  // below does not find them: a row's versions would otherwise answer the next row's search at a
+  // past time, under the issue keys the next row's issues take again, and the fill's cursor would
+  // name a position in the log this reset emptied.
+  "search_text_versions",
+  "search_text_versions_fill",
   "user_sessions",
 ];
 

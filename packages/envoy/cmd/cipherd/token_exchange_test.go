@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -673,8 +674,8 @@ func TestAPairIsRefusedANameAnExchangeEntryFixesThatItsPairHolds(t *testing.T) {
 // naming no session and no scope, and is answered a token the listed API account reads back as
 // exactly the read entry's: the scope read, the project scope none, the entry's service and the
 // session it fixes, no person and no project, and this test's own key. Nothing was registered for
-// the pod, since the entry fixes the session. The same request naming the scope read is refused
-// invalid_scope, so the scope is the entry's to grant and never the request's.
+// the pod, since the entry fixes the session. A trade that asks for read is
+// TestTheBinaryNarrowsATradeOnRequest's.
 func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
@@ -727,13 +728,80 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
 		}
 	})
+}
 
-	t.Run("the same request naming the scope read mints nothing", func(t *testing.T) {
-		status, body := live.exchange(t, with(form, "scope", oauthwire.ScopeRead))
-		if status != http.StatusBadRequest || body["error"] != "invalid_scope" || body["access_token"] != nil {
-			t.Fatalf("an exchange naming the scope %s = %d %v, want 400 invalid_scope and no access token: the exchange client is registered for %s alone, and the read entry grants read without being asked", oauthwire.ScopeRead, status, body, oauthwire.Scope)
-		}
-	})
+// TestTheBinaryNarrowsATradeOnRequest is the live proof of narrowing, on the real binary and a
+// fresh schema: a pod entry's trade and a read entry's trade that ask for the scope read are each
+// answered a token the listed API account reads back as the same identity under the narrowed word
+// of its project scope, holding read, bound to this test's own key, and the read entry's trade
+// that names a cut reads back with that cut. Each answer is its kind's in the golden file the
+// shared verifier, Dispatch, the listener and the NATS auth service are held to
+// (ciphertokentest.NarrowedAnswers), the read entry's with the cut beside it.
+func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	broker := startBroker(t, brokerOptions{Env: exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds)})
+	broker.Await(t, "token exchange")
+	live := newLiveBroker(broker.Addr, key)
+	registrarToken := accountToken(t, cluster, clusterKey, registrarAccount)
+	live.registered(t, mintPodToken(t, cluster, clusterKey, podAccount, enrolmentAudience, firstPodUID), heldSession, registrarToken)
+	const cut = "2026-11-18T09:30:00.123456Z"
+	for _, c := range []struct {
+		name string
+		form url.Values
+		// kind is the answer's in the golden file, filled with session; cut is the cut the
+		// trade names, which the golden answer is read back with.
+		kind, session, cut string
+	}{
+		{"a pod entry's trade",
+			with(exchangeForm(mintPodToken(t, cluster, clusterKey, podAccount, exchangeAudience, firstPodUID), heldSession), "scope", oauthwire.ScopeRead),
+			"pod-entry", heldSession, ""},
+		{"a read entry's trade",
+			with(exchangeForm(mintPodToken(t, cluster, clusterKey, readerAccount, exchangeAudience, readerPodUID), ""), "scope", oauthwire.ScopeRead),
+			"read-entry", readerSession, ""},
+		{"a read entry's trade with a cut",
+			with(with(exchangeForm(mintPodToken(t, cluster, clusterKey, readerAccount, exchangeAudience, readerPodUID), ""), "scope", oauthwire.ScopeRead), oauthwire.FormAsOf, cut),
+			"read-entry", readerSession, cut},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			status, body := live.exchange(t, c.form)
+			token, _ := body["access_token"].(string)
+			if status != http.StatusOK || token == "" || body["token_type"] != "DPoP" || body["scope"] != oauthwire.ScopeRead {
+				t.Fatalf("the read trade = %d %v, want 200 with a DPoP-bound access token holding the scope read", status, body)
+			}
+			status, body = live.introspect(t, token, apiToken)
+			if status != http.StatusOK {
+				t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
+			}
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var answer oauthwire.Introspection
+			if err := json.Unmarshal(raw, &answer); err != nil {
+				t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
+			}
+			want, ok := ciphertokentest.NarrowedAnswers(t, jkt, c.session, answer.ExpiresAt)[c.kind]
+			if !ok {
+				t.Fatalf("the narrowed answers hold no answer for %s", c.kind)
+			}
+			want.AsOf = c.cut
+			if !reflect.DeepEqual(answer, want) {
+				t.Errorf("introspection answered %+v, want %+v", answer, want)
+			}
+			if answer.ExpiresAt <= time.Now().Unix() {
+				t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
+			}
+		})
+	}
 }
 
 // TestTheBinaryExchangesAMachinesGoogleIdentityToken is the live proof of the machine grant: the

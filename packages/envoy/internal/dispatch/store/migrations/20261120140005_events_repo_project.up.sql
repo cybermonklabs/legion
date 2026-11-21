@@ -1,0 +1,41 @@
+-- pgmigrate:non-transactional
+-- 20261120140005_events_repo_project.up.sql: the index on events through which a read at a cut
+-- finds the repository mappings, built concurrently.
+--
+-- Why it exists. A read at a cut reads each repository's mapping to a project from its newest
+-- settings.repo_project.updated at or before the cut (internal/dispatch/asof, repoProjectsShadow).
+-- The issue read and the issue listing read the mappings for an issue's repository. No index
+-- held that type, so each statement that read the mappings at a cut read all of events: on a copy
+-- of production's event log (843,238 events, 57 such events, 2026-11-20), 0.8 to 1.5 s for each
+-- such statement. The index holds only the events of that type, in created_at order, so the read
+-- finds those at or before the cut and reads no other event. On the copy it was 16 kB.
+--
+-- The predicate must stay the shadow's word for word: repoProjectsShadow names the one type in
+-- each of its reads of events. When the two do not agree, the answer stays correct, but the read
+-- does not use this index (asof.TestTheShadowsUseTheirIndexes).
+--
+-- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment
+-- runs one replica under a Kubernetes Deployment's `strategy: Recreate`
+-- (packages/envoy/infra/README.md). So the build's time is downtime. The build reads all of
+-- events two times; on the copy, events and its indexes were 1,459 MB, and a plain build of this
+-- index took 1.2 s on the pod.
+--
+-- Why it is exempt from the census's size limit. events is larger than the 1 GiB that a
+-- migration may touch (pgmigrate.CensusTableLimit). A migration whose first line is
+-- `-- pgmigrate:non-transactional` and that holds exactly one non-unique
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS - this one - runs outside the runner's transaction, and
+-- the census does not apply its size limit to it (pgmigrate/nontransactional.go, concurrentIndex,
+-- and pgmigrate/census.go, Census). The build takes SHARE UPDATE EXCLUSIVE on events, which no
+-- ordinary read or write of events waits on. It waits for each older snapshot between its two
+-- reads of the table.
+--
+-- What a failed build leaves. A build that fails, or that is cancelled or killed, leaves an index
+-- of this name that is marked invalid. The planner does not use an invalid index, and PostgreSQL
+-- can go on updating it on each write. Reads at a cut stay correct, but slow, until the index is
+-- built. The runner records the version only after a build that finished. At the next boot it
+-- drops the invalid index with DROP INDEX CONCURRENTLY and builds it again
+-- (pgmigrate/nontransactional.go, ExecNonTransactional and dropOwnLeftover). Do not drop it by
+-- hand.
+create index concurrently if not exists events_repo_project
+    on events (created_at)
+    where type = 'settings.repo_project.updated';

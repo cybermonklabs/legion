@@ -1,0 +1,23 @@
+kind: Added
+body: |-
+  `DISPATCH_AS_OF_NOT_SERVED` (`AS_OF_NOT_SERVED`), `DISPATCH_INVALID_AS_OF` (`INVALID_AS_OF`) and
+  `DISPATCH_AS_OF_SEARCH_NOT_FILLED` (`AS_OF_SEARCH_NOT_FILLED`) are the codes of Dispatch's
+  refusals of a read at a past time. `DISPATCH_AS_OF_HEADER` (`Dispatch-As-Of`),
+  `DISPATCH_AS_OF_ABSENT_HEADER` (`Dispatch-As-Of-Absent`) and `DISPATCH_AS_OF_FILLED_THROUGH_HEADER`
+  (`Dispatch-As-Of-Filled-Through`) name the headers of such a read, and `parseAsOfAbsent` reads the
+  members that the second header names. `bun run gen:go` writes each into the Go package.
+
+  The seven read specs, `dispatch_read`, `dispatch_doc_read`, `dispatch_search`,
+  `dispatch_answers`, `dispatch_open_asks`, `dispatch_inbox` and `dispatch_results`, take `as_of`.
+  The OpenAPI document and the generated types declare the query parameter `as_of` on each route
+  that answers it but `GET /api/v1/search`, whose search at a cut a client sends to
+  `GET /api/v1/search/results`.
+
+  `DISPATCH_AS_OF_TOKEN_NOT_SERVED` is the code that Dispatch gives a read-only token with a cut
+  on `GET /ws/live` and on each read that holds no past answer. A route that answers `as_of`
+  answers such a token as of its cut, and `GET /api/v1/whoami` names the cut. #4557's entry for
+  that code names every read except `GET /api/v1/whoami`. With this change the code applies to the
+  reads above alone.
+time: 2026-11-20T19:00:02Z
+custom:
+  Issue: pr4639

@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -82,26 +83,47 @@ const latestReviewsStatement = `
 		order by artifact_id, ` + docs.ReviewOrder + `
 	`
 
+// openApprovalAsksHead is the select list, the from and the head of the lateral join that both
+// statements of the open approval requests share, so the two scan alike
+// (scanOpenApprovalRequests). Each statement goes on with the documents it joins.
+const openApprovalAsksHead = `
+		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
+		from asks a` + lastReplyJoin + `
+		cross join lateral jsonb_array_elements(`
+
 // openApprovalAsksStatement reads the open approval requests naming any document in $1, with the
 // turn waitingOnExpression gives each; scanOpenApprovalRequests reads its rows. One row per
 // document of each open request naming one of these documents, so a request that covers a spec
 // and its Verification document is found by either and reported on both.
-const openApprovalAsksStatement = `
-		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
-		from asks a` + lastReplyJoin + `
-		cross join lateral jsonb_array_elements(a.approval -> 'documents') document
+const openApprovalAsksStatement = openApprovalAsksHead + `a.approval -> 'documents') document
 		where a.kind = 'approval' and a.state = 'open'
 		  and ` + docs.ApprovalDocumentsJSONPath + ` ?| $1::text[]
 		  and document ->> 'artifact_id' = any($1::text[])
 	`
 
+// openApprovalAsksAtCutStatement is openApprovalAsksStatement for a read at a cut, where the asks
+// shadow gives the approval of each request as its newest event at the cut wrote it. A request
+// whose newest event at the cut is older than the documents of approval requests (event 186,599)
+// holds no documents there: migration 20261102110100 filled them in the row with no event. Such a
+// request named one document, its approval.artifact_id, and the statement finds the request by
+// that document, with null documents (scanOpenApprovalRequests). The shadow is a relation of its
+// own, which the index asks_open_approval_documents does not serve, so the statement does not test
+// the path of the documents.
+const openApprovalAsksAtCutStatement = openApprovalAsksHead + `coalesce(a.approval -> 'documents',
+			jsonb_build_array(jsonb_build_object('artifact_id', a.approval -> 'artifact_id')))) document
+		where a.kind = 'approval' and a.state = 'open'
+		  and document ->> 'artifact_id' = any($1::text[])
+	`
+
 // openApprovalRequest is one document's open approval request: who asked, whose turn it is, and
-// the documents the request names when it names more than this one.
+// the documents the request names when it names more than this one. documentsUnknown is set for a
+// request that a read at a cut finds with no documents (openApprovalAsksAtCutStatement).
 type openApprovalRequest struct {
-	id        string
-	author    model.Actor
-	waitingOn string
-	documents []model.AskApprovalDocument
+	id               string
+	author           model.Actor
+	waitingOn        string
+	documents        []model.AskApprovalDocument
+	documentsUnknown bool
 }
 
 // approvalTargets is the documents of artifacts, whose approval the two statements read, and the
@@ -140,7 +162,8 @@ func scanLatestReviews(rows pgx.Rows, latestReviews map[string]model.ArtifactRev
 // scanOpenApprovalRequests reads the rows openApprovalAsksStatement returns into requests, keyed
 // by document id, reaching an error the way scanLatestReviews does: the statement's own failure
 // is the last rows.Err(), unwrapped, and the leading check names the read for an error pgx
-// recorded before this callback ran.
+// recorded before this callback ran. Null documents are a request that a read at a cut finds with
+// none (openApprovalAsksAtCutStatement).
 func scanOpenApprovalRequests(rows pgx.Rows, requests map[string]openApprovalRequest) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("load open approval asks: %w", err)
@@ -155,11 +178,13 @@ func scanOpenApprovalRequests(rows pgx.Rows, requests map[string]openApprovalReq
 		if err := json.Unmarshal(author, &actor); err != nil {
 			return fmt.Errorf("decode approval ask author: %w", err)
 		}
+		request := openApprovalRequest{id: id, author: actor, waitingOn: waitingOn, documentsUnknown: documents == nil}
 		var named []model.AskApprovalDocument
-		if err := json.Unmarshal(documents, &named); err != nil {
-			return fmt.Errorf("decode approval ask documents: %w", err)
+		if documents != nil {
+			if err := json.Unmarshal(documents, &named); err != nil {
+				return fmt.Errorf("decode approval ask documents: %w", err)
+			}
 		}
-		request := openApprovalRequest{id: id, author: actor, waitingOn: waitingOn}
 		// One document is the document being read, which the chip already names; two or more are
 		// what it must spell out.
 		if len(named) > 1 {
@@ -215,6 +240,7 @@ func applyApprovals(
 			approval.AskID = &id
 			approval.WaitingOn = request.waitingOn
 			approval.Documents = request.documents
+			approval.DocumentsUnknown = request.documentsUnknown
 		}
 		artifact.Approval = approval
 	}
@@ -224,8 +250,9 @@ func applyApprovals(
 // artifacts, and returns the apply that fills each document's Approval once the batch is closed.
 // The apply reads each document's Versions (applyApprovals), so a caller that queues those too
 // applies them first (queueArtifactDetails). No document queues nothing and its apply fills
-// nothing.
-func queueApprovals(b *pgx.Batch, artifacts []*model.Artifact) func() {
+// nothing. A read at the cut ctx carries finds the open requests then, with each request whose
+// documents no record at the cut gives (openApprovalAsksAtCutStatement).
+func queueApprovals(ctx context.Context, b *pgx.Batch, artifacts []*model.Artifact) func() {
 	ids, byID := approvalTargets(artifacts)
 	if len(ids) == 0 {
 		return func() {}
@@ -235,7 +262,11 @@ func queueApprovals(b *pgx.Batch, artifacts []*model.Artifact) func() {
 	b.Queue(latestReviewsStatement, ids).Query(func(rows pgx.Rows) error {
 		return scanLatestReviews(rows, latestReviews)
 	})
-	b.Queue(openApprovalAsksStatement, ids).Query(func(rows pgx.Rows) error {
+	openRequests := openApprovalAsksStatement
+	if _, atCut := asof.CutFrom(ctx); atCut {
+		openRequests = openApprovalAsksAtCutStatement
+	}
+	b.Queue(openRequests, ids).Query(func(rows pgx.Rows) error {
 		return scanOpenApprovalRequests(rows, requests)
 	})
 	return func() { applyApprovals(byID, latestReviews, requests) }
@@ -247,7 +278,7 @@ func queueApprovals(b *pgx.Batch, artifacts []*model.Artifact) func() {
 // queues nothing and reads nothing.
 func (s *server) attachApprovals(ctx context.Context, q queryer, artifacts []*model.Artifact) error {
 	batch := &pgx.Batch{}
-	apply := queueApprovals(batch, artifacts)
+	apply := queueApprovals(ctx, batch, artifacts)
 	if batch.Len() == 0 {
 		return nil
 	}

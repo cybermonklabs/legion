@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { DISPATCH_BLOCK_UNITS, DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
-import { type DispatchToolResult, executeDispatchTool } from "../dispatch-execute";
+import type { DispatchToolResult } from "../dispatch-execute";
 import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
 import {
   forgetShownPictures,
@@ -15,6 +15,7 @@ import {
 } from "../dispatch-picture-tools";
 import { pictureAddresses } from "../dispatch-pictures";
 import { ToolInputError } from "../tool-input-errors";
+import { executeDispatchTool } from "./whoami-stand-in";
 
 const config = {
   enabled: true,
@@ -500,6 +501,83 @@ describe("sending pictures", () => {
     expect(server.posted).toEqual([]);
   });
 
+  // A picture is uploaded before the call's own write. A repeat of that upload that Dispatch
+  // answers with a landing - a replayed 2xx reading ANSWER_NOT_KEPT, or 409 KEY_COMMITTED - says
+  // the upload was made but gives no copy of it, so the call has no address to put in its text:
+  // nothing is posted, and the call says to run it again, which uploads the picture as its next
+  // version.
+  test("an upload that landed with no answer to give says to run the call again, and nothing is posted", async () => {
+    const lost = {
+      ANSWER_NOT_KEPT:
+        "Dispatch gives no copy of its answer, which was too large to keep or holds a comment or " +
+        "a message that was deleted, or a document version name a delete replaced, or a " +
+        "related-item hit for a document in which a comment's insert suggestion, deleted since, " +
+        "was made at any time",
+      KEY_COMMITTED: "its answer was lost on the way back",
+    };
+    for (const [code, landing] of [
+      [
+        "ANSWER_NOT_KEPT",
+        // Dispatch's keyed layer carries the request's key back on every answer to a keyed
+        // write, a replay included; a 2xx without it is no answer of Dispatch's.
+        (key: string) =>
+          new Response(JSON.stringify({ code: "ANSWER_NOT_KEPT", error: "not kept" }), {
+            status: 201,
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": key,
+              "Idempotency-Replayed": "?1",
+            },
+          }),
+      ],
+      [
+        "KEY_COMMITTED",
+        () =>
+          json({ code: "KEY_COMMITTED", error: "the write landed and its answer was lost" }, 409),
+      ],
+    ] as const) {
+      let uploads = 0;
+      const server = dispatch((pathname, init) => {
+        if (pathname === "/healthz") return json({ idempotency_keys: true });
+        if (pathname !== "/api/v1/issues/DSP-41/artifacts" || init.method !== "POST") return;
+        uploads += 1;
+        return uploads === 1
+          ? json({ code: "UNAVAILABLE", error: "database unavailable" }, 503)
+          : landing(new Headers(init.headers).get("Idempotency-Key") ?? "");
+      });
+      const shot = file("landed.png", PNG);
+
+      const failure = await refusal(
+        executeDispatchTool({
+          tool: "dispatch_message",
+          args: { issue: "DSP-41", body: "Look.", images: [shot] },
+          cwd: directory,
+          host: "omp",
+          sessionId: session,
+          config,
+          env: {},
+          exec: async () => {
+            throw new Error("no repository");
+          },
+          fetchImpl: server.fetchImpl,
+          writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [0], pause: async () => undefined },
+        })
+      );
+      forgetKeyedLayerMemory();
+
+      expect(uploads).toBe(2);
+      expect(failure.message).toBe(
+        `images: ${shot} was uploaded: POST ` +
+          `http://dispatch.test/api/v1/issues/DSP-41/artifacts was made, but ${lost[code]} ` +
+          `(${code}), so this command cannot print what it made: read it back with \`dispatch ` +
+          "read`, or with the matching list for something it created. That was a picture " +
+          "uploaded before this call's own write, so nothing else was written: run the call " +
+          "again, which uploads it as its next version. Nothing was posted."
+      );
+      expect(server.posted).toEqual([]);
+    }
+  });
+
   test("the line a picture gets names the version Dispatch gave it, and Dispatch bounds the text", async () => {
     // The owner already holds a file of this name at version 12, so the posted line is longer
     // than one for a first version.
@@ -787,6 +865,68 @@ describe("reading pictures", () => {
     expect(requests).toContain("/api/v1/artifacts/chart-1/versions/2");
   });
 
+  // A read shows the body an edit wrote, so a picture that body carries is as new as the edit:
+  // `datedBodies` dates a post at its `edited_at`. Dated at the send instead, the corrected
+  // comment's picture would be the oldest of the nine and the only one past this read's eight.
+  test("dispatch_read of a comment thread dates an edited body's picture at the edit", async () => {
+    const id = (n: number) => `0b6e0f4e-4e2c-4d55-9a7e-0e9b3a4c1d2${n}`;
+    const address = (n: number) => `dispatch://DSP-42/artifact/c${n}-png@v1`;
+    const post = (n: number, fields: Record<string, unknown> = {}) => ({
+      id: id(n),
+      issue_key: "DSP-42",
+      author: { kind: "user", id: "sami" },
+      body: `Note ${n}.\n\n![c${n}.png](${address(n)})`,
+      anchor: null,
+      created_at: `2026-10-04T10:0${n}:00Z`,
+      ...fields,
+    });
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === `/api/v1/comments/${id(0)}`) {
+        return json({
+          // The oldest comment of the thread, corrected after the last reply was written.
+          comment: post(0, { edited_at: "2026-10-04T10:09:00Z" }),
+          replies: [1, 2, 3, 4, 5, 6, 7, 8].map((n) => post(n)),
+        });
+      }
+      const named = /^\/api\/v1\/issues\/DSP-42\/artifacts\/c(\d)-png$/.exec(pathname);
+      if (named !== null) {
+        return json({
+          id: `pic-${named[1]}`,
+          issue_key: "DSP-42",
+          project: "DSP",
+          slug: `c${named[1]}-png`,
+          name: `c${named[1]}.png`,
+          kind: "image",
+          versions: [{ number: 1, mime: "image/png", size: 16 }],
+        });
+      }
+      if (/^\/api\/v1\/artifacts\/pic-\d\/versions\/1$/.test(pathname)) {
+        return new Response(png(16), { headers: { "Content-Type": "image/png" } });
+      }
+      if (pathname === "/api/v1/references") return json({ code: "NOT_FOUND", error: "no" }, 404);
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const result = await run(
+      "dispatch_read",
+      { ref: `dispatch://DSP-42/comment/${id(0)}` },
+      fetchImpl as typeof fetch,
+      randomUUID()
+    );
+
+    const pictureLines = result.text
+      .split("\n")
+      .filter((line) => line.startsWith("- image ") || line.startsWith("- not shown:"));
+    expect(pictureLines).toEqual([
+      `- image 1: ${address(0)} (c0.png, image/png, 16 bytes)`,
+      ...[8, 7, 6, 5, 4, 3, 2].map(
+        (n, index) => `- image ${index + 2}: ${address(n)} (c${n}.png, image/png, 16 bytes)`
+      ),
+      `- not shown: ${address(1)} (past this read's 8 pictures; dispatch doc-read shows it)`,
+    ]);
+  });
+
   test("dispatch_read of an issue's log shows the pictures every kind of text in it embeds, newest first", async () => {
     const address = (n: number) => `dispatch://DSP-41/artifact/p${n}-png@v1`;
     const shows = (n: number) => `Number ${n}:\n\n![p${n}.png](${address(n)})`;
@@ -854,6 +994,115 @@ describe("reading pictures", () => {
       .map((line) => line.split(" ")[3]);
     expect(shown).toEqual([7, 6, 5, 4, 3, 2, 1].map(address));
     expect(result.images).toHaveLength(7);
+  });
+
+  // R3 of dispatch://INFRA-1523: a deleted post gives no part of its body to a read, so no
+  // picture its body embedded is shown. A post deleted before the log is read has events that
+  // carry no body. The log's events are one request and each cut body's whole read another, so a
+  // post deleted between the two reaches the read with the part its event carried, and its whole
+  // read answers it deleted: the deleted line is its text then, never that part.
+  test("dispatch_read of an issue's log shows no picture of a deleted comment or message", async () => {
+    const id = (n: number) => `0b6e0f4e-4e2c-4d55-9a7e-0e9b3a4c1d3${n}`;
+    const address = (name: string) => `dispatch://DSP-41/artifact/${name}-png@v1`;
+    const shows = (name: string) => `See ${name}:\n\n![${name}.png](${address(name)})`;
+    const deletion = {
+      deleted_at: "2026-10-04T11:00:00Z",
+      deleted_by: { kind: "user", id: "sami" },
+    };
+    const event = (seq: number, type: string, payload: Record<string, unknown>) => ({
+      id: seq,
+      seq,
+      issue_key: "DSP-41",
+      type,
+      actor: { kind: "user", id: "sami" },
+      created_at: `2026-10-04T10:0${seq}:00Z`,
+      payload,
+    });
+    const events = [
+      event(1, "comment.created", { id: id(1), ...deletion }),
+      event(2, "message.created", { id: id(2), ...deletion }),
+      event(3, "comment.created", { id: id(3), body: shows("cut-comment"), body_truncated: true }),
+      event(4, "message.created", { id: id(4), body: shows("cut-message"), body_truncated: true }),
+      event(5, "comment.created", { id: id(5), body: shows("kept-comment") }),
+      event(6, "message.created", { id: id(6), body: shows("kept-message") }),
+      event(7, "comment.deleted", { id: id(1), ...deletion }),
+      event(8, "message.deleted", { id: id(2), ...deletion }),
+    ];
+    const deleted = (n: number) => ({
+      id: id(n),
+      issue_key: "DSP-41",
+      author: { kind: "user", id: "sami" },
+      body: "",
+      created_at: `2026-10-04T10:0${n}:00Z`,
+      ...deletion,
+    });
+    const bytes = png(16);
+    const requests: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      requests.push(pathname);
+      if (pathname === "/api/v1/issues/DSP-41") {
+        return json({
+          key: "DSP-41",
+          title: "Pictures",
+          status: "in_progress",
+          route: null,
+          open_asks: [],
+          children: [],
+          last_seq: events.length,
+        });
+      }
+      if (pathname === "/api/v1/issues/DSP-41/events") return json(events);
+      if (pathname === `/api/v1/comments/${id(3)}`) {
+        return json({ comment: { ...deleted(3), anchor: null }, replies: [] });
+      }
+      if (pathname === `/api/v1/issues/DSP-41/messages/${id(4)}`) {
+        return json({ message: deleted(4), replies: [] });
+      }
+      // Every picture is still there, the deleted posts' included: only the posts were deleted.
+      const slug = pathname.match(/^\/api\/v1\/issues\/DSP-41\/artifacts\/([a-z-]+-png)$/)?.[1];
+      if (slug !== undefined) {
+        return json({
+          id: slug,
+          issue_key: "DSP-41",
+          project: "DSP",
+          slug,
+          name: slug.replace("-png", ".png"),
+          kind: "image",
+          versions: [{ number: 1, mime: "image/png", size: bytes.length }],
+        });
+      }
+      if (/^\/api\/v1\/artifacts\/[a-z-]+-png\/versions\/1$/.test(pathname)) {
+        return new Response(bytes, { headers: { "Content-Type": "image/png" } });
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const result = await run(
+      "dispatch_read",
+      { ref: "dispatch://DSP-41/log" },
+      fetchImpl as typeof fetch,
+      randomUUID()
+    );
+
+    const pictureLines = result.text
+      .split("\n")
+      .filter((line) => line.startsWith("- image ") || line.startsWith("- not shown:"));
+    expect(pictureLines).toEqual([
+      `- image 1: ${address("kept-message")} (kept-message.png, image/png, 16 bytes)`,
+      `- image 2: ${address("kept-comment")} (kept-comment.png, image/png, 16 bytes)`,
+    ]);
+    expect(result.images).toHaveLength(2);
+    // The two bodies cut on their events were read whole, and only the standing posts' pictures
+    // were fetched.
+    expect(requests).toContain(`/api/v1/comments/${id(3)}`);
+    expect(requests).toContain(`/api/v1/issues/DSP-41/messages/${id(4)}`);
+    expect(requests.filter((pathname) => pathname.includes("/artifacts")).sort()).toEqual([
+      "/api/v1/artifacts/kept-comment-png/versions/1",
+      "/api/v1/artifacts/kept-message-png/versions/1",
+      "/api/v1/issues/DSP-41/artifacts/kept-comment-png",
+      "/api/v1/issues/DSP-41/artifacts/kept-message-png",
+    ]);
   });
 
   test("dispatch_doc_read refuses an agent ref whose session id holds a bracket or a backtick", async () => {

@@ -1,0 +1,26 @@
+{
+  "id": 378,
+  "issue_key": null,
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 2,
+  "type": "settings.repo_project.updated",
+  "actor": {
+    "kind": "session",
+    "id": "01a13c57-d826-7242-80fe-5f0670188b11"
+  },
+  "notify": false,
+  "created_at": "2026-10-16T17:43:39.069819Z",
+  "payload": {
+    "deleted": false,
+    "mapping": {
+      "repo": "lorem ipsum dolor sit amet lorem ipsu",
+      "project": "ACME",
+      "created_at": "2026-10-16T17:43:39.069819Z",
+      "created_by": {
+        "id": "01a13c57-d826-7242-80fe-5f0670188b11",
+        "kind": "session"
+      }
+    }
+  }
+}

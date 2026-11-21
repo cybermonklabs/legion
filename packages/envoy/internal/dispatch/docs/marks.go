@@ -251,7 +251,8 @@ func (s *Service) BlockForQuote(ctx context.Context, artifactID, quote string) (
 }
 
 // SuggestionKind returns the kind recorded on a verified browser or server suggestion mark. A
-// reply's projection of its thread root reads it under WithCommentMarks on a closed issue too.
+// projection reads it under WithCommentMarks on a closed issue too: of its thread root, where
+// a reply projects, and of the comment's own mark, where its author's edit does.
 func (s *Service) SuggestionKind(ctx context.Context, artifactID, id string) (string, error) {
 	tree, err := s.docTree(commentMarkOperation(ctx), artifactID)
 	if err != nil {
@@ -266,16 +267,61 @@ func (s *Service) SuggestionKind(ctx context.Context, artifactID, id string) (st
 
 // AcceptSuggestion applies the replacement for a suggestion mark.
 func (s *Service) AcceptSuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor) error {
-	return s.applySuggestion(context.WithValue(ctx, skippedAnchorRefreshKey{}, id), artifactID, id, replaceWith, actor, true)
+	_, _, err := s.applySuggestion(context.WithValue(ctx, skippedAnchorRefreshKey{}, id), artifactID, id, replaceWith, actor, true)
+	return err
 }
 
-// RejectSuggestion removes a suggestion mark and its inserted text when necessary.
-func (s *Service) RejectSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) error {
-	return s.applySuggestion(context.WithValue(ctx, skippedAnchorRefreshKey{}, id), artifactID, id, "", actor, false)
+// RejectSuggestion removes a suggestion mark and its inserted text when necessary, and answers the
+// anchor marks the removal of an insert's text took text from (TakenAnchorMarks), which the reject
+// route keeps on the comment for the comment's delete (api/comment_actions.go, commentAction). The
+// anchor refresh the removal runs orphans each open row on a mark it took out whole, keeping the
+// quote, and gives each open row on a mark it cut what is left of the mark's text: the inserted
+// words are the suggestion's own until its author deletes it.
+func (s *Service) RejectSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) (TakenAnchorMarks, error) {
+	_, taken, err := s.applySuggestion(context.WithValue(ctx, skippedAnchorRefreshKey{}, id), artifactID, id, "", actor, false)
+	return taken, err
 }
 
-func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor, accept bool) error {
-	return s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+// RejectDeletedCommentSuggestion rejects the pending suggestion of a comment its author is
+// deleting: the mark goes and an insert suggestion's text goes with it, as RejectSuggestion
+// does. Its one caller is the comment delete (api/comment_delete.go, deleteComment), whose
+// transaction holds the document owner's lock (api/comment_actions.go,
+// lockedCommentForCorrection through lockOwnerOfComment) and has decided under that lock that
+// the comment is its author's to delete - the same standing a comment's own anchor writes have,
+// and the delete marks the context it passes here as theirs (WithCommentMarks). So this reject
+// runs as those writes run, owner-verified under the caller's mark (commentMarkOperation), and a
+// closed issue's document takes it: a closed issue still takes the delete of its comment, and
+// the suggestion's replacement text is the comment's text too, so it leaves the document with
+// the body. Owner-verified, the write meets no closed refusal (allowInject); a comment's mark
+// write, it forks the stored document cold (closedIssueCommentMark, readFork says why). The
+// accept and the reject routes keep RejectSuggestion, which a closed issue refuses as it always
+// did, and so does this reject under a context no caller marked.
+//
+// It answers the kind the suggestion's mark recorded: "insert", "replace" or "delete"
+// (suggestionKind). Only an insert's mark wraps text the suggestion itself put in the document,
+// which this reject takes out again (rejectedInsert); a replace's and a delete's wrap document
+// text, which an accept would replace and a reject leaves. So only an insert's anchor quote, the
+// text its mark wrapped, is a copy of the comment's own text.
+//
+// It also answers the anchor marks the removal of an insert's text took text from
+// (TakenAnchorMarks): an ask's or another comment's mark on words the insert added, since an
+// anchor's mark may overlap a suggestion's. A mark the removal took out whole quoted those words
+// alone, the post being deleted, so the anchor refresh this write runs leaves every row on it as it
+// stands (removedAnchorSkip), and the delete writes each such row, open or closed, with an empty
+// quote (RewriteTakenAnchors); a mark the removal cut is refreshed from what is left of it, as
+// every refresh reads an open row, and the delete gives a closed row on it that text too.
+func (s *Service) RejectDeletedCommentSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) (string, TakenAnchorMarks, error) {
+	ctx = context.WithValue(commentMarkOperation(ctx), skippedAnchorRefreshKey{}, id)
+	return s.applySuggestion(context.WithValue(ctx, removedAnchorSkipKey{}, &removedAnchorSkip{}), artifactID, id, "", actor, false)
+}
+
+// applySuggestion accepts or rejects the suggestion mark id, and answers the kind that mark
+// recorded (suggestionKind) and, for a reject that takes an insert's text out, the anchor marks it
+// took text from (takenAnchorMarks).
+func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor, accept bool) (string, TakenAnchorMarks, error) {
+	var kind string
+	var taken TakenAnchorMarks
+	err := s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		fragment := doc.GetXmlFragment(fragmentName)
 		// Read before the Yjs transaction opens: the state vector takes the document lock.
 		since := authoredClock(ctx, artifactID, doc)
@@ -292,7 +338,7 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 		if !ok {
 			return fmt.Errorf("%w: suggestion mark %q has no attributes", ErrDocSchema, id)
 		}
-		kind, err := suggestionKind(attrs, id)
+		kind, err = suggestionKind(attrs, id)
 		if err != nil {
 			return err
 		}
@@ -329,11 +375,18 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 			})
 		}
 		// A reject is not checked: it removes the text a browser insert added, which gives back
-		// the document the insert started from.
+		// the document the insert started from. The anchor marks on that text are read off the
+		// trees on either side of the removal (takenAnchorMarks), and a deleted comment's reject
+		// hands the ones it takes out whole to the anchor refresh this write runs
+		// (removedAnchorSkip).
 		if !accept {
 			next, err := rejectedInsert(tree, id)
 			if err != nil {
 				return err
+			}
+			taken = takenAnchorMarks(tree, next, id)
+			if skip, ok := ctx.Value(removedAnchorSkipKey{}).(*removedAnchorSkip); ok {
+				skip.marks = markSet(taken.Removed)
 			}
 			return write(next)
 		}
@@ -412,6 +465,10 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 		}
 		return write(next)
 	})
+	if err != nil {
+		return "", TakenAnchorMarks{}, err
+	}
+	return kind, taken, nil
 }
 
 // refuseBrokenAsks refuses the first ask a write left unreadable whose id the document could read

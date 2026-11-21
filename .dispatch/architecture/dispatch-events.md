@@ -23,7 +23,7 @@ it carries broker-produced events onward and is the client of the listener's con
 The relay's is the process's one reader of the event log for live readers:
 every events subscription on a page's live socket and the Delivery page's hub take it, so the hub reads no event log of its own.
 
-Since a lower id can still be open after a higher one has committed, every reader that pages the log by a global id cursor (the event stream relay, an events subscription's bounded replay and its catch-up after an overflow, `GET /api/v1/events/log`, `GET /api/v1/references?since=`) reads only up to the safe horizon of the server's one `events.Horizon`, and delivers in id order.
+Since a lower id can still be open after a higher one has committed, every reader that pages the log by a global id cursor (the event stream relay, an events subscription's bounded replay and its catch-up after an overflow, `GET /api/v1/events/log`, `GET /api/v1/references?since=`, the keyword fill) reads only up to the safe horizon of the server's one `events.Horizon`, and delivers in id order.
 An observation is one statement in a transaction of its own that reads A, the newest id its snapshot sees, that snapshot's xmin, its xmax and whether its in-progress list is empty, and X, its own transaction id, assigned after that snapshot.
 A later observation whose snapshot xmin is above X proves that no transaction below X still runs, so every id at or below A is final;
 the horizon is the A of the newest observation proven so.
@@ -61,8 +61,22 @@ Only with neither, a first boot or a reset log, does it read the whole log, whic
 GET /auth/whoami's event_head, which a page resumes its first feed from, comes from the same marks or those horizons and waits on nothing, except on a process with no mark counting and no horizon proven or persisted, which waits up to 2 s and then answers 503 EVENT_HEAD_UNAVAILABLE rather than an event_head of 0, and the page asks again while it does.
 After the event log is reset, the relay forgets the horizon the old log proved and ends the generation with every subscription on it;
 a cold stream that finds the relay still on the old log's cursor opens once that reset has run, replayed from the newest id below which the new log has no gap.
+Package `events` holds the check that tells a reset log from a quiet one, for each reader of the log by a global id cursor.
+`events.EventCursorCheck` reads, in one statement, the newest event's id and the `created_at` of the event at the reader's cursor.
+`events.EventLogWasReset` answers from those two values whether the log was reset under that cursor: the newest id is below the cursor, or the row at the cursor is gone or carries another `created_at` than the reader read.
+Three callers use it, each with its own cursor:
+the event stream relay (`resetCursor` in `api/event_stream_relay.go`, both functions), an events subscription (`api/live_events.go`, `EventLogWasReset` over its own `eventSubscriptionCheck`, which reads the same two values beside its replay count), and the keyword fill (`textversions`, both functions, in each batch's transaction).
 The delivery hub is ready and takes delivery changes while the horizon is held, because its relay subscription is taken on a goroutine of its own, and it acts on events once that subscription stands.
 Each observation uses one transaction id; concurrent callers share one, and an idle process takes none.
 The server observes through a two-connection pool of its own (`store.Pool.Horizon`), so the horizon does not wait behind requests for a shared connection; a process whose horizon pool cannot open observes through the shared pool until it restarts, and logs that once.
 A failed observation is logged, and a reader waiting on the horizon gets the error back once every observation has failed for ten seconds, so a horizon that cannot be read never stalls a reader silently.
 Observations and every read capped at the horizon run on the primary.
+
+A read at a past time, the cut, reads the log through the `events` shadow (`internal/dispatch/asof`): the events whose transaction began at or before the cut, each with its payload as its write stored it.
+The three event logs at a cut, an issue's, a document's and `GET /api/v1/events/log`, run their present statements under the cut (`api/events_as_of.go`).
+Ids are not commit order, so a page of the whole log at a cut ends its id range at the largest id of the events at the cut (`asof.NewestEventIDStatement`).
+A page of an issue's or a document's log pages by `seq`, and the shadow alone holds it to the cut.
+`attachPostMarks` runs over a page at a cut as over a present page and reads each post's present `deleted_at`, so a post deleted after the cut answers its own events with no body, and a reply's event keeps the preview that it holds of that post.
+Eleven indexes on `events`, each built by a migration of its own with `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, serve the shadows' reads, and each partial index's predicate is its shadow's list of types:
+`events_issue_state` (`20261120004315`, the newest state of each issue), `events_ask_state` (`20261120004316`, the newest state of each ask), `events_created_at` (`20261120004317`, the newest id at the cut), `events_issue_claim` (`20261120140001`, an issue's claim), `events_issue_activity` (`20261120140002`, an issue's `updated_at` and `last_seq`), `events_comment_state` (`20261120140003`, a comment's events), `events_message_state` (`20261120140004`, a message's events), `events_repo_project` (`20261120140005`, the repository mappings), `events_ask_follower` (`20261120140006`, an ask's follows), `events_artifact_renamed` (`20261120140007`, a document's name) and `events_project_setting` (`20261120140008`, a project's settings).
+`internal/dispatch/store/README.md` gives each index's key and the read that it serves.

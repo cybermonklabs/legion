@@ -8694,6 +8694,63 @@ test("a node whose words are only a bare address is named by its short form, in 
   expect(crumbs[1]?.textContent, "the crumb names the node by its address as written").toBe(short);
 });
 
+// R2 and R3 of dispatch://INFRA-1523: a crumb draws a node's one line where its own row is not
+// drawn, so it holds a corrected post's marks, as a filter's parent line does (`ParentLink`): a
+// deleted comment is drawn as its deleted line, from the delete, never as the model's text holds
+// it with the time as stored; an edited one says ` · edited` after its line.
+test("a crumb of a deleted comment draws its deleted line, and an edited one's says edited", async () => {
+  setViewport(1000);
+  const user = userEvent.setup();
+  const deletedAt = "2026-11-05T12:00:00Z";
+  const root = node({
+    children: [
+      node({
+        children: [
+          node({
+            children: [node({ id: "comment-3", text: "Under it.", type: "comment" })],
+            editedAt: "2026-11-05T13:00:00Z",
+            held: 1,
+            id: "comment-2",
+            text: "Ship it.",
+            type: "comment",
+          }),
+        ],
+        deletedAt,
+        deletedBy: { id: "alice", kind: "user" },
+        held: 2,
+        id: "comment-1",
+        text: `Deleted by alice · ${deletedAt}`,
+        type: "comment",
+      }),
+    ],
+    id: KEY,
+    text: `${KEY} The issue's own title`,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  for (const next of ["comment-2", "comment-3"]) {
+    await user.keyboard(".");
+    await waitFor(() => expect(rowsFor(view.container, next)).toHaveLength(1));
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(view.container)).toBe(next));
+  }
+  await user.keyboard(".");
+  const crumbs = await waitFor(() => {
+    const found = [...view.container.querySelectorAll<HTMLElement>("[data-crumb]")];
+    if (found.length < 3) throw new Error("the breadcrumb holds no crumb of both comments");
+    return found;
+  });
+  const deleted = crumbs[1];
+  expect({
+    deletedLine: deleted
+      ?.querySelector("[data-post-deleted]")
+      ?.textContent?.startsWith("Deleted by alice · "),
+    edited: crumbs[2]?.textContent,
+    storedTime: deleted?.textContent?.includes(deletedAt),
+  }).toEqual({ deletedLine: true, edited: "Ship it. · edited", storedTime: false });
+});
+
 /** Seeds `client` with the reader and every read the body's tree is built from (`slots/body.tsx`),
  *  each answered empty, but the comments', which answer `comments` and are left unread where
  *  none are given. */

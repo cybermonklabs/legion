@@ -17,6 +17,7 @@ import {
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
+  DispatchAnswerNotKeptError,
   DispatchClient,
   DispatchGatewayError,
   DispatchServiceError,
@@ -2202,8 +2203,8 @@ describe("DispatchClient's writes", () => {
     expect(await (form.get("file") as Blob).text()).toBe("# Spec");
   });
 
-  // A write Dispatch made whose answer is gone is no refusal: a replay of a first answer larger
-  // than Dispatch keeps (2xx ANSWER_NOT_KEPT), or 409 KEY_COMMITTED (the write landed before its
+  // A write Dispatch made whose answer is gone is no refusal: a replay of a first answer Dispatch
+  // gives no copy of (2xx ANSWER_NOT_KEPT), or 409 KEY_COMMITTED (the write landed before its
   // answer was lost, and Dispatch will not run it again). It is never asked again, and its one line
   // says what was made and to read it back.
   test("a write whose answer is gone is a landing, never resent", async () => {
@@ -2215,7 +2216,10 @@ describe("DispatchClient's writes", () => {
         }),
         IDEMPOTENCY_ANSWER_NOT_KEPT,
         201,
-        "Dispatch kept no copy of its answer, which was too large",
+        "Dispatch gives no copy of its answer, which was too large to keep or holds a comment " +
+          "or a message that was deleted, or a document version name a delete replaced, or " +
+          "a related-item hit for a document in which a comment's insert suggestion, deleted " +
+          "since, was made at any time",
       ],
       [
         refusal(409, IDEMPOTENCY_KEY_COMMITTED, "the write landed and its answer was lost"),
@@ -2241,6 +2245,82 @@ describe("DispatchClient's writes", () => {
       expect(error.message).toBe(
         `POST ${url} was made, but ${lost} (${code}), so this command cannot print what it made: ` +
           "read it back with `dispatch read`, or with the matching list for something it created."
+      );
+    }
+  });
+
+  // A call that writes nothing (the markdown round trip, the related-item check, a result's dry
+  // run) made nothing, so a replay of an answer Dispatch kept no copy of is no landing and names
+  // nothing to read back: the call is asked once more under a new key, which runs it afresh, and
+  // that ask's answer is the call's. A second such replay is thrown as an answer not kept, never
+  // asked a third time.
+  test("a call that writes nothing whose answer Dispatch did not keep is asked once more under a new key", async () => {
+    const notKept = () =>
+      json({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, error: "not kept" }, 200, {
+        "Idempotency-Replayed": "?1",
+      });
+    const unavailable = () => refusal(503, "UNAVAILABLE", "database unavailable");
+    const checked = { outcome: "none", search: "meaning_and_keywords", related: [] };
+    const dryRun = { line: "- [x] k1 (implementer): pass at 1111111" };
+    for (const [call, url, answer, result] of [
+      [
+        (dispatch: DispatchClient) => dispatch.markdownRoundTrip("# Notes\n"),
+        "http://dispatch.test/api/v1/markdown/round-trip",
+        { markdown: "# Notes\n" },
+        "# Notes\n",
+      ],
+      [
+        (dispatch: DispatchClient) => dispatch.related("DSP", { title: "Retry webhooks" }),
+        "http://dispatch.test/api/v1/projects/DSP/related",
+        checked,
+        checked,
+      ],
+      [
+        (dispatch: DispatchClient) =>
+          dispatch.dryRunResult("DSP-1", {
+            actor,
+            check: "k1",
+            role: "implementer",
+            verdict: "pass",
+            commit: "1111111111111111111111111111111111111111",
+          }),
+        "http://dispatch.test/api/v1/issues/DSP-1/results/dry-run",
+        dryRun,
+        dryRun,
+      ],
+    ] as const) {
+      const answered = scripted([unavailable(), notKept(), json(answer)]);
+
+      await expect(call(client(answered.fetchImpl, pacing().retry))).resolves.toEqual(result);
+
+      const keys = answered.sent.map((request) => request.headers["Idempotency-Key"]);
+      expect(answered.sent.map((request) => [request.method, request.url])).toEqual([
+        ["POST", url],
+        ["POST", url],
+        ["POST", url],
+      ]);
+      // The repeat after the 503 goes under the first key; the ask after the replay, under a new one.
+      expect(keys[1]).toBe(keys[0] as string);
+      expect(keys[2]).toMatch(IDEMPOTENCY_KEY_PATTERN);
+      expect(keys[2]).not.toBe(keys[0] as string);
+      expect(answered.sent[2]?.body).toBe(answered.sent[0]?.body as string);
+
+      const unkept = scripted([unavailable(), notKept(), unavailable(), notKept(), json(answer)]);
+
+      const error = await failure(call(client(unkept.fetchImpl, pacing().retry)));
+
+      const asked = unkept.sent.map((request) => request.headers["Idempotency-Key"]);
+      expect(asked).toHaveLength(4);
+      expect(new Set(asked).size).toBe(2);
+      expect(error).toBeInstanceOf(DispatchAnswerNotKeptError);
+      expect(error).not.toBeInstanceOf(DispatchWriteLandedError);
+      expect(error).not.toBeInstanceOf(DispatchServiceError);
+      expect(error).toEqual(
+        expect.objectContaining({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, status: 200 })
+      );
+      expect(error.message).toBe(
+        `POST ${url} wrote nothing, and Dispatch kept no copy of its answer (ANSWER_NOT_KEPT), so ` +
+          "this command has no answer to print: run it again, which asks under a new key."
       );
     }
   });

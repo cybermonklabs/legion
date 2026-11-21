@@ -1,0 +1,101 @@
+{
+  "id": 439333,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 241,
+  "type": "ask.resolved",
+  "actor": {
+    "kind": "session",
+    "id": "lorem ipsum dolor s"
+  },
+  "notify": false,
+  "created_at": "2026-11-12T15:46:22.724038Z",
+  "payload": {
+    "anchor": null,
+    "answer": null,
+    "approval": {
+      "approved": {
+        "at": "2026-11-12T00:09:39.411125Z",
+        "by": {
+          "id": "alice@example.com",
+          "kind": "user"
+        },
+        "version": 23
+      },
+      "artifact_id": "bda14b99-6ec7-40b1-ae27-9a0078f83c59",
+      "documents": [
+        {
+          "artifact_id": "bda14b99-6ec7-40b1-ae27-9a0078f83c59",
+          "name": "lorem i",
+          "requested_version": 23,
+          "version": 23
+        },
+        {
+          "artifact_id": "6422d114-43ad-4fb3-b6ee-d76de79fa996",
+          "name": "lorem ipsum dol",
+          "requested_version": 23,
+          "version": 23
+        }
+      ],
+      "name": "lorem i",
+      "requested_version": 23,
+      "version": 23
+    },
+    "approval_artifact": {
+      "project": "ACME",
+      "slug": "lore",
+      "name": "lorem i",
+      "primary": true
+    },
+    "artifact_id": null,
+    "asked_of": null,
+    "asked_of_at": null,
+    "asked_of_by": null,
+    "author": {
+      "id": "01a1c522-71b2-7183-89ca-4593fa39bc40",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit a",
+        "host": "lor",
+        "machine": "lorem ipsum dolor s",
+        "session_title": "lorem ipsum dolor sit amet lo"
+      }
+    },
+    "block_id": null,
+    "created_at": "2026-11-12T14:24:55.822671Z",
+    "edited_at": null,
+    "id": "5b44a20c-dffa-4dce-9c52-862b60739012",
+    "issue_key": "ACME-1",
+    "kind": "approval",
+    "multiple": false,
+    "opened_event_id": 436129,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsu",
+        "id": "b2",
+        "label": "lorem i"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor si",
+        "id": "b3",
+        "label": "lorem ipsum dol"
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum",
+    "referenced_by_count": 0,
+    "resolution": {
+      "actor": {
+        "id": "lorem ipsum dolor s",
+        "kind": "session"
+      },
+      "at": "2026-11-12T15:46:22.863522317Z",
+      "kind": "withdrawn",
+      "reason": "lorem ipsum dolor sit amet lorem ipsu"
+    },
+    "revision": 1,
+    "state": "resolved",
+    "thread_logins": [],
+    "urgency": "high"
+  }
+}

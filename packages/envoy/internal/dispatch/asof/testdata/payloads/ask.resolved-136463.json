@@ -1,0 +1,81 @@
+{
+  "id": 136463,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 121,
+  "type": "ask.resolved",
+  "actor": {
+    "kind": "session",
+    "id": "01a19324-ec44-73da-a272-12d744b0ae5a",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit amet ",
+      "tmux": "lorem ipsu",
+      "pane": "lore",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum do"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-31T21:49:33.425553Z",
+  "payload": {
+    "anchor": {
+      "artifact_id": "6bad9973-28a7-415c-ae94-42b61a64d9fe",
+      "block_id": "7e4581a5-c20b-4279-8e61-c72292941924",
+      "mark_id": "lorem ipsum dolo",
+      "orphaned": true,
+      "quote": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo",
+      "version": 2
+    },
+    "anchor_artifact": {
+      "project": "ACME",
+      "slug": "lorem ipsum dolor sit ",
+      "name": "lorem ipsum dolor sit ",
+      "primary": false
+    },
+    "answer": null,
+    "artifact_id": null,
+    "author": {
+      "id": "bob@example.com",
+      "kind": "user"
+    },
+    "block_id": null,
+    "created_at": "2026-10-31T20:10:34.607195Z",
+    "edited_at": null,
+    "id": "da4a0e0c-1deb-443d-97a8-2c41df845386",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 135547,
+    "options": [],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dol",
+    "referenced_by_count": 4,
+    "resolution": {
+      "actor": {
+        "id": "01a19324-ec44-73da-a272-12d744b0ae5a",
+        "kind": "session",
+        "origin": {
+          "cwd": "lorem ipsum dolor sit amet ",
+          "host": "lor",
+          "machine": "lorem ipsum d",
+          "pane": "lore",
+          "session_title": "lorem ipsum dolor sit amet lorem ipsum do",
+          "tmux": "lorem ipsu"
+        },
+        "owner": "alice@example.com"
+      },
+      "at": "2026-10-31T21:49:33.431165271Z",
+      "kind": "resolved",
+      "reason": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor"
+    },
+    "revision": 1,
+    "state": "resolved",
+    "thread_logins": [
+      "bob@example.com",
+      "alice@example.com"
+    ],
+    "urgency": "med"
+  }
+}

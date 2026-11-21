@@ -122,6 +122,11 @@ const MintedDedupeKeyPattern = "^(?:envoy\\.role\\.forward\\.)?(?:publish|agent\
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = "The listener didn't answer within the send window; the message may already have been delivered."
 
+// DeletedPostDeliveryError is what a delete settles each send of its post still pending with.
+// Generated from DELETED_POST_DELIVERY_ERROR in packages/contracts so the string Dispatch writes
+// and the string the dashboard reads a delete's receipts and attempts by cannot drift apart.
+const DeletedPostDeliveryError = "ended by the post's delete"
+
 // StoreUnconfirmedCause is what a delivery attempt records when the listener answered its send
 // 503 with the code that says the message may be stored (listenerwire.CodeMaybeStored). Generated
 // from STORE_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the string
@@ -202,13 +207,15 @@ const GoingEventEnd = "end"
 const GoingEventError = "error"
 
 // The codes an error frame carries: the run reached its window without an answer, the deployment
-// has no text model configured, and the model service refused or failed. Generated from
-// GOING_ERROR_ANSWER_DID_NOT_ARRIVE, GOING_ERROR_NO_MODEL_CONFIGURED and
-// GOING_ERROR_ANSWER_FAILED in packages/contracts so the code the server writes and the wording
-// the page keys on it cannot drift apart.
+// has no text model configured, the model service refused or failed, and a post the run was
+// given was deleted after it. Generated from GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
+// GOING_ERROR_NO_MODEL_CONFIGURED, GOING_ERROR_ANSWER_FAILED and GOING_ERROR_ANSWER_WITHDRAWN in
+// packages/contracts so the code the server writes and the wording the page keys on it cannot
+// drift apart.
 const GoingErrorAnswerDidNotArrive = "ANSWER_DID_NOT_ARRIVE"
 const GoingErrorNoModelConfigured = "NO_MODEL_CONFIGURED"
 const GoingErrorAnswerFailed = "ANSWER_FAILED"
+const GoingErrorAnswerWithdrawn = "ANSWER_WITHDRAWN"
 
 // GoingSearchTool is the name of the one tool the model is given, another search of Dispatch.
 // Generated from GOING_SEARCH_TOOL in packages/contracts so the name the server declares and the
@@ -265,6 +272,12 @@ const MaxIssueAdvances = 20
 const MaxIssuePageLimit = 250
 const DefaultIssuePageLimit = 50
 
+// PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
+// GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT
+// in packages/contracts so the page the server reads and the full page on which the
+// `dispatch read --history` command names the read of older rows cannot drift apart.
+const PostHistoryPageLimit = 200
+
 // IssueTitleMax is the longest issue title, in UTF-16 units, that POST /api/v1/issues and
 // PATCH /api/v1/issues/{key} accept. Generated from ISSUE_TITLE_MAX in packages/contracts so the
 // server's refusal and the dashboard's title fields cannot drift apart.
@@ -285,6 +298,74 @@ const DispatchItemBlocks = 32768
 // packages/contracts; the server enforces it, names it in its refusal, and publishes it through
 // GET /api/v1/limits.
 const DispatchEventBodyMax = 32000
+
+// DispatchEventTypes is every event type Dispatch writes to its log, sorted: the members of the
+// DispatchEvent union. Generated from DISPATCH_EVENT_TYPES in packages/contracts, which the
+// TypeScript compiler holds to that union, so a Go reader that sorts every type, as the keyword
+// fill's inventory test (internal/dispatch/textversions) does, learns of a new type from it.
+var DispatchEventTypes = []string{
+	"architecture.sync_failed",
+	"architecture.synced",
+	"artifact.approved",
+	"artifact.changes_requested",
+	"artifact.created",
+	"artifact.human_edited",
+	"artifact.removed",
+	"artifact.renamed",
+	"artifact.version",
+	"ask.anchor_refreshed",
+	"ask.answered",
+	"ask.asked_of",
+	"ask.edited",
+	"ask.follower_added",
+	"ask.follower_removed",
+	"ask.handed_back",
+	"ask.opened",
+	"ask.resolved",
+	"block.invalid",
+	"block.repaired",
+	"child.added",
+	"child.removed",
+	"child.status",
+	"comment.anchor_refreshed",
+	"comment.answered",
+	"comment.created",
+	"comment.deleted",
+	"comment.delivery",
+	"comment.edited",
+	"comment.reopened",
+	"comment.resolved",
+	"decision.kept",
+	"handoff.recorded",
+	"issue.claimed",
+	"issue.closed",
+	"issue.created",
+	"issue.deployed",
+	"issue.pull_request_attribution_changed",
+	"issue.released",
+	"issue.updated",
+	"message.accepted",
+	"message.answered",
+	"message.created",
+	"message.deleted",
+	"message.delivery",
+	"message.edited",
+	"priority.updated",
+	"project.created",
+	"project.updated",
+	"result.recorded",
+	"result.retracted",
+	"settings.architecture_source.updated",
+	"settings.project_default_assignee.updated",
+	"settings.repo_project.updated",
+	"subscription.remove_requested",
+	"subscription.removed",
+	"suggestion.accepted",
+	"suggestion.rejected",
+	"user_agent_state.updated",
+	"user_state.updated",
+	"user_thread_state.updated",
+}
 
 // DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
 // POST /api/v1/issues/{key}/handoffs/{phase} accepts. Generated from DISPATCH_HANDOFF_BODY_MAX in
@@ -408,8 +489,8 @@ const IdempotencyKeyPattern = "^[A-Za-z0-9._:-]{1,128}$"
 
 // The codes of a keyed write's refusals and of a replay whose first answer was not kept: a key
 // used for another request (422), a key whose first request still runs (409), a key whose write
-// landed and whose answer was lost (409), a header that is not a key (400), and a first answer too
-// large to keep. Generated from IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_KEY_IN_FLIGHT,
+// landed and whose answer was lost (409), a header that is not a key (400), and a first answer
+// Dispatch gives no copy of (IDEMPOTENCY_ANSWER_NOT_KEPT names when). Generated from IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_KEY_IN_FLIGHT,
 // IDEMPOTENCY_KEY_COMMITTED, IDEMPOTENCY_KEY_INVALID and IDEMPOTENCY_ANSWER_NOT_KEPT in
 // packages/contracts so the server's codes and the clients' reading of them cannot drift apart.
 const IdempotencyKeyReused = "KEY_REUSED"
@@ -424,6 +505,46 @@ const IdempotencyAnswerNotKept = "ANSWER_NOT_KEPT"
 // the clients' account of them cannot drift apart.
 const IdempotencyKeyTTL = 86400000 * time.Millisecond
 const IdempotencyLease = 60000 * time.Millisecond
+
+// DispatchAsOfNotServed is the code of the 400 for an as_of that a route cannot answer. A route
+// that holds no history answers only the present, and it refuses every as_of with this code. A
+// route that answers as_of refuses with this code a filter parameter that it cannot evaluate at
+// that time. The message names that parameter. Generated from DISPATCH_AS_OF_NOT_SERVED in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
+const DispatchAsOfNotServed = "AS_OF_NOT_SERVED"
+
+// DispatchInvalidAsOf is the code of the 400 for an as_of that Dispatch cannot read: a value that
+// is not an RFC 3339 time, a time later than the server's present time, or an as_of that the
+// request sends more than once. Generated from DISPATCH_INVALID_AS_OF in packages/contracts so the
+// server's refusal and every client's reading of it cannot drift apart.
+const DispatchInvalidAsOf = "INVALID_AS_OF"
+
+// DispatchAsOfSearchNotFilled is the code of the 409 for a search at a past time that the fill of
+// the keyword table has not reached. Where the fill has reached a time, the message and
+// DispatchAsOfFilledThroughHeader name that time; where it has reached no time yet, the message
+// says so and the answer has no such header. Generated from DISPATCH_AS_OF_SEARCH_NOT_FILLED in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
+const DispatchAsOfSearchNotFilled = "AS_OF_SEARCH_NOT_FILLED"
+
+// DispatchAsOfHeader is the response header on every answer that Dispatch gives as of a past time
+// (the cut), for an as_of in the request or for a token that carries a cut. The value is the cut
+// in RFC 3339, with six fractional digits, in UTC. Generated from DISPATCH_AS_OF_HEADER in
+// packages/contracts so the server and every client name the header once.
+const DispatchAsOfHeader = "Dispatch-As-Of"
+
+// DispatchAsOfAbsentHeader is the response header that names each member that a past-time answer
+// omits because the records at the cut cannot give it. The value is a comma-separated list of
+// RFC 6901 JSON Pointers, in which a segment * stands for every member of an array, such as
+// /open_asks/*/referenced_by_count. Generated from DISPATCH_AS_OF_ABSENT_HEADER in
+// packages/contracts so the server and every client name the header once.
+const DispatchAsOfAbsentHeader = "Dispatch-As-Of-Absent"
+
+// DispatchAsOfFilledThroughHeader is the response header on a 409 DispatchAsOfSearchNotFilled when
+// the fill of the keyword table has reached a time. The value is that time, in RFC 3339; a refusal
+// whose fill has reached no time yet has no such header. Generated from
+// DISPATCH_AS_OF_FILLED_THROUGH_HEADER in packages/contracts so the server and every client name
+// the header once.
+const DispatchAsOfFilledThroughHeader = "Dispatch-As-Of-Filled-Through"
 
 // SessionHeartbeat is how often a pane's pi-envoy plugin refreshes its listener registration, and
 // SessionLiveWindow how long a session's last registration keeps it live to the listener. Three
@@ -470,12 +591,20 @@ const IDAmbiguous = "ID_AMBIGUOUS"
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = "SIGN_IN_REQUIRED"
 
-// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
-// that holds only the scope read, to a route the read list does not name: the route ran nothing,
-// and the request wrote only the row of its spent DPoP proof. Generated from
+// DispatchReadOnlyToken is the code of the 403 for a request by a read-only token (any token that
+// holds read, a broker's or a personal one) to a route outside the read class: the route ran
+// nothing, and the request wrote only the record of the token's use. Generated from
 // DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
 // reading of it cannot drift apart.
 const DispatchReadOnlyToken = "READ_ONLY_TOKEN"
+
+// DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
+// carries a cut (as_of) to a read that holds no past answer: GET /ws/live, and each read route
+// that does not answer as_of except GET /api/v1/whoami. A route that answers as_of answers such a
+// token as of its cut, and GET /api/v1/whoami names the cut. The route ran nothing rather than
+// answer with the present. Generated from DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so
+// the server's refusal and every client's reading of it cannot drift apart.
+const DispatchAsOfTokenNotServed = "AS_OF_TOKEN_NOT_SERVED"
 
 func NowMillis() int64 {
 	return time.Now().UnixMilli()

@@ -1,6 +1,7 @@
 import type {
   Agent,
   ClaimHolderLiveness,
+  CommentEventPayload,
   DispatchEvent,
   Issue,
   IssueAdvance,
@@ -11,17 +12,20 @@ import type {
   IssueProgress,
   IssueReferences,
   IssueRouteStatus,
+  MessageEventPayload,
 } from "@legion/contracts";
 import { actorLabel, claimHolds, claimTakeableAt, ISSUE_ROUTE_STATUSES } from "@legion/contracts";
-import { actorText } from "../actor-text";
+import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { humanEditHead } from "../human-edit";
+import { LEFT_OUT, leftOutAt, type ReadCut } from "./as-of";
 import { approvalLine, documentListLines } from "./document-targets";
 import { linkFor } from "./links";
 
-/** The Components line of an issue read: the effective set with where it came from. */
-function componentsLine(components: IssueComponents): string {
+/** The Components line of an issue read: the effective set with where it came from. At a cut
+ *  (`asOf`) the set is left out: it is read from the component model now. */
+function componentsLine(components: IssueComponents, asOf: string | undefined): string {
   const ids = components.ids ?? [];
   const unknown = components.unknown ?? [];
   const inherited =
@@ -29,13 +33,14 @@ function componentsLine(components: IssueComponents): string {
   const retired = unknown.length === 0 ? "" : ` (retired: ${unknown.join(", ")})`;
   switch (components.mode) {
     case "explicit":
+      if (asOf !== undefined) return `Components: ${leftOutAt(asOf)}${inherited}`;
       return `Components: ${ids.length === 0 ? "none live" : ids.join(", ")}${inherited}${retired}`;
     case "none":
       return `Components: none — ${components.reason ?? ""}${inherited}`;
     case "inherit":
       return "Components: unassigned";
     default:
-      return `Components: ${components.mode}${inherited}${retired}`;
+      return `Components: ${components.mode}${inherited}${asOf === undefined ? retired : ""}`;
   }
 }
 
@@ -80,9 +85,16 @@ function advancesLine(issue: { readonly advances?: readonly IssueAdvance[] | nul
 export function claimText(
   claim: IssueClaim,
   agents: LiveAgents | undefined,
-  read: ClaimHolderLiveness = {}
+  read: ClaimHolderLiveness = {},
+  asOf?: string
 ): string {
   const titles = agents?.titles;
+  // At a cut (`asOf`) whether a session holds the claim now is left out: neither the registry
+  // nor the holder's liveness is read, and no word of the present is printed.
+  if (asOf !== undefined) {
+    const marker = claim.actor.kind === "session" ? ` · liveness ${leftOutAt(asOf)}` : "";
+    return `${actorLabel(claim.actor, titles)} since ${claim.at}${marker}`;
+  }
   const liveness = holderLiveness(claim, agents, read);
   const holding = claimHolds(claim, titles, liveness);
   const takeableAt = claimTakeableAt(liveness);
@@ -146,16 +158,23 @@ export interface LiveAgents {
  * per row, and none at all unless a session holds something being rendered — the same gate the
  * dashboard applies with `useAgents(holdsSession)`.
  *
- * `undefined` is no registry: none was needed, or the agents request failed. Names then fall back
- * to the title each session stamped on its write, and a session's claim reads "liveness unknown"
- * (`claimText`) rather than running or not running. A holder the registry does not list is the
- * ordinary case, a session that has ended, whose claim the next agent may take.
+ * `undefined` is no registry: none was needed, the agents request failed, or the read is at a cut
+ * (`cut`), where the registry, which answers the present only, is not read and is left out. Names
+ * then fall back to the title each session stamped on its write. A session's claim then reads
+ * "liveness unknown" (`claimText`) rather than running or not running, and at a cut it reads
+ * "liveness left out at <cut>". A holder the registry does not list is the ordinary case, a
+ * session that has ended, whose claim the next agent may take.
  */
 export async function liveAgents(
   client: DispatchClient,
-  needed: boolean
+  needed: boolean,
+  cut?: ReadCut
 ): Promise<LiveAgents | undefined> {
   if (!needed) {
+    return undefined;
+  }
+  if (cut !== undefined) {
+    cut.leave(LEFT_OUT.liveness);
     return undefined;
   }
   try {
@@ -211,10 +230,18 @@ export function routeHeldBySession(issue: RoutedIssue): boolean {
  * - so it names the state rather than reading as unreachable. An `unknown` route says why from
  * `route_status_reason`: a listener whose agent list is refilling did answer and will judge it
  * in a moment, while one that is unreachable (or a server too old to give a reason) did not
- * answer at all.
+ * answer at all. At a cut (`asOf`) whether it reaches anyone is left out: it is read from the
+ * listener's session list now.
  */
-export function routeText(issue: RoutedIssue, titles?: ReadonlyMap<string, string>): string {
+export function routeText(
+  issue: RoutedIssue,
+  titles?: ReadonlyMap<string, string>,
+  asOf?: string
+): string {
   if (issue.route === null) return "none";
+  if (asOf !== undefined) {
+    return `${issue.route} (whether it reaches anyone is ${leftOutAt(asOf)})`;
+  }
   const holder = issue.route_holder ?? null;
   const reach: Record<IssueRouteStatus, string> = {
     live:
@@ -289,6 +316,8 @@ export function olderServerWarnings(issue: {
   ];
   return warnings.length === 0 ? {} : { warnings };
 }
+/** An issue read as `dispatch read` prints it. At a cut (`asOf`) the fields of the present it
+ *  cannot give, its route's reach, its claim's liveness and its component set, read as left out. */
 export function issueSummary(
   issue: IssueDetails,
   events: readonly DispatchEvent[],
@@ -296,7 +325,8 @@ export function issueSummary(
   graph: readonly string[],
   linkBase: string | undefined,
   coverage: IssueCoverage | string,
-  agents?: LiveAgents
+  agents?: LiveAgents,
+  asOf?: string
 ): string {
   const asks = issue.open_asks ?? [];
   const labels = issue.labels ?? [];
@@ -321,12 +351,12 @@ export function issueSummary(
     `Link: ${linkFor(`/issues/${encodeURIComponent(issue.key)}`, linkBase)}`,
     `Status: ${issue.status}`,
     `Assignee: ${issue.assignee ?? "unassigned"}`,
-    `Claimed by: ${issue.claim === null ? "nobody" : claimText(issue.claim, agents, issue)}`,
+    `Claimed by: ${issue.claim === null ? "nobody" : claimText(issue.claim, agents, issue, asOf)}`,
     ...(issue.priority === null ? [] : [`Priority: P${issue.priority}`]),
     `Labels: ${labels.length === 0 ? "none" : labels.join(", ")}`,
-    componentsLine(issue.components),
+    componentsLine(issue.components, asOf),
     advancesLine(issue),
-    `Route: ${routeText(issue, agents?.titles)}`,
+    `Route: ${routeText(issue, agents?.titles, asOf)}`,
     repositoryLine(issue),
     `Progress: ${progressText(issue.progress, ", ") || "none"}`,
     ...(specApproval === undefined
@@ -377,6 +407,30 @@ export function logSummary(issue: IssueDetails, events: readonly DispatchEvent[]
   ].join("\n");
 }
 
+/**
+ * The head an event of a comment or an issue message reads with: the head of the body it
+ * carries, or, on a post its author deleted, the mark the read of the event carries in place of
+ * every body. A `comment.deleted` or `message.deleted` event carries no body at all, and so does
+ * every earlier event of a post once it is deleted, which is why the body is read for absence.
+ * An event of a post its author edited carries the words that event carried, which a later edit
+ * may have replaced: the post's own `created` event and every `edited` event but the last one
+ * carry words that are gone, and the newest `edited` event carries the words the post holds now.
+ * The read of the event stamps every event of such a post with the time of its last edit
+ * (`attachPostMarks`, `api/events.go`), so the line names that time and a reader can tell which
+ * it is meeting. A reader given stale words with no mark is the fault dispatch://INFRA-1523
+ * exists for.
+ *
+ * The payload is named in the reading a `DispatchEvent` carries, the one Dispatch writes, so
+ * its `deleted_by` is a `WrittenActor` and not the served row's `Actor`: a build with
+ * `exactOptionalPropertyTypes` takes neither reading for the other
+ * (`dispatch-api-spellings.test.ts`).
+ */
+function postEventHead(payload: CommentEventPayload | MessageEventPayload): string | undefined {
+  if (payload.deleted_at != null) return deletedMark(payload.deleted_at, payload.deleted_by);
+  if (payload.body === undefined) return undefined;
+  return withEditedMark(textHead(payload.body), payload.edited_at);
+}
+
 /** The head of the text an event carries, so a log reads without opening each item. */
 function eventHead(event: DispatchEvent): string | undefined {
   switch (event.type) {
@@ -400,11 +454,14 @@ function eventHead(event: DispatchEvent): string | undefined {
     case "comment.edited":
     case "comment.resolved":
     case "comment.reopened":
+    case "comment.deleted":
     case "suggestion.accepted":
     case "suggestion.rejected":
     case "message.created":
     case "message.answered":
-      return textHead(event.payload.body);
+    case "message.edited":
+    case "message.deleted":
+      return postEventHead(event.payload);
     case "artifact.version":
       return textHead(
         `${event.payload.name} v${event.payload.version.number}${event.payload.version.summary ? `: ${event.payload.version.summary}` : ""}`

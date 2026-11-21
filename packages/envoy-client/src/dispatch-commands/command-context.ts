@@ -1,6 +1,6 @@
 import type { Actor, ArtifactUploadResponse, CreateArtifactInput } from "@legion/contracts";
 import { type DispatchOrigin, defaultExec, resolveOrigin } from "../dispatch-cwd";
-import { DispatchWriteLandedError } from "../dispatch-http";
+import { type AsOfRead, DispatchWriteLandedError } from "../dispatch-http";
 import { shownPictures, textWithPictures } from "../dispatch-picture-tools";
 import { ToolInputError } from "../tool-input-errors";
 import {
@@ -28,16 +28,24 @@ function toolActor(origin: DispatchOrigin, input: ExecuteDispatchToolInput): Act
  * The context a command that acts for this session runs on, built once per call: the origin a
  * write is recorded against (a subprocess, which is why no command that answers without one
  * reaches this), the client every request goes through, the owner the call names with Dispatch's
- * own key for it, and the pictures helpers a write posts with.
+ * own key for it, and the pictures helpers a write posts with. A read command at a cut (`read`)
+ * resolves the owner and its documents as they stood at that cut.
  */
-export async function commandContext(session: SessionContext): Promise<CommandContext> {
+export async function commandContext(
+  session: SessionContext,
+  read?: AsOfRead
+): Promise<CommandContext> {
   const { input, ownerArguments, pictures } = session;
   const actor = toolActor(
     await resolveOrigin(input.env ?? process.env, input.exec ?? defaultExec, input.cwd),
     input
   );
   const client = session.newClient();
-  const { owner, documentOwner, resolveDocument } = await documentTargets(client, ownerArguments);
+  const { owner, documentOwner, resolveDocument } = await documentTargets(
+    client,
+    ownerArguments,
+    read
+  );
   // An external issue reference beside an issue ref is compared here, once Dispatch has resolved
   // it to the key the ref spells (`ownerConflictProblems` compares native keys before any request).
   const issueArgument = optionalString(input.args, "issue");

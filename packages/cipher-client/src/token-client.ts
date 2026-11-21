@@ -54,11 +54,14 @@ import {
 import {
   ACTOR_TOKEN_TYPE_MACHINE,
   EXCHANGE_CLIENT_ID,
+  FORM_AS_OF,
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
   FORM_PROJECTS,
+  FORM_SCOPE,
   FORM_SESSION,
   GRANT_TYPE_TOKEN_EXCHANGE,
+  HEADER_DPOP_HOLDER,
   SUBJECT_TOKEN_TYPE_GOOGLE,
   TOKEN_PATH,
   TOKEN_TYPE_DPOP,
@@ -213,6 +216,23 @@ export interface BrokerTokenClientOptions {
    * `launcher_credential.token_login` audit row, which the broker writes for every one of them.
    */
   readonly launcherCredential?: boolean | undefined;
+  /**
+   * The scope this trade asks for ({@link FORM_SCOPE}): `read` (`SCOPE_READ`) narrows the minted
+   * token to reading, on the identity the same trade would have had. Empty or absent asks for
+   * none and sends no parameter, which is the token every trade got before the parameter.
+   */
+  readonly scope?: string | undefined;
+  /** The cut a read trade asks for ({@link FORM_AS_OF}): an RFC 3339 time, sent as written. Empty
+   *  or absent sends no parameter. The broker refuses a cut beside any scope but `read`. */
+  readonly asOf?: string | undefined;
+  /**
+   * The key the minted token is bound to, where it is not {@link key}: a read trade whose proof
+   * key holds a launcher credential, as a person's box key does, sends a second proof of the same
+   * request signed with this key ({@link HEADER_DPOP_HOLDER}), and the broker binds the token to
+   * it. {@link BrokerTokenClient.key} is then this key, so every proof presented beside the token
+   * is signed with it, and the box key signs the trade alone.
+   */
+  readonly holderKey?: DpopKey | undefined;
   /** Overrides {@link DEFAULT_RENEW_BEFORE_MS}. Only a test shortens it. */
   readonly renewBeforeMs?: number | undefined;
   /** `Date.now` unless a test replaces it. */
@@ -277,11 +297,14 @@ export function requestInit(
 export class BrokerTokenClient {
   readonly #brokerUrl: string;
   readonly #key: DpopKey;
+  readonly #holderKey: DpopKey | undefined;
   readonly #subject: TokenSource;
   readonly #actor: TokenSource | undefined;
   readonly #session: string;
   readonly #projects: readonly string[];
   readonly #launcherCredential: boolean;
+  readonly #scope: string;
+  readonly #asOf: string;
   readonly #renewBeforeMs: number;
   readonly #now: () => number;
   readonly #attemptMs: number;
@@ -328,11 +351,14 @@ export class BrokerTokenClient {
     // carries no header of its own (`holdUrlUserinfo`).
     this.#brokerUrl = holdUrlUserinfo(brokerUrl);
     this.#key = options.key;
+    this.#holderKey = options.holderKey;
     this.#subject = options.subject;
     this.#actor = options.actor;
     this.#session = options.session ?? "";
     this.#projects = [...(options.projects ?? [])];
     this.#launcherCredential = options.launcherCredential ?? true;
+    this.#scope = options.scope ?? "";
+    this.#asOf = options.asOf ?? "";
     this.#renewBeforeMs = options.renewBeforeMs ?? DEFAULT_RENEW_BEFORE_MS;
     this.#now = options.now ?? Date.now;
     this.#attemptMs = options.attemptMs ?? TRADE_ATTEMPT_MS;
@@ -342,9 +368,11 @@ export class BrokerTokenClient {
     this.#random = options.random ?? Math.random;
   }
 
-  /** The key this client proves, whose public half the broker records. */
+  /** The key the tokens this client trades are bound to, whose public half the broker records:
+   *  the holder key where the client has one, else the key its trades prove. Every proof a caller
+   *  presents beside one of those tokens is signed with it. */
   get key(): DpopKey {
-    return this.#key;
+    return this.#holderKey ?? this.#key;
   }
 
   /** Names the identity traded, without naming a token. */
@@ -660,7 +688,8 @@ export class BrokerTokenClient {
   /**
    * One RFC 8693 exchange: the subject token this moment's source answers, the actor token where a
    * person is signing in, the session name, whether this trade declines the launcher credential
-   * its identity holds, and a DPoP proof of this client's key.
+   * its identity holds, the scope and the cut a read trade asks for, and a DPoP proof of this
+   * client's key, with a proof of its holder key beside it where it has one.
    *
    * `openid-client` makes the request and reads the answer — the grant type, the client id, the
    * form encoding, the endpoint and the shape of what came back — and the proof is signed by the
@@ -682,6 +711,10 @@ export class BrokerTokenClient {
     // Sent only when there is a list: a trade naming none reads exactly as one written before the
     // parameter existed.
     if (this.#projects.length > 0) form[FORM_PROJECTS] = this.#projects.join(" ");
+    // Each sent only when set: a trade that asks for neither reads exactly as one written before
+    // the parameters existed.
+    if (this.#scope !== "") form[FORM_SCOPE] = this.#scope;
+    if (this.#asOf !== "") form[FORM_AS_OF] = this.#asOf;
     if (!this.#launcherCredential) {
       // Sent only to decline: an absent parameter asks, so a broker that has never heard of this
       // parameter answers a client that does ask exactly as it always has.
@@ -759,10 +792,12 @@ export class BrokerTokenClient {
   }
 
   /**
-   * One request through the caller's fetch with a DPoP proof of this client's key, retried once
-   * when the broker answers `use_dpop_nonce` with a nonce to carry (RFC 9449 Section 8). The
-   * answer's own body is kept in `raw`, since `openid-client` lowercases `token_type` (RFC 6749
-   * makes it case-insensitive) while the corpus names the spelling the broker wrote.
+   * One request through the caller's fetch with a DPoP proof of this client's key, and a proof of
+   * the same request by its holder key where it has one ({@link HEADER_DPOP_HOLDER}), retried once
+   * when the broker answers `use_dpop_nonce` with a nonce to carry (RFC 9449 Section 8), which
+   * both proofs then carry. The answer's own body is kept in `raw`, since `openid-client`
+   * lowercases `token_type` (RFC 6749 makes it case-insensitive) while the corpus names the
+   * spelling the broker wrote.
    */
   async #send(
     url: string,
@@ -772,10 +807,11 @@ export class BrokerTokenClient {
   ): Promise<Response> {
     const send = async (): Promise<Response> => {
       const headers = new Headers(options.headers);
-      headers.set(
-        "DPoP",
-        await this.#key.proof({ method: options.method, url, nonce: this.#nonce })
-      );
+      const request = { method: options.method, url, nonce: this.#nonce };
+      headers.set("DPoP", await this.#key.proof(request));
+      if (this.#holderKey !== undefined) {
+        headers.set(HEADER_DPOP_HOLDER, await this.#holderKey.proof(request));
+      }
       return await this.#fetch(url, requestInit(options, signal, headers));
     };
     let answer = await send();

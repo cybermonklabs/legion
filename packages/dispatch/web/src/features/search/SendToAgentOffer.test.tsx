@@ -1,7 +1,7 @@
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import type { IssueClaimHolderState } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -138,10 +138,14 @@ async function typeWords(user: UserEvent): Promise<void> {
 }
 
 /** The writing cursor inside a block of the page behind the bar, as a reader writing in the
- *  document leaves it. The bar reads it on the render that opens it (`scopeAtCursor`), so this
- *  is put in place before `openBar`; it answers what that render will find, and the caller
- *  takes it off the page again. */
-function placeCaretInBlock(text: string): { readonly chip: string; readonly remove: () => void } {
+ *  document leaves it. The bar takes the block on the render that opens it (`blockAtCursor`), so
+ *  this is put in place before `openBar`; it answers what that render will find, and the caller
+ *  takes it off the page again. `setText` puts other words in the block, as the editor does. */
+function placeCaretInBlock(text: string): {
+  readonly chip: string;
+  readonly remove: () => void;
+  readonly setText: (text: string) => void;
+} {
   const editable = document.createElement("div");
   editable.setAttribute("contenteditable", "true");
   const block = document.createElement("p");
@@ -156,7 +160,13 @@ function placeCaretInBlock(text: string): { readonly chip: string; readonly remo
   const selection = window.getSelection();
   selection?.removeAllRanges();
   selection?.addRange(range);
-  return { chip: `the block “${text}”`, remove: () => editable.remove() };
+  return {
+    chip: `the block “${text}”`,
+    remove: () => editable.remove(),
+    setText: (words) => {
+      block.textContent = words;
+    },
+  };
 }
 
 /** Presses one key on the bar's box, which is where the two keys that move the chip act. */
@@ -290,6 +300,40 @@ test("Tab narrows the chip to the block, and the message names that block before
       body: `${issueKey}, ${block.chip}: ${words}`,
       delivery: "aside",
     });
+  } finally {
+    bar.restore();
+    block.remove();
+  }
+});
+
+// RM.7 of dispatch://INFRA-1523's surface census: the chip names the block by its text, and a
+// pending insert's delete takes the insert's words out of that block while the bar is open. The
+// chip reads the block's text from the editor each time it is drawn, and the message hands on the
+// text the chip draws, so neither keeps the words the block held when the bar opened.
+test("a block whose words change while the bar is open is named by its words now, in the chip and in the message", async () => {
+  const block = placeCaretInBlock("The sextant sights the horizon, as the insert said.");
+  const user = userEvent.setup();
+  const bar = openBar(sessionClaim, "live");
+  const left = "The sextant sights the horizon.";
+  try {
+    await pressOnBox(user, "Tab");
+    await typeWords(user);
+    expect(screen.getByTestId("search-scope").textContent).toContain(block.chip);
+
+    await act(async () => {
+      block.setText(left);
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("search-scope").textContent).toContain(`the block “${left}”`)
+    );
+    await user.click(await waitFor(() => screen.getByText(offerLabel)));
+
+    await waitFor(() => expect(bar.createAgentMessage).toHaveBeenCalled());
+    expect(bar.createAgentMessage.mock.calls[0]?.[1]).toEqual({
+      body: `${issueKey}, the block “${left}”: ${words}`,
+      delivery: "aside",
+    });
+    expect(document.body.textContent).not.toContain("as the insert said");
   } finally {
     bar.restore();
     block.remove();

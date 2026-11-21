@@ -1,5 +1,5 @@
 import { decodeBlockId, isIdPrefix } from "@legion/contracts";
-import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import { isCancelledError, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -72,10 +72,12 @@ import { DocumentReferences, useReferenceClick } from "./document-references";
 import type { EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
 import type { Highlight } from "./highlight";
+import { liveTextQueryOptions } from "./live-text-query";
 import {
   blockOffsets,
   blockPlacements as collectBlockPlacements,
   composerKindFor,
+  insertMarksIn,
   markPlacements,
   selectionBarKindFor,
 } from "./marks";
@@ -104,14 +106,6 @@ function wholeBlockId(root: HTMLElement, prefix: string): string | undefined {
 }
 
 const CONTROL_CHARACTERS = /\p{Cc}/gu;
-
-/** The live document's text as the server reads it now. A read of it decides whether the editor
- * may connect: the server answers `409 DOC_SCHEMA` for a stored tree outside the Proof schema. */
-export const liveTextQueryOptions = (artifactId: string) =>
-  queryOptions({
-    queryKey: ["artifact", artifactId, "text"],
-    queryFn: () => api.getArtifactText(artifactId),
-  });
 
 /** Why an admission left the live editor closed, from its own `/text` read: a tree outside the
  * Proof schema the page offers to repair from markdown, a stored history that cannot load the page
@@ -467,7 +461,6 @@ export function ProofDocument({
     method: "POST",
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });
-  const liveMarkdown = liveTextQuery.data?.markdown ?? "";
   const versionMarkdown =
     versionQuery.data !== undefined && "markdown" in versionQuery.data
       ? versionQuery.data.markdown
@@ -835,29 +828,39 @@ export function ProofDocument({
     // artifact event's invalidation, say - leaves a connected editor and its unsent edits alone.
     // A blocked admission waits for the next successful read of the text, which a repair upload
     // or a rebuild brings about, and is admitted again (`readmitRef`). An admission that found
-    // content this build cannot read yet reads the text again on its own timer instead.
-    const admit = () => {
-      const textRead = queryClient
+    // content this build cannot read yet reads the text again on its own timer instead. A pending
+    // insert's delete gives up a read of the text still out (`dropUnmarkedText`), since what it
+    // would land can hold the deleted words; that read decides nothing, and the admission reads
+    // again.
+    const readText = (): Promise<unknown> =>
+      queryClient
         .fetchQuery({ ...liveTextQueryOptions(artifact.id), staleTime: 0 })
-        .then(
-          () => undefined,
-          async (error: unknown) => {
-            if (isArtifactNotFound(error)) {
-              try {
-                const { deletePendingEdits } = await importWhenOnline(
-                  () => import("./pending-edits")
-                );
-                await deletePendingEdits(artifact.id);
-              } catch (deleteError) {
-                console.error(
-                  "Could not delete pending browser edits for a removed document",
-                  deleteError
-                );
-              }
-            }
-            return admissionBlock(error);
+        .catch((error: unknown) => {
+          if (mounted && isCancelledError(error)) {
+            return readText();
           }
-        );
+          throw error;
+        });
+    const admit = () => {
+      const textRead = readText().then(
+        () => undefined,
+        async (error: unknown) => {
+          if (isArtifactNotFound(error)) {
+            try {
+              const { deletePendingEdits } = await importWhenOnline(
+                () => import("./pending-edits")
+              );
+              await deletePendingEdits(artifact.id);
+            } catch (deleteError) {
+              console.error(
+                "Could not delete pending browser edits for a removed document",
+                deleteError
+              );
+            }
+          }
+          return admissionBlock(error);
+        }
+      );
       void Promise.all([textRead, loadTransport()])
         .then(([block, connect]) => {
           if (!mounted) {
@@ -949,18 +952,28 @@ export function ProofDocument({
                   switch (action.kind) {
                     case "comment":
                     case "suggest":
-                    case "ask":
+                    case "ask": {
                       // The margin owns the mark from here: it removes it when the composer ends
-                      // unsaved and retypes it when the composer's kind changes.
+                      // unsaved and retypes it when the composer's kind changes. The anchor keeps
+                      // the pending inserts the selected words lie in, whose comment's delete
+                      // takes them out of the document (`ComposerAnchor.insertMarks`): an empty
+                      // list where they lie in none, and none where the editor holds no document
+                      // to read them from, which leaves the words to a read of the text.
+                      const doc = editor?.view.state.doc;
                       return marginRef.current.composeForMark({
                         anchor: {
                           artifact: artifact.id,
+                          insertMarks:
+                            doc === undefined
+                              ? undefined
+                              : insertMarksIn(doc, action.from, action.to),
                           mark_id: action.markId,
                           placement: action.placement ?? undefined,
                           quote: action.quote,
                         },
                         kind: composerKindFor(action.kind),
                       });
+                    }
                     case "quote-comment": {
                       // A closed issue's document takes no mark: the comment names its text by
                       // quote, and the server writes its mark where the reader selected. The bar
@@ -969,7 +982,7 @@ export function ProofDocument({
                       const doc = editor?.view.state.doc;
                       const anchor =
                         doc === undefined ? undefined : quoteAnchor(doc, action.from, action.to);
-                      if (anchor === undefined) {
+                      if (doc === undefined || anchor === undefined) {
                         setQuoteRefusal(
                           "This selection holds no text to quote. Select text to comment on it."
                         );
@@ -977,7 +990,11 @@ export function ProofDocument({
                       }
                       setQuoteRefusal(undefined);
                       return marginRef.current.composeForMark({
-                        anchor: { artifact: artifact.id, ...anchor },
+                        anchor: {
+                          artifact: artifact.id,
+                          ...anchor,
+                          insertMarks: insertMarksIn(doc, action.from, action.to),
+                        },
                         kind: "comment",
                       });
                     }
@@ -1323,8 +1340,12 @@ export function ProofDocument({
         </section>
       ) : versionMarkdown === undefined ? (
         <p>Loading version…</p>
+      ) : showDiff && liveTextQuery.data !== undefined ? (
+        <ChangeView after={liveTextQuery.data.markdown} before={versionMarkdown} />
+      ) : showDiff && liveTextQuery.isError ? (
+        <p>Could not load the current version to compare.</p>
       ) : showDiff ? (
-        <ChangeView after={liveMarkdown} before={versionMarkdown} />
+        <p>Loading the current version…</p>
       ) : (
         <div data-testid="version-view">
           <VersionView

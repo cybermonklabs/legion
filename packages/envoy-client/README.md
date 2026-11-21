@@ -780,16 +780,28 @@ deadline ended it"). A write Dispatch
 made whose answer is gone is a `DispatchWriteLandedError` (`code`, an `IdempotencyLandedCode`, and
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
-answer larger than Dispatch keeps (`answerNotKept`, shared with the page). It is no refusal and no
-`DispatchServiceError`, and it is never asked again. Its message is the one line the session
-reads: the method and URL were made, why the answer is gone, and to read what it made back with
-`dispatch read` or the matching list. The `dispatch` command exits 0 on one and records
-`landed_without_answer: <code>` in its ledger entry. A step before the
+answer Dispatch gives no copy of: one larger than the 1 MiB a key keeps, or a success that holds a
+comment or a message that was deleted, or a document version name a delete replaced, or a
+related-item hit for a document in which a comment's insert suggestion, deleted since, was made at
+any time, so it may hold that suggestion's words
+(`answerNotKept`, shared with the page; `IDEMPOTENCY_ANSWER_NOT_KEPT` in `@legion/contracts`). It
+is no refusal and no `DispatchServiceError`, and it is never asked again. Its message is the one
+line the session reads: the method and URL were made, why the answer is gone, and to read what it
+made back with `dispatch read` or the matching list. The `dispatch` command exits 0 on one and
+records `landed_without_answer: <code>` in its ledger entry. A step before the
 command's own write that lands this way fails the command (exit 1) with that line and what it
 means: a picture upload (nothing else was written: run the call again, which uploads it as its
 next version), or the closing reason of `issue-update --status done` (the close was not sent: read
 the issue's messages for the reason, then close with one that points at it). The close's own
-`PATCH` landing this way is the command's write, and exits 0.
+`PATCH` landing this way is the command's write, and exits 0. A `POST` that writes nothing
+(`markdownRoundTrip`, `related`, `dryRunResult`) made nothing either, so that replayed 2xx is no
+landing: the client asks the call once more under a new key, which runs it afresh, and a second
+such answer is a `DispatchAnswerNotKeptError` (`code` `ANSWER_NOT_KEPT`, `status`), no
+`DispatchServiceError`. Its message says the call wrote nothing, that Dispatch kept no copy of its
+answer, and to run the command again, which asks under a new key: `dispatch related` and a
+`dispatch result --dry-run` exit 1 on one, and `dispatch artifact` refuses the upload its
+stored-text check could not run, saying to send it again. A replayed refusal is the refusal
+Dispatch first gave, thrown as any other.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
@@ -906,7 +918,8 @@ trades that person, as the Go client does:
   that is no list fails the call naming the variable. The machine's own trade names no project.
 
 Dispatch gives the token that names a person the `person` and `approve` scopes, so the session
-writes as that person.
+writes as that person. A read trade's token (`DISPATCH_TOKEN_BROKER_READ`, below) holds `person`
+alone and writes nothing.
 
 The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
 `AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
@@ -966,13 +979,14 @@ one that traded at the broker as the machine. A session that used a bearer did n
 broker, so you can resume it.
 
 Each person's trade costs one refresh at the issuer and one `launcher_credential.token_login`
-audit row at the broker. The broker writes that row for every person's trade, and it lets no
-person's trade decline the launcher credential (`personDeclinesNothing`). The client also reads
-the issuer's discovery document once. A broker access token lasts `BROKER_ACCESS_TOKEN_SECONDS`
-(900 seconds by default), and the client trades again five minutes before the token lapses
-(`DEFAULT_RENEW_BEFORE_MS`). So with the broker's default, a long-lived session that keeps
-calling trades about every ten minutes. Every `dispatch` command, Claude Code hook and
-`envoy-send` is a process of its own, so each one trades once.
+audit row at the broker. The broker writes that row for every person's ordinary trade, and it lets
+no such trade decline the launcher credential (`personDeclinesNothing`). A person's read trade
+declines it and writes no such row. The client also reads the issuer's discovery document once.
+A broker access token lasts `BROKER_ACCESS_TOKEN_SECONDS` (900 seconds by default), and the client
+trades again five minutes before the token lapses (`DEFAULT_RENEW_BEFORE_MS`). So with the
+broker's default, a long-lived session that keeps calling trades about every ten minutes. Every
+`dispatch` command, Claude Code hook and `envoy-send` is a process of its own, so each one trades
+once.
 
 A revoke of the sign-in on Dispatch ends the tokens of that sign-in, and the next trade is
 refused with words that name `agent-secrets login`. The revoke does not end a personal agent
@@ -990,6 +1004,39 @@ person's envoy.json holds their `dispatch.token`. Any other value of the variabl
 naming it: `DISPATCH_TOKEN_BROKER is "<value>" and takes 1 …`. The start also sets
 `PERSON_SIGNIN_TRADE=off` for the controller, so its broker route trades the machine and never
 the operator's sign-in (above).
+
+`DISPATCH_TOKEN_BROKER_READ=1` narrows the trade of Dispatch's credential to reading. The trade
+asks the broker for the scope `read`, and the token keeps the identity the same trade would have
+had and writes nothing. `DISPATCH_TOKEN_BROKER_AS_OF=<an RFC 3339 time>` beside it adds a cut
+(`as_of`), the past time the token reads at. Either setting takes the broker route as
+`DISPATCH_TOKEN_BROKER=1` does and reads no bearer, so a shell that also holds `DISPATCH_TOKEN`
+never writes with it. `DISPATCH_TOKEN_BROKER_READ` takes `1` alone. A cut without
+`DISPATCH_TOKEN_BROKER_READ=1`, a cut that is not an RFC 3339 time with at most six fractional
+digits, and a cut at the zero time (`0001-01-01T00:00:00Z`, under any offset), which the broker
+refuses since it would read as no cut, turn Dispatch off with an error that names the setting. No
+such error quotes the value.
+
+The two settings narrow the Dispatch trade alone (`brokerCredential`'s `read`). The Dispatch
+credential gets a broker client of its own, keyed by the session, the broker variables and the two
+settings. The Envoy listener and NATS keep the session's shared client, which asks for no scope,
+since both refuse a read-only token and a session's inbound messages must keep working. A
+person's read trade sends no `launcher_credential`, which the broker reads as declined. It makes a
+P-256 key of its own for the process and sends it as the holder key (`DPoP-Holder`) beside the box
+key's DPoP proof. That key signs every proof Dispatch sees, so the box key signs the trade alone.
+The machine's own trade already proves a key the process made, which holds no launcher credential,
+so it sends no holder key. A person's read trade is refused once the sign-in's launcher credential
+lapses, until one ordinary trade renews it (the token files, below).
+
+Under a read-only token, a write prints Dispatch's refusal (`READ_ONLY_TOKEN: …`) and exits 1.
+`dispatch whoami` says that the credential may only read, and names its cut where it has one.
+Under a cut, each of the seven read commands reads Dispatch as of the cut, and the cut replaces
+any `--as-of` the call gives (Reads at a past time, below). Any other read of a route that holds
+no past answer prints Dispatch's refusal (`AS_OF_TOKEN_NOT_SERVED: …`) and exits 1.
+`dispatch issues` is not one of the seven: it reads no whoami first, sends no `as_of` and checks
+no `Dispatch-As-Of`. `GET /api/v1/issues` answers a token that carries a cut as of that cut, so
+under such a token `dispatch issues` lists the issues as they stood at the cut, with no
+`Left out at` line. A line of an issue whose route the listing leaves out names the route and says
+that the listing does not say whether it reaches anyone.
 
 ### The `dispatch` command
 
@@ -1047,9 +1094,100 @@ at most once a day.
 `empty`, `text` or `json`, from `src/stand-in-gateway.ts`) on `--port` (ephemeral by default) and
 prints its URL, for proving what a command shows when a gateway, not Dispatch, answers.
 
+### Reads at a past time
+
+`read`, `doc-read`, `search`, `answers`, `open-asks`, `inbox` and `results` take `--as-of <text>`,
+an RFC 3339 time such as `2026-11-10T12:00:00Z`. The flag comes from the `as_of` field of each of
+the seven specs (`packages/contracts/src/dispatch-tools.ts`), so `--as-of-file` and the help come
+with it. Each of the seven reads `GET /api/v1/whoami` before any other request, with or without
+`--as-of` (`readAtCut`, `dispatch-commands/as-of.ts`). A token whose answer names a cut reads at
+that cut, and its cut replaces any `--as-of` the call gives.
+
+At a cut the command sends `as_of` to each route it calls that answers it (`AsOfRead`, which
+`DispatchClient`'s `#url` adds as `as_of`). It calls no route that holds no history: the reference
+graph (`GET /api/v1/references`), an issue's references and coverage, whether a session runs
+(`GET /api/v1/agents`), and the Inbox's unread threads (`GET /api/v1/me/replies`) and credential
+requests. A block read (`--ref …#b-…`) reads its block from the document, the ask, the comment or
+the message at the cut. `search` sends a search at a cut to `GET /api/v1/search/results`, because
+`everyBuildReadsSearch` sends there each member beyond the ones every build reads.
+
+At a cut the first line of the output is always `Left out at <cut>: …`. It names each part that
+the command did not read, and each field that an answer named in `Dispatch-As-Of-Absent`, in words
+(`absentFieldWords`), or it says `nothing`. `ABSENT_FIELD_WORDS` holds words for each member that
+`asof.AbsentFields` (`packages/envoy/internal/dispatch/asof/absent.go`) names, and a test of
+`dispatch-as-of.test.ts` reads that file and fails on a member with no words and on words for no
+member. A member that a newer Dispatch names and this table does not is named by its JSON
+Pointer. Every age and window counts from the cut. `answers` lists what people wrote in the 72
+hours before the cut, and says so. `open-asks` counts each age from the cut. `inbox` counts its
+bands and ages from the cut, and leaves out its `Later` band, because no event records a snooze.
+`read` prints no present-tense route or claim line for a field that the answer left out.
+
+A Dispatch older than `as_of` ignores the parameter and answers the present. So the command uses
+nothing of an answer to a call that sent `as_of` with no `Dispatch-As-Of` header, and exits 1
+naming the route (`AsOfNotAnswered`). `results --at` with a cut is refused with exit 2: beside
+`--as-of` before any request, and under a token that carries a cut after the whoami read alone.
+`--at` compares each check with one commit through GitHub now, and a read at a cut reads nothing
+from GitHub. Dispatch's refusals of a read at a cut print in words before Dispatch's own message,
+and keep their code and status: `AS_OF_NOT_SERVED`, `INVALID_AS_OF`, `AS_OF_TOKEN_NOT_SERVED`, and
+`AS_OF_SEARCH_NOT_FILLED`, which names the time that the keyword table reaches where Dispatch
+sends it (`Dispatch-As-Of-Filled-Through`), and otherwise says that the table reaches no time yet.
+
+### The `dispatch` command's token files
+
+A copy of the command can use a broker token that was traded elsewhere, so the copy holds no
+subject token and trades nothing. Two settings name two files (`file-token-credential.ts`):
+
+- `DISPATCH_BROKER_TOKEN_FILE` names a file that holds one broker access token and nothing else.
+  Whitespace around it is trimmed.
+- `DISPATCH_BROKER_DPOP_KEY_FILE` names a file that holds the P-256 private key the token is bound
+  to, as one PKCS#8 PEM block (a block labelled `PRIVATE KEY`, as
+  `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256` writes it). A SEC1
+  (`EC PRIVATE KEY`) or PKCS#1 block is refused, though the runtime would read it.
+
+The key is made for the copy that holds the file. It is never a sign-in's box key, it signs no
+launcher proof and holds no launcher credential, and no token is bound to it but the read-only
+tokens traded for that copy. The broker's read trade binds such a key and refuses a key that a
+live launcher credential is bound to. Keeping every other token off the key is the rule of the
+driver that trades for the copy.
+
+With both set, the command's one Dispatch credential presents `Authorization: DPoP <token>` and a
+proof signed with the key, naming the request's method, its URL and the token (`ath`). It sends
+them to `DISPATCH_URL` alone, and refuses a request to any other origin. `DISPATCH_URL` must be
+Dispatch's public origin, because Dispatch checks each proof's URL against it. The command reads
+both files again before each request and keeps neither, so the driver renews the token by writing
+a new file and renaming it over the old one, and keeps the key. The Envoy listener never gets the
+token: it takes only its own settings (`ENVOY_TOKEN_FILE`, `ENVOY_TOKEN`, `envoy.token`), and the
+command makes no trade at the broker for Dispatch or for any other service.
+
+A person's read trade does not extend the launcher credential of the person's sign-in. Once that
+credential lapses, the broker refuses the driver's read trades and names the cure: one ordinary
+trade of the person, which `agent-secrets` makes. The read tokens traded under the lapsed
+credential end with it.
+
+Each proof carries the process's own clock in `iat`, and Dispatch takes a proof only within one
+minute of its own time, so the command must run on the real clock.
+
+The command refuses to start, exits 2 and names every setting at fault, when one of the two
+settings is set alone, when `DISPATCH_URL` is not set, or when any of these is set beside them:
+`DISPATCH_TOKEN_BROKER`, `DISPATCH_TOKEN_BROKER_READ`, `DISPATCH_TOKEN_BROKER_AS_OF`,
+`DISPATCH_TOKEN`, `DISPATCH_TOKEN_FILE`, `AGENT_SECRETS_URL`, `AGENT_SECRETS_MACHINE_IDENTITY`, a
+`dispatch.token` in the chosen `envoy.json`, or a `dispatch.token` in the checkout's
+`.envoy/envoy.json`. The checkout's file is read for this check even with `DISPATCH_URL` set, and
+one that cannot be read is refused too, since whether it holds a token cannot be told. A `!`
+command in either `dispatch.token` is found by the field's presence and never run. A file that
+cannot be read, a token file that is empty or blank, and a key that is not P-256 in one PKCS#8 PEM
+block each fail the request with an error that names the setting and the file and quotes none of
+its bytes. Under a read-only token, a write prints Dispatch's refusal (`READ_ONLY_TOKEN: …`) and
+exits 1.
+
+Only the `dispatch` command reads the two settings: it passes `tokenFiles` to
+`sessionDispatchSettings`. Every other caller of `dispatchSettings` that finds either set, each
+plugin and its hooks included (claude-envoy, its Codex server, pi-envoy, pi-legion), turns Dispatch
+off with an error that says so, rather than writing with another credential beside them.
+
 ## Command specs
 
-`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-seven
+`@legion/contracts` `src/dispatch-tools.ts` is the single source for the
 Dispatch specs behind the `dispatch` command: each one's name, description, field schemas
 and example. `dispatch-command.ts` derives the command and its flags from them, and no host
 adds aliases or descriptions of its own.

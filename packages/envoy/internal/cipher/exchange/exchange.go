@@ -429,7 +429,7 @@ type AccountEntry struct {
 // token they are minted holds the OAuth scope oauthwire.ScopeRead and the project scope
 // ProjectScopeNone, names Service and Session, and names no person and no project. Every field is
 // required. A resource server accepts such a token only where it asks to, and Dispatch serves it
-// on the routes its read list names and nowhere else.
+// on every GET route it classes as a read and nowhere else.
 //
 // It is a list of its own, BROKER_EXCHANGE_READ_ACCOUNTS, rather than a kind of AccountEntry, so
 // that a broker of a build that predates it reads none of its entries and mints such an account

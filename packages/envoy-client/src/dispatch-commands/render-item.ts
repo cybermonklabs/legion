@@ -1,4 +1,6 @@
 import type {
+  Actor,
+  AskOption,
   AskRead,
   AskWithTrees,
   BlockPath,
@@ -9,12 +11,14 @@ import type {
   MessageRead,
   OpenAsk,
   OpenAsksResponse,
+  PostHistoryRead,
 } from "@legion/contracts";
-import { actorActText, encodeBlockId } from "@legion/contracts";
-import { actorText } from "../actor-text";
+import { actorActText, encodeBlockId, POST_HISTORY_PAGE_LIMIT } from "@legion/contracts";
+import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
-import type { DispatchClient } from "../dispatch-http";
+import type { AsOfRead, DispatchClient } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
+import { leftOutAt } from "./as-of";
 import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
 import { linkFor } from "./links";
@@ -27,14 +31,15 @@ import { edgeLine, graphSectionLines } from "./render-graph";
  * edge stays under the ask, the ones at its question among them: no read carries the question's
  * part id. An ask whose parts carry no id — an older server, or an ask the index has not reached,
  * whose revision is 0 — reads as it did before the parts: its options bare, every edge under the
- * ask.
+ * ask. At a cut (`asOf`) a reply's body the records at the cut cannot give is left out.
  */
 export function askSummary(
   { ask, replies, answers }: AskRead,
   askRef: string,
   pictures: readonly string[],
   incoming: GraphReferences | string,
-  outgoing: GraphReferences | string
+  outgoing: GraphReferences | string,
+  asOf?: string
 ): string {
   const answer = ask.answer;
   const earlierAnswers = (answers ?? []).slice(0, -1);
@@ -42,7 +47,7 @@ export function askSummary(
   const partRef = (id: string) => `${askRef}#b-${encodeBlockId(id)}`;
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply, asOf),
   ]);
   const resolutionWords = dispatchWordsText(ask.resolution?.dispatch_words);
   return [
@@ -52,7 +57,7 @@ export function askSummary(
     ...((ask.options ?? []).length === 0
       ? ["- none"]
       : (ask.options ?? []).flatMap((option) => [
-          `- ${option.label}${option.description ? ` — ${option.description}` : ""}${option.id === undefined ? "" : ` (${partRef(option.id)})`}`,
+          `- ${optionText(option)}${option.id === undefined ? "" : ` (${partRef(option.id)})`}`,
           ...partReferenceLines(parts.at, option.id),
         ])),
     `State: ${ask.state}`,
@@ -95,6 +100,12 @@ export function askSummary(
     ...pictures,
     ...graphSectionLines(parts.rest, outgoing),
   ].join("\n");
+}
+
+/** An ask option as every read names it: its label, and its description after a dash where it
+ *  has one. */
+export function optionText(option: Pick<AskOption, "label" | "description">): string {
+  return `${option.label}${option.description ? ` — ${option.description}` : ""}`;
 }
 
 /** An ask's inbound edges split by the part each points at: `at` holds the edges at one of its
@@ -173,18 +184,22 @@ export function waitsOnPerson(ask: { readonly waiting_on_person?: string }): str
  *  is the ask card's own, `asked of`, rather than `waiting on`, because a row under `Waiting on
  *  agent (N):` waits on the agent - the next move there is the agent's, and naming the person
  *  must not claim otherwise. A Dispatch older than that rule answers no person, and the row
- *  then says nobody rather than printing an empty name (`waitsOnPerson`). */
-function openAskLine(ask: OpenAsk, linkBase: string | undefined): string {
+ *  then says nobody rather than printing an empty name (`waitsOnPerson`). At a cut (`asOf`) a
+ *  person that rests on a project default the records cannot give is left out. */
+function openAskLine(ask: OpenAsk, linkBase: string | undefined, asOf: string | undefined): string {
   const priority = ask.priority === null ? "" : `P${ask.priority} · `;
-  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${waitsOnPerson(ask) ?? "nobody"} · ${ask.question} · ${linkFor(ask.ref, linkBase)}`;
+  const person = waitsOnPerson(ask) ?? (asOf === undefined ? "nobody" : `(${leftOutAt(asOf)})`);
+  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${person} · ${ask.question} · ${linkFor(ask.ref, linkBase)}`;
 }
 
 /** `dispatch open-asks` as text, each ask linked against `linkBase`, the base `linkBaseOf`
  *  answers (the command's own, or the Claude Code session hook's), or printed as its
- *  `dispatch://` reference where there is none (`linkFor`). */
+ *  `dispatch://` reference where there is none (`linkFor`). Each age is the server's, counted
+ *  from the cut (`asOf`) for a read at one. */
 export function formatOpenAsksSummary(
   response: OpenAsksResponse,
-  linkBase: string | undefined
+  linkBase: string | undefined,
+  asOf?: string
 ): string {
   const scope = "active open asks you authored on open issues and project documents";
   if (response.count === 0) {
@@ -196,28 +211,84 @@ export function formatOpenAsksSummary(
     `${response.count} unanswered ${response.count === 1 ? "ask" : "asks"} you authored on active issues and project documents.`,
     "",
     `Waiting on human (${waitingOnHuman.length}):`,
-    ...waitingOnHuman.map((ask) => openAskLine(ask, linkBase)),
+    ...waitingOnHuman.map((ask) => openAskLine(ask, linkBase, asOf)),
     "",
     `Waiting on agent (${waitingOnAgent.length}):`,
-    ...waitingOnAgent.map((ask) => openAskLine(ask, linkBase)),
+    ...waitingOnAgent.map((ask) => openAskLine(ask, linkBase, asOf)),
   ].join("\n");
 }
+/** A post as a read prints it: the deleted mark alone for a withdrawn post, else the body with
+ *  the time of the last edit above it where the author replaced it. At a cut (`asOf`) a body the
+ *  records at the cut cannot give is left out. */
+function postBodyLines(
+  post: {
+    readonly body: string;
+    readonly edited_at?: string | null;
+    readonly deleted_at?: string | null;
+    readonly deleted_by?: Actor | null;
+  },
+  asOf?: string
+): string[] {
+  if (post.deleted_at != null) return [deletedMark(post.deleted_at, post.deleted_by)];
+  // A read at a cut leaves out the body of a post that was edited since and cut in its event.
+  const body: string | undefined = post.body;
+  const text = body === undefined && asOf !== undefined ? leftOutAt(asOf) : body;
+  return [...(post.edited_at == null ? [] : [`Edited: ${post.edited_at}`]), `Body: ${text}`];
+}
+
+/**
+ * What `dispatch read --history` prints: the post's history entries, newest first, each under
+ * the time of its write and the actor that made it, and of a standing post with the body an
+ * edit replaced. A post nobody edited or deleted lists none. No read of a deleted post gives any
+ * part of its body, so its list carries the deleted mark and each entry's time and actor. Dispatch answers one page, so a full page
+ * (`POST_HISTORY_PAGE_LIMIT` rows, from `@legion/contracts`, which the server's `postHistory`
+ * reads its page at as `contracts.PostHistoryPageLimit`) ends with the route that reads the rows
+ * before its oldest time, `?before=` that time: this command has no flag that reads them.
+ */
+export function postHistorySummary(
+  kind: "Comment" | "Message",
+  ref: string,
+  id: string,
+  read: PostHistoryRead
+): string {
+  const entries = read.entries ?? [];
+  const deleted = read.deleted_at != null;
+  const oldest = entries.at(-1);
+  const route = `/api/v1/${kind === "Comment" ? "comments" : "messages"}/${id}/history`;
+  return [
+    `${kind} history: ${ref}`,
+    ...(read.deleted_at == null ? [] : [deletedMark(read.deleted_at, read.deleted_by)]),
+    ...(entries.length === 0
+      ? ["- none"]
+      : entries.flatMap((entry) => [
+          `${entry.edited_at} · ${actorText(entry.edited_by)}`,
+          ...(deleted ? [] : [`Body: ${entry.body}`]),
+        ])),
+    ...(entries.length < POST_HISTORY_PAGE_LIMIT || oldest === undefined
+      ? []
+      : [
+          `This is the newest page, and a page holds ${POST_HISTORY_PAGE_LIMIT} rows: GET ${route}?before=${oldest.edited_at} reads any older rows.`,
+        ]),
+  ].join("\n");
+}
+
 export function commentSummary(
   { comment, replies }: CommentRead,
-  graph: readonly string[]
+  graph: readonly string[],
+  asOf?: string
 ): string {
   const root = [
     `${comment.id} · ${actorText(comment.author)}`,
     ...anchorLines(comment),
-    ...replyBlockLines(comment),
-    `Body: ${comment.body}`,
+    ...replyBlockLines(comment, asOf),
+    ...postBodyLines(comment, asOf),
   ];
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     ...anchorLines(reply),
-    ...replyBlockLines(reply),
+    ...replyBlockLines(reply, asOf),
     ...(reply.answers != null && reply.answers !== comment.id ? [`Answers: ${reply.answers}`] : []),
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply, asOf),
   ]);
   return [
     "Comment:",
@@ -228,15 +299,34 @@ export function commentSummary(
   ].join("\n");
 }
 
-/** The block of its parent a reply answers: its id and the head of its text, or that no current
- *  revision of the parent holds it. A comment or message that answers no block prints nothing. */
-function replyBlockLines(record: Pick<Comment, "reply_block">): string[] {
+/** The block of its parent a reply answers: its id and the head of its text, that no current
+ *  revision of the parent holds it, or, where the parent is a post its author deleted, the
+ *  deleted line every read prints for one (`deletedMark`) in place of the text the delete
+ *  cleared. Where the parent stands and its author edited it (`edited_at`), the line ends with
+ *  the mark every line prints for an edited post (`editedMark`): the head is of the parent's
+ *  words as they stand, and a read of the reply does not always print the parent's own
+ *  `Edited:` line beside it (a comment's or message's read answers the post named and its
+ *  replies, never the post it quotes). A comment or message that answers no block prints
+ *  nothing. At a cut (`asOf`), whether the block was removed is left out where no event records
+ *  it, and so is the block's text: the line then names the block alone. */
+function replyBlockLines(record: Pick<Comment, "reply_block">, asOf: string | undefined): string[] {
   const block = record.reply_block;
   if (block === undefined || block === null) return [];
+  if (block.deleted_at != null) {
+    return [
+      `Re: block ${block.block_id} (parent deleted): ${deletedMark(block.deleted_at, block.deleted_by)}`,
+    ];
+  }
+  const removed: boolean | undefined = block.removed;
+  if (removed === true)
+    return [withEditedMark(`Re: block ${block.block_id} (removed)`, block.edited_at)];
+  const head =
+    removed === undefined && asOf !== undefined
+      ? `Re: block ${block.block_id} (whether it was removed is ${leftOutAt(asOf)})`
+      : `Re: block ${block.block_id}`;
+  const text: string | undefined = block.text;
   return [
-    block.removed
-      ? `Re: block ${block.block_id} (removed)`
-      : `Re: block ${block.block_id}: ${textHead(block.text)}`,
+    withEditedMark(text === undefined ? head : `${head}: ${textHead(text)}`, block.edited_at),
   ];
 }
 
@@ -281,17 +371,18 @@ export function positionText(block: BlockPath): string {
 
 export function messageSummary(
   { message, replies }: MessageRead,
-  graph: readonly string[]
+  graph: readonly string[],
+  asOf?: string
 ): string {
   const root = [
     `${message.id} · ${actorText(message.author)}`,
-    ...replyBlockLines(message),
-    `Body: ${message.body}`,
+    ...replyBlockLines(message, asOf),
+    ...postBodyLines(message, asOf),
   ];
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
-    ...replyBlockLines(reply),
-    `Body: ${reply.body}`,
+    ...replyBlockLines(reply, asOf),
+    ...postBodyLines(reply, asOf),
   ]);
   return [
     "Message:",
@@ -306,19 +397,21 @@ export function messageSummary(
  *  with its question and every reply under it (a comment whose `ask_id` names the ask), then each
  *  open comment thread with its root and every reply in order. A reply carries no anchor, so the
  *  threads are read from the owner's comments unfiltered and grouped by their ask or root. A
- *  resolved or answered ask and a resolved thread are not printed, nor are their replies. */
+ *  resolved or answered ask and a resolved thread are not printed, nor are their replies. At
+ *  `read`'s cut, the threads as they stood then. */
 export async function openAnchoredThreads(
   client: DispatchClient,
-  resolved: ResolvedArtifact
+  resolved: ResolvedArtifact,
+  read: AsOfRead = {}
 ): Promise<string[]> {
   const asksPromise =
     resolved.owner.kind === "project"
-      ? client.getArtifactAsks(resolved.artifact.id)
+      ? client.getArtifactAsks(resolved.artifact.id, undefined, read)
       : Promise.resolve(resolved.issue?.open_asks ?? []);
   const commentsPromise =
     resolved.owner.kind === "project"
-      ? client.getArtifactComments(resolved.artifact.id)
-      : client.getComments(resolved.issue?.key ?? "");
+      ? client.getArtifactComments(resolved.artifact.id, read)
+      : client.getComments(resolved.issue?.key ?? "", read);
   const commentsResultPromise = commentsPromise.then(
     (value) => ({ status: "fulfilled" as const, value }),
     (reason) => ({ status: "rejected" as const, reason })
@@ -342,7 +435,7 @@ export async function openAnchoredThreads(
       `ask ${ask.id} · ${actorText(ask.author)} · ${ask.created_at}`,
       ...anchorLines(ask),
       `Question: ${ask.question}`,
-      ...threadReplyLines(askReplies.get(ask.id) ?? []),
+      ...threadReplyLines(askReplies.get(ask.id) ?? [], read.asOf),
     ].join("\n")
   );
   const byId = new Map(comments.map((comment) => [comment.id, comment]));
@@ -362,18 +455,18 @@ export async function openAnchoredThreads(
     [
       `comment ${root.id} · ${actorText(root.author)} · ${root.created_at}`,
       ...anchorLines(root),
-      `Body: ${root.body}`,
-      ...threadReplyLines(replies.get(root.id) ?? []),
+      ...postBodyLines(root, read.asOf),
+      ...threadReplyLines(replies.get(root.id) ?? [], read.asOf),
     ].join("\n")
   );
   return [...askThreads, ...commentThreads];
 }
 
 /** A thread's replies as dispatch_doc_read prints them under their ask or root comment. */
-function threadReplyLines(replies: readonly Comment[]): string[] {
+function threadReplyLines(replies: readonly Comment[], asOf: string | undefined): string[] {
   return replies.flatMap((reply) => [
     `reply ${reply.id} · ${actorText(reply.author)} · ${reply.created_at}`,
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply, asOf),
   ]);
 }
 

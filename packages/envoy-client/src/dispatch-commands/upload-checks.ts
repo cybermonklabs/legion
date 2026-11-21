@@ -1,6 +1,7 @@
 import type { Artifact } from "@legion/contracts";
 import { ARTIFACT_NAME_EXISTS_RULE, PATH_KEEPS_BYTES, pathKeepsBytesOf } from "@legion/contracts";
 import { actorText } from "../actor-text";
+import { DispatchAnswerNotKeptError } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { dispatchAnswered } from "./failures";
 
@@ -124,8 +125,15 @@ export function storedTextProblem(given: string, stored: string, name: string): 
  * through, so that refusal names what to do instead of saying to send the upload again: the
  * text is past what the check reads, and a name whose extension keeps the bytes has `--path`,
  * which stores the file and asks this route nothing.
+ *
+ * The round trip writes nothing, so where Dispatch kept no copy of its answer under either of the
+ * two keys the client asks it under (`DispatchAnswerNotKeptError`), nothing was made either: the
+ * refusal says so, and that sending the upload again asks it afresh.
  */
 export function storedTextCheckFailed(error: unknown, name: string): string {
+  if (error instanceof DispatchAnswerNotKeptError) {
+    return `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip wrote nothing, and Dispatch kept no copy of its answer (${error.code}). Send the upload again, which asks it under a new key.`;
+  }
   const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with ${messageFor(error)}.`;
   if (!dispatchAnswered(error, 413)) {
     return `${failure} Send the upload again once that call is answered.`;

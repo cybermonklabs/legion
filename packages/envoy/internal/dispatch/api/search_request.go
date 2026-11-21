@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // searchParameters is one validated search: the words, the filters every leg of it is narrowed
@@ -38,6 +39,10 @@ import (
 // reading is text read as the words a person wrote and the operators around them
 // (readSearchQuery), taken once by whoever builds the parameters and handed to every reader of
 // it through queryReading.
+//
+// versions is the keyword table at the cut of a search at a past time (store.TextVersionsAt), and
+// nil for a search of the present: the search then runs the statements at the cut
+// (searchAsOfQuery, searchAsOfMeaningQuery) and never broadens (runSearch).
 type searchParameters struct {
 	text          string
 	project       string
@@ -53,6 +58,7 @@ type searchParameters struct {
 	broaden       []string
 	excluded      string
 	reading       *searchReading
+	versions      *store.TextVersions
 }
 
 // numberScope is the project a bare issue number names: the project filter when the request

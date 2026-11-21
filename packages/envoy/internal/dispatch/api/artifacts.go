@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -68,6 +69,7 @@ func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	reads := artifactReads(artifacts, reader)
 	reader.resolve()
+	approvalsAtTheCut(r.Context(), artifacts)
 	WriteJSON(w, http.StatusOK, reads)
 }
 
@@ -967,6 +969,7 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	read := artifactRead{Artifact: artifact}
 	read.shape(reader)
 	reader.resolve()
+	approvalAtTheCut(r.Context(), artifact.Approval, "")
 	WriteJSON(w, http.StatusOK, read)
 }
 
@@ -1031,9 +1034,14 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 // beside them for a request that asked for them with ?blocks=true. The three come from one
 // rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session cannot leave
 // a listing's byte ranges indexing markdown they were not computed over; nil blocks for a request
-// that asked for none, which pays for none of that rendering.
+// that asked for none, which pays for none of that rendering. At a cut they come from the
+// document's newest version then, and the live document is not read (artifactTextAtTheCut).
 func (s *server) artifactTextBody(r *http.Request, artifactID string) (string, string, *[]model.ArtifactBlock, error) {
-	if r.URL.Query().Get("blocks") != "true" {
+	withBlocks := r.URL.Query().Get("blocks") == "true"
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		return s.artifactTextAtTheCut(r.Context(), artifactID, withBlocks)
+	}
+	if !withBlocks {
 		markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifactID)
 		return markdown, token, nil, err
 	}
@@ -1063,6 +1071,17 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 	if artifact.Kind != "doc" {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+		return
+	}
+	// At a cut the blocks are those of the document's newest version then, and the live document
+	// is not read (artifactBlocksAtTheCut).
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		blocks, err := s.artifactBlocksAtTheCut(r.Context(), artifact.ID)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, blocks)
 		return
 	}
 	blocks, err := s.deps.Docs.Blocks(r.Context(), artifact.ID)
@@ -1205,8 +1224,17 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	// under its new name, and an older version's carries its number (versionFilename).
 	filename := versionFilename(artifact.Name, artifact.Kind, number, latest)
 	if artifact.Kind == "doc" {
-		var markdown string
-		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number, &markdown)
+		var stored string
+		var insertTree []byte
+		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number, &stored, &insertTree)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// The text every arm answers gives no word of a pending insert whose comment its author
+		// deleted, though the version stores them (docs.MaskedVersionText); the version's sha256
+		// and size stay the stored text's, which an approval is pinned to.
+		markdown, err := docs.MaskedVersionText(r.Context(), s.deps.Store.Pool, artifact.ID, stored, insertTree)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1223,7 +1251,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, markdown)
 			return
 		}
-		hash := sha256.Sum256([]byte(markdown))
+		hash := sha256.Sum256([]byte(stored))
 		sha := hex.EncodeToString(hash[:])
 		version.SHA256 = &sha
 		// A past version's text is read in the version mode: the attributes the server wrote
@@ -1646,15 +1674,16 @@ func artifactIDs(artifacts []*model.Artifact) []string {
 // (readIssueDetails), and a read of its own sends them as a batch of its own (loadArtifactDetails).
 // The apply fills the versions first, since an approval's state reads them (applyApprovals), and
 // leaves an artifact with no version a non-nil empty list (applyVersions). No artifact queues
-// nothing and its apply fills nothing.
-func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact) func() {
+// nothing and its apply fills nothing. ctx is the read's: a read at a cut reads the open approval
+// requests as they stood then (queueApprovals).
+func queueArtifactDetails(ctx context.Context, b *pgx.Batch, artifacts []*model.Artifact) func() {
 	versions := map[string][]model.Version{}
 	if ids := artifactIDs(artifacts); len(ids) > 0 {
 		b.Queue(artifactVersionsStatement, ids).Query(func(rows pgx.Rows) error {
 			return scanVersionsByArtifact(rows, versions)
 		})
 	}
-	approvals := queueApprovals(b, artifacts)
+	approvals := queueApprovals(ctx, b, artifacts)
 	return func() {
 		applyVersions(artifacts, versions)
 		approvals()
@@ -1668,7 +1697,7 @@ func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact) func() {
 // nothing else reads the database in between.
 func loadArtifactDetails(ctx context.Context, q queryer, artifacts []*model.Artifact) error {
 	batch := &pgx.Batch{}
-	apply := queueArtifactDetails(batch, artifacts)
+	apply := queueArtifactDetails(ctx, batch, artifacts)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -2149,17 +2178,19 @@ func (s *server) loadVersions(ctx context.Context, q queryer, artifactID string)
 	return versions, rows.Err()
 }
 
-// loadVersion reads one version of a document with its markdown, which the content route answers,
-// so its size is that markdown's length rather than a second read of the column.
-func (s *server) loadVersion(ctx context.Context, q queryer, artifactID string, number int, markdown *string) (model.Version, error) {
+// loadVersion reads one version of a document with its stored markdown, which the content route
+// answers, so its size is that markdown's length rather than a second read of the column, and the
+// version's insert tree (artifact_versions.insert_tree), which that route masks the markdown by
+// (docs.MaskedVersionText).
+func (s *server) loadVersion(ctx context.Context, q queryer, artifactID string, number int, markdown *string, insertTree *[]byte) (model.Version, error) {
 	var version model.Version
 	var authors []byte
 	if err := q.QueryRow(ctx, `
-		select v.number, v.named, v.summary, v.authors, v.created_at, v.mime, v.sha256, v.markdown
+		select v.number, v.named, v.summary, v.authors, v.created_at, v.mime, v.sha256, v.markdown, v.insert_tree
 		from artifact_versions v where v.artifact_id = $1 and v.number = $2
 	`, artifactID, number).Scan(
 		&version.Number, &version.Named, &version.Summary, &authors, &version.CreatedAt,
-		&version.MIME, &version.SHA256, markdown,
+		&version.MIME, &version.SHA256, markdown, insertTree,
 	); err != nil {
 		return model.Version{}, err
 	}

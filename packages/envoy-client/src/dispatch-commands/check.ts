@@ -1,6 +1,7 @@
 import {
   dispatchToolSchema,
   dispatchToolSpecs,
+  isIdPrefix,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
   zodSchemaApi,
@@ -13,6 +14,7 @@ import { defaultExec, type ExecFn, resolveCwdRepo } from "../dispatch-cwd";
 import { type ParsedDispatchRef, parseDispatchRef } from "../dispatch-owner";
 import { localPictures, parseAgentArtifactRef } from "../dispatch-picture-tools";
 import { formatZodIssues } from "../tool-input-errors";
+import { RESULTS_AT_AS_OF_PROBLEM } from "./as-of";
 import {
   asObject,
   type CheckedCall,
@@ -31,9 +33,12 @@ import {
   commentIdProblem,
   innerRefProblem,
   itemRefProblem,
+  messageArgumentId,
+  messageArgumentProblem,
   messageIdOf,
   messageIdProblem,
   messageInReplyTo,
+  normalizeUUID,
   refOwnerName,
   replyBlockProblem,
 } from "./refs";
@@ -47,6 +52,10 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_edit_ask: true,
   dispatch_resolve_ask: true,
   dispatch_resolve_comment: true,
+  dispatch_edit_comment: true,
+  dispatch_delete_comment: true,
+  dispatch_edit_message: true,
+  dispatch_delete_message: true,
   dispatch_follow: true,
   dispatch_search: true,
   dispatch_related: true,
@@ -119,10 +128,39 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
       }
       break;
     }
-    case "dispatch_resolve_comment": {
+    case "dispatch_resolve_comment":
+    case "dispatch_edit_comment":
+    case "dispatch_delete_comment": {
       const comment = optionalString(args, "comment");
-      if (comment?.startsWith("dispatch://") && parseDispatchRef(comment)?.kind !== "comment") {
+      // A bare value that is no id leaves something in the request's path that is not an id:
+      // a blank one and the dot segments the URL parse removes each reach
+      // /api/v1/comments/ or /api/v1/, which every build answers with its router's no-route
+      // 404, whatever its age, and that 404 is this release's own tell for a server without
+      // the correction routes (dispatch://INFRA-1523). No reading of that answer separates the
+      // two, so the id is refused here, before anything is sent, for dispatch resolve-comment
+      // as much as for the two corrections, since all three read this argument the same way.
+      // The rule is the server's own: a whole uuid, or a prefix of at least eight hex
+      // characters.
+      if (
+        comment !== undefined &&
+        !comment.startsWith("dispatch://") &&
+        normalizeUUID(comment) === undefined &&
+        !isIdPrefix(comment)
+      ) {
+        problems.push(commentIdProblem);
+      } else if (
+        comment?.startsWith("dispatch://") &&
+        parseDispatchRef(comment)?.kind !== "comment"
+      ) {
         problems.push(itemRefProblem(comment) ?? commentIdProblem);
+      }
+      break;
+    }
+    case "dispatch_edit_message":
+    case "dispatch_delete_message": {
+      const message = optionalString(args, "message");
+      if (message !== undefined && messageArgumentId(message) === undefined) {
+        problems.push(messageArgumentProblem("message"));
       }
       break;
     }
@@ -159,8 +197,17 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
     case "dispatch_read": {
       const message = optionalString(args, "message");
       if (message !== undefined && messageIdOf(message) === undefined) {
+        problems.push(messageArgumentProblem("message"));
+      }
+      // The contract holds --history to a call that names a ref, and says so itself when none
+      // does; what is left to say is that the ref must name one post, since the bodies a
+      // history read lists are that post's.
+      const historyRef =
+        optionalBoolean(args, "history") === true ? optionalString(args, "ref") : undefined;
+      const historyKind = historyRef === undefined ? undefined : parseDispatchRef(historyRef)?.kind;
+      if (historyRef !== undefined && historyKind !== "comment" && historyKind !== "message") {
         problems.push(
-          "message must be a full message id (uuid) or a dispatch://KEY/message/<id> reference"
+          "--history lists the bodies an edit of one comment or issue message replaced, so --ref must name one: dispatch://KEY/comment/<id> or dispatch://KEY/message/<id>"
         );
       }
       const events = optionalNumber(args, "events");
@@ -187,6 +234,12 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
         problems.push(
           "blocks lists the live document, the one dispatch doc-edit changes; name no version"
         );
+      }
+      break;
+    }
+    case "dispatch_results": {
+      if (optionalString(args, "at") !== undefined && optionalString(args, "as_of") !== undefined) {
+        problems.push(RESULTS_AT_AS_OF_PROBLEM);
       }
       break;
     }

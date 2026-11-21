@@ -158,7 +158,19 @@ func writeIssueComponents(ctx context.Context, tx pgx.Tx, key, project string, i
 // refs.IssueRepoTerms, so it terminates even if a raced reparent ever commits a cycle: a row carries
 // its depth, so no two rows of one chain are equal and `union`'s distinct step would remove
 // nothing.
-var issueComponentsTerms = `comp_chain as (
+var issueComponentsTerms = issueComponentsOwnerTerms + `, comp as (
+		select o.key, o.owner_key, o.mode, o.reason,
+		       coalesce(array_agg(m.component_id order by m.component_id) filter (where x.id is not null), '{}'::text[]) as ids,
+		       coalesce(array_agg(m.component_id order by m.component_id) filter (where m.component_id is not null and x.id is null), '{}'::text[]) as unknown
+		from comp_owner o
+		left join issue_component_members m on m.issue_key = o.owner_key
+		left join components x on x.project_key = m.project_key and x.id = m.component_id
+		group by o.key, o.owner_key, o.mode, o.reason
+	)`
+
+// issueComponentsOwnerTerms are the walk of issueComponentsTerms: the nearest issue on each
+// subject's parent chain with an issue_components row, and that row's mode and reason.
+var issueComponentsOwnerTerms = `comp_chain as (
 		select s.key as start, i.key, i.parent_key, 0 as depth
 		from subjects s join issues i on i.key = s.key
 		union all
@@ -169,14 +181,17 @@ var issueComponentsTerms = `comp_chain as (
 		select distinct on (c.start) c.start as key, c.key as owner_key, ic.mode, ic.reason
 		from comp_chain c join issue_components ic on ic.issue_key = c.key
 		order by c.start, c.depth
-	), comp as (
-		select o.key, o.owner_key, o.mode, o.reason,
-		       coalesce(array_agg(m.component_id order by m.component_id) filter (where x.id is not null), '{}'::text[]) as ids,
-		       coalesce(array_agg(m.component_id order by m.component_id) filter (where m.component_id is not null and x.id is null), '{}'::text[]) as unknown
+	)`
+
+// issueComponentsTermsAtCut are issueComponentsTerms for a read at a cut (asof): the same owner,
+// mode and reason of each subject, which the shadows of issues and issue_components give at the
+// cut, with no member. The members and the project's component model (issue_component_members,
+// components) keep no history, so the read at a cut does not read them. An explicit attachment
+// leaves out its ids and its unknown ids (issueAtTheCut, issueSummariesAtTheCut), and an
+// attachment of another mode holds no member.
+var issueComponentsTermsAtCut = issueComponentsOwnerTerms + `, comp as (
+		select o.key, o.owner_key, o.mode, o.reason, '{}'::text[] as ids, '{}'::text[] as unknown
 		from comp_owner o
-		left join issue_component_members m on m.issue_key = o.owner_key
-		left join components x on x.project_key = m.project_key and x.id = m.component_id
-		group by o.key, o.owner_key, o.mode, o.reason
 	)`
 
 // issueComponentsJoin attaches issueComponentsTerms' answer to the issue aliased `i` in the

@@ -14,7 +14,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -77,6 +79,13 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 // entry, and the read behind it attaches all of them again. An entry the cache evicts and a
 // restart end it sooner. Those fields are an ask's own facts rather than the feed's, and the
 // Inbox, the ask read and the issue read answer them fresh, from no kept list.
+//
+// A page at a cut is read whole every time. It reads no validator of metadata, since the issue's
+// sequence at the cut does not move for a post deleted after the cut, which the page then reads
+// as deleted, and it reads nothing kept, which holds present answers under keys that name no cut.
+// It goes out under an ETag over the cut and its own bytes, and is kept under no key
+// (writePastListAnswer). It leaves out what the records at the cut do not give
+// (eventPageAtTheCut).
 func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -86,22 +95,32 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	lastSeq, createdAt, issueHeld, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
+	trees := wantsDisplayTrees(r)
+	cut, atCut := asof.CutFrom(r.Context())
+	var key listAnswerKey
+	issueHeld := false
+	if !atCut {
+		lastSeq, createdAt, held, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		etag := s.eventFeedETag(lastSeq, createdAt, options, trees)
+		if answerNotModified(w, r, etag) {
+			return
+		}
+		key = listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key"), etag)
+		if s.listAnswers.answer(w, key) {
+			return
+		}
+		issueHeld = held
+	}
+	events, err := s.readEvents(r.Context(), issueOwner(r.PathValue("key")), options)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	trees := wantsDisplayTrees(r)
-	etag := s.eventFeedETag(lastSeq, createdAt, options, trees)
-	if answerNotModified(w, r, etag) {
-		return
-	}
-	key := listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key"), etag)
-	if s.listAnswers.answer(w, key) {
-		return
-	}
-	events, err := s.readEvents(r.Context(), issueOwner(r.PathValue("key")), options)
-	if err != nil {
+	if err := s.eventPageAtTheCut(r.Context(), events); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -115,14 +134,17 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if atCut {
+		s.writePastListAnswer(w, r, cut, encoded, trees)
+		return
+	}
 	s.writeListAnswer(w, key, encoded, issueHeld)
 }
 
 // eventFeedETag hashes what one page of an issue's activity feed is made of: the issue whose feed
 // it is, that issue's newest event sequence and the query that pages it, closed with the lines
-// both lists' ETags carry (listETag). It is referencesETag's shape - one line per part, then the
-// hash of them - and it names no issue key: a validator is compared against the one URL that gave
-// it.
+// both lists' ETags carry (listETag): one line per part, then the hash of them. It names no issue
+// key: a validator is compared against the one URL that gave it.
 //
 // The issue is named by its created_at rather than its key, because the key is the one part of it
 // that comes back. last_seq is a counter of the row, so a key taken by a new issue stands at
@@ -135,7 +157,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 // never comes back with the key (migration 20261106020619); the feed's column does come back, so
 // the row's birth stamp is hashed in beside it. It is the same fact, read the same way, that
 // tells the event relay an event log that was reset under its cursor from one that merely went
-// quiet (eventLogWasReset).
+// quiet (events.EventLogWasReset).
 func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventListOptions, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "created=%d\nlast_seq=%d\nafter=%d\nbefore=%d\nhas_before=%t\ndescending=%t\nlimit=%d\n",
@@ -177,6 +199,10 @@ func (s *server) issueEventSequence(ctx context.Context, key string) (int, time.
 // therefore capped at the safe horizon, at or below which every event is final, the same cap and
 // the same wait GET /api/v1/references?since= reads under (sinceHorizon): every event committed
 // before the request stands at or below it, so paging to the end of this answer skips nothing.
+// At a cut the page also ends at the newest event id at the cut (newestEventIDAtTheCut). The wait
+// for the horizon runs with no cut: it reads no table as it stood at the cut, and where the
+// horizon observes through the shared pool, which binds each statement under a cut, the begin of
+// its observation would be refused.
 func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -192,13 +218,25 @@ func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	through, err := s.sinceHorizon(r.Context())
+	through, err := s.sinceHorizon(asof.WithoutCut(r.Context()))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		newest, err := s.newestEventIDAtTheCut(r.Context())
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		through = min(through, newest)
+	}
 	events, err := s.readEventsAfterID(r.Context(), after, through, limit)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := s.eventPageAtTheCut(r.Context(), events); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -394,7 +432,250 @@ func (s *server) readEventRows(ctx context.Context, query string, arguments ...a
 	if err := s.attachAskEventFields(ctx, events); err != nil {
 		return nil, err
 	}
+	if err := s.attachPostMarks(ctx, events); err != nil {
+		return nil, err
+	}
 	return events, nil
+}
+
+// askEventKinds are the kinds of event whose payload is an ask, to which a read adds the ask's
+// fields (attachAskEventFields): the types the asks shadow reads an ask's state from.
+var askEventKinds = func() map[string]bool {
+	kinds := map[string]bool{}
+	for _, kind := range asof.AskStateTypes() {
+		kinds[kind] = true
+	}
+	return kinds
+}()
+
+// postBodyEventKinds is the kind of post each event kind's payload is about: the kind whose
+// table the payload's `id` names, and whose own body the payload carries under `body`. They are
+// what attachPostMarks marks: every other kind of either post carries no body of its own. The
+// receipts carry no text of the post at all (comment.delivery, message.delivery, message.accepted,
+// whose payload names the message under message_id and holds no text of it), and a delete event
+// (comment.deleted, message.deleted) is built from the post with its body cleared and carries no
+// text of the post a reply answers either (deleteEventReplyBlock). The other events of a reply
+// also carry the text of the post it answers, which the event log keeps (reply_body and
+// reply_block.text, below).
+var postBodyEventKinds = map[string]refs.ItemKind{
+	"comment.created":          refs.ItemComment,
+	"comment.edited":           refs.ItemComment,
+	"comment.answered":         refs.ItemComment,
+	"comment.resolved":         refs.ItemComment,
+	"comment.reopened":         refs.ItemComment,
+	"comment.anchor_refreshed": refs.ItemComment,
+	// The two suggestion kinds are a comment's own events under another name
+	// (comment_actions.go, commentAction).
+	"suggestion.accepted": refs.ItemComment,
+	"suggestion.rejected": refs.ItemComment,
+	"message.created":     refs.ItemMessage,
+	"message.edited":      refs.ItemMessage,
+	"message.answered":    refs.ItemMessage,
+}
+
+// postMarks are the marks a post's author left on it since it was written, as the post itself
+// reads with them: when they last replaced its body (comments.edited_at, messages.edited_at), nil
+// on a post nobody edited, and when they deleted it and who they are (deleted_at, deleted_by), as
+// model.DeletedPostMark reads every other read's copy of that mark. deletedBy is nil where the
+// row records no actor, which is the mark an event payload then carries as a null deleted_by.
+// quoteCleared is that the comment's stored anchor quote is empty. Only the delete of a comment
+// whose insert suggestion no accept made document text, pending or rejected, empties a quote: its
+// own (clearDeletedPostBody), since that quote is the text the suggestion inserted, and that of
+// every other ask and comment on a mark the insert's removal took out whole, or on a mark it cut
+// that the document no longer holds (docs.RewriteTakenAnchors). No other write stores an empty
+// quote - an anchor's quote is refused empty (resolveAnchor) and every mark a refresh reads it
+// from covers text. A message carries no anchor, so it is false there.
+type postMarks struct {
+	editedAt     *time.Time
+	deletedAt    *time.Time
+	deletedBy    *model.Actor
+	quoteCleared bool
+}
+
+// postKey names one post an event page holds: the kind of post it is, which names the table its
+// id is in (refs.ItemKind.ItemTable), and the id. Each kind's ids are its own, so a comment and a
+// message of the same id are two posts here.
+type postKey struct {
+	kind refs.ItemKind
+	id   string
+}
+
+// attachPostMarks gives every event of an edited or a deleted comment or message the marks the
+// post itself reads with. Of an edited post it sets edited_at to the time its author last
+// replaced the body: an event keeps the edited_at of the moment it was written, null on the
+// post's creation, beside the body as it stood then, so without the post's own mark a read of
+// the log would print that body as if nobody had replaced it since. Of a deleted post it also
+// takes the body out of the payload: a read of the post's own events says that it is deleted and
+// gives no part of what it said, the anchor quote of a deleted comment's insert suggestion
+// included, while the events of a reply that quote it keep the preview they froze of it (below).
+// The stored row is never rewritten - the log is the record of what happened - so the marks are
+// read here, at every read, which is why readEventRows calls it for readEvents and
+// readEventsAfterID alike. The time of each edit stays the created_at of the edit's own event.
+//
+// It is this file's own way of filling what a payload cannot carry from the write that appended
+// it (attachAskEventFields): the events table holds no comment id and no message id, so there is
+// nothing for eventSelect to join on, and a column joined onto the row could not remove the
+// payload's body anyway.
+//
+// The frozen previews of another post stay, as the delete leaves them: the reply_body and the
+// reply_block.text of a message reply's message.answered and of its message.edited written
+// before the delete, and the reply_block.text of a comment reply's comment.created or
+// comment.answered and of each later event of that reply written before the delete but its
+// comment.deleted. A reply's own delete event, message.deleted or comment.deleted, carries no
+// text of the post it answers whenever it is written (deleteEventReplyBlock), and an event of
+// the reply written after the delete carries no text of it. Each is part of an event of the post
+// that quoted it, and only the quoted post's own events are marked here. So are the document
+// events of an accepted suggestion, which are no event of the post: the accept's
+// artifact.version, and an artifact.renamed written before the delete, which carries every
+// version, keep the name the accept gave the version.
+func (s *server) attachPostMarks(ctx context.Context, events []model.Event) error {
+	// The ids the page names, by the kind of post each is an id of; that kind names the table
+	// readPostMarks reads it in.
+	ids := map[refs.ItemKind][]string{}
+	// What the first pass found for each event, which the second reads rather than finding
+	// again: the post the payload names, and the payload it was read from. A raw payload is
+	// nil for every event this read leaves alone.
+	keys := make([]postKey, len(events))
+	raws := make([]json.RawMessage, len(events))
+	// A page holds several events of one post - its creation, its edit, its delete - and the
+	// read asks after each post once.
+	asked := map[postKey]bool{}
+	for index := range events {
+		kind, carriesBody := postBodyEventKinds[events[index].Type]
+		if !carriesBody {
+			continue
+		}
+		raw, ok := events[index].Payload.(json.RawMessage)
+		if !ok {
+			return fmt.Errorf("decode %s payload: expected raw JSON", events[index].Type)
+		}
+		// A payload this server did not write - an older build's, a test's - need name no post:
+		// one that names none is passed through as the database returned it.
+		var header struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &header); err != nil || header.ID == "" {
+			continue
+		}
+		key := postKey{kind: kind, id: header.ID}
+		keys[index], raws[index] = key, raw
+		if asked[key] {
+			continue
+		}
+		asked[key] = true
+		ids[kind] = append(ids[kind], header.ID)
+	}
+	marks, err := s.readPostMarks(ctx, ids)
+	if err != nil {
+		return err
+	}
+	if len(marks) == 0 {
+		return nil
+	}
+	for index := range events {
+		if raws[index] == nil {
+			continue
+		}
+		// Each kind's id names its own table, so a comment event reads the comments' marks and
+		// a message event the messages', which is what the key the first pass built says.
+		post, found := marks[keys[index]]
+		if !found {
+			continue
+		}
+		payload := map[string]any{}
+		if err := json.Unmarshal(raws[index], &payload); err != nil {
+			return fmt.Errorf("decode %s payload: %w", events[index].Type, err)
+		}
+		if post.editedAt != nil {
+			payload["edited_at"] = post.editedAt
+		}
+		if post.deletedAt != nil {
+			// The body, the mark that it was cut short, and a suggestion's replacement text,
+			// which is the comment's text too and which the delete clears with the body.
+			delete(payload, "body")
+			delete(payload, "body_truncated")
+			delete(payload, "suggestion")
+			// The quote the row holds empty, which every event the comment wrote before its delete
+			// carries in its anchor as it stood then. A quote is document text and stays - an
+			// accepted insert's, a replace's, a delete's and a plain comment's - but for two: the
+			// text an insert suggestion put in the document and no accept made document text, which
+			// the comment's own delete emptied with the body, and a plain comment's quote that lay
+			// wholly on such an insert's words, pending or rejected, which that insert's delete
+			// emptied on the row (docs.RewriteTakenAnchors). A quote that delete cut back to its
+			// document text is not empty, and each event keeps it as the event froze it.
+			if anchor, ok := payload["anchor"].(map[string]any); ok && post.quoteCleared {
+				anchor["quote"] = ""
+			}
+			payload["deleted_at"] = post.deletedAt
+			payload["deleted_by"] = post.deletedBy
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("encode %s payload: %w", events[index].Type, err)
+		}
+		events[index].Payload = json.RawMessage(encoded)
+	}
+	return nil
+}
+
+// readPostMarks reads the marks of each post of ids that is edited or deleted, in one statement
+// over the table of each kind that has an id to read: the table refs names for the kind, which
+// owns the map of an item kind to its storage (refs.ItemKind.ItemTable), as postHistoryOwner
+// reads it, with whether a comment's stored anchor quote is empty (postMarks.quoteCleared). Each
+// id is matched as text, through the comments_id_text and messages_id_text indexes, so a payload
+// id that is not a uuid cannot fail the read, as it would under a cast of the parameter. Each row
+// names the kind it came from, which the id alone does not say.
+func (s *server) readPostMarks(ctx context.Context, ids map[refs.ItemKind][]string) (map[postKey]postMarks, error) {
+	marks := map[postKey]postMarks{}
+	// One select per kind that has an id to read, in a fixed order rather than a map's, each
+	// with the parameter its ids are passed as.
+	selects, arguments := []string{}, []any{}
+	for _, kind := range []refs.ItemKind{refs.ItemComment, refs.ItemMessage} {
+		if len(ids[kind]) == 0 {
+			continue
+		}
+		items, _, err := kind.ItemTable()
+		if err != nil {
+			return nil, err
+		}
+		quoteCleared := "false"
+		if kind == refs.ItemComment {
+			quoteCleared = "coalesce(anchor->>'quote' = '', false)"
+		}
+		arguments = append(arguments, ids[kind])
+		selects = append(selects, fmt.Sprintf(`
+		select '%s'::text, id::text, edited_at, deleted_at, deleted_by, %s from %s
+		where id::text = any($%d::text[]) and (edited_at is not null or deleted_at is not null)`, kind, quoteCleared, items, len(arguments)))
+	}
+	if len(selects) == 0 {
+		return marks, nil
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, strings.Join(selects, "\n\t\tunion all"), arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("read the corrected posts of an event page: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key postKey
+		var kind string
+		var editedAt, deletedAt *time.Time
+		var deletedBy []byte
+		var quoteCleared bool
+		if err := rows.Scan(&kind, &key.id, &editedAt, &deletedAt, &deletedBy, &quoteCleared); err != nil {
+			return nil, fmt.Errorf("read the corrected posts of an event page: %w", err)
+		}
+		key.kind = refs.ItemKind(kind)
+		mark := postMarks{editedAt: editedAt, quoteCleared: quoteCleared}
+		var err error
+		if mark.deletedAt, mark.deletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+			return nil, fmt.Errorf("post %s: %w", key.id, err)
+		}
+		marks[key] = mark
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the corrected posts of an event page: %w", err)
+	}
+	return marks, nil
 }
 
 // decodedAskEventPayload is the ask payload that needs read-time fields added before it is written
@@ -414,9 +695,7 @@ func (s *server) attachAskEventFields(ctx context.Context, events []model.Event)
 	asks := []model.Ask{}
 	payloads := []decodedAskEventPayload{}
 	for index := range events {
-		switch events[index].Type {
-		case "ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back", "ask.asked_of":
-		default:
+		if !askEventKinds[events[index].Type] {
 			continue
 		}
 		raw, ok := events[index].Payload.(json.RawMessage)
@@ -452,7 +731,10 @@ func (s *server) attachAskEventFields(ctx context.Context, events []model.Event)
 	}
 	for index := range payloads {
 		payloads[index].payload["opened_event_id"] = *asks[index].OpenedEventID
-		payloads[index].payload[model.ReferencedByCountKey] = *asks[index].ReferencedByCount
+		// A read at a cut reads no count (queueAskDetails): the payload then carries none.
+		if count := asks[index].ReferencedByCount; count != nil {
+			payloads[index].payload[model.ReferencedByCountKey] = *count
+		}
 		attachAskEventPartIDs(payloads[index].payload, asks[index])
 	}
 	if err := s.attachAskDocumentArtifacts(ctx, payloads); err != nil {

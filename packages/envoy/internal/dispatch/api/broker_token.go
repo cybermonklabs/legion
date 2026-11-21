@@ -33,9 +33,11 @@ import (
 // It answers nothing itself: each route refuses a caller that does not resolve in its own way —
 // a JSON error, a closed socket — and reaches this decision through optionalActor as it always
 // has. A request presenting no such token passes straight through and is resolved where it
-// always was. The one layer that reads the decision without resolving anything is the read-only
-// gate inside it (refuseReadOnlyToken), which answers a read-only token on every route the read
-// list does not name.
+// always was. The one layer that reads the decision before the route resolves its caller is the
+// read-only gate inside it (refuseReadOnlyToken), which verifies no broker-issued token itself:
+// it answers a read-only token on every route outside the read class, and one that carries a cut
+// on every read that holds no past answer. A personal token is the gate's own to resolve, and the
+// gate carries that result, its refusal included, as this carries its decision.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := ciphertoken.Presented(r); !presented {
@@ -77,6 +79,11 @@ func errNoBrokerConfigured() *apiError {
 	return errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
 }
 
+// readOnlyPersonScopes is what a read-only broker token that acts for its person holds: the
+// person scope alone, never approve (brokerTokenActor). Every such credential shares this one
+// slice, as personCredential shares model.Scopes, so a request allocates none; nothing writes it.
+var readOnlyPersonScopes = []string{model.ScopePerson}
+
 // brokerTokenActor authenticates a caller presenting an access token the secrets broker issued,
 // under the DPoP scheme: the broker is asked whether the token is live and the caller is held to
 // the key that token is bound to (internal/ciphertoken). A verified caller is the session the
@@ -89,13 +96,17 @@ func errNoBrokerConfigured() *apiError {
 // empty writer. It holds no OAuth scope either, so the rows a person's own credential reaches
 // turn it away earlier still (gateRouteScopes): there is no person for it to act as.
 //
-// A read-only token is one of those too, a service and no person, and the broker held it to less
-// still: the scope read alone, the project scope none, no project (ciphertoken.Caller.ReadOnly,
-// which only a verifier built with Options.ServesReadOnly answers). Its credential is marked
-// read-only (model.Credential.ReadOnly) and holds no OAuth scope, and refuseReadOnlyToken answers
-// it 403 READ_ONLY_TOKEN on every route the read list does not name (readScopeRoutes), ahead of
-// the scope gate, the sign-in check and everything else the route does. On a listed route it is
-// the session it names, reading as that session does.
+// A read-only token writes nothing (ciphertoken.Caller.ReadOnly, which only a verifier built with
+// Options.ServesReadOnly answers). It is the read entry's token, which names a service and no
+// person and holds the scope read alone, or a token narrowed to reading because its trade asked
+// for read, which names the person or the service, and the projects, that the same trade would
+// have named without read. Its credential is marked read-only (model.Credential.ReadOnly), with
+// the token's cut (model.Credential.Cut), and refuseReadOnlyToken answers it 403 READ_ONLY_TOKEN
+// on every route outside the read class (readClasses) and on GET /ws/live, ahead of the scope
+// gate, the sign-in check and everything else the route does. A token that carries a cut is
+// answered as of its cut on every read of kind answers (asOfGate), and GET /api/v1/whoami names
+// the cut; every other read and GET /ws/live answer it 403 AS_OF_TOKEN_NOT_SERVED. On a read it
+// serves, it is the session it names, reading as that session does.
 //
 // Each refusal is its own code, and none of them repeats the token the caller presented:
 //
@@ -109,11 +120,11 @@ func errNoBrokerConfigured() *apiError {
 //   - 401 BROKER_TOKEN_NOT_A_SESSION — the broker holds the token live, but it is not a
 //     session's credential: it names no session, it names neither a person nor a service, it
 //     was issued to a client other than the exchange a session's token comes from, or its
-//     project scope and its scope are a shape no broker mints (the scope read beside a project
-//     scope that writes, or the project scope none in any shape but a read-only token's). A
-//     machine login's own access token is one of these, and Dispatch records every write under
-//     the session its credential proved, so it acts on none of them rather than letting a
-//     request body name a session for a credential that names none.
+//     project scope and its scope are a shape no broker mints (the scope read or a cut beside a
+//     project scope that writes, or the project scope none or a narrowed one in any shape but a
+//     read-only token's). A machine login's own access token is one of these, and Dispatch
+//     records every write under the session its credential proved, so it acts on none of them
+//     rather than letting a request body name a session for a credential that names none.
 //   - 429 BROKER_TOKEN_RATE_LIMITED — this source address has no introspection left in its
 //     bucket; nothing was asked of the broker. It carries the wait in Retry-After as well as in
 //     its prose, as the broker's own 429s do.
@@ -160,20 +171,27 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// person: it proves a session, not that any person stands behind the request. A token that
 	// names a service and no person gets none either, whatever scope the broker answered: there
 	// is no person for it to act as, and a scope that said otherwise would let it act as the
-	// session's own id on the routes that read what belongs to a person. A read-only token is
-	// one of those, and its one scope, read, is carried as the credential's ReadOnly mark and
-	// never as a scope a route could require.
+	// session's own id on the routes that read what belongs to a person.
+	//
+	// A read-only token is read by its base word (ciphertoken.Caller.ProjectScope) as the same
+	// token without read would be, and holds less: one narrowed from a token that acts as its
+	// person still acts for that person, so it holds the person scope alone, and never approve;
+	// every other holds none. The scope read itself is carried as the credential's ReadOnly mark
+	// and never as a scope a route could require, so no recorded act names it.
 	var scopes []string
 	if caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson {
 		scopes = model.Scopes
+		if caller.ReadOnly {
+			scopes = readOnlyPersonScopes
+		}
 	}
 	actor := model.Actor{
 		Kind: "session",
 		ID:   caller.Session,
 		// The broker proved this session, so the credential already names the agent behind the
 		// request and no request body has to name it, and the actor is Proven. A read-only token
-		// is marked as one, which is all refuseReadOnlyToken reads.
-		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly},
+		// is marked as one, with the cut it reads at, which are what refuseReadOnlyToken reads.
+		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly, Cut: caller.Cut},
 		Proven:     true,
 	}
 	// A caller names a person or a service, never both and never neither (ciphertoken.Caller),
@@ -187,12 +205,13 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// Only a token an operator's entry mapped to one project names that project as the one it
 	// may write, which is today's named-scope rule; a named token naming none (the shared
 	// public-session account's) writes, as a token naming no project does, wherever Dispatch's
-	// own rules let it, and ciphertoken refuses a named token naming two.
+	// own rules let it, and ciphertoken refuses a named token naming two. A token narrowed from a
+	// named one names its project too, as the project it reads as, and writes none.
 	// A token acting as its person carries the list
 	// its trade asked for (ciphertoken.Caller.Projects), and that list limits no write here: a
 	// dev box session's person writes wherever they may, and the token of a machine naming a
-	// service and no person names no project at all. Nor does a read-only token, whose project
-	// scope none names no project and writes none.
+	// service and no person names no project at all. Nor does a token of the project scope none,
+	// the read entry's or one narrowed from it, which names no project and writes none.
 	if caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1 {
 		project := caller.Projects[0]
 		actor.Project = &project

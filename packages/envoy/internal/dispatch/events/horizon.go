@@ -14,8 +14,8 @@
 //	select m.id, e.created_at,
 //		pg_snapshot_xmin(s.snapshot)::text, pg_snapshot_xmax(s.snapshot)::text,
 //		not exists (select 1 from pg_snapshot_xip(s.snapshot)), pg_current_xact_id()::text
-//	from (select coalesce(max(id), 0) as id from events) m
-//	left join events e on e.id = m.id
+//	from (select coalesce(max(id), 0) as id from public.events) m
+//	left join public.events e on e.id = m.id
 //	cross join (select pg_current_snapshot() as snapshot) s
 //
 // It yields A, the newest id visible to the statement's snapshot S, the created_at of the event
@@ -96,6 +96,18 @@
 // Observations, and every read capped at H, run on the primary. A hot standby refuses
 // pg_current_xact_id, and a standby that has not yet replayed a committed row would serve a read
 // at or below H without it.
+//
+// # A read at a past time
+//
+// A Horizon is machinery: it reads the event log as it stands now, also for a read at a past
+// time (asof), which bounds its page by H and by the newest event at its cut. So each statement
+// here names the log with its schema, public.events, as each deliberate read of the present log
+// at a cut does (asof.AsksChangedAfterStatement, store.TextVersionsAt): the name shows that the
+// read is of the present. A shadow is a WITH member of the same name that the store puts in
+// front of a statement under a cut (asof.Bind), which a schema-qualified name does not read. The
+// caller of a read at a cut waits for H under no cut (asof.WithoutCut): where H observes through
+// the shared request pool, that pool binds each statement under a cut and refuses the begin of
+// an observation.
 package events
 
 import (
@@ -159,16 +171,16 @@ const (
 // value of the new one.
 const persistHorizonSQL = `
 	insert into event_horizon (id, safe, safe_at)
-	select 1, e.id, e.created_at from events e where e.id = $1 and e.created_at = $2
+	select 1, e.id, e.created_at from public.events e where e.id = $1 and e.created_at = $2
 	on conflict (id) do update set safe = excluded.safe, safe_at = excluded.safe_at, updated_at = now()
 	where event_horizon.safe < excluded.safe
-		or not exists (select 1 from events e where e.id = event_horizon.safe and e.created_at = event_horizon.safe_at)
+		or not exists (select 1 from public.events e where e.id = event_horizon.safe and e.created_at = event_horizon.safe_at)
 `
 
 // persistedHorizonSQL reads the persisted H when it is a value of the log as it stands now.
 const persistedHorizonSQL = `
 	select coalesce((select h.safe from event_horizon h
-		join events e on e.id = h.safe and e.created_at = h.safe_at
+		join public.events e on e.id = h.safe and e.created_at = h.safe_at
 		where h.id = 1), 0)
 `
 
@@ -502,7 +514,7 @@ type Mark struct {
 const markSQL = `
 	select coalesce(newest.id, 0), newest.created_at, pg_current_xact_id()::text
 	from (select 1) one
-	left join lateral (select id, created_at from events order by id desc limit 1) newest on true
+	left join lateral (select id, created_at from public.events order by id desc limit 1) newest on true
 `
 
 // Mark takes one observation now and answers it, without recording it among the observations H is
@@ -572,7 +584,7 @@ const oldestEventWriterSQL = `
 		from pg_locks t
 		join pg_locks x on x.pid = t.pid and x.locktype = 'transactionid' and x.mode = 'ExclusiveLock' and x.granted
 		where t.locktype = 'relation' and t.database = (select oid from pg_database where datname = current_database())
-			and t.relation = 'events'::regclass and t.granted and t.pid <> pg_backend_pid()
+			and t.relation = 'public.events'::regclass and t.granted and t.pid <> pg_backend_pid()
 			and t.mode in ('RowExclusiveLock', 'ShareUpdateExclusiveLock', 'ShareLock', 'ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock')
 		union all
 		select transaction::text::numeric from pg_prepared_xacts where database = current_database()
@@ -621,7 +633,7 @@ func (h *Horizon) WriterFloor(ctx context.Context, marks ...Mark) (floor int64, 
 		}
 		if mark.Newest > 0 {
 			var stands bool
-			if err := h.db.QueryRow(ctx, `select exists (select 1 from events where id = $1 and created_at = $2)`, mark.Newest, mark.NewestAt).Scan(&stands); err != nil {
+			if err := h.db.QueryRow(ctx, `select exists (select 1 from public.events where id = $1 and created_at = $2)`, mark.Newest, mark.NewestAt).Scan(&stands); err != nil {
 				return 0, false, fmt.Errorf("check a mark's log against the event log: %w", err)
 			}
 			if !stands {
@@ -798,8 +810,8 @@ const horizonObserveSQL = `
 		pg_snapshot_xmax(s.snapshot)::text,
 		not exists (select 1 from pg_snapshot_xip(s.snapshot)),
 		pg_current_xact_id()::text
-	from (select coalesce(max(id), 0) as id from events) m
-	left join events e on e.id = m.id
+	from (select coalesce(max(id), 0) as id from public.events) m
+	left join public.events e on e.id = m.id
 	cross join (select pg_current_snapshot() as snapshot) s
 `
 

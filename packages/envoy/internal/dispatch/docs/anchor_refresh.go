@@ -120,13 +120,17 @@ func commentMarkType(table string) string {
 	return `'dispatchAsk'`
 }
 
-// changedAnchor is an open anchor whose quote or orphaned flag its current tree mark changes.
-// comment is whether its row is a comment's (a comment or a suggestion) rather than an ask's, and
-// event builds the row's refresh event once the write phase reaches it.
+// changedAnchor is an anchor whose quote or orphaned flag a write changes: an open anchor its
+// current tree mark moves (refreshAnchors), or a row on a mark the reject of an insert took text
+// from (RewriteTakenAnchors). comment is whether its row is a comment's (a comment or a
+// suggestion) rather than an ask's, closed whether its row is closed (a resolved comment, an ask
+// no longer open), which no refresh reads, and event builds the row's refresh event once the
+// write phase reaches it.
 type changedAnchor struct {
 	mark      anchoredMark
 	refreshed model.Anchor
 	comment   bool
+	closed    bool
 	event     func() (model.Event, error)
 }
 
@@ -138,6 +142,19 @@ type refreshedAnchors struct {
 	quotes   []string
 	orphaned []bool
 }
+
+// removedAnchorSkipKey keys the *removedAnchorSkip of a deleted comment's reject
+// (RejectDeletedCommentSuggestion).
+type removedAnchorSkipKey struct{}
+
+// removedAnchorSkip is the anchor marks a deleted comment's reject took out whole with an insert's
+// words (TakenAnchorMarks.Removed). applySuggestion records them as it makes the removal, and its
+// operation then records the write and refreshes the document's anchors against the tree it left,
+// under the same context (recordLiveOperation). That refresh leaves each row on one of these marks
+// as it stands (refreshAnchors): it would orphan the row keeping its quote, the deleted post's
+// words, and announce that, where the delete writes every row on such a mark, of any state, with
+// an empty quote (RewriteTakenAnchors).
+type removedAnchorSkip struct{ marks map[pmdoc.MarkRef]bool }
 
 // refreshAnchors updates each open anchor from its current tree mark. Each persisted change
 // appends the affected row's own full refresh event in this transaction; callers publish the
@@ -157,13 +174,19 @@ type refreshedAnchors struct {
 // rather than read back. Where the step is queued, the ledger records each refreshed anchor
 // (RegisterPendingAnchor), so a later refresh in the same transaction reads the anchor this one
 // leaves.
+//
+// A deleted comment's reject also leaves out every row on a mark it took out whole with the
+// insert's words (removedAnchorSkip): the delete writes those rows itself (RewriteTakenAnchors).
 func (s *Service) refreshAnchors(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node, actor model.Actor) error {
 	anchors, err := s.openAnchoredMarks(ctx, tx, artifactID)
 	if err != nil {
 		return err
 	}
 	skippedMarkID, skipping := ctx.Value(skippedAnchorRefreshKey{}).(string)
-	skipped := func(mark anchoredMark) bool { return skipping && mark.anchor.MarkID == skippedMarkID }
+	removedSkip, _ := ctx.Value(removedAnchorSkipKey{}).(*removedAnchorSkip)
+	skipped := func(mark anchoredMark) bool {
+		return (skipping && mark.anchor.MarkID == skippedMarkID) || (removedSkip != nil && removedSkip.marks[mark.markRef()])
+	}
 	// One walk finds every anchor: a walk per row would make each write quadratic in a document
 	// carrying many anchors. Rows sharing a key look the same result up, each refreshed in turn.
 	keys := make([]pmdoc.MarkRef, 0, len(anchors))
@@ -197,6 +220,15 @@ func (s *Service) refreshAnchors(ctx context.Context, tx pgx.Tx, artifactID stri
 	if len(changed) == 0 {
 		return nil
 	}
+	return s.writeChangedAnchors(ctx, tx, changed, actor)
+}
+
+// writeChangedAnchors writes changed, the anchors a write moves, as refreshAnchors says: it reads
+// every event they owe, registers each one on the transaction's ledger as it will stand
+// (RegisterPendingAnchor), open or closed as its row is, and puts one update of each table and
+// one append per event on the write phase as one step. refreshAnchors and RewriteTakenAnchors both
+// write through it, so a row either moves is written, announced and registered alike.
+func (s *Service) writeChangedAnchors(ctx context.Context, tx pgx.Tx, changed []changedAnchor, actor model.Actor) error {
 	changedAsks, changedComments := refreshedAnchors{table: "asks"}, refreshedAnchors{table: "comments"}
 	// A row the transaction has only queued carries its own event builder, so it is left out of
 	// the reads by id: the table holds no row of it to read.
@@ -230,7 +262,7 @@ func (s *Service) refreshAnchors(ctx context.Context, tx pgx.Tx, artifactID stri
 		}
 		if ledger != nil {
 			row := PendingAnchor{
-				ID: anchor.mark.id, Kind: MarkKind(anchor.mark.markType), Anchor: anchor.refreshed, Open: true,
+				ID: anchor.mark.id, Kind: MarkKind(anchor.mark.markType), Anchor: anchor.refreshed, Open: !anchor.closed,
 			}
 			if anchor.mark.pending != nil {
 				row.Event = anchor.mark.pending.Event
@@ -267,6 +299,137 @@ func (s *Service) refreshAnchors(ctx context.Context, tx pgx.Tx, artifactID stri
 		}
 		return nil
 	})
+}
+
+// takenAnchorRowsQuery is the statement RewriteTakenAnchors runs over target's table: every row
+// anchored on the document bound to $1 whose anchor names one of the mark ids bound to $2, open or
+// closed, oldest first, with the type of the mark it anchors and whether target holds it open.
+func takenAnchorRowsQuery(target anchorTarget) string {
+	return fmt.Sprintf(`
+			select id::text, anchor, %s, (%s)
+			from %s
+			where %s and anchor->>'mark_id' = any($2::text[])
+			order by created_at, id
+		`, commentMarkType(target.table), target.open, target.table, target.anchoredOn())
+}
+
+// RewriteTakenAnchors writes the anchor of every ask and comment row on artifactID, open or
+// closed, anchored on a mark the reject of an insert suggestion took text from (TakenAnchorMarks),
+// so that no read of the row gives a word the insert put in the document. Its one caller is the
+// delete of a comment whose insert no accept made document text (api/comment_delete.go,
+// deleteComment): the words were only ever that comment's, and the delete withdraws them. It
+// writes in the caller's joined transaction, under the document owner's lock the delete holds, as
+// an anchor refresh writes (writeChangedAnchors), and each row it changes is announced in its
+// comment.anchor_refreshed or ask.anchor_refreshed as a refresh's is. An anchor is a field the
+// document derives, which every refresh rewrites as the document changes, so this edits no post.
+//
+//   - A row on a mark the removal took out whole (taken.Removed) quoted those words alone: its quote
+//     is emptied, and it stands orphaned, whatever its state.
+//   - An open row on a mark the removal cut (taken.Cut) is the anchor refresh's: the one the removal
+//     ran gave it the mark's text in the tree the removal left, as every later refresh does. A
+//     closed row on such a mark, which no refresh reads, is given its mark's text in the document
+//     as the transaction holds it now, as a refresh computes a quote (pmdoc.FindMarks), and stands;
+//     where that document no longer holds the mark, no text of it is left to give, and its quote is
+//     emptied with it orphaned, since the quote it holds may be the inserted words.
+//
+// A row is read as the transaction will leave it, its registration on the ledger in place of the
+// stored row (RegisterPendingAnchor), and one already standing as it would be written is left
+// alone, so a row this transaction already wrote is not announced twice.
+func (s *Service) RewriteTakenAnchors(ctx context.Context, artifactID string, taken TakenAnchorMarks, actor model.Actor) error {
+	if len(taken.Removed) == 0 && len(taken.Cut) == 0 {
+		return nil
+	}
+	tx, ok := txFromContext(ctx)
+	if !ok {
+		return errUnjoined
+	}
+	removed, cut := markSet(taken.Removed), markSet(taken.Cut)
+	pending := pendingAnchorsOf(ctx, artifactID)
+	type takenRow struct {
+		mark anchoredMark
+		open bool
+	}
+	var rows []takenRow
+	for _, target := range anchorTargets {
+		// Only the ids of the marks this table's rows carry (anchorTable): a table none of them
+		// belongs to is not read.
+		var markIDs []string
+		for _, marks := range [][]AnchorMark{taken.Removed, taken.Cut} {
+			for _, mark := range marks {
+				if anchorTable(mark.Type) == target.table {
+					markIDs = append(markIDs, mark.ID)
+				}
+			}
+		}
+		if len(markIDs) == 0 {
+			continue
+		}
+		listed, err := tx.Query(ctx, takenAnchorRowsQuery(target), artifactID, markIDs)
+		if err != nil {
+			return fmt.Errorf("list %s anchors on taken marks: %w", target.table, err)
+		}
+		for listed.Next() {
+			var row takenRow
+			var encoded []byte
+			if err := listed.Scan(&row.mark.id, &encoded, &row.mark.markType, &row.open); err != nil {
+				listed.Close()
+				return fmt.Errorf("scan %s anchor on a taken mark: %w", target.table, err)
+			}
+			if err := model.DecodeAnchor(encoded, &row.mark.anchor); err != nil {
+				listed.Close()
+				return fmt.Errorf("decode %s anchor on a taken mark: %w", target.table, err)
+			}
+			if registered := pendingAnchor(pending, row.mark.id); registered != nil {
+				row.mark = anchoredMark{id: registered.ID, markType: string(registered.Kind), anchor: registered.Anchor, pending: registered}
+				row.open = registered.Open
+			}
+			if ref := row.mark.markRef(); removed[ref] || cut[ref] {
+				rows = append(rows, row)
+			}
+		}
+		listed.Close()
+		if err := listed.Err(); err != nil {
+			return fmt.Errorf("list %s anchors on taken marks: %w", target.table, err)
+		}
+	}
+	// The document is read once, and only for a closed row on a cut mark.
+	var found map[pmdoc.MarkRef]pmdoc.MarkFound
+	var changed []changedAnchor
+	for _, row := range rows {
+		ref := row.mark.markRef()
+		refreshed := row.mark.anchor
+		switch {
+		case removed[ref]:
+			refreshed.Quote, refreshed.Orphaned = "", true
+		case row.open:
+			continue
+		default:
+			if found == nil {
+				tree, err := s.docTree(commentMarkOperation(ctx), artifactID)
+				if err != nil {
+					return err
+				}
+				keys := make([]pmdoc.MarkRef, 0, len(taken.Cut))
+				for _, mark := range taken.Cut {
+					keys = append(keys, pmdoc.MarkRef(mark))
+				}
+				found = pmdoc.FindMarks(tree, keys)
+			}
+			// A mark the document no longer holds leaves no text to give: hit is then zero.
+			hit, stands := found[ref]
+			refreshed.Quote, refreshed.Orphaned = hit.Quote, !stands
+		}
+		if refreshed == row.mark.anchor {
+			continue
+		}
+		changed = append(changed, changedAnchor{
+			mark: row.mark, refreshed: refreshed, comment: anchorTable(row.mark.markType) == "comments", closed: !row.open,
+		})
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	return s.writeChangedAnchors(ctx, tx, changed, actor)
 }
 
 // anchorRefreshEvent builds the anchor-refresh event of anchor's row as its update leaves it: the
@@ -420,12 +583,16 @@ type anchorArtifactPlace struct{ name, projectKey, slug string }
 
 // loadAnchorRefreshedComments reads each comment of ids with its mentions and deliveries, by id,
 // and the place of the artifact each anchored comment's anchor is on, by comment id, for the
-// comments whose anchor names an artifact that exists. Every id must name a comment.
+// comments whose anchor names an artifact that exists. Every id must name a comment. A deleted
+// comment carries its delete mark (model.DeletedPostMark), as every other read of it does: the
+// event this builds is stored as built, and a reader that takes the stored payload unmasked
+// would otherwise read a comment with an empty body and no mark as one that stands.
 func loadAnchorRefreshedComments(ctx context.Context, tx pgx.Tx, ids []string) (map[string]model.Comment, map[string]anchorArtifactPlace, error) {
 	comments := make(map[string]model.Comment, len(ids))
 	places := make(map[string]anchorArtifactPlace, len(ids))
 	rows, err := tx.Query(ctx, `
 		select c.id::text, c.issue_key, c.artifact_id::text, c.author, c.body, c.anchor, c.reply_to::text, c.ask_id::text, c.turn, c.resolved, c.resolved_by, c.resolved_at, c.edited_at, c.suggestion, c.created_at,
+			c.deleted_at, c.deleted_by,
 			aa.name, coalesce(aa.project_key, ''), aa.slug
 		from comments c
 		left join artifacts aa on aa.id = `+store.CastableUUID(`c.anchor->>'artifact_id'`)+`
@@ -437,18 +604,21 @@ func loadAnchorRefreshedComments(ctx context.Context, tx pgx.Tx, ids []string) (
 	defer rows.Close()
 	for rows.Next() {
 		var comment model.Comment
-		var author, anchor, resolvedBy, suggestion []byte
-		var resolvedAt, editedAt *time.Time
+		var author, anchor, resolvedBy, suggestion, deletedBy []byte
+		var resolvedAt, editedAt, deletedAt *time.Time
 		var anchorName, anchorSlug *string
 		var anchorProject string
 		if err := rows.Scan(
 			&comment.ID, &comment.IssueKey, &comment.ArtifactID, &author, &comment.Body, &anchor, &comment.ReplyTo, &comment.AskID, &comment.Turn, &comment.Resolved,
-			&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt,
+			&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt, &deletedAt, &deletedBy,
 			&anchorName, &anchorProject, &anchorSlug,
 		); err != nil {
 			return nil, nil, fmt.Errorf("load refreshed comments: %w", err)
 		}
 		id := comment.ID
+		if comment.DeletedAt, comment.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+			return nil, nil, fmt.Errorf("refreshed comment %q: %w", id, err)
+		}
 		if err := json.Unmarshal(author, &comment.Author); err != nil {
 			return nil, nil, fmt.Errorf("decode refreshed comment %q author: %w", id, err)
 		}

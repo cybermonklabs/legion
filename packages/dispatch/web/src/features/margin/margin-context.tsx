@@ -71,10 +71,13 @@ export interface ComposerBridge {
  *  the one it names: the only place the two meet, so a field `RetypedMark` gains reaches both
  *  the margin's re-anchor and the composer's kind switch. The answer names that mark, so an
  *  anchor that named its text by quote alone - which only a document the server marks for itself
- *  carries, and which neither caller re-anchors - is not one of them. */
+ *  carries, and which neither caller re-anchors - is not one of them. It keeps the pending
+ *  inserts the words lie in (`ComposerAnchor.insertMarks`): the mark is written over the same
+ *  words. */
 export function anchorAt(anchor: ComposerAnchor, mark: RetypedMark): ComposerAnchor {
   return {
     artifact: anchor.artifact,
+    insertMarks: anchor.insertMarks,
     mark_id: mark.markId,
     // The composer keeps no placement where the editor had none to give.
     placement: mark.placement ?? undefined,

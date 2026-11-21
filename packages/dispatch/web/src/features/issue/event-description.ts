@@ -1,7 +1,13 @@
-import type { BlockInvalidEventPayload } from "@legion/contracts";
+import {
+  type BlockInvalidEventPayload,
+  type CommentDeliveryEventPayload,
+  DELETED_POST_DELIVERY_ERROR,
+  type MessageDeliveryEventPayload,
+} from "@legion/contracts";
 import type { DispatchEvent } from "../../api/types";
 import { capabilityLabel } from "../conversation/delivery";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
+import { type DeletablePost, postDeletion } from "../refs/post-marks";
 
 /** An event's line in the Pinned tab, as `AgentPart`s: an agent it names keeps its identity
  *  until `EventBody` draws it through `AgentName`. */
@@ -10,12 +16,49 @@ export function eventDescription(event: DispatchEvent): AgentPart[] {
   return typeof description === "string" ? [description] : description;
 }
 
+/**
+ * The line a deleted post's event shows in place of its body. The read of the event takes
+ * `body` out of the payload and stamps `deleted_at` and `deleted_by` in its place
+ * (`api/events.go`), so there is no text here to print and the mark is what a reader meets.
+ * `undefined` for a post nobody deleted, which prints its body as it always has.
+ */
+function deletedPost(payload: DeletablePost, kind: string): AgentPart[] | undefined {
+  const deleted = postDeletion(payload);
+  if (deleted === null) {
+    return undefined;
+  }
+  return deleted.by === null ? [`${kind} deleted`] : [`${kind} deleted by `, { actor: deleted.by }];
+}
+
 /** A `block.invalid`'s line, in the Pinned tab and the Activity tab alike: a check block whose
  *  `ci_check` settlement refused, or an ask block it marked malformed. */
 export function blockInvalidDescription(payload: BlockInvalidEventPayload): string {
   return payload.block_type === "check"
     ? `refused check ${payload.block_id}: ${payload.reason}`
     : `marked decision ${payload.block_id} malformed: ${payload.reason}`;
+}
+
+/**
+ * A delivery receipt's line, a message's and a comment mention's alike. A queued attempt reads as
+ * queued, a queued repeat included: the listener holds it for a session that is not running. Any
+ * other duplicate attempt reached the listener and the stream stored nothing new; its state is
+ * still `sent`, so reporting the state alone would read as a fresh delivery. A failure carrying
+ * the delete's words is the receipt the post's delete appended for a send it ended, which says
+ * nothing of whether that send reached the session, so it says the delete ended the send, as the
+ * Activity tab's line does (`activityDescription`), and never that the send failed.
+ */
+function deliveryReceipt(
+  kind: "Comment" | "Message",
+  receipt: CommentDeliveryEventPayload | MessageDeliveryEventPayload
+): string {
+  const mode = capabilityLabel(receipt.delivery);
+  if (receipt.state !== "queued" && receipt.duplicate === true) {
+    return `${kind} already delivered: ${mode}`;
+  }
+  if (receipt.state === "failed" && receipt.error === DELETED_POST_DELIVERY_ERROR) {
+    return `${kind} send ended by the post's delete: ${mode}`;
+  }
+  return `${kind} ${receipt.state}: ${mode}`;
 }
 
 function describe(event: DispatchEvent): string | AgentPart[] {
@@ -77,17 +120,18 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return "Comment reopened";
     case "comment.edited":
       return "Comment edited";
+    case "comment.deleted":
+      return deletedPost(event.payload, "Comment") ?? "Comment deleted";
+    case "message.edited":
+      return "Message edited";
+    case "message.deleted":
+      return deletedPost(event.payload, "Message") ?? "Message deleted";
     case "message.created":
     case "message.answered":
-      return event.payload.body;
+      // The body is absent only on a deleted post, which deletedPost answers first.
+      return deletedPost(event.payload, "Message") ?? event.payload.body ?? "";
     case "message.delivery":
-      // A queued attempt reads as queued, a queued repeat included: the listener holds it for a
-      // session that is not running. Any other duplicate attempt reached the listener and the
-      // stream stored nothing new; its state is still `sent`, so reporting the state alone would
-      // read as a fresh delivery.
-      return event.payload.state !== "queued" && event.payload.duplicate === true
-        ? `Message already delivered: ${capabilityLabel(event.payload.delivery)}`
-        : `Message ${event.payload.state}: ${capabilityLabel(event.payload.delivery)}`;
+      return deliveryReceipt("Message", event.payload);
     case "message.accepted":
       return "Message taken as the session's own turn";
     case "ask.opened":
@@ -98,16 +142,14 @@ function describe(event: DispatchEvent): string | AgentPart[] {
         : "Ask re-anchored after an edit";
     case "comment.created":
     case "comment.answered":
-      return event.payload.body;
+      // The body is absent only on a deleted post, which deletedPost answers first.
+      return deletedPost(event.payload, "Comment") ?? event.payload.body ?? "";
     case "comment.anchor_refreshed":
       return event.payload.anchor?.orphaned
         ? "Comment lost its quote"
         : "Comment re-anchored after an edit";
     case "comment.delivery":
-      // Same rule as message.delivery above.
-      return event.payload.state !== "queued" && event.payload.duplicate === true
-        ? `Comment already delivered: ${capabilityLabel(event.payload.delivery)}`
-        : `Comment ${event.payload.state}: ${capabilityLabel(event.payload.delivery)}`;
+      return deliveryReceipt("Comment", event.payload);
     case "issue.created":
       return "Issue created";
     case "issue.updated":

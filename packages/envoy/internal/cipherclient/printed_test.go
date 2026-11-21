@@ -322,7 +322,10 @@ func TestARedirectedDiscoveryPrintsWhereItEnded(t *testing.T) {
 		t.Fatal("Start read a discovery document from a port that is closed")
 	}
 	namesAll(t, "the redirected discovery", err.Error(), "connection refused")
-	if strings.Contains(err.Error(), "302") || !errors.Is(err, syscall.ECONNREFUSED) {
+	// The two addresses are taken out before the status is looked for: a port the kernel picks,
+	// such as 43029, can hold the digits 302.
+	printed := strings.NewReplacer(redirected, "", closed, "").Replace(err.Error())
+	if strings.Contains(printed, "302") || !errors.Is(err, syscall.ECONNREFUSED) {
 		t.Errorf("the redirected discovery = %q (errors.Is ECONNREFUSED: %t), want the refused connection it ended in", err, errors.Is(err, syscall.ECONNREFUSED))
 	}
 

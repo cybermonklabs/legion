@@ -2244,3 +2244,48 @@ func TestUnauthenticatedLargeIssueBodyIsRejectedBeforeDecoding(t *testing.T) {
 		t.Fatalf("unauthenticated large body status = %d body=%s, want %d", response.Code, response.Body.String(), http.StatusUnauthorized)
 	}
 }
+
+// The two waits below live here, in a file every build compiles, because tests built with and
+// without -race both call them: the xid-window tests (built without -race only), and the
+// read-only results and drive tests (built with it too).
+
+// awaitSettledDocuments waits until no document owes a settlement and no backend has held an xid
+// for a quiet spell, so a test that needed settlement to run first measures its request alone.
+func awaitSettledDocuments(t *testing.T, database *store.Store) {
+	t.Helper()
+	awaitQuietDatabase(t, database, true)
+}
+
+// awaitQuietDatabase waits until no backend has held an xid for a quiet spell and, where settled
+// asks it, no document owes a settlement either. A document of a closed issue owes its settlement
+// until the issue reopens - a closed issue settles nothing, and the reopen arms what it owes
+// (docs' settlement) - so a request made on a closed issue waits for the quiet alone.
+func awaitQuietDatabase(t *testing.T, database *store.Store, settled bool) {
+	t.Helper()
+	const quiet = 300 * time.Millisecond
+	deadline := time.Now().Add(30 * time.Second)
+	var calm time.Time
+	for time.Now().Before(deadline) {
+		var busy bool
+		if err := database.Pool.QueryRow(context.Background(), `
+			select ($1::boolean and exists (select 1 from doc_settlements_pending))
+			    or exists (select 1 from pg_stat_activity
+			               where datname = current_database() and backend_xid is not null and pid <> pg_backend_pid())
+		`, settled).Scan(&busy); err != nil {
+			t.Fatalf("read settlement state: %v", err)
+		}
+		switch {
+		case busy:
+			calm = time.Time{}
+		case calm.IsZero():
+			calm = time.Now()
+		case time.Since(calm) >= quiet:
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if settled {
+		t.Fatal("documents never finished settling")
+	}
+	t.Fatal("the database never fell quiet")
+}

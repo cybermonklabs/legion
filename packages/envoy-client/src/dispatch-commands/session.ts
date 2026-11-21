@@ -5,26 +5,30 @@ import type {
   WhoamiResponse,
 } from "@legion/contracts";
 import { awaitsDecision, inboxThreadRow, serviceSubjectLabel } from "@legion/contracts";
-import { actorText } from "../actor-text";
+import { actorText, deletedMark, editedMark } from "../actor-text";
 import { textHead } from "../ask-answer";
 import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { isNoAnswersRoute, renderSessionAnswersList } from "../session-answers";
-import type { DispatchToolResult, SessionContext } from "./context";
+import { LEFT_OUT, leftOutAt, type ReadTime, readTime } from "./as-of";
+import type { DispatchToolResult, ReadingContext, SessionContext } from "./context";
 import { dispatchAnswered, refusalWithCode } from "./failures";
 
 /**
- * `dispatch answers`: the answers this session's asks have been given since it last read them.
- * It names no owner, so it runs on the session's context alone.
+ * `dispatch answers`: the answers this session's asks have been given since it last read them;
+ * at a cut, those of the 72 hours before it. It names no owner, so it runs on the session's
+ * context alone.
  */
-export async function answersCommand(context: SessionContext): Promise<DispatchToolResult> {
-  const { configUrl, input, newClient: dispatchClient } = context;
+export async function answersCommand(
+  context: ReadingContext<SessionContext>
+): Promise<DispatchToolResult> {
+  const { configUrl, input, newClient: dispatchClient, reading } = context;
   const sessionId = input.sessionId?.trim();
   if (!sessionId) throw new Error("host session id is required for dispatch answers");
   let response: SessionAnswersResponse;
   try {
-    response = await dispatchClient().sessionAnswers(sessionId);
+    response = await dispatchClient().sessionAnswers(sessionId, {}, reading.cut);
   } catch (error) {
     if (isNoAnswersRoute(error)) {
       throw new Error(
@@ -33,8 +37,10 @@ export async function answersCommand(context: SessionContext): Promise<DispatchT
     }
     throw error;
   }
+  // At a cut the window is the 72 hours before it, as the server reads it (decision 12 of
+  // dispatch://INFRA-4620): nothing the list prints counts from this machine's clock.
   return {
-    text: renderSessionAnswersList(response.items ?? [], { now: Date.now() }),
+    text: renderSessionAnswersList(response.items ?? [], readTime(reading.cut)),
     details: { session: sessionId, since: response.since, total: response.total },
   };
 }
@@ -49,7 +55,9 @@ function whoamiPerson(identity: WhoamiResponse): string | null {
 
 /**
  * `dispatch whoami`: the identity Dispatch records this session's writes as. It names no owner,
- * so it runs on the session's context alone.
+ * so it runs on the session's context alone. A read-only credential, which Dispatch names by
+ * `read` among its scopes, is told it may only read, with its cut where it has one, in place of
+ * the sentences about the issues it would create.
  */
 export async function whoamiCommand(context: SessionContext): Promise<DispatchToolResult> {
   const { input, newClient: dispatchClient } = context;
@@ -64,6 +72,10 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // a session of its own: read either omission as that older build, not as "no session".
   const proved = identity.kind === "agent" ? (identity.session ?? null) : null;
   const project = identity.kind === "agent" ? (identity.project ?? null) : null;
+  // A Dispatch that predates read-only tokens names no `read` and no cut, and has no read-only
+  // credential to name.
+  const readOnly = identity.scopes?.includes("read") === true;
+  const cut = identity.kind === "agent" ? (identity.cut ?? null) : null;
   // The session Dispatch records the writes as: the one the credential proved, else this host's.
   const session = proved ?? sessionId;
   const unowned =
@@ -75,21 +87,40 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // the command that gets them a write. A verified service-account token names a service and
   // proves no session; it writes as before, and keeps the sentence it had.
   const signInNeeded = owner === null && service !== null && proved !== null;
-  const acting =
+  // Who the session is, as each sentence names it: the person it acts for, else the service it
+  // runs as. The text names the identity the way every other surface does; details keeps the
+  // subject whole, because that is the persisted value.
+  const who =
     owner !== null
-      ? `Session ${session} acts for ${owner}: issues you create without an assignee are assigned to ${owner}.`
+      ? `acts for ${owner}`
       : service !== null
-        ? // The text names the identity the way every other surface does; details
-          // keeps the subject whole, because that is the persisted value.
-          signInNeeded
-          ? `Session ${session} runs as service ${serviceSubjectLabel(service)} and no person, so it may read but Dispatch refuses every write it makes: run \`agent-secrets login\` on this machine to write as yourself.`
-          : `Session ${session} runs as service ${serviceSubjectLabel(service)}: ${unowned}`
-        : `Session ${session} runs under the shared token: ${unowned}`;
-  const elsewhere =
+        ? `runs as service ${serviceSubjectLabel(service)}`
+        : "runs";
+  // The session the credential proved, where it is not this host's.
+  const named =
     proved !== null && proved !== sessionId
-      ? ` Your credential names session ${proved}, which is not this host session (${sessionId}): Dispatch records every write you make as ${proved}.`
+      ? ` Your credential names session ${proved}, which is not this host session (${sessionId})`
       : "";
-  const writable = project !== null ? ` It may write project ${project} and no other.` : "";
+  let acting: string;
+  let elsewhere =
+    named === "" ? "" : `${named}: Dispatch records every write you make as ${proved}.`;
+  if (readOnly) {
+    // Dispatch refuses every write of a read-only credential with READ_ONLY_TOKEN, before any
+    // other check, so neither the issues it would create nor a sign-in it would need are its
+    // sentence, and it records no write as any session.
+    acting = `Session ${session} ${who} with a read-only credential: it may read, and Dispatch refuses every write it makes.${cut === null ? "" : ` Its cut is ${cut}, the past time it reads Dispatch at.`}`;
+    elsewhere = named === "" ? "" : `${named}.`;
+  } else if (owner !== null) {
+    acting = `Session ${session} ${who}: issues you create without an assignee are assigned to ${owner}.`;
+  } else if (signInNeeded) {
+    acting = `Session ${session} ${who} and no person, so it may read but Dispatch refuses every write it makes: run \`agent-secrets login\` on this machine to write as yourself.`;
+  } else if (service !== null) {
+    acting = `Session ${session} ${who}: ${unowned}`;
+  } else {
+    acting = `Session ${session} runs under the shared token: ${unowned}`;
+  }
+  const writable =
+    project !== null && !readOnly ? ` It may write project ${project} and no other.` : "";
   return {
     text: acting + elsewhere + writable,
     details: { session, owner, service, project },
@@ -144,10 +175,11 @@ function inboxSnoozed(row: InboxRow, now: number): boolean {
  * Which band a row sits in: the page's `sectionOf` (`.../features/inbox/sections.ts`). A snooze
  * the person set wins over everything, because deferring an ask is them saying it does not need
  * them now; every other row sits under whose turn it is. A row the Inbox lists without a turn
- * belongs to no band, as on the page, and so is listed under no heading.
+ * belongs to no band, as on the page, and so is listed under no heading. At a cut (`asOf`) no
+ * snooze is known, so every row sits under whose turn it is.
  */
-function inboxSection(row: InboxRow, now: number): "agent" | "human" | "later" | undefined {
-  if (inboxSnoozed(row, now)) return "later";
+function inboxSection(row: InboxRow, time: ReadTime): "agent" | "human" | "later" | undefined {
+  if ("now" in time && inboxSnoozed(row, time.now)) return "later";
   const waiting = row.waiting_on;
   return waiting === "agent" || waiting === "human" ? waiting : undefined;
 }
@@ -198,12 +230,20 @@ function inboxReplyAge(at: string, now: number): string {
 }
 
 /** One unread thread: who owns it, what kind of thread it is, the head of its subject, who wrote
- *  the newest reply and how long ago, and where to read it. */
+ *  the newest reply and how long ago, and where to read it. A thread whose root its author
+ *  deleted has no subject left, and the deleted line every read prints for one (`deletedMark`)
+ *  stands in its place. A thread whose root its author edited carries the mark every line prints
+ *  for one (`editedMark`) after its subject, which is the head of the root's words as they stand. */
 function inboxThreadLine(row: MyReplyRow, now: number): string {
   return [
     `- ${inboxThreadLabel(row)}`,
     row.kind,
-    textHead(row.subject, INBOX_QUESTION_HEAD),
+    ...(row.deleted_at == null
+      ? [
+          textHead(row.subject, INBOX_QUESTION_HEAD),
+          ...(row.edited_at == null ? [] : [editedMark(row.edited_at)]),
+        ]
+      : [deletedMark(row.deleted_at, row.deleted_by)]),
     actorText(row.reply.author),
     inboxReplyAge(row.reply.created_at, now),
     row.ref,
@@ -293,71 +333,98 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  *
  * `Credential requests` is the broker's list as Dispatch relays it, in its order: the pending
  * requests first, then the expired ones nobody has dismissed.
+ *
+ * Every band and age counts from `time`: the present, or the cut (`asOf`) the Inbox was read at.
+ * At a cut no event records a snooze, so `Later` is left out and each row it would hold sits
+ * under whose turn it is.
  */
 function formatInboxSummary(
   rows: readonly InboxRow[],
-  threads: readonly MyReplyRow[],
-  requests: readonly CredentialPendingRow[],
-  now: number
+  threads: readonly MyReplyRow[] | undefined,
+  requests: readonly CredentialPendingRow[] | undefined,
+  time: ReadTime
 ): string {
   const sections = { agent: [] as InboxRow[], human: [] as InboxRow[], later: [] as InboxRow[] };
   for (const row of rows) {
-    const section = inboxSection(row, now);
+    const section = inboxSection(row, time);
     if (section !== undefined) sections[section].push(row);
   }
   return [
-    `Needs you ${sections.human.length + requests.filter(awaitsDecision).length}`,
+    `Needs you ${sections.human.length + (requests ?? []).filter(awaitsDecision).length}`,
     ...sections.human.map(inboxAskLine),
     "",
     `Waiting on agents ${sections.agent.length}`,
     ...sections.agent.map(inboxAskLine),
     "",
-    `Later ${sections.later.length}`,
-    ...sections.later.map(inboxAskLine),
-    "",
-    `Unread threads ${threads.length}`,
-    ...threads.map((row) => inboxThreadLine(row, now)),
-    "",
-    `Credential requests ${requests.length}`,
-    ...requests.map(credentialRequestLine),
+    ...("asOf" in time
+      ? [`Later ${leftOutAt(time.asOf)}`]
+      : [`Later ${sections.later.length}`, ...sections.later.map(inboxAskLine)]),
+    // A band read at a cut from a route that holds no history is left out whole, and the
+    // `Left out at` line names it: only a read of the present lists the threads, whose ages
+    // count from its clock.
+    ...(threads === undefined || !("now" in time)
+      ? []
+      : [
+          "",
+          `Unread threads ${threads.length}`,
+          ...threads.map((row) => inboxThreadLine(row, time.now)),
+        ]),
+    ...(requests === undefined
+      ? []
+      : ["", `Credential requests ${requests.length}`, ...requests.map(credentialRequestLine)]),
   ].join("\n");
 }
 
 /**
- * `dispatch inbox`: what the person's Inbox page shows. It names no owner, so it runs on the
- * session's context alone.
+ * `dispatch inbox`: what the person's Inbox page shows; at a cut, the asks open then, with no
+ * unread threads and no credential requests, which hold no history. It names no owner, so it
+ * runs on the session's context alone.
  */
-export async function inboxCommand(context: SessionContext): Promise<DispatchToolResult> {
+export async function inboxCommand(
+  context: ReadingContext<SessionContext>
+): Promise<DispatchToolResult> {
+  const {
+    reading: { identity, cut },
+  } = context;
   const client = context.newClient();
-  // All four reads at once: they depend on nothing of each other, and the credential list is
-  // the slow one, since Dispatch relays it to the secrets broker.
-  const pending = settleSideRead(client.credentialPending());
-  const unread = settleSideRead(client.myReplies());
-  let identity: WhoamiResponse;
+  // The three reads at once: they depend on nothing of each other, and the credential list is
+  // the slow one, since Dispatch relays it to the secrets broker. Whoami was read before them
+  // (`readAtCut`). At a cut the two side reads are left out: their routes hold no history.
+  const pending = cut === undefined ? settleSideRead(client.credentialPending()) : undefined;
+  const unread = cut === undefined ? settleSideRead(client.myReplies()) : undefined;
+  if (cut !== undefined) {
+    cut.leave(LEFT_OUT.unreadThreads);
+    cut.leave(LEFT_OUT.credentialRequests);
+    cut.leave(LEFT_OUT.snoozes);
+  }
   let rows: InboxRow[];
   try {
-    [identity, rows] = await Promise.all([client.whoami(), client.inbox("me")]);
+    rows = await client.inbox("me", cut);
   } catch (error) {
     // The inbox route needs `person`, and a credential without it is refused 403
     // OAUTH_SCOPE_REQUIRED, whose message names the scope: the code is what the caller acts
-    // on, so it reaches the text. `whoami` needs no scope.
+    // on, so it reaches the text.
     throw refusalWithCode(error);
   }
   const viewer = whoamiPerson(identity);
   const warnings: string[] = [];
   // A Dispatch with no secrets broker answers null, which is an ordinary deployment: it has
   // no credential requests, so it lists and counts none.
-  const requests: readonly CredentialPendingRow[] =
-    sideRead(await pending, "credential requests", warnings)?.pending ?? [];
-  const threads: readonly MyReplyRow[] =
-    sideRead(await unread, "unread threads", warnings)?.rows ?? [];
+  const requests: readonly CredentialPendingRow[] | undefined =
+    pending === undefined
+      ? undefined
+      : (sideRead(await pending, "credential requests", warnings)?.pending ?? []);
+  const threads: readonly MyReplyRow[] | undefined =
+    unread === undefined
+      ? undefined
+      : (sideRead(await unread, "unread threads", warnings)?.rows ?? []);
   return {
-    text: formatInboxSummary(rows, threads, requests, Date.now()),
+    text: formatInboxSummary(rows, threads, requests, readTime(cut)),
     details: {
       viewer,
       asks: rows.length,
-      unread_threads: threads.length,
-      credential_requests: requests.length,
+      ...(threads === undefined ? {} : { unread_threads: threads.length }),
+      ...(requests === undefined ? {} : { credential_requests: requests.length }),
     },
     ...(warnings.length === 0 ? {} : { warnings }),
   };

@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  The `dispatch` command's `read`, `doc-read`, `search`, `answers`, `open-asks`, `inbox` and
+  `results` take `--as-of <text>`, an RFC 3339 time, and read Dispatch as it stood at that time.
+  Each of the seven now reads `GET /api/v1/whoami` first on every run, with or without
+  `--as-of`: a token whose whoami answer names a cut reads at that cut, and the cut replaces
+  `--as-of`. At a cut each command sends `as_of` to each route it calls that answers it, and calls
+  no route that keeps no history. The first line of the output, `Left out at <time>:`, names each
+  part that the command did not read and each field that Dispatch cannot give at that time. Every
+  age and window counts from that time.
+
+  The command uses nothing of an answer to a read at a past time that does not name the cut in
+  `Dispatch-As-Of`, which an older Dispatch does not send, and exits 1 naming the route.
+  `dispatch results` refuses `--at` with a cut, with exit 2. Dispatch's refusals of a read at a
+  past time print in words before Dispatch's own message.
+
+  `dispatch issues` is not one of the seven. Under a token that carries a cut it lists the issues
+  as Dispatch answers that token, as of the cut, with no `Left out at` line.
+time: 2026-11-20T19:00:03Z
+custom:
+  Issue: pr4639

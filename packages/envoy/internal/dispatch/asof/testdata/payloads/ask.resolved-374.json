@@ -1,0 +1,81 @@
+{
+  "id": 374,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 8,
+  "type": "ask.resolved",
+  "actor": {
+    "kind": "session",
+    "id": "01a13bcd-3e9f-7770-b0f4-88fa364eb58e",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lore",
+      "tmux": "lorem ip",
+      "pane": "lo",
+      "session_title": "lorem ipsum dolor sit "
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-16T17:43:02.315281Z",
+  "payload": {
+    "anchor": null,
+    "answer": null,
+    "artifact_id": null,
+    "author": {
+      "id": "01a13bcd-3e9f-7770-b0f4-88fa364eb58e",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+        "host": "lor",
+        "machine": "lorem ipsum d",
+        "pane": "lo",
+        "session_title": "lorem ipsum dolor sit ",
+        "tmux": "lorem i"
+      }
+    },
+    "block_id": null,
+    "created_at": "2026-10-16T17:37:35.607229Z",
+    "edited_at": null,
+    "id": "1f9eecf6-c606-427d-bd4a-a094c8dad473",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 253,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+        "id": "b2",
+        "label": "lorem "
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo",
+        "id": "b3",
+        "label": "lorem ip"
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ip",
+    "referenced_by_count": 1,
+    "resolution": {
+      "actor": {
+        "id": "01a13bcd-3e9f-7770-b0f4-88fa364eb58e",
+        "kind": "session",
+        "origin": {
+          "cwd": "lore",
+          "host": "lor",
+          "machine": "lorem ipsum d",
+          "pane": "lo",
+          "session_title": "lorem ipsum dolor sit ",
+          "tmux": "lorem ip"
+        }
+      },
+      "at": "2026-10-16T17:43:02.325337186Z",
+      "kind": "retracted",
+      "reason": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum "
+    },
+    "revision": 1,
+    "state": "resolved",
+    "urgency": "low"
+  }
+}

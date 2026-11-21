@@ -242,11 +242,14 @@ export interface WriteBounds extends RequestBounds {
   readonly progress?: (loaded: number, total: number) => void;
 }
 
-/** A write Dispatch had already made, with no answer it can give for it (`code`): the first
- *  answer was too large for it to keep, so the repeat came back with the first one's status and
- *  no resource (`IDEMPOTENCY_ANSWER_NOT_KEPT`), or the answer was lost before Dispatch stored it,
- *  so the repeat came back `409 KEY_COMMITTED` (`isKeyCommitted`). The write landed; its caller
- *  reads what it wrote again, and shows no refusal. */
+/** A write Dispatch had already made, with no answer it can give for it (`code`): Dispatch gives
+ *  no copy of the first answer, which was too large for it to keep or holds a comment or an issue
+ *  message that was deleted, or a document version name a delete replaced, or a related-item hit
+ *  for a document in which a comment's insert suggestion, deleted since, was made at any time,
+ *  so the repeat came back with the first one's status and no resource
+ *  (`IDEMPOTENCY_ANSWER_NOT_KEPT`), or the answer was lost before Dispatch stored it, so the repeat
+ *  came back `409 KEY_COMMITTED` (`isKeyCommitted`). The write landed; its caller reads what it
+ *  wrote again, and shows no refusal. */
 export class AnswerNotKeptError extends Error {
   readonly code: IdempotencyLandedCode;
   readonly status: number;

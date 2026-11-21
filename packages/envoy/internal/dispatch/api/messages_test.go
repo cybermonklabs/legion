@@ -118,7 +118,7 @@ func TestCreateMessageReplyCarriesReplyBodyAndGetMessageReturnsChain(t *testing.
 		t.Fatalf("list events: status=%d body=%s", events.Code, events.Body.String())
 	}
 	if !strings.Contains(events.Body.String(), `"reply_body":"Ship the build tonight"`) {
-		t.Fatalf("message.created event missing reply_body preview: %s", events.Body.String())
+		t.Fatalf("message.answered event missing reply_body preview: %s", events.Body.String())
 	}
 
 	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/messages/"+root.ID, nil, "alice")

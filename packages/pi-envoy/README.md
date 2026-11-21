@@ -526,6 +526,10 @@ reviews these calls:
 
 - `dispatch ask`, `dispatch message`, `dispatch edit-ask`, `dispatch comment`, `dispatch doc-edit`
   and `dispatch request-approval`
+- the four corrections of a post the gate already reviewed: `dispatch edit-comment`,
+  `dispatch delete-comment`, `dispatch edit-message` and `dispatch delete-message`. An edit's new
+  body is the text under review, as the `comment` or `message` that posted it was; a delete
+  carries no body, so what is under review is the call itself, which names the post it takes down
 - `dispatch issue` with `--spec` or `--spec-file`
 - `dispatch artifact` when it uploads a markdown document: inline text (`--content`,
   `--content-file`), a `--path` file whose name ends in `.md` or `.markdown`, or a `--name` that
@@ -674,7 +678,7 @@ gated write only when it consumes one, so a write sent any other way is refused 
   ledger is read, so a read of the stored version would see the new text and count nothing.
 
 The gated writes are the same list for the gate and the CLI (`gatedWrite` in
-`@legion/envoy-client/askgate-marker`): the six commands above, an `issue` with a spec and an
+`@legion/envoy-client/askgate-marker`): the ten commands above, an `issue` with a spec and an
 `artifact` that uploads a markdown document. `--help`, `--dry-run` and every other command need no
 marker. So a pipe to a program other than one trailing `head` or `tail`, a loop, a variable,
 `xargs`, an alias, a script, `python3 -c`, `node -e`, or a process an eval cell starts runs, and
@@ -982,7 +986,9 @@ CLI outside the form the gate reads and carried an ask for a person (`outcome: "
   send the recorder back to the read and then to the append. Each append carries a key of its own,
   the sha256 of the session and the record's id, so an append Dispatch ran late is replayed to its
   next attempt rather than written twice; the same record sent again with another time in its body
-  gets `422 KEY_REUSED`, is not written, and is counted as not confirmed. Keys
+  gets `422 KEY_REUSED`, is not written, and is counted as not confirmed. An append Dispatch made
+  and gave no copy of its answer for (`409 KEY_COMMITTED`, or a replay of an answer it kept none
+  of) is in the document, so the record is written and counted nowhere as not confirmed. Keys
   belong to the login that sent them, and every Legion pod writes under the shared agent token,
   which is one login for all of them (`requestKeyLogin`,
   `packages/envoy/internal/dispatch/api/request_keys.go`); Dispatch keeps a key 24 h

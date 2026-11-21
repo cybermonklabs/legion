@@ -25,6 +25,7 @@ import {
 } from "./signins";
 import type { TokenSource } from "./source";
 import { BrokerTokenClient } from "./token-client";
+import { SCOPE_READ } from "./wire";
 
 /** Names the secrets broker, as it does for every other form of `agent-secrets`. */
 export const BROKER_URL_VAR = "AGENT_SECRETS_URL";
@@ -215,6 +216,13 @@ export interface MadeBrokerClient {
   readonly signIn: Pick<SignInRecord, "person" | "thumbprint"> | undefined;
 }
 
+/** A trade narrowed to reading, as a caller of {@link brokerTokenClient} asks for one: the scope
+ *  `read` ({@link SCOPE_READ}), and the cut where the token reads as of a past time. */
+export interface ReadTrade {
+  /** The cut, an RFC 3339 time sent as written (`FORM_AS_OF`); absent or empty for none. */
+  readonly asOf?: string | undefined;
+}
+
 /**
  * The client this environment describes for a caller acting as the session `own`, with the
  * sign-in it trades, or undefined where it names no broker or no identity — a machine that trades
@@ -256,10 +264,19 @@ export interface MadeBrokerClient {
  * Claude Code process, each of them on the operator's machine-logins list for its hour and
  * removed by nothing. The machine's own launcher credential is `agent-secrets`' and the
  * helper's, which ask for it.
+ *
+ * Where `read` is given, the trade asks for the scope read ({@link SCOPE_READ}) and the cut `read`
+ * names: the token keeps the identity the same trade would have had, and only reads. A person's
+ * read trade still sends no `launcher_credential`, which the broker reads as declined for a read
+ * trade, and it makes a key of its own for the client, which it sends as the holder key
+ * (`holderKey`): the box key proves the sign-in and signs the trade alone, and the token is bound
+ * to the holder key, which signs every proof presented beside it. The machine's own client already
+ * proves a key this process made, which holds no launcher credential, and needs no holder key.
  */
 export async function brokerTokenClient(
   env: BrokerEnvironment,
-  own = ""
+  own = "",
+  read?: ReadTrade | undefined
 ): Promise<MadeBrokerClient | undefined> {
   const brokerUrl = value(env, BROKER_URL_VAR);
   const machine = machineIdentity(env);
@@ -268,6 +285,7 @@ export async function brokerTokenClient(
   // into the variable.
   if (!isHttpUrl(brokerUrl)) throw new Error(`${BROKER_URL_VAR} is not an http or https URL`);
   const record = await chooseSignIn(env);
+  const narrowed = read === undefined ? {} : { scope: SCOPE_READ, asOf: read.asOf };
   if (record === undefined) {
     const client = new BrokerTokenClient({
       brokerUrl,
@@ -275,6 +293,7 @@ export async function brokerTokenClient(
       subject: machine,
       session: tradeSession(env, own),
       launcherCredential: false,
+      ...narrowed,
     });
     return { client, signIn: undefined };
   }
@@ -291,6 +310,8 @@ export async function brokerTokenClient(
     actor: machine,
     session: own.trim() || signInSessionName(record),
     projects: tradeProjects(env),
+    ...narrowed,
+    ...(read === undefined ? {} : { holderKey: await newDpopKey() }),
   });
   return { client, signIn: { person: record.person, thumbprint: record.thumbprint } };
 }

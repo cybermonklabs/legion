@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"sync/atomic"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/bytelru"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -181,6 +183,23 @@ func (s *server) writeListAnswer(w http.ResponseWriter, key listAnswerKey, encod
 	writeListAnswerBytes(w, gzipped, body)
 }
 
+// writePastListAnswer writes encoded as a list answer at cut, the comment list's or the feed's.
+// Its ETag hashes the cut and the answer's own bytes, closed with the lines both lists' ETags
+// carry (listETag): an answer at a cut can move with no write its validator of metadata reads (a
+// post deleted after the cut reads as deleted at it), and an ETag that names its cut is never a
+// present answer's or another cut's. It is kept under no key, since the kept answers name no cut,
+// and it goes out as plain JSON: the writer of a past-time answer takes out the members it leaves
+// out (pastAnswer), and compressAnswers compresses what that writer writes.
+func (s *server) writePastListAnswer(w http.ResponseWriter, r *http.Request, cut asof.Cut, encoded listAnswerBytes, trees bool) {
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "as_of=%s\n", cut)
+	_, _ = hash.Write(encoded)
+	if answerNotModified(w, r, s.listETag(hash, trees)) {
+		return
+	}
+	writeListAnswerBytes(w, false, encoded)
+}
+
 // encodeListAnswer is body encoded exactly as WriteJSON writes it, trailing newline and all, so
 // the bytes a list answers with are the bytes it answered with before any of them were kept.
 func encodeListAnswer(body any) (listAnswerBytes, error) {
@@ -223,7 +242,7 @@ func listAnswerKeyFor(r *http.Request, route, owner, etag string) listAnswerKey 
 }
 
 // listETag closes a list's hash with the three lines both lists' ETags carry and answers the
-// validator itself, in referencesETag's form. The trees variant is in the hash rather than left
+// validator itself: the hash's hex in double quotes. The trees variant is in the hash rather than left
 // to `Vary: Dispatch-Trees` alone, so a caller that gains or drops the header can never match an
 // ETag given for the other reading however a cache between it and Dispatch behaves - a list of
 // nothing answers the same bytes either way, and would otherwise share one. The parser version

@@ -258,7 +258,7 @@ func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing
 	if !strings.Contains(asked, words) || !strings.Contains(asked, "href: "+href) {
 		t.Fatalf("the model was asked %q, want the question and the hit's href", asked)
 	}
-	stored, err := goingItemText(context.Background(),
+	stored, _, err := goingItemText(context.Background(),
 		rig.database.Pool, []going.Hit{{Kind: "issue", ID: issueKey}}, contracts.GoingHitRuneMax)
 	if err != nil {
 		t.Fatalf("read the issue's stored text: %v", err)

@@ -1,0 +1,90 @@
+{
+  "_comment": "answers holds the broker's introspection answer (oauthwire.Introspection) for a token narrowed to reading, keyed by the kind of trade that minted it. Before it reads an answer, a test replaces each JSON string ${jkt}, ${session} and ${exp}, its quotes included: ${jkt} with the thumbprint of the key the token is bound to and ${session} with the token's session, both strings, and ${exp} with the token's expiry in seconds since the epoch, a number. The key the token is bound to is the holder key's for person-sign-in, machine-login and machine-login-with-a-cut, whose read trades send a DPoP-Holder proof by a key made for the token's holder, and the caller's DPoP proof key for every other kind. Everything else is literal.",
+  "answers": {
+    "pod-entry": {
+      "active": true,
+      "session": "${session}",
+      "person": "ada@example.com",
+      "project_scope": "read-named",
+      "projects": ["ACME"],
+      "scope": "read",
+      "exp": "${exp}",
+      "client_id": "dispatch-token-exchange",
+      "jkt": "${jkt}"
+    },
+    "read-entry": {
+      "active": true,
+      "session": "${session}",
+      "service": "example-reader",
+      "project_scope": "read-none",
+      "scope": "read",
+      "exp": "${exp}",
+      "client_id": "dispatch-token-exchange",
+      "jkt": "${jkt}"
+    },
+    "workflow-entry": {
+      "active": true,
+      "session": "${session}",
+      "person": "ada@example.com",
+      "project_scope": "read-named",
+      "projects": ["ACME"],
+      "scope": "read",
+      "exp": "${exp}",
+      "client_id": "dispatch-token-exchange",
+      "jkt": "${jkt}"
+    },
+    "google-identity-no-person": {
+      "active": true,
+      "session": "${session}",
+      "service": "example-fleet",
+      "project_scope": "read-person",
+      "scope": "read",
+      "exp": "${exp}",
+      "client_id": "dispatch-token-exchange",
+      "jkt": "${jkt}"
+    },
+    "google-identity-with-a-person": {
+      "active": true,
+      "session": "${session}",
+      "person": "ada@example.com",
+      "project_scope": "read-named",
+      "projects": ["ACME"],
+      "scope": "read",
+      "exp": "${exp}",
+      "client_id": "dispatch-token-exchange",
+      "jkt": "${jkt}"
+    },
+    "person-sign-in": {
+      "active": true,
+      "session": "${session}",
+      "person": "ada@example.com",
+      "machine": "example-fleet@example-project.iam.gserviceaccount.com",
+      "project_scope": "read-person",
+      "scope": "read person",
+      "exp": "${exp}",
+      "client_id": "dispatch-token-exchange",
+      "jkt": "${jkt}"
+    },
+    "machine-login": {
+      "active": true,
+      "session": "${session}",
+      "person": "ada@example.com",
+      "project_scope": "read-person",
+      "scope": "read person",
+      "exp": "${exp}",
+      "client_id": "dispatch-token-exchange",
+      "jkt": "${jkt}"
+    },
+    "machine-login-with-a-cut": {
+      "active": true,
+      "session": "${session}",
+      "person": "ada@example.com",
+      "project_scope": "read-person",
+      "scope": "read person",
+      "as_of": "2026-11-18T09:30:00.123456Z",
+      "exp": "${exp}",
+      "client_id": "dispatch-token-exchange",
+      "jkt": "${jkt}"
+    }
+  }
+}

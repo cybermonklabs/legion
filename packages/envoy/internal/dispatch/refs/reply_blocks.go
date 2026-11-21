@@ -72,7 +72,7 @@ func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID, serve
 			where c.id = $1::uuid`
 	case ItemMessage:
 		query = `
-			select m.body, m.created_at, m.issue_key is not null,
+			select m.body, coalesce(m.edited_at, m.created_at), m.issue_key is not null,
 			       s.message_id is not null, s.owed_at is not null, s.body_sha256
 			from messages m left join message_block_state s on s.message_id = m.id
 			where m.id = $1::uuid`
@@ -190,7 +190,11 @@ func ItemBlockRef(kind ItemKind, issueKey *string, project, slug, itemID, blockI
 // reply's owner (as itemBlockParent addresses the reply's parent); a message is owned by its
 // issue alone, so a message reply needs neither project nor slug, and a direct message's block
 // has no reference. Text is the block's stored excerpt, which a removal keeps, so a removed
-// block reads the last text it held.
+// block reads the last text it held. A block of a comment or a message carries the post's
+// EditedAt, read from the item row the block belongs to, so a read of the reply alone says its
+// parent was edited. A block of a post its author deleted reads removed with no text, since the
+// delete clears every excerpt (TombstoneItem), and carries the post's delete mark, read from the
+// same row.
 func ReplyBlocks(ctx context.Context, q Queryer, kind ItemKind, replyIDs []string) (map[string]*model.ReplyBlock, error) {
 	blocks := make(map[string]*model.ReplyBlock)
 	if len(replyIDs) == 0 {
@@ -209,9 +213,10 @@ func ReplyBlocks(ctx context.Context, q Queryer, kind ItemKind, replyIDs []strin
 	}
 	query := `
 		select r.id::text, b.node_id, b.block_id, b.excerpt, b.position is null, b.` + tables.item + `::text,
-		       r.issue_key, ` + owner + `
+		       r.issue_key, ` + owner + `, ` + kind.postMarkColumns("post") + `
 		from ` + replies.items + ` r
-		join ` + tables.blocks + ` b on b.node_id = r.replies_to_block` + joins + `
+		join ` + tables.blocks + ` b on b.node_id = r.replies_to_block
+		join ` + tables.items + ` post on post.id = b.` + tables.item + joins + `
 		where r.id = any($1::uuid[]) and r.replies_to_block is not null`
 	rows, err := q.Query(ctx, query, replyIDs)
 	if err != nil {
@@ -221,10 +226,15 @@ func ReplyBlocks(ctx context.Context, q Queryer, kind ItemKind, replyIDs []strin
 	for rows.Next() {
 		var replyID, itemID, project, slug string
 		var issueKey *string
+		var marks postMarks
 		block := model.ReplyBlock{}
-		if err := rows.Scan(&replyID, &block.Node, &block.BlockID, &block.Text, &block.Removed, &itemID, &issueKey, &project, &slug); err != nil {
+		if err := rows.Scan(append([]any{&replyID, &block.Node, &block.BlockID, &block.Text, &block.Removed, &itemID, &issueKey, &project, &slug}, marks.targets()...)...); err != nil {
 			return nil, fmt.Errorf("scan the block a %s reply names: %w", kind, err)
 		}
+		if block.DeletedAt, block.DeletedBy, err = marks.deleted(); err != nil {
+			return nil, fmt.Errorf("the %s block %s: %w", kind, block.Node, err)
+		}
+		block.EditedAt = marks.editedAt
 		block.Ref = BlockRef(itemRef(string(kind), issueKey, project, slug, itemID), block.BlockID)
 		blocks[replyID] = &block
 	}

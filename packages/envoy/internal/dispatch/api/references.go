@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -327,6 +328,13 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 // (refs.RemovedBlockNode); a pin to a current block carries the current block's facts. A pin to
 // a version the document lacks, to one whose blocks are not on record (an older build wrote it and
 // none indexed it) or to one that did not hold the block answers 404, each saying which.
+//
+// N's text of the block is read as every read of version N reads its text: without the words of
+// an insert suggestion whose comment its author deleted and no accept made document text, which
+// N's insert tree finds by the mark's id (docs.MaskedVersionBlockTexts, the lookup
+// docs.MaskedVersionText masks the version by). The block index recorded the block's text with
+// those words, and a row of it is never rewritten, so the pin's text is the block's in that tree
+// rendered without them, where the block holds them, and the text recorded otherwise.
 func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	documentKey, _, _ := strings.Cut(query.ID, "#")
@@ -362,8 +370,16 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 	case at.Text == nil:
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s at version %d", ref.Block, document.Ref, ref.Pin)
 	}
+	pinText := *at.Text
+	masked, err := docs.MaskedVersionBlockTexts(ctx, pool, document.ID, at.InsertTree, []string{ref.Block})
+	if err != nil {
+		return model.GraphNode{}, err
+	}
+	if maskedText, held := masked[ref.Block]; held {
+		pinText = maskedText
+	}
 	blockRef := refs.BlockRef(document.Ref, ref.Block)
-	pin := &model.BlockPin{Version: ref.Pin, Ref: blockRef + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
+	pin := &model.BlockPin{Version: ref.Pin, Ref: blockRef + "@v" + strconv.Itoa(ref.Pin), Text: pinText}
 	if !current {
 		pin.State, pin.RemovedVersion = "removed", at.RemovedVersion
 		removed, err := refs.RemovedBlockNode(ctx, pool, document, query.ID, ref.Block, at.RemovedVersion)
@@ -392,8 +408,16 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 // current text with N's, or "removed" with the revision that removed it (RemovedVersion), as a
 // node with no text or changed revision whose facts are a removed block's
 // (refs.RemovedItemBlockNode). A pin past the item's current revision, or to one that did not
-// hold the block, answers 404, each saying which. A message never changes, so no reference pins
-// a message's block (parseReferencesQuery refuses one).
+// hold the block, answers 404, each saying which. A message records no revisions, not even for an
+// edit of its body, so there is no revision to pin a message's block to and no reference pins one
+// (parseReferencesQuery refuses one).
+//
+// A block of a post its author deleted is gone with the body: the delete indexes the empty body,
+// which takes every block out of the post (planEditedItem, in clearDeletedPostBody), and clears
+// the text each revision recorded (refs.TombstoneItem). So each 404 a read of it can reach - no
+// current block, no recorded text at the pin, and a pin past the current revision - names the
+// deletion as well (itemBlockNotFound): every read of a deleted post says that it is deleted and
+// gives no part of what it said.
 func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	kind := refs.ItemKind(ref.Item)
@@ -416,7 +440,8 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, r
 	}
 	if ref.Pin == 0 {
 		if !current {
-			return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no %s %q in %s %s", noun, ref.Block, ref.Item, item.ID)
+			return model.GraphNode{}, s.itemBlockNotFound(ctx, kind, item.ID,
+				fmt.Sprintf("no %s %q in %s %s", noun, ref.Block, ref.Item, item.ID))
 		}
 		return node, nil
 	}
@@ -426,9 +451,11 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, r
 	}
 	switch {
 	case ref.Pin > at.Current:
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no revision %d of %s %s; its current revision is %d", ref.Pin, ref.Item, item.ID, at.Current)
+		return model.GraphNode{}, s.itemBlockNotFound(ctx, kind, item.ID,
+			fmt.Sprintf("no revision %d of %s %s; its current revision is %d", ref.Pin, ref.Item, item.ID, at.Current))
 	case at.Text == nil:
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no %s %q in %s %s at revision %d", noun, ref.Block, ref.Item, item.ID, ref.Pin)
+		return model.GraphNode{}, s.itemBlockNotFound(ctx, kind, item.ID,
+			fmt.Sprintf("no %s %q in %s %s at revision %d", noun, ref.Block, ref.Item, item.ID, ref.Pin))
 	}
 	pin := &model.BlockPin{Version: ref.Pin, Ref: refs.BlockRef(item.Ref, ref.Block) + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
@@ -460,11 +487,59 @@ func itemBlockNoun(kind string) string {
 	return "block"
 }
 
+// itemBlockNotFound is the 404 a block reference answers when the item holds no such block:
+// `missing`, the words the read's own case wrote, and after them the deletion when the item is
+// a post its author withdrew. The delete clears the body, takes every block out of the post by
+// indexing the empty body (planEditedItem, in clearDeletedPostBody) and clears the text each
+// revision recorded (refs.TombstoneItem), so a read of a deleted post's block would otherwise
+// say that the block is missing and leave the deletion unsaid, where every read of the post
+// says that it is deleted. The status stays 404: the reference names a node no read can give,
+// which is what NOT_FOUND says here, and the words match deletedPostError's
+// (handler_errors.go), written again here under that 404. The mark is read on this path alone, so a reference to a
+// block that is there costs no query for it.
+func (s *server) itemBlockNotFound(ctx context.Context, kind refs.ItemKind, itemID, missing string) error {
+	deleted, err := s.postIsDeleted(ctx, kind, itemID)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		return errorf(http.StatusNotFound, "NOT_FOUND", "%s: this %s is deleted", missing, kind)
+	}
+	return errorf(http.StatusNotFound, "NOT_FOUND", "%s", missing)
+}
+
+// postIsDeleted reports whether comment or message itemID carries a delete mark (deleted_at).
+// A comment and a message are the only posts a delete marks - the columns are theirs alone
+// (20261110224508_post_corrections.up.sql) - so an ask, the third item kind, answers false and
+// reads nothing. The table of a kind is refs', which owns the map of an item kind to its
+// storage (refs.ItemKind.ItemTable), as postHistoryOwner reads it. A row deleted outright
+// between the caller's read and this one answers false, and the caller's own refusal then
+// stands as it wrote it.
+func (s *server) postIsDeleted(ctx context.Context, kind refs.ItemKind, itemID string) (bool, error) {
+	if kind != refs.ItemComment && kind != refs.ItemMessage {
+		return false, nil
+	}
+	items, _, err := kind.ItemTable()
+	if err != nil {
+		return false, err
+	}
+	var deleted bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, `
+		select deleted_at is not null from `+items+` where id = $1
+	`, itemID).Scan(&deleted); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read the delete mark of %s %s: %w", kind, itemID, err)
+	}
+	return deleted, nil
+}
+
 // blockPin is a trailing `@v<N>` pin, as a block reference writes one.
 var blockPin = regexp.MustCompile(`@v[0-9]+$`)
 
 // pinsAMessageBlock reports whether raw, a reference text.ParseRef refused, is a block of a
-// message pinned to a revision: the grammar reads none, since a message never changes.
+// message pinned to a revision: the grammar reads none, since a message records no revisions.
 func pinsAMessageBlock(raw, serverURL string) bool {
 	unpinned := blockPin.ReplaceAllString(raw, "")
 	if unpinned == raw {
@@ -485,7 +560,7 @@ func parseRequestRef(raw, serverURL string) (text.Ref, error) {
 		return ref, nil
 	}
 	if pinsAMessageBlock(raw, serverURL) {
-		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
+		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which records no revisions; name the block without @v<N>", raw)
 	}
 	return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
 }
@@ -635,13 +710,19 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			Via:      closureMember.Via,
 		})
 	}
-	etag := referencesETag(issue.LastSeq, members, truncated, latestOnly)
-	w.Header().Set("ETag", etag)
-	if r.Header.Get("If-None-Match") == etag {
-		w.WriteHeader(http.StatusNotModified)
+	// The answer is encoded once, exactly as WriteJSON writes it, trailing newline and all, so
+	// the token hashes the bytes it validates and those are the bytes written.
+	var answer bytes.Buffer
+	if err := json.NewEncoder(&answer).Encode(model.IssueReferences{Members: members, Truncated: truncated}); err != nil {
+		s.writeHandlerError(w, fmt.Errorf("encode the issue's references: %w", err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, model.IssueReferences{Members: members, Truncated: truncated})
+	if answerNotModified(w, r, referencesETag(answer.Bytes(), latestOnly)) {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(answer.Bytes())
 }
 
 // referencesClosureBound bounds refs.Closure's walk for one GET of an issue's references, as the
@@ -707,18 +788,27 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, model.ArtifactReferences{Outgoing: outgoing, ReferencedBy: referencedBy})
 }
 
-// referencesETag hashes what an issue references answer depends on. The trimmed answer
-// (latestOnly) hashes one more line naming its variant, so the full and trimmed answers of one
-// issue never share an ETag; the full answer hashes no such line.
-func referencesETag(lastSeq int, members []model.ReferenceMember, truncated, latestOnly bool) string {
+// referencesETag is an issue references answer's validator: a hash of the answer's own bytes.
+// The trimmed answer (latestOnly) hashes one more line naming its variant ahead of them, so the
+// full and trimmed answers of one issue never share an ETag, even where every member has one
+// version and the two answers are the same bytes; the full answer hashes no such line, and no
+// answer's bytes begin with it, as each begins with `{`.
+//
+// It hashes the answer rather than what the answer is made of because a member moves without
+// anything this issue holds moving with it. A member is a document of another owner (no member
+// is one of this issue's own documents, refs.Closure), and that owner's writes append their
+// events there: a rename of the document (artifact.renamed, renameArtifact) changes the
+// member's artifact.name, and the delete of a comment whose accepted suggestion named a version
+// after the comment's body renames that version (renameAcceptedVersion), while this issue's
+// event sequence, the closure and each member's latest version stand still. A token over those
+// would answer a reader holding it 304 over the old name; a token over the answer moves with
+// every byte a reader is shown.
+func referencesETag(answer []byte, latestOnly bool) string {
 	hash := sha256.New()
-	_, _ = fmt.Fprintf(hash, "%d\n%t\n", lastSeq, truncated)
 	if latestOnly {
 		_, _ = io.WriteString(hash, "versions=latest\n")
 	}
-	for _, member := range members {
-		_, _ = fmt.Fprintf(hash, "%s@%d\n", member.Artifact.ID, member.Artifact.Versions[len(member.Artifact.Versions)-1].Number)
-	}
+	_, _ = hash.Write(answer)
 	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
 }
 

@@ -119,8 +119,11 @@ func TestTheWireCorpusHoldsThisClient(t *testing.T) {
 				Session:   exchange.Session,
 				Projects:  exchange.Projects,
 				// The entry's own form says whether this trade declines the launcher
-				// credential, so the one place the corpus states it is the form it asserts.
+				// credential, and the scope and the cut it asks for, so the one place the corpus
+				// states them is the form it asserts.
 				NoLauncherCredential: exchange.Form[oauthwire.FormLauncherCredential] == oauthwire.FormLauncherCredentialDeclined,
+				Scope:                exchange.Form["scope"],
+				AsOf:                 exchange.Form[oauthwire.FormAsOf],
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)

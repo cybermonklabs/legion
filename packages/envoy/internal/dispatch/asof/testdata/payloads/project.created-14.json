@@ -1,0 +1,29 @@
+{
+  "id": 14,
+  "issue_key": null,
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 1,
+  "type": "project.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a13c57-d826-7242-80fe-5f0670188b11",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit ",
+      "tmux": "lorem ip",
+      "pane": "lo",
+      "session_title": "lorem ipsum dolor sit"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-16T05:50:24.691734Z",
+  "payload": {
+    "key": "lorem",
+    "name": "lorem ipsum dolor",
+    "open_asks": 0,
+    "created_at": "2026-10-16T05:50:24.691734Z"
+  }
+}
