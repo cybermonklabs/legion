@@ -6,11 +6,13 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
 // TestARestrictedOperatorGetsNoSecret is the request machine's half of the rule that a restricted
@@ -263,9 +265,54 @@ func TestAnApprovalOfARestrictedMembersOldRequestGrantsNothing(t *testing.T) {
 		t.Fatalf("%s's old request holds %d grants, %v; want none", outsider, grants, err)
 	}
 
-	// The control: the same approval of a full member's pending request grants it.
+	// While Dispatch cannot say what kind of member the full member is, the same approval is
+	// refused, *projectaccess.MemberKindUncheckable, and decides nothing: the request stays
+	// pending with no grant. A fresh client stands in for the 2 s a failed read is kept.
+	dispatch.SetDown(true)
+	m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
+	dec, err = m.ApplyDecision(ctx, *fullReq.RecordID, true, "bob@example.com")
+	var uncheckable *projectaccess.MemberKindUncheckable
+	if !errors.As(err, &uncheckable) || uncheckable.Person != fixtureOperator {
+		t.Fatalf("ApplyDecision(approve %s's request) while Dispatch is down = %+v, %v; want *projectaccess.MemberKindUncheckable naming %s", fixtureOperator, dec, err, fixtureOperator)
+	}
+	var state string
+	if err := m.Store.Pool.QueryRow(ctx, `select state, (select count(*) from grants where request_id=$1) from requests where id=$1`, fullReq.ID).Scan(&state, &grants); err != nil || state != "pending" || grants != 0 {
+		t.Fatalf("%s's request after the refused approval: state %q with %d grants, %v; want pending and none", fixtureOperator, state, grants, err)
+	}
+
+	// The control: once Dispatch answers, the same approval of the full member's request grants it.
+	dispatch.SetDown(false)
+	m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 	if dec, err := m.ApplyDecision(ctx, *fullReq.RecordID, true, "bob@example.com"); err != nil || dec.State != "granted" || dec.GrantID == "" {
-		t.Fatalf("ApplyDecision(approve %s's request) = %+v, %v; want it granted", fixtureOperator, dec, err)
+		t.Fatalf("ApplyDecision(approve %s's request) once Dispatch answers = %+v, %v; want it granted", fixtureOperator, dec, err)
+	}
+}
+
+// TestAJudgesApprovalIsRefusedWhileTheMemberKindCannotBeRead: the model judge's approval asks what
+// kind of member the session's person is, afresh and under its bound, and while Dispatch cannot
+// say, the approval is refused, *projectaccess.MemberKindUncheckable, and nothing is granted; once
+// Dispatch answers, the same approval grants.
+func TestAJudgesApprovalIsRefusedWhileTheMemberKindCannotBeRead(t *testing.T) {
+	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "TEAM_HUMAN", Hosts: []string{"team.example"}, Judge: new(uint32(900))}}}
+	m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
+	retag(t, m, taggedSecret("TEAM_HUMAN", fixtureOperator, policy.TierHuman, teamProject, "team-human-v1"))
+	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
+	m.Judge = func(PendingRequest) {}
+	req := pendingJudgeable(t, m, enr, key, "TEAM-7: rotate the deploy key", 600, "TEAM_HUMAN")
+	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
+	dispatch.SetDown(true)
+	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve"})
+	var uncheckable *projectaccess.MemberKindUncheckable
+	if !errors.As(err, &uncheckable) || uncheckable.Person != fixtureOperator {
+		t.Fatalf("ApplyJudgeDecision(approve) while Dispatch is down = %+v, %v; want *projectaccess.MemberKindUncheckable naming %s", dec, err, fixtureOperator)
+	}
+	var grants int
+	if err := m.Store.Pool.QueryRow(t.Context(), `select count(*) from grants where request_id=$1`, req.ID).Scan(&grants); err != nil || grants != 0 {
+		t.Fatalf("the judge's refused approval left %d grants, %v; want none", grants, err)
+	}
+	dispatch.SetDown(false)
+	if dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve"}); err != nil || dec.State != "granted" {
+		t.Fatalf("ApplyJudgeDecision(approve) once Dispatch answers = %+v, %v; want granted: the judge asks afresh", dec, err)
 	}
 }
 

@@ -62,8 +62,11 @@ func (s slowAccess) States(ctx context.Context, projects []string) (map[string]p
 // when that approval fails. With 2 seconds of the run left and a Dispatch that takes 3 to answer,
 // the approval's reads end JudgeRowReserve before the run does (JudgeDispatch), so the approval
 // fails while there is still time to write the row, and the row is written on the same context.
-// The control is a Dispatch that answers at once: the approval is granted, writing its own row,
-// and the second row is the one written after it.
+// The approval's first read is the session's person's member kind (restrictedOperator, asked
+// before the project facts so they stay the last read before the transaction), so the read cut
+// short is that one: a *projectaccess.MemberKindUncheckable whose failure is the bound's
+// deadline. The control is a Dispatch that answers at once: the approval is granted, writing its
+// own row, and the second row is the one written after it.
 func TestTheJudgedRowIsWrittenWhenTheDecisionsDispatchReadIsSlow(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -91,8 +94,9 @@ func TestTheJudgedRowIsWrittenWhenTheDecisionsDispatchReadIsSlow(t *testing.T) {
 			if granted := err == nil && dec.State == "granted"; granted != c.granted {
 				t.Fatalf("the judge's approval = %+v, %v; want granted %v", dec, err, c.granted)
 			}
-			if !c.granted && !errors.Is(err, ErrProjectAccessUnavailable) {
-				t.Errorf("the judge's approval failed with %v; want ErrProjectAccessUnavailable: its Dispatch read was cut short", err)
+			var uncheckable *projectaccess.MemberKindUncheckable
+			if !c.granted && (!errors.As(err, &uncheckable) || !errors.Is(err, context.DeadlineExceeded)) {
+				t.Errorf("the judge's approval failed with %v; want a *projectaccess.MemberKindUncheckable cut short by the bound's deadline: its first Dispatch read was cut short", err)
 			}
 			// The slow case writes the costliest row LogJudged writes, one whose applied is
 			// unknown, so the time the approval left covers the read that resolves it too
@@ -112,7 +116,8 @@ func TestTheJudgedRowIsWrittenWhenTheDecisionsDispatchReadIsSlow(t *testing.T) {
 }
 
 // boundLog is askLog for the judge's path: every question asked of Dispatch, under which of the
-// machine's judge methods, and whether it was asked under JudgeDispatch's bound.
+// machine's judge methods, whether it was asked under JudgeDispatch's bound, and that bound's
+// deadline, so two reads under one bound show the same deadline.
 type boundLog struct {
 	inner projectaccess.Access
 	mu    sync.Mutex
@@ -123,6 +128,7 @@ type boundLog struct {
 type boundQuestion struct {
 	by, question string
 	bounded      bool
+	deadline     time.Time
 }
 
 func (b *boundLog) during(by string) {
@@ -134,7 +140,8 @@ func (b *boundLog) during(by string) {
 func (b *boundLog) note(ctx context.Context, question string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.asked = append(b.asked, boundQuestion{by: b.by, question: question, bounded: UnderJudgeDispatch(ctx)})
+	deadline, _ := ctx.Deadline()
+	b.asked = append(b.asked, boundQuestion{by: b.by, question: question, bounded: UnderJudgeDispatch(ctx), deadline: deadline})
 }
 
 func (b *boundLog) questions() []boundQuestion {
@@ -206,6 +213,43 @@ func TestNoDispatchReadOnTheJudgesPathSkipsItsBound(t *testing.T) {
 	for _, q := range asked {
 		if !q.bounded {
 			t.Errorf("%s asked %q outside JudgeDispatch's bound", q.by, q.question)
+		}
+	}
+}
+
+// TestAnApprovalAsksTheMemberKindFirstUnderTheDecisionsOneBound: an approval's member-kind read
+// (restrictedOperator) is asked before the project facts the decision rests on, so the facts'
+// atDecision read is the last read of Dispatch before the transaction and the facts are under
+// projectaccess.CacheTTL old when the decision is made; and for the model judge every read of its
+// approval shares one JudgeDispatch bound, the same deadline, never one bound after another.
+func TestAnApprovalAsksTheMemberKindFirstUnderTheDecisionsOneBound(t *testing.T) {
+	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "TEAM_HUMAN", Hosts: []string{"team.example"}, Judge: new(uint32(900))}}}
+	m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
+	retag(t, m, taggedSecret("TEAM_HUMAN", fixtureOperator, policy.TierHuman, teamProject, "team-human-v1"))
+	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
+	m.Judge = func(PendingRequest) {}
+	req := pendingJudgeable(t, m, enr, key, "TEAM-7: rotate the deploy key", 600, "TEAM_HUMAN")
+	log := &boundLog{inner: m.Projects}
+	m.Projects = log
+	log.during("ApplyJudgeDecision")
+	if dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve"}); err != nil || dec.State != "granted" {
+		t.Fatalf("ApplyJudgeDecision = %+v, %v; want granted", dec, err)
+	}
+	asked := log.questions()
+	if len(asked) < 2 {
+		t.Fatalf("the judge's approval asked Dispatch %+v; want the member kind and the project facts", asked)
+	}
+	if !strings.HasPrefix(asked[0].question, "member kind of ") {
+		t.Errorf("the judge's approval asked Dispatch %+v; want the member kind first, so the project facts are the last read before the transaction", asked)
+	}
+	for _, q := range asked[1:] {
+		if strings.HasPrefix(q.question, "member kind of ") {
+			t.Errorf("the judge's approval asked the member kind again after the project facts (%+v)", asked)
+		}
+	}
+	for _, q := range asked {
+		if q.deadline.IsZero() || !q.deadline.Equal(asked[0].deadline) {
+			t.Errorf("the judge's approval asked %q under the deadline %v, the first under %v; want one JudgeDispatch bound for all its reads", q.question, q.deadline, asked[0].deadline)
 		}
 	}
 }

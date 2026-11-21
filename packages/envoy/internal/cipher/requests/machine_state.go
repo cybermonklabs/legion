@@ -2231,31 +2231,27 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	if err != nil {
 		return Decision{}, false, err
 	}
-	var facts projectFacts
-	if approve || !who.isJudge() {
-		if facts, err = m.decisionFacts(ctx, recordID, who, pre, set); err != nil {
-			return Decision{}, false, err
-		}
-	}
 	// An approval asks Dispatch about the request's person too, on the pool and before the
 	// transaction, as Create and every release do (restrictedOperator), for the enrollment the
 	// read above found holding the request: a restricted member's request left pending from
 	// before the broker asked is then the policy's denial, restricted-member, and no grant is
 	// written for a release to refuse. A denial asks nothing, since it releases nothing. The
 	// transaction decides by this answer only while the request still hangs off that enrollment,
-	// and makes another attempt when it moved. The model judge's approval asks it as it asks its
-	// project rule (decisionFacts): afresh, and under JudgeDispatch's bound.
+	// and makes another attempt when it moved. It is asked first, on the same reads as
+	// decisionFacts (decisionReads: one JudgeDispatch bound for the judge, afresh), so the
+	// project facts' atDecision read is the last read of Dispatch before the transaction and the
+	// facts the decision rests on are under projectaccess.CacheTTL old when it is made.
+	reads, cancel := decisionReads(ctx, who)
+	defer cancel()
 	var restricted bool
 	if approve {
-		asking, cancel := ctx, func() {}
-		if who.isJudge() {
-			var bounded context.Context
-			bounded, cancel = JudgeDispatch(ctx)
-			asking = projectaccess.Fresh(bounded)
+		if restricted, err = m.restrictedOperator(reads, pre.holder); err != nil {
+			return Decision{}, false, err
 		}
-		restricted, err = m.restrictedOperator(asking, pre.holder)
-		cancel()
-		if err != nil {
+	}
+	var facts projectFacts
+	if approve || !who.isJudge() {
+		if facts, err = m.decisionFacts(reads, recordID, who, pre, set); err != nil {
 			return Decision{}, false, err
 		}
 	}
