@@ -458,11 +458,12 @@ type routeScopeSet []string
 //
 // These are the routes Dispatch refused every bearer token on until INFRA-1017, and two scopes
 // decide them now: `person`, "this credential acts as its person", which every row here needs,
-// and `approve`, the right to settle what a person settles, which the eleven rows below that
-// decide a credential, a sign-in, a review or a token need as well. A person's browser, their
-// personal tokens and their machine logins hold both; the shared token, a pod's service-account
-// token, a project-scoped session's token and a broker-issued token that names a service and no
-// person hold neither.
+// and `approve`, the right to settle what a person settles, which the rows below that decide a
+// credential, a sign-in, a review, a decision's Keep or a token need as well. A person's browser
+// holds both, and their personal tokens hold the set each token's row names. A broker-issued
+// token that acts for its person holds `person` alone, never `approve` (brokerTokenActor). The
+// shared token, a pod's service-account token, a project-scoped session's token and a
+// broker-issued token that names a service and no person hold neither.
 //
 // The scope `read` a read-only token holds is no value of this map: a scope here is one the
 // caller must hold, and no person holds that one. The routes such a token may call are a list of
@@ -492,7 +493,6 @@ var routeScopes = map[string]routeScopeSet{
 	"PUT /api/v1/me/issues/{key}/state":                      {model.ScopePerson},
 	"GET /api/v1/me/agents/state":                            {model.ScopePerson},
 	"PUT /api/v1/me/agents/{session_id}/state":               {model.ScopePerson},
-	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep":     {model.ScopePerson},
 	"GET /api/v1/me/documents/{id}/read":                     {model.ScopePerson},
 	"PUT /api/v1/me/documents/{id}/read":                     {model.ScopePerson},
 	"PUT /api/v1/me/asks/{id}/snooze":                        {model.ScopePerson},
@@ -543,6 +543,9 @@ var routeScopes = map[string]routeScopeSet{
 	// The review that names the version its caller read settles what the review above settles,
 	// with that version as a guard.
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": {model.ScopePerson, model.ScopeApprove},
+	// Keeping a decision records the person's agreement with it ("Kept by" in the web app), which
+	// takes it out of what waits on their review, so it settles what a person settles too.
+	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": {model.ScopePerson, model.ScopeApprove},
 }
 
 // readScopeRoutes is every route a read-only token may call, by "<method> <pattern>": a token the
