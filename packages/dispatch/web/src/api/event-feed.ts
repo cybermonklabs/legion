@@ -1,3 +1,4 @@
+import { isEventType } from "@legion/contracts";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
@@ -7,77 +8,12 @@ import {
   markPendingAskThreadsOnIssue,
 } from "../features/inbox/ask-thread-freshness";
 
-import { markCorrectedPost } from "./corrected-post";
 import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
 import { inboxQuery } from "./queries";
 import { hearLiveEvent } from "./query-client";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
-import type { AuthenticatedUser, DispatchEvent, EventType } from "./types";
-
-const knownEventTypes: Record<EventType, true> = {
-  "project.created": true,
-  "project.updated": true,
-  "settings.repo_project.updated": true,
-  "settings.project_default_assignee.updated": true,
-  "settings.architecture_source.updated": true,
-  "architecture.synced": true,
-  "architecture.sync_failed": true,
-  "user_state.updated": true,
-  "user_agent_state.updated": true,
-  "user_thread_state.updated": true,
-  "decision.kept": true,
-  "priority.updated": true,
-  "issue.created": true,
-  "issue.updated": true,
-  "issue.closed": true,
-  "issue.claimed": true,
-  "issue.released": true,
-  "issue.deployed": true,
-  "handoff.recorded": true,
-  "artifact.created": true,
-  "artifact.renamed": true,
-  "artifact.removed": true,
-  "artifact.version": true,
-  "artifact.human_edited": true,
-  "artifact.approved": true,
-  "artifact.changes_requested": true,
-  "ask.opened": true,
-  "ask.anchor_refreshed": true,
-  "ask.edited": true,
-  "ask.handed_back": true,
-  "ask.asked_of": true,
-  "ask.answered": true,
-  "ask.resolved": true,
-  "ask.follower_added": true,
-  "ask.follower_removed": true,
-  "block.repaired": true,
-  "block.invalid": true,
-  "result.recorded": true,
-  "result.retracted": true,
-  "issue.pull_request_attribution_changed": true,
-  "comment.created": true,
-  "comment.anchor_refreshed": true,
-  "comment.delivery": true,
-  "comment.answered": true,
-  "comment.resolved": true,
-  "comment.reopened": true,
-  "comment.edited": true,
-  "comment.deleted": true,
-  "suggestion.accepted": true,
-  "suggestion.rejected": true,
-  "message.created": true,
-  "message.delivery": true,
-  "message.accepted": true,
-  "message.answered": true,
-  "message.edited": true,
-  "message.deleted": true,
-  "child.status": true,
-  "child.added": true,
-  "child.removed": true,
-  "subscription.remove_requested": true,
-  "subscription.removed": true,
-};
+import type { AuthenticatedUser, DispatchEvent } from "./types";
 
 const inboxQueryKey = inboxQuery().queryKey;
 
@@ -324,9 +260,7 @@ export function useEventFeed({
         }
         const type =
           typeof raw === "object" && raw !== null && "type" in raw ? raw.type : undefined;
-        // `Object.hasOwn`, not `in`: `knownEventTypes` inherits `Object.prototype`, so `in` reads
-        // an event named `constructor` or `toString` as a known type and reads it as an event.
-        if (typeof type !== "string" || !Object.hasOwn(knownEventTypes, type)) {
+        if (typeof type !== "string" || !isEventType(type)) {
           // The server may add an event this client cannot parse. Refresh everything rather than
           // leaving a rendered field stale until the next gap.
           refreshEverything();
@@ -343,9 +277,6 @@ export function useEventFeed({
           // A write's own event ends its hold on its queries' reads, so the refresh this event asks
           // for, and every read after it, is asked past the hold (`hearLiveEvent`).
           hearLiveEvent(queryClient, event, viewer);
-          // Written now, ahead of the batch's refresh, whose stale mark a write would clear: a
-          // read of the post whose refetch fails keeps the answer this marks.
-          markCorrectedPost(queryClient, event);
           const targets = eventRefreshTargets(event, viewer);
           markAskThreadsSeededByAnInFlightInbox(queryClient, targets, askThreadsIssue(event));
           queueRefresh(targets);
