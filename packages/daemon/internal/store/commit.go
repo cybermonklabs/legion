@@ -15,8 +15,10 @@ import (
 )
 
 // TxPool is what TransactWith opens its transaction on, and the outcome read of a lost commit
-// its own read-only one. The daemon's guarded pool (*Pool), a pgx pool and intake's Pool all
-// satisfy it.
+// its own read-only one. In the daemon it is always the guarded pool (*Pool), so a body that asks
+// for a second connection while its transaction holds one is refused at that call
+// (ErrNestedAcquire); the packages that measure their handlers against a real PostgreSQL pass a
+// pgx pool of their own.
 type TxPool interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }

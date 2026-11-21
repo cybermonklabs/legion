@@ -1551,20 +1551,6 @@ func PlanRatingUnexpected(what string) *Refusal {
 		"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
 }
 
-// Pool is the Postgres connection pool the intake applies facts on, keeps its consumers'
-// positions in and reads what it has already applied from, each through store.TransactWith. In
-// the daemon it is always the store's guarded pool (store.Pool), and that is the point of the
-// hand-over: a handler that asks the pool for a second connection while the fact's own
-// transaction holds one — under the global fact lock every other fact queues behind — is refused
-// at that call (store.ErrNestedAcquire) instead of waiting for a connection only it can give back.
-//
-// It is named as the one method those transactions need because the packages that measure the
-// handlers against a real Postgres open pools of their own and apply facts straight on them.
-// Nothing in the daemon opens a pool but the store.
-type Pool interface {
-	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
-}
-
 // ApplyFact is the only transaction path for facts, whether they arrived through JetStream, the
 // API, or supervision. It records the event before running handlers, skips duplicates before any
 // handler runs, remembers the first refusal while completing every handler, and rolls all writes
@@ -1597,7 +1583,7 @@ type Pool interface {
 // Dispatch, Envoy, the API and supervision passes here, so the rule is given to facts here once;
 // the boot's Dispatch listing, which admission applies outside ApplyFact, takes it in admission's
 // Reconcile.
-func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
+func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
 	source, eventID, fact = storetext.Text(source), storetext.Text(eventID), storetext.Strings(fact)
 	var result Result
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -1667,7 +1653,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 // ApplyFact records each id as the store keeps it (storetext.Text), so the ids are looked up as
 // the store keeps them, and each one found is answered under the id the caller gave: a caller that
 // looks up its own id finds it, whatever the rule made of it.
-func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (map[string]bool, error) {
+func Applied(ctx context.Context, pool store.TxPool, source string, eventIDs []string) (map[string]bool, error) {
 	applied := make(map[string]bool, len(eventIDs))
 	if len(eventIDs) == 0 {
 		return applied, nil

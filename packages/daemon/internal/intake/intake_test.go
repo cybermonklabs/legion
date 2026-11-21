@@ -257,7 +257,7 @@ func TestACancelAtCommitStillCommitsTheFactAndRunsItsHooks(t *testing.T) {
 		return Result{}, nil
 	})
 
-	if _, err := ApplyFact(ctx, cancelAtCommit{Pool: pool, cancel: cancel}, "dispatch", "event-cancel-at-commit", DispatchIssue{Key: "LEGION-208"}, hooked); err != nil {
+	if _, err := ApplyFact(ctx, cancelAtCommit{TxPool: pool, cancel: cancel}, "dispatch", "event-cancel-at-commit", DispatchIssue{Key: "LEGION-208"}, hooked); err != nil {
 		t.Fatalf("ApplyFact with its context canceled at commit: %v", err)
 	}
 	if ctx.Err() == nil {
@@ -336,12 +336,12 @@ func TestAFactCancelledAfterItsIDReadDoesNotCommit(t *testing.T) {
 // cancelAtCommit is a pool whose transactions cancel the context of the fact they apply as they
 // commit: the cancel a stopping daemon sends while a fact's commit is on its way to the server.
 type cancelAtCommit struct {
-	Pool
+	store.TxPool
 	cancel context.CancelFunc
 }
 
 func (p cancelAtCommit) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
-	tx, err := p.Pool.BeginTx(ctx, options)
+	tx, err := p.TxPool.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err
 	}

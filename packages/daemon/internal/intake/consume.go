@@ -231,7 +231,7 @@ func (r *RetryLater) Unwrap() error { return r.Err }
 // when it last handled a message (Lag).
 type Consumers struct {
 	spec     ConsumerSpec
-	pool     Pool
+	pool     store.TxPool
 	stream   jetstream.Stream
 	dispatch jetstream.Consumer
 	github   jetstream.Consumer
@@ -267,7 +267,7 @@ type Consumers struct {
 // The version is decided on one the connection reports: a connection reconnecting or draining when
 // the boot reaches this is looked at again, within ctx (the boot attempt's 30 s bootTimeout, the
 // bound the stream lookup after this has), and is never read as a server of no version.
-func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec ConsumerSpec) (*Consumers, error) {
+func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPool, spec ConsumerSpec) (*Consumers, error) {
 	if pool == nil {
 		return nil, errors.New("intake consumers need the Postgres pool facts are applied on")
 	}
@@ -362,7 +362,7 @@ func (c *Consumers) repositories() []ghrepo.Repository {
 // may have been handled by the consumer before it went missing, or may have been missed. The
 // daemon applied none of them, and nothing replays them. A consumer with no position starts at the
 // next message.
-func openConsumer(ctx context.Context, stream jetstream.Stream, pool Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func openConsumer(ctx context.Context, stream jetstream.Stream, pool store.TxPool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	existing, err := stream.Consumer(ctx, config.Durable)
 	if errors.Is(err, jetstream.ErrConsumerNotFound) {
 		return createConsumer(ctx, stream, pool, logger, config)
@@ -377,7 +377,7 @@ func openConsumer(ctx context.Context, stream jetstream.Stream, pool Pool, logge
 
 // createConsumer creates the missing durable consumer config names, at its stored position when
 // pool keeps one and at the next message otherwise (openConsumer).
-func createConsumer(ctx context.Context, stream jetstream.Stream, pool Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func createConsumer(ctx context.Context, stream jetstream.Stream, pool store.TxPool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	start, stored, err := storedStreamTime(ctx, pool, config.Durable)
 	if err != nil {
 		return nil, err
@@ -840,7 +840,7 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 // names counts the issue events this consumer read named in the old form, and the ones named in
 // neither form, which are poison (issueNames). dropped is what it remembers of the checks
 // settlements whose drop it logged (droppedSettlements).
-func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool Pool, handlers []Handler, names *issueNames, dropped *droppedSettlements) bool {
+func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool store.TxPool, handlers []Handler, names *issueNames, dropped *droppedSettlements) bool {
 	decoded, err := decodeMessage(message.Subject(), spec.Project, repositories, message.Data())
 	if err != nil {
 		attributes := []any{"error", err}
@@ -966,7 +966,7 @@ func nakOutcome(what, nakWhat string, err error) messageOutcome {
 // own AckWait bound, nested under work, so one dependency that is slow to answer is cut while the
 // handling as a whole runs to HandlerLimit. dropped is the consumer's memory of the checks
 // settlements whose drop it logged (droppedSettlements).
-func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool Pool, decoded decodedMessage, handlers []Handler, dropped *droppedSettlements) messageOutcome {
+func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool store.TxPool, decoded decodedMessage, handlers []Handler, dropped *droppedSettlements) messageOutcome {
 	// decoded.Fact is never nil here: consumeMessage acknowledges a message that decodes to none
 	// before it starts the keeper this work runs under.
 	if _, ok := decoded.Fact.(RepoMappingChanged); ok {
@@ -1082,7 +1082,7 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 // (ApplyFact) and no GitHub read, whatever the number of other pull requests a mapped repository
 // reviews and checks. A pull request recorded after this read, by a later opened, gets its checks
 // and reviews from their next event.
-func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact Fact) (bool, error) {
+func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool store.TxPool, fact Fact) (bool, error) {
 	var repo string
 	var number int
 	switch fact := fact.(type) {
