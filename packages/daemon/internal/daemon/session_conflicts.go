@@ -174,8 +174,8 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 				s.log.Warn("supervise: the suspension of a claim recording a session name it does not hold was refused; it is left as it is",
 					"claim", token, "kind", c.Hold.Kind, "name", c.Hold.Name, "state", refused.State, "reason", refused.Reason, "error", err)
 			case errors.Is(err, supervise.ErrSuspendHeld):
-				s.log.Warn("supervise: the suspension of a claim recording a session name it does not hold waits for its turn or its launch",
-					"claim", token, "kind", c.Hold.Kind, "name", c.Hold.Name)
+				s.log.Warn("supervise: the suspension of a claim recording a session name it does not hold is held, and runs once what holds it is over",
+					"claim", token, "kind", c.Hold.Kind, "name", c.Hold.Name, "held", err)
 			case ctx.Err() != nil:
 				return fmt.Errorf("suspend %s, which records the %s %s it does not hold: %w", token, c.Hold.Kind, c.Hold.Name, err)
 			default:

@@ -606,7 +606,7 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 		// The lock the restore's own `git update-ref` takes for each saved head: one left
 		// behind fails that command with "cannot lock ref", and the restore gives up with the
 		// released pod's work left in the daemon's database for good.
-		gitDir := f.gitDir(ws)
+		gitDir := f.GitDir(ws)
 		var planted []string
 		for index := range saved.Tips {
 			path := filepath.Join(gitDir, "refs", "heads", restoreRefPrefix+strconv.Itoa(index)+".lock")
@@ -634,7 +634,7 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 				t.Fatalf("slice %d answered %#v", frame.Index, got)
 			}
 		}
-		if got := conn.start(roleStart(1, ws, f.env)); !got.OK {
+		if got := conn.start(roleStart(1, ws, f.Env)); !got.OK {
 			t.Fatalf("the start after the bundle answered %#v; the launcher's log:\n%s", got, fleet.stderr.String())
 		}
 		conn.awaitExit(1)

@@ -209,8 +209,10 @@ metadata:
 stringData: {AUTH: "$auth_user:$auth_token"}
 YAML
 
-  # Annotated against Cluster Autoscaler/node consolidation, the same pair every Legion issue pod
-  # carries (manifest.go's safeToEvictAnnotation and doNotDisruptAnnotation): confirmed live,
+  # Annotated against Cluster Autoscaler/node consolidation, the pair a Guaranteed Legion issue
+  # pod carries (manifest.go's safeToEvictAnnotation and doNotDisruptAnnotation; an issue pod
+  # carries safe-to-evict only while its cpu and memory requests each equal their limit, and a
+  # Burstable one carries do-not-disrupt alone): confirmed live,
   # 2026-10-17, a bridge pod without them ran fine for ten minutes, alone on its own
   # Node-Auto-Provisioned node, then vanished mid-run (its chisel client's own log: connected at
   # 11:21:07, disconnected with the underlying TCP connection refused — not a graceful shutdown —

@@ -178,6 +178,7 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestCompact":       {RequestCompact{}},
 		"ResumePause":          {ResumePause{}},
 		"CompactEnded":         {CompactEnded{}},
+		"TurnEndCopied":        {TurnEndCopied{}},
 	}
 	for _, kind := range timers {
 		byType["Timer"] = append(byType["Timer"], Timer{Kind: kind})
@@ -366,6 +367,8 @@ func fenced(ev Event, c Claim) Event {
 		return RequestCompact{Claim: c.Token}
 	case CompactEnded:
 		return CompactEnded{Claim: c.Token, Generation: c.Generation, Compacted: true}
+	case TurnEndCopied:
+		return TurnEndCopied{Claim: c.Token, Copy: 7777}
 	}
 	panic("unhandled sample")
 }
@@ -402,6 +405,11 @@ func TestEveryNamedIgnoreChangesNothingAndRefusesARequest(t *testing.T) {
 						// before any row sees it (ownsCompaction), so the compaction it names is
 						// recorded here, as a timer's arming is.
 						h.m.compacting = &compacting{generation: end.Generation, back: c.State}
+					}
+					if copied, ok := ev.(TurnEndCopied); ok {
+						// The fence drops the end of a copy the machine is not waiting to hear of
+						// (turnCopy), so the copy it names is recorded, as a timer's arming is.
+						h.m.turnCopy = &turnCopy{seq: copied.Copy}
 					}
 					before := h.claim()
 					puts := len(h.store.history())

@@ -178,7 +178,13 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 		return nil
 	}
 	controller := claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree)
-	if m.claim.State == StateWorking && !controller {
+	// A claim in a turn holds the relaunch back for that turn's end, and so does one whose held
+	// stop waits for the copy its last turn's end started (waitForTurnCopy): the relaunch replaces
+	// the process, and here it would let that process go through the held stop (replaceNow,
+	// endHeld) while the copy still asks its shim, which cuts the copy off and leaves the turn's
+	// end in no copy once the role is stopped. The controller's claim takes no copy
+	// (Deps.CopyTurnEnd), and its turn is never waited out.
+	if !controller && (m.claim.State == StateWorking || m.stopWaitsForTurnCopy()) {
 		m.holdStaleRelaunch(trigger)
 		return nil
 	}
@@ -211,6 +217,13 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 // tick while its turn runs, so only the first of them logs; the rest replace the trigger and say
 // nothing.
 //
+// A claim whose held stop waits for the copy its last turn's end started is held here too, the
+// claim idle or ready meanwhile (refreshPlugin). Nothing re-decides that relaunch at the copy's
+// end: the held stop runs then, or at the wait's bound, and its let-go takes the process and this
+// relaunch with it (letGo), so the claim's next launch is a resume onto this daemon's plugin. A
+// hold dropped while it waits (dropHeld) ends the wait, and the next sweep, which posts the claim
+// again, finds no wait and relaunches it.
+//
 // A claim in a turn takes no admission of the refresh gate, and the relaunch its turn's end
 // runs asks for one where every uncredited relaunch of this lane asks, at refreshPlugin's own
 // guard (afterTurn, dispatch://INFRA-2712 R2). A wait of a turn is minutes, and a credit held
@@ -227,8 +240,11 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 // claim one sweep, which is what an imperfect skip costs the pass everywhere else it makes one.
 func (m *Machine) holdStaleRelaunch(trigger string) {
 	if m.staleRelaunch == nil {
-		m.log.Info("supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end",
-			"incarnation", m.claim.Locator.Incarnation, "pluginContract", m.claim.PluginContract,
+		line := "supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end"
+		if m.claim.State != StateWorking {
+			line = "supervise: the process speaks another plugin contract; its relaunch waits for the copy of its turn's end that its held stop waits for"
+		}
+		m.log.Info(line, "incarnation", m.claim.Locator.Incarnation, "pluginContract", m.claim.PluginContract,
 			"daemonApiVersion", m.deps.PluginContract, "trigger", trigger)
 	}
 	m.staleRelaunch = &trigger
@@ -491,6 +507,15 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	if m.launchWaits() {
 		m.log.Info("supervise: a registration on another plugin contract reached a claim whose relaunch waits its turn; that turn replaces this process and nothing is relaunched or charged here",
 			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "due", m.wake.at)
+		return claim.StalePluginContract(got, m.deps.PluginContract)
+	}
+	// A held stop that waits for the copy its turn's end started takes this process at the copy's
+	// end or the wait's bound (waitForTurnCopy), and its let-go ends the stale process with it, so
+	// the claim's next launch is a resume onto this daemon's plugin. A relaunch here would end that
+	// hold now (relaunchStale, replaceNow, endHeld), while the copy still asks the process's shim.
+	if m.stopWaitsForTurnCopy() {
+		m.log.Info("supervise: a registration on another plugin contract reached a claim whose held stop waits for the copy of its turn's end; that stop takes this process and nothing is relaunched or charged here",
+			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "copy", m.turnCopy.seq)
 		return claim.StalePluginContract(got, m.deps.PluginContract)
 	}
 	var err error

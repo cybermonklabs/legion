@@ -177,7 +177,11 @@ func (m *Machine) turnOpen() bool {
 // fails with its prompt count left at the limit. A suspension that fails charges nothing: the next
 // failure reaches the limit again and retries the retirement. So does a relaunch the tree lifecycle
 // refuses, checked before the suspension so the process is kept (checkLaunch). A retirement while a
-// suspension is held is that suspension's stop instead, charged nothing (suspendHeld).
+// suspension is held is that suspension's stop instead, charged nothing (suspendHeld), except
+// while that stop waits for the copy its turn's end started (waitForTurnCopy): run then, it would
+// stop the process the copy still asks. The failure is charged, and the stop is left to the copy's
+// end or the wait's bound, which runs it (endTurnCopyWait); a failure that comes meanwhile is
+// charged the same way.
 //
 // The retirement's stop is where the process is let go, so that is where what it ended is
 // recorded, under the retirement's own cause (endRetired, letGo): the last retirement as well,
@@ -191,6 +195,12 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 		return m.persist(ctx)
 	}
 	if m.held != nil {
+		if m.stopWaitsForTurnCopy() {
+			m.claim.Budgets.PromptFailures = failures
+			m.log.Warn("supervise: prompt failure at the limit while the held stop waits for the copy of its turn's end; the stop runs once that wait is over",
+				"why", why, "promptFailures", failures, "limit", m.deps.Limits.PromptFailures, "copy", m.turnCopy.seq, "by", m.held.By)
+			return m.persist(ctx)
+		}
 		return m.suspendHeld(ctx)
 	}
 	retires := m.claim.Budgets.PromptRetires + 1

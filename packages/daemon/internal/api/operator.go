@@ -482,8 +482,10 @@ func (s *server) drawExperiments(tree string) func(ctx context.Context, tx pgx.T
 
 // claimRequest is one operator request on an existing claim: event builds the request the claim's
 // machine is posted, or answers the caller itself and reports false. A suspension the machine holds
-// for the agent's turn (supervise.ErrSuspendHeld) is not a refusal: it answers 202 with the claim as
-// it is, still working.
+// (supervise.ErrSuspendHeld) is not a refusal: it answers 202 with the claim as it is — working,
+// for one held for the agent's turn; launching or shim_connected, for one held for its launch's
+// ready; idle or ready, for one held for the copy of the issue's workspace that its last turn's end
+// started.
 //
 // Both reads of the claim are the machine's published view (supervise.Machine.View), never
 // Machine.Claim: a claim whose launch is running holds its machine's lock for as long as the
@@ -517,8 +519,8 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 
 // claimEvent posts one request to a claim's machine (postClaimEvent), as every operator request
 // on a claim does (claimRequest): it answers the caller itself when the daemon is stopping or
-// the machine refuses, and reports whether the machine held the request for the agent's turn
-// (supervise.ErrSuspendHeld), which is no refusal.
+// the machine refuses, and reports whether the machine held the request — for the agent's turn,
+// its launch's ready or its last turn's copy (supervise.ErrSuspendHeld) — which is no refusal.
 func (s *server) claimEvent(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
 	request string, ev supervise.Event) (held, ok bool) {
 	posted, err := s.postClaimEvent(w, r, m, token, request, ev)

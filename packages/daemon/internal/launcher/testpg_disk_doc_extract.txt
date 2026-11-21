@@ -1,0 +1,21 @@
+# A copy of the region of docs/kubernetes.md that this package's testpg_disk_doc_test.go holds to
+# the line a reset of the test database writes and the kubectl logs command that shows it, in the
+# guide's own bytes: the reset's line and how to read it, under "A test database in the pod".
+#
+# The guide still answers for the launcher, in two halves. This package's testpg_disk_doc_test.go
+# reads the region out of this copy through internal/testdoc and holds it to testPGProgram;
+# packages/daemon/internal/textcheck's TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines holds
+# it to the guide's own lines between the same two markers. Splitting it that way is what lets an
+# edit to the guide alone start the text-check run rather than the daemon's Go lane: the product
+# test does not read the guide.
+#
+# So this file is changed only when the region changes, in the same commit as the guide. The
+# format is internal/testdoc's (ExtractRegions): a `from: ` line and its start marker, a `to: `
+# line and its end marker, then the region's lines.
+
+from: `legion-testpg: reset of the cluster in <data directory>
+to: a role reads it there or in `$LEGION_TEST_PG_LOG`.
+  `legion-testpg: reset of the cluster in <data directory>: <free> free of <size> on its disk, under the floor of 2.0 GiB; it held <database> (owner <role>, <size>), …`, each database that is no template, in name order, and each amount in GiB to a tenth, or in MiB below one GiB.
+  Each control character of a database's name or of its owner's is written `?`, since a role names its own databases, and a newline in a name would otherwise split the line and could forge a second `legion-testpg: reset` line.
+  Where the server did not answer, the line ends `the server did not answer, so it read no databases`, and where the list failed, `the server answered but the list of its databases failed, so it read none`.
+  `kubectl logs <pod> -c roles | grep 'legion-testpg: reset'` finds it, and a role reads it there or in `$LEGION_TEST_PG_LOG`.

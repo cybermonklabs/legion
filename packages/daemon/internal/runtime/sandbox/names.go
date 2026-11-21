@@ -92,11 +92,12 @@ const (
 	RolesDir     = launcher.FixedRoot + "/roles"
 	RoleHomesDir = RolesDir + "/" + launcher.RoleHomesDir
 	// TestPGDir is where an issue pod whose deployment sets `runtime.kubernetes.test_postgres`
-	// keeps the pod's own PostgreSQL for tests: its data directory and admin socket, on a disk
-	// emptyDir of the pod's own (testPGVolume). It is under RolesDir, which every role's
-	// namespace covers, so no role's process reaches the cluster's files — a role that could
-	// write postgresql.auto.conf would have the launcher load it, outside every role namespace,
-	// at the server's next start.
+	// keeps the pod's own PostgreSQL for tests: its data directory and admin socket, on a volume
+	// of the pod's own (testPGVolume) — a disk emptyDir, or a generic ephemeral volume of its own
+	// where `runtime.kubernetes.test_postgres_disk` sizes one. It is under RolesDir, which every
+	// role's namespace covers, so no role's process reaches the cluster's files — a role that
+	// could write postgresql.auto.conf would have the launcher load it, outside every role
+	// namespace, at the server's next start.
 	TestPGDir = RolesDir + "/" + launcher.TestPGDirName
 	// TestPGLogFile is where `legion launcher role-init` binds that cluster's server log, the one
 	// file, read-only, in every role's namespace of such a pod, over the empty file the worker

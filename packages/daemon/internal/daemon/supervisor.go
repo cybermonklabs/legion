@@ -40,11 +40,16 @@ type supervisor struct {
 	// it (supervision.start), since a relaunched worker's hello would wait for the relaunch itself.
 	restored chan struct{}
 	// durableState is the one callback every machine of this supervisor reports its durable
-	// transitions to (supervise.Machine.OnDurableState): ready, working and failed.
+	// transitions to (supervise.Machine.OnDurableState): ready, working, idle and failed.
 	durableState func(supervise.Claim, supervise.ClaimState)
 	// beforeDecision is overrides.beforeDecision, run on a claim's feed before its machine decides
 	// each event (add); nil runs nothing. It is set before the first machine is added.
 	beforeDecision func(claim.Token, supervise.Event)
+	// turnEndCopy is the workflow's start of the copy a turn's end owes
+	// (workflowRuntime.copyWorkspaceAtTurnEnd), which copyTurnEnd hands every machine's turn's
+	// end to; nil before the workflow attaches it and in a daemon with no workflow, which copies
+	// nothing.
+	turnEndCopy atomic.Pointer[func(supervise.Claim, func()) (time.Duration, bool)]
 
 	mu       sync.RWMutex
 	machines map[claim.Token]*member
@@ -148,6 +153,25 @@ func (s *supervisor) OnDurableState(callback func(supervise.Claim, supervise.Cla
 	for _, member := range s.machines {
 		member.machine.OnDurableState(callback)
 	}
+}
+
+// copyTurnEndsWith makes start what takes the copy each machine's turn's end owes, from now on
+// and for every machine, those built before it included (copyTurnEnd).
+func (s *supervisor) copyTurnEndsWith(start func(supervise.Claim, func()) (time.Duration, bool)) {
+	s.turnEndCopy.Store(&start)
+}
+
+// copyTurnEnd is every machine's start of the copy its turn's end owes (supervise.Deps.CopyTurnEnd):
+// the workflow's copy (copyTurnEndsWith), told once the copy has ended by copied posted to the
+// claim's machine through its feed (post), as every other runtime fact reaches a machine. The post
+// waits on no machine, so the copy's goroutine never waits on a decision, the stop it releases
+// among them. Before the workflow attaches, and in a daemon with no workflow, it starts nothing.
+func (s *supervisor) copyTurnEnd(c supervise.Claim, copied supervise.TurnEndCopied) (time.Duration, bool) {
+	start := s.turnEndCopy.Load()
+	if start == nil {
+		return 0, false
+	}
+	return (*start)(c, func() { s.post(c.Token, copied) })
 }
 
 // Create stores a new claim, queued, and supervises it. An explicit operator prompt is kept

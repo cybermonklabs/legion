@@ -133,6 +133,20 @@ type Config struct {
 	// none. Every hook's words arrive resolved, so the engine never reads a file and never sees
 	// a path.
 	Hooks []Hook
+	// Pushes is the daemon's record of the newest push of each issue's branch
+	// (store.Store.RecordIssuePush), which the push handler writes inside the push fact's own
+	// transaction for every push of `legion/<KEY>` on the issue's repository, whether or not the
+	// issue has a pull request. The restore of a new pod reads it to refuse any running copy of
+	// the issue's workspace older than that push (runtime.DecideWorkspaceRestore), since such a
+	// copy would put the workspace back on work behind the pushed commits; a release bundle is
+	// never refused so, and no restore sets the branch itself (runtime.RestorableBookmarks). Nil
+	// records none, as in every engine built without the daemon's store.
+	Pushes Pushes
+	// PushRecorded is told, once the push fact's transaction has committed, of each issue whose
+	// push moved the record Pushes keeps, and of none whose push it already held: the daemon takes
+	// a copy of that issue's workspace then (workflowRuntime.copyWorkspaceAtPush), so the copy a
+	// new pod is sent is normally one taken after the push and holding it. Nil tells nobody.
+	PushRecorded func(issue string)
 	// Experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
 	// of which every issue-unit one is drawn for each issue this engine records for the first
 	// time, against that issue's own key (recordChild). Every project the loader reads declares
@@ -995,10 +1009,17 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // the four counts the failure left, each against the limit it ran out at (noticeFailure). The
 // worker-died of a role that does not work the issue's phase names it too, since that role's
 // architect decides whether to start it again on the same evidence. The tree architect's own
-// worker-died carries no failure record, so its reason carries the sentence instead, with the
+// worker-died names it as well, in the controller's copy: nobody inside the tree is left to read
+// it, and the controller deciding what to do about that architect is told what killed it, the
+// plain sentence of its last death's cause included (supervise's deathCause, dispatch://INFRA-1117
+// R9), as the operator who relaunches it reads the claim's own record (api.ClaimFailureView). That
+// copy carries the failure record, whose `detail` is the supervisor's sentence and whose `death`
+// is the runtime's account, opening with the plain sentence where the daemon has one, so its
+// reason is the pod end alone, when the claim holds one. The row to the architect's own role
+// carries no failure record, so its reason carries the supervisor's sentence instead, with the
 // pod end when the claim holds one, or else, for a claim that failed because its process died,
-// the first line of the runtime's account of that death (deathReason): it is the one notice of
-// that failure the architect and the controller are sent.
+// the first line of the runtime's account of that death (deathReason). Neither row says the
+// sentence or the account twice.
 //
 // A child's own architect works no phase but its child's acceptance (accepting), where no worker
 // runs: the daemon starts it with the child's first phase (StartFirstPhase). Its claim failing
@@ -1031,8 +1052,16 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, err
 	}
 	if claim.IsTreeArchitect(fact.Role, issue.Key, issue.Tree) {
-		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase,
-			Reason: deathReason(fact, false)})
+		// The two rows differ, so this writes them itself rather than through noticeWithController:
+		// the failure record goes to the controller alone, and each row's reason leaves out what
+		// its failure record already says (deathReason's failureCarried).
+		died := record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Reason: deathReason(fact, false)}
+		if err := e.notice(ctx, tx, issue.Key, died); err != nil {
+			return intake.Result{}, err
+		}
+		failure := noticeFailure(fact)
+		died.Failure, died.Reason = failure, deathReason(fact, failure != nil)
+		return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(died))
 	}
 	if fact.Role == claim.RoleArchitect {
 		if !record.InWorkflow(*issue) {
@@ -1135,7 +1164,9 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 // Its first line holds that reason and message too, so beside the pod end it would name the
 // kubelet's message twice. The death begins with the verdict the runtime reached (supervise's
 // deathCause), `gone` above all, so it is written after "the process was last found "
-// (deathFirstLine).
+// (deathFirstLine); where the runtime read a cause the daemon tells in plain words, the death
+// opens instead with that plain sentence, and "The runtime's detail: " then introduces the
+// verdict (dispatch://INFRA-1117 R9), so the quoted first line carries both.
 //
 // It is named only where the fact's cause is supervise.CauseDied, too: the death is written at
 // every death of the claim and cleared by nothing (supervise's died), so a claim that died, was
@@ -1148,11 +1179,12 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 // one failed with no launch since the death that wrote it.
 //
 // failureCarried says the notice carries a failure record beside this reason, as the held
-// phase's does whenever the fact names a cause. That record's `detail` already carries the
-// sentence and its `death` the runtime's account (noticeFailure), so such a reason is the pod
-// end alone, and empty when there is none, since repeating either would say one thing twice.
-// The tree architect's notice carries no failure record, and neither does a held phase's whose
-// fact names no cause, so their reason carries the sentence and the pod end, and the tree
+// phase's does whenever the fact names a cause, and as the controller's copy of the tree
+// architect's does (claimFailed). That record's `detail` already carries the sentence and its
+// `death` the runtime's account (noticeFailure), so such a reason is the pod end alone, and empty
+// when there is none, since repeating either would say one thing twice. The row to the tree
+// architect's own role carries no failure record, and neither does a held phase's whose fact
+// names no cause, so their reason carries the sentence and the pod end, and the tree
 // architect's, where there is no pod end and its claim failed because it died, the death: without
 // them the notice would say nothing of why the claim failed. A held phase's fact that names no
 // cause does not name `died` either, so its reason names no death.

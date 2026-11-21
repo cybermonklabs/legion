@@ -15,11 +15,19 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   `Eventually` is the wait a test usually wants, a minute or the binary's own deadline less a second, at `Poll`, the package's own pace, failing with what it waited for; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` is that deadline clamp alone, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
 
+- A test that holds a guide to the facts it must state reads it through `packages/daemon/internal/testdoc`, out of its package's committed extract: a copy of the regions it checks, in the guide's own bytes, beside the test.
+  `Region` reads the region the extract names by two markers, from the test's own package directory, and fails naming what it cannot find once; `RequireDocFacts` fails naming each fact whose phrase that region does not carry; `RegionBullets` and `BulletNaming` read its list items.
+  A test in `packages/daemon/internal/textcheck` holds each region of the extract to the guide's lines between the same two markers, so the product test reads no guide and an edit of the guide alone still fails a test CI runs.
+
 - A fixture that runs git or jj takes its runner and its `init` argv from `packages/daemon/internal/fixturegit`.
   `Runner` holds the test and the child's whole environment — `Isolated(t, home)` is the usual one — and runs one command four ways: `Run` trimmed, `Raw` untrimmed, `Out` for standard output alone, and `Try` for a caller that keeps the error.
   `InitBare`, `InitWorkTree` and `JJInit` build the whole argv, and the semantic axes stay the call site's: bare or not, the initial branch, and colocation, with only the quiet spelling normalised.
   The runner chooses no binary — `argv[0]` does, so a fixture that runs a pinned git or jj passes that path itself.
   `packages/envoy` has no Go git or jj fixture runner, so this one is the daemon module's alone.
+
+- A test that needs the real shim's bundle of a real jj workspace takes it from `packages/daemon/internal/shim/shimtest`.
+  `New` builds a seeded remote, a pod's colocated clone and its issue workspace under an isolated environment, `Work` commits work no remote holds, and `Bundle` runs the shim's own bundler against that workspace over the worker stream's frames and answers what it built.
+  The launcher's restore tests and the daemon's cadence test share it, so the bundle both read is the one production builds.
 
 - A fake GitHub server is the module's `internal/githubtest`: `Server` for a fake its caller reaches by URL, `Serve` where the caller needs the server itself, and `Unexpected` as the default arm of a fake for which an unplanned request is a failure.
   `Spec` carries the opt-in bearer gate and the opt-in request recorder.

@@ -373,7 +373,7 @@ func newPauseDaemonRig(t *testing.T, tune func(*config.Config)) *pauseDaemonRig 
 	t.Cleanup(st.Close)
 	r := &pauseDaemonRig{t: t, ctx: ctx, cfg: cfg, pool: pool, st: st, records: record.NewStore(), clock: clock,
 		rt: newPauseRuntime(clock), envoy: envoy, board: board, logs: &syncBuffer{}, project: project, built: &built{}}
-	r.o = fakeRuntime(r.rt, r.built)
+	r.o = pauseOverrides(r.rt, r.built)
 	r.o.clock = clock
 	r.o.idleTick = pauseRigTick
 	r.o.orphanSweep = time.Hour

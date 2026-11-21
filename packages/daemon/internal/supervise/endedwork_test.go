@@ -167,7 +167,7 @@ func TestARelaunchRecordsADeath(t *testing.T) {
 
 	h.wantState(StateLaunching)
 	h.wantCalls("Resume", 1)
-	cause := endDied(deathCause(observation))
+	cause := endDied(observation)
 	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: died, Turn: true, TaskTurn: true,
 		Background: true, Kinds: []string{"subagent"}, Reported: true})
 	h.wantEndedLine(cause)
@@ -377,7 +377,7 @@ func TestARelaunchRecordsADeathASuspensionLandsOver(t *testing.T) {
 			h.must(RequestSuspend{Claim: h.token, Reason: "a fresh session was asked for", By: SuspendedByOperator, NeverHold: true})
 
 			h.wantState(StateSuspended)
-			cause := endDied(deathCause(observation))
+			cause := endDied(observation)
 			h.wantEnded(EndedWork{At: at, Cause: cause, Generation: dead, Turn: true, TaskTurn: true,
 				Background: true, Kinds: []string{"subagent"}, Reported: true})
 			h.wantEndedLine(cause)
@@ -433,7 +433,7 @@ func TestARelaunchRecordsAndDoesNotWait(t *testing.T) {
 
 		h.wantCalls("Resume", 1)
 		h.wantState(StateLaunching)
-		h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})), Generation: died,
+		h.wantEnded(EndedWork{At: at, Cause: endDied(runtime.Observation{Kind: runtime.Gone}), Generation: died,
 			Turn: true, TaskTurn: true})
 	})
 }
@@ -465,7 +465,7 @@ func TestARelaunchRecordsNoReportOfAnEarlierLaunch(t *testing.T) {
 
 	h.observe(runtime.Gone)
 
-	h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})), Generation: second, Turn: true, TaskTurn: true})
+	h.wantEnded(EndedWork{At: at, Cause: endDied(runtime.Observation{Kind: runtime.Gone}), Generation: second, Turn: true, TaskTurn: true})
 }
 
 // Unknown is not silence: a process that ran a turn and left no report of its launch — a Claude
@@ -480,7 +480,7 @@ func TestARelaunchRecordsAProcessWithNoReportAsUnknown(t *testing.T) {
 
 	h.observe(runtime.Gone)
 
-	cause := endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))
+	cause := endDied(runtime.Observation{Kind: runtime.Gone})
 	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: died})
 	h.wantEndedLine(cause)
 }
@@ -536,7 +536,7 @@ func TestARelaunchRecordsAReportOlderThanTheCutTurnAsNoReport(t *testing.T) {
 			h.observe(runtime.Gone)
 
 			h.wantState(StateLaunching)
-			h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+			h.wantEnded(EndedWork{At: at, Cause: endDied(runtime.Observation{Kind: runtime.Gone}),
 				Generation: died, Turn: true, TaskTurn: true, Background: len(row.kinds) > 0, Kinds: row.kinds,
 				Reported: row.reported})
 			p := h.pending()
@@ -605,7 +605,7 @@ func TestARelaunchRecordsTheWorkAnOlderReportSawOfAProcessThatDiesIdle(t *testin
 
 			h.observe(runtime.Gone)
 
-			h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+			h.wantEnded(EndedWork{At: at, Cause: endDied(runtime.Observation{Kind: runtime.Gone}),
 				Generation: died, Background: len(row.kinds) > 0, Kinds: row.kinds, Reported: row.reported})
 			ended := h.claim().EndedWork
 			sentence := RelaunchSentence(ended)
@@ -673,7 +673,7 @@ func TestARelaunchRecordsAReportOlderThanABusyAnswersTurnAsNoReport(t *testing.T
 			h.observe(runtime.Gone)
 
 			h.wantState(StateLaunching)
-			h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+			h.wantEnded(EndedWork{At: at, Cause: endDied(runtime.Observation{Kind: runtime.Gone}),
 				Generation: died, Turn: true, Background: len(row.kinds) > 0, Kinds: row.kinds, Reported: row.reported})
 			p := h.pending()
 			if p.Interrupted || !p.ConfirmedAt.IsZero() {
@@ -768,7 +768,7 @@ func TestARelaunchRecordsAReportOlderThanATurnTheAgentSaysItIsInAsNoReport(t *te
 				h.observe(runtime.Gone)
 
 				h.wantState(StateLaunching)
-				h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+				h.wantEnded(EndedWork{At: at, Cause: endDied(runtime.Observation{Kind: runtime.Gone}),
 					Generation: died, Turn: true, TaskTurn: !through.drops, Reported: !row.before})
 				sentence := RelaunchSentence(h.claim().EndedWork)
 				if !through.drops {
@@ -891,7 +891,7 @@ func TestARelaunchRecordsNoTurnForAProcessLostDuringACompaction(t *testing.T) {
 		cause string
 	}{
 		{name: "a death", lose: func(h *harness) { h.observe(runtime.Gone) },
-			cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))},
+			cause: endDied(runtime.Observation{Kind: runtime.Gone})},
 		{name: "a displacement", lose: func(h *harness) { h.observeDisplaced(runtime.Gone) }, cause: endDisplaced},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -924,7 +924,7 @@ func TestARelaunchRecordsTheTurnStartedUnderACompaction(t *testing.T) {
 	h.observe(runtime.Gone)
 
 	h.wantState(StateLaunching)
-	cause := endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))
+	cause := endDied(runtime.Observation{Kind: runtime.Gone})
 	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: died, Turn: true,
 		Background: true, Kinds: []string{"subagent"}, Reported: true})
 	h.wantEndedLine(cause)
@@ -1134,7 +1134,7 @@ func TestARelaunchRecordsTheTaskTakenBackFromATurnWhoseResultWasStillToCome(t *t
 			cause string
 		}{
 			{name: "a death", end: func(h *harness) { h.observe(runtime.Gone) },
-				cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))},
+				cause: endDied(runtime.Observation{Kind: runtime.Gone})},
 			{name: "a repoint", end: func(h *harness) { h.observe(runtime.StaleAddress) }, cause: endRepointed},
 			{name: "a stale-plugin relaunch", end: func(h *harness) {
 				// The harness's register() walk records h.deps's contract, so the relaunched

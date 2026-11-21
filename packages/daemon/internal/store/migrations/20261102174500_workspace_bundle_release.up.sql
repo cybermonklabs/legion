@@ -4,7 +4,7 @@
 -- release_id is issue_releases.id of the idle release whose save wrote the row. The restore of the
 -- issue's next pod carries it to that pod's launcher in every launcher_bundle slice and reads it
 -- back out of the launcher_restored that confirms the restore, and the confirmation deletes the row
--- only while release_id is still the release that report names (store.DeleteRestoredWorkspaceBundle).
+-- only while release_id is still the release that report names (store.KeepRestoredWorkspaceBundle).
 -- A launcher holds its report until some connection carries it, so one can reach the daemon after
 -- the issue's next release has saved a bundle of its own; without this column that report deleted
 -- the issue's one row, and the teardown of that newer release had already taken the disk the work

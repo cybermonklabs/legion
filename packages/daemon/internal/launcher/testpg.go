@@ -2,12 +2,18 @@ package launcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // The pod's own PostgreSQL for tests, which an issue pod's launcher serves when the deployment
@@ -45,7 +51,23 @@ const (
 	testPGLogName     = "server.log"
 	// testPGProgram is that script, on the image's PATH.
 	testPGProgram = "legion-testpg"
+	// testPGSetAsideName is where, in the cluster's directory, a reset moves the cluster it
+	// replaces, in one rename, before it makes the new one. The script names the same path
+	// (legion-testpg's aside), and the disk check deletes whatever it finds there
+	// (checkTestPGDisk), which is the old cluster whole where a reset was cut after its rename.
+	testPGSetAsideName = "data.reset"
+	// The variables a reset is told the disk's reading in, in bytes, for the line it writes: the
+	// bytes free, the disk's size and the floor they fell under.
+	testPGFreeVariable  = "LEGION_TESTPG_FREE_BYTES"
+	testPGSizeVariable  = "LEGION_TESTPG_SIZE_BYTES"
+	testPGFloorVariable = "LEGION_TESTPG_FLOOR_BYTES"
 )
+
+// testPGServedDSN is the DSN the launcher tells the script to serve: TestPGDSN, the one every
+// generation of this launcher is told (testPGEnv). A test that runs the real script points it at
+// a port of its own, so that script never serves, resets or stops the server on the machine's own
+// port 5433.
+var testPGServedDSN = TestPGDSN
 
 // testPGInterval is how often the launcher asks the script again. `ensure` returns after one
 // connection through the DSN while the server serves it, so the poll costs milliseconds, and a
@@ -113,23 +135,37 @@ func testPGEnv(env []string, serves bool) []string {
 // to bind even when the attempt failed before `initdb` wrote one: without it such a role would
 // hold the image's empty mount point for its whole generation and see nothing of what the server
 // a later tick starts logs. A log that cannot be made is logged as the script's failures are.
+//
+// Where the cluster is on a disk of its own (Config.TestPostgresDisk), the ticker goroutine runs
+// the disk check (checkTestPGDisk) once at once and then at every tick, in place of the tick's
+// plain `ensure`. The first attempt stays the plain `ensure`, bounded by testPGBound, because the
+// daemon's boot of the pod waits on it; a reset, which takes longer, runs only in the goroutine,
+// which no role's start waits on.
 func serveTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard) <-chan struct{} {
-	// The interval is read here, in the caller's own goroutine, and not inside the one below: it
-	// is a package variable a test shortens, and a goroutine still reading it after the test
-	// restored it is a data race the race detector fails the test for.
+	// The interval, the disk's reader and the reset's bound are read here, in the caller's own
+	// goroutine, and not inside the one below: each is a package variable a test replaces, and a
+	// goroutine still reading one after the test restored it is a data race the race detector
+	// fails the test for.
 	interval := testPGInterval
+	space := testPGDiskSpace
+	resetBound := testPGResetBound
 	if err := makeTestPGLog(cfg.RolesDir); err != nil {
 		log.linef("launcher: test database: %v", err)
 	}
-	ensure := func() {
-		if err := runTestPG(ctx, cfg, log, guard, "ensure"); err != nil {
-			log.linef("launcher: test database: %v", err)
-		}
+	tick := func() { ensureTestPG(ctx, cfg, log, guard) }
+	if cfg.TestPostgresDisk {
+		tick = func() { checkTestPGDisk(ctx, cfg, log, guard, space, resetBound) }
 	}
-	ensure()
+	ensureTestPG(ctx, cfg, log, guard)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// At once rather than one interval later: a launcher that restarts in a pod whose disk
+		// is already under the floor resets it now, and deletes now what a reset cut by that
+		// restart set aside.
+		if cfg.TestPostgresDisk {
+			tick()
+		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -137,11 +173,92 @@ func serveTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard)
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				ensure()
+				tick()
 			}
 		}
 	}()
 	return done
+}
+
+// ensureTestPG is one plain `ensure`, bounded by testPGBound, its failure logged.
+func ensureTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard) {
+	if err := runTestPG(ctx, cfg, log, guard, ensureRun()); err != nil {
+		log.linef("launcher: test database: %v", err)
+	}
+}
+
+// testPGResetFloor is the bytes free on the cluster's own disk under which the disk check resets
+// the cluster. It is far above what the server needs to go on working, because what the server
+// meets at none is worse than a reset: a data-file write that finds no space fails its statement
+// and the server stays up, but a WAL write that finds none makes the server panic, end every
+// connection and start again, over and over while the disk stays full.
+const testPGResetFloor = 2 << 30
+
+// testPGResetBound is how long one `legion-testpg reset` may take. It is not testPGBound, whose
+// 60 s are one `ensure`'s inside the daemon's boot of the pod: a reset stops the server, waits for
+// its processes, makes and starts a new cluster and deletes the old one, which on a loaded pod
+// takes longer, and it runs in the loop's goroutine alone, so no role's start waits on its bound.
+// A test shortens it.
+var testPGResetBound = 5 * time.Minute
+
+// testPGDiskSpace reads the disk dir is on: the bytes free to a process that is not root
+// (f_bavail, which leaves out the blocks the filesystem keeps for root, as the server, which runs
+// as the launcher's user, finds them) and the disk's size. A test replaces it, so a check reads
+// the free bytes its case needs.
+var testPGDiskSpace = func(dir string) (free, size uint64, err error) {
+	var stat unix.Statfs_t
+	if err = unix.Statfs(dir, &stat); err != nil {
+		return 0, 0, err
+	}
+	block := uint64(stat.Bsize)
+	return stat.Bavail * block, stat.Blocks * block, nil
+}
+
+// checkTestPGDisk is one check of a cluster on a disk of its own (Config.TestPostgresDisk), the
+// loop's in place of its plain `ensure`. That disk reports its own size, unlike the pod's
+// emptyDir, so the bytes free on it are the cluster's own to fill, and a cluster that fills it
+// is reset before the server meets a full disk.
+//
+// It first deletes the old cluster a reset moved aside and did not delete (testPGSetAsideName),
+// which would otherwise hold its bytes for the pod's life and count against the free bytes read
+// next. A reset leaves it there when it is cut after its rename, when its new cluster fails to
+// start and when its own delete of the old cluster fails; the reset's own lines say which, so the
+// words logged here name what the check found and not why it was left. It deletes it without the
+// script's lock, because only a reset makes that path, and the launcher runs its resets one at a
+// time, from this check alone, each under a bound that kills its whole process group (resetRun),
+// so no run of the script still uses it. It leaves alone the directory the script's start makes a
+// new cluster in (legion-testpg's init) and renames into place: an `ensure` its bound cut may leave
+// a start still filling that directory under the lock (ensureRun), and every start deletes what a
+// cut initdb left there before its own initdb. It then reads the disk with space (testPGDiskSpace).
+// Under testPGResetFloor it runs `legion-testpg reset` (resetRun, bounded by resetBound,
+// testPGResetBound, which the caller reads); at or over the floor, and where the disk cannot be
+// read, it runs the plain `ensure`. A failure is logged and never thrown, as the plain
+// `ensure`'s is.
+func checkTestPGDisk(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard, space func(dir string) (free, size uint64, err error), resetBound time.Duration) {
+	dir := testPGDir(cfg.RolesDir)
+	aside := filepath.Join(dir, testPGSetAsideName)
+	if _, err := os.Lstat(aside); err == nil {
+		if err := os.RemoveAll(aside); err != nil {
+			log.linef("launcher: test database: delete %s, the old cluster a reset moved aside and did not delete: %v", aside, err)
+		} else {
+			log.linef("launcher: test database: deleted %s, the old cluster a reset moved aside and did not delete", aside)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		log.linef("launcher: test database: read %s, where a reset moves the old cluster aside: %v", aside, err)
+	}
+	free, size, err := space(dir)
+	if err != nil {
+		log.linef("launcher: test database: read the bytes free on the cluster's disk at %s, so this check runs ensure alone: %v", dir, err)
+		ensureTestPG(ctx, cfg, log, guard)
+		return
+	}
+	if free >= testPGResetFloor {
+		ensureTestPG(ctx, cfg, log, guard)
+		return
+	}
+	if err := runTestPG(ctx, cfg, log, guard, resetRun(free, size, resetBound)); err != nil {
+		log.linef("launcher: test database: %v", err)
+	}
 }
 
 // makeTestPGLog makes the cluster's directory and, where there is none, the server's log in it,
@@ -161,42 +278,110 @@ func makeTestPGLog(rolesDir string) error {
 	return file.Close()
 }
 
-// testPGBound is how long one run of the script may take. The first `ensure` runs before the
-// launcher serves any role, and the daemon's boot timeout for a pod is 120 s by default, so an
-// `ensure` that hangs — a lock a dead holder still owns, a disk that does not answer — must not
-// take the pod's whole boot with it. `flock` inside the script waits up to 180 s of its own, which
-// this bound cuts short deliberately: a role starting without its test database and a line in the
-// log is better than a pod the daemon gives up on. A test shortens it.
+// testPGBound is how long one `ensure` may take; a reset has a bound of its own
+// (testPGResetBound). The first `ensure` runs before the launcher serves any role, and the
+// daemon's boot timeout for a pod is 120 s by default, so an `ensure` that hangs — a lock a dead
+// holder still owns, a disk that does not answer — must not take the pod's whole boot with it.
+// `flock` inside the script waits up to 180 s of its own, which this bound cuts short
+// deliberately: a role starting without its test database and a line in the log is better than a
+// pod the daemon gives up on. A test shortens it.
 var testPGBound = 60 * time.Second
 
-// runTestPG runs one command of the image's script with the DSN it must serve, the directory it
-// must serve it from and the file it must log to, writing its output to the container's log
-// behind a prefix of its own, so a refusal reads apart from a role's lines. Its process is held
-// out of the reaper's pass (pidGuard) until this wait has read its exit. WaitDelay makes the kill
-// at testPGBound final: without it a child that keeps the output pipe open — the postmaster
-// `pg_ctl` leaves running — would hold this wait past the bound.
-func runTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard, command string) error {
-	bounded, cancel := context.WithTimeout(ctx, testPGBound)
+// testPGRun is one run of the image's script: the command it runs, the bound it runs under, the
+// variables it is told after the launcher's own (runTestPG), and whether the bound kills the
+// script's whole process group (killGroupAtBound) rather than the script's own process alone.
+// ensureRun and resetRun make the two runs the launcher has, so each command is paired with its
+// bound and its kill in one place, and no run's kill depends on how its command is spelled.
+type testPGRun struct {
+	command string
+	bound   time.Duration
+	env     []string
+	group   bool
+}
+
+// ensureRun is one plain `ensure`, bounded by testPGBound, whose bound kills the script's own
+// process alone. The script runs a start as `flock … "$0" start-locked`, so that flock and the
+// start-locked it started can outlive the kill, and the bound leaves them running on purpose:
+// all they go on to do is that start, under the cluster's lock, which the next `ensure` waits for
+// and then finds serving, and it touches nothing the launcher deletes, since the disk check
+// deletes the cluster a reset set aside and never the directory a start makes its new cluster in
+// (checkTestPGDisk). A start cut anywhere leaves nothing broken either, because it renames a new
+// cluster into the data directory only once initdb has made it whole (legion-testpg's start).
+func ensureRun() testPGRun { return testPGRun{command: "ensure", bound: testPGBound} }
+
+// resetRun is one `legion-testpg reset`, bounded by bound and told free, the bytes free on the
+// cluster's disk, size, the disk's size, and testPGResetFloor, which free fell under, for the
+// line it writes. Its bound kills the script's whole process group: a reset that outlived its
+// bound would go on moving and deleting the cluster beside the next check, which deletes the
+// cluster a reset set aside without the script's lock.
+func resetRun(free, size uint64, bound time.Duration) testPGRun {
+	return testPGRun{
+		command: "reset",
+		bound:   bound,
+		env: []string{
+			testPGFreeVariable + "=" + strconv.FormatUint(free, 10),
+			testPGSizeVariable + "=" + strconv.FormatUint(size, 10),
+			testPGFloorVariable + "=" + strconv.FormatUint(testPGResetFloor, 10),
+		},
+		group: true,
+	}
+}
+
+// killGroupAtBound makes the bound of cmd, a run of the script, end the run and not only the
+// wait for it. The script runs its command as `flock … "$0" <command>-locked`, so the process
+// exec.CommandContext kills at the bound is the shell that waits for flock, and flock and the
+// child it started would outlive that kill, holding the cluster's lock and working on the
+// cluster. So the script starts in a process group of its own, and the bound kills the whole
+// group, which leaves what a reset's order of steps makes a cut leave: a cluster the next check
+// serves, resets again or rebuilds (legion-testpg's reset_locked). That order is also why the
+// kill is a SIGKILL with no SIGTERM before it: no step needs a handler to clean up after itself.
+// A postmaster the run started is not in the group, since `pg_ctl` starts it in a session of its
+// own, so the kill never takes a server the next check's `ensure` would find serving. A group
+// already gone answers ESRCH: the run finished as its bound came, and the cancel reports the
+// process done, as exec's own kill does, rather than turn that finish into an error.
+func killGroupAtBound(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); !errors.Is(err, syscall.ESRCH) {
+			return err
+		}
+		return os.ErrProcessDone
+	}
+}
+
+// runTestPG runs one run of the image's script with the DSN it must serve, the directory it must
+// serve it from and the file it must log to, and the run's own variables after them, writing its
+// output to the container's log behind a prefix of its own, so a refusal reads apart from a
+// role's lines. It kills the script at the run's bound, and with it the script's whole process
+// group where the run asks for that (testPGRun.group, killGroupAtBound). Its process is held out
+// of the reaper's pass (pidGuard) until this wait has read its exit. WaitDelay makes the kill at
+// the bound final: without it a child that keeps the output pipe open — the postmaster `pg_ctl`
+// leaves running, or the flock of an `ensure` its bound cut — would hold this wait past the bound.
+func runTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard, run testPGRun) error {
+	bounded, cancel := context.WithTimeout(ctx, run.bound)
 	defer cancel()
 	out, _ := log.writers(testPGProgram)
-	cmd := exec.CommandContext(bounded, testPGProgram, command)
+	cmd := exec.CommandContext(bounded, testPGProgram, run.command)
 	cmd.WaitDelay = time.Second
-	cmd.Env = append(os.Environ(),
-		TestPGVariable+"="+TestPGDSN,
+	if run.group {
+		killGroupAtBound(cmd)
+	}
+	cmd.Env = append(append(os.Environ(),
+		TestPGVariable+"="+testPGServedDSN,
 		testPGDirVariable+"="+testPGDir(cfg.RolesDir),
 		testPGLogVariable+"="+testPGLog(cfg.RolesDir),
-	)
+	), run.env...)
 	cmd.Stdout, cmd.Stderr = out, out
 	pid, err := guard.start(cmd)
 	if err != nil {
-		return fmt.Errorf("start %s %s: %w", testPGProgram, command, err)
+		return fmt.Errorf("start %s %s: %w", testPGProgram, run.command, err)
 	}
 	defer guard.done(pid)
 	if err := cmd.Wait(); err != nil {
 		if bounded.Err() != nil && ctx.Err() == nil {
-			return fmt.Errorf("%s %s did not finish within %s", testPGProgram, command, testPGBound)
+			return fmt.Errorf("%s %s did not finish within %s", testPGProgram, run.command, run.bound)
 		}
-		return fmt.Errorf("%s %s: %w", testPGProgram, command, err)
+		return fmt.Errorf("%s %s: %w", testPGProgram, run.command, err)
 	}
 	return nil
 }

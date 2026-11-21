@@ -68,10 +68,13 @@ var ErrCompactProcessGone = errors.New("the claim lost its process while its ses
 // that arrived while Oh My Pi wrote the summary, which the machine holds as it holds a
 // suspension that arrives in a turn (holdSuspension). The compaction ran and its end was the
 // claim's own, so this is neither ErrCompactProcessGone nor a store that would not write
-// (ErrCompactNotEnded); what it is is a claim the end did not give back. The hold runs there
-// and the claim is suspended, or the claim is working for a turn Oh My Pi started under the
-// compaction and the hold runs at that turn's end instead (compactEnded). Either way the task
-// the claim owes was not sent.
+// (ErrCompactNotEnded); what it is is a claim the end did not give back to its agent. The end
+// has one of three outcomes (compactEnded): the hold runs there and the claim is suspended; the
+// claim is working for a turn Oh My Pi started under the compaction, and the hold runs at that
+// turn's end instead; or the copy of the issue's workspace that a turn's end started is still
+// being taken, and the claim is given back ready or idle holding the stop, which runs at that
+// copy's end or at the wait's bound (waitForTurnCopy). In each the task the claim owes was not
+// sent.
 //
 // What becomes of that task is the hold's own, and settle is what decides it. A suspension by
 // a source that resumes this same claim in the same phase — an operator's hold, and a
@@ -79,14 +82,14 @@ var ErrCompactProcessGone = errors.New("the claim lost its process while its ses
 // again (SuspendSource.RetiresPhaseTask, settle). The daemon's own suspension ends the
 // claim's phase, so settle retires the task queued for that phase with it and nothing sends
 // it; the claim's next phase brings a task of its own. A hold of the daemon's that a start
-// drops before it runs is neither: the claim runs on, and the turn this answer left it
-// working for ends as any other turn does and sends the task (StartedBy, dropHeld,
-// turnEnded).
+// drops before it runs is neither: the claim runs on, and its task goes at that start
+// (releaseHeld) or at the end of the turn this answer left it working for, as any turn's end
+// sends it (StartedBy, dropHeld, turnEnded).
 //
 // It is the end's answer rather than a failure of it, as ErrSuspendHeld is the answer of a
 // suspension the machine holds: nothing of the claim is left half written, and the caller is
 // told what the claim is rather than that the compaction worked (api's compact).
-var ErrCompactSuspended = errors.New("a suspension held over the claim ended its compaction, so the claim was not given back and the task it owes was not sent")
+var ErrCompactSuspended = errors.New("a suspension held over the claim ended its compaction, so the claim did not go back to its agent and the task it owes was not sent")
 
 // compacting is the compaction a claim is in: the connection it runs over and the generation it
 // was taken at. Those two, and the claim recording a compaction at all, are what the end of a
@@ -403,6 +406,11 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // CompactResponse) — would be false of both. The hold that runs here stops a process in no
 // turn, so what its let-go records reads the claim in the state the compaction gives it back
 // in (compacting.back, suspendHeldAtEnd), and the next process is not told a turn was cut off.
+// It is a stop held for an end, so it waits first for the copy a turn's end started that is
+// still being taken — the turn that ended under this compaction above all, whose copy turnEnded
+// started — at most the copy's budget and never past the hold's own deadline (waitForTurnCopy):
+// the claim is given back meanwhile holding the stop and handed nothing, which is the same
+// answer.
 func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	ended := ev.(CompactEnded)
 	// The fence let this end through, so the claim holds the compaction it names (ownsCompaction).
@@ -428,17 +436,30 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	if m.held != nil {
 		// A suspension that arrived while the compaction ran was held for it, as one that
 		// arrives in a turn is (holdSuspension); it runs now, exactly as the turn's end runs it.
+		if waits, err := m.heldStopWaitsAtEnd(ctx, run.back); waits {
+			if err != nil {
+				return err
+			}
+			return ErrCompactSuspended
+		}
 		if err := m.suspendHeldAtEnd(ctx, run.back); err != nil {
 			if m.held == nil {
 				return err
 			}
 			m.claim.State = run.back
-			return errors.Join(err, m.persist(ctx))
+			return errors.Join(err, m.durableWrite(ctx, run.back, m.persist))
 		}
 		return ErrCompactSuspended
 	}
 	m.claim.State = run.back
-	if err := m.persist(ctx); err != nil {
+	// The state the claim goes back to is reported to the daemon as a durable transition, as
+	// turnEnded reports the idle it writes (durableWrite, OnDurableState). A turn that ends while
+	// the session is being compacted is left working by turnEnded and reaches its idle here
+	// instead (run.back is Idle for it); the copy of the issue's workspace that turn's end owes
+	// was started at the turn's end itself (copyTurnEnd), not from this report. The report
+	// follows the claim write, so a write the database did not take owes the report instead and
+	// makes it when the write lands (oweDurableState, makeOwedReports).
+	if err := m.durableWrite(ctx, run.back, m.persist); err != nil {
 		return err
 	}
 	return m.afterTurn(ctx)

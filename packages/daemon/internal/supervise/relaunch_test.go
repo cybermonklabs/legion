@@ -131,7 +131,7 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 		task = "implement the plan"
 		next = "review it"
 	)
-	died := endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))
+	died := endDied(runtime.Observation{Kind: runtime.Gone})
 	for _, tc := range []struct {
 		name, cause string
 		// letGo lets the process go in the turn of its task and brings the next process up to
@@ -796,7 +796,7 @@ func TestARelaunchSentenceStaysToldWhenTheTurnThatReadItIsInterrupted(t *testing
 		// end ends the task's turn and lets the process go.
 		end func(t *testing.T, h *harness)
 	}{
-		{name: "the process dies in that turn", cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+		{name: "the process dies in that turn", cause: endDied(runtime.Observation{Kind: runtime.Gone}),
 			end: func(t *testing.T, h *harness) {
 				h.observe(runtime.Gone)
 			}},
@@ -890,7 +890,7 @@ func TestARelaunchSentenceIsToldAgainWhenATurnTakenBeforeItsPromptsResultIsCutOf
 		// brings the claim back to send again.
 		cut, idle, resend func(t *testing.T, h *harness)
 	}{
-		{name: "the process dies in the turn", cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+		{name: "the process dies in the turn", cause: endDied(runtime.Observation{Kind: runtime.Gone}),
 			cut: func(t *testing.T, h *harness) {
 				gone := runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}
 				if err := h.m.Handle(h.ctx, RuntimeObservation{Observation: gone}); err != nil {

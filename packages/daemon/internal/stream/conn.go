@@ -286,6 +286,15 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 // runs its jj reads and its `git bundle create` within timeout; the answer is awaited for that
 // plus the RPC timeout, the round trip, and crosses as an rpc_chunk sequence when the bundle is
 // larger than one line.
+//
+// The frame carries runtime.MaxWorkspaceBundleBytes as its bound, and the shim refuses a bundle
+// over it with the size the bundle came to: it builds the bundle before it can read the size, so
+// that refusal is the one that names a size over the bound. It is answered as a
+// *runtime.WorkspaceBundleTooLargeError, which the daemon records as a workspace too large to
+// carry; every other refusal, one naming a size within the bound or none, is a *RefusedError, a
+// bundle the shim could not build. An answer that carries a bundle over the bound all the same is
+// that same *runtime.WorkspaceBundleTooLargeError, carrying the size it arrived at, so no caller
+// reads a bundle's size against the bound itself.
 func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (runtime.WorkspaceBundle, error) {
 	id := rand.Text()
 	frame := shimwire.BundleWorkspace{
@@ -304,10 +313,18 @@ func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.D
 			return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 		}
 		if !answer.OK {
+			if answer.SizeBytes > frame.MaxBytes {
+				return runtime.WorkspaceBundle{}, &runtime.WorkspaceBundleTooLargeError{Bytes: answer.SizeBytes, Max: frame.MaxBytes}
+			}
 			return runtime.WorkspaceBundle{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeBundleWorkspace, Reason: answer.Error}
 		}
+		if size := len(answer.Bundle); size > frame.MaxBytes {
+			return runtime.WorkspaceBundle{}, &runtime.WorkspaceBundleTooLargeError{Bytes: size, Max: frame.MaxBytes}
+		}
+		// The shim's own time of its reading is left out: it is the node's clock, and a copy's
+		// time is the store's when its take began (store.Store.BeginWorkspaceCopy).
 		return runtime.WorkspaceBundle{
-			Bundle: answer.Bundle, Head: answer.Head, Tips: answer.Tips, Bookmarks: answer.Bookmarks, At: answer.At,
+			Bundle: answer.Bundle, Head: answer.Head, Tips: answer.Tips, Bookmarks: answer.Bookmarks,
 		}, nil
 	case shimwire.Response:
 		// A shim that does not answer the frame itself forwards it, and OMP refuses a command

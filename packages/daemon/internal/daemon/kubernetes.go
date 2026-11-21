@@ -339,6 +339,16 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	if err != nil {
 		return sandbox.Options{}, fmt.Errorf("runtime.kubernetes.issue_volume: %w", err)
 	}
+	// The test database's own disk, parsed once here as the issue volume is; nil while the file
+	// sets none, which keeps the cluster in the pod's emptyDir.
+	var testPostgresDisk *resource.Quantity
+	if k.TestPostgresDisk != "" {
+		size, err := resource.ParseQuantity(k.TestPostgresDisk)
+		if err != nil {
+			return sandbox.Options{}, fmt.Errorf("runtime.kubernetes.test_postgres_disk: %w", err)
+		}
+		testPostgresDisk = &size
+	}
 	var tolerations []corev1.Toleration
 	for _, t := range k.Scheduling.Tolerations {
 		tolerations = append(tolerations, corev1.Toleration{
@@ -403,6 +413,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		SessionStore:            k.SessionStore,
 		Setup:                   k.Setup,
 		TestPostgres:            k.TestPostgres,
+		TestPostgresDisk:        testPostgresDisk,
 		MemoryGuard:             memoryGuard,
 		LeakCheckSetting:        cfg.LeakCheck,
 		BootTimeout:             cfg.WorkerBootTimeout,
@@ -588,7 +599,7 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // owner whose installation holds the repository now), with the repositories the project works as
 // the ones its repository caches follow (cached: those of its live issue records and of the
 // launches since their last read, workflowRuntime.cacheRepositories), with the store's own
-// workspace bundles as what a replacement pod's launcher is sent and what its restore drops, and
+// workspace bundles as what a replacement pod's launcher is sent and what its restore keeps, and
 // registers its launcher acceptor on the stream listener. A daemon with no GitHub Apps hands it no
 // tokens, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
@@ -608,20 +619,28 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
-		// The two halves of the release's saved work: an idle release puts the issue's unpushed
-		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
-		// replaces the released one before any role of that pod starts. The confirmation deletes
-		// the bundle of the release the launcher's report names and no other, so a report that
-		// arrives late takes no newer release's work with it. The read is the bundle's one restore
-		// attempt: the first pod that is not the one the work came off takes it, whether the
-		// bundle is sent or that pod is refused as no newer than the save, and nothing is
-		// answered for that bundle again.
-		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
-		// A pod whose Sandbox owns the issue's kept volume, and was created before the save,
-		// mounts the volume the work was taken off. The runtime asks this drop first for such a
-		// pod, and the store deletes the bundle the take would answer, without its body, so the
-		// pod is sent nothing and the bundle holds the issue's pod no longer.
-		opts.HeldWorkspaceBundle = heldWorkspaceBundle(st, opts.Project)
+		// The restore of a new pod and the two copies of an issue workspace it chooses between:
+		// an idle release puts the issue's unpushed work in one (outbox's release) and the
+		// cadence of a running pod in the other. The take reads both and the newest push of the
+		// issue's branch the daemon recorded, offers the newer copy to the launcher of the pod
+		// that replaces the one the work came off before any role of that pod starts, refuses a
+		// running copy older than that push, and closes the older copy unsent, all in one
+		// transaction. A refused or closed copy is spent there; a sent one is spent once a role of
+		// the pod it was sent to registers (store.Store.RecordPodRegistration, which the
+		// supervisor's Deps.PodRegistered calls), and is sent again to the next start of the issue
+		// while none has. The take is bound to this daemon's project (savedWorkspaceCopy).
+		opts.SavedWorkspaceBundle = savedWorkspaceCopy(st, opts.Project)
+		// A launcher's restore report keeps the copy it names as the restoring pod's own running
+		// copy, so the work outlives a second end of that pod before its first turn. Which of the
+		// two tables the report names is read off its id, and that rule belongs to the store that
+		// owns both (store.KeepRestoredWorkspaceCopy).
+		opts.WorkspaceBundleRestored = st.KeepRestoredWorkspaceCopy
+		// A pod whose Sandbox owns the issue's kept volume mounts the volume every copy taken
+		// since that Sandbox was created came off. The runtime asks this drop first for such a
+		// pod, and the store deletes each such copy the take would answer, release bundle and
+		// running copy alike, without its body, so the pod is sent nothing of it and a release
+		// bundle holds the issue's pod no longer.
+		opts.HeldWorkspaceCopies = heldWorkspaceCopies(st, opts.Project)
 		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
 		// left the volume above its low mark, or of the trimmer switching itself off — reaches
 		// the daemon through this, and the daemon turns it into the one fact that can tell the
@@ -663,25 +682,33 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 	}
 }
 
-// savedWorkspaceBundle is st's take of a release's saved work for a pod of project, the runtime's
-// project token (sandbox.Options.Project), in the shape the runtime calls it
-// (runtime.SavedWorkspaceBundle). A bundle is project's only where project records its issue
-// (store.Store.TakeWorkspaceBundleForRestore): on a database shared with another project's
-// daemon, a bundle of that project's issue is that daemon's, whatever pod of this daemon asks.
-func savedWorkspaceBundle(st *store.Store, project string) runtime.SavedWorkspaceBundle {
-	return func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-		return st.TakeWorkspaceBundleForRestore(ctx, project, issue, podUID, podCreated)
+// savedWorkspaceCopy is st's take of an issue's saved workspace copies for a pod of project, the
+// runtime's project token (sandbox.Options.Project), in the shape the runtime calls it
+// (runtime.SavedWorkspaceBundle). A copy is project's to take only where project records its issue
+// (store.Store.TakeWorkspaceCopyForRestore): on a database shared with another project's daemon, a
+// copy of an issue project does not record is that daemon's, and it is withheld from every pod of
+// this daemon and stays in the database, since a row names no project. This daemon's cadence
+// writes no running copy of such an issue and drops none, an operator's spawn of it included,
+// under the same rule and the same token (store.Store.PutRunningWorkspaceCopy,
+// store.Store.DeleteRunningWorkspaceCopy, workflowRuntime.storeRunningCopy), so the spawn's pods
+// are answered nothing and the other daemon's copy stands for that daemon's pod.
+func savedWorkspaceCopy(st *store.Store, project string) runtime.SavedWorkspaceBundle {
+	return func(ctx context.Context, issue, podUID string) (runtime.WorkspaceRestore, error) {
+		return st.TakeWorkspaceCopyForRestore(ctx, project, issue, podUID)
 	}
 }
 
-// heldWorkspaceBundle is st's drop of a release's saved work that the kept volume of a pod of
-// project already holds, in the shape the runtime calls it (runtime.HeldWorkspaceBundleDrop).
-// project is the runtime's project token (sandbox.Options.Project). The drop follows the take's
-// project rule (store.Store.DropHeldWorkspaceBundle): a bundle of an issue that project does not
-// record is another project's daemon's, and a pod of this daemon drops none of it.
-func heldWorkspaceBundle(st *store.Store, project string) runtime.HeldWorkspaceBundleDrop {
-	return func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
-		return st.DropHeldWorkspaceBundle(ctx, project, issue, podUID, keptSince)
+// heldWorkspaceCopies is st's drop of the saved copies of an issue's workspace that the kept
+// volume of a pod of project already holds, in the shape the runtime calls it
+// (runtime.HeldWorkspaceCopiesDrop). project is the runtime's project token
+// (sandbox.Options.Project). The drop follows the take's project rule
+// (store.Store.DropHeldWorkspaceCopies): a pod of this daemon drops no copy of an issue that
+// project does not record, and the copy stays in the database for the pod of the project that
+// records the issue, since this daemon's cadence writes no running copy of such an issue, an
+// operator's spawn of it included (store.Store.PutRunningWorkspaceCopy).
+func heldWorkspaceCopies(st *store.Store, project string) runtime.HeldWorkspaceCopiesDrop {
+	return func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceRestore, error) {
+		return st.DropHeldWorkspaceCopies(ctx, project, issue, podUID, keptSince)
 	}
 }
 

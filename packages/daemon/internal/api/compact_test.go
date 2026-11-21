@@ -381,12 +381,14 @@ func TestACompactionOfAReadyClaimUnderAHeldSuspensionIsNotTaken(t *testing.T) {
 
 // suspendedCompactionRefusal is the sentence the compaction gives a claim a held suspension's
 // end took in place of its agent (api's compact, supervise.ErrCompactSuspended). It says what
-// the caller asked for and did not get, and nothing of the owed task beyond its not being
-// sent: what each hold does with that task is written once, on supervise.ErrCompactSuspended.
+// the caller asked for and did not get, when the hold stops the claim, and nothing of the owed
+// task beyond its not being sent: what each hold does with that task is written once, on
+// supervise.ErrCompactSuspended.
 func suspendedCompactionRefusal(token claim.Token) string {
 	return string(token) + "'s session was compacted, and a suspension held over the claim ended that " +
-		"compaction rather than the claim coming back: it was not given back, and the task it owes " +
-		"was not sent. " + wantAskAgainLater
+		"compaction rather than the claim coming back to its agent: the task it owes was not sent, and " +
+		"the hold stops the claim at once, at the end of a turn begun under the compaction, or once " +
+		"the copy of its last turn's end is over. " + wantAskAgainLater
 }
 
 // A suspension that arrives while the session is being compacted is held for the compaction's

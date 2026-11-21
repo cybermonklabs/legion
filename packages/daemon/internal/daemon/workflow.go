@@ -153,6 +153,27 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// copyBundler is the runtime's bundler of an issue workspace's unpushed work, and copyStore
+	// the daemon's store the copies it answers are kept in, which the cadence that keeps a copy of
+	// each workspace while its pod runs uses (tickWorkspaceCopies, copyWorkspaceAtTurnEnd,
+	// copyWorkspaceAtPush). They are set whatever the deployment releases, because the cadence is
+	// no part of release: a deployment with `idle_minutes: 0` still has pods the cluster can end
+	// under it. copyBundler is nil where the runtime implements no runtime.WorkspaceBundler —
+	// `runtime: tmux`, whose processes share the daemon's own disk — and copyStore for a daemon
+	// built with no store, which is every hand-built workflowRuntime in a test; either leaves the
+	// cadence doing nothing. A whole-daemon test may set copyBundler before attach, which then
+	// keeps it (overrides.copyBundler). copies is what that cadence holds in memory, one entry per
+	// issue it has copied, and the run's context its copies run under; the outbox's release save
+	// is handed the same one (newOutbox), so the save and a copy share one single flight.
+	//
+	// copyBudget is the budget one copy is given; zero means the production constant
+	// (runningCopyBudget). A test shortens it, as it shortens the ticks. The period between two
+	// copies of one issue is the constant runningCopyPeriod alone, because a release's save
+	// prunes the cadence's memory by it as a copy does (runningCopies.giveBack).
+	copyBundler runtime.WorkspaceBundler
+	copyStore   *store.Store
+	copies      runningCopies
+	copyBudget  time.Duration
 	// now is the daemon's one clock (overrides.clock, the machines' clock, the wall clock in
 	// production), which the engine stamps its deadlines with (workflow.Config.Clock) and the
 	// idle, wake and stuck passes read their now from, so a test clock moves all of them
@@ -697,6 +718,12 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
 	// which is the pacing off: the engine then writes that catch-up due at once, as it always did.
 	engineCfg.Reserve = reserve
+	// Every push of an issue's branch is recorded in its fact's transaction, and once it commits
+	// the issue's workspace is copied (copyWorkspaceAtPush): the restore of a new pod refuses any
+	// running copy older than that push (store.TakeWorkspaceCopyForRestore), and this copy is the
+	// one that takes its place. The cadence's store and bundler are attach's, read when the push
+	// arrives.
+	engineCfg.Pushes, engineCfg.PushRecorded = st, w.copyWorkspaceAtPush
 	// The engine stamps its deadlines on the daemon's one clock, which the machines and this
 	// runtime's passes read too (dispatch://INFRA-3759).
 	engineCfg.Clock = clock
@@ -1578,7 +1605,8 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 }
 
 // attach gives the workflow what only supervision has: the outbox, built on its supervisor and
-// its runtime, and the deployment's budget limits, which a failed claim's fact carries to the
+// its runtime, the daemon's store and the runtime's bundler of an issue workspace for the
+// cadence, and the deployment's budget limits, which a failed claim's fact carries to the
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
 // supervisor's own (supervise.WakePace, the rate and the burst the machines are held to), which
 // the outbox reads through that supervisor where it writes the line (wakeRan); the limiter both
@@ -1593,10 +1621,21 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
 // and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
 // which also drops that repository (podEndsOn).
+//
+// The cadence's store and bundler are wired here and not in attachIdleRelease, which returns
+// early where the deployment releases no pod: the cadence that keeps a copy of each issue
+// workspace while its pod runs is no part of release (tickWorkspaceCopies). A deployment with
+// `idle_minutes: 0` releases nothing and still has pods the cluster can end under it, so it
+// takes the copies; what leaves the cadence with nothing to do is a runtime that bundles no
+// workspace, which is `runtime: tmux`. The bundler is the runtime's unless run set a test's in its
+// place (overrides.copyBundler). The outbox is handed the cadence's memory too, so that a
+// release's save takes the same per-issue mark a copy takes (outbox.bundleIssueWorkspace): both
+// run the shim's bundler in the issue's workspace, and two of them there at once would share the
+// ref prefix `refs/legion-bundle/`.
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
-		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
+		supervision.supervisor.store, &w.copies, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
@@ -1604,6 +1643,22 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
+	w.copyStore = supervision.supervisor.store
+	if w.copyBundler == nil {
+		w.copyBundler, _ = supervision.supervisor.deps.Runtime.(runtime.WorkspaceBundler)
+	}
+	if w.copyBundler != nil {
+		// A copy owed while a release's save held the issue's place is taken once that save
+		// gives the place back, and the outbox that runs the save starts it through the cadence's
+		// own start (runningCopies.hold).
+		w.copies.startsOwedWith(w.startOwedCopy)
+		// Every machine's turn's end starts the copy it owes through the supervisor
+		// (supervise.Deps.CopyTurnEnd, supervisor.copyTurnEnd), which hands it to this runtime's
+		// copy from now on, machines built before this attach included.
+		supervision.supervisor.copyTurnEndsWith(w.copyWorkspaceAtTurnEnd)
+	} else {
+		w.log.Info("running copy: the runtime bundles no workspace, so no copy is kept of a running pod's work")
+	}
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
@@ -1858,9 +1913,20 @@ func (w *workflowRuntime) terminal(c supervise.Claim, state supervise.ClaimState
 }
 
 // claimDurableState is the daemon's one durable-state callback, because a supervisor keeps one
-// (supervisor.OnDurableState): a claim's ready and its failure are workflow facts (terminal), and
-// the same transitions measure a released pod's resume — its replacement pod is up at the first
-// ready, and the woken role took its work at the first turn (podResume).
+// (supervisor.OnDurableState). It reads three transitions:
+//
+//   - ready and failed are workflow facts (terminal);
+//   - ready and working measure a released pod's resume — its replacement pod is up at the first
+//     ready, and the woken role took its work at the first turn (podResume).
+//
+// A turn that ended is reported idle, and the copy of the issue's workspace it owes is not taken
+// from that report: without the copy started at the turn's end, a turn that ended into a held stop
+// would be stopped before any idle report, so every machine starts that copy from the turn's end
+// itself (copyWorkspaceAtTurnEnd, supervise.Deps.CopyTurnEnd), and a copy taken here as well would
+// be the same turn's end copied twice.
+//
+// It runs on the machine's own goroutine, so what it does with a transition is either a write of
+// its own (terminal, whose fact the daemon's boot replays when it fails) or a goroutine's.
 func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.ClaimState) {
 	w.podResume(c, state)
 	if state == supervise.StateReady || state == supervise.StateFailed {
@@ -1930,6 +1996,12 @@ func terminalEventID(c supervise.Claim, state supervise.ClaimState) string {
 // reads no events or has lost a held or worker-died fact looks healthy and does nothing.
 func (w *workflowRuntime) run(ctx context.Context) error {
 	group, running := errgroup.WithContext(ctx)
+	// Every copy of an issue workspace runs under the run, whichever path started it, so the
+	// daemon's stop ends the copies in flight rather than leaving them to run to their budget
+	// against a store that is closing (runningCopies). Each copy takes a hold mark of its own as
+	// it starts (goCopy), since copies run beside each other and beside these loops. A copy asked
+	// for before this point — the turn's end of a claim the boot restored — starts here.
+	w.copies.runUnder(running)
 	// Every loop below runs beside the others for the life of the process, so each takes a hold
 	// mark of its own for the pool (store.ForConcurrentWorker): on one shared mark the first loop
 	// to open a transaction would have the pool refuse every other loop its first connection,
@@ -1987,6 +2059,10 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	})
 	group.Go(func() error {
 		w.tickWakes(store.ForConcurrentWorker(running))
+		return nil
+	})
+	group.Go(func() error {
+		w.tickWorkspaceCopies(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {

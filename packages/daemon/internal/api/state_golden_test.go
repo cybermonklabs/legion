@@ -164,6 +164,8 @@ runtime:
       pi_legion: 10.4.0
       pi_envoy: https://legion:fixture-plugin-password@plugins.internal.example/pi-envoy-10.4.0.tgz?token=fixture-plugin-token
     setup: [/bin/sh, -c, 'echo fixture-setup']
+    test_postgres: true
+    test_postgres_disk: 8Gi
     repository_cache:
       volume: 40Gi
       refresh_minutes: 15

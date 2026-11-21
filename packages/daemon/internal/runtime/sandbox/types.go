@@ -286,6 +286,18 @@ type Options struct {
 	// every process in it, so a server a role started would die with that generation and take
 	// every sibling role's test database with it.
 	TestPostgres bool
+	// TestPostgresDisk is runtime.kubernetes.test_postgres_disk: the size of the disk of its own
+	// that every issue pod serving TestPostgres keeps the cluster on, nil while the deployment
+	// sets none and the cluster stays in the testpg emptyDir. The disk is a generic ephemeral
+	// volume on the issue disk's StorageClass (claimSpec), which the kubelet's ephemeral-storage
+	// limit does not count, so a test database that fills it cannot get its pod evicted, and its
+	// launcher is told so (--test-postgres-disk, launcher.Config.TestPostgresDisk). It is read
+	// only where TestPostgres is set.
+	//
+	// It is no part of the pod shape a template records (podShapeRecord): a pod created after it
+	// is set gets the disk, and a running pod keeps its emptyDir until something else replaces it,
+	// so setting it opens no update round of every pod.
+	TestPostgresDisk *resource.Quantity
 	// MemoryGuard is what the memory guard in an issue pod's launcher runs by
 	// (runtime.kubernetes.memory_guard.issue_pods), handed to it on the daemon's answer to each
 	// of its roles' hellos (LauncherResolver). Nil is a deployment that turned the guard off, and
@@ -378,21 +390,29 @@ type Options struct {
 	// which is one no live record and no launch since the last read names, once that cache's
 	// retention passes. Required for supervision.
 	CacheRepositories func() []ghrepo.Repository
-	// SavedWorkspaceBundle is the bundle an issue's last release saved, and WorkspaceBundleRestored
-	// the confirmation that drops it once the issue's new pod holds it. The pair carries the work a
-	// release took off the released pod's disk back into the pod that replaces it: the runtime
-	// sends it to that pod's launcher before any role of the pod starts (launchers.restoreWorkspace),
-	// and confirms it on the launcher's Held. The daemon fills them from its store; a runtime given
-	// neither restores nothing, which is what a pod whose issue was never released does anyway.
+	// SavedWorkspaceBundle takes what an issue holds of its workspace for a new pod, and
+	// WorkspaceBundleRestored is the confirmation that keeps whichever copy the new pod's
+	// launcher put back as that pod's own running copy, named by the launcher session's pod uid
+	// (store.KeepRestoredWorkspaceCopy). The pair carries the work a release took off a pod's
+	// disk, or a cadence took off a pod the cluster ended without one, back into the pod that
+	// replaces it: the runtime hands that pod's launcher, before any role of the pod starts, the
+	// one copy the take answers it is sent (launchers.restoreWorkspace), and confirms it on the
+	// launcher's own report. The kept copy is answered nothing to that pod and offered to the
+	// pod after it, so the work outlives a second end of the pod before its first turn. The take
+	// chooses between the issue's two copies, refuses a running copy older than the newest
+	// recorded push of the issue's branch and spends the attempts, in one transaction of the
+	// store's (store.TakeWorkspaceCopyForRestore). The daemon fills both from its store; a
+	// runtime given neither restores nothing, which is what a pod whose issue holds no copy does
+	// anyway.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
 	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
-	// HeldWorkspaceBundle drops the bundle an issue's last release saved where the pod's own kept
-	// volume holds that work already (runtime.HeldWorkspaceBundleDrop): the pod's Sandbox owns the
-	// issue's kept volume and was created before the save. At each role start the runtime asks it
-	// before the take, and only for a pod of such a Sandbox (launchers.restoreWorkspace). When it
-	// drops the bundle, the runtime sends that pod nothing. A runtime given none takes the bundle
-	// for every pod as SavedWorkspaceBundle answers it.
-	HeldWorkspaceBundle runtime.HeldWorkspaceBundleDrop
+	// HeldWorkspaceCopies drops each copy of an issue's workspace, the release bundle and the
+	// running copy, that the pod's own kept volume holds already (runtime.HeldWorkspaceCopiesDrop):
+	// the pod's Sandbox owns the issue's kept volume and was created before the copy was taken. At
+	// each role start the runtime asks it before the take, and only for a pod of such a Sandbox
+	// (launchers.restoreWorkspace). When it drops a copy, the runtime sends that pod nothing. A
+	// runtime given none takes the copies for every pod as SavedWorkspaceBundle answers them.
+	HeldWorkspaceCopies runtime.HeldWorkspaceCopiesDrop
 	// MemoryGuardKilled takes one process an issue pod's memory guard ended, as that pod's
 	// launcher reported it on the connection of the role whose process it was
 	// (runtime.MemoryGuardKilled): the daemon turns it into the note that tells that role why its

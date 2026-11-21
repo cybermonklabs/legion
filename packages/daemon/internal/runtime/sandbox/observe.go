@@ -71,7 +71,9 @@ func (r *Runtime) Probe(ctx context.Context, loc runtime.Locator) (runtime.Obser
 
 // evaluate is one observation of loc's process from the stores: Uncertain while they cannot answer
 // (view), otherwise the verdict the mapping reads from them, said Displaced when the daemon's own
-// replacement of the recorded pod is what ended the process (displaced).
+// replacement of the recorded pod is what ended the process (displaced), and carrying what the
+// daemon read about the cause of the pod's end where the process ended with its pod
+// (runtime.Observation.EndReading, capturePodEnd).
 //
 // The pod store and the Sandbox store are fed by two informers nothing orders, so a pod's end can
 // reach the runtime before the Suspended patch that named it does. A final verdict (ends) whose
@@ -139,6 +141,23 @@ func (r *Runtime) evaluate(ctx context.Context, loc runtime.Locator) runtime.Obs
 		obs.Displaced = true
 		obs.Detail += fmt.Sprintf("; the daemon replaced pod %s to launch another role there", loc.Sandbox.PodUID)
 	}
+	// What ended the pod the process ran in, as the informer saw that end (capturePodEnd): the one
+	// value the supervisor decides the end on, read here for every claim of the pod and for every
+	// kind of pod, since the reading is of the cause of the end and not of the kind of pod. An end
+	// of the pod's own that the daemon tells in plain words carries its cause beside it
+	// (podEnd.death), read there because the kubelet's message it comes from leaves with the pod; a
+	// cause the verdict read off the container itself (markOutOfMemory) is the nearer one and stands.
+	if endsProcess(obs.Kind) {
+		if end, ok := r.podEndOf(loc.Sandbox.PodUID); ok {
+			if end.reading != "" {
+				obs.EndReading = end.reading
+				obs.Detail += "; " + end.detail()
+			}
+			if obs.Cause.Kind == "" {
+				obs.Cause = end.death
+			}
+		}
+	}
 	return obs.Observation
 }
 
@@ -156,8 +175,8 @@ func (r *Runtime) readSandbox(ctx context.Context, name string) (*sandbox, error
 
 // observation is one verdict of the mapping: the runtime.Observation the caller receives, beside
 // the one classification only this package acts on. No runtime consumer reads it — the supervisor
-// reads Kind, Displaced, OutOfMemory and PodEnd beside the detail — so it stays here rather than on
-// the cross-runtime contract.
+// reads Kind, Displaced, OutOfMemory, EndReading, Cause and PodEnd beside the detail — so it stays
+// here rather than on the cross-runtime contract.
 type observation struct {
 	runtime.Observation
 	// initFailed is a Gone whose process never started because an init container of its pod ended
@@ -175,7 +194,16 @@ type observation struct {
 // ends reports whether obs is a final verdict the daemon's own replacement of a pod can account
 // for: a Gone or NotRecordedProcess, never one a failed init container made.
 func ends(obs observation) bool {
-	return (obs.Kind == runtime.Gone || obs.Kind == runtime.NotRecordedProcess) && !obs.initFailed
+	return endsProcess(obs.Kind) && !obs.initFailed
+}
+
+// endsProcess reports whether kind is a final verdict on the recorded process: it is not running
+// and nothing of it will run again, whatever ended it. It is what ends reads before excluding the
+// ends a failed init container made, and what the reading of a pod's end is attached to
+// (evaluate): a pod the cluster ended under its init containers ended through no fault of the
+// roles in it either.
+func endsProcess(kind runtime.ObservationKind) bool {
+	return kind == runtime.Gone || kind == runtime.NotRecordedProcess
 }
 
 // names reports whether s names loc's recorded pod as the live pod a relaunch replaced
@@ -273,7 +301,7 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 		detail, ranOutOfMemory := r.ended(ctx, v, container, role, initName, initExit)
 		ended := observe(runtime.Gone, "%s", detail)
 		ended.initFailed = initExit != nil && pod.DeletionTimestamp == nil
-		ended.OutOfMemory = ranOutOfMemory
+		ended.markOutOfMemory(pod, ranOutOfMemory)
 		// The pod's own reason for the end, apart from the detail, which ends with a tail of the
 		// role's log: this is what the claim keeps and what the worker-died notice names
 		// (runtime.Observation.PodEnd).
@@ -329,7 +357,7 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 	if ended := status.State.Terminated; ended != nil {
 		gone := observe(runtime.Gone, "pod %s (uid %s) container %s terminated (%s, exit code %d); last lines of %s:\n%s",
 			name, pod.UID, container, ended.Reason, ended.ExitCode, role, r.roleLog(ctx, name, container, role))
-		gone.OutOfMemory = outOfMemory(container, ended)
+		gone.markOutOfMemory(pod, outOfMemory(container, ended))
 		return gone
 	}
 	if !connected {
@@ -360,7 +388,7 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 		// state for each connection (accept) — so the container did not end under it, and the
 		// role's process ended on its own.
 		gone := observe(runtime.Gone, "pod %s (uid %s) role %s's launcher reports no child%s", name, pod.UID, role, containerRestarts(status))
-		gone.OutOfMemory = outOfMemory(container, status.LastTerminationState.Terminated)
+		gone.markOutOfMemory(pod, outOfMemory(container, status.LastTerminationState.Terminated))
 		return gone
 	}
 }
@@ -471,6 +499,24 @@ func (r *Runtime) ended(ctx context.Context, v view, container string, role clai
 // to, so the rule holds wherever the mark is set.
 func outOfMemory(container string, state *corev1.ContainerStateTerminated) bool {
 	return container == runtime.IssuePodContainer && state != nil && state.Reason == "OOMKilled"
+}
+
+// markOutOfMemory marks o, a Gone of a process in pod, with an out-of-memory end where ranOut says
+// the end is one the note is for (outOfMemory): OutOfMemory, and the cause the daemon tells it by,
+// the memory limit pod's spec holds the issue pod's one container to (runtime.DeathMemoryLimit),
+// which is the limit the kubelet ended it for passing. ranOut is true only for that container, so
+// its limit is the one read. A container the spec gives no memory limit carries no cause: the
+// kernel ended it for the node's memory, under no limit of its own, and there is no number to tell.
+func (o *observation) markOutOfMemory(pod *corev1.Pod, ranOut bool) {
+	o.OutOfMemory = ranOut
+	if !ranOut {
+		return
+	}
+	for _, c := range pod.Spec.Containers {
+		if limit := c.Resources.Limits.Memory().Value(); c.Name == runtime.IssuePodContainer && limit > 0 {
+			o.Cause = runtime.DeathCause{Kind: runtime.DeathMemoryLimit, Limit: limit}
+		}
+	}
 }
 
 // fetchCacheState is what a failed workspace-fetch's detail says of the repository cache it fills

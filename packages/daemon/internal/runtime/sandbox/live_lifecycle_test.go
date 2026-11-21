@@ -303,9 +303,10 @@ func (r *liveRig) gkeEphemeralStorageClamped() bool {
 
 // isGKEExtendedDurationAffinity reports whether a carries exactly the NodeAffinity GKE Autopilot
 // adds on its own to a pod carrying `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`
-// (manifest.go's safeToEvictAnnotation, every issue pod's, never the probe's — probeManifest's
-// own doc says why) to protect it from disruption for up to seven days (confirmed live,
-// 2026-10-17: a real root issue pod on the production GKE cluster carried exactly this one
+// (manifest.go's safeToEvictAnnotation: the controller's pod's always, an issue pod's while its
+// reservation is Guaranteed, as every reservation of this harness is, and never the probe's —
+// probeManifest's own doc says why) to protect it from disruption for up to seven days (confirmed
+// live, 2026-10-17: a real root issue pod on the production GKE cluster carried exactly this one
 // required NodeAffinity term, keyed `cloud.google.com/extended-duration-pods`, nothing else —
 // https://docs.cloud.google.com/kubernetes-engine/docs/how-to/extended-duration-pods). It is
 // GKE's own addition, not a pod affinity or anti-affinity the pod spec asks for, and it still

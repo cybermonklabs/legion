@@ -149,6 +149,16 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 			"kind", m.wake.kind, "due", m.wake.at, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
 		return nil
 	}
+	// The claim is in a turn it started after the end of one whose copy its held stop still waits
+	// for (endTurnCopyWait leaves such a stop to this turn's end). Replacing the process now would
+	// end that hold (replaceNow, endHeld) while the copy still asks the process's shim. The turn
+	// is left alone, as a refused replacement leaves it, and the next sweep posts it again: by
+	// then the copy has ended, or its wait has run out at the copy's budget.
+	if m.stopWaitsForTurnCopy() {
+		m.log.Info("supervise: the stall backstop found the claim's held stop waiting for the copy of an earlier turn's end; the turn is left to the next sweep",
+			"copy", m.turnCopy.seq, "until", m.turnCopy.due, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
+		return nil
+	}
 	suspended := m.held != nil
 	// The claim's process is read through a guard, and the two reads this recovery's own other
 	// entries make are too (repoint, displaced, noProcessRecorded). No live path reaches any of

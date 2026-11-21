@@ -175,7 +175,7 @@ func TestMemoryGuardServeLauncherHandsAKillToTheReceiverWithTheSessionsOwnIssueR
 	var logs lockedLog
 	killed, calls := recordedMemoryKills()
 	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, killed, nil, slogTo(&logs))
-	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
+	session := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 	w, done := serveLauncherPipe(t, session)
 
 	noGuard := memoryKillReport(1)
@@ -218,7 +218,7 @@ func TestKernelKillServeLauncherHandsTheReceiverTheReportWithItsCause(t *testing
 	var logs lockedLog
 	killed, calls := recordedMemoryKills()
 	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, killed, nil, slogTo(&logs))
-	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
+	session := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 	w, done := serveLauncherPipe(t, session)
 
 	unknown := memoryKillReport(1)
@@ -265,7 +265,7 @@ func TestMemoryGuardServeLauncherDropsAKillNoIssueOrNoReceiverCanTake(t *testing
 				killed, calls = recordedMemoryKills()
 			}
 			launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, killed, nil, slogTo(&logs))
-			session := launchers.accept(tc.token, tc.issue, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
+			session := launchers.accept(tc.token, tc.issue, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 			w, done := serveLauncherPipe(t, session)
 
 			sendFrame(t, w, memoryKillReport(1))

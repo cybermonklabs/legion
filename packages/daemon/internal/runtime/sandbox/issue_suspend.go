@@ -61,12 +61,14 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 // Sandbox owns a kept volume. Under the turn, authorize is asked first and false acts on nothing.
 // A Sandbox already gone is done. One labelled with another project, issue or tree is refused. The
 // Sandbox is set Suspended in the one write of its mode here (suspendOver), and its pod is waited
-// out. That write is setMode's JSON patch for a Sandbox that is not Suspended yet, and nothing for
-// one that is. A release reads the stored pod for that write and a close reads none, so a release
-// whose pod failed on the kept volume (volumeFault) sends one merge patch of the mode and the
-// reset mark in its place, or of the mark alone for a Sandbox already Suspended that does not
-// carry it. A release that keeps the Sandbox sends one merge patch more once it has deleted the
-// Secrets, which records that delete (annotate, secretsReleasedAnnotation) and changes no mode.
+// out. That write is the JSON patch setMode sends for a suspension, for a Sandbox that is not
+// Suspended yet, and nothing for one that is. A release reads the stored pod for that write and a
+// close reads none, so a release whose pod failed on the kept volume (volumeFault) sends one merge
+// patch of the mode and the reset mark in its place, or of the mark alone for a Sandbox already
+// Suspended that does not carry it. The suspension records the daemon's end of the pod under
+// daemonSuspendedAct, the act this passes, before either patch is sent. A release that keeps the
+// Sandbox sends one merge patch more once it has deleted the Secrets, which records that delete
+// (annotate, secretsReleasedAnnotation) and changes no mode.
 func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error), keep bool) error {
 	act := "suspend"
 	if keep {
@@ -106,7 +108,13 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 	if keep {
 		pod = r.storedPod(name)
 	}
-	if _, err := r.suspendOver(ctx, s, pod, nil); err != nil {
+	// The pod the suspension ends is ended by the daemon, and the suspension records that under
+	// daemonSuspendedAct before its patch is sent, the reset mark's merge patch as the JSON patch
+	// (suspendOver, meanToEndPodOf), so the end reads as the daemon's own rather than as something
+	// outside the pod ending it. The idle release's teardown comes through here too: both are this
+	// one effect on the issue's pod. A Sandbox a try of its own already suspended takes no second
+	// suspension, since that try made the record its patch needed.
+	if _, err := r.suspendOver(ctx, s, pod, daemonSuspendedAct, nil); err != nil {
 		return fmt.Errorf("%s issue %s: %w", act, issue, err)
 	}
 	if _, err := r.awaitPodGone(ctx, s); err != nil {

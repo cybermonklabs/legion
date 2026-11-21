@@ -146,17 +146,37 @@ func TestClaimsSuspendStopsAtEveryOtherEnd(t *testing.T) {
 	}
 }
 
-// A suspension still held when --wait runs out fails the command, naming the claim's state and why
-// a held suspension can outlast the stop timeout.
+// A suspension still held when --wait runs out fails the command, naming the claim's state and
+// what holds its suspension, read from the state it waits in: a claim in a turn waits for that
+// turn's end, a launching one for its agent's ready, and an idle one for the copy of the issue's
+// workspace that its last turn's end started. Each names the runtime's refused stop besides.
+//
+// The control is a branch's words swapped for another's: the case of that state then fails at the
+// words it reads.
 func TestClaimsSuspendFailsWhenTheHeldSuspensionOutlastsTheWait(t *testing.T) {
-	port, _ := heldSuspendDaemon(t, heldWorking)
+	for _, tc := range []struct {
+		name string
+		seen seenClaim
+		want string
+	}{
+		{name: "a claim in a turn", seen: heldWorking,
+			want: "is still working after the --wait bound of 1s, its suspension held: its agent's turn has not ended"},
+		{name: "a launching claim", seen: seenClaim{"launching", true},
+			want: "is still launching after the --wait bound of 1s, its suspension held: its launch has not said it is ready"},
+		{name: "an idle claim whose turn's copy is still being taken", seen: seenClaim{"idle", true},
+			want: "is still idle after the --wait bound of 1s, its suspension held: the copy of the issue's workspace that its last turn's end started has not ended"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			port, _ := heldSuspendDaemon(t, tc.seen)
 
-	code, out, errb := suspendAgainst(t, port, "1s")
+			code, out, errb := suspendAgainst(t, port, "1s")
 
-	if code != 1 || out != "" {
-		t.Fatalf("suspend exited %d printing %q, want 1 and nothing printed", code, out)
-	}
-	if want := "is still working after the --wait bound of 1s, its suspension held"; !strings.Contains(errb, want) {
-		t.Fatalf("suspend said %q, want %q", errb, want)
+			if code != 1 || out != "" {
+				t.Fatalf("suspend exited %d printing %q, want 1 and nothing printed", code, out)
+			}
+			if !strings.Contains(errb, tc.want) || !strings.Contains(errb, "or the runtime refused the stop") {
+				t.Fatalf("suspend said %q, want %q and the runtime's refused stop", errb, tc.want)
+			}
+		})
 	}
 }

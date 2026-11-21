@@ -186,7 +186,7 @@ func (r *bundleRestore) apply(ctx context.Context, env []string) restoreResult {
 	r.body = nil
 	if err != nil {
 		r.notice = fmt.Sprintf("the released workspace's saved work could not be read (%v); this workspace holds only what was pushed,"+
-			" and the bundle of release %d stays in the daemon's database, which sends it to no pod again", err, r.release)
+			" and the bundle of release %d stays in the daemon's database, which sends it to no pod again once a role of this pod has registered", err, r.release)
 	} else {
 		r.restored, r.notice = restoreWorkspace(ctx, r.start, dir, env, r.release, bundle)
 	}
@@ -211,7 +211,8 @@ func (r *bundleRestore) owed() *shimwire.LauncherRestored {
 
 // sent forgets the report once a connection has carried it. A report the daemon read but could
 // not act on is the daemon's to retry, not the launcher's: it keeps its copy of the work, which
-// it sends no pod again (internal/runtime/sandbox's restoreWorkspace).
+// it sends no pod again once a role of this pod has registered (internal/runtime/sandbox's
+// restoreWorkspace).
 func (r *bundleRestore) sent(report *shimwire.LauncherRestored) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -224,23 +225,30 @@ func (r *bundleRestore) sent(report *shimwire.LauncherRestored) {
 // what it restored, or of what was lost and why. start starts each of its jj and git commands
 // (procgroup.Starter). release is the idle release whose save built the bundle, which the notice
 // of a failure names: that is the bundle an operator reads out of the daemon's database, since the
-// daemon records one restore attempt per bundle and sends it to no pod again. A restore that fails
-// leaves the workspace as provisioning made it — what the issue's branch holds — and the roles
-// start on that, with the saved work in the database alone for the life of the issue's pods.
+// daemon sends a bundle to no pod again once a role of the pod it was sent to has registered, and
+// the roles of this pod start, and register, whatever the restore did. A restore that fails leaves
+// the workspace as provisioning made it — what the issue's branch holds — and the roles start on
+// that, with the saved work in the database alone for the life of the issue's pods.
 func restoreWorkspace(ctx context.Context, start procgroup.Starter, dir string, env []string, release int64, b shimwire.WorkspaceBundle) (bool, string) {
 	// Every reason is written as one line (oneLine), however many lines the tool that failed
 	// wrote: the notice goes to the container's log, where one line is one notice.
 	lost := func(reason string) (bool, string) {
 		return false, fmt.Sprintf("the released workspace's saved work was not restored (%s); this workspace holds only what was pushed,"+
-			" and the work of %d head(s) and %d bookmark(s) saved at %s stays in the daemon's database as the bundle of release %d, which it sends to no pod again",
+			" and the work of %d head(s) and %d bookmark(s) saved at %s stays in the daemon's database as the bundle of release %d, which it sends to no pod again once a role of this pod has registered",
 			oneLine(reason), len(b.Tips), len(b.Bookmarks), b.At.UTC().Format(time.RFC3339), release)
 	}
 	// A bundle is applied to the workspace the pod that replaces the released one provisioned,
-	// and to no other. The daemon is what holds that rule: it records one restore attempt per
-	// bundle, against the pod it sends it to, and sends that bundle to no pod and no launcher
-	// again (store.TakeWorkspaceBundleForRestore), so a roles container that restarts on the
-	// pod's own disk — coming back with a launcher process that holds no record of the restore
-	// it already ran — is sent nothing to apply over the work the roles have done since.
+	// and to no other. The daemon is what holds that rule: it records the pod it sends a bundle
+	// to, and once a role of that pod has registered it sends that bundle to no pod and no
+	// launcher again (store.TakeWorkspaceCopyForRestore), so a roles container that restarts on
+	// the pod's own disk after a role ran there — coming back with a launcher process that holds
+	// no record of the restore it already ran — is sent nothing to apply over the work the roles
+	// have done since. A container that restarts before any role registered is sent the bundle
+	// again and restores it again over a workspace no role has touched: a restore that ran to its
+	// end leaves none of its temporary branches, so the second one runs as the first did. One
+	// killed in the middle leaves them, so the next one fails at their create and the roles start
+	// on what was pushed; no role runs during a restore, so the container is far below its memory
+	// limit then, and closing that window needs a launcher that clears them first.
 	//
 	// This check is the workspace's own half of it, and it catches the one thing the daemon
 	// cannot see: a bundle that reached the very workspace it was saved from, whose creation

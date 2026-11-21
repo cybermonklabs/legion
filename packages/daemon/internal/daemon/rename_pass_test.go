@@ -396,7 +396,7 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 // pass wakes (wakeLive, refreshCacheRepositories) then caches the `to`; the issue's next launch's
 // spec (specs.repository, workflowRuntime.launchRepository) names the `to` at the record's default
 // branch; and the next pod's restore takes the bundle that release saved, which the store keeps by
-// issue and not by repository (store.TakeWorkspaceBundleForRestore). Control: with the pass at
+// issue and not by repository (store.TakeWorkspaceCopyForRestore). Control: with the pass at
 // that hook deleted (releaseIssue's endPods), the next launch's spec names the `from`.
 func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T) {
 	rig := newIdleRig(t)
@@ -464,10 +464,11 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 		t.Errorf("the next launch's spec works %s at %s, want %s at main: the pod after the rename works the new name",
 			spec.Repository, spec.DefaultBranch, renameTo)
 	}
-	saved, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", key, "pod-after-the-rename", time.Now().UTC().Add(time.Minute))
-	if err != nil || take != runtime.WorkspaceBundleSend || string(saved.Bundle) != "PACK" || saved.Head != "abc" || saved.PodUID != releasedPodUID {
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, "legion", key, "pod-after-the-rename")
+	saved := restore.ReleaseBundle
+	if err != nil || saved.Take != runtime.WorkspaceBundleSend || string(saved.Bundle.Bundle) != "PACK" || saved.Bundle.Head != "abc" || saved.Bundle.PodUID != releasedPodUID {
 		t.Errorf("the next pod's restore took %v of a bundle with head %q off %q (%v), want the bundle the release saved off %s sent to it",
-			take, saved.Head, saved.PodUID, err, releasedPodUID)
+			saved.Take, saved.Bundle.Head, saved.Bundle.PodUID, err, releasedPodUID)
 	}
 }
 
@@ -477,7 +478,7 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 // release's pod leaves the issue's stored names on the old name and logs one kept line that names
 // the issue and says the runtime keeps its volume. With the new name written, the next pod would
 // make a fresh workspace under the new name, the runtime would drop the saved bundle, since the
-// kept volume holds that work (runtime.HeldWorkspaceBundleDrop), and the work would stay under the
+// kept volume holds that work (runtime.HeldWorkspaceCopiesDrop), and the work would stay under the
 // old name. A later pass writes such an issue once no kept volume is left: here, once the runtime
 // keeps no volume of the issue, as after the teardown of its close (SuspendIssue), the next pod end
 // writes the new name, and its issues line counts one row written and none left. Control: the same

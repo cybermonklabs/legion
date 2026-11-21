@@ -108,6 +108,17 @@ type Kubernetes struct {
 	// the pod as LEGION_TEST_PG_DSN, so no agent points a test at the deployment's own databases.
 	// False when the file sets none. It needs an image carrying /usr/local/bin/legion-testpg.
 	TestPostgres bool
+	// TestPostgresDisk is `runtime.kubernetes.test_postgres_disk`: the size, a Kubernetes quantity
+	// as the file wrote it, of a disk of its own that every issue pod running the test database
+	// keeps the cluster on, "" when the file sets none. The disk is a generic ephemeral volume on
+	// the issue disk's StorageClass, made with the pod and deleted with it, in place of the
+	// `testpg` emptyDir: the kubelet counts a pod's emptyDir volumes against its ephemeral-storage
+	// limit and not a volume a claim provides, so a test database that fills its disk can no
+	// longer get its pod evicted (INFRA-1117). It requires TestPostgres. A pod created after the
+	// key is set gets the disk, and a running pod keeps its emptyDir until it is replaced: the
+	// size is no part of the shape the daemon compares a running pod with (sandbox's
+	// podShapeRecord), so setting the key opens no update round.
+	TestPostgresDisk string
 	// IdleRelease is `runtime.kubernetes.idle_release`, settled: how long an issue pod with no
 	// turn in progress and no turn due is kept before the daemon releases it, and how long after
 	// a release the backstop wakes each phase worker of the pod whose phase is open. Both
@@ -721,6 +732,9 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if block.TestPostgres, err = readTestPostgres(fields["test_postgres"]); err != nil {
 		return nil, err
 	}
+	if block.TestPostgresDisk, err = readTestPostgresDisk(fields["test_postgres_disk"], block.TestPostgres); err != nil {
+		return nil, err
+	}
 	if block.RepositoryCache, err = readRepositoryCache(fields["repository_cache"]); err != nil {
 		return nil, err
 	}
@@ -758,6 +772,34 @@ func readTestPostgres(value *yaml.Node) (bool, error) {
 		return false, fmt.Errorf("%s must be true or false", key)
 	}
 	return on, nil
+}
+
+// leastTestPostgresDisk is the smallest test_postgres_disk the loader takes. The launcher resets
+// the test database whenever its disk has under 2 GiB free (launcher.testPGResetFloor), and a
+// disk of about 2 GiB never shows that much free, since the filesystem's metadata and its root
+// reserve are not free to the server, so the launcher would reset it at every check. The least
+// size is that floor with room above it for a fresh cluster and its WAL.
+const leastTestPostgresDisk = "4Gi"
+
+// readTestPostgresDisk reads `runtime.kubernetes.test_postgres_disk`, "" when absent: a positive
+// Kubernetes quantity, read as issue_volume is (readQuantity), of at least leastTestPostgresDisk.
+// A smaller size is refused naming the size and the least one, since the launcher would reset the
+// test database on it at every check. It is refused while test_postgres is not true, naming both
+// keys: a disk for a test database no pod runs is a mistake the operator must see, not a setting
+// the daemon may drop without a word.
+func readTestPostgresDisk(value *yaml.Node, testPostgres bool) (string, error) {
+	const key = kubernetesKey + ".test_postgres_disk"
+	size, err := readQuantity(value, key)
+	if err != nil || size == "" {
+		return size, err
+	}
+	if below(size, leastTestPostgresDisk) {
+		return "", fmt.Errorf("%s is %s, under the %s least size: the launcher resets the test database while its disk has under 2 GiB free, so a smaller disk would be reset at every check", key, size, leastTestPostgresDisk)
+	}
+	if testPostgres {
+		return size, nil
+	}
+	return "", fmt.Errorf("%s is the disk of the pod's own test database, so it requires %s.test_postgres: true", key, kubernetesKey)
 }
 
 // readSetup reads `runtime.kubernetes.setup`, an argv of non-empty strings (readStrings), nil when

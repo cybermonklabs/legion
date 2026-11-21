@@ -1294,12 +1294,16 @@ Closing the terminal leaves the project without one, and the daemon logs
    the claim at once, rather than waiting out a launch that can take minutes. Every `legion
    claims` subcommand takes a `--wait`, one minute by default, that bounds the whole call: a call
    that reaches it is refused with a line naming the bound, and the daemon goes on with what it
-   began under its own deadlines. Until the stop lands the hold lives only in the daemon's memory,
-   so before restarting
-   the daemon wait until `legion claims list` shows the claim `suspended`, not merely
-   `suspensionHeld`. The resumed agent continues the same conversation in a new pod — and that
-   pod brings a disk of its own, so its workspace is provisioned afresh from the issue's branch
-   and anything the old pod held unpushed is gone. Let the agent push before you suspend it.
+   began under its own deadlines. An operator's suspension of an idle or ready agent whose last
+   turn's end started a copy of the issue's workspace that is still being taken is held too,
+   answered 202, and waits for that copy, at most `worker_stop_timeout_seconds` from its arrival
+   and never past the copy's own 4 minutes. Until the stop lands the hold lives only in the
+   daemon's memory, so before restarting the daemon wait until `legion claims list` shows the
+   claim `suspended`, not merely `suspensionHeld`: read it again after a call that ran out of its
+   `--wait`, or give a drain's calls a `--wait` longer than the stop timeout. The resumed agent
+   continues the same conversation in a new pod — and that pod brings a disk of its own, so its
+   workspace is provisioned afresh from the issue's branch and anything the old pod held unpushed
+   is gone. Let the agent push before you suspend it.
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
    role of an open issue live and idle between phases and while the root waits on a person. A child

@@ -43,12 +43,14 @@ func operatorRouteFixture(t *testing.T) Pod {
 }
 
 // CheckPod refuses, naming both, an operator variable the runtime, the worker image, or every
-// launch sets, or one that places Oh My Pi's sessions; a volume Legion names; a mount at, under, or
-// above a path Legion mounts, the image owns, a tool runs from, or the state home Legion reserves
-// in the image's home directory; a provider key naming any variable already set in the agent's
-// environment, or whose pointer is; and a provider key reading a providers secret's key, which
-// would export that secret into Oh My Pi's environment. It passes the Go live harnesses' operator
-// pod, and an operator's own settings overlay and a baseline variable it may override.
+// launch sets, or one that places Oh My Pi's sessions; a volume Legion names, or a claim named as
+// Legion's own claims are; a mount at, under, or above a path Legion mounts, the image owns, a tool
+// runs from, or the state home Legion reserves in the image's home directory; a provider key
+// naming any variable already set in the agent's environment, or whose pointer is; and a provider
+// key reading a providers secret's key, which would export that secret into Oh My Pi's
+// environment. It passes the Go live harnesses' operator pod, an operator's claim whose name only
+// resembles one of Legion's, and an operator's own settings overlay and a baseline variable it
+// may override.
 func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 	mountAt := func(path string) Pod {
 		return Pod{
@@ -153,6 +155,17 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		{name: "an issue pod's own disk", pod: Pod{Volumes: []corev1.Volume{
 			{Name: "share", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: SandboxName("legion-acme-acme-7-architect") + "-" + issueVolume}}},
 		}}, want: "runtime.kubernetes.pod.volumes[0].persistent_volume_claim.name legion-acme-acme-7-issue is a claim Legion makes for an issue's, a tree's or a repository cache's own volume: name a claim of your own"},
+		// An issue pod's test database on a disk of its own (runtime.kubernetes.test_postgres_disk)
+		// is a generic ephemeral volume too, its claim named for the pod and testPGVolume.
+		{name: "an issue pod's test database disk", pod: Pod{Volumes: []corev1.Volume{
+			{Name: "share", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: SandboxName("legion-acme-acme-7-architect") + "-" + testPGVolume}}},
+		}}, want: "runtime.kubernetes.pod.volumes[0].persistent_volume_claim.name legion-acme-acme-7-testpg is a claim Legion makes for an issue's, a tree's or a repository cache's own volume: name a claim of your own"},
+		{name: "an operator's claim ending in testpg", pod: Pod{Volumes: []corev1.Volume{
+			{Name: "share", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "operator-testpg"}}},
+		}}},
+		{name: "an operator's claim naming testpg short of its end", pod: Pod{Volumes: []corev1.Volume{
+			{Name: "share", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "legion-shared-testpg-data"}}},
+		}}},
 		{name: "a mount at a path Legion mounts", pod: mountAt("/var/run/legion/launcher"), want: overlaps("/var/run/legion/launcher", "/var/run/legion/launcher", false)},
 		// This release refuses it: role-init binds the pod's test server log there.
 		{name: "a mount at the test server log's path", pod: mountAt("/var/run/legion/testpg.log"),

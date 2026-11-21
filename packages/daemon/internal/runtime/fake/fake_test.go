@@ -438,6 +438,35 @@ func TestConnRecordsWhatTheDaemonAskedOfTheAgent(t *testing.T) {
 	}
 }
 
+// The connection refuses a bundle over the bound a saved copy carries as the shim refuses it and
+// the stream's connection answers that refusal: with the size it came to and none of its bytes. A
+// daemon test of a workspace too large to copy then meets the answer production meets, and a
+// bundle within the bound is answered whole.
+func TestConnRefusesABundleOverTheBoundAsTheShimDoes(t *testing.T) {
+	ctx := context.Background()
+	conn := NewConn()
+	over := runtime.WorkspaceBundle{Bundle: make([]byte, runtime.MaxWorkspaceBundleBytes+1), Head: "c0ffee"}
+	conn.SetWorkspaceBundle(over)
+
+	bundle, err := conn.BundleWorkspace(ctx, "LEGION-208", time.Minute)
+	var tooLarge *runtime.WorkspaceBundleTooLargeError
+	if !errors.As(err, &tooLarge) || tooLarge.Bytes != over.Size() || tooLarge.Max != runtime.MaxWorkspaceBundleBytes {
+		t.Fatalf("a bundle over the bound: got %v, want a WorkspaceBundleTooLargeError of %d bytes over %d", err, over.Size(), runtime.MaxWorkspaceBundleBytes)
+	}
+	if bundle.Size() != 0 {
+		t.Fatalf("the refusal carried %d bytes of the bundle, want none", bundle.Size())
+	}
+
+	within := runtime.WorkspaceBundle{Bundle: make([]byte, runtime.MaxWorkspaceBundleBytes), Head: "c0ffee"}
+	conn.SetWorkspaceBundle(within)
+	if bundle, err := conn.BundleWorkspace(ctx, "LEGION-208", time.Minute); err != nil || bundle.Size() != within.Size() {
+		t.Fatalf("a bundle at the bound: got %d bytes, %v, want the whole %d", bundle.Size(), err, within.Size())
+	}
+	if bundled := conn.Bundlings(); len(bundled) != 2 {
+		t.Fatalf("bundlings: %+v, want the refused ask and the answered one", bundled)
+	}
+}
+
 // The directory answers for the claims that have a live connection and says so for the ones that
 // do not — the ordinary state of a pane whose agent has not connected yet, or has gone.
 func TestConnsAnswersOnlyForClaimsWithALiveConnection(t *testing.T) {

@@ -49,6 +49,13 @@ type podKind interface {
 	// resources are the reservation every container of the pod carries, its init containers'
 	// included (Options.Resources).
 	resources(r *Runtime) corev1.ResourceRequirements
+	// asksExtendedRunTime is whether a pod of this kind, under the deployment's reservations, asks
+	// GKE Autopilot for extended run time, which is the one thing that decides whether its
+	// template carries safeToEvictAnnotation (podTemplate). The controller's pod asks always; an
+	// issue pod only while its reservation is Guaranteed, so that an operator who gives an issue
+	// pod room to burst gets a pod that shares a node (issuePod.asksExtendedRunTime). Karpenter's
+	// doNotDisruptAnnotation is no kind's to decide: every pod carries it.
+	asksExtendedRunTime(r *Runtime) bool
 	// initContainers are the pod's init containers, and initVolumes the volumes only they mount,
 	// besides the pod's own volume and config home.
 	initContainers(r *Runtime, l launch) []corev1.Container
@@ -57,10 +64,11 @@ type podKind interface {
 	// role of roles, and launcherContainer that container: its command, the mounts of every role's
 	// own volumes and the pod's shared ones, and the kubelet-resolved environment (resolved).
 	// mainVolumes are the volumes that container mounts beyond each role's own, the pod's volume,
-	// the config home, the agent-secrets volumes, the providers and the operator's.
+	// the config home, the agent-secrets volumes, the providers and the operator's, for a pod of
+	// launch l.
 	container() string
 	launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container
-	mainVolumes(r *Runtime) []corev1.Volume
+	mainVolumes(r *Runtime, l launch) []corev1.Volume
 	// agentEnv is what each agent is told of its kind, mainEnvironment's one block of its own.
 	agentEnv(l launch) []corev1.EnvVar
 	// provision readies what a new pod needs before relaunch writes its launcher Secrets and sets
@@ -152,6 +160,51 @@ func (issuePod) container() string { return runtime.IssuePodContainer }
 
 // resources is the one issue-pod reservation.
 func (issuePod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Issue }
+
+// asksExtendedRunTime is whether this deployment's issue pod asks GKE Autopilot for extended run
+// time: only while its reservation is Guaranteed (guaranteedReservation). A deployment that gives
+// an issue pod a cpu or memory request below its limit has asked for a pod that bursts, and
+// Autopilot gives a pod carrying safeToEvictAnnotation a node of its own, which is the opposite of
+// that: the pod would hold a whole node at its limits and burst into nothing. So the request
+// decides, and no legion.yaml key does — a deployment that had set one could not go back to an
+// earlier daemon release without editing its file first, which is the one action it takes when
+// this change goes wrong. What a Burstable issue pod gives up is the seven-day protection: the
+// cluster may end it to repack a node, and the daemon continues each of its roles from the
+// workspace copy it keeps outside the pod, but for the ends it counts as the pod's own, which
+// doNotDisruptAnnotation's comment (manifest.go) states.
+func (k issuePod) asksExtendedRunTime(r *Runtime) bool {
+	return guaranteedReservation(k.resources(r))
+}
+
+// guaranteedReservation reports whether resources is the Guaranteed reservation the kubelet reads:
+// its cpu request equal to its cpu limit and its memory request equal to its memory limit. It
+// compares quantities (resource.Quantity.Cmp), so a request of 1 under a limit of 1000m is equal,
+// as config.Reservation.Burstable compares the same two pairs of the configuration's strings. The
+// two are one rule written on each side of a package boundary — this package reads no
+// configuration, and the configuration depends on no runtime implementation — and
+// TestTheSafeToEvictAnnotationsGuaranteedRuleAgreesWithTheConfigurations holds them to one answer,
+// so the pod an operator's `legion config check` calls Guaranteed is the pod that carries the
+// annotation.
+// Ephemeral storage is not read, and never should be: every pod of this deployment requests less
+// of the node's disk than its limit allows it to write (defaultResources), so reading it would
+// make every pod Burstable here while the kubelet, which reads cpu and memory alone, calls them
+// Guaranteed.
+//
+// A resource with a request and no limit, with a limit and no request, or with neither, reads as
+// not Guaranteed: an absent quantity is zero, so a missing limit is no pair to be equal to, and a
+// pod with no cpu or memory limit at all is the kubelet's BestEffort, never its Guaranteed. No
+// configuration reaches this: New refuses a reservation whose cpu or memory request or limit is
+// missing or not positive (checkRequirements), and config.Reservation.Burstable, which reads the
+// same configuration, panics on a quantity that is not there rather than reading it as Guaranteed.
+func guaranteedReservation(resources corev1.ResourceRequirements) bool {
+	for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+		request, limit := resources.Requests[name], resources.Limits[name]
+		if limit.Sign() <= 0 || request.Cmp(limit) != 0 {
+			return false
+		}
+	}
+	return true
+}
 
 func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token, error) {
 	return claim.NewToken(project, issue, role)
@@ -345,8 +398,13 @@ func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvV
 	var extra []corev1.VolumeMount
 	if r.testPostgres {
 		// The launcher serves the pod's own test database (launcher's testpg.go) and the roles
-		// container keeps its cluster here; no role's namespace shows this mount.
+		// container keeps its cluster here; no role's namespace shows this mount. Where the
+		// cluster is on a disk of its own (mainVolumes), the launcher is told so
+		// (--test-postgres-disk), since the free bytes it reads there are then the cluster's alone.
 		flags = append(flags, "--test-postgres")
+		if r.testPostgresDisk != nil {
+			flags = append(flags, "--test-postgres-disk")
+		}
 		extra = append(extra, corev1.VolumeMount{Name: testPGVolume, MountPath: TestPGDir})
 	}
 	if l.microVM != nil {
@@ -411,20 +469,32 @@ func (r *Runtime) rolesDirLayout(roles []claim.Role) (command []string, mounts [
 	return command, append(mounts, corev1.VolumeMount{Name: roleHomesVolume, MountPath: RoleHomesDir})
 }
 
-// mainVolumes is the role homes volume (roleHomesVolumes), and the test database's where the
-// deployment serves one.
-func (issuePod) mainVolumes(r *Runtime) []corev1.Volume {
+// mainVolumes is the role homes volume (roleHomesVolumes). Where the deployment serves the pod's
+// own test database, the testpg volume its cluster lives on follows, its disk claimed for launch l.
+func (issuePod) mainVolumes(r *Runtime, l launch) []corev1.Volume {
 	volumes := roleHomesVolumes()
-	if r.testPostgres {
-		// The test database's cluster, on the node's disk for the same reason the role homes are:
-		// a memory volume would charge its data directory and every test's database to the pod's
-		// memory. It is created with the pod and deleted with it, so each issue starts on an
-		// empty cluster. It carries no SizeLimit, as the role homes volume does not: the pod's
-		// ephemeral-storage limit is what bounds both, and a test that fills the node's disk
-		// through either is evicted with every role of the pod.
-		volumes = append(volumes, corev1.Volume{Name: testPGVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+	if !r.testPostgres {
+		return volumes
 	}
-	return volumes
+	// The test database's cluster, on a disk for the same reason the role homes are: a memory
+	// volume would charge its data directory and every test's database to the pod's memory. It is
+	// created with the pod and deleted with it either way, so each issue starts on an empty
+	// cluster. Where the deployment sizes a disk for it (runtime.kubernetes.test_postgres_disk) it
+	// is a generic ephemeral volume of that size, claimed on the issue disk's class (claimSpec) with
+	// no metadata, as the issue disk's is (disk): the kubelet's ephemeral-storage limit counts the
+	// pod's emptyDir volumes and not a volume a claim provides, so a test database that fills it
+	// fills its own disk and cannot get the pod evicted. The pod's FSGroup makes the new disk's
+	// root writable to the pod's user, as it makes the issue disk's (podTemplate). Otherwise it is
+	// an emptyDir on the node's disk with no SizeLimit, as the role homes volume carries none: the
+	// pod's ephemeral-storage limit is what bounds both, and a test that fills the node's disk
+	// through either is evicted with every role of the pod.
+	cluster := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+	if size := r.testPostgresDisk; size != nil {
+		cluster = corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{
+			VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: claimSpec(r.storageClass, *size, l.microVM)},
+		}}
+	}
+	return append(volumes, corev1.Volume{Name: testPGVolume, VolumeSource: cluster})
 }
 
 // roleHomesVolumes is the role homes volume of a pod whose launcher runs the roles-dir form
@@ -541,6 +611,15 @@ func (controllerPod) container() string { return runtime.ControllerPodContainer 
 // resources is the controller's pod's reservation.
 func (controllerPod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Controller }
 
+// asksExtendedRunTime is always: the controller's pod asks for extended run time whatever its
+// reservation. One pod runs the project's controller, every tree's work passes through it, and
+// nothing else can take over the turn it is in, so a deployment that gives the controller room to
+// burst must not thereby lose the controller's protection from a repacking autoscaler. What an
+// issue pod gives up in exchange for bursting — being ended and continued elsewhere — is an issue
+// pod's alone: the daemon copies an issue workspace out of its pod, and the controller holds no
+// such workspace.
+func (controllerPod) asksExtendedRunTime(*Runtime) bool { return true }
+
 func (controllerPod) claimToken(project, _ string, _ claim.Role) (claim.Token, error) {
 	return claim.ControllerToken(project), nil
 }
@@ -643,7 +722,7 @@ func (k controllerPod) rolesDirContainer(r *Runtime, l launch, resolved []corev1
 // (issuePod.mainVolumes). Where the session database names a writer audience its launcher runs the
 // roles-dir form (rolesDirContainer), whose role homes volume holds the controller's home overlay,
 // temporary directories and own config home, as an issue pod's holds each of its roles'.
-func (controllerPod) mainVolumes(r *Runtime) []corev1.Volume {
+func (controllerPod) mainVolumes(r *Runtime, _ launch) []corev1.Volume {
 	if r.sessionWriterAudience() == "" {
 		return nil
 	}

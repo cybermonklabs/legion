@@ -3,11 +3,16 @@ package daemon
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // releaseSaveFaults is the real release store with two faults a test arms by setting a field.
@@ -250,4 +255,62 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 			t.Fatal("the unowned release stored a bundle")
 		}
 	})
+}
+
+// A bundle the release cannot save stops it: the pod stays, every claim the release suspended is
+// resumed into it, and no Sandbox is torn down. The work a role has not pushed is kept at the
+// cost of a pod, never dropped to save one. The pod's hold names which it was: a bundle that could
+// not be built, or one too large to carry, which the shim refuses itself with the size it came to
+// and which the release's line names.
+func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// fail makes the save's bundle fail that way.
+		fail func(rig *idleRig)
+		hold workflow.IdleHold
+		// says is what the release's line says of the bundle, where the case pins it.
+		says string
+	}{
+		{name: "the bundle could not be built", hold: workflow.IdleHoldBundleSave,
+			fail: func(rig *idleRig) { rig.rt.bundleErr = errors.New("the launcher answered nothing") }},
+		{name: "the shim refuses the bundle as over the bound", hold: workflow.IdleHoldBundleTooLarge,
+			says: strconv.Itoa(runtime.MaxWorkspaceBundleBytes + 1),
+			fail: func(rig *idleRig) {
+				shim := fake.NewConn()
+				shim.SetWorkspaceBundle(runtime.WorkspaceBundle{Bundle: make([]byte, runtime.MaxWorkspaceBundleBytes+1),
+					Head: "abc", Tips: []string{"abc"}})
+				rig.rt.shim = shim
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			ctx := context.Background()
+			logs := &syncBuffer{}
+			rig.runner.log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			tc.fail(rig)
+
+			rig.w.releaseIdlePods(ctx)
+			rig.drain(t)
+
+			got := rig.machine.Claim()
+			if got.State == supervise.StateSuspended {
+				t.Fatalf("the claim = %s by %s, want it resumed into the pod the release kept", got.State, got.SuspendedBy)
+			}
+			if _, suspended := rig.rt.reads(); suspended != 0 {
+				t.Fatalf("Sandbox teardowns = %d, want none", suspended)
+			}
+			if rig.bundled(t) {
+				t.Fatal("a release that could not save its bundle left one behind")
+			}
+			if rig.marked(t) {
+				t.Fatal("the stopped release left its mark behind")
+			}
+			if holds := rig.records(t).Holds; len(holds) != 1 || holds[0].Reason != tc.hold.String() {
+				t.Fatalf("holds = %+v, want the one %s", holds, tc.hold)
+			}
+			if line := logs.String(); !strings.Contains(line, "hold="+tc.hold.String()) || !strings.Contains(line, tc.says) {
+				t.Fatalf("the release logged:\n%s\nwant its cancel under %s naming %q", line, tc.hold, tc.says)
+			}
+		})
+	}
 }

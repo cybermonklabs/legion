@@ -190,6 +190,11 @@ type overrides struct {
 	// that came due (workflowRuntime.idleTick, both ticks); zero is the production minute. A test
 	// of release and wake shortens it, so it waits out its own period rather than the daemon's.
 	idleTick time.Duration
+	// copyBundler is the bundler the running copy asks for an issue workspace's unpushed work in
+	// place of the runtime (workflowRuntime.copyBundler); nil, in production, is the runtime
+	// itself. An idle release's save still asks the runtime (outbox.bundleIssueWorkspace), so a
+	// whole-daemon test that sets it reads the two kinds of bundle apart (pause_copies_rig_test.go).
+	copyBundler runtime.WorkspaceBundler
 	// mergeStateRetry is how long the merge-state ladder, the merge-queue read and the second read
 	// of a conflicting head wait between two reads of GitHub, and the unit the reads after a
 	// ladder wait in (workflowRuntime.mergeStateRetry, read through mergeStateWait); zero is the
@@ -458,6 +463,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
+		// A test's bundler stands in for the runtime's in the running copy alone
+		// (overrides.copyBundler); nil, as in production, leaves attach to take the runtime's.
+		workflow.copyBundler = o.copyBundler
 		plan.identity = workflow.identity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
@@ -1769,6 +1777,15 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+		// Every turn's end starts the copy it owes through the supervisor, which hands it to the
+		// workflow's running copy once that attaches (copyTurnEndsWith).
+		CopyTurnEnd: sup.copyTurnEnd,
+	}
+	// A registration in an issue pod is recorded against that pod before it is answered, which is
+	// what spends a saved workspace copy sent to the pod (store.Store.RecordPodRegistration); the
+	// tmux runtime's processes run in no pod and send no copy, so that daemon records none.
+	if cfg.Runtime.Name == "kubernetes" {
+		sup.deps.PodRegistered = st.RecordPodRegistration
 	}
 	if pauses != nil {
 		sup.deps.Paused, sup.deps.PauseStopped, sup.deps.WakeLetOut = pauses.service.Paused, pauses.stopped, pauses.wakeLetOut

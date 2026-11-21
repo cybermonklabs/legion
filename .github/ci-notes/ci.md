@@ -236,7 +236,7 @@ and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, b
 packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
 for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
 outside the daemon: contracts' fixtures
-(internal/api/state_golden_test.go:1391, internal/intake/intake_test.go:856,960), the
+(internal/api/state_golden_test.go:1393, internal/intake/intake_test.go:856,960), the
 agents internal/prompts/roles_test.go:261 stats, the tools skill its :689 holds
 roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:432
 holds the reviewer's prompt to, the GitHub App helper
@@ -636,13 +636,14 @@ credential_argument_test.go's credentialTextFiles lists every file git tracks or
 track, but docs/plans and docs/superpowers, which are dated history, and its
 TestNoTextGivesACredentialAsACommandArgument reads each of them.
 
-## text_checks: The seven copies of shipped texts that readExtract reads
+## text_checks: The ten copies of shipped texts that readExtract reads
 
-The seven copies of shipped texts that readExtract (waiting_line_texts_test.go)
+The ten copies of shipped texts that readExtract (waiting_line_texts_test.go)
 reads to hold them to the texts themselves: the waiting line's four, the two way
-backs' (way_back_doc_test.go:129) and the troubleshooting page's refusal table's
-(troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
-own check reads it. They are .txt files, which the module's `'packages/daemon/**/*.go'` in the `text_checks` filter does
+backs' (way_back_doc_test.go:130), the troubleshooting page's refusal table's
+(troubleshooting_refusals_doc_test.go:41) and the three of docs/kubernetes.md's regions
+(workspace_copy_doc_test.go:92), each committed beside the package whose own check
+reads it. They are .txt files, which the module's `'packages/daemon/**/*.go'` in the `text_checks` filter does
 not match.
 
 ## dispatch_memory: `go test -tags memory ./cmd/dispatch`. memory_profile_test.go

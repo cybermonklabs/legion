@@ -133,7 +133,7 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 // launch sets would reach the agent's container twice, and one that places Oh My Pi's sessions
 // would move them off the store Legion resumes them from; a volume name would be in the pod twice;
 // a persistent_volume_claim naming one of Legion's own claims (legionClaim) would hand every pod an
-// issue's workspace or a repository cache;
+// issue's workspace, an issue pod's test cluster or a repository cache;
 // a mount at, under, or above a path Legion mounts, the image owns (imageOwnedPaths), or a tool
 // runs from hides it or is hidden by it; and a mount at, under, or above xdgStateHome
 // (/home/legion/.local/state), the path Legion reserves in the image's home directory: no role's
@@ -274,20 +274,24 @@ func throughImageLinks(mount, guarded string, related func(mount, guarded string
 
 // legionClaim reports whether claim is named as the volume claims Legion's pods and Sandboxes make
 // or made are: an issue pod's own disk, the generic ephemeral volume the kubelet names for its pod
-// and its volume (`legion-…-issue`, issuePod.disk); the controller's, which its Sandbox still owns
+// and its volume (`legion-…-issue`, issuePod.disk); the disk of its own an issue pod keeps its
+// test database on where runtime.kubernetes.test_postgres_disk sizes one, named the same way for
+// the testPGVolume volume (`legion-…-testpg`); the controller's, which its Sandbox still owns
 // (IssueClaimName, `issue-legion-…`); a repository cache's (cacheClaimName, `cache-legion-…`); or a
 // tree's from the earlier layout legion-v10.0.0 kept (`tree-legion-…`, every clone, workspace and
-// session file of a tree). Every pod mounting such a claim would read and write that workspace or
-// that cache, so an operator volume naming one is refused. The pod's own disk is named the other
-// way round from the Sandbox-owned claims — the volume's name is the suffix, not the prefix — so it
-// needs a rule of its own rather than a fourth prefix.
+// session file of a tree). Every pod mounting such a claim would read and write that workspace,
+// that test cluster or that cache, so an operator volume naming one is refused; a test cluster
+// mounted into every issue pod is one pod's, whose `postgresql.auto.conf` that pod's launcher
+// loads outside every role's namespace. The pod's own disks are named the other way round from
+// the Sandbox-owned claims — the volume's name is the suffix, not the prefix — so they need a rule
+// of their own rather than more prefixes.
 func legionClaim(claim string) bool {
 	for _, prefix := range []string{issueVolume + "-legion-", cacheVolume + "-legion-", "tree-legion-"} {
 		if strings.HasPrefix(claim, prefix) {
 			return true
 		}
 	}
-	return strings.HasPrefix(claim, "legion-") && strings.HasSuffix(claim, "-"+issueVolume)
+	return strings.HasPrefix(claim, "legion-") && (strings.HasSuffix(claim, "-"+issueVolume) || strings.HasSuffix(claim, "-"+testPGVolume))
 }
 
 // dashboardURL is whether value is a DISPATCH_PUBLIC_URL boot lets through: a rule narrower than

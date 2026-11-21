@@ -296,19 +296,39 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 	return intake.Result{}, nil
 }
 
-// push records a push to the pull request's branch (classify.ApplyPushDropping) and re-asks the
-// review round (reaskRound). It records nothing for a push whose After is record.NoCommit: that is
-// GitHub's deletion of the branch, which names no code. intake's decodePush makes no fact of a
-// deletion, and this test holds for a Push from any other source too. It records nothing for a
-// push to a pull request recorded merged either, since the merge has landed: a push after it is
-// not code that merged, and once the merge named its head that head is final (merged). The limit
-// is a merge that names no head, which no source sends in this release (intake's decodePullRequest
-// and daemon's mergeQueueRead both name it): a push made before such a merge but delivered after
-// it is not recorded, so it does not take back an approval of the head the record holds, although
+// Pushes is the daemon's record of the newest push of each issue's branch, written in the push
+// fact's own transaction (Config.Pushes, store.Store.RecordIssuePush). It is given both heads of
+// the push, the one it replaced and the one it left, and no time: the record stamps the push with
+// the store's own clock, the one every time the restore compares is read by
+// (runtime.DecideWorkspaceRestore). That time cannot order two pushes — every push is recorded at
+// the store's now, a redelivery and a late webhook included — and the record orders them by the
+// heads it has seen instead. It answers whether the push moved the record, which a redelivery and
+// a late webhook behind the newest push do not. A branch's deletion never reaches it: push
+// records nothing for one.
+type Pushes interface {
+	RecordIssuePush(ctx context.Context, tx pgx.Tx, issue, before, after string) (bool, error)
+}
+
+// push applies a push of a branch. It records nothing for a push whose After is record.NoCommit:
+// that is GitHub's deletion of the branch, which names no code, so the head the deletion replaced
+// is not added to the heads the record has seen (issue_push_heads) either. intake's decodePush
+// makes no fact of a deletion, and this test holds for a Push from any other source too. Any other
+// push of an issue's branch is recorded first and on its own (recordPush), and only then is the
+// pull request the push moves read: with no pull request recorded on the branch the push is
+// recorded and the rest is nothing. That pull request's push is recorded
+// (classify.ApplyPushDropping) and its review round re-asked (reaskRound). It records nothing for
+// a push to a pull request recorded merged, since the merge has landed: a push after it is not
+// code that merged, and once the merge named its head that head is final (merged). The limit is a
+// merge that names no head, which no source sends in this release (intake's decodePullRequest and
+// daemon's mergeQueueRead both name it): a push made before such a merge but delivered after it
+// is not recorded, so it does not take back an approval of the head the record holds, although
 // it may be the code that merged.
 func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.Result, error) {
 	if fact.After == record.NoCommit {
 		return intake.Result{}, nil
+	}
+	if err := e.recordPush(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
 	}
 	pr, err := e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
@@ -348,6 +368,43 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byPush)
+}
+
+// recordPush records a push of `legion/<KEY>` on the repository KEY is recorded on in the record
+// of that issue's branch's newest push (Config.Pushes), with both of its heads, at the store's own
+// clock, and asks for a copy of the issue's workspace once the fact commits
+// (Config.PushRecorded) when the push moved that record. The branch alone names the issue
+// (issueForBranch), so the record is made whether or not the issue has a pull request: a branch
+// is pushed before its pull request opens, and an issue with no pull-request record is the one a
+// record kept beside the pull request would have missed — the one a stale copy of its workspace
+// would then have been sent for, putting the workspace back behind what GitHub holds. Every push
+// is recorded, whoever pushed: a copy older than any of them is behind that push.
+//
+// The copy is asked for on commit and not here, as every effect of a fact is: a fact that rolls
+// back has recorded no push, and a copy is a `git bundle create` in a workspace a role is working
+// in, which the daemon takes for a push it holds and for none it might not. It is asked for only
+// when the push moved the record, because only such a push refuses a copy the restore would
+// otherwise send: a redelivered webhook and a late one behind the newest push move nothing, and a
+// copy asked for either would discard the copy in flight as overtaken (the daemon's
+// runningCopies.pushed) and bundle the workspace again for nothing. A branch's deletion never
+// comes here: push records nothing for it.
+func (e *Engine) recordPush(ctx context.Context, tx pgx.Tx, fact intake.Push) error {
+	if e.cfg.Pushes == nil {
+		return nil
+	}
+	issue, err := e.issueForBranch(ctx, tx, fact.Repo, fact.Branch)
+	if err != nil || issue == nil {
+		return err
+	}
+	moved, err := e.cfg.Pushes.RecordIssuePush(ctx, tx, issue.Key, fact.Before, fact.After)
+	if err != nil {
+		return err
+	}
+	if recorded := e.cfg.PushRecorded; recorded != nil && moved {
+		key := issue.Key
+		intake.OnCommit(ctx, func() { recorded(key) })
+	}
+	return nil
 }
 
 // reaskRound re-asks issue's review round (settleRound) after a fact that changed the pull

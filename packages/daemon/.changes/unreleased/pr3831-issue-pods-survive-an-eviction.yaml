@@ -1,0 +1,61 @@
+kind: Added
+custom:
+  Issue: pr3831
+body: |-
+  The daemon keeps a copy of each issue workspace's unpushed work while its pod runs: at the end of
+  each turn, every 5 minutes inside a turn, and at each push of the issue's branch it records. The
+  next pod of the issue restores the newer of that copy and the bundle an idle release saved,
+  before any role starts. A confirmed restore and a cancelled release keep the work as the pod's
+  own copy, so a second end of the pod before its next turn still restores it. No restore sets the
+  issue's branch `legion/<KEY>` or its rescue branch, and no running copy older than the newest
+  recorded push is restored. The restore decision compares times from the store's clock alone.
+  A copy sent to a pod that ends before any of its roles registers is sent again at the next start.
+  The restore of an issue runs one role start at a time, and once a pod's launcher process holds
+  the copy, the starts of its other roles neither take nor send it again.
+  A stop held for a turn's end, such as a project pause's, an operator's suspend or a linger,
+  waits for that turn's copy, at most the copy's 4-minute budget and never past the stop's own
+  deadline, and a copy that fails or times out lets the stop go. A stop that reaches a role while
+  the copy of its last turn's end is still being taken waits for it the same way. A project's pause stops no
+  running copy. Only a daemon whose project records the issue writes or drops its running copy,
+  so an operator's spawn of another project's issue leaves that project's copy as it is.
+
+  A pod the cluster ends, by an eviction, a preemption, a node going down or a delete the daemon
+  did not make, continues every role of the issue in its own session with no death and no launch
+  failure charged, however often it happens and whether the role's agent was ready or still
+  starting. An end the daemon reads neither way is still charged as it is today: an `Evicted` end
+  with no `DisruptionTarget` condition, such as a pod over its own disk limit, and a reason such
+  as `UnexpectedAdmissionError`. So is an eviction for node memory or disk pressure whose kubelet
+  message names a container of the pod using more memory, or more ephemeral storage, than it
+  requested, since that is the pod's own use; one whose message names no container of the pod
+  over its request is a neighbour's and is continued, and so is one for disk use in the pod's
+  `emptyDir` volumes, which the message names no container for. An end the daemon started itself
+  stays its own whatever the kubelet writes. An end from outside the pod is told to the next
+  process as an end from outside the pod, not as the daemon's replacement of the pod.
+
+  A death charged for memory or for the pod's own disk is told in plain words, with its number and
+  before the runtime's own detail, in the role's next task and in the claim's `lastDeathCause`: the
+  `roles` container's memory limit when it ended `OOMKilled`, the container's use and request when
+  node pressure evicted the pod for its own memory or ephemeral-storage use, and the disk limit
+  when the kubelet evicted the pod for its own disk. After an eviction over the ephemeral-storage
+  request the task also says to keep large files under `$TMPDIR`. After one for the disk limit it
+  first says what that limit counts: each role's home, `/tmp` and `/var/tmp`, the container's logs
+  and what is written in the container's own layer. Where the pod kept its test database in an
+  `emptyDir`, which that limit counts, it names the test database too and says to drop each
+  database a test run makes; it then says to keep large files under `$TMPDIR`. The memory limit's
+  sentence is the task's one statement that the pod ran out of memory: the out-of-memory note
+  behind it keeps only its guidance on heavy work. When those deaths fail the claim, the hold
+  notice and its copies carry the same words in `failure.death`, and the controller's copy of the
+  `worker-died` of a tree's own architect now carries `failure` too, so the controller reads them.
+
+  An issue pod whose CPU or memory request is below its limit no longer carries
+  `cluster-autoscaler.kubernetes.io/safe-to-evict`, so such pods can share nodes and burst.
+
+  The migrations add `workspace_running_copies`, `issue_pushes`, `issue_push_heads`,
+  `workspace_restore_asks` and a `written_at` column on `workspace_running_copies` and
+  `workspace_bundles`. To roll back, the operator first puts each lowered issue request back to its
+  limit and waits for each pod's update round, then stops this daemon and, before the earlier image
+  runs, runs one required `psql` step that re-pinning the image does not do:
+  `delete from workspace_running_copies;` and
+  `update workspace_restore_asks set registered_at = first_asked_at where registered_at is null;`.
+  The second has every copy this release sent spent, as the earlier daemon's rule has it, since
+  that daemon records no registration (`docs/kubernetes.md`, "Rolling back the running copy").

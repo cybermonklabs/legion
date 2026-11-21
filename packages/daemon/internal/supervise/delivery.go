@@ -241,9 +241,12 @@ type sentences struct{ abandoned, ended bool }
 // Composing a prompt tells nothing (confirm).
 //
 // Behind the interruption, when its end was the pod running out of memory, comes outOfMemoryTask
-// — the agent reads that its turn was interrupted, then why, then the task. A task a provider
-// error took back carries its own sentence last of all (ProviderErrorNote), so the agent reads
-// what the provider did and then the task; each of these says something the others do not.
+// — the agent reads that its turn was interrupted, then why, then the task. Where the record the
+// interruption's sentence tells is of a death whose cause already says so with the container's
+// memory limit (EndedWork.Death), the note is its guidance alone (outOfMemoryNote), so the task
+// says once that the pod ran out of memory. A task a provider error took back carries its own
+// sentence last of all (ProviderErrorNote), so the agent reads what the provider did and then the
+// task; each of these says something the others do not.
 //
 // The daemon's own delivery of a relaunch's record (Delivery.Relaunch, queueRelaunch) has no task:
 // its text is the record's sentence alone (RelaunchSentence), composed from the record as it
@@ -297,7 +300,7 @@ func (d Delivery) message(c Claim) (string, sentences) {
 		prefix += interruptedTask(c.EndedWork.Cause)
 	}
 	if d.Interrupted && d.OutOfMemory && !oldTurn {
-		prefix += outOfMemoryTask
+		prefix += outOfMemoryNote(c.EndedWork)
 	}
 	if d.ProviderErrorNote != "" {
 		prefix += d.ProviderErrorNote + "\n\n"
@@ -1528,12 +1531,33 @@ func handoffWords() string {
 // its pod ran out of memory. The agent cannot see why the kubelet ended its container, and the
 // heavy work that filled the pod is the thing it must stop doing there, so it is told what
 // happened and where the rule about work a pod does not run is written.
-const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the container that runs " +
-	"every role of this issue, with the reason OOMKilled, and that end is what stopped your turn. " +
-	"The work that filled the pod can be another role's, not yours. An issue pod runs no heavy " +
-	"build and no whole test suite, so read skill://legion-worker/references/tools.md before you " +
-	"run such work again, and send it to CI on the pull request or where your deployment's " +
-	"instructions say.\n\n"
+const outOfMemoryTask = outOfMemoryStatement + outOfMemoryGuidance
+
+// outOfMemoryStatement is outOfMemoryTask's account of what happened, and outOfMemoryGuidance what
+// the agent does about it. In front of a task whose record already says the pod ran out of memory
+// in the daemon's plain sentence, which names the container's memory limit (EndedWork.Death), the
+// note is the guidance alone (outOfMemoryNote), so the task says once that the pod ran out of
+// memory, in the sentence that names the limit (dispatch://INFRA-1117 R9).
+const (
+	outOfMemoryStatement = "Your pod ran out of memory. Kubernetes ended the container that runs " +
+		"every role of this issue, with the reason OOMKilled, and that end is what stopped your turn. "
+	outOfMemoryGuidance = "The work that filled the pod can be another role's, not yours. An issue pod runs no heavy " +
+		"build and no whole test suite, so read skill://legion-worker/references/tools.md before you " +
+		"run such work again, and send it to CI on the pull request or where your deployment's " +
+		"instructions say.\n\n"
+)
+
+// outOfMemoryNote is the out-of-memory note in front of a task taken back from a turn its pod's
+// running out of memory cut off, where ended is the record the sentence in front of it tells:
+// outOfMemoryTask, or its guidance alone where that record is of the `roles` container killed for
+// passing its memory limit (runtime.DeathMemoryLimit), whose cause opens with the plain sentence
+// naming that limit (plainCause, endDied).
+func outOfMemoryNote(ended EndedWork) string {
+	if ended.Death == runtime.DeathMemoryLimit {
+		return outOfMemoryGuidance
+	}
+	return outOfMemoryTask
+}
 
 // interrupted takes back the pending task whose turn the claim's process can no longer finish — it
 // died, or a forced stop is about to end it — so the relaunched agent's ready sends it again: Oh My
@@ -1639,7 +1663,7 @@ const (
 // launch whose turn has come, or one a held suspension's deadline stops — where nothing ended the
 // pod's container, so the end was not the pod running out of memory. A death and a displacement
 // pass the observation's own OutOfMemory instead, and the suspension that lands over a process a
-// report found gone passes what that report recorded (suspendOverADeadProcess, goneOutOfMemory).
+// report found gone passes what that report recorded (suspendOverADeadProcess, goneDeath).
 const ordinaryEnd = false
 
 // markRead and clearReadMark are the only writers of the pending task's read mark: its

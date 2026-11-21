@@ -299,10 +299,10 @@ func TestASuspendOverADeadProcessAfterARestartLandsOnceTheReadFindsItGone(t *tes
 // or a restart forgot the one that did. No death was judged then (died), so the suspension that
 // lands over the process does died's work for it (suspendOverADeadProcess): it sends the clean
 // stop of the dead process's Envoy session (sessionGone), and it takes the dead turn's task back
-// with the note of the end the read found (goneOutOfMemory). It records that end as the death it
-// is (recordEnd, endDied), so the task goes back behind the record's sentence naming the death. A
-// pod that ran out of memory is the commonest end of a process in that window, so both verdicts
-// of gone are asked, in both windows.
+// with the note of the end the read found (goneDeath's OutOfMemory). It records that end as the
+// death it is (recordEnd, endDied), so the task goes back behind the record's sentence naming the
+// death. A pod that ran out of memory is the commonest end of a process in that window, so both
+// verdicts of gone are asked, in both windows.
 //
 // The negative controls are the stop dropped from the suspension, where the listener would keep
 // the dead session's role and issue claims while the fresh session forgets its id; the verdict's
@@ -357,14 +357,15 @@ func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsN
 					t.Errorf("the claim holds %+v, want the dead turn's task back under a new id, unconfirmed, interrupted and marked out of memory %v",
 						p, verdict.outOfMemory)
 				}
-				cause := deathCause(runtime.Observation{Kind: runtime.Gone})
+				read := runtime.Observation{Kind: runtime.Gone}
+				cause := deathCause(read)
 				if c := h.claim().LastDeathCause; c != cause {
 					t.Errorf("the claim records its last death as %q, want the read's own account %q", c, cause)
 				}
 				ended := h.claim().EndedWork
-				if ended.Cause != endDied(cause) || !ended.Turn || !ended.TaskTurn || !ended.Tells() {
+				if ended.Cause != endDied(read) || !ended.Turn || !ended.TaskTurn || !ended.Tells() {
 					t.Errorf("the claim records the let-go's end as %+v, want the read's death %q, with the dead turn and its task, untold",
-						ended, endDied(cause))
+						ended, endDied(read))
 				}
 				want := relaunchSentence(ended, true) + "\n\n" + held.Task
 				if verdict.outOfMemory {

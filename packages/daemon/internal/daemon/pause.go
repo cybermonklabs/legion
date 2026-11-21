@@ -37,11 +37,11 @@ import (
 //   - the outbox's `pause_stop` executor (outbox.pauseStop, decision 4).
 
 // pauseStopWait is how long a `pause_stop` row waits before it asks its claim again while the
-// claim holds the stop for its turn or its launch (ErrSuspendHeld), or a launch whose outcome is
-// uncertain stands. The wait is bounded rather than the backoff's minute, so a turn of an hour
-// asks six times and logs no warning a minute (decision 4); what ends it sooner is the stop
-// transaction, which makes the row due at once when it records the claim stopped
-// (store.ExpeditePauseStopRowsTx) and wakes its lane.
+// claim holds the stop for its turn, its launch or the copy its last turn's end started
+// (ErrSuspendHeld), or a launch whose outcome is uncertain stands. The wait is bounded rather than
+// the backoff's minute, so a turn of an hour asks six times and logs no warning a minute
+// (decision 4); what ends it sooner is the stop transaction, which makes the row due at once when
+// it records the claim stopped (store.ExpeditePauseStopRowsTx) and wakes its lane.
 const pauseStopWait = 10 * time.Minute
 
 // projectPause is the daemon's half of its project's pause: the service, which holds the flag and
@@ -511,7 +511,8 @@ func pauseStopClaimOf(c supervise.Claim) store.PauseStopClaim {
 //   - the pause has ended (supervise.ErrPauseEnded): the resume committed after this row read its
 //     pause open and before the machine decided the stop, so nothing was stopped, and the row
 //     finishes without acting, as a row that reads its pause ended does;
-//   - held for the agent's turn or its launch (supervise.ErrSuspendHeld): the row asks again after
+//   - held for the agent's turn, its launch, or the copy the claim's last turn's end started
+//     (supervise.ErrSuspendHeld, whose text names which): the row asks again after
 //     pauseStopWait, or as soon as the stop transaction records the claim stopped and makes the
 //     row due;
 //   - refused as not registered: a queued claim runs nothing and has no launch under way, and the
@@ -559,7 +560,7 @@ func (r *outbox) pauseStop(ctx context.Context, row record.OutboxRow, payload re
 		return nil
 	case errors.Is(err, supervise.ErrSuspendHeld):
 		return wait.Until(r.now().UTC().Add(pauseStopWait),
-			fmt.Sprintf("pause %d's stop of %s is held for the claim's turn or its launch", held.ID, token))
+			fmt.Sprintf("pause %d's stop of %s waits: %v", held.ID, token, err))
 	case errors.As(err, &refused) && refused.State == supervise.StateQueued:
 		return r.endPauseStop(ctx, row, issue, held, token, store.PauseStopStopped,
 			"the claim is queued: no process runs, no launch is under way, and the pause holds the start that would launch it")

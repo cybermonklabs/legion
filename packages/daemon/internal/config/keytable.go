@@ -615,6 +615,8 @@ var nestedKeys = []memberGroup{
 			Description: "Removed: a role installs its skills with Oh My Pi's own commands in `setup`; the loader refuses a file that still sets it."},
 		{Name: "test_postgres", Default: "`false`", RequiredBy: "no",
 			Description: "Whether every issue pod's roles container serves its own PostgreSQL for the tests that need one."},
+		{Name: "test_postgres_disk", Default: "the test database stays on the pod's counted disk, an emptyDir the pod's `ephemeral_storage` limit counts", RequiredBy: "no",
+			Description: "The size, as a Kubernetes quantity of at least 4Gi, of a disk of its own on the issue volume's StorageClass that each issue pod keeps its test database on, which the pod's ephemeral-storage limit does not count; a smaller disk would never show the 2 GiB free under which the launcher resets the test database, so it is refused. It requires `test_postgres: true`, and a pod already running when it is set keeps its emptyDir until the pod is replaced."},
 		{Name: "idle_release", Default: "a pod quiet for ten minutes is released, and an open phase's worker is woken an hour after that", RequiredBy: "no",
 			Description: "How long an issue's pod may be quiet before the daemon releases it, and how long after that release a worker whose phase is open is brought back whatever else wakes it."},
 		{Name: "memory_guard", Default: "the guard runs in every gVisor issue pod at the defaults of `memory_guard.issue_pods`", RequiredBy: "no",

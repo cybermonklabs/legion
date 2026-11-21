@@ -158,8 +158,11 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 // decision of its own: the worker-died of a role that does not work the issue's phase names the
 // failure too, since that role's architect decides whether to start it again on the same
 // evidence; the tree architect's own carries no failure record and names the sentence in its
-// reason instead, as R5 has it, and the one that ends a closed issue's production-check look
-// carries no failure record either, since its reason already names the cause.
+// reason instead, as R5 has it, while the controller's copy of it carries the failure record,
+// since that copy is all the controller is told of what killed that architect
+// (dispatch://INFRA-1117 R9), and so names no sentence in its reason; and the one that ends a
+// closed issue's production-check look carries no failure record either, since its reason
+// already names the cause.
 func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 	const sentence = "the planner's process died with its task outstanding, and its relaunches ran out"
 	failed := func(issue string, role claim.Role) intake.ClaimFailed {
@@ -215,7 +218,7 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		}
 	})
 
-	t.Run("a tree architect's claim names no failure record and its reason names the sentence, quoted", func(t *testing.T) {
+	t.Run("a tree architect's claim names the sentence in its reason and the failure to the controller", func(t *testing.T) {
 		pool := migratedPool(t)
 		seedIssue(t, pool, root)
 
@@ -223,8 +226,9 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 			t.Fatalf("ApplyFact the architect's failed claim: %v", err)
 		}
 		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning, Reason: strconv.Quote(sentence)}
-		if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(died)}; !sameNotices(got, want) {
-			t.Fatalf("notice rows = %+v, want %+v, naming no failure record and the sentence as the reason", got, want)
+		told := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning, Failure: named}
+		if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(told)}; !sameNotices(got, want) {
+			t.Fatalf("notice rows = %+v, want %+v, the architect's naming no failure record and the sentence as the reason, and the controller's copy naming the failure", got, want)
 		}
 	})
 

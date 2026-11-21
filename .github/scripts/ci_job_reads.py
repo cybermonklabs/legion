@@ -553,7 +553,7 @@ RULES = {
         Read(path, "internal/api/reachstates_test.go:50 lists ../supervise and :60 parses each .go file of it but the test files (:57)")
         for path in files_but_tests(f"{DAEMON}/internal/supervise")],
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
-    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1391 (path from goldenPath at :1380, declared :38)")),
+    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1393 (path from goldenPath at :1382, declared :38)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
         (f"{FIX}/capability-redaction-plugin-report.json", "internal/capabilities/capabilities_test.go:236 readFixture")),
@@ -597,14 +597,17 @@ RULES = {
     f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),
     f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:139")),
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
+    f"{DAEMON}/internal/launcher/testpg_disk_test.go": reads(
+        (f"{DAEMON}/docker/legion-testpg", "internal/launcher/testpg_disk_test.go:76 runs it through the link :63 puts on PATH, "
+                                           "whose target is ../../docker/legion-testpg made absolute (:112)")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
         ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:762-763")),
     f"{DAEMON}/internal/runtime/sandbox/operatorpod_test.go": reads(
         ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/operatorpod_test.go:28"),
-        (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:236"),
-        (f"{DAEMON}/docker/worker.Dockerfile", "internal/runtime/sandbox/operatorpod_test.go:298")),
+        (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:263"),
+        (f"{DAEMON}/docker/worker.Dockerfile", "internal/runtime/sandbox/operatorpod_test.go:325")),
     f"{DAEMON}/internal/runtime/sandbox/boundary_test.go": [legion_build("internal/runtime/sandbox/boundary_test.go:757 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/tmux/tmux_real_test.go": [
         legion_build("internal/runtime/tmux/tmux_real_test.go:88-89 go build .../daemon/cmd/legion"),
@@ -694,6 +697,22 @@ RULES = {
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
                                "for plan_ratings_way_back_doc_test.go:35 (assertIsTheGuidesBlock, way_back_doc_test.go:165, "
                                "through wayBackBlockOfTheGuide, :181) and :49 (entryLinkIn of shippedText)")),
+    # internal/daemon/workspace_copy_doc_test.go, internal/runtime/sandbox/workspace_copy_doc_test.go
+    # and internal/launcher/testpg_disk_doc_test.go read no text outside their own packages and have
+    # no row: each reads the extract beside it through internal/testdoc, and this row is what holds
+    # those three copies to the guide, in the text-check job (dispatch://INFRA-1117).
+    f"{DAEMON}/internal/textcheck/workspace_copy_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+                               "for workspace_copy_doc_test.go:48 (shippedText)"),
+        (f"{DAEMON}/internal/daemon/workspace_copy_doc_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../daemon/workspace_copy_doc_extract.txt for "
+         "workspace_copy_doc_test.go:92, the committed copy it holds the guide's regions to (readExtract)"),
+        (f"{DAEMON}/internal/runtime/sandbox/workspace_copy_doc_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../runtime/sandbox/workspace_copy_doc_extract.txt "
+         "for workspace_copy_doc_test.go:92, the committed copy it holds the guide's regions to (readExtract)"),
+        (f"{DAEMON}/internal/launcher/testpg_disk_doc_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../launcher/testpg_disk_doc_extract.txt "
+         "for workspace_copy_doc_test.go:92, the committed copy it holds the guide's region to (readExtract)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.

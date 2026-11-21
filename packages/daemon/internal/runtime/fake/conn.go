@@ -210,6 +210,11 @@ func (c *Conn) FailCompact(err error) { c.fail("Compact", err) }
 // the bundle SetWorkspaceBundle gave it, recorded with the issue asked about. With none given it
 // fails, so a test that never expected a release to bundle sees the request go unanswered rather
 // than an empty bundle.
+//
+// A bundle over runtime.MaxWorkspaceBundleBytes is refused with its size and without its bytes,
+// as the shim refuses it and the stream's connection answers that refusal
+// (*runtime.WorkspaceBundleTooLargeError): a test drives the bound through the answer production
+// gets, never through a bundle that arrives whole.
 func (c *Conn) BundleWorkspace(_ context.Context, issue string, timeout time.Duration) (runtime.WorkspaceBundle, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -219,6 +224,9 @@ func (c *Conn) BundleWorkspace(_ context.Context, issue string, timeout time.Dur
 	}
 	if c.bundle == nil {
 		return runtime.WorkspaceBundle{}, errors.New("fake: the shim was asked to bundle its workspace, and the test set none (SetWorkspaceBundle)")
+	}
+	if size := c.bundle.Size(); size > runtime.MaxWorkspaceBundleBytes {
+		return runtime.WorkspaceBundle{}, &runtime.WorkspaceBundleTooLargeError{Bytes: size, Max: runtime.MaxWorkspaceBundleBytes}
 	}
 	return *c.bundle, nil
 }

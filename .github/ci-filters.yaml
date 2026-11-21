@@ -515,6 +515,7 @@ plugin_pack:
   - '!packages/daemon/internal/stream/**/*_test.go'
   - '!packages/daemon/internal/supervise/**/*_test.go'
   - '!packages/daemon/internal/testbin/**/*_test.go'
+  - '!packages/daemon/internal/testdoc/**/*_test.go'
   - '!packages/daemon/internal/testnats/**/*_test.go'
   - '!packages/daemon/internal/testpg/**/*_test.go'
   - '!packages/daemon/internal/testtmp/**/*_test.go'
@@ -1725,7 +1726,7 @@ text_checks:
   - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
   - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
   - 'packages/daemon/internal/store/migrations/*.up.sql'
-  # why: .github/ci-notes/ci.md#text_checks-the-seven-copies-of-shipped-texts-that-readextract-reads
+  # why: .github/ci-notes/ci.md#text_checks-the-ten-copies-of-shipped-texts-that-readextract-reads
   - 'packages/daemon/cmd/legion/awaiting_summary_extract.txt'
   - 'packages/daemon/cmd/legion/troubleshooting_refusals_extract.txt'
   - 'packages/daemon/cmd/legion/waiting_line_block_extract.txt'
@@ -1733,6 +1734,9 @@ text_checks:
   - 'packages/daemon/internal/daemon/upgrade_architect_entry_way_back_extract.txt'
   - 'packages/daemon/internal/daemon/upgrade_way_back_extract.txt'
   - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
+  - 'packages/daemon/internal/daemon/workspace_copy_doc_extract.txt'
+  - 'packages/daemon/internal/launcher/testpg_disk_doc_extract.txt'
+  - 'packages/daemon/internal/runtime/sandbox/workspace_copy_doc_extract.txt'
   - 'docs/site/src/content/docs/legion/concepts.md'
   - 'docs/site/src/content/docs/legion/walkthrough.md'
   - 'docs/site/src/content/docs/legion/using-legion.md'

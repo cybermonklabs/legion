@@ -335,7 +335,8 @@ type Claim struct {
 	TurnOutcomes []TurnOutcome
 	// LastDeathCause is why the claim's process was last found gone — the runtime's own account of
 	// the death (runtime.Observation.Detail: an OOM kill, a node that went away, a pod the cluster
-	// evicted) — and LastStartFailure why its last start did not produce a running agent — a
+	// evicted), behind the daemon's plain sentence of its cause where the runtime read one
+	// (deathCause) — and LastStartFailure why its last start did not produce a running agent — a
 	// launcher that refused the start, an init container that failed, a pod that never became
 	// ready (launchAfter's error). They are two answers to two questions, kept apart because a
 	// claim that cannot start and a claim that keeps dying are different faults, and each is kept
@@ -358,9 +359,10 @@ type Claim struct {
 	UncertainStreak int
 	// SuspendedBy is who suspended the claim while it is suspended, and "" otherwise.
 	SuspendedBy SuspendSource
-	// SuspensionHeld is whether a suspension is held for the agent's turn (holdSuspension), and
-	// SuspensionHeldBy who asked for it. Both are memory only: Machine.Claim reports them, and the
-	// store never writes them.
+	// SuspensionHeld is whether a suspension is held — for the agent's turn (holdSuspension), for a
+	// launch's ready (holdSuspendUntilReady), or for the copy the claim's last turn's end started
+	// (suspend) — and SuspensionHeldBy who asked for it. Both are memory only: Machine.Claim
+	// reports them, and the store never writes them.
 	SuspensionHeld   bool
 	SuspensionHeldBy SuspendSource
 	// SessionLost is the cause of the forget that the launch this claim is being built a spec for
@@ -411,8 +413,10 @@ type Claim struct {
 	// DeathCharged is whether the death of the process this claim records has been charged, or
 	// found to have nothing to charge: the decision died makes for one dead process, and the
 	// record that keeps a second report of that same process from being charged a second death.
-	// The rule it keeps is written where it is applied (died); what leaves a claim to be
-	// reported twice is ProcessGone's two windows above.
+	// An end of that process's pod from outside it charges nothing and writes this all the same
+	// (endedFromOutside), so a later report of that same process is charged no death either. The
+	// rule it keeps is written where it is applied (died, endedFromOutside); what leaves a claim
+	// to be reported twice is ProcessGone's two windows above.
 	//
 	// It is durable, and it is the one of these marks that is: a restart restores the claim a
 	// refused or parked relaunch left standing over its dead process, and the sweep's first
@@ -986,6 +990,17 @@ type Deps struct {
 	// where it is read; nil reads no report, so every let-go of a process that ran a turn
 	// records that the daemon has none.
 	ClaimActivity func(ctx context.Context, token claim.Token, generation uint64) (ActivityReport, bool, error)
+	// PodRegistered records that a role of issue registered in the pod of podUID: the daemon's
+	// store, under which a saved copy of the issue's workspace sent to that pod is spent from then
+	// on (store.Store.RecordPodRegistration). A registration of a claim whose process runs in a
+	// pod (runtime.SandboxLocator) calls it before the registration is persisted and answered, the
+	// first registration and every one after it (register, reregister), and an error refuses the
+	// registration, which leaves the agent to its registration deadline: answered while the store
+	// still read the copy unspent, a restarted roles container of that pod would be sent the copy
+	// again over the work the role does from then on. It is called while the machine's lock is
+	// held, bounded by the claim-write deadline. nil — the tmux runtime, and a test that needs
+	// none — records nothing, as does a claim whose locator names no pod.
+	PodRegistered func(ctx context.Context, issue, podUID string) error
 	// PluginContract is the daemon's own plugin contract number (api.DaemonAPIVersion; supervise
 	// cannot import api), compared against each claim's recorded PluginContract to decide whether a
 	// registration or a restored claim is stale.
@@ -1120,6 +1135,26 @@ type Deps struct {
 	// does its write on a goroutine of its own, as the durable-state report's podResume does in
 	// internal/daemon. nil stamps nothing.
 	WakeLetOut func(token claim.Token, issue string, role claim.Role, at time.Time)
+	// CopyTurnEnd starts the copy of the issue workspace's unpushed work that the end of c's turn
+	// owes (R1 of dispatch://INFRA-1117), at every turn's end the machine records (copyTurnEnd):
+	// the turn's agent_end, the sweep's word that the turn is over, a turn that ends under a
+	// compaction and one the daemon never saw begin, whatever the claim goes to from there —
+	// idle, or straight on to a stop held for that end. c is the claim whose turn ended, its role
+	// and the locator of the process it ran in among it, so the copy asks that role's shim
+	// rather than reading the claims again after the fact, when a stop may already have taken
+	// the role.
+	//
+	// It is called inside the machine's decision, so it returns at once: the copy runs on a
+	// goroutine of the daemon's, and no turn waits for it (R2). Once that copy has ended, whatever
+	// it came to — stored, refused, failed or abandoned at its budget — the daemon hands copied
+	// back to the machine's Handle, as it hands every other runtime fact, and never from inside
+	// this call. budget is the most the copy takes, which bounds how long a stop held for the
+	// turn's end, or asked while the copy is taken, waits for it (waitForTurnCopy); started is
+	// false where no copy was started — a controller's claim, a claim of no issue, a daemon that
+	// bundles no workspace, one that keeps no store or one that is stopping, and a daemon's
+	// supervisor before its workflow has attached the copy — and copied is then never handed back.
+	// nil starts no copy, and no stop waits for one.
+	CopyTurnEnd func(c Claim, copied TurnEndCopied) (budget time.Duration, started bool)
 	// Worker is the context a goroutine the machine starts applies its decision on: a timer that
 	// fires (arm) and a prompt's send (startSend) each call Handle from a goroutine of their own,
 	// beside whatever goroutine feeds the machine its events, and the decision writes the claim
@@ -1391,8 +1426,9 @@ type Machine struct {
 	// stayed armed on a working claim (askTurnOver); from unansweredAsksWarn on, each one is
 	// logged at Warn.
 	unansweredAsks int
-	// held is the suspension held for the agent's turn (holdSuspension), or for a launch's ready
-	// (holdSuspendUntilReady), nil for none.
+	// held is the suspension held for the agent's turn (holdSuspension), for a launch's ready
+	// (holdSuspendUntilReady), or for the copy the claim's last turn's end started (suspend), nil
+	// for none.
 	held *RequestSuspend
 	// heldLaunch is whether the held suspension waits over a launch — one holdSuspendUntilReady
 	// keeps until the agent says ready — and false whenever held is nil: it is set with held and
@@ -1482,8 +1518,21 @@ type Machine struct {
 	// reads the claim in this state rather than as a turn cut off (endState, recordEnd). The
 	// claim's own state stays working through the stop, as it always has: the stop publishes the
 	// claim while the runtime stops it (stoppingProcess), and the end gives the claim its state
-	// back only once the hold's outcome is known (turnEnded, compactEnded).
+	// back only once the hold's outcome is known (turnEnded, compactEnded). A stop that waits for
+	// the copy its turn's end started (waitForTurnCopy) is the one exception: the end gives the
+	// claim its state back first, and the stop runs later from that state, which reads as it
+	// stands.
 	heldStopBack ClaimState
+	// turnCopy is the copy of the issue's workspace that the end of the claim's last turn started
+	// (Deps.CopyTurnEnd, copyTurnEnd), while the machine has not heard it end: nil once its end
+	// has come back (TurnEndCopied), once a held stop's wait for it has run out (TimerTurnCopy),
+	// and once the process whose turn it copies is let go (letGo). A stop held for a turn's end
+	// waits for it, and so does a suspension that reaches the claim while it is being taken
+	// (waitForTurnCopy, suspend). turnCopies numbers the copies the machine has started, so the
+	// end of an earlier one decides nothing about a later one (fence). Both are memory only, as
+	// the held suspension is: a restart forgets the wait with the hold it was for.
+	turnCopy   *turnCopy
+	turnCopies uint64
 	// processGone is what the runtime's last report of the process the claim records found
 	// (reportedProcess, Claim.ProcessGone), and false until a report has found that process
 	// gone. Every report the machine judges writes it — a gone verdict sets it and a verdict
@@ -1497,26 +1546,23 @@ type Machine struct {
 	// death is the claim's own and durable, because a restart must not charge it again
 	// (Claim.DeathCharged).
 	processGone bool
-	// goneOutOfMemory is whether the report that set processGone found that process's pod ended
-	// for running out of memory (runtime.Observation.OutOfMemory), and false wherever processGone
-	// is: written and cleared with it (reportedProcess, letGo). It is kept for the one path that
-	// takes the dead turn's task back after the report rather than at it — a suspension that
-	// reaches the claim over that process (suspendOverADeadProcess) — so the task goes back with
-	// the note the death would have given it (interrupted, outOfMemoryTask). It is memory only,
-	// as processGone is, and for the same reason.
-	goneOutOfMemory bool
-	// goneCause is the runtime's account of the death the report that set processGone found
-	// (deathCause), and empty wherever processGone is false: written and cleared with it. It is
-	// kept for the same suspension, which records the dead process's end as the death it is under
-	// this account (recordEnd, endDied) once the dead turn's task is taken back, unless a death
-	// died judged already recorded it, so the task is sent again saying why its process died
-	// rather than that a suspension ended it: the sentence in front of it reads that record, its
-	// own while the record is untold (relaunchSentence) and the record's cause once it is told
-	// (interruptedTask, EndedWork.Cause). Before the take-back the suspension also puts it on the
-	// claim as died would have (Claim.LastDeathCause), which the operator's listing and a failed
-	// claim's notices read, and it puts back the cause the claim held when the take-back's write
-	// fails (suspendOverADeadProcess).
-	goneCause string
+	// goneDeath is the runtime's observation of the death the report that set processGone found,
+	// and the zero value wherever processGone is false: written and cleared with it
+	// (reportedProcess, letGo). It is kept for the one path that takes the dead turn's task back
+	// after the report rather than at it — a suspension that reaches the claim over that process
+	// (suspendOverADeadProcess) — so the task goes back with the note the death would have given
+	// it where its pod ran out of memory (runtime.Observation.OutOfMemory: interrupted,
+	// outOfMemoryTask), and the suspension records the dead process's end as the death it is
+	// under that observation's account (recordEnd, endDied) once the dead turn's task is taken
+	// back, unless a death died judged already recorded it, so the task is sent again saying why
+	// its process died rather than that a suspension ended it: the sentence in front of it reads
+	// that record, its own while the record is untold (relaunchSentence) and the record's cause
+	// once it is told (interruptedTask, EndedWork.Cause). Before the take-back the suspension also
+	// puts the death's cause on the claim as died would have (deathCause, Claim.LastDeathCause),
+	// which the operator's listing and a failed claim's notices read, and it puts back the cause
+	// the claim held when the take-back's write fails. It is memory only, as processGone is, and
+	// for the same reason.
+	goneDeath runtime.Observation
 	// previous is the incarnation the claim last ran and no longer records — stopped by a
 	// suspension, retired, failed on, or found dead — which every launch of the same session hands
 	// the runtime to wait out until one starts. letGo is the one way a process gets here. It is
@@ -2318,11 +2364,15 @@ func (m *Machine) unlock() {
 	m.mu.Unlock()
 }
 
-// OnDurableState installs the daemon callback for the durable transitions it acts on: ready,
-// working and failed. Two of them are terminal for the workflow and one, working, is not: the
-// daemon reads a turn starting to stamp a woken pod's first turn. The callback runs after the
-// transition's claim write has succeeded, and a machine keeps one, so a daemon that observes
-// more than one of them observes them in that one callback.
+// OnDurableState installs the daemon callback for the durable transitions it reports: ready,
+// working, idle and failed. Two of them are terminal for the workflow, and the daemon reads a
+// turn starting to stamp a woken pod's first turn. A turn ending is reported idle as well, but the
+// copy of the issue workspace's unpushed work that the turn's end owes is not taken from that
+// report: without the copy started at the turn's end, a turn that ended into a held stop would be
+// stopped before any idle report, so the machine starts that copy from the turn's end itself
+// (Deps.CopyTurnEnd, copyTurnEnd), and the held stop waits for it. The callback runs after the
+// transition's claim write has succeeded, and a machine keeps one, so a daemon that observes more
+// than one of them observes them in that one callback.
 func (m *Machine) OnDurableState(callback func(Claim, ClaimState)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2344,10 +2394,10 @@ func (m *Machine) report(c Claim, state ClaimState) {
 // one order: the report follows the write, and a write the store did not take reports nothing
 // and owes the report instead, for whatever claim write lands next to make (oweDurableState,
 // settleOwedWrite). Every decision that reports a durable transition goes through here — the
-// turn that starts, the claim that is ready, the claim that failed — because the order is the
-// point and the owing works only on the error of the write it belongs to: a fourth caller that
-// wrote the three steps out itself and left the owing off would lose its report in silence,
-// which is the fault the mark exists to end.
+// turn that starts, the turn that ends, the claim that is ready, the claim that failed — because
+// the order is the point and the owing works only on the error of the write it belongs to: a
+// fifth caller that wrote the three steps out itself and left the owing off would lose its
+// report in silence, which is the fault the mark exists to end.
 //
 // write is the decision's own claim write: persist for most of them, and confirm for a turn
 // start that confirms the delivery whose turn it is.
@@ -2549,6 +2599,17 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 			m.log.Warn("supervise: the compaction's end reached a claim that no longer holds it; the claim was not given back and sent nothing",
 				"generation", ev.Generation, "claimGeneration", m.claim.Generation, "state", m.claim.State)
 			return false, ErrCompactProcessGone
+		}
+	case TurnEndCopied:
+		// Only the end of the copy the machine still waits to hear of decides anything: the end
+		// of an earlier turn's copy, one whose wait ran out at its bound, and one of a process
+		// the claim has let go are each a copy no stop waits for (turnCopy). They are the
+		// ordinary outcome of a copy that outlived its process or its turn rather than a stale
+		// fact a far side repeats, so they go at Debug and leave no mark (dropStale): every copy
+		// ends once, under a number of its own.
+		if c := m.turnCopy; c == nil || c.seq != ev.Copy {
+			m.log.Debug("supervise: the end of a copy of the issue's workspace that nothing waits for decides nothing", "copy", ev.Copy)
+			return false, nil
 		}
 	}
 	return true, nil
@@ -3318,7 +3379,8 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // died is the claim's process found gone — or found to be some other process — while it was
 // live: one launch failure, and the same session relaunched after it, or failed when the budget
 // is spent. The runtime's account of the death is kept on the claim (Claim.LastDeathCause) before
-// anything else, so whoever asks afterwards — the operator's listing, the notices a failed claim
+// anything else, behind the daemon's plain sentence of its cause where the runtime read one
+// (deathCause), so whoever asks afterwards — the operator's listing, the notices a failed claim
 // sends, the relaunched agent's own first prompt — is told why this claim's process ended rather
 // than left to read the daemon's log. A task whose turn the process was running goes back to
 // waiting (interrupted), for the relaunch to send, and a death with work outstanding is counted
@@ -3392,8 +3454,8 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// memory, names the pod end the store holds and a restart's replay reads back. The rule never
 	// adds a rune, so the runtime's bound (runtime.PodEndRunes) still holds.
 	m.claim.PodEnd = storetext.FarSideText(observation.PodEnd)
-	ended := endDied(m.claim.LastDeathCause)
-	m.recordGoneEnd(ctx, ended)
+	ended := endDied(observation)
+	m.recordGoneEnd(ctx, ended, observation.Cause.Kind)
 	m.sessionGone(ctx)
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err
@@ -3459,13 +3521,26 @@ func (m *Machine) endUncharged(ended string) bool {
 	return false
 }
 
-// deathCause is what the claim records of a death: the runtime's own account of it, behind the
-// verdict it reached, so a cause reads as a sentence wherever it is repeated. A runtime that gave
-// no detail leaves the verdict alone. The account is a pod's events and the last lines of its log,
-// so it is kept as a far side's text (storetext.FarSideText) before the claim, the state, the
-// store and ended work repeat it. It keeps the runtime's own bound rather than taking
-// FarSideError's: that bound keeps the last lines, which are what name the death.
+// deathCause is what the claim records of a death (Claim.LastDeathCause): the daemon's plain
+// sentence of its cause where the runtime read one (plainCause), and then the runtime's own account
+// of it (deathAccount), so the operator's listing and the notices of a claim its deaths fail open
+// with what ended the process and the number it passed (dispatch://INFRA-1117 R9). A death of any
+// other cause is the runtime's account alone, as it always was.
 func deathCause(observation runtime.Observation) string {
+	account := deathAccount(observation)
+	if plain := plainCause(observation.Cause); plain != "" {
+		return plain + ". " + runtimeDetail + account
+	}
+	return account
+}
+
+// deathAccount is the runtime's own account of a death, behind the verdict it reached, so a cause
+// reads as a sentence wherever it is repeated. A runtime that gave no detail leaves the verdict
+// alone. The account is a pod's events and the last lines of its log, so it is kept as a far side's
+// text (storetext.FarSideText) before the claim, the state, the store and ended work repeat it. It
+// keeps the runtime's own bound rather than taking FarSideError's: that bound keeps the last lines,
+// which are what name the death.
+func deathAccount(observation runtime.Observation) string {
 	if observation.Detail == "" {
 		return string(observation.Kind)
 	}
@@ -3808,6 +3883,10 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // the suspension, the retirement, the failure — so no stored charge ever outlives the process it
 // was made for.
 //
+// The wait for the copy the process's last turn's end started goes with the process as well
+// (turnCopy): the stop that waited for it has run, or the process it would have stopped is gone,
+// and the copy's end when it comes is of no process the claim records (fence).
+//
 // Before any of that, what the process ended is recorded for cause, the caller's reading of why
 // it lets the process go (recordEnd): the turn it was in, whether that turn was the pending
 // task's, and the background work its own activity report named. It is read here, first,
@@ -3816,7 +3895,7 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // with the process too (cutTurnOf), and so do the marks of the sentences a prompt to it carried
 // (carried): the next process has been sent nothing yet.
 func (m *Machine) letGo(ctx context.Context, cause string) {
-	m.recordEnd(ctx, cause)
+	m.recordEnd(ctx, cause, "")
 	m.disarmAll()
 	m.relaunch = nil
 	m.wake = nil
@@ -3827,7 +3906,8 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.busyTurn = false
 	m.turnsDelivery, m.cutTurnOf, m.carried = "", "", sentences{}
 	m.compacting, m.lostCompaction = nil, nil
-	m.processGone, m.goneOutOfMemory, m.goneCause, m.claim.DeathCharged = false, false, "", false
+	m.turnCopy = nil
+	m.processGone, m.goneDeath, m.claim.DeathCharged = false, runtime.Observation{}, false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {
 		m.revoke(*enrollment)
 	}
@@ -3912,11 +3992,30 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// leaves its end nothing else to read. The record of what that process's end cut off
 		// still reads the compaction, until the let-go (Machine.lostCompaction, recordEnd).
 		m.compactionLostProcess()
+		// The daemon's own replacement of a pod is no fault of the process (Displaced). An end
+		// something outside the pod made is read in one place, here, and goes to the one site
+		// that decides it (endedFromOutside), which continues the claim in its own session
+		// charged nothing, however often such ends come. An end the daemon itself made, and one
+		// the runtime read neither way, are charged exactly as they were before the reading
+		// existed.
 		if observation.Displaced {
-			return m.displaced(ctx, observation)
+			return m.displaced(ctx, observation, endDisplaced)
+		}
+		if observation.EndReading == runtime.PodEndNotOurs {
+			return m.endedFromOutside(ctx, observation)
 		}
 		return m.died(ctx, observation)
 	case runtime.StaleAddress:
+		// The replacement would let the live process go through the held stop (replaceNow,
+		// endHeld) while the copy of its turn's end still asks its shim, cutting that copy off.
+		// The runtime's sweep observes the process again at every tick, so this one is left to
+		// the copy's end: the held stop then lets the process go itself, and a hold dropped
+		// meanwhile (dropHeld) leaves the next observation to repoint it.
+		if m.stopWaitsForTurnCopy() {
+			m.log.Info("supervise: the process is alive at a stale address while its held stop waits for the copy of its turn's end; it is replaced once that wait is over",
+				"incarnation", observation.Locator.Incarnation, "copy", m.turnCopy.seq, "detail", observation.Detail)
+			return nil
+		}
 		return m.repoint(ctx, observation)
 	case runtime.Uncertain:
 		m.claim.UncertainStreak++
@@ -3936,15 +4035,15 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 // claim's process reads it (processReadOf), so the machine and its callers group the kinds
 // one way.
 //
-// A verdict that found the process gone records, beside that, whether its pod ran out of memory
-// (goneOutOfMemory) and the runtime's account of the death (goneCause), for the suspension that takes the dead turn's task back later
-// (suspendOverADeadProcess). A verdict that found the process running clears both, the stale
-// address among them: that process is alive, holding an address a process launched now is not
-// handed (repoint), and the relaunch it raises can be refused at its turn exactly as a death's
-// can — read as gone, such a claim would be refused "its process is gone" while its live
-// process ran a turn of its own. A runtime that could not answer says nothing either way, so an
-// uncertain verdict leaves what the last answer found standing until one comes (judge's
-// uncertain verdict, probe).
+// A verdict that found the process gone records, beside that, the runtime's observation of the
+// death (goneDeath), whether its pod ran out of memory included, for the suspension that takes the
+// dead turn's task back later (suspendOverADeadProcess). A verdict that found the process running
+// clears both, the stale address among them: that process is alive, holding an address a process
+// launched now is not handed (repoint), and the relaunch it raises can be
+// refused at its turn exactly as a death's can — read as gone, such a claim would be refused "its
+// process is gone" while its live process ran a turn of its own. A runtime that could not answer
+// says nothing either way, so an uncertain verdict leaves what the last answer found standing
+// until one comes (judge's uncertain verdict, probe).
 //
 // Such a verdict clears what was charged for that process's death with it (Claim.DeathCharged),
 // and reports that it did so, for judge to write: the process is running, so the death a later
@@ -3953,10 +4052,10 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 func (m *Machine) reportedProcess(observation runtime.Observation) (clearedCharge bool) {
 	switch processReadOf(observation.Kind) {
 	case ProcessGone:
-		m.processGone, m.goneOutOfMemory, m.goneCause = true, observation.OutOfMemory, deathCause(observation)
+		m.processGone, m.goneDeath = true, observation
 	case ProcessRuns:
 		clearedCharge = m.claim.DeathCharged
-		m.processGone, m.goneOutOfMemory, m.goneCause, m.claim.DeathCharged = false, false, "", false
+		m.processGone, m.goneDeath, m.claim.DeathCharged = false, runtime.Observation{}, false
 	}
 	return clearedCharge
 }
@@ -4389,6 +4488,8 @@ func claimOf(ev Event) claim.Token {
 	case RequestCompact:
 		return ev.Claim
 	case CompactEnded:
+		return ev.Claim
+	case TurnEndCopied:
 		return ev.Claim
 	case ResumePause:
 		return ev.Claim

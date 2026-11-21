@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -19,14 +20,16 @@ const endedWorkVersion = 20261113082415
 // trip is the column through putClaim and scanClaim; the read the machine records the background
 // work from is the activity report of the launch it lets go, and of no other (ClaimActivity); and
 // the migration is read back under both: every row the table already holds takes null.
+// A death's kind round-trips with the record (EndedWork.Death): the out-of-memory note reads it.
 func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
 	t.Run("the record round-trips with the claim, and its absence is null", func(t *testing.T) {
 		ctx := context.Background()
 		store := migratedStore(t)
 		want := tmuxClaim("legion-LEGION-209-implementer")
 		want.EndedWork = supervise.EndedWork{
-			At: at(5), Cause: "the process died: gone: pod legion-legion-209 (uid 8a1f) ended: OOMKilled",
-			Generation: 3, Turn: true, TaskTurn: true, Background: true,
+			At: at(5), Cause: "the pod's roles container, which runs every role of this issue, was killed because it used " +
+				`more than its 8 GiB memory limit. The runtime's detail: "gone: pod legion-legion-209 (uid 8a1f) ended: OOMKilled"`,
+			Death: runtime.DeathMemoryLimit, Generation: 3, Turn: true, TaskTurn: true, Background: true,
 			Kinds: []string{"subagent", "async-job"}, Reported: true,
 		}
 		if err := store.PutClaim(ctx, want); err != nil {

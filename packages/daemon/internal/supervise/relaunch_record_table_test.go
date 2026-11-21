@@ -520,7 +520,7 @@ func TestARelaunchRecordsEveryLetGoKindInEveryClaimState(t *testing.T) {
 		}
 	)
 	var (
-		died         = endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))
+		died         = endDied(runtime.Observation{Kind: runtime.Gone})
 		stalledTurn  = endStalled(backstopBound, true)
 		stalledClaim = endStalled(backstopBound, false)
 		suspended    = endSuspended(SuspendedByOperator)

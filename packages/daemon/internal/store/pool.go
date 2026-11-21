@@ -127,8 +127,8 @@ func holdsConnection(ctx context.Context) bool {
 // pool takes one. A caller that takes none is one the guard cannot see, since a context nothing
 // marked holds no connection as far as the pool can tell (holdsConnection): the sandbox
 // launcher's frame loop is such a caller, deleting a restored workspace bundle on a context made
-// from context.Background() (runtime/sandbox/launcher.go, restoreReported), and the pool refuses
-// it nothing.
+// from context.Background() (runtime/sandbox/launcher_restore.go, restoreReported), and the pool
+// refuses it nothing.
 //
 // It differs from WithTransactionTracking, this package's other mark, by never reusing ctx's:
 // that one hands back the mark ctx already carries, which siblings sharing it would set and

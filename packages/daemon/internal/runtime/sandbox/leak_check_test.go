@@ -66,24 +66,22 @@ func servedLeakCheck() *fakeLeakCheck {
 }
 
 // leakCheckStore is a store holding the issue's saved workspace bundle, as a released issue's
-// does when its next pod starts: the bundle's one restore attempt is what a refused start must
-// not spend.
+// does when its next pod starts: the bundle is what a refused start must take nothing of.
 func leakCheckStore(t *testing.T) (*store.Store, runtime.WorkspaceBundle) {
 	t.Helper()
 	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
-	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
-		t.Fatalf("save the released workspace's bundle: %v", err)
-	}
+	saveReleaseBundle(t, st, saved)
 	return st, saved
 }
 
 // withLeakCheckAndStore hands the runtime source as its reader of the leak check and st's saved
-// workspace bundles.
+// workspace copies, through the one take, bound to the rig's project, and the confirmation the
+// daemon wires (store.TakeWorkspaceCopyForRestore, KeepRestoredWorkspaceCopy).
 func withLeakCheckAndStore(source LeakCheckReader, st *store.Store) rigOption {
 	return withOptions(func(o *Options) {
 		o.LeakCheck = source
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeBundle(st), st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeCopies(st), st.KeepRestoredWorkspaceCopy
 	})
 }
 
@@ -591,13 +589,13 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 			if pod == nil {
 				t.Fatal("the refused launch left no pod")
 			}
-			bundle, take, err := st.TakeWorkspaceBundleForRestore(g.ctx, testProject, testTree, string(pod.UID), pod.CreationTimestamp.Time)
+			restore, err := st.TakeWorkspaceCopyForRestore(g.ctx, testProject, testTree, string(pod.UID))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if take != runtime.WorkspaceBundleSend || !bytes.Equal(bundle.Bundle, saved.Bundle) {
+			if bundle := restore.ReleaseBundle; bundle.Take != runtime.WorkspaceBundleSend || !bytes.Equal(bundle.Bundle.Bundle, saved.Bundle) {
 				t.Fatalf("after the refusal the store answers the pod %d bytes (take %v), want the %d saved still to send",
-					len(bundle.Bundle), take, len(saved.Bundle))
+					len(bundle.Bundle.Bundle), bundle.Take, len(saved.Bundle))
 			}
 		})
 	}

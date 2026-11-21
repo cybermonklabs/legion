@@ -93,10 +93,10 @@ func TestNoTestOfThisPackageCanReachThePodsWorkspace(t *testing.T) {
 			t.Errorf("a generation started by a test here would restore into %s, the workspace of the process that runs the tests", dir)
 		}
 	})
-	// fixtureenv.Isolated, which bundleFixture.env is built from, drops a workspace the process
-	// holds whether or not a Guard ran. This reads Isolated and not bundleFixture.env itself. The
-	// process is handed a workspace of this case's own to read back, so what passes is Isolated's
-	// doing and not an environment that held none anyway.
+	// fixtureenv.Isolated, which the bundle fixture's Env is built from (shimtest.Workspace),
+	// drops a workspace the process holds whether or not a Guard ran. This reads Isolated and not
+	// that Env itself. The process is handed a workspace of this case's own to read back, so what
+	// passes is Isolated's doing and not an environment that held none anyway.
 	t.Run("a fixture's environment carries no workspace the process holds", func(t *testing.T) {
 		decoy := filepath.Join(t.TempDir(), "not-the-pods-workspace")
 		t.Setenv("LEGION_WORKSPACE", decoy)

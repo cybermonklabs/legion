@@ -200,8 +200,13 @@ type KubernetesSettings struct {
 	Setup []string `json:"setup"`
 	// TestPostgres is whether every issue pod serves its own PostgreSQL for tests, which every
 	// role of such a pod is told as LEGION_TEST_PG_DSN, so every pod may read it.
-	TestPostgres    bool                    `json:"test_postgres"`
-	RepositoryCache RepositoryCacheSettings `json:"repository_cache"`
+	TestPostgres bool `json:"test_postgres"`
+	// TestPostgresDisk is the size of the test database's own disk, absent while the file sets
+	// none and the cluster stays on the pod's emptyDir. It is no credential, and a role reads it to
+	// know whether a test database it fills counts against its pod's disk limit, so every pod may
+	// read it.
+	TestPostgresDisk string                  `json:"test_postgres_disk,omitempty"`
+	RepositoryCache  RepositoryCacheSettings `json:"repository_cache"`
 	// IdleRelease is the settled `runtime.kubernetes.idle_release`: how long an issue pod must
 	// have had no turn in progress and no turn due before the daemon releases it, and how long
 	// after a release the backstop wakes a phase worker whose phase is still open. Neither is a
@@ -678,9 +683,10 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			Issue:      reservationSettingsOf(block.Resources.Issue),
 			Controller: reservationSettingsOf(block.Resources.Controller),
 		},
-		SessionStore: string(block.SessionStore.Kind),
-		Setup:        stringsOf(block.Setup),
-		TestPostgres: block.TestPostgres,
+		SessionStore:     string(block.SessionStore.Kind),
+		Setup:            stringsOf(block.Setup),
+		TestPostgres:     block.TestPostgres,
+		TestPostgresDisk: block.TestPostgresDisk,
 		RepositoryCache: RepositoryCacheSettings{
 			Volume:         block.RepositoryCache.Volume,
 			RefreshMinutes: block.RepositoryCache.RefreshMinutes,

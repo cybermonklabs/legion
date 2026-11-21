@@ -125,10 +125,12 @@ func (m *Machine) launchMet() bool { return m.wake != nil || m.relaunch != nil }
 
 // holdsTask is whether the claim holds a task no turn has taken: its pending delivery, while it
 // is unconfirmed. A confirmed one is the task of a turn that ran, which settle retires once the
-// claim is no longer working, so it owes the role no launch.
+// claim is no longer working, so it owes the role no launch. Nor does the daemon's own delivery of
+// a relaunch's record, which is no work of the claim's (HoldsTask): the released suspension keeps
+// it, and the role's next run tells it, so a resume launches no process only to tell it.
 func (m *Machine) holdsTask() bool {
 	p := m.claim.Pending
-	return p != nil && p.ConfirmedAt.IsZero()
+	return HoldsTask(p) && p.ConfirmedAt.IsZero()
 }
 
 // pauseGate is the gate's hold of a launch while the project is paused (decision 7), reached from
@@ -353,9 +355,13 @@ func (m *Machine) pauseHoldAtResult() bool {
 }
 
 // stopAtResult runs the project pause's held suspension that waited for this result
-// (pauseHoldAtResult), once the result has decided the task, and does nothing otherwise.
+// (pauseHoldAtResult), once the result has decided the task, and does nothing otherwise. The
+// stop is held for the end of the turn the result is of, so it waits for the copy that end
+// started as every stop held for a turn's end does, at most the copy's budget and never past the
+// hold's own deadline, and a copy that fails or runs out of its budget lets it go
+// (waitForTurnCopy): the claim stays idle meanwhile, holding the stop and handed nothing.
 func (m *Machine) stopAtResult(ctx context.Context) error {
-	if !m.pauseHoldAtResult() {
+	if !m.pauseHoldAtResult() || m.waitForTurnCopy() {
 		return nil
 	}
 	return m.suspendHeld(ctx)

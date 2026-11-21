@@ -61,6 +61,11 @@ func promptRetryDelay(attempt int) time.Duration {
 // The cause is named once here and handed to whoever writes it down, since one failed turn has
 // one cause and the words are the same in the claim's failure, in the prompt the task goes
 // behind and in the controller's notice.
+//
+// A failure decided while a held stop waits for the copy its turn's end started (waitForTurnCopy)
+// would stop the process that copy still asks (fail, endProcess). The run and the task taken back
+// are written, and the stop is left to the copy's end or the wait's bound, which runs it
+// (endTurnCopyWait); the held stop's suspension, not this failure, is what the claim ends in.
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
 	cause := providerErrorCause(r.HTTPStatus)
 	m.claim.ProviderErrorRun++
@@ -74,6 +79,11 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 		return err
 	}
 	if holdsTheIssue(r.HTTPStatus) {
+		if m.stopWaitsForTurnCopy() {
+			m.log.Warn("supervise: a provider error that fails the claim came while the held stop waits for the copy of its turn's end; the stop runs once that wait is over",
+				"delivery", r.DeliveryID, "httpStatus", r.HTTPStatus, "copy", m.turnCopy.seq, "by", m.held.By)
+			return m.persist(ctx)
+		}
 		return m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause)
 	}
 	return m.providerErrorClears(ctx, cause)

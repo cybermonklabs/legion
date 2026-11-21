@@ -194,7 +194,7 @@ func TestATestDatabaseThatCannotStartOnlyLogs(t *testing.T) {
 func TestTheGuardForgetsAChildOnceItsWaitHasRead(t *testing.T) {
 	calls := stubTestPG(t)
 	guard := &pidGuard{}
-	if err := runTestPG(context.Background(), Config{RolesDir: t.TempDir(), TestPostgres: true}, &roleLog{}, guard, "ensure"); err != nil {
+	if err := runTestPG(context.Background(), Config{RolesDir: t.TempDir(), TestPostgres: true}, &roleLog{}, guard, ensureRun()); err != nil {
 		t.Fatalf("runTestPG: %v", err)
 	}
 	if held := guard.held(); len(held) != 0 {
@@ -218,7 +218,7 @@ func TestATestDatabaseRunThatHangsIsBounded(t *testing.T) {
 	testPGBound = 200 * time.Millisecond
 	t.Cleanup(func() { testPGBound = 60 * time.Second })
 	started := time.Now()
-	err := runTestPG(context.Background(), Config{RolesDir: t.TempDir(), TestPostgres: true}, &roleLog{}, &pidGuard{}, "ensure")
+	err := runTestPG(context.Background(), Config{RolesDir: t.TempDir(), TestPostgres: true}, &roleLog{}, &pidGuard{}, ensureRun())
 	if err == nil || !strings.Contains(err.Error(), "did not finish within") {
 		t.Fatalf("runTestPG = %v, want the bound named", err)
 	}

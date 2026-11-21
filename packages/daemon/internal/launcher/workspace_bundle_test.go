@@ -1,23 +1,19 @@
 package launcher
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
-	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
-	"github.com/sjawhar/legion/daemon/internal/shim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shim/shimtest"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -179,22 +175,22 @@ func TestAReleasedWorkspacesWorkIsBundledByTheShimAndRestoredByTheLauncher(t *te
 	f.workOne()
 	saved := f.bundleWorkspaceOne()
 
-	if remote := f.run(f.remote, "git", "--git-dir="+f.remote, "log", "--all", "--oneline"); strings.Contains(remote, "working copy") ||
+	if remote := f.Run(f.Remote, "git", "--git-dir="+f.Remote, "log", "--all", "--oneline"); strings.Contains(remote, "working copy") ||
 		strings.Contains(remote, "second head") || strings.Contains(remote, "issue work") {
 		t.Fatalf("the save pushed to the remote, which now holds:\n%s", remote)
 	}
 	if len(saved.Tips) < 3 {
 		t.Fatalf("the save kept %d heads, want the working copy, the issue branch's and the second head: %v", len(saved.Tips), saved.Tips)
 	}
-	if saved.Bookmarks["legion/"+bundleIssue] != f.commits["issue work"] || saved.Bookmarks["side"] != f.commits["second head"] {
+	if saved.Bookmarks["legion/"+bundleIssue] != f.Commits["issue work"] || saved.Bookmarks["side"] != f.Commits["second head"] {
 		t.Fatalf("the save kept the bookmarks %v, want legion/%s on %s and side on %s",
-			saved.Bookmarks, bundleIssue, f.commits["issue work"], f.commits["second head"])
+			saved.Bookmarks, bundleIssue, f.Commits["issue work"], f.Commits["second head"])
 	}
 	if _, kept := saved.Bookmarks["main"]; kept {
 		t.Fatalf("the save kept main, which points at a commit the remote already holds: %v", saved.Bookmarks)
 	}
-	if saved.Head != f.commits["working copy"] {
-		t.Fatalf("the save recorded the working copy as %s, want %s", saved.Head, f.commits["working copy"])
+	if saved.Head != f.Commits["working copy"] {
+		t.Fatalf("the save recorded the working copy as %s, want %s", saved.Head, f.Commits["working copy"])
 	}
 
 	workspace := f.secondPod("ws2")
@@ -263,12 +259,12 @@ func TestPutBacksPIDOneHelper(t *testing.T) {
 	}
 	answers := make([]answer, len(guarded))
 	for index, dir := range guarded {
-		answers[index].restored, answers[index].notice = restoreWorkspace(context.Background(), managers[0].restore.start, dir, f.env, bundleRelease, saved)
+		answers[index].restored, answers[index].notice = restoreWorkspace(context.Background(), managers[0].restore.start, dir, f.Env, bundleRelease, saved)
 	}
 	controlTries, controlNotice := 0, ""
 	for _, dir := range control {
 		controlTries++
-		restored, notice := restoreWorkspace(context.Background(), procgroup.NoReaper, dir, f.env, bundleRelease, saved)
+		restored, notice := restoreWorkspace(context.Background(), procgroup.NoReaper, dir, f.Env, bundleRelease, saved)
 		if !restored && (strings.Contains(notice, "no child processes") || strings.Contains(notice, "no such process")) {
 			controlNotice = notice
 			break
@@ -310,8 +306,8 @@ func TestARestoreWhoseBaseCommitIsGoneStartsTheRolesWithANotice(t *testing.T) {
 
 	// The remote's branches move back to the first commit, so the pod that replaces the released
 	// one clones a repository that lacks the commit the bundle is built on.
-	f.run(f.remote, "git", "--git-dir="+f.remote, "update-ref", "refs/heads/main", f.commits["one"])
-	f.run(f.remote, "git", "--git-dir="+f.remote, "update-ref", "refs/heads/legion/"+bundleIssue, f.commits["one"])
+	f.Run(f.Remote, "git", "--git-dir="+f.Remote, "update-ref", "refs/heads/main", f.Commits["one"])
+	f.Run(f.Remote, "git", "--git-dir="+f.Remote, "update-ref", "refs/heads/legion/"+bundleIssue, f.Commits["one"])
 
 	workspace := f.secondPod("ws3")
 	notice := f.restoreInto(workspace, saved, 1)
@@ -322,22 +318,24 @@ func TestARestoreWhoseBaseCommitIsGoneStartsTheRolesWithANotice(t *testing.T) {
 		t.Fatalf("the notice is %q, want it to name when the lost work was saved", notice)
 	}
 	// The notice names the bundle the work is in, because that is where it stays: the daemon
-	// records one restore attempt per bundle and sends it to no pod again.
-	if !strings.Contains(notice, fmt.Sprintf("bundle of release %d", bundleRelease)) || !strings.Contains(notice, "sends to no pod again") {
-		t.Fatalf("the notice is %q, want it to name the bundle the work stays in and that no pod is sent it again", notice)
+	// sends it to no pod again once a role of this pod has registered, which the roles that start
+	// on what was pushed do.
+	const neverAgain = "sends to no pod again once a role of this pod has registered"
+	if !strings.Contains(notice, fmt.Sprintf("bundle of release %d", bundleRelease)) || !strings.Contains(notice, neverAgain) {
+		t.Fatalf("the notice is %q, want it to name the bundle the work stays in and that no pod is sent it again once a role of this pod registered", notice)
 	}
-	if log := f.run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "all()", "--no-graph", "-T", "commit_id ++ \"\\n\""); strings.Contains(log, saved.Head) {
+	if log := f.Run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "all()", "--no-graph", "-T", "commit_id ++ \"\\n\""); strings.Contains(log, saved.Head) {
 		t.Fatalf("a restore that failed left the saved working copy in the workspace:\n%s", log)
 	}
 }
 
 // A bundle is restored into a workspace provisioned after it was saved, and into no other. The
-// daemon holds that rule with a record of its own — one restore attempt per bundle, against the
-// pod it is sent to (store.TakeWorkspaceBundleForRestore) — and this is the workspace's own half
-// of it, which catches what the daemon cannot see: a bundle that reached the very workspace the
-// save was taken from, whose creation record is older than the save (workspace.Created).
-// Applying it there would `jj edit` back to the saved head and move each bookmark
-// `--allow-backwards` over what the roles have done since.
+// daemon holds that rule with a record of its own — the pod it sends a bundle to, which it sends
+// none again once a role of that pod registers (store.TakeWorkspaceCopyForRestore) — and this is
+// the workspace's own half of it, which catches what the daemon cannot see: a bundle that reached
+// the very workspace the save was taken from, whose creation record is older than the save
+// (workspace.Created). Applying it there would `jj edit` back to the saved head and move each
+// bookmark `--allow-backwards` over what the roles have done since.
 func TestARestoreRefusesAWorkspaceOlderThanTheWorkItHolds(t *testing.T) {
 	testbin.RequireJJFilters(t)
 	f := newBundleFixture(t)
@@ -345,15 +343,15 @@ func TestARestoreRefusesAWorkspaceOlderThanTheWorkItHolds(t *testing.T) {
 	saved := f.bundleWorkspaceOne()
 	// The roles go on working in the workspace the save came out of, as they do while the pod
 	// lives on: its working copy is another commit now.
-	f.run(f.ws, "jj", "new", "-R", f.ws, "-m", "work after the save")
-	f.write(filepath.Join(f.ws, "after.txt"), "after\n")
-	after := f.at()
+	f.Run(f.Dir, "jj", "new", "-R", f.Dir, "-m", "work after the save")
+	f.Write(filepath.Join(f.Dir, "after.txt"), "after\n")
+	after := f.WorkingCopy()
 
-	notice := f.restoreInto(f.ws, saved, 1)
+	notice := f.restoreInto(f.Dir, saved, 1)
 	if !strings.Contains(notice, "not restored") || !strings.Contains(notice, "before the work was saved") {
 		t.Fatalf("the notice is %q, want the restore refused for a workspace created before the work was saved", notice)
 	}
-	if head := f.run(f.ws, "jj", "log", "-R", f.ws, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id"); head != after {
+	if head := f.Run(f.Dir, "jj", "log", "-R", f.Dir, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id"); head != after {
 		t.Fatalf("the working copy is on %s, want the %s the roles worked on: the restore edited the workspace back to the saved head %s",
 			head, after, saved.Head)
 	}
@@ -379,12 +377,12 @@ func TestARestoreSkipsABookmarkNameJJWillNotTakeAndRestoresTheRest(t *testing.T)
 	if !strings.Contains(notice, "is restored") || !strings.Contains(notice, awkward) {
 		t.Fatalf("the notice is %q, want the restore done and the bookmark it could not set named", notice)
 	}
-	if head := f.run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id"); head != saved.Head {
+	if head := f.Run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id"); head != saved.Head {
 		t.Fatalf("the restored working copy is on %s, want the saved %s: one bad bookmark name took the rest of the restore with it", head, saved.Head)
 	}
-	listed := f.run(workspace, "jj", "bookmark", "list", "-R", workspace, "--ignore-working-copy",
+	listed := f.Run(workspace, "jj", "bookmark", "list", "-R", workspace, "--ignore-working-copy",
 		"-T", `if(remote, "", name ++ " " ++ normal_target.commit_id() ++ "\n")`)
-	if !strings.Contains(listed, "side "+f.commits["second head"]) {
+	if !strings.Contains(listed, "side "+f.Commits["second head"]) {
 		t.Fatalf("the restored workspace has no side bookmark:\n%s", listed)
 	}
 	if strings.Contains(listed, awkward) {
@@ -401,79 +399,17 @@ const (
 	bundleRepo  = "widgets"
 )
 
-// bundleFixture is one remote, the pod that is released and the workspace it worked in, and the
-// pods that replace it: real git and real jj throughout, every command naming the directory it
-// runs in (docs/testing.md).
+// bundleFixture is one remote, the pod that is released and the workspace it worked in, which is
+// the fixture of every test that runs the real shim's bundler (shimtest.Workspace), and the pods
+// that replace it, into which this package's launcher restores what that shim bundled.
 type bundleFixture struct {
-	t       *testing.T
-	root    string
-	remote  string
-	clone   string
-	ws      string
-	env     []string
-	commits map[string]string
+	*shimtest.Workspace
+	t *testing.T
 }
 
 func newBundleFixture(t *testing.T) *bundleFixture {
 	t.Helper()
-	for _, tool := range []string{"jj", "git"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s is required: %v", tool, err)
-		}
-	}
-	root := t.TempDir()
-	// Neither the workspace, the configuration, the remote nor the credential of the process that
-	// runs the tests reaches the fixture's git and jj: its environment is fixtureenv.Isolated of
-	// a home of this test's own, which holds none of the host's jj and git configuration — its
-	// user, its trailers, its filters — and the identity below is the fixture's own
-	// (docs/testing.md).
-	home := filepath.Join(root, "home")
-	f := &bundleFixture{
-		t: t, root: root, remote: filepath.Join(root, "remote"), clone: filepath.Join(root, "clone"), ws: filepath.Join(root, "ws"),
-		commits: map[string]string{},
-		env: append(fixtureenv.Isolated(home),
-			"JJ_USER=tester", "JJ_EMAIL=tester@example.test",
-			"GIT_AUTHOR_NAME=tester", "GIT_AUTHOR_EMAIL=tester@example.test",
-			"GIT_COMMITTER_NAME=tester", "GIT_COMMITTER_EMAIL=tester@example.test"),
-	}
-	seed := filepath.Join(root, "seed")
-	for _, dir := range []string{f.remote, seed, home} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	f.run(f.remote, fixturegit.InitBare(f.remote, "")...)
-	f.run(f.remote, "git", "--git-dir="+f.remote, "symbolic-ref", "HEAD", "refs/heads/main")
-	f.run(seed, fixturegit.InitWorkTree(seed, "main")...)
-	f.write(filepath.Join(seed, "f.txt"), "one\n")
-	f.run(seed, "git", "add", "-A")
-	f.run(seed, "git", "commit", "--quiet", "-m", "one")
-	f.commits["one"] = f.run(seed, "git", "rev-parse", "HEAD")
-	f.run(seed, "git", "remote", "add", "origin", f.remote)
-	f.run(seed, "git", "push", "--quiet", "-u", "origin", "main")
-	f.write(filepath.Join(seed, "f.txt"), "two\n")
-	f.run(seed, "git", "commit", "--quiet", "-am", "two")
-	f.run(seed, "git", "push", "--quiet", "origin", "main")
-	f.run(seed, "git", "push", "--quiet", "origin", "main:refs/heads/legion/"+bundleIssue)
-	f.pod(f.clone, f.ws)
-	return f
-}
-
-// pod is a pod's shared clone and the issue workspace in it, as provisioning makes them: a
-// colocated clone of the remote with every remote branch tracked, one `jj workspace add`, and the
-// record of when the workspace was created, which a restore reads to tell a workspace provisioned
-// since the save from the one the save came out of (workspace.RecordCreated, restoreWorkspace).
-func (f *bundleFixture) pod(clone, ws string) {
-	f.t.Helper()
-	// --no-local: a local clone hardlinks the whole object store, unreachable objects included,
-	// where a pod clones over the network and gets only what the remote's refs reach.
-	f.run(f.root, "git", "clone", "--quiet", "--no-local", f.remote, clone)
-	f.run(clone, fixturegit.JJInit(clone, true)...)
-	f.run(clone, "jj", "bookmark", "track", "main@origin", "legion/"+bundleIssue+"@origin")
-	f.run(clone, "jj", "workspace", "add", "--name", filepath.Base(ws), ws)
-	if err := workspace.RecordCreated(ws, time.Now()); err != nil {
-		f.t.Fatal(err)
-	}
+	return &bundleFixture{Workspace: shimtest.New(t, bundleIssue), t: t}
 }
 
 // secondPod is the pod that replaces the released one: its own clone of the remote as it stands
@@ -483,7 +419,7 @@ func (f *bundleFixture) pod(clone, ws string) {
 // the clone from (workspace.Location, workspace.WorkspaceOf).
 func (f *bundleFixture) secondPod(name string) string {
 	f.t.Helper()
-	state := filepath.Join(f.root, name)
+	state := filepath.Join(f.Root, name)
 	located, err := workspace.Location(state, ghrepo.MustParse(bundleOwner+"/"+bundleRepo), bundleIssue)
 	if err != nil {
 		f.t.Fatal(err)
@@ -494,7 +430,7 @@ func (f *bundleFixture) secondPod(name string) string {
 			f.t.Fatal(err)
 		}
 	}
-	f.pod(clone, ws)
+	f.Pod(clone, ws)
 	return ws
 }
 
@@ -503,117 +439,31 @@ func (f *bundleFixture) secondPod(name string) string {
 // second head, and a local bookmark moved onto that head.
 func (f *bundleFixture) workOne() {
 	f.t.Helper()
-	f.run(f.ws, "jj", "new", "-R", f.ws, `remote_bookmarks(exact:"legion/`+bundleIssue+`")`, "-m", "issue work")
-	f.write(filepath.Join(f.ws, "issue.txt"), "issue\n")
-	f.run(f.ws, "jj", "bookmark", "set", "-R", f.ws, "--allow-backwards", "legion/"+bundleIssue, "-r", "@")
-	f.commits["issue work"] = f.at()
-	f.run(f.ws, "jj", "new", "-R", f.ws, "-m", "working copy")
-	f.write(filepath.Join(f.ws, "wip.txt"), "wip\n")
-	working := f.at()
-	f.run(f.ws, "jj", "new", "-R", f.ws, "trunk()", "-m", "second head")
-	f.write(filepath.Join(f.ws, "second.txt"), "second\n")
-	f.run(f.ws, "jj", "bookmark", "create", "-R", f.ws, "side", "-r", "@")
-	f.commits["second head"] = f.at()
-	f.run(f.ws, "jj", "edit", "-R", f.ws, working)
-	f.commits["working copy"] = f.at()
-}
-
-// at is the workspace's working-copy commit, after the snapshot the read itself makes.
-func (f *bundleFixture) at() string {
-	f.t.Helper()
-	return f.run(f.ws, "jj", "log", "-R", f.ws, "-r", "@", "--no-graph", "-T", "commit_id")
+	f.Run(f.Dir, "jj", "new", "-R", f.Dir, `remote_bookmarks(exact:"legion/`+bundleIssue+`")`, "-m", "issue work")
+	f.Write(filepath.Join(f.Dir, "issue.txt"), "issue\n")
+	f.Run(f.Dir, "jj", "bookmark", "set", "-R", f.Dir, "--allow-backwards", "legion/"+bundleIssue, "-r", "@")
+	f.Commits["issue work"] = f.WorkingCopy()
+	f.Run(f.Dir, "jj", "new", "-R", f.Dir, "-m", "working copy")
+	f.Write(filepath.Join(f.Dir, "wip.txt"), "wip\n")
+	working := f.WorkingCopy()
+	f.Run(f.Dir, "jj", "new", "-R", f.Dir, "trunk()", "-m", "second head")
+	f.Write(filepath.Join(f.Dir, "second.txt"), "second\n")
+	f.Run(f.Dir, "jj", "bookmark", "create", "-R", f.Dir, "side", "-r", "@")
+	f.Commits["second head"] = f.WorkingCopy()
+	f.Run(f.Dir, "jj", "edit", "-R", f.Dir, working)
+	f.Commits["working copy"] = f.WorkingCopy()
 }
 
 // bundleWorkspaceOne runs the real shim against the released pod's workspace and returns the
-// bundle it built: the daemon's end of the worker stream, one bundle-workspace frame, and the
-// result the shim answers, reassembled from its chunk lane as the daemon's reader reassembles it.
+// bundle it built (shimtest.Workspace.Bundle), under the bound the daemon asks with, failing the
+// test where the shim built none.
 func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 	f.t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	saved, err := f.Bundle(context.Background(), runtime.MaxWorkspaceBundleBytes)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	f.t.Cleanup(func() { _ = listener.Close() })
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	exited := make(chan struct{})
-	go func() {
-		defer close(exited)
-		// The wrapped process is a plain `cat`: the shim bridges its stdio and answers the
-		// bundle frame itself, so nothing of Oh My Pi is needed to prove the save.
-		_, _ = shim.Run(ctx, shim.Config{
-			Network: "tcp", Address: listener.Addr().String(), BootToken: "boot",
-			Argv: []string{"/bin/sh", "-c", "exec cat"},
-			Env:  append(f.env, "LEGION_WORKSPACE="+f.ws),
-		})
-	}()
-	f.t.Cleanup(func() {
-		cancel()
-		select {
-		case <-exited:
-		case <-time.After(20 * time.Second):
-			f.t.Error("the shim did not leave after its context ended")
-		}
-	})
-
-	conn, err := listener.Accept()
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	defer conn.Close()
-	if err := conn.SetDeadline(time.Now().Add(2 * time.Minute)); err != nil {
-		f.t.Fatal(err)
-	}
-	reader := shimwire.NewReader(bufio.NewReader(conn))
-	if line, err := reader.ReadLine(); err != nil {
-		f.t.Fatalf("the shim's hello: %v", err)
-	} else if frame, err := shimwire.Decode(line); err != nil || frame.FrameType() != shimwire.TypeHello2 {
-		f.t.Fatalf("the shim opened with %v (%v)", frame, err)
-	}
-	writer := shimwire.NewWriter(conn)
-	if err := writer.WriteFrame(shimwire.HelloAck{}); err != nil {
-		f.t.Fatal(err)
-	}
-	request := shimwire.BundleWorkspace{ID: "bundle-1", Issue: bundleIssue, MaxBytes: 40 << 20, TimeoutMs: 120_000}
-	if err := writer.WriteFrame(request); err != nil {
-		f.t.Fatal(err)
-	}
-	var chunks shimwire.Reassembler
-	for {
-		line, err := reader.ReadLine()
-		if err != nil {
-			f.t.Fatalf("read the shim's answer: %v", err)
-		}
-		frame, err := shimwire.Decode(line)
-		if err != nil {
-			continue
-		}
-		if chunk, ok := frame.(shimwire.RPCChunk); ok {
-			whole, err := chunks.Push(chunk)
-			if err != nil {
-				f.t.Fatalf("reassemble the shim's answer: %v", err)
-			}
-			if whole == nil {
-				continue
-			}
-			if frame, err = shimwire.Decode(whole); err != nil {
-				f.t.Fatalf("decode the shim's reassembled answer: %v", err)
-			}
-		}
-		result, ok := frame.(shimwire.BundleWorkspaceResult)
-		if !ok {
-			continue
-		}
-		if !result.OK {
-			f.t.Fatalf("the shim refused the save: %s", result.Error)
-		}
-		if err := result.Validate(); err != nil {
-			f.t.Fatal(err)
-		}
-		return shimwire.WorkspaceBundle{
-			Bundle: result.Bundle, Head: result.Head, Tips: result.Tips, Bookmarks: result.Bookmarks, At: result.At,
-		}
-	}
+	return saved
 }
 
 // bundleRelease is the id of the idle release whose save every fixture bundle carries: the daemon
@@ -643,7 +493,7 @@ func (f *bundleFixture) restoreInto(workspace string, saved shimwire.WorkspaceBu
 	}
 	marker := filepath.Join(f.t.TempDir(), "marker")
 	command := g.childStart(generation, marker, nil)
-	command.Env = append(command.Env, append(f.env, "LEGION_WORKSPACE="+workspace)...)
+	command.Env = append(command.Env, append(f.Env, "LEGION_WORKSPACE="+workspace)...)
 	if result := g.start(command); !result.OK {
 		f.t.Fatalf("the start after the bundle answered %#v", result)
 	}
@@ -676,53 +526,28 @@ func (f *bundleFixture) restoreInto(workspace string, saved shimwire.WorkspaceBu
 // none of the restore's temporary branches left in the repository.
 func (f *bundleFixture) requireRestored(workspace string, saved shimwire.WorkspaceBundle) {
 	f.t.Helper()
-	log := f.run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "all()", "--no-graph",
+	log := f.Run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "all()", "--no-graph",
 		"-T", `commit_id ++ " " ++ description.first_line() ++ "\n"`)
 	for _, want := range []string{"issue work", "second head", "working copy"} {
-		if !strings.Contains(log, f.commits[want]+" "+want) {
-			f.t.Fatalf("the restored workspace %s holds no %s (%s), so that head is not visible:\n%s", workspace, want, f.commits[want], log)
+		if !strings.Contains(log, f.Commits[want]+" "+want) {
+			f.t.Fatalf("the restored workspace %s holds no %s (%s), so that head is not visible:\n%s", workspace, want, f.Commits[want], log)
 		}
 	}
-	listed := f.run(workspace, "jj", "bookmark", "list", "-R", workspace, "--ignore-working-copy",
+	listed := f.Run(workspace, "jj", "bookmark", "list", "-R", workspace, "--ignore-working-copy",
 		"-T", `if(remote, "", name ++ " " ++ normal_target.commit_id() ++ "\n")`)
-	for name, commit := range map[string]string{"legion/" + bundleIssue: f.commits["issue work"], "side": f.commits["second head"]} {
+	for name, commit := range map[string]string{"legion/" + bundleIssue: f.Commits["issue work"], "side": f.Commits["second head"]} {
 		if !strings.Contains(listed, name+" "+commit) {
 			f.t.Fatalf("the restored workspace %s has no %s on %s:\n%s", workspace, name, commit, listed)
 		}
 	}
-	if head := f.run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id"); head != saved.Head {
+	if head := f.Run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id"); head != saved.Head {
 		f.t.Fatalf("the restored working copy of %s is on %s, want the saved %s", workspace, head, saved.Head)
 	}
 	if body, err := os.ReadFile(filepath.Join(workspace, "wip.txt")); err != nil || string(body) != "wip\n" {
 		f.t.Fatalf("the restored working copy's own change in %s reads %q (%v)", workspace, body, err)
 	}
 	// Nothing of the restore is left in the repository: the temporary branches are gone.
-	if refs := f.run(workspace, "git", "--git-dir="+f.gitDir(workspace), "for-each-ref", "--format=%(refname)", "refs/heads/"); strings.Contains(refs, restoreRefPrefix) {
+	if refs := f.Run(workspace, "git", "--git-dir="+f.GitDir(workspace), "for-each-ref", "--format=%(refname)", "refs/heads/"); strings.Contains(refs, restoreRefPrefix) {
 		f.t.Fatalf("the restore left its temporary branches behind in %s:\n%s", workspace, refs)
 	}
-}
-
-// gitDir is the git directory behind a workspace, as the restore resolves it.
-func (f *bundleFixture) gitDir(ws string) string {
-	f.t.Helper()
-	dir, err := workspace.GitDir(ws)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	return dir
-}
-
-func (f *bundleFixture) write(path, content string) {
-	f.t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		f.t.Fatal(err)
-	}
-}
-
-// run runs one jj or git command in dir, which is the directory it reads its repository from: jj
-// searches upward from the directory it runs in for the closest .jj, so a command with no Dir
-// would open the workspace the test process stands in (docs/testing.md).
-func (f *bundleFixture) run(dir string, args ...string) string {
-	f.t.Helper()
-	return fixturegit.Runner{TB: f.t, Env: f.env}.Run(dir, args...)
 }
