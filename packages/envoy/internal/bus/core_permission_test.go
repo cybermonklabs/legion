@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -417,4 +418,110 @@ func TestResendRefusedCoreWaitsForTheMessagesTheRevokedSubscriptionHolds(t *test
 			t.Fatal("the handler was not handed both messages delivered before the revocation")
 		}
 	}
+}
+
+// revokedCoreClient connects a client as a user the server first grants subject, subscribes it in
+// queue, and then has the server reload without the grant, which revokes the subscription. It
+// returns the client, the server, its granting configuration and a count of the subscriptions to
+// subject the server received after a point in its log.
+func revokedCoreClient(t *testing.T, subject, queue string) (*bus.Client, *testnats.Server, string, func(from int) int) {
+	t.Helper()
+	seed, public := testnats.User(t)
+	granted := testnats.SubscribeGrantConfig(public, subject, "_INBOX.>")
+	server, uri := testnats.StartConfig(t, granted, []string{"-DV", "-js"}, false)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	client, err := bus.Connect([]string{uri})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	if _, err := client.SubscribeCore(subject, func(*natsgo.Msg) {}, queue); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := client.Conn.Flush(); err != nil {
+		t.Fatalf("flush the subscription: %v", err)
+	}
+	if err := server.Reload(t, testnats.SubscribeGrantConfig(public, "_INBOX.>")); err != nil {
+		t.Fatalf("reload without the grant: %v", err)
+	}
+	waitFor(t, 30*time.Second, "CoreSubOK to read the reload's revocation", func() bool { return !client.CoreSubOK() })
+	sent := func(from int) int { return strings.Count(server.Log()[from:], "<<- [SUB "+subject+" ") }
+	return client, server, granted, sent
+}
+
+// ResendRefusedCore keeps the refusal mark until the server has answered what it sent: right after
+// a send the server refuses, CoreSubOK still reads false. Cleared before the answer, it read true
+// for about one round trip after each send, and /healthz answered 200 for a lane the server
+// refuses. Each of the ten sends here is counted in the server's trace, so a pass is not a send
+// that never happened.
+func TestCoreSubOKStaysFalseThroughAResendTheServerRefuses(t *testing.T) {
+	const sends = 10
+	client, server, _, sent := revokedCoreClient(t, "notifications.>", "resend-answer-test")
+	from := len(server.Log())
+	for attempt := 1; attempt <= sends; attempt++ {
+		waitFor(t, 30*time.Second, "CoreSubOK to read the refusal before the next send", func() bool { return !client.CoreSubOK() })
+		if err := client.ResendRefusedCore(); err != nil {
+			t.Fatalf("send %d: %v", attempt, err)
+		}
+		if client.CoreSubOK() {
+			t.Fatalf("CoreSubOK read true right after send %d, which the server refuses", attempt)
+		}
+	}
+	if err := client.Conn.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if n := sent(from); n != sends {
+		t.Fatalf("the server received %d subscriptions, want the %d the client sent", n, sends)
+	}
+}
+
+// A refusal of the session before a reconnect is not answered. Once nats.go has reconnected, it has
+// sent the subscription again to the new server, but the mark it set on the old session stays until
+// the reconnect callback clears it (onReconnect). A send in that gap sent a second SUB and
+// unsubscribed the one the new server had just accepted. Here a disconnect hook holds nats.go's
+// callback goroutine, so the reconnect callback waits while the client is connected to the
+// restarted server, which grants the subscription: ResendRefusedCore sends nothing, and the server
+// receives nats.go's SUB alone and no UNSUB.
+func TestResendRefusedCoreSendsNothingForTheRefusalOfTheSessionBeforeAReconnect(t *testing.T) {
+	const subject = "notifications.>"
+	client, server, granted, sent := revokedCoreClient(t, subject, "resend-session-test")
+	held, release := make(chan struct{}), make(chan struct{})
+	var hold, free sync.Once
+	let := func() { free.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	client.AddDisconnectHook(func() {
+		hold.Do(func() {
+			close(held)
+			<-release
+		})
+	})
+
+	from := len(server.Log())
+	server.Restart(t, granted)
+	select {
+	case <-held:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the restart's disconnect never reached the hook")
+	}
+	waitFor(t, 30*time.Second, "the client to reconnect while its reconnect callback waits", func() bool {
+		return client.Conn.Status() == natsgo.CONNECTED && client.Conn.Stats().Reconnects == 1
+	})
+	if err := client.Conn.Flush(); err != nil {
+		t.Fatalf("flush the reconnected connection: %v", err)
+	}
+	if client.CoreSubOK() {
+		t.Fatal("CoreSubOK reads true before the reconnect callback ran; the test proves nothing about the gap")
+	}
+	if err := client.ResendRefusedCore(); err != nil {
+		t.Fatalf("resend in the gap: %v", err)
+	}
+	if err := client.Conn.Flush(); err != nil {
+		t.Fatalf("flush after the resend: %v", err)
+	}
+	subs, unsubs := sent(from), strings.Count(server.Log()[from:], "<<- [UNSUB ")
+	let()
+	if subs != 1 || unsubs != 0 {
+		t.Fatalf("after the reconnect and before its callback ran, the server received %d SUBs and %d UNSUBs; want nats.go's one SUB and no UNSUB", subs, unsubs)
+	}
+	waitFor(t, 30*time.Second, "CoreSubOK once the reconnect callback ran", client.CoreSubOK)
 }

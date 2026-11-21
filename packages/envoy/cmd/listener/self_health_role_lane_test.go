@@ -17,8 +17,15 @@ import (
 )
 
 // roleLaneProbePeriod is the self-health period the tests here run the monitor at, in place of
-// main's 30 s, so that many periods pass in a few seconds.
-const roleLaneProbePeriod = 100 * time.Millisecond
+// main's 30 s, so many periods pass in a second. No test waits on it or on any other span of time:
+// each waits for an event it counts (a probe, a failure line, a SUB in the server's trace), and the
+// probe reads the server's own answer to each send (bus.Client.ResendRefusedCore), never the mark
+// the client's error callback sets after it.
+const roleLaneProbePeriod = 10 * time.Millisecond
+
+// roleLaneHealthMachine is the rig's machine id, which names the machine's queue group, the second
+// group the role lane may subscribe in (bus.ListenerQueue).
+const roleLaneHealthMachine = "role-lane-health"
 
 // roleLaneInactiveText is the error /healthz answers, and the self-health probe fails with, while
 // the role lane forwards nothing.
@@ -27,14 +34,17 @@ const roleLaneInactiveText = "role lane subscription inactive"
 // roleLaneHealthRig is a listener's role lane on a NATS server of its own, beside the /healthz of a
 // listener whose bus, caches and bound durable are on another server, with the self-health monitor
 // running over both at roleLaneProbePeriod. The lane server's one user may subscribe to the role
-// lane's subject under granted and not under revoked, and the test changes that grant by a reload
-// or a restart. The server traces every protocol line, so the test counts the subscriptions the
-// lane sends and the server's refusals of them.
+// lane's subject, in either queue group, under granted, and not under revoked, and the test changes
+// that grant by a reload or a restart. The server traces every protocol line, so the test counts the
+// subscriptions the lane sends and the server's refusals of them.
 type roleLaneHealthRig struct {
 	server           *testnats.Server
 	uri, seed        string
+	public           string
 	granted, revoked string
 	lane             *bus.Client
+	client           *bus.Client
+	caches           []listenerCache
 	received         chan string
 	logs             *lockedBuffer
 	probes           atomic.Int64
@@ -46,13 +56,12 @@ type roleLaneHealthRig struct {
 func newRoleLaneHealthRig(t *testing.T, consumer string) *roleLaneHealthRig {
 	t.Helper()
 	rig := &roleLaneHealthRig{received: make(chan string, 16), logs: &lockedBuffer{}}
-	var public string
-	rig.seed, public = testnats.User(t)
-	rig.granted = testnats.SubscribeGrantConfig(public, "_INBOX.>", contracts.RoleTopicPrefix+">")
-	rig.revoked = testnats.SubscribeGrantConfig(public, "_INBOX.>")
+	rig.seed, rig.public = testnats.User(t)
+	rig.granted = testnats.SubscribeGrantConfig(rig.public, "_INBOX.>", contracts.RoleTopicPrefix+">")
+	rig.revoked = testnats.SubscribeGrantConfig(rig.public, "_INBOX.>")
 	rig.server, rig.uri = testnats.StartConfig(t, rig.granted, []string{"-DV", "-js"}, false)
 	seed := rig.seed
-	lane, _, err := bus.ConnectRoleLane([]string{rig.uri}, "role-lane-health", func(msg *natsgo.Msg) { rig.received <- msg.Subject },
+	lane, _, err := bus.ConnectRoleLane([]string{rig.uri}, roleLaneHealthMachine, func(msg *natsgo.Msg) { rig.received <- msg.Subject },
 		bus.WithEnvironment(func(name string) (string, bool) {
 			if name == bus.NkeySeedEnvVar {
 				return seed, true
@@ -68,6 +77,7 @@ func newRoleLaneHealthRig(t *testing.T, consumer string) *roleLaneHealthRig {
 	client := setupTestNATS(t)
 	deps := openHealthzDeps(t, client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
 	deps.roleLane = lane
+	rig.client, rig.caches = client, deps.caches
 	rig.get = serveHealthz(deps)
 	if code, body := rig.get(); code != http.StatusOK || body["status"] != "healthy" {
 		t.Fatalf("before any grant changes: /healthz = %d %v, want 200 healthy", code, body)
@@ -204,8 +214,9 @@ func (r *roleLaneHealthRig) requireDelivers(t *testing.T) {
 // matches, was never logged. The probe now fails on the lane every period while it is refused, and
 // stops once the lane is back. The hub changes a grant by a reload, which keeps the connection, so
 // the probe sends the refused subscription again each period: a reload that gives the grant back
-// brings the lane back with no reconnect. A reconnect, which sends every subscription again, brings
-// it back too.
+// brings the lane back with no reconnect, and so does one that takes away only the shared queue
+// group's grant, which leaves the lane in its machine's group, as a start would. A reconnect, which
+// sends every subscription again, brings it back too.
 func TestTheSelfHealthProbeFailsWhileTheRoleLaneIsRefusedAndStopsOnceItIsBack(t *testing.T) {
 	t.Run("a reload gives the grant back", func(t *testing.T) {
 		rig := newRoleLaneHealthRig(t, "role-lane-health-reload")
@@ -217,6 +228,27 @@ func TestTheSelfHealthProbeFailsWhileTheRoleLaneIsRefusedAndStopsOnceItIsBack(t 
 		}
 		rig.requireStopped(t)
 		rig.requireDelivers(t)
+		if reconnects := rig.lane.Conn.Stats().Reconnects; reconnects != 0 {
+			t.Fatalf("the role lane reconnected %d times; this way out must need no reconnect", reconnects)
+		}
+		if rig.terminated.Load() {
+			t.Fatal("the monitor terminated the listener over the role lane")
+		}
+	})
+
+	t.Run("a reload takes away only the shared group's grant", func(t *testing.T) {
+		rig := newRoleLaneHealthRig(t, "role-lane-health-shared")
+		machineQueue := bus.ListenerQueue(roleLaneHealthMachine)
+		rig.revoked = testnats.SubscribeGrantConfig(rig.public, "_INBOX.>", contracts.RoleTopicPrefix+"> "+machineQueue)
+		from := rig.traceFrom()
+		rig.revoke(t)
+		waitFor(t, 30*time.Second, "the self-health probe to fail on the role lane", func() bool { return rig.failures() >= 1 })
+
+		rig.requireStopped(t)
+		rig.requireDelivers(t)
+		if accepted := strings.Count(rig.server.Log()[from:], "<<- [SUB "+contracts.RoleTopicPrefix+"> "+machineQueue+" "); accepted != 1 {
+			t.Fatalf("the role lane sent its subscription in the machine's queue group %s %d times, want once", machineQueue, accepted)
+		}
 		if reconnects := rig.lane.Conn.Stats().Reconnects; reconnects != 0 {
 			t.Fatalf("the role lane reconnected %d times; this way out must need no reconnect", reconnects)
 		}
@@ -244,8 +276,9 @@ func TestTheSelfHealthProbeFailsWhileTheRoleLaneIsRefusedAndStopsOnceItIsBack(t 
 	})
 }
 
-// While the grant stays missing, each probe sends the refused subscription once and no more: the
-// lane sends one SUB per failed probe, the server refuses each one, and nothing else sends one.
+// While the grant stays missing, each failed probe sends the refused subscription once in each of
+// the lane's two queue groups, the shared one and the machine's, and no more: the server refuses
+// each SUB, and nothing else sends one.
 func TestTheSelfHealthProbeSendsARefusedRoleLaneAgainOncePerPeriod(t *testing.T) {
 	rig := newRoleLaneHealthRig(t, "role-lane-health-missing")
 	from := rig.traceFrom()
@@ -260,8 +293,8 @@ func TestTheSelfHealthProbeSendsARefusedRoleLaneAgainOncePerPeriod(t *testing.T)
 	}
 
 	failures, probes, sent, refusals := rig.failures(), int(rig.probes.Load()), rig.sent(from), rig.refusals(from)
-	if sent != failures || sent > probes {
-		t.Fatalf("the role lane sent its subscription %d times over %d probes, %d of them failed on it; want one SUB per failed probe", sent, probes, failures)
+	if sent != 2*failures || sent > 2*probes {
+		t.Fatalf("the role lane sent its subscription %d times over %d probes, %d of them failed on it; want one SUB per queue group per failed probe", sent, probes, failures)
 	}
 	// One refusal is the reload's revocation, and each other one answers a SUB.
 	if refusals != sent+1 {

@@ -274,9 +274,12 @@ func knownSessionMoveHook(known *session.KnownSessions, logger *logging.Logger) 
 // failed rebuilds end in a restart, whose store Open creates it again. A cache
 // whose copy needs a read (kvCache.NeedsRead) is rebuilt as a stopped watcher
 // is: nothing but a Rewatch reads its bucket again, for instance after the
-// reconnect hook's Rewatch failed while the old watcher survived.
+// reconnect hook's Rewatch failed while the old watcher survived. A role lane
+// failure is never one (checkSelfHealth), whatever it wraps: the error of a send
+// that failed on a lane connection closed under it says nothing of the main bus,
+// which a rebuild would rebuild.
 func isUnrecoverableSelfHealthFailure(err error, client *bus.Client, caches []listenerCache) bool {
-	if err == nil || !client.Connected() {
+	if err == nil || errors.Is(err, errRoleLaneInactive) || !client.Connected() {
 		return false
 	}
 	if errors.Is(err, nats.ErrConsumerNotFound) || errors.Is(err, errDurableUnbound) ||
@@ -487,9 +490,10 @@ func roleLaneInactive(lane *bus.Client) bool {
 // checkRoleLane is the self-health probe's check of the role lane: errRoleLaneInactive while the
 // lane is inactive (roleLaneInactive). When the server refused the lane's subscription on a
 // connection that stays connected, the check first sends the subscription again
-// (bus.Client.ResendRefusedCore). The server applies a grant change by a reload of its
-// configuration, which keeps the connection, so this send is what brings the lane back after a
-// reload gives the grant back. The next probe reads what the server made of the send.
+// (bus.Client.ResendRefusedCore), in the shared queue group and then in the machine's. The server
+// applies a grant change by a reload of its configuration, which keeps the connection, so this
+// send is what brings the lane back after a reload gives the grant back. The probe reports the
+// lane as it found it, and the next probe reads the lane the send left.
 func checkRoleLane(lane *bus.Client) error {
 	if !roleLaneInactive(lane) {
 		return nil
