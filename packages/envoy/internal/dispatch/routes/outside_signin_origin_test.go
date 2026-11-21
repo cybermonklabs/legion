@@ -83,7 +83,8 @@ func TestGoogleSignInStartsAtTheCanonicalOriginAlone(t *testing.T) {
 // A browser write carrying a session cookie passes the origin check only when its Origin is the
 // origin of its own Host: the outside origin on the outside Host (in any case), the canonical
 // origin on the canonical Host, and nothing across them or from elsewhere. The write is a sign-out,
-// so each case signs in afresh.
+// so each case signs in afresh. A browser holds a host's cookie under that origin's name, which at
+// the outside origin is `__Host-dsession` (the rig is Secure), so the session is sent there so.
 func TestOutsideSignInCookieOriginCheckTakesEachOriginOnItsOwnHost(t *testing.T) {
 	rig := newOriginRig(t, outsideRuleListingEveryone(), outsideOrigin)
 	for _, test := range []struct {
@@ -100,6 +101,9 @@ func TestOutsideSignInCookieOriginCheckTakesEachOriginOnItsOwnHost(t *testing.T)
 		cookie := sessionCookie(rig.signIn(t, googleClaims("google-subject")))
 		if cookie == nil {
 			t.Fatal("the sign-in issued no session cookie")
+		}
+		if !strings.EqualFold(test.host, "canon.test") {
+			cookie = &http.Cookie{Name: "__Host-dsession", Value: cookie.Value}
 		}
 		request := httptest.NewRequest(http.MethodPost, "http://"+test.host+"/auth/logout", nil)
 		request.Header.Set("Origin", test.origin)

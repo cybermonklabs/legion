@@ -360,9 +360,12 @@ func (r *signInRig) signIn(t *testing.T, claims map[string]any) *httptest.Respon
 	return callbackOn(r.handler, code, state, stateCookie)
 }
 
+// sessionCookie is the session cookie a sign-in set, under whichever of its two names it set it
+// with a value, or nil. Which name a sign-in sets is TestASignInSetsTheSessionForItsOriginAndSetting's
+// (auth) and the walk's (cmd/dispatch) to check.
 func sessionCookie(response *httptest.ResponseRecorder) *http.Cookie {
 	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == "dsession" && cookie.Value != "" {
+		if (cookie.Name == "__Host-dsession" || cookie.Name == "dsession") && cookie.Value != "" && cookie.MaxAge >= 0 {
 			return cookie
 		}
 	}
@@ -723,14 +726,18 @@ func TestGroupSignInRecordsNoSubject(t *testing.T) {
 	}
 }
 
+// Each cookie of the sign-in is Secure as the cookie mode says, but the clearing of
+// `__Host-dsession` in HTTP development mode, which a browser takes only Secure; the session a
+// sign-in at the canonical origin issues is canonicalSessionCookie in both modes.
 func TestOAuthStateCookieMatchesCookieMode(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		insecure bool
 		secure   bool
+		session  string
 	}{
-		{name: "TLS default", secure: true},
-		{name: "HTTP development mode", insecure: true, secure: false},
+		{name: "TLS default", secure: true, session: canonicalSessionCookie},
+		{name: "HTTP development mode", insecure: true, secure: false, session: "dsession"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newSignInRig(t, "")
@@ -742,13 +749,13 @@ func TestOAuthStateCookieMatchesCookieMode(t *testing.T) {
 			}
 			issued := false
 			for _, cookie := range response.Result().Cookies() {
-				issued = issued || cookie.Name == "dsession"
-				if cookie.Secure != tc.secure {
-					t.Errorf("callback cookie %s Secure = %t, want %t", cookie.Name, cookie.Secure, tc.secure)
+				issued = issued || cookie.Name == tc.session && cookie.Value != ""
+				if want := tc.secure || strings.HasPrefix(cookie.Name, "__Host-"); cookie.Secure != want {
+					t.Errorf("callback cookie %s Secure = %t, want %t", cookie.Name, cookie.Secure, want)
 				}
 			}
 			if !issued {
-				t.Errorf("callback set no dsession cookie: %v", response.Result().Cookies())
+				t.Errorf("callback set no %s cookie: %v", tc.session, response.Result().Cookies())
 			}
 		})
 	}
@@ -1010,14 +1017,14 @@ func TestOAuthCallbackRefusesAStateTheCookieDoesNotName(t *testing.T) {
 }
 
 // A value signed with the signing key for anything but the sign-in state is no state cookie: a
-// dsession cookie's value, and a well-formed state signed as a dsession cookie is (the signing
+// session cookie's value, and a well-formed state signed as a session cookie is (the signing
 // key's own MAC rather than the key derived for the state).
 func TestOAuthCallbackRefusesAValueSignedForAnotherPurpose(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		value func(t *testing.T, state string) string
 	}{
-		{name: "dsession cookie", value: func(t *testing.T, _ string) string {
+		{name: "session cookie", value: func(t *testing.T, _ string) string {
 			session, err := http.ParseSetCookie(auth.IssueSessionCookie(rigEmail, 0, testSigningKey, true))
 			if err != nil {
 				t.Fatalf("parse session cookie: %v", err)

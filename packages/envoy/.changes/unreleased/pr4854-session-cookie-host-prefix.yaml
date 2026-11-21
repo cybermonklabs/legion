@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    At an https `DISPATCH_OUTSIDE_ORIGIN`, the session cookie is now `__Host-dsession`, whatever `DISPATCH_INSECURE_COOKIE` says: Secure, HttpOnly, `SameSite=Strict`, `Path=/` and no `Domain`, which a browser takes only from that host itself over https. A sign-in there sets it and clears `dsession`, and a request whose host is the outside origin's, at any port, is read by that name alone, so another host under the outside origin's domain, or an answer over plain http, cannot set a session there. At an http outside origin (a test harness's) the cookie there is `dsession`, not Secure, read alone too.
+
+    At `DISPATCH_SERVER_URL` nothing a sign-in issues changes: the session cookie is still `dsession`, so the release before this one reads every session this one issues, during a rolling update and after a rollback. Dispatch now also reads `__Host-dsession` there, before `dsession`, and clears it at each sign-in, so that a later release can issue `__Host-dsession` there without signing anyone out when it rolls out or is rolled back to this one. The `__Host-` prefix protects no session at `DISPATCH_SERVER_URL` until that later release. The sign-out clears the cookie under both names at either origin.
+time: 2026-11-21T15:07:47.417983179Z
+custom:
+    Issue: pr4854

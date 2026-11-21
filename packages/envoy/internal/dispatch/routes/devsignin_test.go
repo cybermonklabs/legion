@@ -58,15 +58,6 @@ func devSignInRequest(t *testing.T, target string) *http.Request {
 	return request
 }
 
-func sessionCookieOf(response *httptest.ResponseRecorder) *http.Cookie {
-	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == "dsession" {
-			return cookie
-		}
-	}
-	return nil
-}
-
 func errorCodeOf(t *testing.T, response *httptest.ResponseRecorder) string {
 	t.Helper()
 	var body struct {
@@ -102,9 +93,9 @@ func TestDevSignInIssuesTheSessionCookieAndRecordsThePerson(t *testing.T) {
 	if response.Code != http.StatusFound || response.Header().Get("Location") != "/issues/CORE-1" {
 		t.Fatalf("sign-in: status %d Location %q body=%s, want 302 to /issues/CORE-1", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
-	cookie := sessionCookieOf(response)
+	cookie := sessionCookie(response)
 	if cookie == nil {
-		t.Fatalf("sign-in set no dsession cookie: %v", response.Header().Values("Set-Cookie"))
+		t.Fatalf("sign-in set no session cookie: %v", response.Header().Values("Set-Cookie"))
 	}
 	session, ok := auth.VerifySession(cookie.Value, testSigningKey)
 	if !ok || session.Login != "alice@d.example" || session.Generation != 3 {
@@ -131,9 +122,9 @@ func TestDevSignInMintsTheLowercasedEmail(t *testing.T) {
 	if response.Code != http.StatusFound {
 		t.Fatalf("sign-in as Alice: %d %s", response.Code, response.Body.String())
 	}
-	cookie := sessionCookieOf(response)
+	cookie := sessionCookie(response)
 	if cookie == nil {
-		t.Fatal("sign-in as Alice set no dsession cookie")
+		t.Fatal("sign-in as Alice set no session cookie")
 	}
 	whoami := whoamiAs(t, handler, cookie)
 	if whoami.Code != http.StatusOK || strings.TrimSpace(whoami.Body.String()) != `{"event_head":"0","kind":"user","login":"alice@d.example"}` {
@@ -149,7 +140,7 @@ func TestDevSignInRequiresALogin(t *testing.T) {
 		if response.Code != http.StatusBadRequest || errorCodeOf(t, response) != "DEV_SIGNIN_INPUT" {
 			t.Fatalf("%s: %d %s, want 400 DEV_SIGNIN_INPUT", target, response.Code, response.Body.String())
 		}
-		if sessionCookieOf(response) != nil {
+		if sessionCookie(response) != nil {
 			t.Fatalf("%s: set a session cookie", target)
 		}
 	}
@@ -181,7 +172,7 @@ func TestDevSignInRefusesANonLoopbackPeer(t *testing.T) {
 		if response.Code != http.StatusForbidden || errorCodeOf(t, response) != "DEV_SIGNIN_FORBIDDEN" {
 			t.Fatalf("peer %s: %d %s, want 403 DEV_SIGNIN_FORBIDDEN", peer, response.Code, response.Body.String())
 		}
-		if sessionCookieOf(response) != nil {
+		if sessionCookie(response) != nil {
 			t.Fatalf("peer %s: set a session cookie", peer)
 		}
 	}
@@ -191,7 +182,7 @@ func TestDevSignInRefusesANonLoopbackPeer(t *testing.T) {
 	request.RemoteAddr = "[::1]:40000"
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusFound || sessionCookieOf(response) == nil {
+	if response.Code != http.StatusFound || sessionCookie(response) == nil {
 		t.Fatalf("peer [::1]:40000: %d %s, want 302 with a cookie", response.Code, response.Body.String())
 	}
 }
@@ -249,7 +240,7 @@ func TestDevSignInRefusesForwardedRequests(t *testing.T) {
 			if response.Code != http.StatusForbidden || errorCodeOf(t, response) != "DEV_SIGNIN_FORBIDDEN" || !strings.Contains(response.Body.String(), header) {
 				t.Fatalf("%s: %q: %d %s, want 403 DEV_SIGNIN_FORBIDDEN naming the header", header, value, response.Code, response.Body.String())
 			}
-			if sessionCookieOf(response) != nil {
+			if sessionCookie(response) != nil {
 				t.Fatalf("%s: %q: set a session cookie", header, value)
 			}
 		}
@@ -320,7 +311,7 @@ func TestDevSignInIsNotMountedByDefault(t *testing.T) {
 	if response.Code != http.StatusNotFound || errorCodeOf(t, response) != "NOT_FOUND" {
 		t.Fatalf("unmounted route: %d %s, want 404 NOT_FOUND", response.Code, response.Body.String())
 	}
-	if sessionCookieOf(response) != nil || len(sessions.generations) != 0 {
+	if sessionCookie(response) != nil || len(sessions.generations) != 0 {
 		t.Fatal("unmounted route minted a session")
 	}
 

@@ -17,7 +17,7 @@ const (
 	// oauthStateFormat leads every state cookie value, so a later shape can be told from this one.
 	oauthStateFormat = "s1"
 	// oauthStatePurpose is the purpose the state cookie is signed for (auth.SigningKeys.SignFor): a
-	// key derived for it alone, so a state cookie never verifies as a dsession cookie or the reverse.
+	// key derived for it alone, so a state cookie never verifies as a session cookie or the reverse.
 	oauthStatePurpose = "dispatch oauth state v1"
 	// maxNextBytes caps the page a sign-in returns to; a longer one returns to "/". JSON escapes a
 	// byte of a sanitised next into at most two, so the cookie stays far below a browser's 4 KiB.

@@ -686,7 +686,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
 `DISPATCH_IDENTITY` controls how browser requests identify a person, always by lowercase email:
 
-- `cookie` (the default) accepts signed `dsession` cookies, which a sign-in issues (OpenID Connect authorization code), through one of two issuers.
+- `cookie` (the default) accepts the signed session cookie (`__Host-dsession`, or `dsession`: see the session cookie, below), which a sign-in issues (OpenID Connect authorization code), through one of two issuers.
   Beside `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID` and `DISPATCH_SIGNIN_CLIENT_SECRET`, exactly one of `DISPATCH_SIGNIN_GROUP` and `DISPATCH_SIGNIN_DOMAIN` is set, and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` only beside the domain;
   `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` without the domain, both, some without the others, a domain under any issuer but `https://accounts.google.com` (except under the test hooks' `DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1`, for the browser suite's dev issuer), a group under that one, a domain that is not a lowercase DNS name, or an entry of `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` that is empty or not a lowercase domain name IDNA lookup takes (named by its position) refuse the boot, each naming what is wrong (`checkSignInSettings`).
   `DISPATCH_SIGNIN_PASSKEY=1` (below) needs the domain, `DISPATCH_OUTSIDE_ORIGIN` and `DISPATCH_TRUSTED_PROXY_RANGES`, and refuses the boot under `iap` identity and header identity, each naming the setting.
@@ -695,7 +695,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
     Behind Google's external Application Load Balancer, production names its proxy ranges `35.191.0.0/16`, `130.211.0.0/22` and `2600:2d00:1:1::/64` ([Google's firewall rules page](https://cloud.google.com/load-balancing/docs/firewall-rules)), and never the address of the balancer's forwarding rule.
 
   With no `DISPATCH_SIGNIN_*` setting at all the server boots and runs no browser sign-in:
-  it issues no `dsession` cookie, and it refuses every one it has issued, answering each request that needs a person `401 NO_IDENTITY` (`requestIdentityFor`).
+  it issues no session cookie, and it refuses every one it has issued, answering each request that needs a person `401 NO_IDENTITY` (`requestIdentityFor`).
   A cookie minted while sign-in was on still verifies for its thirty days, since the key signing it is the deployment's `DISPATCH_SIGNING_KEY` and outlives the configuration, and with no issuer nothing is left to confirm that the person it names may still use Dispatch.
   The agent-token API is served as it always is, and `GET /auth/start` answers `503 SIGNIN_UNCONFIGURED`.
   That is what a sandbox deployment runs (`envoy-infra:gcp:Dispatch` with its tailnet inputs unset, which has no origin an OAuth provider takes).
@@ -722,7 +722,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   A refusal logs `msg="dispatch: sign-in refused" email=<email> hd=<hd> reason=<reason>`, where a pool refusal logs `username=<username>`.
 
 - A restricted member (`people.member_kind` `restricted`) is a person from outside the domain whom some project's owner is or some project's access list names directly (`access.Listed`; a group on a list never admits such a person).
-  No Google sign-in admits one: at the canonical origin an account whose `hd` is not the domain gets the 403 page saying it is not in the domain, whatever a list names, and the outside origin serves no Google sign-in at all (`/auth/start` and `/auth/callback` answer `404` there, with passkey sign-in on or off), so the Google client's OAuth consent screen stays Internal and lists `<DISPATCH_SERVER_URL>/auth/callback` alone.
+  No Google sign-in admits one: at the canonical origin an account whose `hd` is not the domain gets the 403 page saying it is not in the domain, whatever a list names, and the outside origin serves no Google sign-in at all (`/auth/start` and `/auth/callback` answer `404` on its host at any port, with passkey sign-in on or off, since a browser sends that host's cookies to every port of it), so the Google client's OAuth consent screen stays Internal and lists `<DISPATCH_SERVER_URL>/auth/callback` alone.
   A person from outside signs in with a passkey (`DISPATCH_SIGNIN_PASSKEY`, below), and the rule that admits restricted members (`identity.PasskeyRule`, over the `identity.OutsideRule` it embeds) answers for them.
   An address on a domain the Workspace owns, or on a subdomain of one, is never a restricted member's: the rule refuses it without reading the lists (`identity.ErrWorkspaceAddress`, `identity.WorkspaceAddress`), else a person from outside holding it would read every project that lists the member, even before the member's first sign-in.
   The Workspace's domains are `DISPATCH_SIGNIN_DOMAIN` and each one `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists (`identity.OutsideRule.WorkspaceDomains`): list every domain the Workspace owns;
@@ -938,8 +938,37 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
 The people Dispatch has seen, either way, are the assignee picker's options and the only names an issue may be assigned to.
 
+The session cookie a sign-in issues is signed, HttpOnly, `SameSite=Strict`, host-only (`Path=/` and no `Domain`), and lasts 30 days (`auth.SetSessionCookie`).
+At `DISPATCH_SERVER_URL` it is `Secure` unless `DISPATCH_INSECURE_COOKIE` is set; at `DISPATCH_OUTSIDE_ORIGIN` it follows that origin's scheme (below).
 `DISPATCH_INSECURE_COOKIE=1` omits the `Secure` attribute for local plain-HTTP testing.
 Do not use it on an HTTPS deployment.
+
+The cookie's name depends on the origin, so that every release keeps the build before it working (Running more than one process, below):
+
+- At `DISPATCH_OUTSIDE_ORIGIN` the session cookie has one name, which a sign-in there issues and a request there is read by alone.
+  It follows the outside origin's scheme, whatever `DISPATCH_INSECURE_COOKIE` says: at an `https` outside origin it is `__Host-dsession`, `Secure`, which a browser takes only from that host itself over HTTPS, so no other host under its domain and no answer over plain HTTP can set a session there; at an `http` one (a test harness's) it is `dsession`, not `Secure`, since a browser takes no `Secure` cookie, a `__Host-` one included, over plain HTTP.
+  Where it is `__Host-dsession`, a `dsession` there is no session, and an unsafe request carrying one is no request with a session cookie.
+  A request is the outside origin's for this whenever its `Host` names the outside origin's host, at any port: a browser sends one host's cookies to every port of it.
+  The one name holds because no browser holds a session for the outside origin that the build before this one issued: the first release that serves `DISPATCH_OUTSIDE_ORIGIN` must be this one or a later one.
+  A build that served it earlier issued `dsession` there; a deployment that ran it would sign each person from outside out once when this release rolls out, and a roll between the two builds would answer them `401 NO_IDENTITY`.
+
+- At `DISPATCH_SERVER_URL` the session cookie moves from `dsession` to `__Host-dsession` in three releases:
+
+  1. This release still issues `dsession` there under every setting, so the release before it reads every session it issues, during a rolling update and after a rollback.
+     It reads both names (`auth.SessionFromRequest`, and `auth.HasSessionCookie` for the origin check): the first one a request carries with a non-empty value, `__Host-dsession` before `dsession`, so a `__Host-dsession` beside a `dsession` is read alone, whether or not it verifies.
+     Each sign-in clears `__Host-dsession`, which the next release may have set, so the browser keeps only the session it is given.
+
+  2. The next release issues `__Host-dsession` there where the cookie is Secure, and clears `dsession` at each sign-in.
+     It rolls out only once every process runs this release, and a rollback from it goes back no further than this release: a rollback across both releases signs out everyone who signed in on the next one.
+
+  3. A release at least 30 days after the next one (a session's lifetime) stops reading `dsession` there where the cookie is Secure.
+     Under `DISPATCH_INSECURE_COOKIE` the cookie stays `dsession`.
+
+  So the `__Host-` prefix guards no session at `DISPATCH_SERVER_URL` before the next release.
+  From it, a browser that has signed in holds `__Host-dsession`, and a `dsession` another host sets beside it signs in nobody else; until the third release, a browser that holds no `__Host-dsession` (one that has not signed in since, or has signed out) can still be given a session as `dsession` by another host under the domain or by an answer over plain HTTP.
+
+`POST /auth/logout` clears the cookie under both names at either origin (`auth.ClearSessionCookies`), each clear `Secure` where that origin issues the cookie `Secure`, and the `__Host-` one always.
+Nothing else writes the cookie: no request re-issues or extends a session.
 
 `DISPATCH_DEV_SIGNIN=1` adds a second way to get the cookie on a local instance:
 `GET /auth/_dev/signin?login=<email>` records the lowercased person and issues the session cookie an issuer sign-in does, with no issuer exchange and no group check.
@@ -4648,7 +4677,7 @@ Each item below names a path with its method and identity, then its purpose.
   `register/begin` takes `{"token"}`, the fragment of the owner's link (`POST /api/v1/projects/{key}/access/people/{email}/invitations`), and answers the options `navigator.credentials.create` takes, naming as the user the invited address and as the user handle the person's passkey subject: 16 random bytes, base64url, made at their first enrollment and kept after.
   Beside them it answers `invitation`, `{"project", "made_by"}`: the key of the project the link is for and the login of the owner who made it, which the enrollment page names before the person makes a passkey.
   It uses no link.
-  `register/finish` takes what `navigator.credentials.create` made and, in one transaction, uses the link, signs the person in as a restricted member through the account binding (`PgPeopleStore.signInAccountTx`, under the issuer `people.sub_issuer` records, the outside origin) and stores the passkey (table `passkeys`), answering `{"login"}` and the host-only session cookie.
+  `register/finish` takes what `navigator.credentials.create` made and, in one transaction, uses the link, signs the person in as a restricted member through the account binding (`PgPeopleStore.signInAccountTx`, under the issuer `people.sub_issuer` records, the outside origin) and stores the passkey (table `passkeys`), answering `{"login"}` and the outside origin's session cookie, `__Host-dsession` (`dsession` under `DISPATCH_INSECURE_COOKIE`; the session cookie, above).
   `login/begin` takes `{}` and answers the options `navigator.credentials.get` takes, naming no credential; `login/finish` takes what it made, verifies it against the passkey its credential id names and its user handle, asks the rule again (`AdmitsRestricted`), stores the new signature counter and signs the person in, answering `{"login"}` and the cookie.
 
   - A begin reads and writes nothing: it carries its ceremony to the finish in the signed, HttpOnly, `SameSite=Strict` cookie `__Host-dispatch_passkey_ceremony` (Secure, `Path=/`, no `Domain`, so no other host under the outside origin's domain can set it; `dispatch_passkey_ceremony` under `DISPATCH_INSECURE_COOKIE`), so whichever process the finish reaches completes it, within five minutes;
@@ -4665,7 +4694,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/auth/logout` (POST; cookie or trusted header)
 
-  End the person's Dispatch sessions, forget their refresh token, and clear the session cookie.
+  End the person's Dispatch sessions, forget their refresh token, and clear the session cookie under both its names (`__Host-dsession` and `dsession`).
 
 - `/auth/whoami` (GET; cookie or trusted header)
 

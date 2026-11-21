@@ -95,13 +95,16 @@ func (r *router) atOutside(req *http.Request) bool {
 }
 
 // googleSignInHere serves next, the Google sign-in's start or callback, at the canonical origin
-// alone: at the outside origin it answers the 404 a path no route serves answers (writeNoRoute,
-// logged once, as its route), with passkey sign-in on or off, since Google signs in the
-// Workspace's people alone and they sign in at the canonical origin, and a person from outside
-// signs in with a passkey or not at all.
+// alone: on the outside origin's host, at any port, it answers the 404 a path no route serves
+// answers (writeNoRoute, logged once, as its route), with passkey sign-in on or off, since Google
+// signs in the Workspace's people alone and they sign in at the canonical origin, and a person from
+// outside signs in with a passkey or not at all. The host is compared by name at any port, as
+// markOutsideOrigin marks it: a browser sends the outside host's cookies to every port of it, and
+// the router issues the session there under the outside origin's name, so a Google sign-in served
+// at another port would set the outside origin's session for a person of the Workspace.
 func (r *router) googleSignInHere(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		if r.atOutside(req) {
+		if r.ctx.OutsideOrigin != "" && sameHostName(r.ctx.OutsideOrigin, req.Host) {
 			writeNoRoute(w, req)
 			return
 		}

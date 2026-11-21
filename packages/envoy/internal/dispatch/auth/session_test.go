@@ -1,11 +1,14 @@
 package auth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,13 +17,14 @@ import (
 	"time"
 )
 
+// cookieValue is the value of the session cookie setCookie sets, under whichever name it sets it.
 func cookieValue(t *testing.T, setCookie string) string {
 	t.Helper()
-	parts := strings.SplitN(setCookie, ";", 2)
-	if !strings.HasPrefix(parts[0], "dsession=") {
-		t.Fatalf("expected dsession= prefix, got %q", parts[0])
+	cookie, err := http.ParseSetCookie(setCookie)
+	if err != nil {
+		t.Fatalf("parse set-cookie %q: %v", setCookie, err)
 	}
-	return strings.TrimPrefix(parts[0], "dsession=")
+	return cookie.Value
 }
 
 func sign256(payload, key string) string {
@@ -39,7 +43,10 @@ var testKeys = SingleSigningKey("signing-key")
 
 func TestIssueAndVerifySessionCookie(t *testing.T) {
 	setCookie := IssueSessionCookie("sami@example.com", 7, testKeys, true)
-	for _, frag := range []string{"dsession=", "HttpOnly", "Path=/", "SameSite=Strict", "Max-Age=2592000", "Secure"} {
+	if !strings.HasPrefix(setCookie, "dsession=") {
+		t.Errorf("set-cookie %q, want the canonical origin's dsession=", setCookie)
+	}
+	for _, frag := range []string{"HttpOnly", "Path=/", "SameSite=Strict", "Max-Age=2592000", "Secure"} {
 		if !strings.Contains(setCookie, frag) {
 			t.Errorf("set-cookie %q missing fragment %q", setCookie, frag)
 		}
@@ -101,6 +108,212 @@ func TestVerifySessionRejectsExpiredCookie(t *testing.T) {
 	if _, ok := VerifySession(expired, testKeys); ok {
 		t.Errorf("expired cookie should not verify")
 	}
+}
+
+// A sign-in sets one session cookie and clears the other name, each line HttpOnly,
+// SameSite=Strict, host-only (no Domain) at Path=/, and every `__Host-` line Secure (a browser
+// takes none without it, a clear included). At the canonical origin the session is `dsession`,
+// Secure as the setting says, as every earlier build issues it, so the build before this one reads
+// it in a roll and after a rollback; the sign-in clears `__Host-dsession`, which a later build may
+// have set, so the browser keeps only the session it is given. At the outside origin the cookie
+// follows that origin's scheme, whatever DISPATCH_INSECURE_COOKIE says: `__Host-dsession`, Secure,
+// at an https outside origin, and `dsession`, not Secure, at an http one (a browser refuses a
+// `__Host-` cookie that is not Secure).
+//
+// Controls: issue `__Host-dsession` at the canonical origin, and its Secure row fails; issue
+// `dsession` at the outside origin, and its https rows fail; name the outside cookie by the
+// setting rather than the scheme, and the rows where the two differ fail; issue `__Host-dsession`
+// without Secure, and the https rows fail.
+func TestASignInSetsTheSessionForItsOriginAndSettingAndClearsTheOtherName(t *testing.T) {
+	for _, tc := range []struct {
+		row string
+		// outside is whether the sign-in is at the outside origin, and https whether that origin
+		// is https.
+		outside, https bool
+		// setting is whether DISPATCH_INSECURE_COOKIE is unset, and secure whether the lines
+		// are Secure (a `__Host-` line always is).
+		setting, secure bool
+		issued, cleared string
+	}{
+		{row: "canonical, Secure", setting: true, secure: true, issued: "dsession", cleared: "__Host-dsession"},
+		{row: "canonical, DISPATCH_INSECURE_COOKIE", setting: false, secure: false, issued: "dsession", cleared: "__Host-dsession"},
+		{row: "https outside origin, Secure", outside: true, https: true, setting: true, secure: true, issued: "__Host-dsession", cleared: "dsession"},
+		{row: "https outside origin, DISPATCH_INSECURE_COOKIE", outside: true, https: true, setting: false, secure: true, issued: "__Host-dsession", cleared: "dsession"},
+		{row: "http outside origin, Secure", outside: true, https: false, setting: true, secure: false, issued: "dsession", cleared: "__Host-dsession"},
+		{row: "http outside origin, DISPATCH_INSECURE_COOKIE", outside: true, https: false, setting: false, secure: false, issued: "dsession", cleared: "__Host-dsession"},
+	} {
+		t.Run(tc.row, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.outside {
+				ctx = WithOutsideOrigin(ctx, tc.https)
+			}
+			header := http.Header{}
+			SetSessionCookie(ctx, header, "sami@example.com", 4, testKeys, tc.setting)
+			lines := header.Values("Set-Cookie")
+			if len(lines) != 2 {
+				t.Fatalf("the sign-in set %q, want the session and one clear", lines)
+			}
+			for i, line := range lines {
+				cookie, err := http.ParseSetCookie(line)
+				if err != nil {
+					t.Fatalf("parse %q: %v", line, err)
+				}
+				if cookie.Path != "/" || cookie.Domain != "" || strings.Contains(strings.ToLower(line), "domain=") || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
+					t.Errorf("line %q, want HttpOnly, SameSite=Strict, Path=/ and no Domain", line)
+				}
+				if want := tc.secure || strings.HasPrefix(cookie.Name, "__Host-"); cookie.Secure != want {
+					t.Errorf("line %q: Secure %t, want %t", line, cookie.Secure, want)
+				}
+				switch i {
+				case 0:
+					session, ok := VerifySession(cookie.Value, testKeys)
+					if cookie.Name != tc.issued || cookie.MaxAge != 30*24*60*60 || !ok || session.Login != "sami@example.com" || session.Generation != 4 {
+						t.Errorf("the session line %q, want %s=<sami@example.com at generation 4>; Max-Age=2592000", line, tc.issued)
+					}
+				case 1:
+					if cookie.Name != tc.cleared || cookie.Value != "" || cookie.MaxAge >= 0 {
+						t.Errorf("the clear %q, want %s=; Max-Age=0", line, tc.cleared)
+					}
+				}
+			}
+		})
+	}
+}
+
+// The sign-out clears the session cookie under both its names, wherever the request came: Secure
+// at the canonical origin as the setting says, at the outside origin as its scheme says (a browser
+// takes no Secure cookie, a clear included, over plain http), and `__Host-dsession` always.
+//
+// Control: clear by the setting at the outside origin, and the rows where the scheme and the
+// setting differ fail.
+func TestTheSignOutClearsBothNames(t *testing.T) {
+	for _, tc := range []struct {
+		row string
+		ctx context.Context
+		// setting is whether DISPATCH_INSECURE_COOKIE is unset, and secure whether the clears are
+		// Secure.
+		setting, secure bool
+	}{
+		{row: "canonical, Secure", ctx: context.Background(), setting: true, secure: true},
+		{row: "canonical, DISPATCH_INSECURE_COOKIE", ctx: context.Background(), setting: false, secure: false},
+		{row: "https outside origin, DISPATCH_INSECURE_COOKIE", ctx: WithOutsideOrigin(context.Background(), true), setting: false, secure: true},
+		{row: "http outside origin, Secure", ctx: WithOutsideOrigin(context.Background(), false), setting: true, secure: false},
+	} {
+		header := http.Header{}
+		ClearSessionCookies(tc.ctx, header, tc.setting)
+		var cleared []string
+		for _, line := range header.Values("Set-Cookie") {
+			cookie, err := http.ParseSetCookie(line)
+			if err != nil || cookie.Value != "" || cookie.MaxAge >= 0 || cookie.Path != "/" || cookie.Domain != "" || cookie.Secure != (tc.secure || strings.HasPrefix(cookie.Name, "__Host-")) {
+				t.Errorf("%s: the sign-out set %q, want a clear at Path=/, Secure %t or under the __Host- name", tc.row, line, tc.secure)
+			}
+			cleared = append(cleared, cookie.Name)
+		}
+		if slices.Sort(cleared); !slices.Equal(cleared, []string{"__Host-dsession", "dsession"}) {
+			t.Errorf("%s: the sign-out cleared %q, want both names", tc.row, cleared)
+		}
+	}
+}
+
+// requestCarrying is a request whose Cookie header carries cookies, in their order.
+func requestCarrying(cookies ...*http.Cookie) *http.Request {
+	request := httptest.NewRequest(http.MethodGet, "https://dispatch.example/auth/whoami", nil)
+	for _, cookie := range cookies {
+		request.AddCookie(cookie)
+	}
+	return request
+}
+
+// At the canonical origin a request is signed in by the first name it carries with a non-empty
+// value, `__Host-dsession` before `dsession`: `dsession` is what every build so far issues there,
+// so a person signed in by an earlier build keeps their session, and a `__Host-dsession` beside a
+// `dsession` is read alone, valid or not, so a `dsession` another host planted (login CSRF) never
+// stands in for it. An empty `__Host-dsession` is skipped, which a joined Set-Cookie header
+// (`dsession=<v>;__Host-dsession=`, packages/dispatch/e2e/acceptance/ci-check.sh) relies on. Both
+// readers read so: SessionFromRequest, and HasSessionCookie, which decides whether a write must
+// come from the server's own origin.
+//
+// Controls: read `dsession` alone, and the rows carrying `__Host-dsession` fail; read
+// `__Host-dsession` and fall back to `dsession` when it does not verify, and the row of a good old
+// cookie beside a bad new one fails.
+func TestTheSessionIsReadFromTheHostCookieAndOtherwiseTheOldName(t *testing.T) {
+	expiry := time.Now().Add(time.Hour).UnixMilli()
+	alice := signedCookie("alice@example.com", 1, expiry, "signing-key")
+	mallory := signedCookie("mallory@example.com", 2, expiry, "signing-key")
+	forged := signedCookie("alice@example.com", 1, expiry, "another-key")
+	host := func(value string) *http.Cookie { return &http.Cookie{Name: "__Host-dsession", Value: value} }
+	plain := func(value string) *http.Cookie { return &http.Cookie{Name: "dsession", Value: value} }
+	for _, tc := range []readerRow{
+		{name: "only __Host-dsession", cookies: []*http.Cookie{host(alice)}, login: "alice@example.com", carries: true},
+		{name: "only dsession, issued by an earlier build", cookies: []*http.Cookie{plain(alice)}, login: "alice@example.com", carries: true},
+		{name: "two people: dsession first, __Host-dsession is read", cookies: []*http.Cookie{plain(mallory), host(alice)}, login: "alice@example.com", carries: true},
+		{name: "two people: __Host-dsession first, __Host-dsession is read", cookies: []*http.Cookie{host(alice), plain(mallory)}, login: "alice@example.com", carries: true},
+		{name: "a forged dsession beside a good __Host-dsession", cookies: []*http.Cookie{plain(forged), host(alice)}, login: "alice@example.com", carries: true},
+		{name: "a good dsession beside a forged __Host-dsession", cookies: []*http.Cookie{host(forged), plain(alice)}, login: "", carries: true},
+		{name: "only a forged __Host-dsession", cookies: []*http.Cookie{host(forged)}, login: "", carries: true},
+		{name: "an empty __Host-dsession is skipped", cookies: []*http.Cookie{plain(alice), host("")}, login: "alice@example.com", carries: true},
+		{name: "neither", cookies: nil, login: "", carries: false},
+		{name: "another cookie only", cookies: []*http.Cookie{{Name: "dsession_other", Value: alice}}, login: "", carries: false},
+	} {
+		tc.run(t, context.Background())
+	}
+}
+
+// At the outside origin, which no released build has served, so that no browser holds a session for
+// it under another name, the session cookie has one name, the one its sign-in issues there:
+// `__Host-dsession` at an https outside origin, `dsession` at an http one. A request there carrying
+// only the other name holds no session cookie: it is signed in as nobody, and HasSessionCookie says
+// no, so the origin check lets its write through to a handler that finds no person. Beside the
+// right name the other changes nothing.
+//
+// Controls: read the canonical origin's two names at the outside origin, and the https rows
+// carrying `dsession` alone fail.
+func TestAtTheOutsideOriginTheSessionIsReadByItsOneName(t *testing.T) {
+	expiry := time.Now().Add(time.Hour).UnixMilli()
+	alice := signedCookie("alice@example.com", 1, expiry, "signing-key")
+	mallory := signedCookie("mallory@example.com", 2, expiry, "signing-key")
+	host := func(value string) *http.Cookie { return &http.Cookie{Name: "__Host-dsession", Value: value} }
+	plain := func(value string) *http.Cookie { return &http.Cookie{Name: "dsession", Value: value} }
+	https := []readerRow{
+		{name: "https: only __Host-dsession", cookies: []*http.Cookie{host(alice)}, login: "alice@example.com", carries: true},
+		{name: "https: only a planted dsession", cookies: []*http.Cookie{plain(mallory)}, login: "", carries: false},
+		{name: "https: a planted dsession first, beside __Host-dsession", cookies: []*http.Cookie{plain(mallory), host(alice)}, login: "alice@example.com", carries: true},
+		{name: "https: an empty __Host-dsession beside a planted dsession", cookies: []*http.Cookie{host(""), plain(mallory)}, login: "", carries: false},
+	}
+	plainHTTP := []readerRow{
+		{name: "http: only dsession", cookies: []*http.Cookie{plain(alice)}, login: "alice@example.com", carries: true},
+		{name: "http: only __Host-dsession", cookies: []*http.Cookie{host(mallory)}, login: "", carries: false},
+		{name: "http: __Host-dsession first, beside dsession", cookies: []*http.Cookie{host(mallory), plain(alice)}, login: "alice@example.com", carries: true},
+	}
+	for _, tc := range https {
+		tc.run(t, WithOutsideOrigin(context.Background(), true))
+	}
+	for _, tc := range plainHTTP {
+		tc.run(t, WithOutsideOrigin(context.Background(), false))
+	}
+}
+
+// readerRow is one request the session cookie's readers are asked about: the cookies it carries,
+// the person it is signed in as ("" for none), and HasSessionCookie's answer.
+type readerRow struct {
+	name    string
+	cookies []*http.Cookie
+	login   string
+	carries bool
+}
+
+// run asks both readers about the row's request, made with ctx.
+func (tc readerRow) run(t *testing.T, ctx context.Context) {
+	t.Helper()
+	t.Run(tc.name, func(t *testing.T) {
+		session, ok := SessionFromRequest(requestCarrying(tc.cookies...).WithContext(ctx), testKeys)
+		if tc.login == "" && ok || tc.login != "" && (!ok || session.Login != tc.login) {
+			t.Errorf("SessionFromRequest(%v) = %#v, %t; want signed in as %q (\"\" for none)", tc.cookies, session, ok, tc.login)
+		}
+		if got := HasSessionCookie(requestCarrying(tc.cookies...).WithContext(ctx)); got != tc.carries {
+			t.Errorf("HasSessionCookie(%v) = %t, want %t", tc.cookies, got, tc.carries)
+		}
+	})
 }
 
 // parseKeys is ParseSigningKeys for a setting the test knows is valid.

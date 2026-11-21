@@ -140,7 +140,7 @@ func dispatchTailnetWithoutSignInArgs() *gcp.DispatchArgs {
 // that this deployment runs no browser sign-in. The reverse is refused, since a sign-in input
 // with no tailnet asks a provider to redirect to an in-cluster http:// address
 // (TestDispatchSandboxRefusesWhatItDoesNotBuild). The app this renders is the cookie server with
-// no DISPATCH_SIGNIN_* setting: it signs nobody in, and it refuses every dsession cookie an
+// no DISPATCH_SIGNIN_* setting: it signs nobody in, and it refuses every session cookie an
 // earlier sign-in minted, since its DISPATCH_SIGNING_KEY still verifies them and no membership
 // check is left (cmd/dispatch's TestABootWithNoSignInRefusesACookieIssuedWhileSignInWasOn).
 func TestDispatchSandboxSignInGroupUnsetKeepsTheFrontDoor(t *testing.T) {

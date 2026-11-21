@@ -81,7 +81,7 @@ func (s *outsideSignIn) approver(t *testing.T, handler http.Handler, broker *fak
 		case "cookie":
 			request.Header.Set("Origin", brokerOrigin)
 			for _, c := range cookie.Result().Cookies() {
-				if c.Name == "dsession" && c.Value != "" {
+				if isSessionCookie(c) {
 					request.AddCookie(c)
 				}
 			}

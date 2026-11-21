@@ -73,11 +73,12 @@ func (r *passkeyRig) serverWith(t *testing.T, overrides map[string]string) (http
 	return r.router(t, boot), boot
 }
 
-// sessionCookieOf is the session cookie response set, failing the test naming what when it set none.
+// sessionCookieOf is the session cookie response set, under whichever name its origin issues it
+// (isSessionCookie), failing the test naming what when it set none.
 func sessionCookieOf(t *testing.T, what string, response *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
 	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == "dsession" && cookie.Value != "" && cookie.MaxAge >= 0 {
+		if isSessionCookie(cookie) {
 			return cookie
 		}
 	}

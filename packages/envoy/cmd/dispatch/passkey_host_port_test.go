@@ -32,11 +32,14 @@ func TestTheOutsideOriginIsItsHostWithItsDefaultPortWrittenWithLeadingZeros(t *t
 			t.Errorf("a sign-in's begin with Host %s answered %d %s, want 200, the outside origin's", host, begun.Code, begun.Body.String())
 		}
 	}
-	// Control: a port that is not the default is another origin, answered as the canonical one.
-	other := httptest.NewRequest(http.MethodGet, "https://"+passkeyRPID+":8443/auth/start", nil)
+	// Control: a port that is not the default is another origin, which serves no passkey ceremony
+	// (its Google sign-in is refused too, as on the outside host at any port: googleSignInHere).
+	other := httptest.NewRequest(http.MethodPost, "https://"+passkeyRPID+":8443/auth/passkey/login/begin", strings.NewReader("{}"))
+	other.Header.Set("Content-Type", "application/json")
+	other.Header.Set("Origin", passkeyOrigin)
 	answered := httptest.NewRecorder()
 	r.handler.ServeHTTP(answered, other)
-	if answered.Code != http.StatusFound {
-		t.Fatalf("GET /auth/start with Host %s:8443 answered %d %s, want 302: only the default port is the outside origin", passkeyRPID, answered.Code, answered.Body.String())
+	if answered.Code != http.StatusNotFound {
+		t.Fatalf("a sign-in's begin with Host %s:8443 answered %d %s, want 404: only the default port is the outside origin", passkeyRPID, answered.Code, answered.Body.String())
 	}
 }

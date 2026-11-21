@@ -258,7 +258,7 @@ sign_in_as() {
   local build=$1 person=$2 answer jar=$work/cookies/$1-$2
   answer=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$call_seconds" -c "$jar" \
     "${build_url[$build]}/auth/_dev/signin?login=$(email_of "$person")") || answer=000
-  if [ "$answer" != 302 ] || ! grep -q dsession "$jar"; then
+  if [ "$answer" != 302 ] || ! grep -q $'\tdsession\t' "$jar"; then
     fail "$build: the dev sign-in of $person answered $answer with no session cookie"
   fi
   awk -F '\t' '$6 == "dsession" { print "Cookie: " $6 "=" $7 }' "$jar" >"$work/auth/$build-$person"

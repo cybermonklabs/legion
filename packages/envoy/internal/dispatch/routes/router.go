@@ -447,10 +447,31 @@ func New(ctx *AppContext) (http.Handler, api.Background) {
 func serve(ctx *AppContext) (http.Handler, *http.ServeMux, api.Background) {
 	mux := http.NewServeMux()
 	r, background := mount(ctx, mux)
+	handler := r.markOutsideOrigin(r.enforceCookieOrigin(mux))
 	if ctx.devSignInHost == "" {
-		return r.enforceCookieOrigin(mux), mux, background
+		return handler, mux, background
 	}
-	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), mux, background
+	return requireHost(ctx.devSignInHost, handler), mux, background
+}
+
+// markOutsideOrigin marks each request whose Host is the outside origin's host as
+// auth.WithOutsideOrigin does, with whether the outside origin is https, before any reader of the
+// session cookie sees it, so the cookie is issued and read there by its one name; a request to
+// another host passes unchanged. The host is compared by name alone (sameHostName), at any port:
+// a browser sends one host's cookies to every port of it, so a cookie planted for the outside
+// host reaches every port, and cmd/dispatch refuses an outside origin on the canonical origin's
+// host (checkOutsideOrigin). A server with no outside origin marks nothing.
+func (r *router) markOutsideOrigin(next http.Handler) http.Handler {
+	if r.ctx.OutsideOrigin == "" {
+		return next
+	}
+	https := strings.HasPrefix(r.ctx.OutsideOrigin, "https://")
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if sameHostName(r.ctx.OutsideOrigin, req.Host) {
+			req = req.WithContext(auth.WithOutsideOrigin(req.Context(), https))
+		}
+		next.ServeHTTP(w, req)
+	})
 }
 
 // mount builds New's router, mounts every route the server serves on mux, the API's table among
@@ -602,8 +623,10 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 }
 
 // issueSession ensures the person's session generation and sets the session cookie a sign-in
-// issues, answering 500 when the generation cannot be recorded. authCallback and authDevSignIn
-// both mint through it, so a local dev sign-in carries exactly the cookie an issuer sign-in does.
+// issues, named for the origin the request came to (markOutsideOrigin) and clearing the cookie's
+// other name (auth.SetSessionCookie), answering 500 when the generation cannot be recorded.
+// authCallback, authDevSignIn and the passkey finishes all mint through it, so every sign-in at one
+// origin carries exactly the same cookie, and nothing else writes one.
 //
 // subject is the account a sign-in under SignInRule just recorded, empty for a rule that records
 // none. After the generation is read, SignInRule.ConfirmCookie confirms the address's row still
@@ -635,7 +658,7 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 			return false
 		}
 	}
-	w.Header().Add("Set-Cookie", auth.IssueSessionCookie(email, generation, r.ctx.SigningKey, !r.ctx.InsecureCookie))
+	auth.SetSessionCookie(req.Context(), w.Header(), email, generation, r.ctx.SigningKey, !r.ctx.InsecureCookie)
 	return true
 }
 
@@ -654,7 +677,7 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 	if err := r.ctx.People.End(req.Context(), email); err != nil {
 		slog.Warn("dispatch: forget the sign-in's refresh token failed", "email", email, "error", err)
 	}
-	w.Header().Set("Set-Cookie", auth.ClearSessionCookie(!r.ctx.InsecureCookie))
+	auth.ClearSessionCookies(req.Context(), w.Header(), !r.ctx.InsecureCookie)
 	api.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -1188,16 +1211,21 @@ func sameHost(origin, host string) bool {
 	return ok && hostKey(scheme, own) == hostKey(scheme, host)
 }
 
+// sameHostName reports whether host, a request's Host, names the host of origin, at any port: the
+// names compared as sameHost compares them (HostName). It is the host a browser keeps cookies by.
+func sameHostName(origin, host string) bool {
+	_, own, ok := strings.Cut(origin, "://")
+	return ok && HostName(own) == HostName(host)
+}
+
 // hostKey is host, a Host header or an origin's host under scheme, as sameHost compares it: its
-// name as HostName reads it, then its port as a decimal number with no leading zeros, none for the
-// scheme's default; a port that is no string of digits is kept as written, which no origin's port
-// equals.
+// name (HostName), then its port as a decimal number with no leading zeros, none for the scheme's
+// default; a port that is no string of digits is kept as written, which no origin's port equals.
 func hostKey(scheme, host string) string {
-	name, port := host, ""
-	if split, splitPort, err := net.SplitHostPort(host); err == nil {
-		name, port = split, splitPort
+	port := ""
+	if _, splitPort, err := net.SplitHostPort(host); err == nil {
+		port = splitPort
 	}
-	name = HostName(name)
 	if port != "" && strings.Trim(port, "0123456789") == "" {
 		if number, err := strconv.ParseUint(port, 10, 16); err == nil {
 			port = strconv.FormatUint(number, 10)
@@ -1206,22 +1234,26 @@ func hostKey(scheme, host string) string {
 	if scheme == "https" && port == "443" || scheme == "http" && port == "80" {
 		port = ""
 	}
-	return name + " " + port
+	return HostName(host) + " " + port
 }
 
-// HostName is a host's name as a browser opens it and the router compares it (sameHost): a name
-// holding a character outside ASCII is first mapped as IDNA lookup maps it (idna.Lookup.ToASCII,
+// HostName is the name of host, a Host header, an origin's host or a URL's host name, as a
+// browser opens it and the router compares hosts (sameHost, sameHostName): any port taken off; a
+// name holding a character outside ASCII then mapped as IDNA lookup maps it (idna.Lookup.ToASCII,
 // UTS #46, as a browser maps a URL's host and identity.WorkspaceAddress an address's domain), so
-// fullwidth letters, ideographic full stops or a U-label name the A-label host; then it is lower
-// case, with an IPv6 literal's brackets and every trailing dot taken off. Boot compares the outside
+// fullwidth letters, ideographic full stops or a U-label name the A-label host; then lower case,
+// with an IPv6 literal's brackets and every trailing dot taken off. Boot compares the outside
 // origin's host with the canonical origin's by it (cmd/dispatch's checkOutsideOrigin), so it
 // refuses every pair the router would read as one host.
-func HostName(name string) string {
-	if strings.ContainsFunc(name, func(r rune) bool { return r >= utf8.RuneSelf }) {
-		// A name the lookup refuses is compared as far as it maps: no browser opens it.
-		name, _ = idna.Lookup.ToASCII(name)
+func HostName(host string) string {
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		host = name
 	}
-	return strings.TrimRight(strings.Trim(strings.ToLower(name), "[]"), ".")
+	if strings.ContainsFunc(host, func(r rune) bool { return r >= utf8.RuneSelf }) {
+		// A name the lookup refuses is compared as far as it maps: no browser opens it.
+		host, _ = idna.Lookup.ToASCII(host)
+	}
+	return strings.TrimRight(strings.Trim(strings.ToLower(host), "[]"), ".")
 }
 
 // enforceCookieOrigin refuses an unsafe request that presents a browser's credential, a session

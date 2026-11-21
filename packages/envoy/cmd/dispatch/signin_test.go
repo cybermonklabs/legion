@@ -113,7 +113,7 @@ func TestASignInIssuerOutageAnswersThePageAndTheAPI503AndKeepsTheCookie(t *testi
 	ask := func(path string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodGet, "http://dispatch.test"+path, nil)
 		for _, cookie := range signedIn.Result().Cookies() {
-			if cookie.Name == "dsession" {
+			if isSessionCookie(cookie) {
 				request.AddCookie(cookie)
 			}
 		}
