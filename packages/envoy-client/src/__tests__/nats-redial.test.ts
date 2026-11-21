@@ -375,16 +375,25 @@ function switchedDials(outage: Outage, client: Client, switched: Switched) {
   );
 }
 
+/** What the outage below opened, each held as soon as it opens, so its teardown closes it however
+ *  far the setup got. */
+interface OutageFixture {
+  hub: AuthHub | undefined;
+  readonly connections: NatsConnection[];
+}
+
 /**
  * The outage every row of the describe below reads, run once: nine clients on one hub, each
  * presenting its own broker token, are refused for 13 s and then admitted, and six of them switch
  * sessions. Real time, on purpose: what is under test is nats.js's own redial loop, which sleeps
  * on the platform's timers between the handler's answers. Every draw is fixed. The handler's
  * clock is moved past the outage gap at the drop, so the drop starts an outage as one does after a
- * connection that lived a while, without the run waiting a minute.
+ * connection that lived a while, without the run waiting a minute. The hub and each connection go
+ * into `fixture` as each opens, for the teardown, which owns them.
  */
-async function runOutage(): Promise<Outage> {
+async function runOutage(fixture: OutageFixture): Promise<Outage> {
   const hub = startAuthHub();
+  fixture.hub = hub;
   const broker = stubBroker(600);
   const env = podEnvironment(broker.url);
   let shift = 0;
@@ -414,6 +423,7 @@ async function runOutage(): Promise<Outage> {
       credential: { kind: "broker", broker: credential },
     });
     const connection = await connect(shape(options, credential, counted));
+    fixture.connections.push(connection);
     const reconnected: number[] = [];
     void (async () => {
       for await (const status of connection.status()) {
@@ -539,15 +549,16 @@ async function runOutage(): Promise<Outage> {
 }
 
 describe("broker-token sessions a hub refuses for 13 s and then admits, on real nats.js", () => {
+  const fixture: OutageFixture = { hub: undefined, connections: [] };
   let outage: Outage | undefined;
   beforeAll(async () => {
-    outage = await runOutage();
+    outage = await runOutage(fixture);
   }, 90_000);
   afterAll(async () => {
-    for (const client of Object.values(outage?.clients ?? {})) {
-      await client.connection.close().catch(() => {});
+    for (const connection of fixture.connections) {
+      await connection.close().catch(() => {});
     }
-    outage?.hub.stop();
+    fixture.hub?.stop();
   });
   /** The outage, which `beforeAll` ran. */
   const ran = (): Outage => {
