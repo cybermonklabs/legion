@@ -87,6 +87,10 @@ type fakeHubClock struct {
 	// beforeArm, when set, runs at each arm, before the timer is placed, until it answers true: a
 	// test's Advance landing between the worker's read of the clock and its arm.
 	beforeArm func() bool
+	// firing counts the timer callbacks that have won their timer's one run and not yet returned,
+	// and returned is signalled as each returns (waitCallbacks).
+	firing   int
+	returned *sync.Cond
 }
 
 type fakeHubTimer struct {
@@ -153,14 +157,51 @@ func (c *fakeHubClock) onArm(f func() bool) {
 	c.beforeArm = f
 }
 
-func (t *fakeHubTimer) fire() {
-	if t.done.CompareAndSwap(false, true) {
-		t.f()
+// returnedLocked is the condition waitCallbacks waits on, made on first use, with c.mu held.
+func (c *fakeHubClock) returnedLocked() *sync.Cond {
+	if c.returned == nil {
+		c.returned = sync.NewCond(&c.mu)
 	}
+	return c.returned
+}
+
+// waitCallbacks returns once no timer callback that has begun is still running. A callback of an
+// earlier arm that has won its timer's one run (fire) can be descheduled before it sends its wake,
+// and a timer's Stop cannot take that run back; a wake it sends after a test read the worker's
+// wakes as spent would wake the worker in place of the timer the test is about.
+func (c *fakeHubClock) waitCallbacks() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for c.firing > 0 {
+		c.returnedLocked().Wait()
+	}
+}
+
+// fire runs the timer's callback once, whether the real timer or an Advance comes first. Its win
+// of that one run and the count of callbacks under way change together under the clock's lock, as
+// Stop's win does, so waitCallbacks sees every callback that has won and not yet returned.
+func (t *fakeHubTimer) fire() {
+	c := t.clock
+	c.mu.Lock()
+	won := t.done.CompareAndSwap(false, true)
+	if won {
+		c.firing++
+	}
+	c.mu.Unlock()
+	if !won {
+		return
+	}
+	t.f()
+	c.mu.Lock()
+	c.firing--
+	c.returnedLocked().Broadcast()
+	c.mu.Unlock()
 }
 
 func (t *fakeHubTimer) Stop() bool {
 	t.real.Stop()
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
 	return t.done.CompareAndSwap(false, true)
 }
 
@@ -2168,6 +2209,13 @@ func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing
 // before it can answer: a hook asked in between, by the arm that follows the feed's change
 // recompute, waits for the lock and then finds the row's wake pending, so it answers false, and
 // the row's wake is spent before the clock moves rather than standing in for the timer after it.
+// A wake can also still be on its way from an earlier arm's timer: its callback can have won its
+// timer's one run and be descheduled before it sends, and the worker's Stop of that timer cannot
+// take the run back. Sent after the clock moved, it too would wake the worker in the timer's place.
+// So the hook waits for every such callback to return (waitCallbacks) before it reads the worker's
+// wakes. No timer can begin a run after that: the worker stopped its last timer before this arm,
+// and this arm's timer is placed only once the hook has answered.
+//
 // Each arm at which the hook answers false is followed by another: the view is dirty or
 // computing, so a recompute is due, or a wake is pending. Nothing else the intake can still owe
 // here, a catch-up of the change log after a notification or a connection, marks the view, since
@@ -2190,6 +2238,7 @@ func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testi
 		// channels, such as a catch-up under way, so a mark that work made is on the view by the
 		// time the view is read.
 		rig.hub.catchUpNow()
+		clock.waitCallbacks()
 		rig.hub.mu.Lock()
 		g := rig.hub.generation
 		ready := g != nil && len(g.views) == 1 && len(g.wakeWork) == 0
