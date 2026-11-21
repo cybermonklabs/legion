@@ -115,6 +115,34 @@ go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches t
 straight from the source and checks them against go.sum, so this is a second path, not a weaker
 check.
 
+## Why the ref job, and not github.ref, decides main
+
+The jobs that release, publish or deploy run only on main, and the `ref` job decides what main
+is: one bash test, `[ "$GITHUB_REF" = refs/heads/main ]`, whose verdict each such job reads as
+`needs.ref.outputs.main == 'true'`. An `if:` cannot make that test itself. GitHub compares
+strings in an expression ignoring case (docs.github.com, "Evaluate expressions in workflows and
+actions", Operators), and `startsWith`, `endsWith` and `contains` do too, so
+`github.ref == 'refs/heads/main'` is also true on a branch named `Main` or `MAIN`.
+
+GitHub keeps such a branch beside `main` as a branch of its own, no ruleset of this repository
+covers it, and a workflow_dispatch runs on it: measured on a scratch repository on 2026-11-21,
+where a job behind that `if:` ran in a push run and in a dispatched run on `Main` while `main`
+stood at another commit. The other places that read the ref compare it exactly, measured the same
+day: `on.push.branches: [main]` starts no run on a push to `Main`, so only a dispatch reaches
+these jobs; two branches whose names differ only in case get two concurrency groups from a group
+keyed on `github.ref`, and two Actions cache scopes; and `gh attestation verify` refused an
+archive attested on main when asked for `refs/heads/Main`, so a deployment's check, which asks
+for `refs/heads/main`, refuses an attestation made on `Main`. The npm publishes and the GitHub
+releases and tags check nothing of the kind; the listener's `latest` step alone also checks that
+its commit is on main.
+
+`github.ref_protected` would answer only while the rulesets protect `main` and no branch named
+`Main`, which a settings change outside this tree can alter. The `ref` job holds no permission
+and checks nothing out, so it runs no code of this repository, and its `timeout-minutes` of 5
+bounds a lost runner only. release-envoy-infra.yaml and docs-pages.yaml carry copies of it; in
+release-envoy-listener.yaml the test is the first step of `targets`, the job that runs first there
+and holds contents: read alone, so it runs before that job checks anything out.
+
 ## What legion_build releases and why it holds no credential
 
 The Go `legion`: linux and darwin archives of the binary, which embeds its role prompts, with

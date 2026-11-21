@@ -49,6 +49,22 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
+  # Says whether the run is on main, for build's `if:`, which cannot test that itself: GitHub
+  # compares `github.ref` with a string ignoring case, so a branch named `Main` would release.
+  # .github/ci-notes/release.md#why-the-ref-job-and-not-githubref-decides-main says more. It holds
+  # no permission and checks nothing out.
+  ref:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      main: ${{ steps.ref.outputs.main }}
+    steps:
+      - id: ref
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then main=true; else main=false; fi
+          echo "main=$main" >> "$GITHUB_OUTPUT"
+
   # Versions, vets, tests, builds and smoke-tests the plugin and the command, and hands their
   # archives to publish as an artifact. It runs the module's code and every third-party module it
   # links, so it holds no write scope and no secret: whatever that code does to this VM (a planted
@@ -57,7 +73,8 @@ jobs:
   build:
     # Only main releases them: a workflow_dispatch from another branch skips this job, and publish
     # with it.
-    if: github.ref == 'refs/heads/main'
+    needs: ref
+    if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:

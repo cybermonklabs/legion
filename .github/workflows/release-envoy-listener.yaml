@@ -129,7 +129,10 @@ jobs:
   # packages: write, contents: write, id-token or attestations: write, and a job holding a
   # credential runs no script of this repository (.github/scripts/check-release-credentials.sh).
   # This job holds contents: read alone, so it may run one - which makes it a build job, hence the
-  # tripwire last, as in build, docker and release_build.
+  # tripwire last, as in build, docker and release_build. Its `ref` step, first so that no code of
+  # the checkout runs before it, says whether the run is on main, for release_build's and
+  # release_publish's `if:`, which cannot test that themselves:
+  # .github/ci-notes/release.md#why-the-ref-job-and-not-githubref-decides-main says why.
   targets:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -138,7 +141,12 @@ jobs:
     outputs:
       envoy: ${{ steps.read.outputs.envoy }}
       envoy_image: ${{ steps.read.outputs.envoy_image }}
+      main: ${{ steps.ref.outputs.main }}
     steps:
+      - id: ref
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then main=true; else main=false; fi
+          echo "main=$main" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -479,7 +487,8 @@ jobs:
   # Only main releases: a workflow_dispatch from any other branch publishes its `envoy:<sha>` image
   # above and stops there.
   release_build:
-    if: github.ref == 'refs/heads/main'
+    needs: targets
+    if: needs.targets.outputs.main == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -641,9 +650,8 @@ jobs:
     # On `always()`, so a skipped release_build does not skip this job; every job whose outputs
     # the steps below read has its result tested, targets' among them.
     if: >-
-      always() && github.ref == 'refs/heads/main' &&
-      needs.build.result == 'success' && needs.image_index.result == 'success' &&
-      needs.targets.result == 'success'
+      always() && needs.targets.result == 'success' && needs.targets.outputs.main == 'true' &&
+      needs.build.result == 'success' && needs.image_index.result == 'success'
     concurrency:
       # One run at a time, and every run's turn comes: `queue: max` keeps up to 100 jobs pending
       # in the group, first in, first out, where the default keeps one and cancels it for the
