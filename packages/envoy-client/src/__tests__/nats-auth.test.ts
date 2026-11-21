@@ -6,7 +6,13 @@ import { connect, nkeys } from "nats";
 import { natsSeedFromEnvironment } from "../envoy-settings";
 import { natsAuthOptions } from "../nats-auth";
 import type { BrokerNatsCredential, NatsCredential } from "../nats-credential";
-import { type NatsServer, startNatsServer, useNatsServerDirectory } from "./nats-server";
+import {
+  NATS_START_HOOK_MS,
+  type NatsServer,
+  natsStopHookMs,
+  startNatsServer,
+  useNatsServerDirectory,
+} from "./nats-server";
 
 interface TestKeyPair {
   getSeed(): Uint8Array;
@@ -60,11 +66,19 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
       startNatsServer(serverDirectory),
       startNatsServer(serverDirectory, user.publicKey),
     ]);
-  }, 120_000);
+  }, NATS_START_HOOK_MS);
+  // Two removals, one after the other; a removal that runs out does not stop the other's.
   afterAll(() => {
-    open?.stop();
-    authorized?.stop();
-  }, 60_000);
+    const failures: string[] = [];
+    for (const server of [open, authorized]) {
+      try {
+        server?.stop();
+      } catch (error) {
+        failures.push(String(error));
+      }
+    }
+    if (failures.length > 0) throw new Error(failures.join("; "));
+  }, natsStopHookMs(2));
 
   test("with no seed, connects to a server that asks for no credential", async () => {
     const connection = await connectWith(open.url, {});

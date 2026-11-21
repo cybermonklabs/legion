@@ -19,7 +19,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "nod
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
-import { RETRY_FIRST_WAIT_MS, RETRY_MAX_WAIT_MS } from "@legion/cipher-client/token-client";
+import { RETRY_FIRST_WAIT_MS } from "@legion/cipher-client/token-client";
 import type { Subprocess } from "bun";
 import { connect, Events, type NatsConnection } from "nats";
 import {
@@ -35,7 +35,6 @@ import { type EnvoyEnvironment, envoySettings } from "../envoy-settings";
 import {
   BROKER_REDIAL_CAP_MS,
   BROKER_REDIAL_POLL_MS,
-  brokerRedialWaitBounds,
   natsConnectionOptions,
 } from "../nats-connection";
 import {
@@ -476,198 +475,202 @@ describe.skipIf(!envoyStackEnabled)(
       });
     }, 300_000);
 
-    test("reconnects after two refusals once a token is live again", async () => {
-      // Tokens live three seconds, so the user the service admits a connection as lapses inside
-      // the test, as a 15-minute one does inside a session; the server expires it on its own
-      // clock, so this runs on the wall clock.
-      const broker = stubBroker(3);
-      const hub = await startCalloutHub("reconnect", broker.url);
-      let connection: NatsConnection | undefined;
-      let stopKeeping = () => {};
-      // What the client did, for a failure's dump: every status nats.js reports (a redial's start
-      // is its `reconnecting`, its end a `reconnect`, an `error` or the next `reconnecting`), and
-      // each CONNECT the authenticator answered, with what it presented. A dial that hangs shows
-      // as a `reconnecting` with nothing after it; a connection admitted and kept, as a
-      // `reconnect` with no `disconnect` after it.
-      const started = Date.now();
-      const trace: string[] = [];
-      const note = (what: string) => trace.push(`${Date.now() - started} ms: ${what}`);
-      try {
-        const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_e2e");
-        await credential.ready();
-        note(`token in hand, lapsing at ${credential.expiresAt().getTime() - started} ms`);
-        const options = natsConnectionOptions({
-          servers: [hub.natsUrl],
-          name: "nats-credential-e2e",
-          credential: { kind: "broker", broker: credential },
-        });
-        const authenticate = options.authenticator as (nonce?: string) => unknown;
-        const opened = await connect({
-          ...options,
-          authenticator: ((nonce?: string) => {
-            const auth = authenticate(nonce) as { auth_token?: string } | undefined;
-            note(
-              `CONNECT ${auth?.auth_token === undefined ? "presents nothing" : "presents the token"}`
-            );
-            return auth;
-          }) as typeof options.authenticator,
-        });
-        connection = opened;
-        const reconnected: number[] = [];
-        void (async () => {
-          for await (const status of opened.status()) {
-            note(`status ${status.type} ${JSON.stringify(status.data)}`);
-            if (status.type === Events.Reconnect) reconnected.push(Date.now());
-          }
-        })();
-        // Its own delivery channel is what the service grants a session.
-        opened.subscribe("notifications.envoy.deliver.ses_e2e");
-        await opened.flush();
-        const warnings: string[] = [];
-        stopKeeping = keepNatsCredential(opened, credential, (text) => {
-          note(`keeper: ${text}`);
-          warnings.push(text);
-        });
+    /** The bound of the row below, passed to it; its first wait takes its share of it. */
+    const RECONNECT_ROW_MS = 180_000;
 
-        // The broker goes away: the token lapses with no other to take its place, the server
-        // drops the user it admitted, and each reconnect is refused.
-        note("the broker goes away");
-        broker.state.down = true;
-        const deadline = Date.now() + 20_000;
-        while (hub.refusals() < 2 && Date.now() < deadline) await Bun.sleep(100);
-        if (hub.refusals() < 2)
-          throw new Error(
-            [
-              `natsd refused ${hub.refusals()} connection(s) in 20 s, not 2 or more (the auth service logged ${hub.serviceRefusals()} refusal(s)); the connection is ${opened.isClosed() ? "closed" : "open"}`,
-              "the client, by milliseconds since the row began:",
-              ...trace,
-              hub.logs(),
-            ].join("\n")
-          );
-        expect(opened.isClosed()).toBe(false);
-        // The keeper warns once its renewal fails, and natsd refuses once the token lapses on the
-        // server's clock: two clocks, so no order between the two is promised. The keeper's first
-        // renewal comes halfway to the token's expiry (`renewDelay`), and waits for its trade at
-        // most TRADE_DEADLINE_MS before it warns (`keepNatsCredential`'s tick), so the warning is
-        // promised within that bound of the broker going away, not by natsd's second refusal.
-        const warnedBy = Date.now() + TRADE_DEADLINE_MS + 2_000;
-        while (warnings.length === 0 && Date.now() < warnedBy) await Bun.sleep(100);
-        expect(warnings.length).toBeGreaterThan(0);
-        for (const one of broker.state.minted) {
-          expect(warnings.join("\n")).not.toContain(one.value);
-        }
-
-        // The broker is back: a token is traded and the connection is admitted again. It mints
-        // tokens of a session's usual life again, so the keeper does not renew within the row:
-        // with 3-second tokens it renews about every 1.5 s and reconnects to present each new
-        // token, and the round trip below raced that reconnect (NatsError DISCONNECT).
-        const back = Date.now();
-        // How long the connection may take to come back, from the token client's schedule: only a
-        // token landing starts it over (`BrokerTokenClient.#run`), so the next trade is due at most
-        // RETRY_FIRST_WAIT_MS doubled once for each trade that failed while the broker was away,
-        // capped at RETRY_MAX_WAIT_MS, after the last of them. The credential holds the traded
-        // token only once something takes it: unless the keeper's retry takes it first, the next
-        // dial due, at most BROKER_REDIAL_CAP_MS on, finds nothing live to present, is refused,
-        // and starts the trade that takes it; the token then goes out the next time the redial
-        // loop asks (`brokerRedialDelays`), within BROKER_REDIAL_POLL_MS; and 5 s more for the
-        // handshakes on a loaded machine.
-        const failedTrades = Math.max(broker.state.trades - broker.state.minted.length, 1);
-        const nextTradeMs = Math.min(
-          RETRY_FIRST_WAIT_MS * 2 ** (failedTrades - 1),
-          RETRY_MAX_WAIT_MS
-        );
-        const backBy = back + nextTradeMs + BROKER_REDIAL_CAP_MS + BROKER_REDIAL_POLL_MS + 5_000;
-        broker.state.seconds = 900;
-        broker.state.down = false;
-        while (!reconnected.some((at) => at > back) && Date.now() < backBy) await Bun.sleep(100);
-        expect(reconnected.some((at) => at > back)).toBe(true);
-        expect(opened.isClosed()).toBe(false);
-        expect(await opened.rtt()).toBeGreaterThanOrEqual(0);
-      } finally {
-        stopKeeping();
-        await connection?.close().catch(() => {});
-        await hub.stop();
-      }
-    }, 180_000);
-
-    test("a token revoked before it lapses is dropped at the second refusal, and the connection comes back", async () => {
-      // The broker revokes the session's token: the auth service, which asks it about each
-      // token, refuses every CONNECT that presents it, and nats.js redials on its backoff
-      // (`brokerRedialDelays`). Tokens live ten minutes, so only the keeper's drop gets the
-      // connection a token it admits.
-      const broker = stubBroker(600);
-      const hub = await startCalloutHub("revoked", broker.url);
-      let connection: NatsConnection | undefined;
-      let stopKeeping = () => {};
-      const started = Date.now();
-      const trace: string[] = [];
-      const note = (what: string) => trace.push(`${Date.now() - started} ms: ${what}`);
-      try {
-        const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_revoked");
-        await credential.ready();
-        const opened = await connect(
-          natsConnectionOptions({
+    test(
+      "reconnects after two refusals once a token is live again",
+      async () => {
+        // Tokens live three seconds, so the user the service admits a connection as lapses inside
+        // the test, as a 15-minute one does inside a session; the server expires it on its own
+        // clock, so this runs on the wall clock.
+        const broker = stubBroker(3);
+        const hub = await startCalloutHub("reconnect", broker.url);
+        let connection: NatsConnection | undefined;
+        let stopKeeping = () => {};
+        // What the client did, for a failure's dump: every status nats.js reports (a redial's start
+        // is its `reconnecting`, its end a `reconnect`, an `error` or the next `reconnecting`), and
+        // each CONNECT the authenticator answered, with what it presented. A dial that hangs shows
+        // as a `reconnecting` with nothing after it; a connection admitted and kept, as a
+        // `reconnect` with no `disconnect` after it.
+        const started = Date.now();
+        const trace: string[] = [];
+        const note = (what: string) => trace.push(`${Date.now() - started} ms: ${what}`);
+        try {
+          const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_e2e");
+          await credential.ready();
+          note(`token in hand, lapsing at ${credential.expiresAt().getTime() - started} ms`);
+          const options = natsConnectionOptions({
             servers: [hub.natsUrl],
-            name: "nats-credential-revoked",
+            name: "nats-credential-e2e",
             credential: { kind: "broker", broker: credential },
-          })
-        );
-        connection = opened;
-        const reconnected: number[] = [];
-        void (async () => {
-          for await (const status of opened.status()) {
-            note(`status ${status.type} ${JSON.stringify(status.data)}`);
-            if (status.type === Events.Reconnect) reconnected.push(Date.now());
-          }
-        })();
-        const warnings: string[] = [];
-        stopKeeping = keepNatsCredential(opened, credential, (text) => {
-          note(`keeper: ${text}`);
-          warnings.push(text);
-        });
-        await opened.flush();
+          });
+          const authenticate = options.authenticator as (nonce?: string) => unknown;
+          const opened = await connect({
+            ...options,
+            authenticator: ((nonce?: string) => {
+              const auth = authenticate(nonce) as { auth_token?: string } | undefined;
+              note(
+                `CONNECT ${auth?.auth_token === undefined ? "presents nothing" : "presents the token"}`
+              );
+              return auth;
+            }) as typeof options.authenticator,
+          });
+          connection = opened;
+          const reconnected: number[] = [];
+          void (async () => {
+            for await (const status of opened.status()) {
+              note(`status ${status.type} ${JSON.stringify(status.data)}`);
+              if (status.type === Events.Reconnect) reconnected.push(Date.now());
+            }
+          })();
+          // Its own delivery channel is what the service grants a session.
+          opened.subscribe("notifications.envoy.deliver.ses_e2e");
+          await opened.flush();
+          const warnings: string[] = [];
+          stopKeeping = keepNatsCredential(opened, credential, (text) => {
+            note(`keeper: ${text}`);
+            warnings.push(text);
+          });
 
-        note("the broker revokes the token, and the connection redials");
-        const revoked = broker.state.minted[0]?.value ?? "";
-        broker.state.revoked.add(revoked);
-        const at = Date.now();
-        await opened.reconnect();
-        // Two refusals on the backoff, then the token traded at the second, which goes out the
-        // next time the redial loop asks: the connection is under a minute old, so it keeps its
-        // place in the backoff, and the two refusals are its first two redials, the first due at
-        // most `brokerRedialWaitBounds(1)` after it opened and the second at most
-        // `brokerRedialWaitBounds(2)` after that; then BROKER_REDIAL_POLL_MS, and 10 s for the
-        // trade and the handshakes on a loaded machine.
-        const backBy =
-          at +
-          brokerRedialWaitBounds(1).highestMs +
-          brokerRedialWaitBounds(2).highestMs +
-          BROKER_REDIAL_POLL_MS +
-          10_000;
-        while (!reconnected.some((when) => when > at) && Date.now() < backBy) await Bun.sleep(100);
-        if (!reconnected.some((when) => when > at))
-          throw new Error(
-            [
-              `the connection did not come back within ${(backBy - at) / 1000} s of the revoke; natsd refused ${hub.refusals()} connection(s), and the broker minted ${broker.state.minted.length} token(s)`,
-              "the client, by milliseconds since the row began:",
-              ...trace,
-              hub.logs(),
-            ].join("\n")
+          // The broker goes away: the token lapses with no other to take its place, the server
+          // drops the user it admitted, and each reconnect is refused.
+          note("the broker goes away");
+          broker.state.down = true;
+          // Each phase below waits for its fact, bounded only by the row: its bound less 5 s. An
+          // earlier phase keeps back the time the later ones take on the product's own schedule,
+          // so a slow phase cannot leave the next none: the keeper's warning, at most
+          // TRADE_DEADLINE_MS after its renewal starts, and the reconnect once the broker is back,
+          // at most RETRY_FIRST_WAIT_MS after a failed trade, the next dial at most
+          // BROKER_REDIAL_CAP_MS on, and the redial loop's BROKER_REDIAL_POLL_MS. The schedules
+          // themselves are held to the millisecond by the keeper's and the redial handler's rows
+          // on the fake clock (nats-credential-keeper, nats-redial); on the wall clock and a real
+          // natsd, this row holds the facts.
+          const rowDeadline = started + RECONNECT_ROW_MS - 5_000;
+          const reconnectMs = RETRY_FIRST_WAIT_MS + BROKER_REDIAL_CAP_MS + BROKER_REDIAL_POLL_MS;
+          const until = async (holds: () => boolean, by: number) => {
+            while (!holds() && Date.now() < by) await Bun.sleep(100);
+            return holds();
+          };
+          const refusedBy = rowDeadline - reconnectMs - TRADE_DEADLINE_MS;
+          if (!(await until(() => hub.refusals() >= 2, refusedBy)))
+            throw new Error(
+              [
+                `natsd refused ${hub.refusals()} connection(s) by ${Math.round((refusedBy - started) / 1000)} s into the row, not 2 or more (the auth service logged ${hub.serviceRefusals()} refusal(s)); the connection is ${opened.isClosed() ? "closed" : "open"}`,
+                "the client, by milliseconds since the row began:",
+                ...trace,
+                hub.logs(),
+              ].join("\n")
+            );
+          expect(opened.isClosed()).toBe(false);
+          // The keeper warns once its renewal fails, and natsd refuses once the token lapses on the
+          // server's clock: two clocks, so no order between the two is promised.
+          await until(() => warnings.length > 0, rowDeadline - reconnectMs);
+          expect(warnings.length).toBeGreaterThan(0);
+          for (const one of broker.state.minted) {
+            expect(warnings.join("\n")).not.toContain(one.value);
+          }
+
+          // The broker is back: a token is traded and the connection is admitted again. It mints
+          // tokens of a session's usual life again, so the keeper does not renew within the row:
+          // with 3-second tokens it renews about every 1.5 s and reconnects to present each new
+          // token, and the round trip below raced that reconnect (NatsError DISCONNECT).
+          const back = Date.now();
+          broker.state.seconds = 900;
+          broker.state.down = false;
+          await until(() => reconnected.some((at) => at > back), rowDeadline);
+          expect(reconnected.some((at) => at > back)).toBe(true);
+          expect(opened.isClosed()).toBe(false);
+          expect(await opened.rtt()).toBeGreaterThanOrEqual(0);
+        } finally {
+          stopKeeping();
+          await connection?.close().catch(() => {});
+          await hub.stop();
+        }
+      },
+      RECONNECT_ROW_MS
+    );
+
+    /** The bound of the row below, passed to it; its wait for the reconnect is bounded by it. */
+    const REVOKED_ROW_MS = 120_000;
+
+    test(
+      "a token revoked before it lapses is dropped at the second refusal, and the connection comes back",
+      async () => {
+        // The broker revokes the session's token: the auth service, which asks it about each
+        // token, refuses every CONNECT that presents it, and nats.js redials on its backoff
+        // (`brokerRedialDelays`). Tokens live ten minutes, so only the keeper's drop gets the
+        // connection a token it admits.
+        const broker = stubBroker(600);
+        const hub = await startCalloutHub("revoked", broker.url);
+        let connection: NatsConnection | undefined;
+        let stopKeeping = () => {};
+        const started = Date.now();
+        const trace: string[] = [];
+        const note = (what: string) => trace.push(`${Date.now() - started} ms: ${what}`);
+        try {
+          const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_revoked");
+          await credential.ready();
+          const opened = await connect(
+            natsConnectionOptions({
+              servers: [hub.natsUrl],
+              name: "nats-credential-revoked",
+              credential: { kind: "broker", broker: credential },
+            })
           );
-        expect(hub.refusals()).toBeGreaterThanOrEqual(2);
-        expect(broker.state.minted.length).toBe(2);
-        expect(warnings.join("\n")).toContain(
-          "refused the connection's live broker token (AUTHORIZATION_VIOLATION)"
-        );
-        for (const one of broker.state.minted) expect(warnings.join("\n")).not.toContain(one.value);
-        expect(opened.isClosed()).toBe(false);
-        expect(await opened.rtt()).toBeGreaterThanOrEqual(0);
-      } finally {
-        stopKeeping();
-        await connection?.close().catch(() => {});
-        await hub.stop();
-      }
-    }, 120_000);
+          connection = opened;
+          const reconnected: number[] = [];
+          void (async () => {
+            for await (const status of opened.status()) {
+              note(`status ${status.type} ${JSON.stringify(status.data)}`);
+              if (status.type === Events.Reconnect) reconnected.push(Date.now());
+            }
+          })();
+          const warnings: string[] = [];
+          stopKeeping = keepNatsCredential(opened, credential, (text) => {
+            note(`keeper: ${text}`);
+            warnings.push(text);
+          });
+          await opened.flush();
+
+          note("the broker revokes the token, and the connection redials");
+          const revoked = broker.state.minted[0]?.value ?? "";
+          broker.state.revoked.add(revoked);
+          const at = Date.now();
+          await opened.reconnect();
+          // Two refusals on the backoff, then the token traded at the second, which goes out the
+          // next time the redial loop asks. When each redial goes out is the redial handler's
+          // schedule, held to the millisecond by its rows on the fake clock (nats-redial); here the
+          // wait is for the fact, bounded only by the row's bound less 5 s.
+          const backBy = started + REVOKED_ROW_MS - 5_000;
+          while (!reconnected.some((when) => when > at) && Date.now() < backBy)
+            await Bun.sleep(100);
+          if (!reconnected.some((when) => when > at))
+            throw new Error(
+              [
+                `the connection did not come back by ${Math.round((backBy - started) / 1000)} s into the row; natsd refused ${hub.refusals()} connection(s), and the broker minted ${broker.state.minted.length} token(s)`,
+                "the client, by milliseconds since the row began:",
+                ...trace,
+                hub.logs(),
+              ].join("\n")
+            );
+          expect(hub.refusals()).toBeGreaterThanOrEqual(2);
+          expect(broker.state.minted.length).toBe(2);
+          expect(warnings.join("\n")).toContain(
+            "refused the connection's live broker token (AUTHORIZATION_VIOLATION)"
+          );
+          for (const one of broker.state.minted)
+            expect(warnings.join("\n")).not.toContain(one.value);
+          expect(opened.isClosed()).toBe(false);
+          expect(await opened.rtt()).toBeGreaterThanOrEqual(0);
+        } finally {
+          stopKeeping();
+          await connection?.close().catch(() => {});
+          await hub.stop();
+        }
+      },
+      REVOKED_ROW_MS
+    );
 
     test("a session switch subscribes the new session only once the connection is admitted as it", async () => {
       const broker = stubBroker(600);
