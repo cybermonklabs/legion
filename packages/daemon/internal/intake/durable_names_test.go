@@ -384,6 +384,38 @@ func TestNoConsumerNameIsCreatedTwice(t *testing.T) {
 	})
 }
 
+// On fresh names, as on fixed ones (TestAFailedSetRepositoriesChangesNothing), a repositories
+// change that fails at its first read of the selection store changes nothing and stops nothing: the
+// GitHub consumer Run reads from keeps its connection, and an event published after the failure is
+// still applied, so the caller retries the change on a running daemon.
+func TestAFailedFreshSetRepositoriesKeepsTheConsumerRunReads(t *testing.T) {
+	pool := migratedPool(t)
+	createWrites(t, pool)
+	cutover(t, pool, consumernames.CutoverDone)
+	js, stream, _ := freshJetStream(t)
+	spec := freshSpec(t, &lockedBuffer{}, js)
+	consumers := openIntake(t, js, pool, spec)
+	stop := runConsumers(t, consumers, factMarks())
+	defer stop()
+	github := githubConsumerName(spec.Project)
+	current := currentName(t, pool, github)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	widgets := []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
+	if err := consumers.SetRepositories(canceled, widgets); err == nil {
+		t.Fatal("SetRepositories on a cancelled context reported no failure")
+	}
+	if got := consumers.repositories(); !slices.Equal(got, capturedRepositories) {
+		t.Fatalf("the decoder's set after a failed change = %v, want it unchanged, %v", got, capturedRepositories)
+	}
+	event := publish(t, js, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
+	assertAcknowledgedThrough(t, stream, current, event)
+	testwait.Eventually(t, "the event published after the failed change applied", func() bool {
+		return slices.Equal(writeHandlers(t, pool), []string{"pr-1"})
+	})
+}
+
 // Every reader of a daemon durable finds it through the record (`TestEveryReaderFindsTheCurrentName`),
 // with every fixed name gone from the stream: the boot's reconcile reads DispatchPosition, the state
 // route reads Lag, a mapping refresh updates the GitHub consumer's filters, and Run consumes. Lag

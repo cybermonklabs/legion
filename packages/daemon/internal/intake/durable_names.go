@@ -202,14 +202,16 @@ func (d *durableNames) close() {
 // selected is gone (consumernames.Names.Ensure), and updates the one selected otherwise, keeping
 // the start it was created with, as openConsumer does for a fixed name. It then writes the
 // consumer's floor as the record's last floor, and closes the connections of the logical name's
-// other generations.
+// other generations. A failed Ensure closes none: what the record selects is not known then, and
+// the consumer Run reads from stays bound to its own connection, so a failed repositories change
+// stops nothing and its caller retries it.
 func (d *durableNames) open(ctx context.Context, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	logical := config.Durable
 	sel, _, err := d.names.Ensure(ctx, logical, consumernames.CreateRequest{Create: d.create(config), First: d.first})
-	defer func() { d.keep(logical, sel.Record.Current) }()
 	if err != nil {
 		return nil, d.failed(logical, sel, consumernames.OperationCreate, err)
 	}
+	defer d.keep(logical, sel.Record.Current)
 	current := sel.Record.Current
 	info := sel.Info
 	if info == nil {
