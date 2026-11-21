@@ -1,0 +1,2 @@
+kind: Changed
+body: '`legion-testpg` starts PostgreSQL with `max_connections` 491, up from 483, because a Dispatch server now opens up to 117 connections, two more for the per-issue Legion facts and the eval day-row refresher.'

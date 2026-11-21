@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -600,6 +603,62 @@ func TestRepoProjectRenamedToIsSetKeptClearedAndHeldToOneStep(t *testing.T) {
 	}
 	if got := renamedTo("oldco/gadgets"); got != nil {
 		t.Fatalf("renamed_to after clearing = %q, want null", *got)
+	}
+}
+
+// TestEveryMappingWriterMovesItsChangeIntoTheChangeLog: a mapping's trigger records its settings
+// change, naming the repository, in the change log's outbox (migration 20261117100020), and every
+// writer of a mapping moves one batch of the outbox into the log right after its commit
+// (delivery.DrainRepoProjectChange): the PUT and the DELETE before they answer, the boot seed
+// (SeedRepoProjects) and the delivery fixtures' write (deliverytest.WriteRepoProjects). So each
+// write's change is in delivery_changes, with its repository, once the write returns, and the test
+// drains nothing between the write and its read of the log.
+func TestEveryMappingWriterMovesItsChangeIntoTheChangeLog(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createProjects(t, handler, "CORE")
+	ctx := t.Context()
+	for _, write := range []struct {
+		what, repo string
+		run        func() error
+	}{
+		{"the PUT", "acme/put", func() error {
+			wantStatus(t, "the PUT of acme/put", dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/put", map[string]any{"project": "CORE"}, "alice"), http.StatusOK)
+			return nil
+		}},
+		{"the DELETE", "acme/put", func() error {
+			wantStatus(t, "the DELETE of acme/put", dispatchRequest(t, handler, http.MethodDelete, "/api/v1/settings/repo-projects/acme/put", nil, "alice"), http.StatusNoContent)
+			return nil
+		}},
+		{"the boot seed", "acme/seeded", func() error {
+			return SeedRepoProjects(ctx, database, events.NewBroker(), "acme/seeded=CORE")
+		}},
+		{"the delivery fixtures' write", "acme/fixture", func() error {
+			return deliverytest.WriteRepoProjects(ctx, database.Pool,
+				model.RepoProject{Repo: "acme/fixture", Project: "CORE", CreatedBy: model.Actor{Kind: "system", ID: "fixture"}})
+		}},
+	} {
+		// The changes before the write are moved into the log first, so its head stands past them.
+		if _, err := delivery.DrainPending(ctx, database.Pool); err != nil {
+			t.Fatalf("move the changes before %s into the log: %v", write.what, err)
+		}
+		head, err := delivery.ChangesHead(ctx, database.Pool)
+		if err != nil {
+			t.Fatalf("read the change log's head before %s: %v", write.what, err)
+		}
+		if err := write.run(); err != nil {
+			t.Fatalf("%s of %s: %v", write.what, write.repo, err)
+		}
+		changes, err := delivery.ChangesSince(ctx, database.Pool, head.Seq, 100)
+		if err != nil {
+			t.Fatalf("read the change log after %s: %v", write.what, err)
+		}
+		logged := make([]string, len(changes))
+		for i, change := range changes {
+			logged[i] = change.Kind + " " + change.Repo
+		}
+		if !slices.Contains(logged, delivery.ChangeKindSettings+" "+write.repo) {
+			t.Errorf("after %s of %s the change log holds %v, want a settings change naming %s", write.what, write.repo, logged, write.repo)
+		}
 	}
 }
 

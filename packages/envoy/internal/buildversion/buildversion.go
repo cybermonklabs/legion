@@ -1,7 +1,10 @@
 // packages/envoy/internal/buildversion/buildversion.go
 
-// Package buildversion names the release a host binary (agent-secrets, agent-secrets-helper) was
-// built as, for `--version` and the helper's startup line.
+// Package buildversion names the release a binary was built as. The host binaries
+// (agent-secrets, agent-secrets-helper) report it for `--version` and the helper's startup
+// line. cmd/dispatch stores it in the Legion facts consumer's record of the build that last
+// read each project whole (processBuild), where it is the build of any binary no release
+// stamped a commit into.
 package buildversion
 
 import "runtime/debug"

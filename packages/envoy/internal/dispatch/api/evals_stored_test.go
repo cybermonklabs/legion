@@ -1,0 +1,358 @@
+package api
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"math"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+)
+
+// evalShape is one read of the eval list the stored figures are checked over: its window, its
+// compare range (nil for none), its repositories, and whether the stored figures answer it
+// (evals.FiguresOffered).
+type evalShape struct {
+	name    string
+	window  evals.Range
+	compare *evals.Range
+	repos   []string
+	offered bool
+}
+
+// evalDaysEnding is the n whole UTC days ending at end, exclusive.
+func evalDaysEnding(n int, end time.Time) evals.Range {
+	return evals.Range{From: end.AddDate(0, 0, -n), To: end}
+}
+
+// storedEvalShapes is every shape of the list read a page asks for as of today, and two the stored
+// figures do not answer: each preset of the Evals tab as a GET from midnight to midnight (L days
+// ending today), with and without the compare range before it; each as the live view reads it at a
+// moment of today (L+1 days ending tomorrow), with the compare range its query names and without;
+// a repository's rows; and, read from the day rows, a range of a length the tab does not offer and
+// two repositories.
+func storedEvalShapes(today time.Time, repo, other string) []evalShape {
+	var shapes []evalShape
+	for _, n := range []int{7, 14, 28, 84} {
+		window, live, compare := evalDaysEnding(n, today), evalDaysEnding(n+1, today.AddDate(0, 0, 1)), evalDaysEnding(n, today.AddDate(0, 0, -n))
+		shapes = append(shapes,
+			evalShape{name: fmt.Sprintf("%d days", n), window: window, offered: true},
+			evalShape{name: fmt.Sprintf("%d days with a compare range", n), window: window, compare: &compare, offered: true},
+			evalShape{name: fmt.Sprintf("the live %d days", n), window: live, offered: true},
+			evalShape{name: fmt.Sprintf("the live %d days with a compare range", n), window: live, compare: &compare, offered: true})
+	}
+	repoCompare, custom, customCompare := evalDaysEnding(28, today.AddDate(0, 0, -28)), evalDaysEnding(10, today), evalDaysEnding(10, today.AddDate(0, 0, -10))
+	return append(shapes,
+		evalShape{name: "28 days of " + repo + " with a compare range", window: evalDaysEnding(28, today), compare: &repoCompare, repos: []string{repo}, offered: true},
+		evalShape{name: "the live 14 days of " + repo, window: evalDaysEnding(15, today.AddDate(0, 0, 1)), repos: []string{repo}, offered: true},
+		evalShape{name: "10 days with a compare range", window: custom, compare: &customCompare},
+		evalShape{name: "28 days of two repositories", window: evalDaysEnding(28, today), compare: &repoCompare, repos: []string{repo, other}})
+}
+
+// loggedAggs is the folds a logged series takes, each of one logged eval of the checks.
+var loggedAggs = []string{evals.AggSum, evals.AggRatio, evals.AggWeightedMean, evals.AggQuantile, evals.AggMax, evals.AggLast}
+
+// seedLoggedAggs registers, in project, one logged eval of each of loggedAggs, its one series
+// folded by that agg, and logs its readings over the 100 days before today: on most days one or
+// two, with an n where the fold weighs one, every third of them of repo too, and none on some days
+// and none before the first, so its first day lies inside the longer ranges.
+func seedLoggedAggs(t *testing.T, registry *evals.Store, project, repo string, today time.Time) {
+	t.Helper()
+	caller := model.Actor{Kind: "user", ID: "alice"}
+	for aggIndex, agg := range loggedAggs {
+		slug := "logged-" + strings.ReplaceAll(agg, "_", "-")
+		if _, err := registry.Register(t.Context(), evals.Registration{Project: project, Slug: slug, Caller: caller,
+			Series: []evals.SeriesChange{{Series: "value", SeriesComputationChange: evals.SeriesComputationChange{Agg: evals.Set(agg)}}}}); err != nil {
+			t.Fatalf("register %s: %v", slug, err)
+		}
+		var rows []json.RawMessage
+		for day := range 100 {
+			if (day+aggIndex)%7 == 3 {
+				continue
+			}
+			for reading := 0; reading <= day%2; reading++ {
+				fields := map[string]any{"series": "value", "row_kind": "check", "row_key": fmt.Sprintf("%d-%d", day, reading),
+					"value":       float64((day*37+reading*11+aggIndex*5)%97) / 4,
+					"measured_at": today.AddDate(0, 0, day-100).Add(time.Duration(3+reading*7) * time.Hour)}
+				if agg == evals.AggRatio || agg == evals.AggWeightedMean {
+					fields["n"] = 1 + (day+reading)%5
+				}
+				if (day+reading)%3 == 0 {
+					fields["attributes"] = map[string]any{"repo": repo}
+				}
+				encoded, err := json.Marshal(fields)
+				if err != nil {
+					t.Fatalf("encode a reading: %v", err)
+				}
+				rows = append(rows, encoded)
+			}
+		}
+		if _, err := registry.WriteReadings(t.Context(), evals.Batch{Project: project, Slug: slug, Rows: rows, Caller: caller, BuiltBy: testServerBuild}); err != nil {
+			t.Fatalf("log %s's readings: %v", slug, err)
+		}
+	}
+}
+
+// storedEvalsRig is the server and the moment the stored figures' read is checked over: the
+// delivery project and its repositories, and the Legion project beside it.
+type storedEvalsRig struct {
+	served   *server
+	projects []string
+	now      time.Time
+	today    time.Time
+	delivery string
+	repos    []string
+}
+
+// newStoredEvalsRig seeds the delivery history of 30 days, the Legion history of the golden
+// windows, and the logged evals of every agg over 100 days (seedLoggedAggs), and refreshes the
+// day rows and their stored figures as the server's refresher writes them.
+func newStoredEvalsRig(t *testing.T) (*storedEvalsRig, func(statement string, args ...any)) {
+	t.Helper()
+	_, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
+	fixture, windows := seedEvalHistories(t, database, deps, 30)
+	end := windows[0].Spec.Now
+	if fixture.To.After(end) {
+		end = fixture.To
+	}
+	now := end.Add(-time.Minute)
+	registry := evals.New(database, deps.Docs, deps.Events)
+	seedLoggedAggs(t, registry, fixture.Project, fixture.DeployRepo, measures.Midnight(now))
+	refreshEvalDays(t, registry, database, now)
+	exec := func(statement string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(t.Context(), statement, args...); err != nil {
+			t.Fatalf("%s: %v", strings.Fields(statement)[0], err)
+		}
+	}
+	return &storedEvalsRig{
+		served: served, projects: []string{fixture.Project, windows[0].Spec.Project}, now: now, today: measures.Midnight(now),
+		delivery: fixture.Project, repos: fixture.Repos,
+	}, exec
+}
+
+// read is the list read of every eval of the rig's projects in shape at the rig's moment
+// (readEvalShape).
+func (r *storedEvalsRig) read(t *testing.T, shape evalShape) (evalListResponse, []byte) {
+	t.Helper()
+	return readEvalShape(t, r.served, r.projects, r.now, shape)
+}
+
+// readEvalShape is the list read of every eval of projects in shape, as both list routes and the
+// live view read it, at now, and its JSON body.
+func readEvalShape(t *testing.T, served *server, projects []string, now time.Time, shape evalShape) (evalListResponse, []byte) {
+	t.Helper()
+	ranges := evalRanges{window: shape.window, compare: shape.compare, from: shape.window.From, to: shape.window.To}
+	if shape.compare != nil {
+		ranges.compareFrom, ranges.compareTo = shape.compare.From, shape.compare.To
+	}
+	answer, err := served.readEvalList(t.Context(), evalListRequest{
+		evalReadQuery: evalReadQuery{ranges: ranges, repos: shape.repos, limit: evalPageMax}, projects: projects,
+	}, now)
+	if err != nil {
+		t.Fatalf("read %s: %v", shape.name, err)
+	}
+	body, err := json.Marshal(answer)
+	if err != nil {
+		t.Fatalf("encode %s: %v", shape.name, err)
+	}
+	return answer, body
+}
+
+// TestTheStoredFiguresAnswerWhatTheDayRowsAnswer: over the delivery, Legion and logged histories,
+// with every eval of each computed source and a logged eval of each agg (the quantile among
+// them), the list read of every shape a page asks for answers byte for byte what the read of the
+// day rows answers, folded in day order: each preset with and without its compare range, as a GET
+// and as the live view's L+1 days, a repository's rows, and ranges that start before a series'
+// first day. The read of the day rows is the same server's once no project's figures stand built
+// (eval_figures_built), which a range of a length the tab does not offer and a read of two
+// repositories read anyway. The negative control breaks the stored figures of one eval: every
+// shape the stored figures answer then answers otherwise, and the two the day rows answer do not.
+func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
+	r, exec := newStoredEvalsRig(t)
+	shapes := storedEvalShapes(r.today, r.repos[0], r.repos[1])
+	for _, shape := range shapes {
+		if got := evals.FiguresOffered(shape.repos, shape.window, shape.compare); got != shape.offered {
+			t.Fatalf("%s: the stored figures offered %t, want %t", shape.name, got, shape.offered)
+		}
+	}
+	stored := map[string][]byte{}
+	figures := 0
+	for _, shape := range shapes {
+		answer, body := r.read(t, shape)
+		stored[shape.name] = body
+		for _, item := range answer.Items {
+			figures += len(item.Series)
+		}
+	}
+	marks := r.figuresBuilt(t)
+	if len(marks) != len(r.projects) {
+		t.Fatalf("the figures of %d of the %d projects stand built (%v), so a read answers from the day rows where the stored figures should", len(marks), len(r.projects), marks)
+	}
+	exec(`delete from eval_figures_built`)
+	sample := map[string][]byte{}
+	for _, shape := range shapes {
+		_, sample[shape.name] = r.read(t, shape)
+		if !bytes.Equal(stored[shape.name], sample[shape.name]) {
+			t.Errorf("%s: the stored figures answer %d bytes that differ from the day rows' %d bytes at byte %d", shape.name,
+				len(stored[shape.name]), len(sample[shape.name]), firstDifference(stored[shape.name], sample[shape.name]))
+		}
+	}
+	t.Logf("%d shapes over %d projects, %d series in all, answered alike by the stored figures and the day rows", len(shapes), len(r.projects), figures)
+
+	for project, through := range marks {
+		exec(`insert into eval_figures_built (project_key, through, built_by) values ($1, $2, $3)`, project, through, testServerBuild)
+	}
+	broken := evals.EvalID(r.delivery, evals.SlugDeployFrequency)
+	exec(`update eval_range_figures set figures = '\x0000'::bytea where eval_id = $1`, broken)
+	for _, shape := range shapes {
+		_, body := r.read(t, shape)
+		if differs := !bytes.Equal(body, sample[shape.name]); differs != shape.offered {
+			t.Errorf("%s: with %s's stored figures broken the answer differs from the day rows' %t, want %t", shape.name, broken, differs, shape.offered)
+		}
+	}
+}
+
+// firstDifference is the first index at which a and b differ.
+func firstDifference(a, b []byte) int {
+	for index := range min(len(a), len(b)) {
+		if a[index] != b[index] {
+			return index
+		}
+	}
+	return min(len(a), len(b))
+}
+
+// figuresBuilt is how far each of the rig's projects' figures stand built.
+func (r *storedEvalsRig) figuresBuilt(t *testing.T) map[string]time.Time {
+	t.Helper()
+	built, err := r.served.registry().FiguresThrough(t.Context(), r.projects)
+	if err != nil {
+		t.Fatalf("read how far the figures are built: %v", err)
+	}
+	return built
+}
+
+// TestTheStoredFiguresAnswerK12sHandFolds (k12 over the stored figures): for one count
+// (deploy-frequency's deploys), one hours measure (legion-slot-wait's hours), one share
+// (deploy-run-success's runs) and one quantile (pr-open-to-merge's minutes), the 14-day read with
+// its compare range, which the stored figures answer, states for the window and the compare range
+// each statistic k12 folds by hand from the project's day rows of the range: sums over the days,
+// the share's summed numerator over its summed denominator, the quantile's ranks of every sample
+// of the range merged and sorted, the Legion figures to four decimals, and no data for a range
+// that starts before the series' first day; within k12's tolerance, and bit for bit.
+func TestTheStoredFiguresAnswerK12sHandFolds(t *testing.T) {
+	r, _ := newStoredEvalsRig(t)
+	compare := evalDaysEnding(14, r.today.AddDate(0, 0, -14))
+	shape := evalShape{name: "14 days with a compare range", window: evalDaysEnding(14, r.today), compare: &compare, offered: true}
+	if !evals.FiguresOffered(nil, shape.window, shape.compare) || len(r.figuresBuilt(t)) != len(r.projects) {
+		t.Fatalf("the stored figures do not answer %s: built %v", shape.name, r.figuresBuilt(t))
+	}
+	answer, _ := r.read(t, shape)
+	golden := r.projects[1]
+	measured := []struct{ kind, project, slug, series string }{
+		{"count", r.delivery, evals.SlugDeployFrequency, measures.SeriesDeploys},
+		{"hours", golden, evals.SlugLegionSlotWait, "hours"},
+		{"share", r.delivery, evals.SlugDeployRunSuccess, measures.SeriesRuns},
+		{"quantile", r.delivery, evals.SlugPROpenToMerge, measures.SeriesMinutes},
+	}
+	folds, exact, examined := 0, 0, 0
+	pool := r.served.deps.Store.Pool
+	for _, m := range measured {
+		evalID := evals.EvalID(m.project, m.slug)
+		foldedRows := 0
+		values := seriesValues(t, findEval(t, answer.Items, m.project, m.slug), m.series)
+		var first *time.Time
+		if err := pool.QueryRow(t.Context(), `select min(day) from eval_days where project_key = $1 and eval_id = $2 and writer = 'computation' and series = $3 and repo = ''`,
+			m.project, evalID, m.series).Scan(&first); err != nil {
+			t.Fatalf("read %s's first day: %v", evalID, err)
+		}
+		for _, which := range []struct {
+			label string
+			days  evals.Range
+			got   evals.Statistics
+		}{{"window", shape.window, values.Window}, {"compare", compare, values.Compare}} {
+			rows, err := pool.Query(t.Context(), `
+				select n, sum, num, den, samples, counts from eval_days
+				where project_key = $1 and eval_id = $2 and writer = 'computation' and series = $3 and repo = '' and listed
+				  and day >= $4::date and day < $5::date order by day`, m.project, evalID, m.series, which.days.From, which.days.To)
+			if err != nil {
+				t.Fatalf("read %s's day rows: %v", evalID, err)
+			}
+			type handRow struct {
+				N             int
+				Sum, Num, Den *float64
+				Samples       []float64
+				Counts        map[string]float64
+			}
+			held, err := pgx.CollectRows(rows, pgx.RowToStructByPos[handRow])
+			if err != nil {
+				t.Fatalf("read %s's day rows: %v", evalID, err)
+			}
+			examined, foldedRows = examined+len(held), foldedRows+len(held)
+			var sum, num, den, withPRs float64
+			var merged []float64
+			for _, row := range held {
+				sum += measures.ValueOrZero(row.Sum)
+				num += measures.ValueOrZero(row.Num)
+				den += measures.ValueOrZero(row.Den)
+				withPRs += row.Counts[measures.CountWithPRs]
+				merged = append(merged, row.Samples...)
+			}
+			slices.Sort(merged)
+			hand := map[string]*float64{}
+			days := float64(which.days.To.Sub(which.days.From) / (24 * time.Hour))
+			fourDecimals := func(value float64) float64 { return math.Round(value*1e4) / 1e4 }
+			switch m.kind {
+			case "count":
+				hand["deploys"], hand["with_prs"], hand["per_day"], hand["with_prs_per_day"] = &sum, &withPRs, new(sum/days), new(withPRs/days)
+			case "share":
+				hand["rate"] = nil
+				if den != 0 {
+					hand["rate"] = new(num / den)
+				}
+			case "quantile":
+				hand["n"] = new(float64(len(merged)))
+				if len(merged) > 0 {
+					hand["median"], hand["p90"], hand["max"] = new(measures.Quantile(merged, 0.5)), new(measures.Quantile(merged, 0.9)), new(merged[len(merged)-1])
+				}
+			case "hours":
+				hand["hours"], hand["n"] = new(fourDecimals(sum)), new(float64(len(merged)))
+				if len(merged) > 0 {
+					hand["median"], hand["p90"] = new(fourDecimals(measures.Quantile(merged, 0.5))), new(fourDecimals(measures.Quantile(merged, 0.9)))
+				}
+			}
+			if first == nil || which.days.From.Before(first.UTC()) {
+				for name := range hand {
+					hand[name] = nil
+				}
+			}
+			for name, want := range hand {
+				folds++
+				got := which.got[name]
+				bits := want == nil && got == nil || want != nil && got != nil && math.Float64bits(*want) == math.Float64bits(*got)
+				if bits {
+					exact++
+				}
+				if !bits && (want == nil || got == nil || math.Abs(*want-*got) > 1e-9*math.Max(1, math.Max(math.Abs(*want), math.Abs(*got)))) {
+					t.Errorf("%s %s.%s %s.%s: the stored figures answer %s, k12's hand fold %s", m.kind, m.slug, m.series, which.label, name, showFigure(got), showFigure(want))
+				} else if !bits {
+					t.Errorf("%s %s.%s %s.%s: the stored figures answer %s, k12's hand fold %s, within its tolerance and not bit for bit",
+						m.kind, m.slug, m.series, which.label, name, showFigure(got), showFigure(want))
+				}
+			}
+		}
+		if foldedRows == 0 {
+			t.Errorf("%s's %s holds no day row of %s in the window or the compare range, so the hand fold folds nothing", m.project, m.slug, m.series)
+		}
+	}
+	t.Logf("k12 over the stored figures: %d of %d hand folds bit for bit, over %d day rows", exact, folds, examined)
+}

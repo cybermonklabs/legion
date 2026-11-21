@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  The Dispatch API contract carries the eval routes' types (the list, detail, items, readings and
+  register bodies, `EvalListItem` and the `evals` live view). The delivery measures'
+  `change_failure_rate` stays an object, and its `rate` and `upper_bound_rate` are nullable: they
+  are null, and every count 0, while no failure source exists. Each of the
+  delivery `DeliveryTargets` is a `DeliveryTarget`, `{value, inclusive, direction, judges}`, or
+  null where its eval's target is off: `direction` is the eval's, `higher_better` or
+  `lower_better`, and `judges` the statistics its verdict judges (`<series>.<stat>`, its
+  `target_judges`, or its primary series' headline statistic where it names none), each typed as
+  one of the judges a register write takes of the six delivery evals. Every
+  `DeliveryKpiStatus` field is nullable, and `DeliveryPipelineResponse` carries `status`, a
+  `DeliveryPipelineStatus` of its two lead-time cards' verdicts.

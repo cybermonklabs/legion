@@ -1091,7 +1091,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy, time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. flags_source says whether a failure source fed the change failure rate and time to restore: with none (none) every change_failure_rate count is 0 and every rate null, time_to_restore has no median, and both verdicts are null, since a rate nothing measured is no 0; change_failure_rate itself is never null. 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
     get: operations["getApiV1DeliveryMeasures"];
     put?: never;
     post?: never;
@@ -1108,7 +1108,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets; not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets. A job is ranked among the slowest with as many timed results as pr_checks.slowest_min_results states: the min_n of the job series (job:*) of the pr-ci eval of the project the deploy repository is mapped to, or 50 where it is mapped to no project or that project holds no pr-ci eval yet; the ranking is the one pr-ci's items read with sort=median. Not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, one named more than once, or one whose seven days start before the UTC year 1, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
     get: operations["getApiV1DeliveryPipeline"];
     put?: never;
     post?: never;
@@ -1179,6 +1179,23 @@ export interface paths {
     };
     /** @description The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
     get: operations["getApiV1DeliveryTimeline"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/evals": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The evals of several projects in the project read's item shape and envelope {items, total, limit, offset}, by project in the order named and then by slug, the page running across them: ?project=, repeated, names the projects read, and with none named every project the store holds is read, by key, with no project picked for the caller. The window, compare range, kind, repo and page keys are the project read's. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project. */
+    get: operations["getApiV1Evals"];
     put?: never;
     post?: never;
     delete?: never;
@@ -2718,6 +2735,93 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/projects/{key}/evals": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The project's evals, one page {items, total, limit, offset} by slug (limit 1-200, default 50), each its current definition (every field of eval_versions, read through evals_current), its owner, each listed series with its statistics over the window [from, to) (RFC3339, a moment of the UTC years 1 to 9999, default the last 7 days, at most 84) and over compare_from..compare_to (both or neither, at most 84 days; the two need not be of one length), the change between them, data_since (the series' first day; a range that starts before it reads every statistic null, "no data", never 0), the count of rows that reached the project through a repository, and for a headline series a per-day array; and the verdict of its target (null where the target is off). Every figure is folded from the stored day rows of the UTC days the range covers, which end by 9999-12-31, through the one fold the eval's source names, or its series' agg for a logged eval; a figure past what a float holds is null; window and compare state those days, freshness the oldest row folded and the day-row refresher's age. ?kind= (delivery, legion, ci, experiment) keeps one kind; ?repo=, repeated, folds those repositories' rows in place of the project's. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project. */
+    get: operations["getApiV1ProjectsByKeyEvals"];
+    put?: never;
+    /** @description Register an eval or change its definition {slug, actor?, name?, question?, number_rule?, decision?, doc_block?, doc_text?, failure_modes?, unit?, direction?, target?, target_inclusive?, target_judges?, owner_role?, person?, issue_key?, kind?, source?, state?, replaced_by?, links?, series?}: the next version, written in one transaction with every field the body leaves out copied from the newest version (target: null turns the target off); a series named in series is registered or changed the same way, and a version that lists or unlists a logged eval's series lists or unlists its stored day rows with it. doc_text replaces the eval's method in its section of the project's evals-md document (not with doc_block) unless that section holds it already. Each link {rel, href, label}, its href an absolute http or https URL, is stored with the server's recorded_at, and its far side is never fetched. A slug and a series' name hold at most 512 bytes. source is logged: only the seeded catalogue makes an eval computed, and a write naming another source is refused EVAL_FIELD_INVALID. A series' min_n is the fewest timed results a job needs before pr-ci ranks it among its slowest jobs, so it is taken on pr-ci's job series (job:*) alone and refused EVAL_FIELD_INVALID on any other series, which no read ranks by one. On a computed eval the write sets only how the number is judged and who answers for it: target, target_inclusive, target_judges, the min_n of pr-ci's job series, owner_role, person, issue_key, links, state, replaced_by and its method (doc_text or doc_block); its code defines the rest, and a write naming any other field, or a series the eval does not hold, is refused EVAL_FIELD_COMPUTED. Answers 201 {items, total, limit, offset} with what it wrote, a version of the definition or of a series, or 200 with the versions that stand where the body changed nothing; 400 {code, error, field} with a stable code and the field it refuses (EVAL_SLUG_INVALID, EVAL_KEY_TOO_LONG, EVAL_FIELD_INVALID, EVAL_FIELD_COMPUTED, EVAL_SERIES_INVALID, EVAL_DOC_TEXT_EMPTY, LINK_HREF_NOT_ABSOLUTE, LINK_HREF_NOT_HTTP, LINK_REL_MISSING), 404 PROJECT_NOT_FOUND, 409 EVALS_DOCUMENT_NOT_A_DOCUMENT where the project's evals-md slug names a file. */
+    post: operations["postApiV1ProjectsByKeyEvals"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/evals/{slug}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One eval's versions, newest first, one page {items, total, limit, offset} of the list's item shape: the newest states the window's values as the list read does (the same window, compare range, repo and freshness), every older version its definition alone; and doc_text, the method the eval's section of the project's evals-md document holds (null where the document holds none). 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project and EVAL_NOT_FOUND a slug no eval of it holds. */
+    get: operations["getApiV1ProjectsByKeyEvalsBySlug"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/evals/{slug}/items": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The rows behind an eval's numbers over the window and the compare range, one page {items, total, limit, offset}, every row {row_key, row_kind, cols, measured_at, source, href, links, range} whatever its kind, range compare for a row of the compare range: the eval's readings (a reading logged under a computed eval's slug among them), its stored day rows (day), and for a computed eval the rows its numbers count, as its project's day rows counted them: a Legion eval's issues closed in the range and legion-splitting's filings (issue), a delivery eval's pull requests and deploy runs (pull_request, deploy), a CI eval's runs (run) and pr-ci's jobs (job), unowned-p0's open P0 issues with no owner (issue). measured_at is when a row's value was measured, the moment its eval dates it by: a reading's own, a pull request's merge, a deploy run's and a CI run's start, a Legion issue's close, a filing's filing, a day row's day, a job's newest day, a failing job's latest failure, and the read itself for an open P0 issue with no owner. ?series= narrows to a series (a Legion series' :roots or :children cut, a filed:<class> series, a job:<name> series), ?row_kind= and ?row= to a row kind and a row key, ?repo=, repeated, to those repositories; ?sort=median answers pr-ci's jobs with their series' min_n timed results, slowest first, and ?sort=failures the jobs that failed in the 24 hours before the range's end. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND and EVAL_NOT_FOUND as the eval's read answers them. */
+    get: operations["getApiV1ProjectsByKeyEvalsBySlugItems"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/evals/{slug}/readings": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Log one batch of readings of one eval {readings, actor?}, each reading {series, row_kind, measured_at, value or value_absent_reason, row_key?, col?, unit?, n?, n_unit?, ci_low?, ci_high?, ci_level?, attributes?, links?, source?, note?, replaces?}: stored in one transaction or not at all, under an Idempotency-Key the write requires (400 IDEMPOTENCY_KEY_REQUIRED), a repeat under the key answered the first write's answer. A slug no eval holds registers its eval with the caller as owner, no target and state active; a reading under a computed eval's slug is stored and answered by its items, never folded into its value. A correction is a new reading naming the one it replaces. The server sets recorded_by and recorded_at, and refuses a row carrying either. measured_at lies from 2025-01-01T00:00:00Z to 24 hours after the server's time; series, row_kind, row_key and attributes.repo hold at most 512 bytes each; a link's href is an absolute http or https URL. A refused batch stores nothing and answers 400 {code, error, rows}, rows naming each refused row by its index and field with its own code (READING_INVALID, READING_VALUE_OR_REASON, READING_FIELD_SERVER_SET, READING_SERIES_INVALID, READING_REPLACES_UNKNOWN, READING_ALREADY_REPLACED, MEASURED_AT_OUT_OF_RANGE, EVAL_KEY_TOO_LONG, LINK_HREF_NOT_ABSOLUTE, LINK_HREF_NOT_HTTP, LINK_REL_MISSING, and READING_DAY_OVERFLOW for a value that would take a sum of its day row, its values or each weighted by its n, past what a float holds); a slug that is no slug is 400 EVAL_SLUG_INVALID, one over 512 bytes 400 EVAL_KEY_TOO_LONG, a batch of no reading 400 READINGS_EMPTY, an unknown project 404 PROJECT_NOT_FOUND, and a project whose evals-md slug names a file 409 EVALS_DOCUMENT_NOT_A_DOCUMENT. The write takes no query key but session: any other is 400 INVALID_QUERY naming it. Answers 201 {items, total, limit, offset, definition, registered}. */
+    post: operations["postApiV1ProjectsByKeyEvalsBySlugReadings"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/evals/{slug}/readings/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Refused, whatever the id names: 405 READING_APPEND_ONLY. A reading is append-only; a correction is a new reading naming the one it replaces in replaces. */
+    put: operations["putApiV1ProjectsByKeyEvalsBySlugReadingsById"];
+    post?: never;
+    /** @description Refused, whatever the id names: 405 READING_APPEND_ONLY. A reading is never deleted; a correction is a new reading naming the one it replaces in replaces. */
+    delete: operations["deleteApiV1ProjectsByKeyEvalsBySlugReadingsById"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/projects/{key}/gated-steps": {
     parameters: {
       query?: never;
@@ -2742,7 +2846,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon and the stored per-issue Legion facts: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; an issues map carrying, by issue key, the stored facts of every open issue with Legion phase work and of every issue the board shows (each card's issue and every issue of a tree a card stands in), a closed issue the board does not show being served by an eval's items route alone; and a header with the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, and how fresh the stored facts it serves are. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
     get: operations["getApiV1ProjectsByKeyLegionBoard"];
     put?: never;
     post?: never;
@@ -4464,13 +4568,11 @@ export interface components {
       confirmed: number;
       confirmed_or_pending: number;
       pending: number;
-      /** Format: double */
-      rate: number;
+      rate: null | number;
       rejected: number;
       reverts: number;
       total: number;
-      /** Format: double */
-      upper_bound_rate: number;
+      upper_bound_rate: null | number;
     };
     DeliveryDeployJobTiming: {
       days: components["schemas"]["DeliveryTimingDay"][] | null;
@@ -4488,8 +4590,7 @@ export interface components {
     DeliveryFlagCounts: {
       confirmed: number;
       pending: number;
-      /** Format: double */
-      rate: number;
+      rate: null | number;
       rejected: number;
       reverts: number;
       total: number;
@@ -4511,11 +4612,11 @@ export interface components {
       change_failure_rate: null | boolean;
       change_failure_rate_upper_bound: null | boolean;
       deploy_run_success: null | boolean;
-      deploys_per_day: boolean;
+      deploys_per_day: null | boolean;
       merge_to_production: null | boolean;
       merge_to_production_median: null | boolean;
       opened_to_merge: null | boolean;
-      unowned_p0: boolean;
+      unowned_p0: null | boolean;
     };
     DeliveryLeadTimeCell: {
       max_minutes: null | number;
@@ -4589,6 +4690,7 @@ export interface components {
       failing_jobs: components["schemas"]["DeliveryFailingJob"][] | null;
       run: components["schemas"]["DeliveryTiming"];
       slowest_jobs: components["schemas"]["DeliveryJobTiming"][] | null;
+      slowest_min_results: number;
     };
     DeliveryPipelineResponse: {
       /** Format: date-time */
@@ -4601,7 +4703,12 @@ export interface components {
       production_apply: components["schemas"]["DeliveryDeployJobTiming"];
       staging_apply: components["schemas"]["DeliveryDeployJobTiming"] | null;
       staging_e2e: components["schemas"]["DeliveryDeployJobTiming"] | null;
+      status: components["schemas"]["DeliveryPipelineStatus"];
       targets: components["schemas"]["DeliveryTargets"];
+    };
+    DeliveryPipelineStatus: {
+      merge_to_production: null | boolean;
+      opened_to_merge: null | boolean;
     };
     DeliveryRun: {
       /** Format: date-time */
@@ -4697,18 +4804,50 @@ export interface components {
       median_minutes: null | number;
       p90_minutes: null | number;
     };
+    DeliveryTarget: {
+      /** @enum {string} */
+      direction: "higher_better" | "lower_better";
+      inclusive: boolean;
+      judges:
+        | (
+            | "deploys.deploys"
+            | "deploys.per_day"
+            | "deploys.with_prs"
+            | "deploys.with_prs_per_day"
+            | "issues.value"
+            | "minutes.max"
+            | "minutes.median"
+            | "minutes.n"
+            | "minutes.p90"
+            | "per_deploy.confirmed"
+            | "per_deploy.pending"
+            | "per_deploy.rate"
+            | "per_deploy.rejected"
+            | "per_deploy.total"
+            | "per_pr.confirmed"
+            | "per_pr.pending"
+            | "per_pr.rate"
+            | "per_pr.rejected"
+            | "per_pr.reverts"
+            | "per_pr.total"
+            | "runs.cancelled"
+            | "runs.concluded"
+            | "runs.rate"
+            | "runs.reached_production"
+            | "upper_bound.confirmed_or_pending"
+            | "upper_bound.rate"
+          )[]
+        | null;
+      /** Format: double */
+      value: number;
+    };
     DeliveryTargets: {
-      /** Format: double */
-      change_failure_rate: number;
-      /** Format: double */
-      deploy_run_success_rate: number;
-      /** Format: double */
-      deploys_per_day: number;
-      /** Format: double */
-      merge_to_production_minutes: number;
-      /** Format: double */
-      opened_to_merge_median_minutes: number;
-      unowned_p0: number;
+      change_failure_rate: components["schemas"]["DeliveryTarget"] | null;
+      deploy_run_success_rate: components["schemas"]["DeliveryTarget"] | null;
+      deploys_per_day: components["schemas"]["DeliveryTarget"] | null;
+      merge_to_production_minutes: components["schemas"]["DeliveryTarget"] | null;
+      opened_to_merge_median_minutes: components["schemas"]["DeliveryTarget"] | null;
+      unowned_p0: components["schemas"]["DeliveryTarget"] | null;
     };
     DeliveryTimelineWithMeasures: {
       color_counts: {
@@ -4925,6 +5064,299 @@ export interface components {
     ErrorBody: {
       code: string;
       error: string;
+    };
+    EvalDayPoint: {
+      day: string;
+      statistics: components["schemas"]["EvalStatistics"] | null;
+    };
+    EvalDefinition: {
+      /** Format: date-time */
+      created_at: string;
+      decision: string;
+      direction: string;
+      doc_block: string;
+      eval_id: string;
+      failure_modes: components["schemas"]["EvalFailureMode"][] | null;
+      issue_key: string;
+      kind: string;
+      links: components["schemas"]["EvalLink"][] | null;
+      name: string;
+      number_rule: string;
+      owner_role: string;
+      person: string;
+      project_key: string;
+      question: string;
+      replaced_by: string;
+      slug: string;
+      source: string;
+      state: string;
+      target: null | number;
+      target_inclusive: boolean;
+      target_judges: string[] | null;
+      unit: string;
+      version: number;
+      written_by: components["schemas"]["Actor"];
+      written_via: string;
+    };
+    EvalDetailResponse: {
+      compare: components["schemas"]["EvalRange"] | null;
+      doc_text: null | string;
+      freshness: components["schemas"]["EvalFreshness"];
+      items: components["schemas"]["EvalItem"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
+      window: components["schemas"]["EvalRange"];
+    };
+    EvalFailureMode: {
+      guard: string;
+      mode: string;
+    };
+    EvalFreshness: {
+      refresher_age_seconds: null | number;
+      /** Format: date-time */
+      rows_updated_at: null | string;
+    };
+    EvalItem: {
+      definition: components["schemas"]["EvalDefinition"];
+      owner: components["schemas"]["EvalOwner"];
+      series: components["schemas"]["EvalSeriesValues"][] | null;
+      verdict: components["schemas"]["EvalVerdict"] | null;
+    };
+    EvalItemRow: {
+      cols: {
+        [key: string]: unknown;
+      } | null;
+      href: string;
+      links: components["schemas"]["EvalLink"][] | null;
+      /** Format: date-time */
+      measured_at: string;
+      /** @enum {string} */
+      range: "window" | "compare";
+      row_key: string;
+      row_kind: string;
+      source: string;
+    };
+    EvalItemsResponse: {
+      compare: components["schemas"]["EvalRange"] | null;
+      items: components["schemas"]["EvalItemRow"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
+      window: components["schemas"]["EvalRange"];
+    };
+    EvalJudge: {
+      judge: string;
+      met: null | boolean;
+      value: null | number;
+    };
+    EvalLink: {
+      href: string;
+      label: string;
+      /** Format: date-time */
+      recorded_at: string;
+      rel: string;
+    };
+    EvalLinkInput: {
+      href: string;
+      label?: string;
+      rel: string;
+    };
+    EvalListItem: {
+      definition: components["schemas"]["EvalDefinition"];
+      id: string;
+      owner: components["schemas"]["EvalOwner"];
+      series: components["schemas"]["EvalSeriesValues"][] | null;
+      verdict: components["schemas"]["EvalVerdict"] | null;
+    };
+    EvalListResponse: {
+      compare: components["schemas"]["EvalRange"] | null;
+      freshness: components["schemas"]["EvalFreshness"];
+      items: components["schemas"]["EvalListItem"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
+      window: components["schemas"]["EvalRange"];
+    };
+    EvalOwner: {
+      person: string;
+      role: string;
+      written_by: components["schemas"]["Actor"];
+    };
+    EvalRange: {
+      days: number;
+      /** Format: date-time */
+      from: string;
+      /** Format: date-time */
+      to: string;
+    };
+    EvalReading: {
+      attributes: {
+        [key: string]: unknown;
+      } | null;
+      ci_high: null | number;
+      ci_level: null | number;
+      ci_low: null | number;
+      col: string;
+      eval_id: string;
+      id: string;
+      links: components["schemas"]["EvalLink"][] | null;
+      /** Format: date-time */
+      measured_at: string;
+      n: null | number;
+      n_unit: string;
+      note: string;
+      /** Format: date-time */
+      recorded_at: string;
+      recorded_by: components["schemas"]["Actor"];
+      replaces: string;
+      row_key: string;
+      row_kind: string;
+      series: string;
+      source: string;
+      /** Format: date-time */
+      superseded_at: null | string;
+      unit: string;
+      value: null | number;
+      value_absent_reason: string;
+    };
+    EvalReadingInput: {
+      attributes?: {
+        [key: string]: unknown;
+      } | null;
+      ci_high?: null | number;
+      ci_level?: null | number;
+      ci_low?: null | number;
+      col?: string;
+      links?: components["schemas"]["EvalLinkInput"][] | null;
+      /** Format: date-time */
+      measured_at: string;
+      n?: null | number;
+      n_unit?: string;
+      note?: string;
+      replaces?: string;
+      row_key?: string;
+      row_kind: string;
+      series: string;
+      source?: string;
+      unit?: string;
+      value?: null | number;
+      value_absent_reason?: string;
+    };
+    EvalReadingsInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      readings: components["schemas"]["EvalReadingInput"][] | null;
+    };
+    EvalReadingsRefusal: {
+      code: string;
+      error: string;
+      field?: string;
+      rows?: components["schemas"]["EvalRowRefusal"][];
+    };
+    EvalReadingsResponse: {
+      definition: components["schemas"]["EvalDefinition"];
+      items: components["schemas"]["EvalReading"][] | null;
+      limit: number;
+      offset: number;
+      registered: boolean;
+      total: number;
+    };
+    EvalRegisterInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      decision?: string;
+      direction?: string;
+      doc_block?: string;
+      doc_text?: string;
+      failure_modes?: components["schemas"]["EvalFailureMode"][] | null;
+      issue_key?: string;
+      kind?: string;
+      links?: components["schemas"]["EvalLinkInput"][] | null;
+      name?: string;
+      number_rule?: string;
+      owner_role?: string;
+      person?: string;
+      question?: string;
+      replaced_by?: string;
+      series?: components["schemas"]["EvalSeriesInput"][] | null;
+      slug: string;
+      source?: string;
+      state?: string;
+      target?: null | number;
+      target_inclusive?: boolean;
+      target_judges?: string[] | null;
+      unit?: string;
+    };
+    EvalRegisterResponse: {
+      items: components["schemas"]["EvalRegistered"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
+    };
+    EvalRegistered: {
+      definition: components["schemas"]["EvalDefinition"];
+      series: components["schemas"]["EvalSeries"][] | null;
+      wrote: boolean;
+    };
+    EvalRowRefusal: {
+      code: string;
+      error: string;
+      field?: string;
+      index: number;
+    };
+    EvalSeries: {
+      agg: string;
+      /** Format: date-time */
+      created_at: string;
+      eval_id: string;
+      is_primary: boolean;
+      links: components["schemas"]["EvalLink"][] | null;
+      listed: boolean;
+      min_n: null | number;
+      role: string;
+      series: string;
+      unit: string;
+      version: number;
+    };
+    EvalSeriesInput: {
+      agg?: string;
+      is_primary?: boolean;
+      links?: components["schemas"]["EvalLinkInput"][] | null;
+      listed?: boolean;
+      min_n?: null | number;
+      role?: string;
+      series: string;
+      unit?: string;
+    };
+    EvalSeriesValues: {
+      agg: string;
+      change: components["schemas"]["EvalStatistics"] | null;
+      compare: components["schemas"]["EvalStatistics"] | null;
+      /** Format: date-time */
+      created_at: string;
+      data_since: null | string;
+      days: components["schemas"]["EvalDayPoint"][] | null;
+      eval_id: string;
+      is_primary: boolean;
+      links: components["schemas"]["EvalLink"][] | null;
+      listed: boolean;
+      min_n: null | number;
+      role: string;
+      series: string;
+      unit: string;
+      version: number;
+      via_repository: number;
+      window: components["schemas"]["EvalStatistics"] | null;
+    };
+    EvalStatistics: {
+      [key: string]: null | number;
+    };
+    EvalVerdict: {
+      direction: string;
+      inclusive: boolean;
+      judges: components["schemas"]["EvalJudge"][] | null;
+      met: null | boolean;
+      /** Format: double */
+      target: number;
     };
     Event: {
       actor: components["schemas"]["Actor"];
@@ -5593,9 +6025,15 @@ export interface components {
       priority: null | number;
       roles: string[] | null;
       slot: null | number;
+      /** Format: date-time */
+      slot_since: null | string;
+      slot_use: null | string;
       title: string;
       tree: string;
+      tree_slot: null | number;
+      waiting: components["schemas"]["LegionBoardWaiting"] | null;
       waiting_on: components["schemas"]["LegionBoardWait"] | null;
+      waiting_place: null | number;
     };
     LegionBoardColumn: {
       cards: components["schemas"]["LegionBoardCard"][] | null;
@@ -5614,7 +6052,47 @@ export interface components {
         | "held";
       label: string;
     };
+    LegionBoardFacts: {
+      /** Format: date-time */
+      as_of: null | string;
+      /** Format: date-time */
+      closed_at: null | string;
+      growth: components["schemas"]["LegionBoardGrowth"] | null;
+      hours_by_phase: {
+        [key: string]: number;
+      } | null;
+      /** Format: date-time */
+      opened_at: string;
+      review_rounds: number;
+      root_key: string;
+      /** Format: double */
+      slot_hours: number;
+      tree_depth: number;
+      /** Format: date-time */
+      updated_at: string;
+      waiting_reason: string;
+      /** Format: date-time */
+      work_first_at: null | string;
+      /** Format: double */
+      work_hours: number;
+      /** Format: date-time */
+      work_last_at: null | string;
+    };
+    LegionBoardGrowth: {
+      hours_by_phase: {
+        [key: string]: number;
+      } | null;
+      /** Format: double */
+      slot_hours: number;
+      /** Format: double */
+      work_hours: number;
+      /** Format: double */
+      work_last_at: number;
+    };
     LegionBoardHeader: {
+      facts_cursor_age_seconds: null | number;
+      /** Format: date-time */
+      facts_updated_at: null | string;
       queue_length: number;
       /** Format: date-time */
       read_at: null | string;
@@ -5629,6 +6107,9 @@ export interface components {
       /** Format: date-time */
       computed_at: string;
       header: components["schemas"]["LegionBoardHeader"];
+      issues: {
+        [key: string]: components["schemas"]["LegionBoardFacts"];
+      } | null;
       project: string;
       settings: {
         [key: string]: unknown;
@@ -5638,6 +6119,12 @@ export interface components {
       /** Format: date-time */
       answered_at: null | string;
       kind: string;
+      /** Format: date-time */
+      since: null | string;
+    };
+    LegionBoardWaiting: {
+      blocked_by: string[] | null;
+      reason: string;
       /** Format: date-time */
       since: null | string;
     };
@@ -9771,6 +10258,47 @@ export interface operations {
       };
     };
   };
+  getApiV1Evals: {
+    parameters: {
+      query?: {
+        project?: string[];
+        from?: string;
+        to?: string;
+        compare_from?: string;
+        compare_to?: string;
+        kind?: "delivery" | "legion" | "ci" | "experiment";
+        repo?: string[];
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalListResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1EventsLog: {
     parameters: {
       query?: {
@@ -13734,6 +14262,362 @@ export interface operations {
       };
     };
   };
+  getApiV1ProjectsByKeyEvals: {
+    parameters: {
+      query?: {
+        from?: string;
+        to?: string;
+        compare_from?: string;
+        compare_to?: string;
+        kind?: "delivery" | "legion" | "ci" | "experiment";
+        repo?: string[];
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalListResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1ProjectsByKeyEvals: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["EvalRegisterInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalRegisterResponse"];
+        };
+      };
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalRegisterResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalReadingsRefusal"];
+        };
+      };
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalReadingsRefusal"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalReadingsRefusal"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ProjectsByKeyEvalsBySlug: {
+    parameters: {
+      query?: {
+        from?: string;
+        to?: string;
+        compare_from?: string;
+        compare_to?: string;
+        repo?: string[];
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        slug: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalDetailResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ProjectsByKeyEvalsBySlugItems: {
+    parameters: {
+      query?: {
+        from?: string;
+        to?: string;
+        compare_from?: string;
+        compare_to?: string;
+        series?: string;
+        row_kind?: string;
+        row?: string;
+        repo?: string[];
+        sort?: "median" | "failures";
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        slug: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalItemsResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1ProjectsByKeyEvalsBySlugReadings: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        slug: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["EvalReadingsInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalReadingsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalReadingsRefusal"];
+        };
+      };
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalReadingsRefusal"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EvalReadingsRefusal"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1ProjectsByKeyEvalsBySlugReadingsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        slug: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Method Not Allowed */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1ProjectsByKeyEvalsBySlugReadingsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        slug: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Method Not Allowed */
+      405: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   putApiV1ProjectsByKeyGatedSteps: {
     parameters: {
       query?: {
@@ -14970,6 +15854,7 @@ export type DeliveryMeasuresResponse = components["schemas"]["DeliveryMeasuresRe
 export type DeliveryPR = components["schemas"]["DeliveryPR"];
 export type DeliveryPipelinePRChecks = components["schemas"]["DeliveryPipelinePRChecks"];
 export type DeliveryPipelineResponse = components["schemas"]["DeliveryPipelineResponse"];
+export type DeliveryPipelineStatus = components["schemas"]["DeliveryPipelineStatus"];
 export type DeliveryRun = components["schemas"]["DeliveryRun"];
 export type DeliveryRunDetail = components["schemas"]["DeliveryRunDetail"];
 export type DeliveryRunJob = components["schemas"]["DeliveryRunJob"];
@@ -14980,6 +15865,7 @@ export type DeliverySettings = components["schemas"]["DeliverySettings"];
 export type DeliverySettingsInput = components["schemas"]["DeliverySettingsInput"];
 export type DeliveryShippedPRView = components["schemas"]["DeliveryShippedPRView"];
 export type DeliverySpread = components["schemas"]["DeliverySpread"];
+export type DeliveryTarget = components["schemas"]["DeliveryTarget"];
 export type DeliveryTargets = components["schemas"]["DeliveryTargets"];
 export type DeliveryTimelineWithMeasures = components["schemas"]["DeliveryTimelineWithMeasures"];
 export type DeliveryTiming = components["schemas"]["DeliveryTiming"];
@@ -15010,6 +15896,35 @@ export type EditPreconditionCurrent = components["schemas"]["EditPreconditionCur
 export type EditPreconditionError = components["schemas"]["EditPreconditionError"];
 export type EditPreconditionMismatch = components["schemas"]["EditPreconditionMismatch"];
 export type ErrorBody = components["schemas"]["ErrorBody"];
+export type EvalDayPoint = components["schemas"]["EvalDayPoint"];
+export type EvalDefinition = components["schemas"]["EvalDefinition"];
+export type EvalDetailResponse = components["schemas"]["EvalDetailResponse"];
+export type EvalFailureMode = components["schemas"]["EvalFailureMode"];
+export type EvalFreshness = components["schemas"]["EvalFreshness"];
+export type EvalItem = components["schemas"]["EvalItem"];
+export type EvalItemRow = components["schemas"]["EvalItemRow"];
+export type EvalItemsResponse = components["schemas"]["EvalItemsResponse"];
+export type EvalJudge = components["schemas"]["EvalJudge"];
+export type EvalLink = components["schemas"]["EvalLink"];
+export type EvalLinkInput = components["schemas"]["EvalLinkInput"];
+export type EvalListItem = components["schemas"]["EvalListItem"];
+export type EvalListResponse = components["schemas"]["EvalListResponse"];
+export type EvalOwner = components["schemas"]["EvalOwner"];
+export type EvalRange = components["schemas"]["EvalRange"];
+export type EvalReading = components["schemas"]["EvalReading"];
+export type EvalReadingInput = components["schemas"]["EvalReadingInput"];
+export type EvalReadingsInput = components["schemas"]["EvalReadingsInput"];
+export type EvalReadingsRefusal = components["schemas"]["EvalReadingsRefusal"];
+export type EvalReadingsResponse = components["schemas"]["EvalReadingsResponse"];
+export type EvalRegisterInput = components["schemas"]["EvalRegisterInput"];
+export type EvalRegisterResponse = components["schemas"]["EvalRegisterResponse"];
+export type EvalRegistered = components["schemas"]["EvalRegistered"];
+export type EvalRowRefusal = components["schemas"]["EvalRowRefusal"];
+export type EvalSeries = components["schemas"]["EvalSeries"];
+export type EvalSeriesInput = components["schemas"]["EvalSeriesInput"];
+export type EvalSeriesValues = components["schemas"]["EvalSeriesValues"];
+export type EvalStatistics = components["schemas"]["EvalStatistics"];
+export type EvalVerdict = components["schemas"]["EvalVerdict"];
 export type Event = components["schemas"]["Event"];
 export type FinishedIssue = components["schemas"]["FinishedIssue"];
 export type GoingAction = components["schemas"]["GoingAction"];
@@ -15075,9 +15990,12 @@ export type LauncherCredentialsResponse = components["schemas"]["LauncherCredent
 export type LeadTime = components["schemas"]["LeadTime"];
 export type LegionBoardCard = components["schemas"]["LegionBoardCard"];
 export type LegionBoardColumn = components["schemas"]["LegionBoardColumn"];
+export type LegionBoardFacts = components["schemas"]["LegionBoardFacts"];
+export type LegionBoardGrowth = components["schemas"]["LegionBoardGrowth"];
 export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
 export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
+export type LegionBoardWaiting = components["schemas"]["LegionBoardWaiting"];
 export type LegionSetting = components["schemas"]["LegionSetting"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];

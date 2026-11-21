@@ -408,6 +408,17 @@ export function deleteRepoProject(repo: string, login = "alice") {
   );
 }
 
+/** `POST /api/v1/projects/{key}/evals`: a person's register write of one of `project`'s evals.
+ *  On a computed eval it sets how the number is judged and who answers for it, a series' min_n
+ *  among them, never how the number is computed. */
+export function registerEval(
+  project: string,
+  input: Body<"/api/v1/projects/{key}/evals", "post">,
+  login = "alice"
+) {
+  return post("/api/v1/projects/{key}/evals", { body: input, params: { key: project } }, { login });
+}
+
 /** Mints a personal agent token for `login`; the returned bearer acts for that human. */
 export async function mintAgentToken(name: string, login: string): Promise<string> {
   const minted = await post("/api/v1/me/agent-tokens", { body: { name } }, { login });
@@ -1288,6 +1299,16 @@ export function syncArchitectureSource(project: string, repo: string, options: A
 
 export function getArchitecture(project: string, options: ApiOptions = {}) {
   return get("/api/v1/projects/{key}/architecture", { params: { key: project } }, options);
+}
+
+/** `GET /api/v1/projects/{key}/evals`: one page of the project's evals, each listed series'
+ *  statistics over the window the query names (the route's own default where it names none). */
+export function listProjectEvals(
+  project: string,
+  query: Query<"/api/v1/projects/{key}/evals", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get("/api/v1/projects/{key}/evals", { params: { key: project }, query }, options);
 }
 
 /** Retry one comment mention's delivery, the endpoint the "Mention deliveries" Retry posts to. */

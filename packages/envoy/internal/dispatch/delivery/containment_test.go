@@ -327,6 +327,36 @@ func TestFirstShippingApply(t *testing.T) {
 	})
 }
 
+// TestAShippingIndexShipsEveryPullRequestAsContainingRunDoes: over applies created and completing
+// in the same few seconds, in a shuffled order, so creations and completions tie with each other
+// and with the merges, the index answers for every merge from before the first creation to after
+// the last the apply ContainingRun answers, and nothing for a pull request of another repository
+// or one not merged.
+func TestAShippingIndexShipsEveryPullRequestAsContainingRunDoes(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	second := func(n int) time.Time { return base.Add(time.Duration(n) * time.Second) }
+	var applies []Apply
+	for id := range 40 {
+		created := (id * 7) % 13
+		applies = append(applies, Apply{RunID: int64(100 + (id*11)%40), CreatedAt: second(created), CompletedAt: second(created + (id*5)%9)})
+	}
+	index := NewShippingIndex(applies)
+	const repo = "acme/widgets"
+	for merged := -1; merged <= 14; merged++ {
+		pr := DeliveryPullRequest{Repo: repo, Number: merged + 2, MergedAt: new(second(merged))}
+		want, got := ContainingRun(pr, repo, applies), index.Containing(pr, repo)
+		if (want == nil) != (got == nil) || (want != nil && *want != *got) {
+			t.Errorf("a pull request merged at second %d ships with %+v, want %+v", merged, got, want)
+		}
+		if other := index.Containing(pr, "acme/elsewhere"); other != nil {
+			t.Errorf("a pull request of another repository ships with %+v, want none", other)
+		}
+	}
+	if got := index.Containing(DeliveryPullRequest{Repo: repo, Number: 1}, repo); got != nil {
+		t.Errorf("a pull request not merged ships with %+v, want none", got)
+	}
+}
+
 // TestAppliesCompletingTogetherShipTheSameInEveryOrder: two production applies whose jobs completed
 // in the same second are ordered by run id, and the lower run id ships a pull request both could,
 // in every order the runs are listed in and every order the applies are handed over in. The live
@@ -460,4 +490,76 @@ func TestComputeDeployedStatus(t *testing.T) {
 			t.Errorf("got %q, want not_tracked (repo check independent of apply nilness)", got)
 		}
 	})
+}
+
+// TestTheJudgedJobNamesJudgeARunAsItsEveryJobDoes: given only a run's jobs that
+// Production.JudgedJobNames names, which is what every read but the timeline's hands it,
+// ProductionApplies answers the deploys, the runs missing their apply step and the unmatched runs
+// it answers given every job, over runs that exercise each rule: a deploy among other jobs, a run
+// whose production job applied nothing, one whose job lists no apply step, a dev-only run that
+// skipped the production call and lists it under its caller's name, one that skipped a nested call
+// two levels up, and a run holding no listed name at all.
+func TestTheJudgedJobNamesJudgeARunAsItsEveryJobDoes(t *testing.T) {
+	const deploy, nested, step = "production / production-apply", "dispatch-apply / staging-e2e / staging-e2e", "Run ./.github/actions/apply"
+	production := Production{JobNames: []string{deploy, nested}, ApplyStep: new(step)}
+	if got, want := production.JudgedJobNames(), []string{deploy, nested, "production", "dispatch-apply", "dispatch-apply / staging-e2e"}; !slices.Equal(got, want) {
+		t.Fatalf("JudgedJobNames = %q, want %q: each listed name and each caller a skipped call of it is listed under", got, want)
+	}
+	base := time.Date(2026, 10, 16, 8, 0, 0, 0, time.UTC)
+	success := DeliveryRunConclusionSuccess
+	ran := func(name string, conclusion DeliveryJobConclusion, applyStep *string, stepConclusion *DeliveryJobConclusion) DeliveryRunJob {
+		return DeliveryRunJob{Name: name, Conclusion: new(conclusion), CompletedAt: new(base), ApplyStep: applyStep, ApplyStepConclusion: stepConclusion}
+	}
+	other := []DeliveryRunJob{
+		ran("build", DeliveryJobConclusionSuccess, nil, nil),
+		ran("production-apply", DeliveryJobConclusionSkipped, nil, nil),
+		ran("dispatch-apply / dispatch-apply", DeliveryJobConclusionSuccess, nil, nil),
+	}
+	every := map[int64][]DeliveryRunJob{
+		1: append(slices.Clone(other), ran(deploy, DeliveryJobConclusionSuccess, new(step), new(DeliveryJobConclusionSuccess))),
+		2: append(slices.Clone(other), ran(deploy, DeliveryJobConclusionSuccess, new(step), new(DeliveryJobConclusionSkipped))),
+		3: append(slices.Clone(other), ran(deploy, DeliveryJobConclusionSuccess, new(step), nil)),
+		4: append(slices.Clone(other), ran("production", DeliveryJobConclusionSkipped, nil, nil)),
+		5: append(slices.Clone(other), ran("dispatch-apply / staging-e2e", DeliveryJobConclusionSkipped, nil, nil)),
+		6: slices.Clone(other),
+	}
+	runs := make([]DeliveryRun, len(every))
+	for i := range runs {
+		runs[i] = DeliveryRun{Repo: "acme/widgets", RunID: int64(i + 1), HeadCommitAt: base, Conclusion: &success}
+	}
+	judgedNames := production.JudgedJobNames()
+	named := map[int64][]DeliveryRunJob{}
+	for id, jobs := range every {
+		for _, job := range jobs {
+			if slices.Contains(judgedNames, job.Name) {
+				named[id] = append(named[id], job)
+			}
+		}
+	}
+	runIDs := func(listed []DeliveryRun) []int64 {
+		ids := make([]int64, len(listed))
+		for i, run := range listed {
+			ids[i] = run.RunID
+		}
+		return ids
+	}
+	for _, listing := range [][]DeliveryRun{runs, runs[3:], {runs[3]}, {runs[5]}} {
+		want, got := ProductionApplies(listing, every, production), ProductionApplies(listing, named, production)
+		if !slices.Equal(got.Applies, want.Applies) {
+			t.Errorf("over runs %v, the deploys judged by name = %+v, want %+v", runIDs(listing), got.Applies, want.Applies)
+		}
+		if !slices.Equal(runIDs(got.StepMissing), runIDs(want.StepMissing)) {
+			t.Errorf("over runs %v, the runs missing their step judged by name = %v, want %v", runIDs(listing), runIDs(got.StepMissing), runIDs(want.StepMissing))
+		}
+		var gotUnmatched, wantUnmatched []int64
+		for _, run := range got.Unmatched {
+			gotUnmatched = append(gotUnmatched, run.Run.RunID)
+		}
+		for _, run := range want.Unmatched {
+			wantUnmatched = append(wantUnmatched, run.Run.RunID)
+		}
+		if !slices.Equal(gotUnmatched, wantUnmatched) {
+			t.Errorf("over runs %v, the unmatched runs judged by name = %v, want %v", runIDs(listing), gotUnmatched, wantUnmatched)
+		}
+	}
 }

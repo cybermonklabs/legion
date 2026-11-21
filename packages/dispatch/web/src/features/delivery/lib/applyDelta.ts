@@ -11,6 +11,7 @@ import type {
   DeliveryPR,
   DeliveryRun,
   DeliverySessionGroup,
+  EvalListItem,
 } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 
@@ -19,13 +20,15 @@ type Item = { readonly id: string | number };
 /** The order Dispatch lists each live list in, ties broken by id so a merge of upserts always
  *  lands in one order: pull requests by merge time (`ListPullRequestsInWindow`), runs by their head
  *  commit's time, then id (`deliveryTimelineCompute`'s sort of `runs`), session groups by name,
- *  case aside (`ListSessionGroups`, `order by lower(g.name), g.id`). */
+ *  case aside (`ListSessionGroups`, `order by lower(g.name), g.id`), and an evals view's evals,
+ *  which are one project's, by slug (`evals.Store.Current`'s `order by slug`). */
 const ORDERS = {
   prs: (a: DeliveryPR, b: DeliveryPR) =>
     compareNullableTimestamps(a.merged_at, b.merged_at) || compareText(a.id, b.id),
   runs: (a: DeliveryRun, b: DeliveryRun) => compareTimestamps(a.head_at, b.head_at) || a.id - b.id,
   session_groups: (a: DeliverySessionGroup, b: DeliverySessionGroup) =>
     compareText(a.name.toLowerCase(), b.name.toLowerCase()) || compareText(a.id, b.id),
+  items: (a: EvalListItem, b: EvalListItem) => compareText(a.definition.slug, b.definition.slug),
 } as const;
 
 function compareText(a: string, b: string): number {

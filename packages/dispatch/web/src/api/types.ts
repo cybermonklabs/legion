@@ -152,6 +152,8 @@ export type {
   DuplicateCandidate,
   EditCommentInput,
   EditOp,
+  EvalListItem,
+  EvalListResponse,
   Event,
   EventsLiveResume,
   EventsLiveView,

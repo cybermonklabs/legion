@@ -52,10 +52,6 @@ const (
 	maxNewArtifactKeyBytes = 2692
 )
 
-// artifactColumns is the canonical artifact column list scanArtifact reads. role is read through
-// coalesce because model.Artifact carries it as "" when the document plays no role.
-const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at`
-
 func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -516,55 +512,6 @@ func (s *server) writeUploadNoTokenError(w http.ResponseWriter, name string) {
 		"%q has no token for an upload to name: send it again naming no token", name))
 }
 
-// queueNewArtifact queues the insert of the artifact an upload creates and returns the row as the
-// insert will leave it. Its id, which the document's own writes name before the row is written, is
-// taken here (gen_random_uuid, which assigns no transaction id), in the statement that reads its
-// created_at, the column's default, the transaction's now(), which the insert writes explicitly;
-// its ref_key is the one the 0071 trigger fills in, the target's owner key and the slug
-// (artifactTarget.refPrefix). role is the part the new document plays, which its slug decided
-// (documentRole), read once by the caller, which refuses a blank create that takes one: the row
-// the insert leaves carries it, so the reads this transaction makes of the artifact it just
-// created see it as every later reader will.
-func (s *server) queueNewArtifact(
-	ctx context.Context,
-	tx pgx.Tx,
-	ledger *docs.Ledger,
-	target artifactTarget,
-	project, session *string,
-	slug, name, kind string,
-	role *string,
-	actor model.Actor,
-) (model.Artifact, error) {
-	actorJSON, err := encodeJSON(actor)
-	if err != nil {
-		return model.Artifact{}, err
-	}
-	artifact := model.Artifact{
-		IssueKey: target.IssueKey, Project: deref(project), SessionID: session,
-		RefKey: target.refPrefix() + "/" + slug, Slug: slug, Name: name, Kind: kind, Role: deref(role),
-	}
-	if err := json.Unmarshal(actorJSON, &artifact.CreatedBy); err != nil {
-		return model.Artifact{}, fmt.Errorf("decode artifact author: %w", err)
-	}
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&artifact.ID, &artifact.CreatedAt); err != nil {
-		return model.Artifact{}, err
-	}
-	// The document work that follows runs before the insert below, so the address that insert
-	// gives the row - its key, the issue holding it, none for a project's or a session's
-	// document, and its own dispatch:// address - is recorded for the reads of this
-	// transaction that need it: a block pointer of a new document is held to the document's key
-	// and its issue (docs.addressOfDocument), and text this transaction indexes that cites the
-	// new document resolves to that row (refs.Pending). The issue already has its row, so the
-	// address names no pending parent (refs.DocumentAddress).
-	ledger.RegisterPendingArtifact(artifact.ID, refs.DocumentAddress{
-		RefKey: artifact.RefKey, IssueKey: deref(target.IssueKey), Ref: artifactReference(artifact),
-	})
-	return artifact, queueExec(ledger, `
-		insert into artifacts (id, issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, false, $8, $9, $10)
-	`, artifact.ID, target.IssueKey, project, session, slug, name, kind, role, actorJSON, artifact.CreatedAt)
-}
-
 // queueFileVersion queues the insert of an uploaded file's or image's version and returns the row
 // as the insert will leave it: numbered and dated by the ledger (docs.Ledger.NextVersion), with
 // its uploader as its one author. The bytes are written to the row only where no file store holds
@@ -610,17 +557,6 @@ func (s *server) queueFileVersion(
 		insert into artifact_versions (artifact_id, number, content, mime, size, sha256, authors, named, summary, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, artifactID, number, content, input.contentType, size, sha, authors, version.Named, summary, createdAt)
-}
-
-// recordDocumentTaskProgress records the task count of the document a write just stored.
-// readBack is the rendering that write stored, read back by its own parse (docs'
-// Ledger.ReadBackOf): the count reads that tree rather than parsing the same markdown again, and
-// parses markdown itself when the write left none.
-func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID string, readBack *pmdoc.Node, markdown string) error {
-	if readBack != nil {
-		return docs.RecordTaskProgress(ctx, tx, artifactID, readBack)
-	}
-	return docs.RecordTaskProgressMarkdown(ctx, tx, artifactID, markdown)
 }
 
 func (s *server) storeArtifact(
@@ -675,7 +611,7 @@ func (s *server) storeArtifact(
 			return
 		}
 		project = &loaded.Key
-		if err := lockProjectArtifacts(r.Context(), tx, loaded.Key); err != nil {
+		if err := docs.LockProjectArtifacts(r.Context(), tx, loaded.Key); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -706,7 +642,10 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, createRoleNameRefusal(input.name, slug, *role))
 			return
 		}
-		artifact, err = s.queueNewArtifact(r.Context(), tx, ledger, target, project, session, slug, input.name, kind, role, actor)
+		artifact, err = docs.QueueNewArtifact(r.Context(), ledger, docs.NewArtifact{
+			IssueKey: target.IssueKey, Project: project, Session: session, RefPrefix: target.refPrefix(),
+			Slug: slug, Name: input.name, Kind: kind, Role: role, CreatedBy: actor,
+		})
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -764,32 +703,27 @@ func (s *server) storeArtifact(
 	var documentMarkdown string
 	// documentReadBack is the rendering this write stored, read back by its own parse (docs'
 	// Ledger.ReadBackOf), which the task count and the advice's blocks read in place of parsing
-	// the same markdown again (recordDocumentTaskProgress, documentBlocksFor).
+	// the same markdown again (docs.RecordWrittenTaskProgress, documentBlocksFor).
 	var documentReadBack *pmdoc.Node
 	var documentChanges model.ReferenceChanges
 	if kind == "doc" {
-		if created {
-			// A first upload under a name the owner holds nothing under replaces nothing, so a
-			// token names a version that is not there: the caller read something this owner
-			// does not hold, or another writer has taken the name since. The caller believed
-			// its write was conditional, so it is refused rather than taken, and refused as a
-			// repair naming a token is, since neither document has a token to answer with.
-			if input.precondition != nil {
-				s.writeUploadNoTokenError(w, input.name)
-				return
-			}
-			documentMarkdown, err = s.deps.Docs.SeedText(documentCtx, artifact.ID, string(input.content), actor)
-		} else {
-			// An upload over a document that already exists replaces every word of it, so it
-			// names the token of the version it is replacing, which the write checks on the tree
-			// it reads under its own lock. One that names none is taken unchecked, as it was
-			// before #3000, and counted once it commits (noteUnguardedReplacement): the refusal
-			// of a missing token comes back once every deployed client sends one (INFRA-4980).
-			// A repair - a live tree outside the Proof schema, which has no token for anyone to
-			// name - names none by design. A file is not a document and was refused a token
-			// already (uploadArtifactFor).
-			documentMarkdown, err = s.deps.Docs.ReplaceText(documentCtx, artifact.ID, string(input.content), actor, input.precondition)
+		// A first upload under a name the owner holds nothing under replaces nothing, so a token
+		// names a version that is not there: the caller read something this owner does not hold,
+		// or another writer has taken the name since. The caller believed its write was
+		// conditional, so it is refused rather than taken, and refused as a repair naming a token
+		// is, since neither document has a token to answer with. An upload over a document that
+		// already exists replaces every word of it, so it names the token of the version it is
+		// replacing, which the write checks on the tree it reads under its own lock
+		// (docs.Service.ReplaceText). One that names none is taken unchecked, as it was before
+		// #3000, and counted once it commits (noteUnguardedReplacement): the refusal of a missing
+		// token comes back once every deployed client sends one (INFRA-4980). A repair - a live
+		// tree outside the Proof schema, which has no token for anyone to name - names none by
+		// design. A file is not a document and was refused a token already (uploadArtifactFor).
+		if created && input.precondition != nil {
+			s.writeUploadNoTokenError(w, input.name)
+			return
 		}
+		written, err := docs.WriteDocumentText(documentCtx, s.deps.Docs, artifact.ID, string(input.content), actor, documentSummary, created, input.precondition)
 		if err != nil {
 			// The document service knows the tree a token missed and nothing of this route's
 			// own; the refusal the client reads is worded where the two meet. Nothing is
@@ -797,27 +731,7 @@ func (s *server) storeArtifact(
 			s.writeUploadDocumentError(r.Context(), w, tx, err, input.name, artifact.ID)
 			return
 		}
-		version, err = ledger.QueueVersion(r.Context(), artifact.ID, documentMarkdown, []model.Actor{actor}, documentSummary)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		// The version credits the uploader alone, and holds the upload's write to the document,
-		// which clears the credit of every edit that write read when it changed the document. It
-		// carries the markdown it stored, whose display tree the commit stores
-		// (Ledger.storeVersionTrees), since this route writes the row itself.
-		ledger.WroteVersion(artifact.ID, version, documentMarkdown)
-		documentReadBack = ledger.ReadBackOf(artifact.ID, documentMarkdown)
-		// The count is queued after the version's insert, so it names that version (LEGION-542).
-		if err := recordDocumentTaskProgress(documentCtx, tx, artifact.ID, documentReadBack, documentMarkdown); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		documentChanges, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+		documentMarkdown, version, documentReadBack, documentChanges = written.Markdown, written.Version, written.ReadBack, written.Changes
 	} else {
 		version, err = s.queueFileVersion(r.Context(), tx, ledger, artifact.ID, input, sha, documentSummary, actor)
 		if err != nil {
@@ -863,7 +777,7 @@ func (s *server) storeArtifact(
 	if created {
 		eventType = "artifact.created"
 		artifact.Versions = []model.Version{version}
-		payload = artifactCreatedEventPayload(artifact, documentChanges)
+		payload = docs.ArtifactCreatedEventPayload(artifact, documentChanges)
 	}
 	var published []*model.Event
 	if target.ownsEvents() {
@@ -1585,7 +1499,7 @@ func participantsOrEmpty(participants []model.Actor) []model.Actor {
 // a batch with its other reads (getIssue), so the statement and the scan live apart from the
 // sequential loader that every other route calls.
 const issueArtifactsStatement = `
-		select ` + artifactColumns + `
+		select ` + docs.ArtifactColumns + `
 		from artifacts where issue_key = $1 order by created_at, id
 	`
 
@@ -1608,7 +1522,7 @@ func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) 
 // keeps a non-nil empty list, which the response carries as [].
 func collectArtifacts(rows pgx.Rows) ([]model.Artifact, error) {
 	artifacts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.Artifact, error) {
-		return scanArtifact(row)
+		return docs.ScanArtifact(row)
 	})
 	if err != nil {
 		return nil, err
@@ -1764,14 +1678,14 @@ func isArtifactNotFound(err error) bool {
 
 func (s *server) loadDocumentReferences(ctx context.Context, q queryer, target artifactTarget) ([]model.Artifact, error) {
 	query := `
-		select ` + artifactColumns + `
+		select ` + docs.ArtifactColumns + `
 		from artifacts where issue_key = $1 and kind = 'doc' order by created_at, id`
 	value := target.Project
 	if target.IssueKey != nil {
 		value = *target.IssueKey
 	} else {
 		query = `
-			select ` + artifactColumns + `
+			select ` + docs.ArtifactColumns + `
 			from artifacts where project_key = $1 and issue_key is null and kind = 'doc' order by created_at, id`
 	}
 	rows, err := q.Query(ctx, query, value)
@@ -1779,7 +1693,7 @@ func (s *server) loadDocumentReferences(ctx context.Context, q queryer, target a
 		return nil, err
 	}
 	documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.Artifact, error) {
-		return scanArtifact(row)
+		return docs.ScanArtifact(row)
 	})
 	if err != nil {
 		return nil, err
@@ -1960,7 +1874,7 @@ func (s *server) loadArtifact(ctx context.Context, q queryer, id string) (model.
 
 func (s *server) loadArtifactByRefKey(ctx context.Context, q queryer, refKey string) (model.Artifact, error) {
 	return s.loadArtifactRow(ctx, q, q.QueryRow(ctx, `
-		select `+artifactColumns+`
+		select `+docs.ArtifactColumns+`
 		from artifacts where ref_key = $1
 	`, refKey))
 }
@@ -1985,7 +1899,7 @@ func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (m
 // both reads of an artifact share: the one that goes on to carry the versions and the approval
 // (loadArtifactRow) and the one that takes the row alone (loadArtifactRowByID).
 func scanArtifactOrNotFound(row pgx.Row) (model.Artifact, error) {
-	artifact, err := scanArtifact(row)
+	artifact, err := docs.ScanArtifact(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Artifact{}, errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
 	}
@@ -2007,27 +1921,9 @@ func loadArtifactRowByID(ctx context.Context, q queryer, id string) (model.Artif
 		return model.Artifact{}, err
 	}
 	return scanArtifactOrNotFound(q.QueryRow(ctx, `
-		select `+artifactColumns+`
+		select `+docs.ArtifactColumns+`
 		from artifacts where id = $1
 	`, parsed))
-}
-
-// scanArtifact reads artifactColumns. A session-owned artifact's project is "".
-func scanArtifact(row pgx.Row) (model.Artifact, error) {
-	var artifact model.Artifact
-	var project *string
-	var createdBy []byte
-	if err := row.Scan(
-		&artifact.ID, &artifact.IssueKey, &project, &artifact.SessionID, &artifact.RefKey, &artifact.Slug,
-		&artifact.Name, &artifact.Kind, &artifact.Primary, &artifact.Role, &createdBy, &artifact.CreatedAt,
-	); err != nil {
-		return model.Artifact{}, err
-	}
-	artifact.Project = deref(project)
-	if err := json.Unmarshal(createdBy, &artifact.CreatedBy); err != nil {
-		return model.Artifact{}, fmt.Errorf("decode artifact author: %w", err)
-	}
-	return artifact, nil
 }
 
 // artifactOwnerKey is the owner part of ref_key (artifactTarget.refPrefix), which the 0071
@@ -2045,7 +1941,7 @@ const artifactOwnerKey = `coalesce(issue_key, project_key, 'agent/' || session_i
 // slug and another whose name it is, which uploads stored before this lookup read slugs) gets the
 // one whose slug it is, the one a read by that reference resolves to (resolveDocumentReference).
 const (
-	artifactByNameOrSlugSQL = `select ` + artifactColumns + ` from artifacts where ` + artifactOwnerKey +
+	artifactByNameOrSlugSQL = `select ` + docs.ArtifactColumns + ` from artifacts where ` + artifactOwnerKey +
 		` = $1 and $2 in (name, slug) order by slug = $2 desc limit 1`
 	artifactSlugTakenSQL = `select exists(select 1 from artifacts where ` + artifactOwnerKey + ` = $1 and slug = $2)`
 )
@@ -2066,7 +1962,7 @@ func (s *server) findArtifactByNameOrSlug(ctx context.Context, q queryer, target
 // lookupArtifactByNameOrSlug reads the artifact name finds under target's owner, without its versions.
 func lookupArtifactByNameOrSlug(ctx context.Context, q queryer, target artifactTarget, name string) (model.Artifact, error) {
 	query, owner := target.ownerLookup(artifactByNameOrSlugSQL, agentArtifactByNameOrSlugSQL)
-	return scanArtifact(q.QueryRow(ctx, query, owner, name))
+	return docs.ScanArtifact(q.QueryRow(ctx, query, owner, name))
 }
 
 // versionColumns is the column list a version read selects over artifact_versions aliased v, in
@@ -2361,20 +2257,6 @@ func newArtifactKeyRefusal(target artifactTarget, slug string) error {
 		target.refPrefix(), key, maxNewArtifactKeyBytes)
 }
 
-// lockProjectArtifacts serialises one project's own uploads (its documents, not its issues') for
-// the rest of tx, as lockAgentArtifacts does a conversation's. A project's upload otherwise locks
-// no row before it looks its artifact up by name or slug and takes a new slug, so two uploads at
-// once - `plan.md` and `plan-md` - could each miss the other and leave two documents that one
-// reference names. These uploads take it, and so does a project document's rename or removal
-// (beginArtifactWrite); each takes it before any row, room or the document's owner lock, which
-// comes after it in every taker, so it joins no lock cycle.
-func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('project-artifacts:' || $1))`, project); err != nil {
-		return fmt.Errorf("lock the project's documents: %w", err)
-	}
-	return nil
-}
-
 // beginArtifactWrite opens the transaction a write to one artifact runs in: it reads the
 // artifact the request names, takes its owner's lock and reads the row again under that lock. It
 // is the preamble the title correction and the removal share (renameArtifact, removeArtifact),
@@ -2430,9 +2312,9 @@ func (s *server) beginArtifactWrite(w http.ResponseWriter, r *http.Request) (pgx
 		// lock only at its append, after its update of the row, held the row such a writer waits
 		// on while it waited on the lock that writer holds: a deadlock. The lock is taken here,
 		// before any write, and after the project's upload lock, in the order a project upload
-		// takes the two (storeArtifact: lockProjectArtifacts, then the document's owner), so the
-		// correction and an upload of the same project wait on the upload lock holding neither.
-		if err := lockProjectArtifacts(ctx, tx, artifact.Project); err != nil {
+		// takes the two (storeArtifact: docs.LockProjectArtifacts, then the document's owner), so
+		// the correction and an upload of the same project wait on the upload lock holding neither.
+		if err := docs.LockProjectArtifacts(ctx, tx, artifact.Project); err != nil {
 			return refused(err)
 		}
 		if err := store.LockOwner(ctx, tx, store.ArtifactOwner(artifact.ID)); err != nil {

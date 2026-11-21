@@ -39,7 +39,19 @@ func TestTheBarAddsNoReplicaRoute(t *testing.T) {
 	// Each name a replica's own route would carry, as a path segment or a query parameter the
 	// table's own descriptions name. "/delta" and "/items" are matched as whole segments, so
 	// /api/v1/delivery and an item route of one id are left alone.
+	//
+	// One route carrying "items" is argued for rather than renamed. GET
+	// /api/v1/projects/{key}/evals/{slug}/items (dispatch://INFRA-2916/spec#b-r7) pages, by limit
+	// and offset, the rows behind one eval's number: the pull requests, runs or issues it counted
+	// in a window. It serves no snapshot of the issues and documents, no delta and no cursor, so no
+	// browser can build a replica of the graph from it, and its caller is the Delivery page, not
+	// the bar. R2 of dispatch://INFRA-1042 refuses a replica, not the list behind one number. Only
+	// that method and path, matched exactly, are exempt: every other "items" segment is refused.
+	const evalItems = http.MethodGet + " /api/v1/projects/{key}/evals/{slug}/items"
 	for _, route := range index.Routes {
+		if route.Method+" "+route.Path == evalItems {
+			continue
+		}
 		for _, segment := range strings.Split(route.Path, "/") {
 			if segment == "delta" || segment == "deltas" || segment == "store" || segment == "items" {
 				t.Errorf("%s %s: the bar holds no replica of the issues and documents, so no delta,"+

@@ -1,0 +1,43 @@
+kind: Changed
+body: |-
+  On a computed eval, `POST /api/v1/projects/{key}/evals` sets only how the number is judged and
+  who answers for it: the target with its inclusiveness and judges, the `min_n` of `pr-ci`'s job
+  series, the owner role, person, issue, links, state and what replaced it, and the method. A
+  write naming any field of the computation (name, question, number rule, decision, failure
+  modes, unit, direction, kind, source, any series field but `min_n`, or a series the eval does
+  not hold) is `400 EVAL_FIELD_COMPUTED` naming the field, and stores nothing; a logged eval takes
+  every other field. Every reader of a field the write takes uses it: a `source` other than
+  `logged` is `400 EVAL_FIELD_INVALID`, since only the seeded catalogue makes an eval computed,
+  and a `min_n` on any series but `pr-ci`'s `job:*`, the one series a read ranks by it, is
+  `400 EVAL_FIELD_INVALID` naming `series[i].min_n`. A version that lists or unlists a logged
+  eval's series lists or unlists its stored day rows with it. A write that names a field a person
+  sets records on its version that a person set it, whether or not the value moved, so
+  `target: null` on an eval whose target is already off writes a version rather than nothing. The
+  seed carries a person's `min_n` forward like the target instead of reverting it, and where it
+  takes over a catalogue slug a reading registered first, it sets the catalogue's target unless a
+  register write named the target, its inclusiveness or its judges (a write of other fields
+  alone, such as the unit or the person, does not stop it), the catalogue's `min_n` on `pr-ci`'s
+  job series where no write named one, and, where no one wrote one, its method. The delivery
+  answers read the targets too: `GET /api/v1/delivery/measures`, the timeline's `measures` and
+  `GET /api/v1/delivery/pipeline` judge their figures by the targets of
+  `deploy-frequency`, `change-fail-rate`, `merge-to-production`, `pr-open-to-merge`,
+  `deploy-run-success` and `unowned-p0` in the project the deploy repository is mapped to (the
+  catalogue's where it maps to none), by the rule the eval routes judge by, so each verdict is the
+  eval's own, and a register write of one updates their open live views. Their `targets` changed
+  shape: each is `{value, inclusive, direction, judges}`, or null where the target is off, with
+  the eval's direction and the statistics its verdict judges (`<series>.<stat>`); every `status`
+  field is null where the target is off or nothing is measured; and the Pipeline answers `status`
+  for its two lead-time cards.
+  `status.merge_to_production_median` and `status.change_failure_rate_upper_bound` are each the
+  verdict of that one statistic (`minutes.median`, `upper_bound.rate`), null where its eval's
+  judges do not name it, and the Delivery page colours each figure by a verdict only where its
+  eval's judges name the statistic it shows.
+  They judge every statistic those six evals state, a lead time's `n` included; a target judge of
+  one of them that the delivery answers state no figure of (`unowned-p0`'s `issues.n`, the count
+  of stored days, or any statistic or series the eval does not state) is `400 EVAL_FIELD_INVALID`
+  naming `target_judges[i]`. The Delivery page and the Pipeline name the statistics each target
+  judges under its card. A card's badge is its eval's verdict of the whole window; every other
+  figure, count, bar and per-day cell is coloured only where the target judges the statistic it
+  shows, by its own value of that statistic, a day's bar or cell only for a rate or a quantile of
+  the day's samples (so under a count such as `runs.concluded` or `deploys.deploys` no day is
+  coloured), and a chart draws its target line exactly where its bars may be coloured.

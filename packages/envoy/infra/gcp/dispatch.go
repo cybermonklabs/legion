@@ -30,7 +30,8 @@ const (
 	defaultDispatchDatabaseVersion = "POSTGRES_18"
 	// defaultDispatchDatabaseTier is the Cloud SQL tier when databaseTier is unset: 4 vCPU and
 	// 15 GB. During a roll, every app pod that holds connections (the replicas, the surge pod and
-	// pods still terminating, for up to their grace period) times dispatchConnectionsPerPod must
+	// pods still terminating, for up to their grace period) times the connections one app pod
+	// opens (envoy-dispatch's store.ConnectionsPerProcess, internal/dispatch/store/pool.go) must
 	// fit in the instance's max_connections less PostgreSQL's 3 superuser-reserved slots, so a
 	// consumer sets databaseTier for its replica count.
 	defaultDispatchDatabaseTier = "db-custom-4-15360"
@@ -83,7 +84,7 @@ const (
 	// defaultDispatchProxyCPU and defaultDispatchProxyMemory size the app pod's cloud-sql-proxy
 	// sidecar when proxyCpu and proxyMemory are unset; Autopilot counts it in the pod's request
 	// beside envoy-dispatch. Every database call of the pod passes through the proxy's TLS: up
-	// to dispatchConnectionsPerPod connections at once. The proxy's own
+	// to store.ConnectionsPerProcess connections at once (envoy-dispatch's). The proxy's own
 	// Kubernetes sidecar example requests 1 CPU, since its CPU use scales linearly with the IO
 	// between the database and the application, and 2Gi, since its memory scales linearly with
 	// the active connections
@@ -100,13 +101,6 @@ const (
 	// (https://cloud.google.com/kubernetes-engine/docs/concepts/autopilot-resource-requests).
 	autopilotDefaultEphemeralStorage = "1Gi"
 )
-
-// dispatchConnectionsPerPod is the most connections one app pod opens to Postgres: envoy-dispatch's
-// store.ConnectionsPerProcess (packages/envoy/internal/dispatch/store/pool.go), the sum of its
-// counted pools and its permanent listeners. The listener's and the front door's pods open none.
-// TestDispatchConnectionsPerPodIsTheServers fails when a counted pool's size changes and this
-// does not.
-const dispatchConnectionsPerPod = 115
 
 // Autopilot's bounds for the app pod's total request, the general-purpose compute class's for a pod
 // with pod anti-affinity, which every Dispatch pod carries, or with the safe-to-evict annotation,

@@ -146,6 +146,36 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// A key a project holds already is refused first (409 PROJECT_EXISTS), by a read that takes no
+	// transaction id, before anything below touches that project: the seed would otherwise run on
+	// it, queue behind its evals' locks and its `evals-md`'s owner lock and do that document's
+	// work, and its own refusal of the document (a file there, which the registry expects, or a
+	// document removed during the call) would answer for the create. A create of the same key that
+	// commits after the read is refused by the insert's unique violation.
+	var taken bool
+	if err := tx.QueryRow(r.Context(), `select exists (select 1 from projects where key = $1)`, input.Key).Scan(&taken); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if taken {
+		refuseProjectExists(w)
+		return
+	}
+	// The project's evals and its `evals-md` (dispatch://INFRA-2916, R5) are written in the
+	// transaction that creates it, which the document service joins, so no reader ever sees the
+	// project without them and a refused create leaves neither. The seed runs next, in the
+	// transaction's read phase: its locks, its reads and the document work of `evals-md` hold no
+	// transaction id, and its writes are queued on the ledger (evals.Store.EnsureTx), which Commit
+	// sends after the project's row and its event, the first writes, which the queued rows name.
+	// The seed's versions record their changes in the change log's outbox and take no lock;
+	// Committed moves them into the log once the transaction has committed.
+	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
+	defer ledger.Discard()
+	seeded, err := s.registry().EnsureTx(documentCtx, tx, ledger, input.Key, input.Name)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	var created createdProject
 	if err := tx.QueryRow(r.Context(), `
 		insert into projects (key, name, default_assignee) values ($1, $2, $3)
@@ -153,7 +183,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	`, input.Key, input.Name, projectDefault).Scan(
 		&created.Key, &created.Name, &created.GatedSteps, &created.DefaultAssignee, &created.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
-			writeError(w, "PROJECT_EXISTS", http.StatusConflict, "a project with this key already exists")
+			refuseProjectExists(w)
 			return
 		}
 		s.writeHandlerError(w, err)
@@ -164,12 +194,18 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := tx.Commit(r.Context()); err != nil {
+	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(r.Context(), event)
+	seeded.Committed(r.Context())
 	WriteJSON(w, http.StatusCreated, created)
+}
+
+// refuseProjectExists answers a create of a key a project holds already.
+func refuseProjectExists(w http.ResponseWriter) {
+	writeError(w, "PROJECT_EXISTS", http.StatusConflict, "a project with this key already exists")
 }
 
 // projectNameProblem refuses a project name that would mislead its reader: one holding a control

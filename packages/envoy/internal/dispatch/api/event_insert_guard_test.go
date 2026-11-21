@@ -6,6 +6,7 @@
 package api
 
 import (
+	"go/ast"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -45,6 +46,15 @@ var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 // string literals and chains of literals and package-level constants, in every non-test Go file
 // of the module. A test inserts events directly on purpose -- a backlog to page through, a row
 // shape to serve -- so test sources are outside it, as they are outside that scan.
+//
+// A test-only helper package is a test source that does not end in _test.go: storetest opens a
+// database for a test, legiontest seeds one test's Legion history. Such a package cannot be
+// written as _test.go files, because another package's test imports it, and its rows exist only
+// in the database one test made and dropped, where no reader of the log by id ever runs, or in
+// the scratch database a check loads through evals/evalfixture/cmd, whose open pages see the
+// rows once they reload. The scan names one by its package name, which ends in `test` in this
+// repository (storetest, pgmigratetest, legiontest), and no package a request reaches is named
+// that way.
 func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
@@ -54,6 +64,9 @@ func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 	var offences []string
 	broker := 0
 	for _, source := range sources {
+		if testHelperPackage(source.file) {
+			continue
+		}
 		path := filepath.ToSlash(source.path)
 		for _, statement := range sqlStatements(source.file, constants) {
 			if !eventInsertStatement.MatchString(statement) {
@@ -79,4 +92,13 @@ func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 			"written around a value this scan cannot resolve, this guard now passes by seeing "+
 			"nothing", brokerEventInsert, broker, brokerEventInserts)
 	}
+}
+
+// testHelperPackage is whether the file belongs to a test-only helper package: one whose package
+// name ends in `test`. It is a reading of the source and not a proof, so a reviewer, not this
+// scan, is what stops a server package taking such a name to step out of the guard. The earlier
+// rule, a file's import of `testing`, is wider than the case it was opened for: it also skips
+// benchtime, fixtureenv, testnats, testpg and the other rigs, whose files this scan now reads.
+func testHelperPackage(file *ast.File) bool {
+	return file.Name != nil && strings.HasSuffix(file.Name.Name, "test")
 }

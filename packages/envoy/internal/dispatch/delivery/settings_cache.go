@@ -13,9 +13,10 @@ import (
 )
 
 // SettingsChannel is the Postgres notification channel a delivery_settings change announces itself
-// on at commit (delivery_settings_changed, migration 0156): any change but the freshness columns
-// every GitHub event and reconcile pass rewrite. It is the channel whose pglisten.Hub wake the
-// server passes to StartIntakes.
+// on at commit (delivery_settings_changed, migrations 0156 and 20261120111107): any change but the
+// freshness columns every GitHub event and reconcile pass rewrite and who saved the settings and
+// when (updated_by, updated_at). It is the channel whose pglisten.Hub wake the server passes to
+// StartIntakes.
 const SettingsChannel = "dispatch_delivery_settings"
 
 // settingsRetryInterval is how soon a SettingsCache reads delivery_settings again after a read

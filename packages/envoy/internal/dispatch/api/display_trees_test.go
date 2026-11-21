@@ -373,7 +373,7 @@ func displayTreeFields(row reflect.Type, path string, seen map[reflect.Type]bool
 // A display tree stands on the shape a read answers and never on the row the whole deployment
 // shares, because an event payload carries that row (the spec's R6: the trees "are not part of
 // the message-bus schemas"). A document's approval is the case that was got wrong: the
-// `artifact.created` payload is the document row itself (artifactCreatedEventPayload), so a
+// `artifact.created` payload is the document row itself (docs.ArtifactCreatedEventPayload), so a
 // `reason_tree` on model.ArtifactApproval would be a response field published on the bus. Here
 // one document is reviewed, its read answers the tree of the reason, and the payload of its own
 // creation - and of every other event of its issue - carries none.

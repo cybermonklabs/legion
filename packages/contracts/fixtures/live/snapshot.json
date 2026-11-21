@@ -235,7 +235,7 @@
             "rejected": 0,
             "reverts": 0,
             "total": 0,
-            "rate": 0
+            "rate": null
           },
           "per_deploy": {
             "confirmed": 0,
@@ -243,9 +243,9 @@
             "rejected": 0,
             "reverts": 0,
             "total": 0,
-            "rate": 0,
+            "rate": null,
             "confirmed_or_pending": 0,
-            "upper_bound_rate": 0
+            "upper_bound_rate": null
           }
         },
         "time_to_restore": {
@@ -263,15 +263,58 @@
       "flags_source": "none",
       "unowned_p0": [],
       "targets": {
-        "deploys_per_day": 20,
-        "change_failure_rate": 0.05,
-        "merge_to_production_minutes": 45,
-        "opened_to_merge_median_minutes": 60,
-        "deploy_run_success_rate": 0.9,
-        "unowned_p0": 0
+        "deploys_per_day": {
+          "value": 20,
+          "inclusive": true,
+          "direction": "higher_better",
+          "judges": [
+            "deploys.per_day"
+          ]
+        },
+        "change_failure_rate": {
+          "value": 0.05,
+          "inclusive": false,
+          "direction": "lower_better",
+          "judges": [
+            "per_deploy.rate"
+          ]
+        },
+        "merge_to_production_minutes": {
+          "value": 45,
+          "inclusive": false,
+          "direction": "lower_better",
+          "judges": [
+            "minutes.max",
+            "minutes.median"
+          ]
+        },
+        "opened_to_merge_median_minutes": {
+          "value": 60,
+          "inclusive": false,
+          "direction": "lower_better",
+          "judges": [
+            "minutes.median"
+          ]
+        },
+        "deploy_run_success_rate": {
+          "value": 0.9,
+          "inclusive": true,
+          "direction": "higher_better",
+          "judges": [
+            "runs.rate"
+          ]
+        },
+        "unowned_p0": {
+          "value": 0,
+          "inclusive": true,
+          "direction": "lower_better",
+          "judges": [
+            "issues.value"
+          ]
+        }
       },
       "status": {
-        "deploys_per_day": false,
+        "deploys_per_day": null,
         "change_failure_rate": null,
         "change_failure_rate_upper_bound": null,
         "merge_to_production_median": null,
@@ -367,7 +410,7 @@
       }
     },
     "fields": {
-      "measures": "d91e0023c31c22fa",
+      "measures": "c09549d2a3e9a64f",
       "waiting": "65f5705a0510ccf7",
       "window": "037ec912c5c440a4"
     }

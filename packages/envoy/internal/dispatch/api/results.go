@@ -689,8 +689,8 @@ func (s *server) requireIssueExists(ctx context.Context, key string) error {
 // this package goes through here — the results routes, the check resolver and the approval
 // request's second document.
 func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, slug string) (model.Artifact, bool, error) {
-	artifact, err := scanArtifact(q.QueryRow(ctx, `
-		select `+artifactColumns+` from artifacts
+	artifact, err := docs.ScanArtifact(q.QueryRow(ctx, `
+		select `+docs.ArtifactColumns+` from artifacts
 		where issue_key = $1 and `+verificationRolePredicate+` and ($2 = '' or slug = $2)
 		limit 1
 	`, issueKey, slug))

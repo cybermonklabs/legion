@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  A quantile Dispatch answers (the Pipeline's median and p90 of each day and of the shown days,
+  the lead times' and the time to restore's, an eval's `median` and `p90`) is the same on arm64
+  as on amd64. The Go compiler fuses a multiply and the add it feeds into one instruction on
+  arm64, which rounds once where amd64 and the prototype round twice, so a figure rounded to one
+  decimal could read one tenth apart at a .x5 boundary: a Pipeline day's p90 read 7.6 minutes on
+  an arm64 server and 7.5 on amd64. Each step of the interpolation is now rounded as the
+  prototype rounds it, on every architecture.

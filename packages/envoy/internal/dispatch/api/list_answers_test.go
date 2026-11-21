@@ -106,8 +106,7 @@ func listTargets(t *testing.T, handler http.Handler, project string, comments in
 	return key, "/api/v1/issues/" + key + "/comments", "/api/v1/issues/" + key + "/events"
 }
 
-// issueLastSeq is the issue's newest event sequence: what the activity feed's validator is built
-// on, and what the comment list's deliberately is not.
+// issueLastSeq is the issue's newest event sequence, which both lists' validators hash.
 func issueLastSeq(t *testing.T, database *store.Store, key string) int {
 	t.Helper()
 	var lastSeq int
@@ -429,13 +428,15 @@ func TestAWarmGzipReadOfAListIsCompressedOnce(t *testing.T) {
 // emptyIssuesAsAScenarioResetDoes leaves the database as the browser harness leaves it between
 // scenarios (packages/dispatch/e2e/seed.ts): every issue and everything keyed to one is gone, and
 // each project numbers from 1 again, so the issues of what follows take the keys of what came
-// before. comment_watermarks is not emptied here for the same reason the reset does not empty it:
-// it carries no foreign key into anything the reset names, so nothing reaches it (migration
-// 20261106020619).
+// before. comment_watermarks is emptied beside them because the reset empties it too: the reset
+// empties every table it does not name as kept, and it keeps no comment list's count. Nothing
+// else here would reach that table, since it carries no foreign key into anything (migration
+// 20261106020619), so every key's count starts again from nothing, as it does in the harness.
 func emptyIssuesAsAScenarioResetDoes(t *testing.T, database *store.Store) {
 	t.Helper()
 	for _, statement := range []string{
 		`truncate table issues cascade`,
+		`truncate table comment_watermarks`,
 		`update projects set next_number = 1`,
 	} {
 		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
@@ -444,22 +445,36 @@ func emptyIssuesAsAScenarioResetDoes(t *testing.T, database *store.Store) {
 	}
 }
 
-// A key a new issue takes from an old one is never answered the old issue's activity feed. The
-// feed's validator stands on issues.last_seq, a counter of the issue row, so two issues of one
-// key stand at one sequence and would otherwise be given one ETag: the second issue's reader
-// would be answered 304, or written the bytes this server kept for the first. The issue's
-// created_at is hashed in beside the column so neither can happen, which is what the browser
-// harness needs of it - it empties `issues` and restarts each project's numbering between
-// scenarios, under a server process that keeps running.
-func TestANewIssueUnderARecycledKeyIsNeverAnsweredTheOldIssuesFeed(t *testing.T) {
+// A key a new issue takes from an old one is never answered either of the old issue's lists.
+// Both validators stand on counters that start again with the new issue: the feed's on
+// issues.last_seq, a counter of the issue row, and the comment list's on that and on the list's
+// watermark, whose row the reset empties beside the issue. So two issues of one key, each with
+// one comment, stand at one sequence and one count and would otherwise be given one ETag: the
+// second issue's reader would be answered 304, or written the bytes this server kept for the
+// first. The issue's created_at is hashed in beside the counters so neither can happen, which is
+// what the browser harness needs of it - it empties every table and restarts each project's
+// numbering between scenarios, under a server process that keeps running.
+func TestANewIssueUnderARecycledKeyIsNeverAnsweredTheOldIssuesLists(t *testing.T) {
 	// A settlement of the first issue's spec writes to the tables the reset below empties, and a
 	// delay no test run reaches keeps the two apart, as it does in the harness (quiesceDocuments).
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	first := createInteractionIssue(t, handler, "RECYCL", "The first issue of this key", "")
-	feed := "/api/v1/issues/" + first.Key + "/events"
-	before := listRead(t, handler, feed, listReadOptions{trees: true})
-	beforeETag := listETagOf(t, before, "the first issue's feed")
+	createReferenceAPIComment(t, handler, first.Key, "A comment on the first issue")
+	// was is a text only the first issue's answer holds, and is a text only the second's holds.
+	lists := []struct{ name, target, was, is string }{
+		{"comment list", commentListOf(first.Key), "A comment on the first issue", "A comment on the second issue"},
+		{"activity feed", "/api/v1/issues/" + first.Key + "/events", "The first issue of this key", "The second issue of this key"},
+	}
+	beforeETags := make([]string, len(lists))
+	for i, list := range lists {
+		before := listRead(t, handler, list.target, listReadOptions{trees: true})
+		beforeETags[i] = listETagOf(t, before, "the first issue's "+list.name)
+		if !strings.Contains(before.Body.String(), list.was) {
+			t.Fatalf("the first issue's %s answers %s, want %q in it", list.name, before.Body.String(), list.was)
+		}
+	}
 	beforeSeq := issueLastSeq(t, database, first.Key)
+	beforeCount := commentWatermark(t, database, first.Key)
 
 	emptyIssuesAsAScenarioResetDoes(t, database)
 
@@ -475,27 +490,38 @@ func TestANewIssueUnderARecycledKeyIsNeverAnsweredTheOldIssuesFeed(t *testing.T)
 	if second.Key != first.Key {
 		t.Fatalf("the second issue is %s, want the %s the first had: this case needs the key back", second.Key, first.Key)
 	}
+	createReferenceAPIComment(t, handler, second.Key, "A comment on the second issue")
 	if seq := issueLastSeq(t, database, second.Key); seq != beforeSeq {
 		t.Fatalf("the two issues of %s stand at sequences %d and %d: this case needs the one sequence",
 			first.Key, beforeSeq, seq)
 	}
-
-	after := listRead(t, handler, feed, listReadOptions{trees: true})
-	afterETag := listETagOf(t, after, "the second issue's feed")
-	if afterETag == beforeETag {
-		t.Errorf("both issues of %s answer the feed ETag %s", first.Key, beforeETag)
-	}
-	if !strings.Contains(after.Body.String(), "The second issue of this key") {
-		t.Fatalf("the feed of %s answers %s, want the issue that holds the key now", first.Key, after.Body.String())
+	if count := commentWatermark(t, database, second.Key); count != beforeCount {
+		t.Fatalf("the two comment lists of %s stand at counts %d and %d: this case needs the one count",
+			first.Key, beforeCount, count)
 	}
 
-	holding := listRead(t, handler, feed, listReadOptions{trees: true, etag: beforeETag})
-	if got := listETagOf(t, holding, "the feed read holding the first issue's ETag"); got != afterETag {
-		t.Fatalf("a reader holding the first issue's validator is answered %s, want the %s the feed stands at", got, afterETag)
-	}
-	if !bytes.Equal(holding.Body.Bytes(), after.Body.Bytes()) {
-		t.Errorf("a reader holding the first issue's validator is answered %d bytes, want the %d the feed carries",
-			holding.Body.Len(), after.Body.Len())
+	for i, list := range lists {
+		t.Run(list.name, func(t *testing.T) {
+			after := listRead(t, handler, list.target, listReadOptions{trees: true})
+			afterETag := listETagOf(t, after, "the second issue's "+list.name)
+			if afterETag == beforeETags[i] {
+				t.Errorf("both issues of %s answer the %s ETag %s", first.Key, list.name, afterETag)
+			}
+			if body := after.Body.String(); !strings.Contains(body, list.is) || strings.Contains(body, list.was) {
+				t.Errorf("the %s of %s answers %s, want the one of the issue that holds the key now: %q in it and %q not",
+					list.name, first.Key, body, list.is, list.was)
+			}
+
+			holding := listRead(t, handler, list.target, listReadOptions{trees: true, etag: beforeETags[i]})
+			if got := listETagOf(t, holding, "the "+list.name+" read holding the first issue's ETag"); got != afterETag {
+				t.Fatalf("a reader holding the first issue's validator is answered %s, want the %s the %s stands at",
+					got, afterETag, list.name)
+			}
+			if !bytes.Equal(holding.Body.Bytes(), after.Body.Bytes()) {
+				t.Errorf("a reader holding the first issue's validator is answered %d bytes, want the %d the %s carries",
+					holding.Body.Len(), after.Body.Len(), list.name)
+			}
+		})
 	}
 }
 

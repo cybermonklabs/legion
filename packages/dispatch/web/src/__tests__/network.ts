@@ -57,15 +57,16 @@ const shellHandlers: RequestHandler[] = [
   http.get("/api/v1/agents", () => Response.json([])),
   // The sidebar reads the project list wherever it is drawn - on a wide viewport with the sidebar
   // shown, or in the compact navigation drawer while it is open - with no `enabled` guard
-  // (`features/sidebar/Sidebar.tsx:91`, drawn by `app.tsx:375`). The issue header reads the same
-  // `projectsQuery` key for every root issue, to learn which design steps are gated
-  // (`features/issue/IssueHeader.tsx:292`, `enabled: issue.parent === null`), and that is the
-  // reader this answer exists for: without it, 36 rows of pages carrying the header fail on an
-  // unanswered read, none of them about projects. `CreateIssueDialog`, `ProjectPage`, the
-  // palette's project mode and three settings sections (`ArchitectureSourcesSection.tsx:52`,
-  // `ProjectsSection.tsx:42`, `SettingsPage.tsx:75`) read it too. An empty list is a project with
-  // no gate, which is what a page with no `api.listProjects` spy drew before, and every row that
-  // asserts on project content spies that method above MSW.
+  // (`Sidebar`'s `projectsQuery` read in `features/sidebar/Sidebar.tsx`, drawn by
+  // `NavigationContents` in `app.tsx`). The issue header reads the same `projectsQuery` key for
+  // every root issue, to learn which design steps are gated (`IssueHeader`'s read in
+  // `features/issue/IssueHeader.tsx`, `enabled: issue.parent === null`), and that is the reader
+  // this answer exists for: without it, 36 rows of pages carrying the header fail on an unanswered
+  // read, none of them about projects. `CreateIssueDialog`, `ProjectPage`, the palette's project
+  // mode and three settings sections (`ArchitectureSourcesSection`, `ProjectsSection` and
+  // `SettingsPage`, in `features/settings/`) read it too. An empty list is a project with no gate,
+  // which is what a page with no `api.listProjects` spy drew before, and every row that asserts on
+  // project content spies that method above MSW.
   http.get("/api/v1/projects", () => Response.json([])),
   // The Settings page's daemon section reads every project's Legion daemon with no `enabled` guard
   // beyond the project being known (`useLegionDaemons`), so the read happens wherever that section

@@ -3,6 +3,7 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
+  EvalListResponse,
   LegionBoardResponse,
 } from "./dispatch-api.generated";
 import type { DispatchEvent } from "./dispatch-api-events";
@@ -21,15 +22,34 @@ export type DeliveryLiveWindow =
  *  without `from`/`to` (search and every facet), so the live answer and the GET answer are one. A
  *  legion view names the project whose board it shows and nothing else: the board has no window,
  *  and `project` is all `GET /api/v1/projects/{key}/legion/board` reads. Its snapshot and deltas
- *  carry a `LegionBoardResponse`. */
+ *  carry a `LegionBoardResponse`. An evals view names the project whose evals it shows, its window,
+ *  and the rest of what `GET /api/v1/projects/{key}/evals` would be sent as its `query`: the
+ *  compare range (`compare_from`, `compare_to`), the repositories (`repo`), the kind (`kind`) and
+ *  the page (`limit`, `offset`). Its snapshot and deltas carry an `EvalListResponse`, its evals
+ *  sent by id. */
 export type DeliveryLiveView =
   | { readonly kind: "timeline"; readonly window: DeliveryLiveWindow; readonly query: string }
   | { readonly kind: "measures"; readonly window: DeliveryLiveWindow; readonly query: string }
   | { readonly kind: "pipeline"; readonly at?: string }
-  | { readonly kind: "legion"; readonly project: string };
+  | { readonly kind: "legion"; readonly project: string }
+  | {
+      readonly kind: "evals";
+      readonly project: string;
+      readonly window: DeliveryLiveWindow;
+      readonly query: string;
+    };
 
-/** The timeline's lists sent item by item, by id. */
-export type DeliveryLiveList = "prs" | "runs" | "session_groups";
+/** Each list a view sends item by item, by id, as its body holds it: the timeline's pull
+ *  requests, runs and session groups, and an evals view's evals, by eval id. */
+interface DeliveryLiveLists {
+  readonly prs: NonNullable<DeliveryTimelineWithMeasures["prs"]>;
+  readonly runs: NonNullable<DeliveryTimelineWithMeasures["runs"]>;
+  readonly session_groups: NonNullable<DeliveryTimelineWithMeasures["session_groups"]>;
+  readonly items: NonNullable<EvalListResponse["items"]>;
+}
+
+/** The lists sent item by item, by id. */
+export type DeliveryLiveList = keyof DeliveryLiveLists;
 /** The timeline's maps sent entry by entry, by key. */
 export type DeliveryLiveMap =
   | "issue_titles"
@@ -119,7 +139,8 @@ export type DeliveryLiveBody =
   | DeliveryTimelineWithMeasures
   | DeliveryMeasuresResponse
   | DeliveryPipelineResponse
-  | LegionBoardResponse;
+  | LegionBoardResponse
+  | EvalListResponse;
 
 export interface DeliveryLiveSnapshot {
   readonly type: "snapshot";
@@ -134,7 +155,7 @@ export interface DeliveryLiveSnapshot {
 }
 /** One list's changes: its items that are new or changed, whole, and the ids of those that left. */
 export interface DeliveryLiveItemChanges<L extends DeliveryLiveList> {
-  readonly upsert: NonNullable<DeliveryTimelineWithMeasures[L]>;
+  readonly upsert: DeliveryLiveLists[L];
   readonly remove: readonly string[];
 }
 export interface DeliveryLiveDelta {
@@ -142,7 +163,8 @@ export interface DeliveryLiveDelta {
   readonly sub: string;
   readonly seq: string;
   readonly changed_at: string | null;
-  /** Fields replaced whole. `window` is here whenever it moved, and never alone. */
+  /** Fields replaced whole. A timeline's or measures view's `window` is here whenever it moved,
+   *  and never alone. */
   readonly set: Readonly<Record<string, unknown>>;
   readonly items: { readonly [L in DeliveryLiveList]?: DeliveryLiveItemChanges<L> };
   /** A key's new value, or null when it left. */

@@ -51,9 +51,10 @@ const (
 	// "OWNG"), a conditional edit's admission's (docs.conditionalEditQueueLockNamespace, "QUEU"),
 	// the issue dependencies'
 	// (lockProjectIssueDependencies), the deployment's own issue dependencies'
-	// (lockDeploymentIssueDependencies), one repository mapping's write (lockRepoProjectWrite) and
-	// the rename graph's own (refuseRepoRenameChain). The second key is the listening connection's
-	// backend pid, which no other live connection has, so two processes' keys never meet.
+	// (lockDeploymentIssueDependencies), one repository mapping's write
+	// (delivery.LockRepoProjectWrite) and the rename graph's own (refuseRepoRenameChain). The
+	// second key is the listening connection's backend pid, which no other live connection has,
+	// so two processes' keys never meet.
 	testHookLockNamespace int32 = 0x484F4F4B
 	// testHookTimeout bounds a call: the wait for this process's own listener, and then for every
 	// other process's acknowledgement. A hook's own work - closing streams, or quiesce's flush of

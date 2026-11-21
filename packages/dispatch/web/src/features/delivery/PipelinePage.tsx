@@ -1,20 +1,27 @@
 // The prototype's web/src/pages/Pipeline.tsx, ported as it is: the header line, six cards, the
 // slowest-jobs table and the failed-in-24-hours table, each with the prototype's data-* attributes.
-// Every number, every target and every day comes from GET /api/v1/delivery/pipeline; nothing is
-// computed here but the two lead-time cards' met/missed, which the prototype judges on the page as
-// this does, against the targets the response carries. Differences, each from LEGION-567's slice 3
-// plan or for the same reason as the measures panel's: Dispatch's sidebar replaces the
-// prototype's row of page links; the cards take the prototype's column counts at the prototype's
-// content widths (one column, two from 46rem, six from 78rem: its `md:grid-cols-2
-// xl:grid-cols-6` less its `px-4` page padding) measured on the page's own width rather than the
-// viewport, since beside Dispatch's sidebar the viewport rule put six cards in too little room for
-// their figures; a pipeline whose settings name no staging end-to-end gate (or no staging deploy)
-// omits that card; the prototype's note counting runs whose jobs are not fetched yet is gone, so a
-// run whose jobs are not stored (intake and reconcile write a run and its jobs separately, and a
-// run whose jobs listing GitHub refuses is marked jobs-unfetchable and never gets any) counts in
-// the PR CI card and adds nothing to the two job tables, unremarked; the failing-jobs note names
-// the roll-up job by its role, since the job's name is a setting; and the colours are the theme's
-// tokens.
+// Every number, every target, every verdict and every day comes from GET /api/v1/delivery/pipeline.
+// The two lead-time cards' met/missed badge, which the prototype judged on the page, is the
+// response's `status`, each card's eval's own verdict by its target and the figures it judges
+// (dispatch://INFRA-2916, R5), and each card names those figures and shows their values from the
+// target's `judges`. Nothing is computed here but the tone of a lead-time figure, a day's bar or a
+// judged line's value, which the response gives no verdict of: each is that element's own value
+// against the target, its direction and inclusiveness included, and only where the target judges
+// the statistic it shows (`lib/target.ts`'s `ownVerdict`); each such element names the eval, the
+// statistic and whether its value is one day's or the seven days' (`data-eval`, `data-statistic`,
+// `data-span`).
+// Differences, each from LEGION-567's slice 3 plan or for the same reason as the measures panel's:
+// Dispatch's sidebar replaces the prototype's row of page links;
+// the cards take the prototype's column counts at the prototype's content widths (one column, two
+// from 46rem, six from 78rem: its `md:grid-cols-2 xl:grid-cols-6` less its `px-4` page padding)
+// measured on the page's own width rather than the viewport, since beside Dispatch's sidebar the
+// viewport rule put six cards in too little room for their figures; a pipeline whose settings name
+// no staging end-to-end gate (or no staging deploy) omits that card; the prototype's note counting
+// runs whose jobs are not fetched yet is gone, so a run whose jobs are not stored (intake and
+// reconcile write a run and its jobs separately, and a run whose jobs listing GitHub refuses is
+// marked jobs-unfetchable and never gets any) counts in the PR CI card and adds nothing to the two
+// job tables, unremarked; the failing-jobs note names the roll-up job by its role, since the job's
+// name is a setting; and the colours are the theme's tokens.
 //
 // `?at=` is the test and screenshot hook: the page forwards it to the route, which then names the
 // seven days ending on at's day and looks back 24 hours from it, so a fixture dated in the past
@@ -29,6 +36,7 @@ import type {
   DeliveryLeadTimeCell,
   DeliveryLeadTimeDay,
   DeliveryPipelineResponse,
+  DeliveryTargets,
   DeliveryTiming,
   DeliveryTimingDay,
 } from "../../api/types";
@@ -46,14 +54,35 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { JudgedFigure } from "./JudgedFigure";
 import { formatDue, formatDuration, formatRate } from "./lib/format";
 import { formatAge } from "./lib/freshness";
+import {
+  count,
+  EVAL_SLUGS,
+  type Judge,
+  judgeWord,
+  leadTimeValue,
+  type Span,
+  shownJudges,
+  type Target,
+  targetLine,
+  targetWords,
+  type WriteFigure,
+} from "./lib/target";
 import { SourceFreshness } from "./SourceFreshness";
 import { Sparkbars } from "./Sparkbars";
-import { SpreadBars } from "./SpreadBars";
+import { SPREAD_STATISTICS, SpreadBars } from "./SpreadBars";
 import { TargetBadge } from "./TargetBadge";
 
 const CARD = `flex min-w-0 flex-col gap-1.5 rounded border px-3 py-2 ${surfaceBg} ${borderDefault}`;
+
+/** A day's minutes as a chart's bar writes them in its title (`formatDuration`), with the more
+ *  decimals `SpreadBars` gives a toned bar's value where its usual ones would put it on the other
+ *  side of the target. */
+function writeMinutes(minutes: number): WriteFigure {
+  return (extra) => formatDuration(minutes, extra);
+}
 
 /** `/pipeline`: how long PR checks, the staging end-to-end gate and the two deploys take, and how
  *  often each ends in success, over the last seven UTC days. */
@@ -119,6 +148,11 @@ export function PipelineView({
   const last = days[days.length - 1];
   if (first === undefined || last === undefined) throw new Error("the pipeline has no days");
   const { pr_checks: checks } = pipeline;
+  // How many timed results the server ranked a job by (the min_n of the deploy repository's
+  // project's pr-ci job series, 50 where it has none); a job with no timed result has no median to
+  // rank by, so a ranked job holds one whatever the threshold.
+  const needed = Math.max(checks.slowest_min_results, 1);
+  const neededResults = `${needed} timed ${needed === 1 ? "result" : "results"}`;
 
   return (
     <>
@@ -165,17 +199,21 @@ export function PipelineView({
           />
           <LeadTimeCard
             detail="DORA lead time, PRs by the day they merged"
-            judged="longest"
+            measure="merge_to_production_minutes"
+            met={pipeline.status.merge_to_production}
             metric="merge_to_production"
-            target={pipeline.targets.merge_to_production_minutes}
+            offJudge="minutes.max"
+            targets={pipeline.targets}
             timing={pipeline.merge_to_production}
             title="Merge to production"
           />
           <LeadTimeCard
             detail="Opened to merged, every merged PR, by the day it merged"
-            judged="median"
+            measure="opened_to_merge_median_minutes"
+            met={pipeline.status.opened_to_merge}
             metric="opened_to_merge"
-            target={pipeline.targets.opened_to_merge_median_minutes}
+            offJudge="minutes.median"
+            targets={pipeline.targets}
             timing={pipeline.opened_to_merge}
             title="PR open to merge"
           />
@@ -185,10 +223,10 @@ export function PipelineView({
       <section aria-label="PR CI slowest jobs" className="mt-1" data-section="slowest-jobs">
         <h2 className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>PR CI: slowest jobs</h2>
         <p className={`text-xs ${textMutedOnCanvas}`}>
-          Ranked by their 7-day median; a job needs 50 timed results in the 7 days to be ranked.
+          Ranked by their 7-day median; a job needs {neededResults} in the 7 days to be ranked.
         </p>
         {(checks.slowest_jobs ?? []).length === 0 ? (
-          <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>No job has 50 timed results yet.</p>
+          <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>No job has {neededResults} yet.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="mt-1 w-full max-w-6xl text-xs tabular-nums">
@@ -225,7 +263,7 @@ export function PipelineView({
                       <td className={`px-2 py-1 text-right ${textMutedOnCanvas}`}>{job.total.n}</td>
                       <td className="px-2 py-1 text-right">{formatRate(job.total.success_rate)}</td>
                       <td className="px-2 py-1">
-                        <SpreadBars days={job.days ?? []} format={formatDuration} noun="results" />
+                        <SpreadBars days={job.days ?? []} noun="results" write={writeMinutes} />
                       </td>
                     </tr>
                   );
@@ -302,24 +340,43 @@ function lastDay<T>(timing: { readonly days: readonly T[] | null }): T {
   return today;
 }
 
+/** Where a lead-time figure is judged (`JudgedFigure`): by the target of the eval `evalSlug`
+ *  names, as one day's value or the seven days'. */
+interface Judging {
+  evalSlug: string;
+  target: Target;
+  span: Span;
+}
+
 function Figure(props: {
   label: string;
   median: number | null;
   p90: number | null;
   n: number;
   noun: string;
+  // A lead-time card's: where its figures are judged. A card no eval judges omits it and writes
+  // its figures as text.
+  judging?: Judging;
 }): ReactNode {
+  const { judging } = props;
+  const part = (statistic: Judge, value: number | null, write: WriteFigure) =>
+    judging === undefined ? (
+      write(0)
+    ) : (
+      <JudgedFigure {...judging} statistic={statistic} value={value} write={write} />
+    );
   return (
     <div className="min-w-0">
       <div className={`text-[11px] ${textMutedOnSurface}`}>{props.label}</div>
       <div className="flex items-baseline gap-1">
         <span className={`text-lg font-semibold ${textPrimaryOnSurface}`}>
-          {formatDuration(props.median)}
+          {part("minutes.median", props.median, (extra) => formatDuration(props.median, extra))}
         </span>
         <span className={`text-[11px] ${textMutedOnSurface}`}>median</span>
       </div>
       <div className={`text-xs ${textSecondaryOnSurface}`}>
-        p90 {formatDuration(props.p90)} · {props.n}{" "}
+        p90 {part("minutes.p90", props.p90, (extra) => formatDuration(props.p90, extra))} ·{" "}
+        {part("minutes.n", props.n, count(props.n))}{" "}
         {props.n === 1 ? props.noun.replace(/s$/, "") : props.noun}
       </div>
     </div>
@@ -364,7 +421,7 @@ function TimingCard(props: {
           p90={timing.total.p90_minutes}
         />
       </div>
-      <SpreadBars days={timing.days ?? []} format={formatDuration} noun="runs" />
+      <SpreadBars days={timing.days ?? []} noun="runs" write={writeMinutes} />
       <div className={`text-xs ${textSecondaryOnSurface}`} data-health>
         Success today <span className="font-semibold">{formatRate(today.success_rate)}</span>
         <span className={textMutedOnSurface}>
@@ -378,13 +435,13 @@ function TimingCard(props: {
         </span>
       </div>
       <Sparkbars
-        format={(v) => `${formatRate(v)} success`}
         max={1}
         points={(timing.days ?? []).map((d) => ({
           label: d.day,
           partial: d.partial,
           value: d.success_rate,
         }))}
+        write={(v) => () => `${formatRate(v)} success`}
       />
       <div className={`text-[11px] ${textMutedOnSurface}`}>
         {timing.total.cancelled} cancelled in 7 days, not counted
@@ -393,9 +450,23 @@ function TimingCard(props: {
   );
 }
 
-/** One of the two lead-time cards: merge to production is judged on the seven days' longest
- *  change, PR open to merge on their median, each strictly under the response's target (the
- *  prototype's Pipeline.tsx MergeCard and OpenedToMergeCard). */
+/** One of the two lead-time cards (the prototype's Pipeline.tsx MergeCard and OpenedToMergeCard),
+ *  met or missed as the response's `status` states, its eval's own verdict by its target and the
+ *  statistics it judges, and no verdict where a person turned that target off. The card names
+ *  each statistic the target judges, less those another implies (`lib/target.ts`'s
+ *  `shownJudges`), with today's and the seven days' value of it: the longest change for merge to
+ *  production, whose median it implies, and the median for PR open to merge, until someone
+ *  changes them. Where the target is off, which judges nothing, it names `offJudge`, the
+ *  statistic the card showed before targets carried their judges, so turning a target off takes
+ *  the verdict away and leaves the figures. Every other element it tones takes its own verdict
+ *  (`JudgedFigure`, `lib/target.ts`'s `ownVerdict`), never the badge's: each of today's and the
+ *  seven days' figures and each judged line's two values by its own value of its statistic,
+ *  where the target judges it, today's only for a median, p90 or longest change (a count of pull
+ *  requests judges the seven days' total, which no day is a share of); a day's median bar by that
+ *  day's median and its p90 bar by its p90, each where the target judges it (`SpreadBars`). The
+ *  dashed line is drawn exactly where those bars take a tone, and each toned figure is written on
+ *  its value's side of the target (`judgeFigure`). `measure` names the card's eval among
+ *  `targets`. */
 function LeadTimeCard(props: {
   metric: string;
   title: string;
@@ -404,14 +475,24 @@ function LeadTimeCard(props: {
     readonly days: readonly DeliveryLeadTimeDay[] | null;
     readonly total: DeliveryLeadTimeCell;
   };
-  target: number;
-  judged: "longest" | "median";
+  measure: "merge_to_production_minutes" | "opened_to_merge_median_minutes";
+  targets: DeliveryTargets;
+  met: boolean | null;
+  offJudge: string;
 }): ReactNode {
-  const { timing, target, judged } = props;
+  const { timing, met } = props;
+  const target = props.targets[props.measure];
+  const evalSlug = EVAL_SLUGS[props.measure];
   const today = lastDay(timing);
   const total = timing.total;
-  const judgedValue = judged === "longest" ? total.max_minutes : total.median_minutes;
-  const met = judgedValue === null ? null : judgedValue < target;
+  const line = targetLine(target, SPREAD_STATISTICS);
+  const ofDay: Judging = { evalSlug, target, span: "day" };
+  const ofWindow: Judging = { evalSlug, target, span: "window" };
+  // The count of pull requests is a number; every other statistic of a lead time is minutes.
+  const write = (judge: string, value: number | null): WriteFigure =>
+    judge === "minutes.n" && value !== null
+      ? count(value)
+      : (extra) => formatDuration(value, extra);
   return (
     <div className={CARD} data-metric={props.metric}>
       <div className="flex items-start justify-between gap-2">
@@ -420,6 +501,7 @@ function LeadTimeCard(props: {
       </div>
       <div className="grid grid-cols-2 gap-2">
         <Figure
+          judging={ofDay}
           label="Today"
           median={today.median_minutes}
           n={today.n}
@@ -427,6 +509,7 @@ function LeadTimeCard(props: {
           p90={today.p90_minutes}
         />
         <Figure
+          judging={ofWindow}
           label="Last 7 days"
           median={total.median_minutes}
           n={total.n}
@@ -434,21 +517,40 @@ function LeadTimeCard(props: {
           p90={total.p90_minutes}
         />
       </div>
-      <SpreadBars days={timing.days ?? []} format={formatDuration} noun="PRs" target={target} />
-      <div className={`text-xs ${textSecondaryOnSurface}`}>
-        {judged === "longest" ? "Longest" : "Median"} today{" "}
-        <span className="font-semibold">
-          {formatDuration(judged === "longest" ? today.max_minutes : today.median_minutes)}
-        </span>
-        , 7 days{" "}
-        <span className={`font-semibold ${met === false ? dangerText : ""}`}>
-          {formatDuration(judgedValue)}
-        </span>
-      </div>
+      <SpreadBars
+        days={timing.days ?? []}
+        judged={{ evalSlug, target }}
+        noun="PRs"
+        write={writeMinutes}
+      />
+      {(target === null ? [props.offJudge] : shownJudges(target)).map((judge) => {
+        const todays = leadTimeValue(today, judge);
+        const sevenDays = leadTimeValue(total, judge);
+        return (
+          <div className={`text-xs ${textSecondaryOnSurface}`} data-judge={judge} key={judge}>
+            {judgeWord(judge)} today{" "}
+            <JudgedFigure
+              className="font-semibold"
+              {...ofDay}
+              statistic={judge}
+              value={todays}
+              write={write(judge, todays)}
+            />
+            , 7 days{" "}
+            <JudgedFigure
+              className="font-semibold"
+              {...ofWindow}
+              statistic={judge}
+              value={sevenDays}
+              write={write(judge, sevenDays)}
+            />
+          </div>
+        );
+      })}
       <div className={`text-[11px] ${textMutedOnSurface}`}>
-        {judged === "longest"
-          ? `target under ${target}m for every change (the dashed line)`
-          : `target median under ${target}m (the dashed line)`}
+        {target === null
+          ? "target off"
+          : `target ${targetWords(target)}${line === undefined ? "" : " (the dashed line)"}`}
       </div>
     </div>
   );

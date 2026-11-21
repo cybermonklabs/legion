@@ -17,6 +17,23 @@ test("formatMinutes: whole minutes under an hour, one-decimal hours under a day,
   expect(formatMinutes(null)).toBe("n/a");
 });
 
+// R3-C1: a toned figure takes decimals past its usual ones where they would print it on the other
+// side of its target (`lib/target.ts`'s `judgeFigure`); each bucket keeps its unit.
+test("formatDuration and formatMinutes write extra decimals past each bucket's usual ones", () => {
+  expect([4.62, 44.6, 192, null].map((minutes) => formatDuration(minutes, 1))).toEqual([
+    "4.62m",
+    "44.6m",
+    "3.20h",
+    "n/a",
+  ]);
+  expect([59.6, 210, 3024, null].map((minutes) => formatMinutes(minutes, 1))).toEqual([
+    "59.6m",
+    "3.50h",
+    "2.10d",
+    "n/a",
+  ]);
+});
+
 test("formatRate: a whole percentage, n/a when nothing ended in success or failure", () => {
   expect(formatRate(0.8667)).toBe("87%");
   expect(formatRate(null)).toBe("n/a");

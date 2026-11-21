@@ -284,8 +284,8 @@ func proxyContainer(t *testing.T, template map[string]any) map[string]any {
 
 // Unset, proxyCpu and proxyMemory size the cloud-sql-proxy sidecar for one server pod's pools,
 // 1 CPU and 2Gi as its request and its limit, the sizes the proxy's own Kubernetes sidecar
-// example requests: every database call of the pod, up to dispatchConnectionsPerPod, passes
-// through its TLS.
+// example requests: every database call of the pod, up to envoy-dispatch's
+// store.ConnectionsPerProcess, passes through its TLS.
 func TestDispatchProxyContainerDefaultsToOneCPUAnd2Gi(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)

@@ -2,7 +2,9 @@ package delivery
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -301,6 +303,96 @@ func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	}
 	if completed == nil || !completed.Equal(finished) || !complete {
 		t.Fatalf("run after both writes: completed_at %v, jobs_complete %v; want %v and true", completed, complete, finished)
+	}
+}
+
+// TestTwoJobsWritesOfOneRunListingItsJobsInOppositeOrdersNeverDeadlock: two listings of one run's
+// jobs at once, the second naming them in the opposite order (UpsertRunJobs). The statement locks
+// each stored job's row as it reaches it, so in the order its listing gave each write would lock
+// one job and then wait for the other, which the other write holds while it waits for the first:
+// Postgres would refuse one of them as a deadlock (40P01). The first write is paused at its first
+// job's update, holding that job's row, by a trigger of this test's own, until the second write
+// waits too, at its own first job's update or behind the first write; then both go on, and both
+// land.
+func TestTwoJobsWritesOfOneRunListingItsJobsInOppositeOrdersNeverDeadlock(t *testing.T) {
+	shared, ctx := deliveryTestPool(t)
+	pool := wideTestPool(t, shared)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	if err := UpsertRun(ctx, pool, changeTestRun(813, DeliveryRunKindDeploy, started, started)); err != nil {
+		t.Fatalf("UpsertRun: %v", err)
+	}
+	names := []string{"build", "deploy", "e2e", "lint", "unit"}
+	running := make([]DeliveryRunJob, len(names))
+	for i, name := range names {
+		running[i] = DeliveryRunJob{Repo: "acme/widgets", RunID: 813, Name: name, StartedAt: &started}
+	}
+	if err := UpsertRunJobs(ctx, pool, "acme/widgets", 813, running, false); err != nil {
+		t.Fatalf("UpsertRunJobs while running: %v", err)
+	}
+	finished, success := started.Add(10*time.Minute), DeliveryJobConclusionSuccess
+	forward := make([]DeliveryRunJob, len(names))
+	for i, name := range names {
+		forward[i] = DeliveryRunJob{Repo: "acme/widgets", RunID: 813, Name: name, StartedAt: &started, CompletedAt: &finished, Conclusion: &success}
+	}
+	reversed := slices.Clone(forward)
+	slices.Reverse(reversed)
+
+	const pauseKey = int64(6900_0813)
+	for _, statement := range []string{
+		`create function delivery_test_pause_jobs() returns trigger language plpgsql as $$
+		begin
+			perform pg_advisory_xact_lock_shared(tg_argv[0]::bigint);
+			return new;
+		end $$`,
+		fmt.Sprintf(`create trigger delivery_test_pause_jobs before update on delivery_run_jobs for each row
+			when (new.repo = 'acme/widgets' and new.run_id = 813) execute function delivery_test_pause_jobs('%d')`, pauseKey),
+	} {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("pause the jobs' updates: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, statement := range []string{
+			`drop trigger if exists delivery_test_pause_jobs on delivery_run_jobs`,
+			`drop function if exists delivery_test_pause_jobs()`,
+		} {
+			if _, err := shared.Exec(context.Background(), statement); err != nil {
+				t.Errorf("drop the pause: %v", err)
+			}
+		}
+	})
+	gate, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the gate: %v", err)
+	}
+	defer func() { _ = gate.Rollback(context.Background()) }()
+	if _, err := gate.Exec(ctx, `select pg_advisory_xact_lock($1)`, pauseKey); err != nil {
+		t.Fatalf("take the pause's lock: %v", err)
+	}
+
+	first := goTimed(func() error { return UpsertRunJobs(ctx, pool, "acme/widgets", 813, forward, true) })
+	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 10*time.Second); waiting < 1 {
+		t.Fatal("the first jobs write never reached its first job's update")
+	}
+	second := goTimed(func() error { return UpsertRunJobs(ctx, pool, "acme/widgets", 813, reversed, true) })
+	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 10*time.Second); waiting < 2 {
+		t.Fatal("the second jobs write never waited, at its first job's update or behind the first write")
+	}
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatalf("let the writes on: %v", err)
+	}
+	requireNotDeadlocked(t, "the first jobs write", (<-first).err)
+	requireNotDeadlocked(t, "the jobs write in the opposite order", (<-second).err)
+	stored, err := ListRunJobs(ctx, pool, "acme/widgets", 813)
+	if err != nil || len(stored) != len(names) {
+		t.Fatalf("jobs after both writes = %d, %v; want %d", len(stored), err, len(names))
+	}
+	for _, job := range stored {
+		if job.CompletedAt == nil || !job.CompletedAt.Equal(finished) {
+			t.Errorf("job %s completed at %v after both writes; want %v", job.Name, job.CompletedAt, finished)
+		}
 	}
 }
 

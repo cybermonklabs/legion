@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -137,6 +138,30 @@ func seedAnsweredQuestion(
 	return id
 }
 
+// withoutSearchableEvalsDocument takes project's seeded evals-md (dispatch://INFRA-2916, R5) out of
+// the project's keyword search: it deletes the document's document_search row, the row the related
+// check's document arm matches words on. It waits for the seed's settlement first, since a version
+// a settlement wrote would put the row back (20261101182454's trigger). The document stays, and so
+// do its windows, which the meaning arms read and which the fake embedder maps to defaultVector,
+// below the meaning floor of every query here.
+func withoutSearchableEvalsDocument(t *testing.T, database *store.Store, project string) {
+	t.Helper()
+	var id string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select id::text from artifacts where project_key = $1 and slug = $2`, project, evals.DocumentSlug,
+	).Scan(&id); err != nil {
+		t.Fatalf("read %s's %s: %v", project, evals.DocumentSlug, err)
+	}
+	awaitSettled(t, database, id)
+	removed, err := database.Pool.Exec(context.Background(), `delete from document_search where artifact_id = $1`, id)
+	if err != nil {
+		t.Fatalf("take %s's %s out of keyword search: %v", project, evals.DocumentSlug, err)
+	}
+	if removed.RowsAffected() != 1 {
+		t.Fatalf("took %d search rows of %s's %s out, want its one", removed.RowsAffected(), project, evals.DocumentSlug)
+	}
+}
+
 // crossProjectCheck runs one check whose write is a question, as an ask create runs it.
 func crossProjectCheck(srv *server, project string) *model.Suggestions {
 	return srv.relatedCheck(context.Background(), relatedInput{
@@ -247,6 +272,13 @@ func TestCrossProjectRelatedOffersAnAnsweredQuestionToQuestionWritesOnly(t *test
 	}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
 	target, own, host, hostArtifact := crossProjectAsker(t, handler, database, embedder, "XASK")
+	// XASK holds its seeded evals-md (dispatch://INFRA-2916, R5), whose methods hold the question's
+	// "first" and "backlog". Searchable, it would be a same-project item of every check here, and
+	// the check below that leaves XASK's issues out would find it and answer found whatever XOTH
+	// offers: the one answer that cannot show the outcome is the same-project result's alone. A
+	// project's document is not removed (DELETE /api/v1/artifacts/{id} answers
+	// ARTIFACT_PROJECT_DOCUMENT), so the fixture takes it out of the keyword search instead.
+	withoutSearchableEvalsDocument(t, database, "XASK")
 	createSuggestionProject(t, handler, "XOTH")
 	owner := createSearchIssue(t, handler, "XOTH", "Backlog runbook", "What to do when the backlog grows.")
 	offered := seedAnsweredQuestion(t, handler, database, embedder, owner,

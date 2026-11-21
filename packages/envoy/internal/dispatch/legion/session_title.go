@@ -72,8 +72,9 @@ func (t SessionTitle) Works(issue string) bool {
 // phase worker or a root architect, never the project's controller, whose subject is a project
 // and no issue. It is the one statement of that rule, and every reader of it asks it: the issue
 // half below (RoleSessionWorks), which both reads of the issues that carry phase work ask
-// (PhaseWorkKeys for the metrics, PhaseWorkOf for the board), and the metrics' own window read
-// (metrics.readRoleEvents). So no two of them can disagree about which sessions count.
+// (PhaseWorkKeys for the metrics, PhaseWorkOf for the board), and the metrics' own window read of
+// each role session's events (legion/metrics). So no two of them can disagree about which
+// sessions count.
 func WorkerTitle(title string) (SessionTitle, bool) {
 	parsed, ok := ParseSessionTitle(title)
 	if !ok || parsed.Controller {

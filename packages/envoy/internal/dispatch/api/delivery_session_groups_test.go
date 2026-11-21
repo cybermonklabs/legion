@@ -290,6 +290,50 @@ func TestPatchRenamesAddsRemoves(t *testing.T) {
 	expectRefusal(t, "removing every session", emptied, http.StatusBadRequest, "SESSION_GROUP_INPUT")
 }
 
+// TestAPatchThatChangesNothingKeepsTheLiveViewEqualToTheRead: a live Delivery view hears of a
+// session group's write only through its change row, so a PATCH that moves what the read answers
+// for the group writes one, and a PATCH that writes none leaves the group as the read answered it.
+// A PATCH naming the group's own name, by the actor who last wrote it, changes nothing: here it
+// moved updated_at, which the read answers, while the trigger, which skips an update that differs
+// only in updated_at, logged no change row, so the view kept the old updated_at until some later
+// write's delta (dispatch://INFRA-2916, the testing round of 2026-11-16 at db4f353b).
+func TestAPatchThatChangesNothingKeepsTheLiveViewEqualToTheRead(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	group := createSessionGroup(t, handler, "Crew", "s1", "s2")
+	path := "/api/v1/delivery/session-groups/" + group.ID
+	changes := func() int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(t.Context(), `select count(*) from delivery_changes where kind = 'session_group'`).Scan(&count); err != nil {
+			t.Fatalf("count session_group changes: %v", err)
+		}
+		return count
+	}
+	updatedAt := func(label string, response interface{ Result() *http.Response }) time.Time {
+		t.Helper()
+		result := response.Result()
+		defer result.Body.Close()
+		var body struct {
+			UpdatedAt time.Time `json:"updated_at"`
+		}
+		if result.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", label, result.StatusCode)
+		}
+		if err := json.NewDecoder(result.Body).Decode(&body); err != nil {
+			t.Fatalf("%s: decode group: %v", label, err)
+		}
+		return body.UpdatedAt
+	}
+
+	first := updatedAt("first rename", dispatchRequest(t, handler, http.MethodPatch, path, map[string]any{"name": "Release crew"}, "alice"))
+	before := changes()
+	again := updatedAt("the same name again", dispatchRequest(t, handler, http.MethodPatch, path, map[string]any{"name": "Release crew"}, "alice"))
+	logged := changes() - before
+	if !again.Equal(first) && logged != 1 {
+		t.Errorf("a PATCH that changes nothing moved updated_at from %s to %s and logged %d session_group change rows, want the group unchanged or one change row", first.Format(time.RFC3339Nano), again.Format(time.RFC3339Nano), logged)
+	}
+}
+
 func TestDeleteSessionGroup(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	group := createSessionGroup(t, handler, "Crew", "s1", "s2")

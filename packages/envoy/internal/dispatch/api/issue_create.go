@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
@@ -400,10 +401,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	ledger.WroteVersionText(artifactID, markdown)
 	// documentReadBack is the rendering the seed stored, read back by its own parse (docs'
 	// Ledger.ReadBackOf), which the task count and the advice's blocks read in place of parsing
-	// the same markdown again (recordDocumentTaskProgress, documentBlocksFor).
+	// the same markdown again (docs.RecordWrittenTaskProgress, documentBlocksFor).
 	documentReadBack := ledger.ReadBackOf(artifactID, markdown)
 	// The count is queued after the version's insert, so it names that version (LEGION-542).
-	if err := recordDocumentTaskProgress(documentCtx, tx, artifactID, documentReadBack, markdown); err != nil {
+	if err := docs.RecordWrittenTaskProgress(documentCtx, tx, artifactID, documentReadBack, markdown); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

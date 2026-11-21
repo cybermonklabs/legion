@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -127,6 +128,7 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(delivery.SessionGroup{}):              "DeliverySessionGroup",
 	reflect.TypeOf(measures.Spread{}):                    "DeliverySpread",
 	reflect.TypeOf(measures.Targets{}):                   "DeliveryTargets",
+	reflect.TypeOf(measures.Target{}):                    "DeliveryTarget",
 	reflect.TypeOf(measures.Timing{}):                    "DeliveryTiming",
 	reflect.TypeOf(measures.Cell{}):                      "DeliveryTimingCell",
 	reflect.TypeOf(measures.Day{}):                       "DeliveryTimingDay",
@@ -139,6 +141,22 @@ var schemaNames = map[reflect.Type]string{
 	// what a client imports. The board's own types (legionBoardResponse and its members) already
 	// carry the word and take their Go names.
 	reflect.TypeOf(legion.Settings{}): "LegionSetting",
+
+	// The eval registry's shapes, whose one-word Go names (Definition, Series, Link, Reading,
+	// Error) the evals package can carry because its import path says `evals`, and whose names
+	// here carry the word for a client, which imports every schema from one module.
+	reflect.TypeOf(evals.Definition{}):   "EvalDefinition",
+	reflect.TypeOf(evals.Series{}):       "EvalSeries",
+	reflect.TypeOf(evals.Link{}):         "EvalLink",
+	reflect.TypeOf(evals.FailureMode{}):  "EvalFailureMode",
+	reflect.TypeOf(evals.Reading{}):      "EvalReading",
+	reflect.TypeOf(evals.Error{}):        "EvalReadingsRefusal",
+	reflect.TypeOf(evals.RowError{}):     "EvalRowRefusal",
+	reflect.TypeOf(evals.Statistics{}):   "EvalStatistics",
+	reflect.TypeOf(evals.SeriesValues{}): "EvalSeriesValues",
+	reflect.TypeOf(evals.DayPoint{}):     "EvalDayPoint",
+	reflect.TypeOf(evals.Verdict{}):      "EvalVerdict",
+	reflect.TypeOf(evals.Judge{}):        "EvalJudge",
 }
 
 // rawFieldKeyOf names one field of one Go type: the owner by its reflect.Type rather than by an

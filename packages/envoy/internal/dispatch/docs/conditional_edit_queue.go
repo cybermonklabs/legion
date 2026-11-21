@@ -28,9 +28,9 @@ const maxQueuedConditionalEdits = 32
 // gate's (store.OwnerLockGateNamespace), the loop leases' (duty.leaseNamespace), the test hooks'
 // (the api package's testHookLockNamespace), the issue
 // dependencies' (api's lockProjectIssueDependencies), the deployment's own issue dependencies'
-// (api's lockDeploymentIssueDependencies), one repository mapping's write (api's
-// lockRepoProjectWrite) and the rename graph's own (api's refuseRepoRenameChain), none of them
-// this one.
+// (api's lockDeploymentIssueDependencies), one repository mapping's write
+// (delivery.LockRepoProjectWrite) and the rename graph's own (api's refuseRepoRenameChain), none
+// of them this one.
 const conditionalEditQueueLockNamespace int32 = 0x51554555
 
 // conditionalEditReleaseTimeout bounds the write of a process's count when one of its conditional

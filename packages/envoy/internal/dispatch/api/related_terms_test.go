@@ -348,8 +348,10 @@ func TestRelatedTermsRefreshCountsADocumentOnceAtItsLatestVersion(t *testing.T) 
 		}
 	}
 
-	if items := refreshTermStats(t, database, "VERS"); items != 2 {
-		t.Fatalf("items = %d, want 2: the issue and its spec, once", items)
+	// The project's items are the issue, its spec once, and the project's seeded evals-md
+	// (dispatch://INFRA-2916, R5), whose one version holds none of the words counted below.
+	if items := refreshTermStats(t, database, "VERS"); items != 3 {
+		t.Fatalf("items = %d, want 3: the issue, its spec once, and the seeded evals-md", items)
 	}
 	rows, err := database.Pool.Query(context.Background(), `select lexeme, ndoc from search_term_stats where project_key = 'VERS'`)
 	if err != nil {

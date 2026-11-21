@@ -78,8 +78,10 @@ func (h *deliveryHub) runDue(g *hubGeneration) bool {
 }
 
 // dueAt is when the view is next due, and why: a dirty view viewQuiet after its last mark or
-// viewMaxWait after its first, whichever is sooner (at once for a subscribe's), not before a
-// failed read's retry; a clean one with an answer at its expiry.
+// viewMaxWait after its first, whichever is sooner, or at once for a mark that waits for no quiet
+// (immediate, markDirtyLocked), never before a failed read's retry; a clean one with an answer at
+// its expiry. A view being computed is not due, so it is never recomputed twice at once: a mark
+// made meanwhile falls due by these rules once that recompute has ended.
 func (view *deliveryView) dueAt() (time.Time, string, bool) {
 	if view.computing {
 		return time.Time{}, "", false
@@ -187,8 +189,9 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 		view.lastDirty, view.notBefore = now, now.Add(deliveryLiveRetry)
 	default:
 		if g.epoch != epoch {
-			// The change log was reset while it read, so its position names nothing in the new one.
-			read.seq = 0
+			// The change log was reset while it read, so its position names nothing in the new
+			// one, and no change of the new log was recorded at it.
+			read.seq, read.changedAt = 0, nil
 		}
 		view.settings, view.pop, view.pipe, view.readFrom = read.settings, read.pop, read.pipe, read.from
 		view.body, view.seq, view.changedAt = &read.body, read.seq, read.changedAt
@@ -231,12 +234,13 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 // began leaves dirty set: the position may name the old log, so the marks are taken over only
 // while the generation stands at the epoch the recompute read.
 func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLiveSpec, epoch int64) (deliveryViewRead, error) {
-	ctx, pool := g.readContext(), h.server.deps.Store.Pool
+	ctx := g.readContext()
 	var read deliveryViewRead
-	var err error
-	if read.seq, err = delivery.LatestChangeSeq(ctx, pool); err != nil {
+	head, err := delivery.ChangesHead(ctx, h.server.deps.Store.Pool)
+	if err != nil {
 		return read, err
 	}
+	read.seq, read.changedAt = head.Seq, head.At
 	h.note(deliveryHubNote{what: "recompute position", view: spec.key, through: read.seq})
 	h.mu.Lock()
 	view.readingSeq, view.reading = read.seq, true
@@ -247,11 +251,6 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 		view.dirty, view.immediate = false, false
 	}
 	h.mu.Unlock()
-	if read.seq > 0 {
-		if read.changedAt, err = delivery.ChangeAt(ctx, pool, read.seq); err != nil {
-			return read, err
-		}
-	}
 	now := h.clock.Now()
 	body, err := spec.classes().read(h, ctx, spec, now, &read)
 	if err != nil {
@@ -262,14 +261,15 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 }
 
 // readLegionBoardView is a Legion board's read: the project's own daemon state as the sampler
-// recorded it. It reads no delivery settings — its own are the project's Legion setting, and a
-// deployment that configured one and not the other still shows the board. A project that does
-// not exist is loadProject's refusal, as GET /api/v1/projects/{key}/legion/board answers it.
+// recorded it, and its stored facts closed at now, the moment the body is answered as of. It
+// reads no delivery settings — its own are the project's Legion setting, and a deployment that
+// configured one and not the other still shows the board. A project that does not exist is
+// loadProject's refusal, as GET /api/v1/projects/{key}/legion/board answers it.
 func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	if _, err := h.server.loadProject(ctx, h.server.deps.Store.Pool, spec.project); err != nil {
 		return nil, err
 	}
-	board, err := h.server.readLegionBoard(ctx, spec.project)
+	board, err := h.server.readLegionBoard(ctx, spec.project, now)
 	if err != nil {
 		return nil, err
 	}
@@ -279,8 +279,31 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 	return legionBoardCompute(board, now), nil
 }
 
+// readEvalsView is an evals view's read: the list read of GET /api/v1/projects/{key}/evals, through
+// the function the route answers with (readProjectEvalList), from the query the route would be
+// sent (evalsQuery). So the body is the route's for the same query, byte for byte. A project no
+// row holds is loadProject's errProjectNotFound, which the view refuses as the route answers it
+// (viewReads.refusal, live_frames.go): its subscribers are told so once, with that refusal's code
+// and message, and stay open, since the project's creation seeds its evals and the change rows of
+// those versions mark the view, whose next read answers it.
+//
+// It names no issue and no session, and reads no delivery settings: what moves it is a write of
+// its project's readings, versions or day rows, each of which the change log carries (touchedBy).
+// It sets no expiry, so no expire narrows it: a window is whole UTC days, which move at midnight,
+// and the refresher's pass at midnight writes every project's rows of the new day, its
+// unowned-p0 row at least, whatever its inputs (evals' walkDaily), whose change marks the view.
+func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	answer, err := h.server.readProjectEvalList(ctx, spec.evalsQuery(now), spec.project, now)
+	if err != nil {
+		return nil, err
+	}
+	return answer, nil
+}
+
 // readPipelineView is a pipeline view's read: the delivery settings and the runs, jobs and merges
-// of the seven days ending on its at, or on the present for a view that names none.
+// of the seven days ending on its at, or on the present for a view that names none, with the
+// min_n its slowest jobs are ranked by, through the GET route's own read and compute
+// (readPipelinePopulation, deliveryPipelineCompute), so the view ranks them as the route does.
 func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	pool := h.server.deps.Store.Pool
 	var err error
@@ -305,7 +328,8 @@ func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpe
 }
 
 // readDeliveryView is a timeline or measures view's read: the delivery settings, the population
-// of its window and facets, and the ancestors of every issue that population names.
+// of its window and facets, and, where that population is labeled, the ancestors of every issue
+// it names.
 func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	pool := h.server.deps.Store.Pool
 	var err error
@@ -321,7 +345,16 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 	}
 	read.issues = map[string]struct{}{}
 	read.sessions = map[string]string{}
+	labeled := read.pop.labeled()
 	name := func(issue *string, sessions []string) {
+		// A population read without its labels (a measures view selecting nothing) shows no fact
+		// of the issues its pull requests name and no session by its title, so no write of those
+		// issues, of their ancestors or of a session's title moves its answer: it records none of
+		// them, and so reads no ancestors. The one issue fact it shows, the unowned P0 list, moves
+		// with a P0's write, which showsIssue's p0 rule marks every view showing that list for.
+		if !labeled {
+			return
+		}
 		if issue != nil {
 			read.issues[*issue] = struct{}{}
 		}

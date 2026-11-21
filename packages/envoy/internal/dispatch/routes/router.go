@@ -99,6 +99,10 @@ type AppContextOptions struct {
 	// when it published the build (dashboard.Publish); "" when it serves none. See
 	// api.DepsInput.
 	DashboardEntry string
+	// Build is the build this process runs as, which the eval day rows a readings write keeps
+	// record of (api.Deps.Build): BuildCommit where the image build stamped one, and a string of
+	// this one process where nothing did, so it is never empty where BuildCommit is.
+	Build string
 	// BuildCommit is the commit this process was built from, which main holds in its own
 	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
 	BuildCommit    string
@@ -251,6 +255,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Metrics:                opts.Metrics,
 		AnswersLatency:         opts.AnswersLatency,
 		DashboardEntry:         opts.DashboardEntry,
+		Build:                  opts.Build,
 		BuildCommit:            opts.BuildCommit,
 	})
 	if err != nil {

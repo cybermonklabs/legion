@@ -61,6 +61,49 @@ func TestHorizonProvesAnObservationOnlyFromALaterSnapshot(t *testing.T) {
 	}
 }
 
+// HeldBack is whether a reader that read the log up to the safe it was answered may have left an
+// event above it. Scripted: the first observation sees 8 and proves nothing; the second proves it
+// and sees nothing above it; the third sees 9 while a transaction below its own is still open; the
+// fourth proves 9. A reader is held back while an observed id stands above H (a Gap other than
+// GapNone), and also once H has been proven past the safe it read, which is how a reader whose
+// held-back id another reader of the one Horizon proved meanwhile still asks to read it.
+func TestHorizonHeldBackSaysAReaderLeftAnIDAboveWhatItRead(t *testing.T) {
+	ctx := context.Background()
+	db := &scriptedHorizonDB{script: []scriptedObservation{
+		{newest: 8, xmin: 101, xid: 102},
+		{newest: 8, xmin: 103, xid: 103},
+		{newest: 9, xmin: 103, xid: 104},
+		{newest: 9, xmin: 105, xid: 105},
+	}}
+	horizon := NewHorizon(db)
+	for step, want := range []struct {
+		safe int64
+		// heldBack is HeldBack of the safe this step's Safe answered, and earlier of the one the
+		// step before it answered, which a reader that started then still holds.
+		heldBack, earlier bool
+	}{
+		{safe: 0, heldBack: true, earlier: true},
+		{safe: 8, heldBack: false, earlier: true},
+		{safe: 8, heldBack: true, earlier: true},
+		{safe: 9, heldBack: false, earlier: true},
+	} {
+		before := horizon.Proven()
+		safe, err := horizon.Safe(ctx)
+		if err != nil {
+			t.Fatalf("observation %d: %v", step+1, err)
+		}
+		if safe != want.safe {
+			t.Fatalf("after observation %d: Safe = %d, want %d", step+1, safe, want.safe)
+		}
+		if got := horizon.HeldBack(safe); got != want.heldBack {
+			t.Errorf("after observation %d: HeldBack(%d) = %t, want %t (Gap %d)", step+1, safe, got, want.heldBack, horizon.Gap())
+		}
+		if got := horizon.HeldBack(before); got != want.earlier {
+			t.Errorf("after observation %d: HeldBack(%d), the safe of a reader that read before it, = %t, want %t", step+1, before, got, want.earlier)
+		}
+	}
+}
+
 // A reader's read that leaves only its own observation unproven observes again at once, and that
 // second observation proves the first whenever no older transaction id is still running: the gap
 // closes on two observations with no wait between. One held by an older transaction id stays

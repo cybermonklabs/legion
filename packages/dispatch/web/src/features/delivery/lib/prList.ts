@@ -53,11 +53,18 @@ export function leadTimeMinutes(pr: DeliveryPR): number | undefined {
   return (Date.parse(pr.deployed_at) - Date.parse(pr.merged_at)) / 60_000;
 }
 
-/** Minutes as the page shows durations: "45m", "3.5h", "2.1d". */
-export function formatMinutes(minutes: number): string {
-  if (minutes < 60) return `${Math.round(minutes)}m`;
-  if (minutes < 1440) return `${(minutes / 60).toFixed(1)}h`;
-  return `${(minutes / 1440).toFixed(1)}d`;
+/** Minutes written whole, rounded ("45"), or to `extra` decimals ("44.6"). */
+export function wholeMinutes(minutes: number, extra = 0): string {
+  return extra === 0 ? `${Math.round(minutes)}` : minutes.toFixed(extra);
+}
+
+/** Minutes as the page shows durations: "45m", "3.5h", "2.1d"; with `extra` decimals past those
+ *  ("44.6m"), as a toned figure takes them where its usual ones would print it on the other side
+ *  of its target (`lib/target.ts`'s `judgeFigure`). */
+export function formatMinutes(minutes: number, extra = 0): string {
+  if (minutes < 60) return `${wholeMinutes(minutes, extra)}m`;
+  if (minutes < 1440) return `${(minutes / 60).toFixed(1 + extra)}h`;
+  return `${(minutes / 1440).toFixed(1 + extra)}d`;
 }
 
 export function buildPRListRows(

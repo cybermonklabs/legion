@@ -1,4 +1,10 @@
-import { mintAgentToken } from "./api";
+import {
+  createProject,
+  listProjectEvals,
+  mintAgentToken,
+  putRepoProject,
+  registerEval,
+} from "./api";
 import {
   FIXTURE_WINDOW as MEASURES_WINDOW,
   seedDeliveryFixture,
@@ -629,6 +635,44 @@ test("the measures API gives an agent the numbers the panel shows", async ({ bro
   const body = await response.json();
   expect(body.measures.deploy_frequency.successful_deploys).toBe(5);
   expect(body.status.unowned_p0).toBe(false);
+  await context.close();
+});
+
+// dispatch://INFRA-2916's R5: the measures panel judges a KPI by the target a person sets on the
+// deploy repository's project's eval, and states that target, not a constant of the code. A
+// target written on deploy-frequency moves the card's caption and its verdict, and a null target
+// turns it off.
+test("the measures panel judges deploys a day by the target a person set on the eval", async ({
+  browser,
+}) => {
+  await seedMeasuresFixture();
+  await createProject({ key: "TGT", name: "Targets" });
+  await putRepoProject("acme/widgets", { default: true, project: "TGT" });
+  await expect
+    .poll(async () => ((await listProjectEvals("TGT"))?.items ?? []).map((item) => item.id), {
+      timeout: 60_000,
+    })
+    .toContain("TGT/deploy-frequency");
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const card = page.getByLabel("KPI targets").locator('[data-kpi="Deploys a day"]');
+
+  // 5 deploys over the window: under the catalogue's 20 a day.
+  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
+  await expect(card).toContainText("5 deploys");
+  await expect(card).toContainText("target \u2265 20/day");
+  await expect(card).toContainText("\u2717 missed");
+
+  await registerEval("TGT", { slug: "deploy-frequency", target: 0.1, target_inclusive: true });
+  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
+  await expect(card).toContainText("target \u2265 0.1/day");
+  await expect(card).toContainText("\u2713 met");
+
+  await registerEval("TGT", { slug: "deploy-frequency", target: null });
+  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
+  await expect(card).toContainText("target off");
+  await expect(card).not.toContainText("\u2713 met");
+  await expect(card).not.toContainText("\u2717 missed");
   await context.close();
 });
 

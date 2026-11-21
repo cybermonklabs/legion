@@ -1,0 +1,33 @@
+kind: Changed
+body: |-
+  The evals list reads a range the Evals tab offers from stored figures rather than folding every
+  day row of the range again: `GET /api/v1/projects/{key}/evals`, `GET /api/v1/evals` and the
+  live `evals` view answer a window and a compare range of 7, 14, 28 or 84 days (or one day
+  longer, as the live view reads a preset), of a project's own rows or of one repository's, by
+  key from `eval_range_figures` and `eval_day_figures` (migration `20261120072042_eval_figures`),
+  with the same bytes the fold of the day rows answers. Any other length, two or more
+  repositories, an eval whose stored figures were folded under another definition, and a project
+  whose figures are not built yet still fold the day rows. Every write of day rows folds again, in
+  its own transaction, the figures of the days it moved; the day-row refresher's pass builds each
+  build's whole set of figures once, and then each new day's ranges, and marks a project built
+  once the first whole walk of its figures is done (`eval_figures_built`). A register write that
+  moves what an eval folds by is folded by the refresher's next pass, which reads the change log
+  from a cursor of its own. Both reads fold each eval's rows in day order, so a sum of floats
+  answers the same bits whatever order the rows come back in. The bench waits for every project's
+  figures to be built before it measures a first paint.
+  A change of the delivery settings reaches an open evals page in one pass of the refresher, as
+  one delta: the pass rewrites, in one transaction, every day of the delivery and CI evals the
+  change moves (their day rows, the rows' stored figures and the members that moved). It compares
+  the settings with those the rows stand built under (`eval_days_settings`), so a change no day row
+  reads (a workflow path, the population rule, the roll-up job) rewrites nothing; and the same
+  settings saved again by another person log no change at all (migration
+  `20261120111107_delivery_settings_bookkeeping`).
+  A move of the deploy repository rewrites nothing: the delivery and CI evals that read it (the
+  lead times to production, deploy-frequency, deploy-run-success, pr-ci and the deploy cards) are
+  kept, with their stored figures and their items, once for every repository that holds a
+  delivery run, each as if it were the deploy repository (`eval_days.deploy_repo`), and the evals
+  list, the items route and the live `evals` view read those of the repository the settings name.
+  A move back finds the old repository's numbers as they stand, and a move to a repository that
+  holds no run reads "no data" for those evals. Each repository's series begin on its own first
+  day, never before its first stored run, and its lead times on the merge day of the first pull
+  request it ships. The other settings rewrite each repository that holds a run they read.

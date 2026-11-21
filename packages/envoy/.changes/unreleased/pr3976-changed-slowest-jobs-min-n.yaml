@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The Pipeline's slowest jobs follow the `min_n` a person sets on `pr-ci`'s `job:*` series.
+  `GET /api/v1/delivery/pipeline` (and the live hub's Pipeline view) ranks them by the `min_n` of
+  that series in the project the deploy repository is mapped to, and by 50 where the repository
+  is mapped to no project or that project has no `pr-ci` eval yet, and states the count it ranked
+  by in `pr_checks.slowest_min_results`; the page says that count instead of a fixed 50. A
+  register write of that `min_n` updates an open Pipeline view. The Pipeline's table and
+  `pr-ci`'s items with `sort=median` are one ranking (`measures.FoldSlowestJobs`): the table is
+  its first five jobs.

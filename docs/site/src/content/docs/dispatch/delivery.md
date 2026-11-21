@@ -90,10 +90,10 @@ newest day first; a day the window only partly covers is marked partial.
   the window.
 - **Change failure rate**: confirmed failed changes over deploys (and, in the fold, over pull
   requests). Only a flag the dora role holder has confirmed counts; pending flags are shown
-  separately, as the rate if every one were confirmed. Until flags are recorded the card says so,
-  and the rate is zero.
+  separately, as the rate if every one were confirmed. Until flags are recorded the card says so
+  and shows no rate and no verdict: a rate that measured nothing is not zero.
 - **Time to restore**: the median time from a broken pull request's deploy to its fix's deploy,
-  over confirmed flags.
+  over confirmed flags. Until flags are recorded it has no value.
 - **Rework share**: pull requests whose title starts with `fix`, `revert` or `hotfix`, over all
   pull requests merged in the window.
 - **Deploy runs reaching production**: runs that reached the production job, over runs that
@@ -104,32 +104,83 @@ newest day first; a day the window only partly covers is marked partial.
 
 The filters narrow every figure drawn from pull requests: lead time, rework share and the per-pull
 request failure rate. Deploys and runs follow the window alone, and a deploy counts as one that
-shipped a pull request when it shipped any pull request merged in the window, whatever the filters.
+shipped a pull request when it is, for at least one pull request, the first production deploy that
+contains it, whenever that pull request merged and whatever the filters.
 
 ## The targets
 
-| Figure | Target |
-| --- | --- |
-| Deploys a day | at least 20 |
-| Change failure rate, per deploy | under 5% |
-| Merge → production, for every change | under 45 minutes |
-| Pull request open → merge, median | under 60 minutes |
-| Deploy runs reaching production | at least 90% |
-| P0 issues with no owner | 0 |
+Each target is the target of an eval of the project the deploy repository is mapped to
+(**Settings → Repositories → Projects**), so a change to that eval's target, to whether the
+target itself counts as met, or to the statistics it judges moves the card's verdict and its
+label. Until someone changes one, and where the deploy repository is mapped to no project or the
+project has no such eval yet, the targets are these:
 
-"Under" is met strictly below the target. "At least" is met at the target.
+| Figure | Eval | Target |
+| --- | --- | --- |
+| Deploys a day | `deploy-frequency` | at least 20 |
+| Change failure rate, per deploy | `change-fail-rate` | under 5% |
+| Merge → production, for every change | `merge-to-production` | under 45 minutes |
+| Pull request open → merge, median | `pr-open-to-merge` | under 60 minutes |
+| Deploy runs reaching production | `deploy-run-success` | at least 90% |
+| P0 issues with no owner | `unowned-p0` | 0 |
+
+"Under" is met strictly below the target. "At least" is met at the target. An eval whose target is
+off has a card with no target and no verdict.
+
+A card's label names the statistics its eval's target judges, so it always says what the verdict
+beside it is of: "< 45m for every change" for the longest change, "median < 60m", and, for a
+`pr-open-to-merge` whose target someone set to judge its 90th percentile, "p90" in place of
+"median". A statistic another judged one implies is left out: `merge-to-production` judges its
+longest change and its median, and every change under the target puts the median under it, so
+the label names the longest change alone and the verdict is the same. A card whose target
+judges its own headline figure alone (deploys a day, the failure rate per deploy, run success,
+the count of unowned P0 issues) names no statistic.
+
+The met or missed badge is the only verdict of everything the target judges together. Every other
+figure, count, bar and table cell is green or red only when the target judges the statistic it
+shows, and then by its own value of that statistic, never by the badge: under the catalogue's
+target merge to production's median is green or red by the median itself, its longest change by
+the longest change, and a figure the target does not judge, such as the failure rate's upper bound
+under the catalogue's target, reads plain. A day's bar and a day's cell in the per-day table are
+judged by that day's value only for a rate or a median, 90th percentile or longest time; a count
+over the window, such as the concluded runs or the deploys, is judged by the window's total, so its
+figure on the card takes the colour and no day does. The dashed target line is drawn exactly where
+the bars can take a colour. With the target off, nothing takes a colour and no line is drawn.
+A coloured figure, and the value a coloured bar writes in its hover title, takes more decimals
+where its usual ones would put it on the other side of the target from its own value (on the
+target where the value is not, or past it), so it always reads on the side its colour says (4.96%
+under a 5% target, never 5.0%, while a rate of exactly 5% keeps 5.0%), and a label writes its
+target exactly as it was set.
 
 ## For agents
 
 `GET /api/v1/delivery/measures?from=<RFC 3339>&to=<RFC 3339>` answers the same figures, the
-targets, whether each is met, and the unowned P0 issues. It takes the timeline's parameters:
-`from` and `to` (the last seven days when both are left out, at most 84 days apart), `q` for the
-search, and any filter repeated for several values, such as `&repo=acme/widgets&priority=P0`. Any
-signed-in person or agent token reads it. `GET /api/v1/delivery/timeline` carries the same
+targets, whether each is met, and the unowned P0 issues. Each target is
+`{"value", "inclusive", "direction", "judges"}`, or null when the eval's target is off:
+`inclusive` says whether the value itself is met, `direction` is the eval's, `higher_better` or
+`lower_better`, and `judges` lists the statistics the verdict judges, each `<series>.<stat>`, in
+the order they are judged (the eval's `target_judges`, or its primary series' headline statistic
+when it names none). Each verdict under `status` is true, false, or null when there is no target
+or nothing to judge. The verdicts are the eval's own, judged by the same code as
+`GET /api/v1/projects/{key}/evals`. Two of them are the verdict of one statistic the eval's target
+judges rather than of all of them: `merge_to_production_median` is the median's
+(`minutes.median` of `merge-to-production`) and `change_failure_rate_upper_bound` the upper
+bound's (`upper_bound.rate` of `change-fail-rate`), each null where the eval's `judges` do not
+name that statistic. With the catalogue's judges the median has a verdict and the upper bound has
+none. The route takes the timeline's parameters: `from` and `to`
+(the last seven days when both are left out, at most 84 days apart), `q` for the search, and any
+filter repeated for several values, such as `&repo=acme/widgets&priority=P0`. `from`, `to` and
+`q`, and the Pipeline route's `at`, take one value each, and a query naming one of them twice is
+`400 INVALID_QUERY`, as it is on the eval routes. Any signed-in person or agent token reads it.
+`GET /api/v1/delivery/timeline` carries the same
 answer as its `measures` for its own window and filters, so an agent reading both needs only the
 timeline. The routes and the page's live updates compute from the same stored facts with the same
 code, so they agree. `flags_source` says whether recorded flags fed the change failure rate;
-`none` means no flags are recorded yet.
+`none` means no flags are recorded yet, so every count in `change_failure_rate` is 0 and its rates
+(each `rate` and `upper_bound_rate`) are null, `time_to_restore` has no median, and
+`status.change_failure_rate` and `status.change_failure_rate_upper_bound` are null.
+`change_failure_rate` itself is always the object, never null, so a Delivery page of an earlier
+build, which reads its fields without checking for null, can still read the answer.
 
 `GET /ws/live` is the one websocket each browser tab keeps open for all of its live views. A
 signed-in person or agent token may open it; only a person may subscribe to an agent conversation.
@@ -140,8 +191,12 @@ Every client message is one JSON object:
 ```
 
 `sub` identifies that subscription in every response. `unsubscribe` with the same `sub` ends it.
-A delivery view is `timeline` or `measures` with its window and GET-route query, or `pipeline`
-with optional `at`; it may resume with `{"seq":"…","revs":{…}}`. An event-feed view is
+A delivery view is `timeline` or `measures` with its window and GET-route query; `pipeline` with
+an optional `at`; `legion` with the `project` whose Legion board it shows (the body
+of `GET /api/v1/projects/{key}/legion/board`) and nothing else; or `evals` with the `project`
+whose evals it shows, its window, and the query `GET /api/v1/projects/{key}/evals` would be sent
+without `from` and `to` (`compare_from` and `compare_to`, `repo`, `kind`, `limit`, `offset`). A
+delivery view may resume with `{"seq":"…","revs":{…}}`. An event-feed view is
 `{"kind":"events"}` and resumes with `{"since":"<event id>"}`. An agent view is
 `{"kind":"agent","session_id":"<uuid>"}` and never has a resume. A resume of the wrong shape, or
 any unknown member, is an `INVALID_FRAME` error.
@@ -150,17 +205,25 @@ Dispatch answers a delivery view with:
 
 - a `snapshot`: the matching GET route's body for the window resolved now, the change it reflects
   (`seq`), when that change was recorded (`changed_at`), and a revision for every key it holds;
-- then only `delta` frames: the pull requests, runs and session groups that changed (`items`,
-  each list's `upsert` and the ids it `remove`s), the map entries and counts that changed (`maps`
-  and `counts`, null for a key that left), and the fields replaced whole (`set`, which carries
-  `window` whenever it moved, never alone);
-- `freshness`, the whole freshness verdict - the `freshness` object the snapshot carries (the last
-  event, the last reconcile, its error and how many pull requests cannot be fetched) and the
+- then only `delta` frames: the list items that changed (`items`, each list's `upsert` and the ids
+  it `remove`s: the timeline's pull requests, runs and session groups, and an evals view's evals,
+  by eval id), the map entries and counts that changed (`maps` and `counts`, a legion view's
+  issues by key among the maps, null for a key that left), and the fields replaced whole (`set`,
+  which carries `window` whenever it moved, never alone). A legion view sends an issue's entry
+  only when its stored row moved, not each time an open issue's hours grow: an entry with a value
+  that grows carries `as_of` and `growth`, so a page gives each growing value at its own clock as
+  value plus rate times the hours since `as_of`, as the GET route does at its read, and an entry
+  none of whose values grows carries null for both;
+- `freshness`, the whole freshness verdict - the `freshness` object a timeline, measures or
+  pipeline snapshot carries (the last event, the last reconcile, its error and how many pull
+  requests cannot be fetched) and the
   `stale` source list - sent right after a subscription's first answer when Dispatch
   holds one, so a socket opened or resumed after the verdict changed still gets it, and to every
   subscriber whenever it changes;
 - `error`, with the code the matching GET route would answer (`INVALID_QUERY`,
-  `DELIVERY_NOT_CONFIGURED`) or `INVALID_FRAME`; and
+  `DELIVERY_NOT_CONFIGURED`; `LEGION_NOT_CONFIGURED` for a legion view of a project with no Legion
+  daemon, `PROJECT_NOT_FOUND` for an evals view of a project that does not exist) or
+  `INVALID_FRAME`; and
 - `heartbeat`, every 15 seconds. While nothing the view shows changes, the heartbeat is the only
   frame sent.
 
@@ -281,15 +344,37 @@ clock; a step's median and 90th percentile are rounded to a tenth of a minute.
   branch, is not counted. The first two are optional settings; a pipeline that names neither has no
   such card.
 - **Merge to production**: the delivery lead time, by the day each pull request merged. A pull
-  request still waiting has none yet. It is judged on the seven days' longest change: the target
-  is under 45 minutes for every change.
+  request still waiting has none yet. It is met or missed as the `merge-to-production` eval judges
+  it, on the seven days' longest change and their median until someone changes that: under 45
+  minutes for every change.
 - **PR open to merge**: every merged pull request, deployed or not, by the day it merged. It is
-  judged on the seven days' median: the target is a median under 60 minutes.
+  met or missed as the `pr-open-to-merge` eval judges it, on the seven days' median until someone
+  changes that: a median under 60 minutes.
+
+The verdict on these two cards is the eval's own, judged by the same code as
+`GET /api/v1/projects/{key}/evals`. Each card names the statistics its eval's target judges and
+shows today's and the seven days' value of each, leaving out one that another implies (merge to
+production shows its longest change, which under the target puts the median under it), so a card
+whose eval someone set to judge the 90th percentile reads "P90" where it read "Median". Each
+figure on these cards, and each day's median bar and 90th-percentile bar, is green or red only
+when the eval's target judges the statistic it shows, by its own value, the target's own value
+included where the eval counts it as met; today's figures and the bars are a day's, so under a
+target of the count of pull requests only the seven days' count takes a colour. The dashed line
+marks the target exactly where a bar can take a colour.
+A coloured figure, and the value a coloured bar writes in its hover title, takes more decimals
+where its usual ones would put it on the other side of the target from its own value (on the
+target where the value is not, or past it), so it always reads on the side its colour says (59.9m
+under 60 minutes, never 60m, while a median of exactly 60 minutes keeps 60m), and the card writes
+its target exactly as it was set.
 
 **PR CI: slowest jobs** ranks the checks workflow's jobs by their seven-day median, slowest first,
-and shows five. A job needs 50 timed results in the seven days to be ranked, so a rarely run job
-cannot top the table on a handful of results. Only jobs of runs that ended in success or failure
-are counted.
+and shows five. A job needs a number of timed results in the seven days to be ranked, so a rarely
+run job cannot top the table on a handful of results: the `min_n` of the `job:*` series of the
+`pr-ci` eval in the project the deploy repository is mapped to (**Settings → Repositories →
+Projects**), which is 50 until someone changes it, and 50 where the deploy repository is mapped
+to no project or that project has no `pr-ci` eval yet. The page says the number it ranked by. The
+`pr-ci` eval's items sorted by median list every job ranked the same way. Only jobs of runs that
+ended in success or failure are counted.
 
 **PR CI: jobs that failed in the last 24 hours** lists every job that failed in a run completed in
 the last day, most failures first, with how many of its results there failed and a link to the run
@@ -299,4 +384,6 @@ whenever any of them does, nor a notification or guard step.
 
 For agents, `GET /api/v1/delivery/pipeline` answers the same numbers. Its optional `at`
 (RFC 3339) names the day the seven days end on and the moment the failing jobs look back from;
-left out, it is now. Any signed-in person or agent token reads it.
+left out, it is now. `pr_checks.slowest_min_results` is the number of timed results a job needed
+to be ranked among the slowest, `targets` holds the same targets as the measures route, and
+`status` the verdicts of the two lead-time cards. Any signed-in person or agent token reads it.

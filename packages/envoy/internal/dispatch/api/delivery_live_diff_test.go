@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -66,7 +67,7 @@ func TestEveryResponseFieldHasOneClass(t *testing.T) {
 			}
 		}
 		note("lists", classes.lists)
-		note("maps", classes.maps)
+		note("maps", slices.Collect(maps.Keys(classes.maps)))
 		note("counts", classes.counts)
 		note("whole", slices.Collect(maps.Keys(classes.whole)))
 		note("withChanges", classes.withChanges)
@@ -93,7 +94,8 @@ func TestEveryResponseFieldHasOneClass(t *testing.T) {
 		}
 
 		// Each class's shape: a list's items carry an id, a count map is two levels of counts, a
-		// map is keyed by string, and the subfields a whole field's revision leaves out exist.
+		// map is keyed by string, and the subfields a whole field's or a map entry's revision
+		// leaves out exist.
 		for _, list := range classes.lists {
 			typ := fields[list]
 			if typ == nil || typ.Kind() != reflect.Slice || typ.Elem().Kind() != reflect.Struct {
@@ -104,9 +106,27 @@ func TestEveryResponseFieldHasOneClass(t *testing.T) {
 				t.Errorf("%s: list %q's items have no id", kind, list)
 			}
 		}
-		for _, name := range classes.maps {
-			if typ := fields[name]; typ == nil || typ.Kind() != reflect.Map || typ.Key().Kind() != reflect.String {
+		for name, excluded := range classes.maps {
+			typ := fields[name]
+			if typ == nil || typ.Kind() != reflect.Map || typ.Key().Kind() != reflect.String {
 				t.Errorf("%s: map %q is %v, want a map by string", kind, name, typ)
+				continue
+			}
+			if len(excluded) == 0 {
+				continue
+			}
+			if typ.Elem().Kind() != reflect.Struct {
+				t.Errorf("%s: map %q's entries are %v, so its revision has no subfield %v to leave out", kind, name, typ.Elem(), excluded)
+				continue
+			}
+			sub := map[string]bool{}
+			for _, field := range liveJSONFields(typ.Elem()) {
+				sub[field.name] = true
+			}
+			for _, left := range excluded {
+				if !sub[left] {
+					t.Errorf("%s: %q's entry revision leaves out %q, which an entry does not hold", kind, name, left)
+				}
 			}
 		}
 		for _, name := range classes.counts {
@@ -145,12 +165,20 @@ func TestEveryLiveKindDeclaresItsBehaviourOnItsEntry(t *testing.T) {
 		if classes.read == nil {
 			t.Errorf("%s: no read: a view of this kind answers nothing", kind)
 		}
-		if classes.reads != viewReadsDelivery && classes.reads != viewReadsLegion {
-			t.Errorf("%s: reads = %d: a view reads the deployment's delivery rows or one project's daemon", kind, classes.reads)
+		// A view reads the deployment's delivery rows, one project's daemon, or one project's
+		// eval registry; the first names no project, and every other view names the one project
+		// it shows (viewReads.namesProject).
+		if classes.reads != viewReadsDelivery && classes.reads != viewReadsLegion && classes.reads != viewReadsEvals {
+			t.Errorf("%s: reads = %d: a view reads the deployment's delivery rows, one project's daemon or one project's evals", kind, classes.reads)
 		}
 	}
 	if deliveryLiveKinds[legionBoardView].unownedP0 {
 		t.Error("the Legion board shows no unowned P0 list, so a P0 write must not mark it by itself")
+	}
+	// The Legion board is the one view that shows its daemon's state, which the sampler's read of
+	// that daemon marks by the board's project (dirtyLegionBoard), so the board names its project.
+	if board := deliveryLiveKinds[legionBoardView].reads; board != viewReadsLegion || !board.namesProject() {
+		t.Error("the Legion board does not read its project's daemon, so the sampler's read of that daemon marks no board")
 	}
 }
 
@@ -246,8 +274,8 @@ func liveMeasuresOf(window delivery.DeliveryWindowView, computedAt time.Time, de
 	return deliveryMeasuresResponse{
 		Window: window, ComputedAt: computedAt,
 		Measures:    measures.Result{DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: deploys}, Daily: []measures.DailyPoint{}},
-		FlagsSource: deliveryFlagsSourceNone, UnownedP0: []delivery.UnownedIssue{}, Targets: measures.DefaultTargets,
-		Status:    measures.Status{UnownedP0: true},
+		FlagsSource: deliveryFlagsSourceNone, UnownedP0: []delivery.UnownedIssue{}, Targets: catalogueTargets(),
+		Status:    measures.Status{UnownedP0: new(true)},
 		Freshness: delivery.DeliveryFreshnessView{LastEventAt: &computedAt},
 	}
 }
@@ -265,7 +293,7 @@ func livePipelineOf(computedAt time.Time, n int) deliveryPipelineResponse {
 		}},
 		MergeToProduction: measures.LeadTimeTiming{Days: []measures.LeadTimeDay{}},
 		OpenedToMerge:     measures.LeadTimeTiming{Days: []measures.LeadTimeDay{}},
-		Targets:           measures.DefaultTargets,
+		Targets:           catalogueTargets(),
 		Freshness:         delivery.DeliveryFreshnessView{LastEventAt: &computedAt},
 	}
 }
@@ -392,7 +420,8 @@ func liveApply(t *testing.T, held deliveryLiveEncoded, delta DeliveryLiveDelta) 
 }
 
 // liveComparable is a body as two bodies a page shows alike compare: lists keyed by id, and neither
-// the fields out of change detection nor the subfields a whole field's revision leaves out.
+// the fields out of change detection nor the subfields a whole field's or a map entry's revision
+// leaves out.
 func liveComparable(t *testing.T, of any) map[string]any {
 	t.Helper()
 	var kind string
@@ -411,6 +440,16 @@ func liveComparable(t *testing.T, of any) map[string]any {
 		if object, ok := body[name].(map[string]any); ok {
 			for _, left := range excluded {
 				delete(object, left)
+			}
+		}
+	}
+	for name, excluded := range classes.maps {
+		entries, _ := body[name].(map[string]any)
+		for _, entry := range entries {
+			if object, ok := entry.(map[string]any); ok {
+				for _, left := range excluded {
+					delete(object, left)
+				}
 			}
 		}
 	}
@@ -858,7 +897,7 @@ func TestAChangedMeasureSendsTheMeasuresWhole(t *testing.T) {
 	// An unowned P0 moves unowned_p0 and its status, not the measures.
 	nextBody = liveMeasuresOf(window, at, 1)
 	nextBody.UnownedP0 = []delivery.UnownedIssue{{Key: "ACME-7", Title: "Outage"}}
-	nextBody.Status.UnownedP0 = false
+	nextBody.Status.UnownedP0 = new(false)
 	if delta, ok := liveDiff(t, held, mustEncodeLive(t, deliveryLiveMeasures, nextBody)); !ok {
 		t.Error("an unowned P0 sent no delta")
 	} else if set, _, _, _ := liveSections(delta); !slices.Equal(set, []string{"status", "unowned_p0"}) {
@@ -939,13 +978,132 @@ func TestAListWithARepeatedIDIsRefused(t *testing.T) {
 	}
 }
 
+// The evals fixture world: project ACME's logged evals over the 28 days from liveFrom, compared
+// with the 28 days before them.
+var (
+	liveEvalsWindow  = evals.Range{From: liveFrom, To: liveFrom.AddDate(0, 0, 28)}
+	liveEvalsCompare = evals.Range{From: liveFrom.AddDate(0, 0, -28), To: liveFrom}
+)
+
+// liveEval is one logged eval of ACME as the list read states it: version version of its
+// definition, and its one series, whose mean over the window is mean.
+func liveEval(slug string, version int, mean float64) evalListItem {
+	id := evals.EvalID("ACME", slug)
+	definition := evals.Definition{
+		EvalID: id, Version: version, ProjectKey: "ACME", Slug: slug, Name: slug,
+		FailureModes: []evals.FailureMode{}, Unit: "count", TargetJudges: []string{}, Person: "alice",
+		Kind: evals.KindExperiment, Source: evals.SourceLogged, State: evals.StateActive, Links: []evals.Link{},
+		WrittenVia: evals.ViaReading, WrittenBy: model.Actor{Kind: "user", ID: "alice"}, CreatedAt: liveFrom,
+	}
+	series := evals.SeriesValues{
+		Series: evals.Series{
+			EvalID: id, Series: "value", Version: 1, Unit: "count", Role: evals.RoleHeadline, IsPrimary: true,
+			Listed: true, Agg: evals.AggSum, Links: []evals.Link{}, CreatedAt: liveFrom,
+		},
+		Window: evals.Statistics{"mean": &mean}, Compare: evals.Statistics{}, Change: evals.Statistics{},
+		DataSince: new(liveFrom.Format(time.DateOnly)), Days: []evals.DayPoint{},
+	}
+	return evalListItem{ID: id, evalItem: evalItem{
+		Definition: definition, Owner: evalOwnerOf(definition), Series: []evals.SeriesValues{series},
+	}}
+}
+
+// liveEvalsOf is ACME's list read of items, the rows it folded last updated at updated, the
+// refresher's last pass age seconds before the read.
+func liveEvalsOf(updated time.Time, age int, items ...evalListItem) evalListResponse {
+	return evalListResponse{
+		Items: items, Total: len(items), Limit: evalPageDefault,
+		Window: newEvalRange(liveEvalsWindow), Compare: evalCompareRange(&liveEvalsCompare),
+		Freshness: evalFreshness{RowsUpdatedAt: &updated, RefresherAgeSeconds: &age},
+	}
+}
+
+// TestAnEvalWhoseNumbersMovedIsTheOneItemSent: an evals view sends its list eval by eval, by id. A
+// reading that moves one eval's numbers sends that eval alone; a registered eval is upserted with
+// the total that counts it; a new version of a definition sends its eval whole; a day that turned
+// sends the window and the compare range with the numbers it moved. The refresher's age, which
+// every read measures afresh, sends nothing by itself, and goes with the freshness when the
+// folded rows' own age moves.
+func TestAnEvalWhoseNumbersMovedIsTheOneItemSent(t *testing.T) {
+	updated := liveEvalsWindow.To.Add(-time.Hour)
+	three := func(prSize float64, reviewVersion int) []evalListItem {
+		return []evalListItem{liveEval("deploy-frequency", 1, 3), liveEval("pr-size", 1, prSize), liveEval("review-time", reviewVersion, 30)}
+	}
+	held := mustEncodeLive(t, evalsView, liveEvalsOf(updated, 10, three(120, 1)...))
+
+	// A reading moved pr-size's mean, and the refresher's last pass is a minute further back.
+	delta, ok := liveDiff(t, held, mustEncodeLive(t, evalsView, liveEvalsOf(updated, 70, three(140, 1)...)))
+	if !ok {
+		t.Fatal("an eval whose mean moved sent no delta")
+	}
+	set, items, mapNames, counts := liveSections(delta)
+	if got := liveUpsertIDs(t, delta, "items"); !slices.Equal(got, []string{"ACME/pr-size"}) || len(delta.Items["items"].Remove) != 0 {
+		t.Errorf("items.items = upsert %v, remove %v; want ACME/pr-size alone upserted", got, delta.Items["items"].Remove)
+	}
+	if len(set) != 0 || !slices.Equal(items, []string{"items"}) || len(mapNames)+len(counts) != 0 {
+		t.Errorf("set %v, items %v, maps %v, counts %v; want the one list alone", set, items, mapNames, counts)
+	}
+
+	// The refresher's age alone.
+	if delta, ok := diffDeliveryBody(mustEncodeLive(t, evalsView, liveEvalsOf(updated, 130, three(120, 1)...)), held.revs); ok {
+		t.Errorf("the refresher's age alone sent %+v", delta)
+	}
+
+	// lead-time registered, which sorts between deploy-frequency and pr-size.
+	delta, ok = liveDiff(t, held, mustEncodeLive(t, evalsView, liveEvalsOf(updated, 5, liveEval("deploy-frequency", 1, 3),
+		liveEval("lead-time", 1, 45), liveEval("pr-size", 1, 120), liveEval("review-time", 1, 30))))
+	if !ok {
+		t.Fatal("a registered eval sent no delta")
+	}
+	if got := liveUpsertIDs(t, delta, "items"); !slices.Equal(got, []string{"ACME/lead-time"}) {
+		t.Errorf("items.items.upsert = %v, want the registered eval", got)
+	}
+	if set, _, _, _ := liveSections(delta); !slices.Equal(set, []string{"total"}) {
+		t.Errorf("set = %v, want the total that counts it", set)
+	}
+
+	// The rows a pass rewrote are younger: the freshness goes whole, its refresher age with it.
+	delta, ok = liveDiff(t, held, mustEncodeLive(t, evalsView, liveEvalsOf(updated.Add(2*time.Hour), 5, three(120, 1)...)))
+	if !ok {
+		t.Fatal("younger rows sent no delta")
+	}
+	var freshness evalFreshness
+	if err := json.Unmarshal(delta.Set["freshness"], &freshness); err != nil || freshness.RefresherAgeSeconds == nil ||
+		*freshness.RefresherAgeSeconds != 5 || !freshness.RowsUpdatedAt.Equal(updated.Add(2*time.Hour)) {
+		t.Errorf("set.freshness = %s (%v), want the rows' new age with the refresher's", delta.Set["freshness"], err)
+	}
+
+	// A target set: review-time's third version.
+	delta, ok = liveDiff(t, held, mustEncodeLive(t, evalsView, liveEvalsOf(updated, 10, three(120, 3)...)))
+	if !ok {
+		t.Fatal("a new version sent no delta")
+	}
+	if got := liveUpsertIDs(t, delta, "items"); !slices.Equal(got, []string{"ACME/review-time"}) {
+		t.Errorf("items.items.upsert = %v, want the eval whose definition moved", got)
+	}
+
+	// The day turned: the window and the compare range are a day on, and pr-size's mean moved.
+	turned := liveEvalsOf(updated, 10, three(150, 1)...)
+	turned.Window = newEvalRange(evals.Range{From: liveEvalsWindow.From.AddDate(0, 0, 1), To: liveEvalsWindow.To.AddDate(0, 0, 1)})
+	turned.Compare = evalCompareRange(&evals.Range{From: liveEvalsCompare.From.AddDate(0, 0, 1), To: liveEvalsCompare.To.AddDate(0, 0, 1)})
+	delta, ok = liveDiff(t, held, mustEncodeLive(t, evalsView, turned))
+	if !ok {
+		t.Fatal("a turned day sent no delta")
+	}
+	if set, _, _, _ := liveSections(delta); !slices.Equal(set, []string{"compare", "window"}) {
+		t.Errorf("set = %v, want the window and the compare range", set)
+	}
+}
+
 // TestTheLiveFixturesAreWhatTheDiffWrites holds packages/contracts/fixtures/live, which the
 // contracts' and the dashboard's Bun tests read, to the frames this package writes: a timeline
 // snapshot, the delta of one deploy, a merge and a pull request leaving the window, the snapshot
 // a page subscribing afterwards gets (applying the delta to the first gives its body, but for the
 // freshness a delta never carries), a freshness verdict, an error, the event feed's start, one of
-// its events and its end, and an agent view's responder verdict, the one agent frame whose data
-// Dispatch writes itself. `go test ./internal/dispatch/api -run TestTheLiveFixturesAreWhatTheDiffWrites -update`
+// its events and its end, an agent view's responder verdict, the one agent frame whose data
+// Dispatch writes itself, and an evals view's snapshot, the delta of a reading and a
+// registration, and the snapshot after them, which applying that delta to the first gives whole.
+// `go test ./internal/dispatch/api -run TestTheLiveFixturesAreWhatTheDiffWrites -update`
 // rewrites them.
 func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 	heldTo := liveFrom.Add(48 * time.Hour)
@@ -975,6 +1133,21 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 	}
 	snapshotAt := heldTo.Add(-time.Minute)
 	delta.Sub, delta.Seq, delta.ChangedAt = "timeline-1", "42", &deployedAt
+
+	// ACME's evals: a reading moved pr-size's mean, and lead-time was registered, which sorts
+	// between deploy-frequency and pr-size; the pass that wrote their rows left the folded rows
+	// younger, so the freshness goes whole.
+	evalsAt := liveEvalsWindow.To.Add(-time.Hour)
+	evalsHeld := mustEncodeLive(t, evalsView, liveEvalsOf(evalsAt.Add(-time.Hour), 40,
+		liveEval("deploy-frequency", 1, 3), liveEval("pr-size", 1, 120), liveEval("review-time", 2, 30)))
+	evalsNext := mustEncodeLive(t, evalsView, liveEvalsOf(evalsAt, 5,
+		liveEval("deploy-frequency", 1, 3), liveEval("lead-time", 1, 45), liveEval("pr-size", 1, 140), liveEval("review-time", 2, 30)))
+	evalsDelta, ok := liveDiff(t, evalsHeld, evalsNext)
+	if !ok {
+		t.Fatal("the evals fixture's change sent no delta")
+	}
+	evalsDelta.Sub, evalsDelta.Seq, evalsDelta.ChangedAt = "evals-1", "44", &evalsAt
+	evalsHeldAt := evalsAt.Add(-time.Hour)
 	event := liveFixtureEventFrame(t)
 	frames := map[string]any{
 		"snapshot.json":  held.snapshot("timeline-1", 41, &snapshotAt),
@@ -992,10 +1165,13 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 			Type: "error", Sub: "timeline-1", Code: "DELIVERY_NOT_CONFIGURED",
 			Message: "delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery",
 		},
-		"events_start.json": liveEventsStart("events-1", 41, true),
-		"event.json":        event,
-		"ended.json":        liveEnded("events-1", liveEndedBehind),
-		"agent.json":        liveAgentFrame("agent-1", agentEventResponder, responderEvent(true)),
+		"events_start.json":   liveEventsStart("events-1", 41, true),
+		"event.json":          event,
+		"ended.json":          liveEnded("events-1", liveEndedBehind),
+		"agent.json":          liveAgentFrame("agent-1", agentEventResponder, responderEvent(true)),
+		"evals_snapshot.json": evalsHeld.snapshot("evals-1", 43, &evalsHeldAt),
+		"evals_delta.json":    evalsDelta,
+		"evals_after.json":    evalsNext.snapshot("evals-1", 44, &evalsAt),
 	}
 	for name, frame := range frames {
 		got, err := json.MarshalIndent(frame, "", "  ")
@@ -1042,6 +1218,7 @@ func TestTheClientLiveFixturesAreFramesTheSocketReads(t *testing.T) {
 	}
 	for name, kind := range map[string]string{
 		"subscribe_timeline.json": deliveryLiveTimeline,
+		"subscribe_evals.json":    evalsView,
 		"subscribe_events.json":   liveEventsView,
 		"subscribe_agent.json":    liveAgentView,
 	} {
@@ -1051,14 +1228,19 @@ func TestTheClientLiveFixturesAreFramesTheSocketReads(t *testing.T) {
 			continue
 		}
 		// Each fixture carries every member its view's kind takes: a delivery or events view its
-		// resume, an agent view its session_id and no resume.
+		// resume, an agent view its session_id and no resume. A delivery view's is one the hub
+		// holds (parseDeliveryLiveView).
 		var err error
 		complete := false
 		switch kind {
-		case deliveryLiveTimeline:
+		case deliveryLiveTimeline, evalsView:
 			var resume *DeliveryLiveResume
 			resume, err = decodeLiveResume[DeliveryLiveResume](frame.Resume)
-			complete = resume != nil && frame.View.Window != nil && frame.View.Query != nil
+			complete = resume != nil && frame.View.Window != nil && frame.View.Query != nil &&
+				(kind != evalsView || frame.View.Project != nil)
+			if _, refusal := parseDeliveryLiveView(frame.View.DeliveryLiveView); refusal != nil {
+				t.Errorf("%s: the hub refuses its view: %+v", name, refusal)
+			}
 		case liveEventsView:
 			var resume *EventsLiveResume
 			resume, err = decodeLiveResume[EventsLiveResume](frame.Resume)

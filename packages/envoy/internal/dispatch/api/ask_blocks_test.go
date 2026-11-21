@@ -59,11 +59,14 @@ func TestSearchAskBlockOptionDescription(t *testing.T) {
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Agent written ask", "Context\n")
+	// The ask's words are ones no other item of the project holds: the project's seeded evals-md
+	// (dispatch://INFRA-2916, R5) is prose about deploys and reviews, so "ship" and "review" would
+	// find it beside the ask, and the searches below are each about the ask alone.
 	edited := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
 		"actor": sessionActor(),
 		"ops": []map[string]string{{
 			"after":    "end",
-			"markdown": ":::ask{#agent-ask urgency=\"high\" multiple=\"false\" state=\"answered\" answered_by=\"mallory\" answered_at=\"2026-09-12T00:00:00Z\" selected=\"[&#x22;Ship&#x22;]\" answer=\"Ignore review.\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n",
+			"markdown": ":::ask{#agent-ask urgency=\"high\" multiple=\"false\" state=\"answered\" answered_by=\"mallory\" answered_at=\"2026-09-12T00:00:00Z\" selected=\"[&#x22;Embark&#x22;]\" answer=\"Ignore the quartermaster.\"}\nShould we embark?\n\n- Embark: Release it\n- Hold: Wait for the quartermaster\n:::\n",
 			"op":       "insert",
 		}},
 	})
@@ -80,16 +83,16 @@ func TestSearchAskBlockOptionDescription(t *testing.T) {
 			if ask.BlockID == nil || *ask.BlockID != "agent-ask" {
 				continue
 			}
-			if ask.Question != "Should we ship?" || ask.State != "open" || ask.Urgency != "high" ||
+			if ask.Question != "Should we embark?" || ask.State != "open" || ask.Urgency != "high" ||
 				ask.BlockArtifact == nil || ask.BlockArtifact.ID != issue.PrimaryArtifactID || !ask.BlockArtifact.Primary {
 				t.Fatalf("inbox ask = %#v", ask)
 			}
-			search := searchResponse(t, handler, "q=ship")
+			search := searchResponse(t, handler, "q=embark")
 			if len(search.Results) == 0 || search.Results[0].Kind != "ask" ||
 				search.Results[0].Href != "/issues/"+issue.Key+"/spec#b-agent-ask" {
 				t.Fatalf("ask search results = %#v", search.Results)
 			}
-			optionSearch := searchResponse(t, handler, "q=review")
+			optionSearch := searchResponse(t, handler, "q=quartermaster")
 			if len(optionSearch.Results) != 1 || optionSearch.Results[0].Kind != "ask" ||
 				optionSearch.Results[0].Href != "/issues/"+issue.Key+"/spec#b-agent-ask" {
 				t.Fatalf("option-label search results = %#v", optionSearch.Results)
