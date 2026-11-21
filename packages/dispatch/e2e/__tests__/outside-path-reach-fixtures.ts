@@ -23,9 +23,16 @@
  *  Where a row needs an answer no real listener gives (an https origin on port 443, a probe exit
  *  curl gives only on a broken network), it puts a `curl` of its own first on PATH that answers
  *  for the hosts it names and hands every other call to the host's curl.
+ *
+ *  Every curl a run is given answers the script's `curl -q --version` with
+ *  {@link CURL_VERSION_LINE} and asks no resolver: a curl linked with OpenLDAP, as Ubuntu's is,
+ *  looks this machine's own name up when it prints its version. Measured on Ubuntu 24.04's curl
+ *  8.5.0 with OpenLDAP 2.6.10, that is 10 queries of the name and its search domains, and 30.2 s
+ *  where the resolver answers after 6 s, so each run waited on the machine's DNS before it did
+ *  anything else. Every other call goes to the host's curl.
  */
 
-import { test } from "bun:test";
+import { beforeAll, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,6 +52,13 @@ export const curl = hostTool("curl") ?? "curl";
 const hostSleep = hostTool("sleep") ?? "sleep";
 const mkdir = hostTool("mkdir") ?? "mkdir";
 const hostEnv = hostTool("env") ?? "env";
+
+/** What every curl a run is given answers `curl -q --version` with: a version line the script
+ *  takes, 7.40.0 being the oldest it takes. The script reads only its second word. A row that
+ *  needs another version answers `--version` itself first, as the too-old rows do. The stand-in
+ *  echoes it in single quotes, so it holds none. */
+export const CURL_VERSION_LINE =
+  "curl 7.40.0 (a stand-in for the curl of this host) libcurl/7.40.0";
 
 /** The timeout of a row that stops before the probes. It only stops a run that hangs: each such row
  *  is decided by the verdicts and exit codes its runs print, and its work is counted (one runner
@@ -406,16 +420,29 @@ export function reachFixtures() {
   const scratch = temporaryDirectory("outside-path-reach", {
     root: memoryRoot({ need: 6 * 8 * 2 ** 20 }),
   });
+  /** The directory of the `curl` every run is given: it answers `-q --version` with
+   *  {@link CURL_VERSION_LINE} and hands every other call to the host's curl. `scratch` exists
+   *  from the `beforeAll` its call registered, which Bun runs before this one. */
+  const standIns = join(scratch, "curl-stand-in");
+  const curlStandIn = join(standIns, "curl");
+  beforeAll(() => {
+    mkdirSync(standIns);
+    writeFileSync(
+      curlStandIn,
+      `#!${bash}\ncase "$*" in "-q --version") echo '${CURL_VERSION_LINE}'; exit 0 ;; esac\nexec ${curl} "$@"\n`,
+      { mode: 0o755 }
+    );
+  });
 
   /** The environment every run of the script starts with, whether `drive` or `driveEach` starts
-   *  it: HOME `home`, PATH the host's unless `path` names another, TMPDIR this process's, the
-   *  flag that lets the script take the harness's http origin, and `originSeconds` for the two
-   *  reads of the origin. A change to how a run is started goes here, so the two helpers cannot
-   *  drift apart. */
+   *  it: HOME `home`, PATH the host's with the curl stand-in first unless `path` names another,
+   *  TMPDIR this process's, the flag that lets the script take the harness's http origin, and
+   *  `originSeconds` for the two reads of the origin. A change to how a run is started goes here,
+   *  so the two helpers cannot drift apart. */
   function runEnvironment(home: string, path: string | undefined): Record<string, string> {
     return {
       HOME: home,
-      PATH: path ?? process.env.PATH ?? "",
+      PATH: path ?? `${standIns}:${process.env.PATH ?? ""}`,
       TMPDIR: tmpdir(),
       OUTSIDE_PATH_ALLOW_HTTP: "1",
       OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS: originSeconds,
@@ -586,12 +613,13 @@ export function reachFixtures() {
     );
   }
 
-  /** A PATH directory holding only symlinks to the named host programs. */
+  /** A PATH directory holding only symlinks to the named host programs, `curl` the stand-in that
+   *  hands every call but `-q --version` to the host's curl. */
   function pathOf(...programs: string[]): string {
     const directory = join(scratch, `path-${randomUUID()}`);
     mkdirSync(directory);
     for (const program of programs) {
-      const found = hostTool(program);
+      const found = program === "curl" ? curlStandIn : hostTool(program);
       if (found === null) throw new Error(`${program} is not on this host's PATH`);
       symlinkSync(found, join(directory, program));
     }
@@ -599,10 +627,11 @@ export function reachFixtures() {
   }
 
   /** A PATH directory holding bash, sleep and a `curl` that runs `answers` (bash, which may answer
-   *  and exit) and hands every call it does not answer to the host's curl. */
+   *  and exit) and hands every call it does not answer to the curl stand-in, and so to the host's
+   *  curl. */
   function pathWithCurl(answers: string): string {
     const path = pathOf("bash", "sleep");
-    writeFileSync(join(path, "curl"), `#!${bash}\n${answers}\nexec ${curl} "$@"\n`, {
+    writeFileSync(join(path, "curl"), `#!${bash}\n${answers}\nexec ${curlStandIn} "$@"\n`, {
       mode: 0o755,
     });
     return path;

@@ -104,10 +104,14 @@ agent-secrets secret show: using the gcloud configuration ada (CLOUDSDK_ACTIVE_C
 ```
 
 On GCP the source is one of `the access token in CLOUDSDK_AUTH_ACCESS_TOKEN`,
-`the credentials file GOOGLE_APPLICATION_CREDENTIALS names (PATH)`,
+`the credentials file GOOGLE_APPLICATION_CREDENTIALS names`,
 `the gcloud configuration NAME (CLOUDSDK_ACTIVE_CONFIG_NAME)`,
-`the gcloud account (CLOUDSDK_CORE_ACCOUNT)`, `the well-known credentials file PATH`,
-`the active gcloud account (gcloud configuration NAME)` and `the metadata server`. The account
+`the gcloud account (CLOUDSDK_CORE_ACCOUNT)`,
+`the well-known credentials file (application_default_credentials.json in the directory CLOUDSDK_CONFIG names)`
+(or `in $HOME/.config/gcloud` where `CLOUDSDK_CONFIG` is unset),
+`the active gcloud account (gcloud configuration NAME)` and `the metadata server`. No source is
+named by a path: a credentials file's path is where a person who pasted the credential itself
+puts it. The account
 follows, with ` impersonating SA` where gcloud impersonates one, or `principal unknown` where the
 credential does not say whose it is: a lent token, an `authorized_user` file, and a gcloud login
 whose token comes from an access token file or a credential file override. The CLI asks for no
@@ -119,7 +123,7 @@ metadata server counts only when it yields a token in an answer that says it is 
 the line reads `using the AWS profile NAME (AWS_PROFILE): ARN`,
 `using the AWS profile NAME (AWS_DEFAULT_PROFILE): ARN`,
 `using the access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY: ARN`,
-`using the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (PATH): ARN`, or
+`using the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names: ARN`, or
 `using the AWS SDK's default credential chain: ARN`; where keys or a token file are set beside a
 profile variable, the line adds that they outrank it. Where the profile holds no credential of
 its own, the SDK goes on to a container's credentials endpoint or the machine's instance role,
@@ -215,6 +219,32 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   of one even where a deployment runs a model judge: the judge refuses an administrator's
   secret, so no airlock rules entry can move one of its requests off the person who approves it
   ([The model judge](/legion/broker/concepts/#the-model-judge)). Any value but `true` is refused.
+- **`--project`** is optional. It names the one Dispatch project the secret belongs to, by its
+  key as Dispatch writes it: `--project PRIV`. A secret of a **private** project goes only to a
+  session or pod whose credential names that project; every other one is denied
+  `project-not-named`, whatever its owner and tier allow. A secret of a public project is decided
+  by owner and tier as if it carried no project. A session names its projects when it starts,
+  with `AGENT_SECRETS_PROJECTS` ([name a session's
+  projects](/legion/broker/concepts/#a-private-projects-secrets)). Anyone who may write the
+  store's prefix may set the tag, and that person can already read every value there; which of a
+  project's secrets belong to it is the project owner's call. A key in lower case, two keys, and
+  the word `none` are refused before anything is written. Only a broker that can ask Dispatch
+  whether a project is private serves a secret carrying the tag: any other refuses it
+  `project-unchecked`, which the create prints with its reason and exits 1 for. Beside `--project`
+  or `--project-channels`, the CLI also writes `rollback-guard:project-tags` into the secret's
+  `requesters` tag, after its list, so that a broker from before the project tags refuses the
+  secret rather than serve it to every session; `--requesters none` keeps it, it goes with the
+  last of the two tags, and `show` prints `rollback_guard: yes` and the list without it
+  ([Rolling back past the project tags](/legion/broker/operate/#rolling-back-past-the-project-tags)).
+- **`--project-channels slack`** is optional, and `slack` is its one value. It marks a Slack bot
+  token, such as `LEGION_SLACK_BOT_TOKEN`, whose use a private project's owner limits. A session or
+  pod whose credential names a private Dispatch project spends such a secret only through the
+  airlock ([The airlock](/legion/broker/concepts/#the-airlock)), and only to post with
+  `POST /api/chat.postMessage`, carrying `channel`, `thread_ts` and `text`, to a channel id the
+  owner of every private project it names allows; the proxy refuses every other call
+  `CHANNEL_NOT_ALLOWED`. Where the secret has no airlock entry, such a credential is denied it
+  `project-channels-need-airlock`. A credential that names no private project gets the secret as
+  before. Any other value, and on `create` the word `none`, is refused before anything is written.
 - **`--max-grant`** is optional, except with `--admin true` and with
   `--type google-service-account`, where each needs it, of an hour or less. It is the longest
   `--ttl` a request for this secret may use.
@@ -366,12 +396,13 @@ and names the credential after it, `(as …)`, so where gcloud cannot be pointed
 metadata server, the well-known credentials file) you know whose sign-in to use.
 
 On AWS, Secrets Manager takes the value with the tags, so the secret is made in one call once the
-value is read. A `CreateSecret` the AWS SDK tried once and that was refused with an answer Secrets
-Manager gives before it acts - a name taken, access denied, a request, a parameter or a limit
-refused - says nothing was stored. Any other failure says that the store may hold the secret, with
-its value, or not, and names `agent-secrets secret show NAME` to tell which: a deadline, an outage,
-and any create the SDK tried more than once, since an attempt it retried may have made the secret,
-which the store then answers the retry with as a name already taken. Each exits 1. The broker serves
+value is read. A `CreateSecret` whose every attempt was refused with an answer Secrets Manager
+gives before it acts - a name taken, access denied, a request, a parameter or a limit refused, the
+last of which the AWS SDK retries as a throttle - says nothing was stored. Any other failure says
+that the store may hold the secret, with its value, or not, and names `agent-secrets secret show
+NAME` to tell which: a deadline, an outage, and any create one of whose attempts ended another
+way before the SDK retried it, since that attempt may have made the secret, which the store then
+answers the retry with as a name already taken. Each exits 1. The broker serves
 the secret from the next request. Secrets Manager refuses a name that is already taken, including
 one scheduled for deletion: [restore](#delete-and-restore) that one instead.
 
@@ -470,7 +501,7 @@ that outrank it. A create that IAM lets make the secret but not add its value sa
 ```console
 $ agent-secrets secret retag DEMO_DEPLOY_TOKEN --tier human
 agent-secrets secret retag: using the active gcloud account (gcloud configuration box): robot@example-project.iam.gserviceaccount.com
-agent-secrets secret retag: rpc error: code = PermissionDenied desc = …; the store refused the active gcloud account (gcloud configuration box): robot@example-project.iam.gserviceaccount.com; choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: ada, box); looked in GCP Secret Manager project 100000000001
+agent-secrets secret retag: Secret Manager UpdateSecret answered PermissionDenied (missing permission: secretmanager.secrets.update; its message is not printed); the store refused the active gcloud account (gcloud configuration box): robot@example-project.iam.gserviceaccount.com; choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: ada, box); looked in GCP Secret Manager project 100000000001
 ```
 
 `--owner me` is the one place a sign-in must name a person. Under one that names none, the command
@@ -494,10 +525,10 @@ lists the calls each form makes.
 ```console
 $ agent-secrets secret list
 agent-secrets secret list: using the AWS profile ada (AWS_PROFILE): arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc123/ada@example.com
-NAME               OWNER            TIER   TYPE          MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -          -              yes    -        -
-DEMO_GITHUB_APP    ada@example.com  agent  github-app    -          -              yes    -        -
-DEMO_LOGIN         ada@example.com  human  google-login  1h         -              yes    -        -
+NAME               OWNER            TIER   TYPE          PROJECT  PROJECT_CHANNELS  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -        -                 -          -              yes    -        -
+DEMO_GITHUB_APP    ada@example.com  agent  github-app    -        -                 -          -              yes    -        -
+DEMO_LOGIN         ada@example.com  human  google-login  -        -                 1h         -              yes    -        -
 Every row is a secret in AWS Secrets Manager account 111122223333 in us-east-1.
 ```
 
@@ -521,6 +552,9 @@ github_owners: -
 requesters: -
 scopes: -
 admin: -
+project: -
+project_channels: -
+rollback_guard: -
 max_grant: -
 default_grant: -
 created: 2026-10-06T20:31:08Z
@@ -557,7 +591,7 @@ retagged DEMO_DEPLOY_TOKEN in AWS Secrets Manager account 111122223333 in us-eas
 broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
-Name `--owner`, `--tier`, `--type`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--max-grant`, `--default-grant` or a combination. A retag that
+Name `--owner`, `--tier`, `--type`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--project`, `--project-channels`, `--max-grant`, `--default-grant` or a combination. A retag that
 sets tags reads the owner and tier tags the secret holds and sends both in one request. On AWS,
 this lets an IAM condition inspect both tags. Every other tag or annotation stays as it is. For a
 secret missing an owner or tier tag, name that tag too.
@@ -565,8 +599,9 @@ secret missing an owner or tier tag, name that tag too.
 `--type none` removes the type tag, the old `kind` tag and the `mint-service-account` tag written with it,
 `--github-owners none` removes the GitHub owners, `--requesters none` removes the list of who may
 ask, `--scopes none` removes the scopes, so the token carries `cloud-platform` alone again,
-`--admin none` removes the administrator's mark, `--max-grant none` removes the max grant, and
-`--default-grant none` removes the opt-out. A
+`--admin none` removes the administrator's mark, `--project none` removes the project, so the
+secret belongs to no project again, `--project-channels none` removes the channel limit,
+`--max-grant none` removes the max grant, and `--default-grant none` removes the opt-out. A
 removal is a retag of its own: it changes no other tag, so the cloud refusing it leaves the secret
 as it was. A retag that names `none` beside another change is refused before it writes anything.
 So is a retag that would leave a `github-app` secret without `--github-owners`, as the broker would
@@ -723,10 +758,10 @@ that moment is both), and the **earliest** it can be purged:
 ```console
 $ agent-secrets secret list
 agent-secrets secret list: using the AWS profile ada (AWS_PROFILE): arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc123/ada@example.com
-NAME               OWNER            TIER   TYPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
-DEMO_EMPTY_KEY     ada@example.com  human  -     -          -              yes    -                     -
-DEMO_SHARED_KEY    shared           human  -     -          -              yes    -                     -
+NAME               OWNER            TIER   TYPE  PROJECT  PROJECT_CHANNELS  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -        -                 -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
+DEMO_EMPTY_KEY     ada@example.com  human  -     -        -                 -          -              yes    -                     -
+DEMO_SHARED_KEY    shared           human  -     -        -                 -          -              yes    -                     -
 ```
 
 `EARLIEST_PURGE` is the deletion plus 7 days, Secrets Manager's shortest recovery window: Secrets

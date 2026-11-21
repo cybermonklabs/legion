@@ -10,11 +10,11 @@
 # DEMO_API_KEY, tagged tier=human, which APPROVER_LOGIN approves, DEMO_SERVICE_TOKEN, tagged
 # owner=SERVICE tier=agent, which every pod session of that registered service gets without
 # asking and no person's session sees, and the three github-app secrets below), then starts
-# cmd/broker against
+# cmd/cipherd against
 # it. Prints the exports a second shell needs to drive the clients against it.
 #
 # The GitHub a github-app secret is minted against is a stand-in this script starts:
-# cmd/dev-airlock-stands, of whose nine stands this stack uses the GitHub one
+# cmd/dev-proxy-stands, of whose nine stands this stack uses the GitHub one
 # (BROKER_AIRLOCK_TEST_GITHUB_API_BASE names it). It records every call it was sent, at the
 # recording route the banner names, and the answer it gives a token request is set while it runs,
 # at the answer route the banner names too: the ordinary mint, the HTTP 422 that mints nothing,
@@ -29,7 +29,7 @@
 # the one account acme-org. DEMO_GITHUB_APP_CASE_PAIR's names ada, on which the App has two
 # installations whose logins differ only in case (ada and Ada): GitHubApp.Mint keys the released
 # object by the login GitHub answered with and compares a narrowing's owner without regard to
-# case (internal/broker/secrets/githubapp.go), so a narrowing to ada mints for both and the
+# case (internal/cipher/secrets/githubapp.go), so a narrowing to ada mints for both and the
 # released object holds two installations, which is the release a client that hands one token
 # over must refuse. GitHub itself allows no two accounts whose logins differ only in case: this
 # pair exists to drive that refusal and stands for nothing real.
@@ -91,7 +91,7 @@
 # dev-postgres.sh creates, starts or reuses, and refuses when it runs an image other than that
 # script's pinned pgvector one, or, with DEV_BROKER_POSTGRES_URL set
 # (postgres://<user>@<host>:<port>/<database>, a role that may create databases), on that server
-# through psql, with no Docker at all. cmd/broker binds before it reports anything and
+# through psql, with no Docker at all. cmd/cipherd binds before it reports anything and
 # logs the address it actually bound; this script waits for that line and reads the real port from
 # it, so a curl success can only ever mean this instance's own broker answered. It reads the
 # metrics port from the broker's "broker metrics listening" line the same way, and prints it in
@@ -130,7 +130,7 @@ POSTGRES_CONTAINER="dispatch-pg"
 
 # The kernel never hands out a port a live listener already holds, so binding 127.0.0.1:0 (an
 # OS-assigned ephemeral port) makes a same-port collision between two dev instances impossible.
-# BROKER_PUBLIC_URL mirrors it (also port 0): cmd/broker/main.go treats a BROKER_PUBLIC_URL whose
+# BROKER_PUBLIC_URL mirrors it (also port 0): cmd/cipherd/main.go treats a BROKER_PUBLIC_URL whose
 # port is 0 as "derive my public URL from whatever address I actually bind," since
 # BROKER_PUBLIC_URL must be set before boot but the real port is only known once Listen succeeds.
 # Both roles' real, reachable value is read from the broker's own "broker listening" log line
@@ -196,7 +196,7 @@ GITHUB_SECRET="DEMO_GITHUB_APP"
 GITHUB_CASE_SECRET="DEMO_GITHUB_APP_CASE_PAIR"
 GITHUB_HUMAN_SECRET="DEMO_GITHUB_APP_HUMAN"
 # The local issuer and what it mints for (above): the audience every enrolment and listed caller's
-# token carries, the exchange's own audience, and the four accounts, as internal/broker/brokertest's
+# token carries, the exchange's own audience, and the four accounts, as internal/cipher/ciphertest's
 # rig names them, beside the read entry's account below. The exchange entry fixes no session, so
 # a pod names its own — and a pod of such an entry exchanges only under a name its deployment
 # registered for it, which here is the registrar account's one call below. The pod's two token
@@ -221,7 +221,7 @@ EXCHANGE_PROJECT="EXAMPLE"
 # The session name this stack's pod is registered for, the one it exchanges under.
 EXCHANGE_SESSION="example-worker-session"
 # The read entry (see the header), named as BROKER_EXCHANGE_READ_ACCOUNTS' own example in
-# internal/broker/config names it. Its account is a pod account of its own, so dev-oidc-issuer
+# internal/cipher/config names it. Its account is a pod account of its own, so dev-oidc-issuer
 # binds its token to a pod of its own, and it is listed in no other setting: the broker refuses an
 # account that both exchange settings name, since one account mints one kind of token.
 READ_ACCOUNT="system:serviceaccount:example-ns:example-reader"
@@ -316,11 +316,12 @@ fi
 DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
 
 # --- Build the broker, the local issuer, the stand-ins, and the clients a second shell drives it
-# with. ---
+# with. Each entry is <binary>=<command directory under cmd/>. ---
 echo "dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay..." >&2
 mkdir -p "$BIN_DIR"
-for cmd in broker dev-oidc-issuer dev-airlock-stands agent-secrets agent-secrets-helper agent-secrets-devrelay; do
-  ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/$cmd" "./cmd/$cmd" )
+for entry in broker=cipherd dev-oidc-issuer=dev-oidc-issuer dev-airlock-stands=dev-proxy-stands \
+  agent-secrets=cipher agent-secrets-helper=cipher-helper agent-secrets-devrelay=cipher-devrelay; do
+  ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/${entry%%=*}" "./cmd/${entry#*=}" )
 done
 # The end of the build, which github-narrowing-check.sh waits for under a bound of its own: on a
 # cold build cache the six builds take far longer than the start of what they built.

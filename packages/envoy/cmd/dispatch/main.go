@@ -25,8 +25,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
@@ -625,15 +625,21 @@ func main() {
 	//     as long as the process runs) and the task progress reconciliation (retrying, briefly,
 	//     rows another writer held).
 	//   - timers that stay, because GitHub has no feed of what they would miss - a webhook that
-	//     never arrived, a delivery that failed, a source's branch head: the delivery reconcile
-	//     and the architecture import every 5 minutes, each starting after a random delay within
-	//     one interval (duty.RunJittered), and the webhook redelivery sweep every 2, sweeping at
-	//     start (redeliver.Sweeper.Run); each then waits its interval plus up to a tenth again
-	//     drawn afresh every period (duty.Jittered), so two processes' ticks drift apart rather
-	//     than staying in step. Under the lease each of these passes is recorded with its loop's
-	//     own period (duty_passes, migration 0115), which is what makes it run once per period
-	//     rather than once per process: two tickers started minutes apart almost never meet inside
-	//     a pass, so the lease alone would exclude nothing.
+	//     never arrived, a delivery that failed: the delivery reconcile and the architecture
+	//     import every 5 minutes, each starting after a random delay within one interval
+	//     (duty.RunJittered), and the webhook redelivery sweep every 2, sweeping at start
+	//     (redeliver.Sweeper.Run). While delivery settings are saved, a push of a source's branch
+	//     imports that source at once (delivery.PushImports, architecture.Importer.Pushed; the
+	//     delivery intake runs only then), so the architecture import's timer repairs a push that
+	//     never arrived, and is the only automatic import where no settings are saved. Each then
+	//     waits its interval less up to a tenth of it, drawn afresh every time
+	//     (duty.JitteredWithin), so no wait is longer than
+	//     the interval and two processes' ticks drift apart rather than staying in step. Under
+	//     the lease each of these passes is recorded with its loop's own period, 0.9 of its
+	//     interval (duty.LeasePeriod, duty_passes, migration 0115), which every wait is longer
+	//     than: that is what makes it run once per period rather than once per process, and
+	//     never refuses a lone process's tick. Two tickers started minutes apart almost never
+	//     meet inside a pass, so the lease alone would exclude nothing.
 	//   - timers that poll the database: the block-index reconciliation (every 30 s, 2 s while a
 	//     batch is full), the repair of closed and reopened issues' asks (api.RunIssueAskRepair,
 	//     every 10 minutes on a plain ticker, after the boot's own unleased pass), the prune of
@@ -1034,11 +1040,14 @@ func main() {
 		// given up at its stop budget and handed back. StartIntakes then closes both clients, waits for
 		// each pending hand-back's finalizer to release the hold through the pool, and returns. Each
 		// connects in the background as the publisher does, and its poll takes the durable's hold once
-		// it has.
+		// it has. While delivery settings are saved (the intake runs only then), the intake hands each
+		// push of a branch to the architecture importer the ticker and the routes share, which imports
+		// the enabled sources on that repository and branch at once; a push it hands over once the
+		// importer's Close has begun starts nothing (architecture.Importer.Pushed).
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
-		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake)
+		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, appCtx.Architecture())
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
@@ -2040,7 +2049,7 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // checked against. Spent proofs are recorded in Dispatch's own database (store.DPoPProofs), which
 // the maintenance pass sweeps.
 //
-// It serves a read-only token (brokertoken.Options.ServesReadOnly): the scope read alone, which
+// It serves a read-only token (ciphertoken.Options.ServesReadOnly): the scope read alone, which
 // the broker mints from a read entry. Dispatch is the one service that asks for it, because its
 // route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
 // and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
@@ -2048,13 +2057,13 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
 // (401 UNAUTHORIZED).
-func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL string) (*brokertoken.Verifier, error) {
+func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL string) (*ciphertoken.Verifier, error) {
 	if boot.AgentSecretsURL == "" {
 		return nil, nil
 	}
-	return brokertoken.New(brokertoken.Options{
+	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
-		Account:   brokertoken.NewAccountToken(boot.AgentSecretsTokenFile),
+		Account:   ciphertoken.NewAccountToken(boot.AgentSecretsTokenFile),
 		Origin:    strings.TrimSuffix(serverURL, "/"),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and

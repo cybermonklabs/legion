@@ -16,10 +16,10 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
@@ -199,7 +199,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	// (volumeTrimReports, daemon.Run). It hangs off the plan by pointer, so the plan's own copy
 	// carries the one holder the factory closed over, as plan.repositories does.
 	p.volumeReports = &volumeTrimReports{}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
 		p.memoryGuardKills, p.volumeReports)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
@@ -465,14 +465,14 @@ func providersSecrets(cfg config.Config, lookup func(string) (string, bool)) []s
 // client from runtime.kubernetes.agent_secrets and starts it at boot on a background context, so
 // the daemon logs in with its own projected ServiceAccount token (token_file) and keeps logging in
 // before each credential expires; no person approves any of it, a restart included. Every login
-// logs its own outcome (agentsecrets.Client.Login); one that fails is retried by the client, and
+// logs its own outcome (cipher.Client.Login); one that fails is retried by the client, and
 // pod enrollment waits for it. With the block's exchange_audience set, the same client is the
 // machines' Registrar too (newRegistrar), which registers each role's session for its pod; unset,
 // the Registrar is nil and no registration is ever made. The client itself is returned too,
 // read-only, so the state route can show the login's current status (source.State,
-// agentsecrets.Client.LoginStatus). Never part of launchSecrets, so no pod is ever handed the
+// cipher.Client.LoginStatus). Never part of launchSecrets, so no pod is ever handed the
 // daemon's key, token or credential. Nil, nil, nil without the block.
-func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, supervise.Registrar, *agentsecrets.Client) {
+func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, supervise.Registrar, *cipher.Client) {
 	k := cfg.Runtime.Kubernetes
 	if k == nil || k.AgentSecrets == nil {
 		return nil, nil, nil
@@ -486,18 +486,18 @@ func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, s
 		Timeout:       30 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	client := &agentsecrets.Client{URL: k.AgentSecrets.URL, HTTP: broker, TokenFile: k.AgentSecrets.TokenFile, Log: log}
+	client := &cipher.Client{URL: k.AgentSecrets.URL, HTTP: broker, TokenFile: k.AgentSecrets.TokenFile, Log: log}
 	go func() { _ = client.Start(context.Background()) }()
 	return brokerEnroller{client: client}, newRegistrar(*k.AgentSecrets, client), client
 }
 
-// brokerEnroller is agentsecrets.Client as supervise.Enroller; an *agentsecrets.APIError is a
+// brokerEnroller is cipher.Client as supervise.Enroller; an *cipher.APIError is a
 // PermanentError when its status says so, which is how the machine tells a refusal from an outage,
 // and an ExpiredTokenError for POD_TOKEN_EXPIRED, a stale token under a key that stands.
-type brokerEnroller struct{ client *agentsecrets.Client }
+type brokerEnroller struct{ client *cipher.Client }
 
 func (b brokerEnroller) Enroll(ctx context.Context, e supervise.PodEnrollment) (string, error) {
-	enrolled, err := b.client.Enroll(ctx, agentsecrets.PodEnrollment{
+	enrolled, err := b.client.Enroll(ctx, cipher.PodEnrollment{
 		PodUID: e.PodUID, Slot: e.Slot, Thumbprint: e.Thumbprint, PodToken: e.PodToken, Session: e.Session, Claim: e.Claim,
 	})
 	if err != nil {
@@ -569,7 +569,7 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // token source (the implement App's, minted for the repository's owner) and every tree role's gh
 // bundle (gitHubCredential, a directory for each owner the role's App is installed on, read from
 // GitHub at every bundle, and one for each owner a configured rename moved a repository away
-// from while repos holds the name it moved to), with the
+// from while served answers the name it moved to is served), with the
 // controller's own bundle beside it
 // (appauth.ControllerCredential), which a controller's launch and its refresh both ask by owner,
 // and the directory set those directories are compared with (appauth.GitHubDirs), which the
@@ -584,13 +584,13 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // its pod's own, so the implement App's refusal of an owner costs the controller's pod, which
 // runs the review App alone, nothing — with
 // serving as the rule every provisioning token's repository is read through
-// (repositories.serving, the mapping's own, so a configured rename's mint follows the owner
-// whose installation holds the repository now), with the repositories the project works as the
-// ones its repository caches follow (mapped: the mapping's and those of its live issue records,
-// workflowRuntime.cacheRepositories), with the store's own workspace bundles as what a
-// replacement pod's launcher is sent and what its restore drops, and registers its launcher
-// acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
-// mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
+// (repositories.serving, the repository state's own, so a configured rename's mint follows the
+// owner whose installation holds the repository now), with the repositories the project works as
+// the ones its repository caches follow (cached: those of its live issue records and of the
+// launches since their last read, workflowRuntime.cacheRepositories), with the store's own
+// workspace bundles as what a replacement pod's launcher is sent and what its restore drops, and
+// registers its launcher acceptor on the stream listener. A daemon with no GitHub Apps hands it no
+// tokens, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
 // one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST
 // root ("" is https://api.github.com), which the shared public leak check is read under
@@ -602,12 +602,12 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // (volumeTrimReports): it is built with this factory, before the workflow opens, and filled once
 // it has (plan.volumeReports). One that is never filled refuses every report it is given with
 // errVolumeReportsUnbound, which the launcher session logs.
-func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
+func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills,
 	reports *volumeTrimReports) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
-		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
-		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
+		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
+		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
 		// The two halves of the release's saved work: an idle release puts the issue's unpushed
 		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
 		// replaces the released one before any role of that pod starts. The confirmation deletes
@@ -648,10 +648,10 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 			// every launch's addressing reads its role's App's owners out of beside the drift
 			// check.
 			opts.Tokens = newImplementTokens(apps, serving)
-			opts.GitHubCredential = appauth.GitHubCredential(apps, repos, renames, installed, left, opts.Log)
-			opts.ControllerCredential = appauth.ControllerCredential(apps, repos, renames, installed, left, opts.Log)
+			opts.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, opts.Log)
+			opts.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, opts.Log)
 			opts.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-				return appauth.GitHubDirs(repos, renames, installed, left, roles, repo)
+				return appauth.GitHubDirs(served, renames, installed, left, roles, repo)
 			}
 		}
 		rt, err := sandbox.New(ctx, rc, opts)
@@ -867,7 +867,7 @@ func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMiss
 //
 // It is the one token source the Sandbox runtime's three mint sites share (runtime/sandbox's
 // provision, its gh credential refresh and its repository cache Secret), so the repository a
-// configured rename moved to another owner is mapped here, once, to the name whose installation
+// configured rename moved to another owner is turned here, once, into the name whose installation
 // holds it now (serving): nothing under runtime/sandbox knows of a rename.
 //
 // Only the token follows the rename. Every address those three sites build — the pod's feed, its

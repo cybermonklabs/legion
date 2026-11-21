@@ -10,7 +10,7 @@ import { useKeymap } from "../shell/keymap";
 import { useDialog } from "../shell/useDialog";
 import { IssuePresets } from "./IssuePresets";
 import { presetPath } from "./issue-address";
-import { PRESET_NAMES, type Preset } from "./page-words";
+import { PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-words";
 import type { PresetSignal } from "./presets";
 
 const SIGNALS: Readonly<Record<Preset, PresetSignal>> = {
@@ -245,6 +245,86 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu"), "the next Escape left the menu open").toBeNull();
     expect(document.activeElement, "that Escape left the focus off the control").toBe(chooser);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+/** The ids an `aria-describedby` or `aria-labelledby` under `within` names that no element of
+ *  the document carries. */
+function missingReferences(within: HTMLElement): string[] {
+  return [...within.querySelectorAll("[aria-describedby], [aria-labelledby]")].flatMap((element) =>
+    ["aria-describedby", "aria-labelledby"]
+      .flatMap((attribute) => (element.getAttribute(attribute) ?? "").split(/\s+/))
+      .filter((id) => id !== "" && document.getElementById(id) === null)
+  );
+}
+
+// The view row has no signals to give while the reads its counts come from are out
+// (`slots/view-row.tsx`), since a count drawn then reads as the real one. The row is drawn all
+// the same, each control with its name alone, and no control points at a signal that is not
+// there. The case draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is the
+// row of five.
+test("with no signals the row of five draws every view's control with its name alone, and no description names a missing element", () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const view = render(
+    <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
+      <IssuePresets active="spec" issueKey="CORE-1" />
+    </MemoryRouter>
+  );
+  try {
+    for (const preset of PRESET_ORDER) {
+      expect(
+        screen.getByRole("button", { name: PRESET_NAMES[preset], pressed: preset === "spec" }),
+        `${PRESET_NAMES[preset]} drew no control`
+      ).toBeInTheDocument();
+    }
+    expect(
+      view.container.querySelector("[data-preset-count]"),
+      "a control drew a count with no signals"
+    ).toBeNull();
+    expect(
+      screen.getByRole("toolbar").textContent,
+      "a control drew more than its name with no signals"
+    ).toBe(PRESET_ORDER.map((preset) => PRESET_NAMES[preset]).join(""));
+    expect(
+      missingReferences(view.container),
+      "a control points at an element that is not drawn"
+    ).toEqual([]);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+// The same below 1280 px, where the one control and each item of its menu are named by their
+// signal beside their name: with no signals, each is named by its name alone. The case draws it
+// at 390 px (`PHONE_WIDTH`), where the row is the one control.
+test("with no signals the one control and its menu draw every view named alone, and no name points at a missing element", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
+  const view = render(
+    <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
+      <IssuePresets active="spec" issueKey="CORE-1" />
+    </MemoryRouter>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: PRESET_NAMES.spec }));
+    for (const preset of PRESET_ORDER) {
+      expect(
+        screen.getByRole("menuitemradio", { name: PRESET_NAMES[preset] }),
+        `the menu drew no item for ${PRESET_NAMES[preset]}`
+      ).toBeInTheDocument();
+    }
+    expect(
+      view.container.querySelector("[data-preset-count]"),
+      "the one control or its menu drew a count with no signals"
+    ).toBeNull();
+    expect(
+      missingReferences(view.container),
+      "the one control or an item of its menu points at an element that is not drawn"
+    ).toEqual([]);
   } finally {
     view.unmount();
     restoreMatchMedia();

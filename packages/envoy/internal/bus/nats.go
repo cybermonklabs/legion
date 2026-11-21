@@ -122,9 +122,12 @@ func WithReplicas(n int) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.replicas = n })
 }
 
-// withStreamSubjectsRefresh replaces streamSubjectsRefresh for one client, so a test can see the
-// client read the deployed subjects again without waiting a minute.
-func withStreamSubjectsRefresh(every time.Duration) ConnectOption {
+// WithStreamSubjectsRefresh replaces streamSubjectsRefresh for one client, so a test can see the
+// client read the deployed subjects again without waiting a minute, or hold that read off for the
+// whole of a window in which it counts what the client's connection sends. It is exported for the
+// tests of the programs that connect through this package, as WithKeepInterval is: no deployment
+// sets it, and no caller outside a test may.
+func WithStreamSubjectsRefresh(every time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.streamSubjectsRefresh = every })
 }
 
@@ -204,7 +207,7 @@ func WithSilentCutDetection() DialOption {
 // WithImmediateReconnect has every connection the client makes retry at once after a cut, with a
 // jitter of reconnectJitterImmediate rather than the second every other client waits. It is for
 // the one client a hub's other clients wait on: the NATS auth service
-// (internal/broker/natscallout), which is itself a client of the hub it admits connections to, so
+// (internal/cipher/natscallout), which is itself a client of the hub it admits connections to, so
 // a restart drops its connection too and every client that comes back before it is refused until
 // it returns. The jitter keeps two replicas from dialling in the same instant.
 func WithImmediateReconnect() DialOption {
