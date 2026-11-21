@@ -106,8 +106,9 @@ func TestAReplicaTheHubRefusesRedialsOnABackoffAndStaysLive(t *testing.T) {
 // restart drops it, since every other client of the hub waits on it (bus.WithPromptReconnect).
 // Here the hub refuses the replica for six connects, after which each of its waits is at least
 // 1 s, and is then restarted with the auth_callout that lists it. The replica's link to the hub is
-// then cut and restored at once: it is back within a second, where a replica that kept its place
-// in the backoff waits at least 1 s before it even dials.
+// then cut and restored at once: it is back within half a second (tens of milliseconds in
+// practice), where a replica that kept its place in the backoff waits about 1 s or more before it
+// even dials, so the bound stays clear of both.
 func TestAReplicaRedialsAtOnceWhenItsAdmittedConnectionDrops(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
 	_, other := testnats.User(t)
@@ -134,5 +135,5 @@ func TestAReplicaRedialsAtOnceWhenItsAdmittedConnectionDrops(t *testing.T) {
 	testwait.WithinPolling(t, 30*time.Second, 5*time.Millisecond, "the replica back", service.conn.IsConnected)
 	back := time.Since(restored)
 	t.Logf("the replica was back %s after its link was restored", back.Round(time.Millisecond))
-	require.Less(t, back, time.Second, "the replica took %s to redial: it kept its place in the backoff", back.Round(time.Millisecond))
+	require.Less(t, back, 500*time.Millisecond, "the replica took %s to redial: it kept its place in the backoff", back.Round(time.Millisecond))
 }
