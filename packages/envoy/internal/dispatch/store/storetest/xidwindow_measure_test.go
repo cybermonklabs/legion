@@ -28,12 +28,7 @@ import (
 // own under a testing.TB whose Fatalf stops that goroutine as a test's does (stoppingTB), so this
 // test watches the stop without failing.
 func TestAStoppedMeasureLeavesTheNextItsOwnTrace(t *testing.T) {
-	XidAttempts(t, aStoppedMeasureLeavesTheNextItsOwnTrace)
-}
-
-// aStoppedMeasureLeavesTheNextItsOwnTrace is one attempt of its test (XidAttempts).
-func aStoppedMeasureLeavesTheNextItsOwnTrace(t *testing.T) {
-	skipWhereNoTraceIsTaken(t)
+	RequireXidGapJudgment(t)
 	// A run of this test against a rig that leaks the trace leaves it on; stop it, so the tests
 	// after this one still start their own.
 	t.Cleanup(trace.Stop)
@@ -87,7 +82,7 @@ func aStoppedMeasureLeavesTheNextItsOwnTrace(t *testing.T) {
 // naming go test -trace, rather than failing as the trace it could not start
 // ("execution tracer already enabled").
 func TestAMeasureUnderGoTestTraceSaysSo(t *testing.T) {
-	skipWhereNoTraceIsTaken(t)
+	RequireXidGapJudgment(t)
 	database := Open(t)
 	tracer := NewXidTracer()
 	traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
@@ -108,18 +103,6 @@ func TestAMeasureUnderGoTestTraceSaysSo(t *testing.T) {
 	}
 	if ran {
 		t.Error("Measure ran its operation under a trace it could not take its own beside")
-	}
-}
-
-// skipWhereNoTraceIsTaken skips a test of the rig's execution trace in a run that judges no gap,
-// and so takes no trace, naming why - unless the run sets XidRequireGapsEnv, where it fails.
-func skipWhereNoTraceIsTaken(t *testing.T) {
-	t.Helper()
-	if reason := XidNoGapJudgment(); reason != "" {
-		if xidGapsRequired() {
-			t.Fatalf("XID RIG PROBLEM (not a finding about the code): %s is set, so this run must judge statement-free gaps, and it cannot: %s", XidRequireGapsEnv, reason)
-		}
-		t.Skipf("this run judges no gap, so Measure takes no execution trace: %s", reason)
 	}
 }
 

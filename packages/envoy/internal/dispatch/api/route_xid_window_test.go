@@ -54,9 +54,7 @@ var routeXidWindowTable = slices.Concat(documentRouteXidWindows, issueRouteXidWi
 // TestXidWindowRouteTable measures every row of routeXidWindowTable.
 func TestXidWindowRouteTable(t *testing.T) {
 	for _, row := range routeXidWindowTable {
-		t.Run(row.name, func(t *testing.T) {
-			storetest.XidAttempts(t, func(t *testing.T) { measureRouteXidWindow(t, row) })
-		})
+		t.Run(row.name, func(t *testing.T) { measureRouteXidWindow(t, row) })
 	}
 }
 

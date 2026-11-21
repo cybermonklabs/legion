@@ -231,34 +231,50 @@ func (x *xidTrace) read() (*xidTraceReading, error) {
 				snapped = true
 			}
 		case exptrace.EventStateTransition:
-			transition := event.StateTransition()
-			switch transition.Resource.Kind {
-			case exptrace.ResourceGoroutine:
-				g := transition.Resource.Goroutine()
-				_, to := transition.Goroutine()
-				reading.changes[g] = append(reading.changes[g], xidGoStateChange{at: event.Time(), state: to})
-				if to == exptrace.GoRunning && event.Thread() != exptrace.NoThread {
-					thread := int(event.Thread())
-					reading.runs[thread] = append(reading.runs[thread], xidThreadRun{at: event.Time(), g: g})
-				}
-			case exptrace.ResourceProc:
-				p := transition.Resource.Proc()
-				switch _, to := transition.Proc(); to {
-				case exptrace.ProcIdle:
-					stopped[p] = event.Time()
-				case exptrace.ProcRunning:
-					if at, ok := stopped[p]; ok && event.Thread() != exptrace.NoThread {
-						thread := int(event.Thread())
-						reading.starts[thread] = append(reading.starts[thread], xidProcStart{at: event.Time(), stopped: at})
-					}
-				}
-			}
+			reading.transition(event.StateTransition(), event.Time(), event.Thread(), stopped)
 		}
 	}
 	if !snapped {
 		return nil, errors.New("the execution trace holds no clock snapshot to tie its clock to the process's")
 	}
 	return reading, nil
+}
+
+// transition records one state transition of the trace, at, on thread: a goroutine's new state,
+// and its start on thread when it starts running there; a P's stop, kept in stopped, and its
+// start on thread, with the moment it last stopped. A transition from a state to that same state
+// changes nothing and is passed over: at each generation's start the trace writes every
+// goroutine's and every P's status as a transition from the state it was already in (x/exp/trace's
+// order.go), so an idle P's status there would otherwise read as a new stop, and a handoff that
+// spans a generation's start would read its run-queue wait (Handoff) from that moment rather than
+// from the P's real stop, and the gap would take that wait out twice.
+func (r *xidTraceReading) transition(change exptrace.StateTransition, at exptrace.Time, thread exptrace.ThreadID, stopped map[exptrace.ProcID]exptrace.Time) {
+	switch change.Resource.Kind {
+	case exptrace.ResourceGoroutine:
+		g := change.Resource.Goroutine()
+		from, to := change.Goroutine()
+		if from == to {
+			return
+		}
+		r.changes[g] = append(r.changes[g], xidGoStateChange{at: at, state: to})
+		if to == exptrace.GoRunning && thread != exptrace.NoThread {
+			r.runs[int(thread)] = append(r.runs[int(thread)], xidThreadRun{at: at, g: g})
+		}
+	case exptrace.ResourceProc:
+		p := change.Resource.Proc()
+		from, to := change.Proc()
+		if from == to {
+			return
+		}
+		switch to {
+		case exptrace.ProcIdle:
+			stopped[p] = at
+		case exptrace.ProcRunning:
+			if last, ok := stopped[p]; ok && thread != exptrace.NoThread {
+				r.starts[int(thread)] = append(r.starts[int(thread)], xidProcStart{at: at, stopped: last})
+			}
+		}
+	}
 }
 
 // xidExpVersion is the golang.org/x/exp this binary was built with, as the build records it.

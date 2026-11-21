@@ -23,7 +23,9 @@ func TestReadingAThreadsClocksAllocatesNothing(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if readXidThreadClock().thread == 0 {
-		t.Skip("this kernel shows no thread's scheduler clocks, so the rig reads none")
+		// A kernel that shows no thread's clocks judges no gap (XidNoGapJudgment), so this stops.
+		RequireXidGapJudgment(t)
+		t.Fatal("this thread's scheduler clocks read nothing, yet the rig judges gaps")
 	}
 	if allocs := testing.AllocsPerRun(100, func() { readXidThreadClock() }); allocs != 0 {
 		t.Fatalf("a read of a thread's clocks the rig does not hold allocates %v times, want none", allocs)

@@ -30,12 +30,13 @@ type xidPoll struct {
 // the collector held off (runWithoutCollector).
 //
 // A run that sets XidRequireGapsEnv and cannot judge gaps fails here, naming why
-// (XidNoGapJudgment), instead of judging the window's shape alone; and a run that judges gaps
-// fails here if an execution trace is already running, since the rig takes one of its own.
+// (xidUnjudgedGapsProblem, as RequireXidGapJudgment fails), instead of judging the window's shape
+// alone; and a run that judges gaps fails here if an execution trace is already running, since the
+// rig takes one of its own.
 func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *XidReport {
 	t.Helper()
-	if reason := XidNoGapJudgment(); reason != "" && xidGapsRequired() {
-		t.Fatalf("XID RIG PROBLEM (not a finding about the code): %s is set, so this run must judge statement-free gaps, and it cannot: %s", XidRequireGapsEnv, reason)
+	if problem := xidUnjudgedGapsProblem(); problem != "" {
+		t.Fatal(problem)
 	}
 	if XidJudgesGaps() && trace.IsEnabled() {
 		t.Fatalf("XID RIG PROBLEM (not a finding about the code): an execution trace is already running - go test -trace takes one for the whole test binary - and the runtime runs one at a time, so the rig cannot take the trace it reads the runtime's own waits off; run the xid window tests without go test -trace")

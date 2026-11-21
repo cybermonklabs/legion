@@ -88,10 +88,12 @@ const XidFaultGap = 20 * time.Millisecond
 
 // XidJudgesGaps reports whether this build judges how long a window's statement-free gaps are.
 // A plain build judges them only when its thread-clock probe can read the calling thread's clocks.
-// That probe is read once at run time (xidThreadClocksAvailable): Linux kernels do not all expose
-// schedstat. A build with the race detector does not, and the build tag is the only thing that
-// says so (raceDetector); where either makes gap judgment unavailable, the rig holds window shape
-// alone, as the race build does.
+// That probe is read once at run time (xidThreadClocksUnavailable): Linux kernels do not all expose
+// schedstat. It holds the process's memory once to learn whether it can (xidHoldMemory), and on a
+// machine NUMA balancing runs on that hold's MPOL_LOCAL policy on every private writable mapping
+// lasts for the rest of the process's life: nothing puts it back. A build with the race detector
+// does not judge gaps, and the build tag is the only thing that says so (raceDetector); where
+// either makes gap judgment unavailable, the rig holds window shape alone, as the race build does.
 //
 // The reason for the race build is that under the race detector no bound can tell what it is
 // meant to tell. The detector's instrumentation and the scheduling it forces leave a goroutine off
@@ -306,32 +308,36 @@ func (x *XidTracer) end(ctx context.Context, tag pgconn.CommandTag) {
 
 // lockTransaction locks the calling goroutine, which is sending the BEGIN of a marked
 // transaction on backend pid, to its OS thread until that transaction's COMMIT or ROLLBACK
-// (unlockTransaction), holds that thread out of NUMA balancing meanwhile (xidHoldThread), opens
-// the thread's clock for the transaction's readings and pins the thread to the CPU it is on, with
-// that CPU's softirq counts open beside its clock (xidWatchThreadClock), and holds the process's
-// memory still for the window (xidHoldMemory): out of NUMA balancing, with the execution tracer's
-// pages present. All of it runs inside the BEGIN, which no window holds. A
-// thread locked to a goroutine runs that goroutine and no other, so every gap between two
-// statements the goroutine sends from it is read off clocks of its own: the time the thread ran,
-// and waited for a CPU, is the goroutine's. It is the BEGIN that locks, not the measured
-// operation, because an operation sends a transaction from any goroutine it starts - a broadcast
-// delivers to each session on a goroutine of its own. A thread the rig could not hold is not
-// recorded as held, so its gaps are read off no thread's clocks and are a rig problem
-// (analyzeXidWindows).
+// (unlockTransaction). Where the build judges gaps (XidJudgesGaps), it also holds that thread out
+// of NUMA balancing meanwhile (xidHoldThread), opens the thread's clock for the transaction's
+// readings and pins the thread to the CPU it is on, with that CPU's softirq counts open beside its
+// clock (xidWatchThreadClock), and holds the process's memory still (xidHoldMemory): out of NUMA
+// balancing, with the execution tracer's pages present. The memory's NUMA policy is never put
+// back: it lasts for the rest of the process's life, as the thread-clock probe's own hold does.
+// All of it runs inside the BEGIN, which no window holds. A build that judges no gap does none of
+// that hold, since it reads no gap's clocks. A thread locked to a goroutine runs that goroutine
+// and no other, so every gap between two statements the goroutine sends from it is read off
+// clocks of its own: the time the thread ran, and waited for a CPU, is the goroutine's. It is the
+// BEGIN that locks, not the measured operation, because an operation sends a transaction from any
+// goroutine it starts - a broadcast delivers to each session on a goroutine of its own. A thread
+// the rig could not hold is not recorded as held, so its gaps are read off no thread's clocks and
+// are a rig problem (analyzeXidWindows).
 func (x *XidTracer) lockTransaction(pid uint32) {
 	runtime.LockOSThread()
 	held := xidHeldThread{thread: xidThread()}
-	if release, ok := xidHoldThread(); !ok {
-		release()
-	} else if unwatch, ok := xidWatchThreadClock(); !ok {
-		release()
-	} else {
-		held.release = func() {
-			unwatch()
+	if XidJudgesGaps() {
+		if release, ok := xidHoldThread(); !ok {
 			release()
+		} else if unwatch, ok := xidWatchThreadClock(); !ok {
+			release()
+		} else {
+			held.release = func() {
+				unwatch()
+				release()
+			}
 		}
+		xidHoldMemory()
 	}
-	xidHoldMemory()
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if x.locked == nil {
@@ -427,9 +433,13 @@ type XidWindow struct {
 	// Statements are the transaction's statements from the window's first through COMMIT.
 	Statements []XidStatement
 	Start, End time.Time
-	// StatementTime is the time the window's statements took less the machine's part of it, read as
-	// a gap is (XidStatement.span), so rule 2 sets the code's gaps against the code's statements and
-	// a loaded machine stretches neither.
+	// StatementTime is the time the window's statements took less the part of it the rig reads as
+	// the machine's off a stretch's clocks (XidStatement.span): the thread's wait for a CPU and the
+	// runtime's wait to run its goroutine. It still holds the rig's own work on each statement -
+	// classifying its text, reading whether it wrote, joining a batch's SQL - beyond the softirq
+	// reads it takes out, and the time the client waited on the server for the answer, which a
+	// loaded server stretches. Both lengthen the statements' side, so they can only make rule 2
+	// pass a window it would fail, never fail one it would pass.
 	StatementTime time.Duration
 	// Gaps are the gaps between Statements, Gaps[i] following Statements[i]. GapTime and MaxGap
 	// are of the time the code made in them (XidGap.Made).
@@ -440,124 +450,42 @@ type XidWindow struct {
 	MaxGapAfter int
 }
 
-// XidGap is a stretch of a window - the time between two statements, or a statement's own - from
-// one end to the other on this process's clock (Clock), read as well off the scheduler clocks of
-// the thread that sent it (XidTracer.lockTransaction) - the CPU time it ran meanwhile (Ran) and the
-// time it waited runnable on a run queue for a CPU (Runnable) - and off the execution trace of the
-// goroutine that sent it: the time the Go runtime kept it runnable but not running (GoRunnable),
-// the time it waited on something it asked for (GoWaiting), the time it spent in a system call
-// (GoSyscall), and how much of its runnable time its thread spent woken but on the run queue after
-// another thread handed it a P (Overlap, counted in both Runnable and GoRunnable). Read is false
-// when the rig could not read the thread's clocks at both ends on the thread its transaction's
-// goroutine was locked to, and Traced is false when the trace does not show that goroutine.
-// Softirqs are how many times each softirq ran on SoftirqCPU, the CPU the thread is pinned to,
-// over the gap, and Counted is false where the rig could not count them (xidwindow_again.go).
-type XidGap struct {
-	Clock      time.Duration
-	Ran        time.Duration
-	Runnable   time.Duration
-	GoRunnable time.Duration
-	GoWaiting  time.Duration
-	GoSyscall  time.Duration
-	Overlap    time.Duration
-	Read       bool
-	Traced     bool
-	Softirqs   XidSoftirqs
-	SoftirqCPU int
-	Counted    bool
-}
-
-// xidGoStates is the time a goroutine spent over a stretch of the trace in each state the rig
-// reads, and the part of its runnable time its locked thread spent on the run queue after a
-// handoff (xidTraceReading.goStates).
-type xidGoStates struct {
-	Runnable, Waiting, Syscall, Handoff time.Duration
-}
-
-// Made is the time the code made in the gap. The machine's part of a gap is the time its thread
-// waited runnable for a CPU (Runnable) and the time the Go runtime kept its goroutine from running
-// (GoRunnable: a preemption, a stop of the world, a syscall that lost its P), counted once where
-// they overlap: a goroutine handed back to its locked thread stays runnable until that thread,
-// woken, gets a CPU, and that wait is in both (Overlap). The rest is the code's: the time the
-// thread ran, and the time it was off a CPU of its own accord - asleep, in a system call, or
-// waiting on a lock, a channel or the network. Made never reads less than the CPU the thread ran
-// and the waits the goroutine asked for (GoWaiting), nor less than its waits and its system calls
-// beyond the run queue's part of them - the code's whatever the machine does - and never more than
-// the gap's own time on the clock. A gap whose clocks were not read (Read) is its time on the
-// clock.
-func (g XidGap) Made() time.Duration {
-	if !g.Read {
-		return g.Clock
-	}
-	queued := g.Runnable - g.Overlap
-	return min(g.Clock, max(g.Clock-g.GoRunnable-queued, g.Ran+g.GoWaiting, g.GoWaiting+g.GoSyscall-queued))
-}
-
-// xidStretch reads the stretch from to to off thread's clocks, from's reading and to's, where both
-// were read on it, and off the execution trace of the goroutine running on that thread, where the
-// rig took one (reading).
-func xidStretch(from, to time.Time, fromClock, toClock xidThreadClock, thread int, reading *xidTraceReading) XidGap {
-	span := XidGap{Clock: max(to.Sub(from), 0)}
-	if thread != 0 && fromClock.thread == thread && toClock.thread == thread {
-		span.Read = true
-		span.Ran = toClock.ran - fromClock.ran
-		span.Runnable = toClock.waited - fromClock.waited
-		if reading != nil {
-			var states xidGoStates
-			states, span.Traced = reading.goStates(thread, from, to)
-			span.GoRunnable, span.GoWaiting, span.GoSyscall = states.Runnable, states.Waiting, states.Syscall
-			span.Overlap = min(states.Handoff, span.Runnable, span.GoRunnable)
-		}
-	}
-	return span
-}
-
-// xidGapBetween is the gap from before's end to after's start, read where both were sent from the
-// thread their transaction's goroutine was locked to (xidStretch), with the softirqs its CPU ran
-// meanwhile (countGap).
-func xidGapBetween(before, after XidStatement, reading *xidTraceReading) XidGap {
-	thread := before.locked
-	if after.locked != thread {
-		thread = 0
-	}
-	gap := xidStretch(before.End, after.Start, before.ended, after.started, thread, reading)
-	countGap(&gap, before, after)
-	return gap
-}
-
-// span is the statement's own stretch, from its Start to its End, read as a gap is (xidStretch).
-func (s XidStatement) span(reading *xidTraceReading) XidGap {
-	return xidStretch(s.Start, s.End, s.started, s.ended, s.locked, reading)
-}
-
-// Ran is the CPU time the statement's thread ran from its Start to its End, zero where the rig did
-// not read the thread's clocks at both.
-func (s XidStatement) Ran() time.Duration {
-	if s.locked == 0 || s.started.thread != s.locked || s.ended.thread != s.locked {
-		return 0
-	}
-	return s.ended.ran - s.started.ran
-}
-
 // Length is the window's span, its first statement's start to its COMMIT's end.
 func (w XidWindow) Length() time.Duration { return w.End.Sub(w.Start) }
 
 // Violations are the D6 rules the window breaks, empty when it keeps them. Both of them are
 // readings of the time the code made in the window's gaps (XidGap.Made), so a build that judges
 // none (XidJudgesGaps) breaks none here, and what holds there is the shape each window test
-// asserts of its own window.
+// asserts of its own window. Rule 1 holds each gap to its own bound (XidGap.Bound): XidMaxGap,
+// and beside it, where the gap's CPU ran a device softirq on a kernel that charges that time to
+// the thread it lands on, the time those softirqs may have put on the thread (XidGap.SoftirqHold).
+// Rule 2 holds the gaps to the statements and the same softirq time.
 func (w XidWindow) Violations() []string {
 	if !XidJudgesGaps() {
 		return nil
 	}
 	var broken []string
-	if w.MaxGap > XidMaxGap {
+	var held time.Duration
+	for i, gap := range w.Gaps {
+		hold := gap.SoftirqHold()
+		held += hold
+		if gap.Made() <= gap.Bound() {
+			continue
+		}
+		over := XidMillis(XidMaxGap)
+		if hold > 0 {
+			over = fmt.Sprintf("%s: the %s bound and %s its CPU's device softirqs may hold", XidMillis(gap.Bound()), XidMillis(XidMaxGap), XidMillis(hold))
+		}
 		broken = append(broken, fmt.Sprintf("a statement-free gap of %s (over %s) follows statement %d: %s",
-			XidMillis(w.MaxGap), XidMillis(XidMaxGap), w.MaxGapAfter, xidSQL(w.Statements[w.MaxGapAfter].SQL)))
+			XidMillis(gap.Made()), over, i, xidSQL(w.Statements[i].SQL)))
 	}
-	if w.GapTime > w.StatementTime {
-		broken = append(broken, fmt.Sprintf("its gaps take %s, more than its statements' %s",
-			XidMillis(w.GapTime), XidMillis(w.StatementTime)))
+	if w.GapTime > w.StatementTime+held {
+		also := ""
+		if held > 0 {
+			also = fmt.Sprintf(" and the %s their CPU's device softirqs may hold", XidMillis(held))
+		}
+		broken = append(broken, fmt.Sprintf("its gaps take %s, more than its statements' %s%s",
+			XidMillis(w.GapTime), XidMillis(w.StatementTime), also))
 	}
 	return broken
 }
@@ -592,8 +520,12 @@ func (w XidWindow) Detail() string {
 		if i > 0 {
 			gap := w.Gaps[i-1]
 			flag := ""
-			if XidJudgesGaps() && gap.Made() > XidMaxGap {
-				flag = "  <-- over " + XidMillis(XidMaxGap)
+			switch made, hold := gap.Made(), gap.SoftirqHold(); {
+			case !XidJudgesGaps() || made <= XidMaxGap:
+			case made > gap.Bound():
+				flag = "  <-- over " + XidMillis(gap.Bound())
+			default:
+				flag = fmt.Sprintf("  (over %s, within the %s its CPU's device softirqs may hold)", XidMillis(XidMaxGap), XidMillis(hold))
 			}
 			read := "its thread's clocks unread"
 			if gap.Read {
@@ -764,7 +696,7 @@ func analyzeXidWindows(statements []XidStatement, polls []xidPoll, duration time
 				switch {
 				case !gap.Read:
 					report.Problems = append(report.Problems, fmt.Sprintf(
-						"the gap after statement %d of backend %d's window (%s) was not read off one thread's clocks on both sides: the transaction's goroutine was not locked to its thread from its BEGIN (a BEGIN the operation's marked context did not send), the rig could not hold that thread out of NUMA balancing (xidHoldThread), or another goroutine sent its statements",
+						"the gap after statement %d of backend %d's window (%s) was not read off one thread's clocks on both sides: the transaction's goroutine was not locked to its thread from its BEGIN (a BEGIN the operation's marked context did not send), the rig could not hold that thread out of NUMA balancing (xidHoldThread), the rig could not open that thread's schedstat at its BEGIN (xidWatchThreadClock), a read of the thread's clocks at one of the gap's ends found the thread switched out in each of its tries (readXidThreadClock, xidClockTries), or another goroutine sent its statements",
 						i, transaction.PID, xidSQL(window.Statements[i].SQL)))
 				case !gap.Traced:
 					report.Problems = append(report.Problems, fmt.Sprintf(
@@ -887,34 +819,21 @@ func (r *XidReport) problems() []string {
 
 // Err is the report's verdict: nil when every window keeps D6 and the rig judged one (or the
 // operation MayHoldNoXid). A rig problem comes first, worded so a red run cannot be mistaken for a
-// finding. When every window that breaks D6 is one the machine's interrupts may hold
-// (XidWindow.Again), the violations come as a verdict to measure again (xidAgainError), which
-// XidMeasureAgain acts on; one window that breaks a rule no count can hold makes them a plain
-// violation, which fails at once.
+// finding.
 func (r *XidReport) Err() error {
 	if problems := r.problems(); len(problems) > 0 {
 		return fmt.Errorf("XID RIG PROBLEM (not a finding about the code): %s", strings.Join(problems, "; "))
 	}
 	var b strings.Builder
-	var again []string
-	machine := true
 	for _, window := range r.Windows {
 		if broken := window.Violations(); len(broken) > 0 {
 			fmt.Fprintf(&b, "XID WINDOW VIOLATION (INFRA-636 D6) %s\n  %s\n%s", window.Summary(), strings.Join(broken, "\n  "), window.Detail())
-			if reason := window.Again(); reason != "" {
-				again = append(again, reason)
-			} else {
-				machine = false
-			}
 		}
 	}
-	switch {
-	case b.Len() == 0:
-		return nil
-	case machine:
-		return &xidAgainError{violations: b.String(), reason: strings.Join(again, "; ")}
+	if b.Len() > 0 {
+		return fmt.Errorf("%s", b.String())
 	}
-	return fmt.Errorf("%s", b.String())
+	return nil
 }
 
 // XidShape is what the windows of a measured operation must hold, which every measurement
@@ -950,8 +869,7 @@ func XidWindowOf(statements int, want string) XidShape {
 // largest gap whichever way it goes, and in a build that judges no gap says why, once, so a run
 // that judged shape alone does not read as one that judged the timing; then it fails t when the
 // rig could not judge the operation, a window holds more than shape allows, or a window breaks D6
-// in a build that judges a window's time. A window the rig sends to be measured again ends t's
-// attempt instead, under XidAttempts and before its last attempt (XidMeasureAgain).
+// in a build that judges a window's time.
 func AssertXidWindows(t testing.TB, report *XidReport, shape XidShape) {
 	t.Helper()
 	if reason := XidNoGapJudgment(); reason != "" {
@@ -975,7 +893,6 @@ func AssertXidWindows(t testing.TB, report *XidReport, shape XidShape) {
 		if len(report.problems()) > 0 {
 			t.Fatal(err)
 		}
-		XidMeasureAgain(t, err)
 		t.Error(err)
 	}
 }

@@ -61,7 +61,7 @@ func readXidThreadClock() xidThreadClock {
 	if !ok {
 		return xidThreadClock{}
 	}
-	defer xidCloseThreadClock(fd)
+	defer xidCloseProc(fd)
 	return readXidThreadClockOn(fd, thread)
 }
 
@@ -108,13 +108,18 @@ func init() { xidHeldClocks.Store(&map[int]*xidHeldClock{}) }
 
 // xidOpenThreadClock opens the calling thread's schedstat. /proc/thread-self names the thread at
 // the open, so the descriptor stays that thread's for as long as it is open.
-func xidOpenThreadClock() (uintptr, bool) {
+func xidOpenThreadClock() (uintptr, bool) { return xidOpenProc(xidSchedstatPath) }
+
+// xidOpenProc opens a /proc file read-only: path as openat takes it, NUL-terminated, so that the
+// open is one system call and allocates nothing. ok is false when the file cannot be opened.
+func xidOpenProc(path []byte) (fd uintptr, ok bool) {
 	fd, _, errno := unix.Syscall6(unix.SYS_OPENAT, uintptr(xidAtCWD),
-		uintptr(unsafe.Pointer(&xidSchedstatPath[0])), uintptr(unix.O_RDONLY|unix.O_CLOEXEC), 0, 0, 0)
+		uintptr(unsafe.Pointer(&path[0])), uintptr(unix.O_RDONLY|unix.O_CLOEXEC), 0, 0, 0)
 	return fd, errno == 0
 }
 
-func xidCloseThreadClock(fd uintptr) { unix.Syscall(unix.SYS_CLOSE, fd, 0, 0) }
+// xidCloseProc closes a descriptor xidOpenProc opened.
+func xidCloseProc(fd uintptr) { unix.Syscall(unix.SYS_CLOSE, fd, 0, 0) }
 
 // xidWatchThreadClock opens the calling thread's schedstat and keeps it open as the thread's own
 // descriptor until the returned stop, which a held thread's COMMIT or ROLLBACK calls
@@ -152,9 +157,9 @@ func xidDropThreadClock(thread int) {
 	if clock == nil {
 		return
 	}
-	xidCloseThreadClock(clock.schedstat)
+	xidCloseProc(clock.schedstat)
 	if clock.softirqs != nil {
-		xidCloseThreadClock(clock.softirqs.fd)
+		xidCloseProc(clock.softirqs.fd)
 	}
 }
 
@@ -290,7 +295,10 @@ func xidHoldThread() (release func(), held bool) {
 //
 // lockTransaction holds the memory at each marked BEGIN, inside that statement, since a mapping
 // the process made since the last window - a trace buffer among them - has no policy of its own
-// and pages not yet present.
+// and pages not yet present. The thread-clock probe holds it once too, to learn whether it can
+// (xidThreadClocksUnavailable). Nothing puts the old policy back: once a mapping is set to
+// MPOL_LOCAL here, it stays so for the rest of the process's life, which for a test binary is the
+// rest of its tests.
 //
 // It answers false when NUMA balancing is on and the kernel refuses mbind. A mapping that goes
 // away between the read of /proc/self/maps and its mbind or madvise is one there is nothing left

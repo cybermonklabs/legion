@@ -220,11 +220,7 @@ func awaitQuietDatabase(t *testing.T, database *store.Store, settled bool) {
 // nothing a step before it could have changed: the anchored writes and the writes beside the spec
 // first, then the versions of the spec, then the approval request and its hand-back, and the
 // claim last.
-func TestXidWindowsOnTheLargeSpec(t *testing.T) { storetest.XidAttempts(t, xidWindowsOnTheLargeSpec) }
-
-// xidWindowsOnTheLargeSpec is one attempt of its test: every step on one fixture of its own
-// (storetest.XidAttempts).
-func xidWindowsOnTheLargeSpec(t *testing.T) {
+func TestXidWindowsOnTheLargeSpec(t *testing.T) {
 	runXidSteps(t, newXidFixture(t, testServerOptions{}, ""), false, []xidStep{
 		{"comment create anchored", xidWindowCommentCreateAnchored},
 		{"comment create reply on anchored thread", xidWindowCommentCreateReplyOnAnchoredThread},
@@ -298,10 +294,7 @@ func newBlockAskFixture(t *testing.T) (*xidFixture, string) {
 	return f, askID
 }
 
-func TestXidWindowAskAnswerBlock(t *testing.T) { storetest.XidAttempts(t, xidWindowAskAnswerBlock) }
-
-// xidWindowAskAnswerBlock is one attempt of its test (storetest.XidAttempts).
-func xidWindowAskAnswerBlock(t *testing.T) {
+func TestXidWindowAskAnswerBlock(t *testing.T) {
 	f, askID := newBlockAskFixture(t)
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
@@ -310,10 +303,7 @@ func xidWindowAskAnswerBlock(t *testing.T) {
 	})
 }
 
-func TestXidWindowAskResolveBlock(t *testing.T) { storetest.XidAttempts(t, xidWindowAskResolveBlock) }
-
-// xidWindowAskResolveBlock is one attempt of its test (storetest.XidAttempts).
-func xidWindowAskResolveBlock(t *testing.T) {
+func TestXidWindowAskResolveBlock(t *testing.T) {
 	f, askID := newBlockAskFixture(t)
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPost, "/api/v1/asks/"+askID+"/resolve", map[string]any{
@@ -327,11 +317,6 @@ func xidWindowAskResolveBlock(t *testing.T) {
 // issue's anchored asks: the edit's version settles before the close is measured, as the block
 // ask's own opening did before the edit.
 func TestXidWindowAskBlockEditThenIssueClose(t *testing.T) {
-	storetest.XidAttempts(t, xidWindowAskBlockEditThenIssueClose)
-}
-
-// xidWindowAskBlockEditThenIssueClose is one attempt of its test (storetest.XidAttempts).
-func xidWindowAskBlockEditThenIssueClose(t *testing.T) {
 	f, askID := newBlockAskFixture(t)
 	runXidSteps(t, f, true, []xidStep{
 		{"ask edit block text", func(t *testing.T, f *xidFixture) { xidWindowAskEditBlockText(t, f, askID) }},
@@ -452,11 +437,6 @@ func xidWindowUploadReplace(t *testing.T, f *xidFixture) {
 // and the review - is queued with the route's own writes, so the window is that one batch and the
 // commit ending it.
 func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
-	storetest.XidAttempts(t, xidWindowUploadRestoringTheApprovedText)
-}
-
-// xidWindowUploadRestoringTheApprovedText is one attempt of its test (storetest.XidAttempts).
-func xidWindowUploadRestoringTheApprovedText(t *testing.T) {
 	f := newXidFixture(t, testServerOptions{}, "")
 	approval := reviewDocument(t, f.handler, f.specID, "alice", "approved", "")
 	approved := versionMarkdown(t, f.handler, f.specID, approval.Version)
@@ -501,10 +481,7 @@ func xidWindowNamedVersion(t *testing.T, f *xidFixture) {
 // A rebuild repairs a history ygo cannot load: this server's document store hands the spec's next
 // load a history that does not decode (invalidLoadOnceStore), and the rebuild writes the supplied
 // markdown as the document's next version.
-func TestXidWindowDocumentRebuild(t *testing.T) { storetest.XidAttempts(t, xidWindowDocumentRebuild) }
-
-// xidWindowDocumentRebuild is one attempt of its test (storetest.XidAttempts).
-func xidWindowDocumentRebuild(t *testing.T) {
+func TestXidWindowDocumentRebuild(t *testing.T) {
 	var broken *invalidLoadOnceStore
 	f := newXidFixture(t, testServerOptions{
 		persistence: func(database *store.Store) docs.VersionedStore {
@@ -587,11 +564,6 @@ func (f *xidFixture) approvalRequestOverTwoDocuments(t *testing.T) (string, stri
 // batch: the ask's answer and its answered row, its parts' index, ask.answered, and one review row
 // with its artifact.approved per named document.
 func TestXidWindowApprovalAnswerOverTwoDocuments(t *testing.T) {
-	storetest.XidAttempts(t, xidWindowApprovalAnswerOverTwoDocuments)
-}
-
-// xidWindowApprovalAnswerOverTwoDocuments is one attempt of its test (storetest.XidAttempts).
-func xidWindowApprovalAnswerOverTwoDocuments(t *testing.T) {
 	f := newXidFixture(t, testServerOptions{}, "")
 	askID, verificationID := f.approvalRequestOverTwoDocuments(t)
 	f.measureBatched(t, http.StatusOK, func(h http.Handler) *httptest.ResponseRecorder {
@@ -814,11 +786,7 @@ func newXidDeliveryFixture(t *testing.T) *xidFixture {
 // TestXidWindowDeliveries measures, as steps on one delivery fixture, each delivery route on a
 // delivery of its own: a mention's reply, a targeted message's reply, a direct message's accept
 // and a targeted message's retry.
-func TestXidWindowDeliveries(t *testing.T) { storetest.XidAttempts(t, xidWindowDeliveries) }
-
-// xidWindowDeliveries is one attempt of its test: every step on one fixture of its own
-// (storetest.XidAttempts).
-func xidWindowDeliveries(t *testing.T) {
+func TestXidWindowDeliveries(t *testing.T) {
 	runXidSteps(t, newXidDeliveryFixture(t), false, []xidStep{
 		{"comment delivery reply", xidWindowCommentDeliveryReply},
 		{"message delivery reply", xidWindowMessageDeliveryReply},

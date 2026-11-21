@@ -9,42 +9,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// xidLoopbackBurst sends n datagrams over the loopback interface from the calling thread. The
-// kernel delivers each in a network receive softirq on the sending CPU, run as the send returns,
-// so the CPU's NET_RX count rises with them.
-func xidLoopbackBurst(t testing.TB, n int) {
-	t.Helper()
-	receiver, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		t.Fatalf("open the receiving socket: %v", err)
-	}
-	defer unix.Close(receiver)
-	if err := unix.Bind(receiver, &unix.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
-		t.Fatalf("bind the receiving socket: %v", err)
-	}
-	bound, err := unix.Getsockname(receiver)
-	if err != nil {
-		t.Fatalf("read the receiving socket's address: %v", err)
-	}
-	sender, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		t.Fatalf("open the sending socket: %v", err)
-	}
-	defer unix.Close(sender)
-	payload := make([]byte, 512)
-	for range n {
-		if err := unix.Sendto(sender, payload, 0, bound); err != nil {
-			t.Fatalf("send a datagram over the loopback interface: %v", err)
-		}
-	}
-}
-
 // A held thread is pinned to the CPU it is on, and the rig reads that CPU's softirq counts beside
 // its clocks: a burst of loopback datagrams the thread sends raises the CPU's NET_RX count, a read
 // allocates nothing, and the thread's CPUs are put back when it is let go. With the count read
 // planted to read nothing, the burst counts no NET_RX; with the unpin planted out, the thread keeps
 // its one CPU.
 func TestTheRigCountsTheSoftirqsItsPinnedCPURuns(t *testing.T) {
+	RequireXidGapJudgment(t)
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	var before unix.CPUSet
@@ -66,7 +37,7 @@ func TestTheRigCountsTheSoftirqsItsPinnedCPURuns(t *testing.T) {
 		t.Fatalf("held, this thread may run on %d CPUs (error %v), want only CPU %d", pinned.Count(), err, held.softirqs.cpu)
 	}
 	first := readXidSoftirqs()
-	xidLoopbackBurst(t, 200)
+	XidLoopbackSends(t, func(sent int) bool { return sent < 200 })
 	second := readXidSoftirqs()
 	allocs := testing.AllocsPerRun(100, func() { _ = readXidSoftirqs() })
 	stop()
@@ -106,5 +77,25 @@ func TestASoftirqCountIsReadAtItsCPUsColumn(t *testing.T) {
 	cut := file[:len(file)-len("        RCU:         21         22         23\n")]
 	if _, ok := xidSoftirqCounts(cut, column); ok {
 		t.Fatal("a file without the RCU line read as a reading")
+	}
+}
+
+// A kernel charges interrupt time to the thread it lands on when /proc/stat's sum of every CPU
+// reads no time in hard interrupts (xidReadInterruptTimeCharged); one that accounts it apart
+// reads some, and a first line that is not that sum reads as neither.
+func TestTheKernelsInterruptAccountingIsReadOffProcStat(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		stat        string
+		charged, ok bool
+	}{
+		{"no hard interrupt time", "cpu  8915706459 1628920831 4011368725 22745265490 175918797 0 62420379 0 0 0\ncpu0 1 2 3 4 5 0 7 0 0 0\n", true, true},
+		{"hard interrupt time accounted apart", "cpu  8915706459 1628920831 4011368725 22745265490 175918797 3120 62420379 0 0 0\n", false, true},
+		{"a first line that is one CPU's", "cpu0 1 2 3 4 5 0 7 0 0 0\n", false, false},
+		{"a first line cut short", "cpu  1 2 3 4 5\n", false, false},
+	} {
+		if charged, ok := xidInterruptTimeChargedIn([]byte(test.stat)); charged != test.charged || ok != test.ok {
+			t.Errorf("%s: charged %t, ok %t; want %t, %t", test.name, charged, ok, test.charged, test.ok)
+		}
 	}
 }

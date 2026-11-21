@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"os"
 	"strconv"
+	"sync"
+	"testing"
 	"time"
 	"unsafe"
 
@@ -19,10 +21,44 @@ var xidSoftirqsPath = []byte("/proc/softirqs\x00")
 // bytes and allocates nothing.
 var xidSoftirqNames = func() (names [len(xidSoftirqVectors)][]byte) {
 	for i, vector := range xidSoftirqVectors {
-		names[i] = []byte(vector + ":")
+		names[i] = []byte(vector.name + ":")
 	}
 	return names
 }()
+
+// xidReadInterruptTimeCharged reads, once, whether this kernel charges the time a CPU spends in
+// interrupts to the thread they land on (xidInterruptTimeCharged). The first line of /proc/stat
+// sums every CPU's time by kind, and its sixth field is the time spent in hard interrupts. A
+// kernel that accounts interrupt time apart from the thread it interrupts (CONFIG_IRQ_TIME_ACCOUNTING
+// on, and on at run time) adds to that field at every interrupt; one that does not can only
+// sample it at the tick, and the tick, itself a hard interrupt, never finds the CPU in another
+// one, so the field stays 0 - as it reads on the 288-CPU machine these tests were traced on
+// (Linux 7.0, CONFIG_IRQ_TIME_ACCOUNTING not set: "cpu ... 175918797 0 62420379 ...", 2026-11-20).
+// A file the rig cannot read or parse reads as a kernel that does not charge it.
+var xidReadInterruptTimeCharged = sync.OnceValue(func() bool {
+	stat, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return false
+	}
+	charged, ok := xidInterruptTimeChargedIn(stat)
+	return ok && charged
+})
+
+// xidInterruptTimeChargedIn reads /proc/stat's first line: charged is true when its hard
+// interrupt time is 0 (xidReadInterruptTimeCharged); ok is false when the line is not the sum of
+// every CPU or has no such field.
+func xidInterruptTimeChargedIn(stat []byte) (charged, ok bool) {
+	line, _, _ := bytes.Cut(stat, []byte("\n"))
+	fields := bytes.Fields(line)
+	if len(fields) < 7 || !bytes.Equal(fields[0], []byte("cpu")) {
+		return false, false
+	}
+	irq, err := strconv.ParseUint(string(fields[6]), 10, 64)
+	if err != nil {
+		return false, false
+	}
+	return irq == 0, true
+}
 
 // xidSoftirqReader reads the softirq counts of the one CPU a held thread is pinned to: /proc/softirqs
 // open on fd, the CPU's column in it, a buffer written whole before the window so that no read
@@ -48,7 +84,7 @@ func xidCurrentCPU() (int, bool) {
 // (unpin). The CPU is the one the thread is already on, so the pin moves nothing and leaves the
 // scheduler's spread of the process's threads as it was. It answers nil, with the thread's CPUs as
 // they were, when the thread cannot be pinned or the file cannot be read; that thread's gaps go
-// uncounted, and none of them can be sent to be measured again.
+// uncounted, and none of them is given the time its CPU's softirqs may hold (XidGap.SoftirqHold).
 func xidPinForSoftirqs() *xidSoftirqReader {
 	cpu, ok := xidCurrentCPU()
 	if !ok {
@@ -71,9 +107,8 @@ func xidPinForSoftirqs() *xidSoftirqReader {
 		reader.unpin()
 		return nil
 	}
-	fd, _, errno := unix.Syscall6(unix.SYS_OPENAT, uintptr(xidAtCWD),
-		uintptr(unsafe.Pointer(&xidSoftirqsPath[0])), uintptr(unix.O_RDONLY|unix.O_CLOEXEC), 0, 0, 0)
-	if errno != 0 {
+	fd, ok := xidOpenProc(xidSoftirqsPath)
+	if !ok {
 		reader.unpin()
 		return nil
 	}
@@ -84,7 +119,7 @@ func xidPinForSoftirqs() *xidSoftirqReader {
 		reader.buf[i] = ' '
 	}
 	if _, ok := reader.read(); !ok {
-		xidCloseThreadClock(fd)
+		xidCloseProc(fd)
 		reader.unpin()
 		return nil
 	}
@@ -193,5 +228,42 @@ func readXidSoftirqs() xidSoftirqReading {
 		cpu:    held.softirqs.cpu,
 		cost:   time.Duration(after.Nano() - before.Nano()),
 		ok:     ok && onCPU && cpu == held.softirqs.cpu,
+	}
+}
+
+// XidLoopbackSends sends 512-byte datagrams over the loopback interface from the calling thread,
+// in batches of 16, while more says to; more is given how many it has sent so far. The kernel runs
+// each datagram's receive as a network receive softirq (NET_RX) on the sending CPU, in the sending
+// thread's own system call as the send returns, so the CPU's NET_RX count rises with them, and on
+// a kernel that charges softirq time to the thread it lands on (xidInterruptTimeCharged) that
+// receive is the sending thread's CPU time: the code's own work, which no count can tell from the
+// machine's.
+func XidLoopbackSends(t testing.TB, more func(sent int) bool) {
+	t.Helper()
+	receiver, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open the receiving socket: %v", err)
+	}
+	defer unix.Close(receiver)
+	if err := unix.Bind(receiver, &unix.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatalf("bind the receiving socket: %v", err)
+	}
+	bound, err := unix.Getsockname(receiver)
+	if err != nil {
+		t.Fatalf("read the receiving socket's address: %v", err)
+	}
+	sender, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open the sending socket: %v", err)
+	}
+	defer unix.Close(sender)
+	payload := make([]byte, 512)
+	for sent := 0; more(sent); {
+		for range 16 {
+			if err := unix.Sendto(sender, payload, 0, bound); err != nil {
+				t.Fatalf("send a datagram over the loopback interface: %v", err)
+			}
+			sent++
+		}
 	}
 }

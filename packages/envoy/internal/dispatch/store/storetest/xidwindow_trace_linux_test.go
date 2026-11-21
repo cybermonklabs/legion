@@ -77,6 +77,53 @@ func TestAGapsGoroutineStatesAreReadForItsThreadAndItsSpan(t *testing.T) {
 	}
 }
 
+// A handoff whose wait spans a generation's start reads its run-queue wait from the P's real
+// stop. At each generation's start the trace writes every P's and every goroutine's status as a
+// transition from the state it is already in (x/exp/trace's order.go); here P 2 stops at 1 ms, its
+// idle status comes at 5 ms, and thread 7 starts it at 6 ms while goroutine 1 is runnable from
+// 1 ms, its runnable status also coming at 5 ms. The wait is 1 to 6 ms: 5 ms. A reader that took
+// the idle status for a stop read it from 5 ms, 1 ms, and a gap that took that wait out of the
+// goroutine's runnable time and the thread's run-queue time took the other 4 ms out twice.
+func TestAGenerationsStatusEventsAreNoStateChange(t *testing.T) {
+	base := time.Now()
+	at := func(ms float64) exptrace.Time { return exptrace.Time(ms * float64(time.Millisecond)) }
+	reading := &xidTraceReading{
+		baseTime: base,
+		snapshot: exptrace.ClockSnapshot{Trace: 0, Mono: 0},
+		changes:  map[exptrace.GoID][]xidGoStateChange{},
+		runs:     map[int][]xidThreadRun{},
+		starts:   map[int][]xidProcStart{},
+	}
+	stopped := map[exptrace.ProcID]exptrace.Time{}
+	for _, event := range []struct {
+		change exptrace.StateTransition
+		at     float64
+		thread exptrace.ThreadID
+	}{
+		{exptrace.MakeGoStateTransition(1, exptrace.GoUndetermined, exptrace.GoRunning), 0, 7},
+		{exptrace.MakeProcStateTransition(2, exptrace.ProcUndetermined, exptrace.ProcRunning), 0, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoRunnable), 1, 7},
+		{exptrace.MakeProcStateTransition(2, exptrace.ProcRunning, exptrace.ProcIdle), 1, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoRunnable, exptrace.GoRunnable), 5, exptrace.NoThread},
+		{exptrace.MakeProcStateTransition(2, exptrace.ProcIdle, exptrace.ProcIdle), 5, exptrace.NoThread},
+		{exptrace.MakeProcStateTransition(2, exptrace.ProcIdle, exptrace.ProcRunning), 6, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoRunnable, exptrace.GoRunning), 6, 7},
+	} {
+		reading.transition(event.change, at(event.at), event.thread, stopped)
+	}
+	if got := len(reading.changes[1]); got != 3 {
+		t.Errorf("goroutine 1 changed state %d times, want 3: its status at the generation's start is no change (%+v)", got, reading.changes[1])
+	}
+	states, ok := reading.goStates(7, base.Add(500*time.Microsecond), base.Add(7*time.Millisecond))
+	if !ok {
+		t.Fatal("the trace shows no goroutine on thread 7 by the gap's start")
+	}
+	if want := 5 * time.Millisecond; states.Runnable != want || states.Handoff != want {
+		t.Errorf("runnable %s and on the run queue after the handoff %s, want %s each: P 2 stopped at 1 ms and thread 7 started it at 6 ms",
+			states.Runnable, states.Handoff, want)
+	}
+}
+
 // Made counts the CPU the thread ran, the waits the goroutine asked for and its system calls
 // whatever the machine does, takes out what the machine did - the thread's wait for a CPU and the
 // goroutine's wait for the runtime to run it again - counting once the run-queue wait after a

@@ -1,9 +1,11 @@
 package storetest
 
 import (
+	"fmt"
 	"os"
 	"runtime"
 	"sync"
+	"testing"
 )
 
 // XidRequireGapsEnv names the environment variable that makes a run that cannot judge a window's
@@ -70,3 +72,29 @@ func XidNoGapJudgment() string {
 
 // xidGapsRequired reports whether this run must judge gaps (XidRequireGapsEnv).
 func xidGapsRequired() bool { return os.Getenv(XidRequireGapsEnv) != "" }
+
+// xidUnjudgedGapsProblem is the rig problem of a run that sets XidRequireGapsEnv and cannot judge
+// gaps, naming why (XidNoGapJudgment); empty when the run judges gaps or does not require them.
+func xidUnjudgedGapsProblem() string {
+	reason := XidNoGapJudgment()
+	if reason == "" || !xidGapsRequired() {
+		return ""
+	}
+	return fmt.Sprintf("XID RIG PROBLEM (not a finding about the code): %s is set, so this run must judge statement-free gaps, and it cannot: %s", XidRequireGapsEnv, reason)
+}
+
+// RequireXidGapJudgment stops a test that holds nothing unless the run judges statement-free
+// gaps - a rig self-test whose fault is a gap, or a test of what the rig reads to judge one - in a
+// run that judges none (XidNoGapJudgment): it fails, naming why, where the run sets
+// XidRequireGapsEnv, and skips, naming why, everywhere else. Every such test calls it, and Measure
+// fails as it does under XidRequireGapsEnv, so a run that cannot judge gaps reads the same way in
+// every test.
+func RequireXidGapJudgment(t testing.TB) {
+	t.Helper()
+	if problem := xidUnjudgedGapsProblem(); problem != "" {
+		t.Fatal(problem)
+	}
+	if reason := XidNoGapJudgment(); reason != "" {
+		t.Skipf("this run judges window shape alone, not statement-free gaps: %s", reason)
+	}
+}
