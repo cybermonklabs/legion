@@ -696,7 +696,9 @@ func writeUnavailable(w http.ResponseWriter, code, op string, err error) {
 // Dispatch calls a person a restricted member (*projectaccess.MemberKindUncheckable), and reports
 // whether err was one: 503 MEMBER_KIND_UNCHECKABLE naming the person and why in fixed words, with
 // the failure itself, which can name Dispatch's address, in the log alone. what is the thing
-// refused, as the log line names it. The code is projectaccess.UncheckableCode, spelled out here
+// refused, as the log line names it. The line is ERROR when Dispatch could not be asked, and INFO
+// when the read failed because its caller gave up (MemberKindUncheckable.CallerEnded), which says
+// nothing of Dispatch. The code is projectaccess.UncheckableCode, spelled out here
 // because the broker's generated HTTP reference (cmd/cipher-refgen) reads each refusal's code
 // from a literal; TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode holds the two to one spelling.
 func writeMemberKindUncheckable(w http.ResponseWriter, what string, err error) bool {
@@ -704,8 +706,11 @@ func writeMemberKindUncheckable(w http.ResponseWriter, what string, err error) b
 	if !errors.As(err, &uncheckable) {
 		return false
 	}
-	slog.Error("broker: whether Dispatch calls a person a restricted member cannot be read, so "+what+" is refused",
-		"person", uncheckable.Person, "error", uncheckable.Err)
+	level, line := slog.LevelError, "broker: whether Dispatch calls a person a restricted member cannot be read, so "+what+" is refused"
+	if uncheckable.CallerEnded() {
+		level, line = slog.LevelInfo, "broker: the caller ended before Dispatch said whether the person is a restricted member, so "+what+" is refused"
+	}
+	slog.Log(context.Background(), level, line, "person", uncheckable.Person, "error", uncheckable.Err)
 	writeError(w, http.StatusServiceUnavailable, "MEMBER_KIND_UNCHECKABLE", uncheckable.Error())
 	return true
 }

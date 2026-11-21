@@ -625,8 +625,13 @@ func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 	var uncheckable *projectaccess.MemberKindUncheckable
 	switch {
 	case errors.As(err, &uncheckable):
-		s.log.Error("airlock proxy: whether Dispatch calls a person a restricted member cannot be read, so the release is refused",
-			"read", read, "person", uncheckable.Person, "error", uncheckable.Err)
+		if uncheckable.CallerEnded() {
+			s.log.Info("airlock proxy: the caller ended before Dispatch said whether the person is a restricted member, so the release is refused",
+				"read", read, "person", uncheckable.Person, "error", uncheckable.Err)
+		} else {
+			s.log.Error("airlock proxy: whether Dispatch calls a person a restricted member cannot be read, so the release is refused",
+				"read", read, "person", uncheckable.Person, "error", uncheckable.Err)
+		}
 		return http.StatusServiceUnavailable, projectaccess.UncheckableCode, uncheckable.Error()
 	case errors.Is(err, requests.ErrGrantNotLive):
 		return http.StatusProxyAuthRequired, codeGrantNotLive, err.Error()
