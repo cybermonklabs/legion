@@ -34,6 +34,12 @@ var ErrCommitOutcomeUnknown = errors.New("the store did not say whether the tran
 // on its own.
 var errTransactionOnAnotherPool = errors.New("store: a transaction on another pool was opened inside an open transaction")
 
+// errJoinOfOtherOptions is TransactWith's refusal of a transaction asked for, inside an open one
+// on the same pool, with another isolation level or access mode: a join runs in the open
+// transaction, under that transaction's options, so a repeatable-read read would lose its
+// snapshot and a read-only one PostgreSQL's refusal of its writes.
+var errJoinOfOtherOptions = errors.New("store: a transaction asked for other options than the open transaction it would join")
+
 const (
 	// commitReplyBound is how long a commit waits for its reply after its caller's context ends.
 	commitReplyBound = 1 * time.Second
@@ -57,17 +63,18 @@ const CommitSettleBound = commitReplyBound + outcomeReadBound
 
 // commitHooksKey is the context key a TransactWith scope lives under. It is named only where a
 // scope is stored or read: TransactWith stores the one scope that holds hooks, scopeOf reads it,
-// and readOutcome stores none (TestOnlyTransactOpensACommitScope). Its type is this package's
-// own, so a scope stored anywhere else names it there.
+// and readOutcome and ForConcurrentWorker store none (TestOnlyTransactOpensACommitScope). Its type
+// is this package's own, so a scope stored anywhere else names it there.
 type commitHooksKey struct{}
 
 // commitScope is one open transaction of TransactWith: the hooks its body registers, the
-// transaction and its pool, and whether its body still runs. A TransactWith called on a context
-// whose scope's body still runs joins that transaction.
+// transaction, its pool and its options, and whether its body still runs. A TransactWith called on
+// a context whose scope's body still runs joins that transaction (join).
 type commitScope struct {
 	hooks   []func()
 	tx      pgx.Tx
 	pool    TxPool
+	options pgx.TxOptions
 	writing atomic.Bool
 }
 
@@ -153,10 +160,12 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 // once, on the scoped context, and is never retried. Every transaction of the daemon opens here,
 // the read-only and repeatable-read ones included. In order:
 //
-//   - On a context whose scope's write still runs, it opens nothing: on that scope's pool it
-//     runs write in the open transaction and returns write's error, so write's hooks wait on the
-//     open transaction's commit, and options are the open transaction's; on another pool it runs
-//     nothing and returns errTransactionOnAnotherPool.
+//   - On a context whose scope's write still runs, it opens no transaction: it joins the open one
+//     (join), so write's hooks wait on the open transaction's commit. A join on another pool, or
+//     with another isolation level or access mode, runs nothing and is refused
+//     (errTransactionOnAnotherPool, errJoinOfOtherOptions). A joined write runs under a
+//     savepoint: one that fails is rolled back to it, and its hooks are cut, whatever the open
+//     transaction's body then does with its error.
 //   - A rollback is deferred as soon as the transaction begins, so a panic in write, or any
 //     return below, gives the connection back to the pool and clears the caller's hold mark. It
 //     runs on the commit's context, below, so a rollback after the caller's cancel still reaches
@@ -185,10 +194,7 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 // So a caller whose context ends waits at most CommitSettleBound more for its commit's outcome.
 func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write func(ctx context.Context, tx pgx.Tx) error) error {
 	if open := scopeOf(ctx); open != nil && open.writing.Load() {
-		if !samePool(open.pool, pool) {
-			return errTransactionOnAnotherPool
-		}
-		return write(ctx, open.tx)
+		return open.join(ctx, pool, options, write)
 	}
 	tx, err := pool.BeginTx(ctx, options)
 	if err != nil {
@@ -199,7 +205,7 @@ func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write
 	// Once a commit has been tried, the transaction is closed and this does nothing.
 	defer func() { _ = tx.Rollback(committing) }()
 
-	scope := &commitScope{tx: tx, pool: pool}
+	scope := &commitScope{tx: tx, pool: pool, options: options}
 	scoped := context.WithValue(ctx, commitHooksKey{}, scope)
 	if err := runWrite(scoped, scope, write); err != nil {
 		return err
@@ -238,6 +244,47 @@ func runWrite(scoped context.Context, scope *commitScope, write func(ctx context
 	scope.writing.Store(true)
 	defer scope.writing.Store(false)
 	return write(scoped, scope.tx)
+}
+
+// join runs write inside the scope's open transaction, on ctx, the scope's own context, under a
+// savepoint of that transaction. A write that fails is rolled back to the savepoint, and the hooks
+// it registered are cut from the scope's list, so an outer body that swallows its error commits
+// neither; its error is returned with the rollback's, if that failed too. A write that succeeds
+// releases the savepoint and keeps its hooks on the scope. A join on another pool, or with another
+// isolation level or access mode than the open transaction's, runs nothing.
+func (s *commitScope) join(ctx context.Context, pool TxPool, options pgx.TxOptions, write func(ctx context.Context, tx pgx.Tx) error) error {
+	if !samePool(s.pool, pool) {
+		return errTransactionOnAnotherPool
+	}
+	if isolation(options) != isolation(s.options) || access(options) != access(s.options) {
+		return errJoinOfOtherOptions
+	}
+	savepoint, err := s.tx.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	registered := len(s.hooks)
+	if err := write(ctx, savepoint); err != nil {
+		s.hooks = s.hooks[:registered]
+		return errors.Join(err, savepoint.Rollback(ctx))
+	}
+	return savepoint.Commit(ctx)
+}
+
+// isolation is options' isolation level, the server's default (read committed) when it names none.
+func isolation(options pgx.TxOptions) pgx.TxIsoLevel {
+	if options.IsoLevel == "" {
+		return pgx.ReadCommitted
+	}
+	return options.IsoLevel
+}
+
+// access is options' access mode, read-write when it names none.
+func access(options pgx.TxOptions) pgx.TxAccessMode {
+	if options.AccessMode == "" {
+		return pgx.ReadWrite
+	}
+	return options.AccessMode
 }
 
 // samePool reports whether a and b are one pool: the same comparable value. A pool whose dynamic

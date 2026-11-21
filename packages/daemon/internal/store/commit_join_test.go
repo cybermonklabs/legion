@@ -185,6 +185,103 @@ func TestATransactionOnAClosedScopeIsItsOwn(t *testing.T) {
 	}
 }
 
+// A joined write that fails is undone on its own, whatever its outer body does with the error: the
+// join runs under a savepoint that rolls back, and the hooks it registered are cut, so an outer
+// body that swallows the error commits neither the inner write's row nor its hook.
+func TestAJoinedWriteThatFailsKeepsNeitherItsWritesNorItsHooks(t *testing.T) {
+	rig := newCommitRig(t)
+	ctx := WithTransactionTracking(context.Background())
+	var hooks joinedHooks
+	innerFails := errors.New("the inner body fails after its write")
+	err := Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := insertProbe(ctx, tx, 1); err != nil {
+			return err
+		}
+		OnCommit(ctx, hooks.hook("A"))
+		if err := Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+			if _, err := insertProbe(ctx, tx, 2); err != nil {
+				return err
+			}
+			OnCommit(ctx, hooks.hook("B"))
+			return innerFails
+		}); !errors.Is(err, innerFails) {
+			t.Errorf("the joined Transact = %v, want its body's error", err)
+		}
+		if _, err := insertProbe(ctx, tx, 3); err != nil {
+			return err
+		}
+		OnCommit(ctx, hooks.hook("C"))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Transact = %v, want nil: the outer body swallowed the inner error", err)
+	}
+	if ids := rig.probeIDs(t); !slices.Equal(ids, []int{1, 3}) {
+		t.Fatalf("committed rows = %v, want [1 3]: the failed joined write rolls back alone", ids)
+	}
+	if got := hooks.order(); !slices.Equal(got, []string{"A", "C"}) {
+		t.Fatalf("hooks ran %v, want [A C]: the failed joined write's hook is cut", got)
+	}
+}
+
+// A join keeps its outer transaction's options, so a join that asks for others is refused before
+// its body runs: a repeatable-read read joined into a read-committed transaction would lose the
+// snapshot it asked for, and a read-only one would lose PostgreSQL's refusal of its writes.
+func TestAJoinThatAsksForOtherOptionsIsRefused(t *testing.T) {
+	rig := newCommitRig(t)
+	for _, row := range []struct {
+		name         string
+		outer, inner pgx.TxOptions
+	}{
+		{"repeatable read inside read committed", pgx.TxOptions{}, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}},
+		{"read only inside read write", pgx.TxOptions{}, pgx.TxOptions{AccessMode: pgx.ReadOnly}},
+		{"read write inside read only", pgx.TxOptions{AccessMode: pgx.ReadOnly}, pgx.TxOptions{}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			ran := false
+			err := TransactWith(WithTransactionTracking(context.Background()), rig.pool, row.outer, func(ctx context.Context, tx pgx.Tx) error {
+				return TransactWith(ctx, rig.pool, row.inner, func(context.Context, pgx.Tx) error {
+					ran = true
+					return nil
+				})
+			})
+			if !errors.Is(err, errJoinOfOtherOptions) {
+				t.Fatalf("Transact = %v, want %v", err, errJoinOfOtherOptions)
+			}
+			if ran {
+				t.Fatal("the inner body ran, want it refused before it runs")
+			}
+		})
+	}
+	if err := TransactWith(WithTransactionTracking(context.Background()), rig.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return TransactWith(ctx, rig.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(context.Context, pgx.Tx) error { return nil })
+	}); err != nil {
+		t.Fatalf("a join with the outer's own options = %v, want nil", err)
+	}
+}
+
+// A goroutine a body starts runs beside the body, so its context (ForConcurrentWorker) holds no
+// commit scope: a transaction it opens is its own, and it registers no hook on the body's list,
+// which only the body's goroutine appends to.
+func TestAWorkerStartedInsideABodyJoinsNothing(t *testing.T) {
+	rig := newCommitRig(t)
+	var scoped bool
+	var worker context.Context
+	if err := Transact(WithTransactionTracking(context.Background()), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+		worker = ForConcurrentWorker(ctx)
+		scoped = CommitScoped(worker)
+		return nil
+	}); err != nil {
+		t.Fatalf("Transact: %v", err)
+	}
+	if scoped {
+		t.Fatal("CommitScoped on a worker's context started inside a body = true, want false")
+	}
+	if recovered := onCommitPanic(worker); recovered == nil {
+		t.Fatal("OnCommit on a worker's context did not panic, want the panic of a context no transaction scopes")
+	}
+}
+
 func TestAJoinedHookWaitsForItsOuterOutcome(t *testing.T) {
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())

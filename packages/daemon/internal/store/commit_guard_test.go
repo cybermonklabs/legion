@@ -105,9 +105,9 @@ func wantOnlyIn(t *testing.T, dir, name string, allowed map[string]int) {
 }
 
 // commitHooksKeyOwners are the functions that name the key a commit scope lives under:
-// TransactWith stores the one scope that holds hooks, scopeOf reads it, and readOutcome stores
-// none, so an outcome read never joins a transaction.
-var commitHooksKeyOwners = map[string]int{"TransactWith": 1, "scopeOf": 1, "readOutcome": 1}
+// TransactWith stores the one scope that holds hooks, scopeOf reads it, and readOutcome and
+// ForConcurrentWorker store none, so an outcome read and a worker never join a transaction.
+var commitHooksKeyOwners = map[string]int{"TransactWith": 1, "scopeOf": 1, "readOutcome": 1, "ForConcurrentWorker": 1}
 
 // noCommitGraceOwners are the functions that name the outcome read's mark: readOutcome sets it,
 // and commitContext reads it.

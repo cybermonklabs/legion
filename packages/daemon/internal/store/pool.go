@@ -121,23 +121,25 @@ func holdsConnection(ctx context.Context) bool {
 
 // ForConcurrentWorker returns a context for one of a caller's goroutines that run side by side
 // for as long as the caller lives: ctx's deadline, cancellation and values, with a hold mark of
-// its own, always a fresh one. A worker that takes a connection — a transaction, a cursor — marks
-// only itself, so its siblings are still free to take theirs, and the pool still refuses each
-// worker a second connection of its own. A goroutine that runs beside others and reaches this
-// pool takes one. A caller that takes none is one the guard cannot see, since a context nothing
-// marked holds no connection as far as the pool can tell (holdsConnection): the sandbox
-// launcher's frame loop is such a caller, deleting a restored workspace bundle on a context made
-// from context.Background() (runtime/sandbox/launcher.go, restoreReported), and the pool refuses
-// it nothing.
+// its own, always a fresh one, and no commit scope. A worker that takes a connection — a
+// transaction, a cursor — marks only itself, so its siblings are still free to take theirs, and
+// the pool still refuses each worker a second connection of its own. A goroutine that runs beside
+// others and reaches this pool takes one. A caller that takes none is one the guard cannot see,
+// since a context nothing marked holds no connection as far as the pool can tell
+// (holdsConnection): the sandbox launcher's frame loop is such a caller, deleting a restored
+// workspace bundle on a context made from context.Background() (runtime/sandbox/launcher.go,
+// restoreReported), and the pool refuses it nothing.
 //
 // It differs from WithTransactionTracking, this package's other mark, by never reusing ctx's:
 // that one hands back the mark ctx already carries, which siblings sharing it would set and
 // clear under each other. A worker's mark is its own whatever the parent carries, so the caller
 // must start these goroutines outside any transaction or connection of this pool's — a
 // process-lifetime context, as the daemon's loops run off — since a fresh mark cannot see a
-// connection the parent holds.
+// connection the parent holds. For the same reason it holds no commit scope: a goroutine started
+// inside a TransactWith body would otherwise join that body's transaction, run statements on its
+// connection beside the body, and append to its hook list from a second goroutine.
 func ForConcurrentWorker(ctx context.Context) context.Context {
-	return context.WithValue(ctx, holdingKey{}, &holding{})
+	return context.WithValue(context.WithValue(ctx, holdingKey{}, &holding{}), commitHooksKey{}, (*commitScope)(nil))
 }
 
 // loggedSites is the calling stacks that have already logged a refusal: one line per distinct
