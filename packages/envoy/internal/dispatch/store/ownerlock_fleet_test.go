@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build (OwnerLockProtocol). A build before this one serialises
@@ -311,26 +312,24 @@ func arrive(ctx context.Context, s *Store, arrival earlierBuildArrival, key stri
 	return arriveOn(ctx, conn, arrival, key)
 }
 
-// awaitGateWait waits up to ten seconds for backend pid to wait for the owner lock gate
-// exclusively, as an earlier build's arrival waits for it, and fails the test when what it runs,
-// named what, ends first (ended).
+// awaitGateWait waits for backend pid to wait for the owner lock gate exclusively, as an earlier
+// build's arrival waits for it, and fails the test when what it runs, named what, ends first
+// (ended). Its one bound is the test binary's deadline less testwait's margin (testwait.Until),
+// whose failure prints the gate as pid last held or waited for it.
 func awaitGateWait(t *testing.T, s *Store, pid uint32, ended <-chan error, what string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if gate, granted := gateLock(t, s, pid); gate == "ExclusiveLock" && !granted {
-			return
+	testwait.Until(t, what+" to wait for the owner lock gate exclusively", func() (string, bool) {
+		gate, granted := gateLock(t, s, pid)
+		if gate == "ExclusiveLock" && !granted {
+			return "", true
 		}
 		select {
 		case err := <-ended:
 			t.Fatalf("%s ended (%v) while a transaction held the gate shared; want it to wait for the gate", what, err)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s did not wait for the gate within 10s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return fmt.Sprintf("backend %d holds or waits for the gate as %q (granted %t)", pid, gate, granted), false
+	})
 }
 
 // writerShape is how one writer of the owner lock's races (ownerlock_fleet_race_test.go,

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build (ownerlock_fleet_test.go): the earlier build's arrival
@@ -355,21 +356,46 @@ func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *test
 	}
 }
 
-// writerGateBound is how long an owner lock of this build may take while an arrival waits for the
-// gate, once its statements are prepared on its connection: its statement and the owners' rows
-// after it, two round trips with no wait in them.
-const writerGateBound = 50 * time.Millisecond
+// writerAnswer is what a writer's owner lock came to while an arrival waited for the gate: its
+// answer, or, before it answered, the backends Postgres records its backend as waiting for.
+type writerAnswer struct {
+	answered bool
+	err      error
+	blockers []int32
+}
+
+// awaitWriterAnswer waits for the owner lock running on backend pid to answer on locked, and reads
+// between its questions whom Postgres records that backend as waiting for (pg_blocking_pids): a
+// writer that queues behind another transaction is seen waiting there, and the wait ends with
+// those backends rather than at any span of the clock. Its one bound is the test binary's deadline
+// less testwait's margin (testwait.Until).
+func awaitWriterAnswer(t *testing.T, s *Store, pid uint32, locked <-chan error, what string) writerAnswer {
+	t.Helper()
+	return testwait.Until(t, what+" to answer or to wait for another backend", func() (writerAnswer, bool) {
+		select {
+		case err := <-locked:
+			return writerAnswer{answered: true, err: err}, true
+		default:
+		}
+		var blockers []int32
+		if err := s.Pool.QueryRow(context.Background(), `select pg_blocking_pids($1)`, int32(pid)).Scan(&blockers); err != nil {
+			t.Fatalf("read whom backend %d waits for: %v", pid, err)
+		}
+		return writerAnswer{blockers: blockers}, len(blockers) != 0
+	})
+}
 
 // A writer of this build that starts while an earlier build's arrival waits for the owner lock gate
 // never queues behind that arrival. The arrival waits for a transaction that read no earlier build
 // and holds the gate shared; the writer's owner lock tries the gate shared, which Postgres refuses
 // while the arrival's exclusive request waits, and so takes its owners' rows, as it does beside an
-// earlier build, at once. Each read-phase owner lock - LockOwner, LockOwnersShared, TryLockOwners -
-// answers in the mode beside an earlier build, holding its owner's row and no gate, and the arrival
-// is still waiting after them. Each runs twice on one connection: the first run prepares its
-// statements there, which is no cost of the gate, and the second answers within writerGateBound.
-// With the gate waited for rather than tried, the first of them queues behind the arrival until
-// the transaction it waits for ends.
+// earlier build, without waiting. Each read-phase owner lock - LockOwner, LockOwnersShared,
+// TryLockOwners - answers in the mode beside an earlier build, holding its owner's row and no gate,
+// and the arrival is still waiting after them. No clock decides the row: while each writer runs,
+// Postgres's record of whom its backend waits for is read (awaitWriterAnswer), and a writer seen
+// waiting for another backend fails the row naming it. With the gate waited for rather than tried,
+// the first of them queues behind the arrival until the transaction it waits for ends, and that
+// read sees it.
 func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *testing.T) {
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
@@ -416,46 +442,37 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 				t.Fatal(err)
 			}
 			defer writerConn.Release()
-			for _, measured := range []bool{false, true} {
-				for _, writer := range writers {
-					tx, err := writerConn.Begin(ctx)
-					if err != nil {
-						t.Fatal(err)
-					}
-					locked := make(chan error, 1)
-					began := time.Now()
-					go func() { locked <- writer.lock(tx) }()
-					select {
-					case err := <-locked:
-						took := time.Since(began)
-						if err != nil {
-							t.Fatalf("%s: %v", writer.name, err)
-						}
-						if measured {
-							t.Logf("%s answered in %s while %s waited for the gate", writer.name, took, arrival.name)
-							if took > writerGateBound {
-								t.Errorf("%s took %s while %s waited for the gate, want at most %s: no wait on the gate", writer.name, took, arrival.name, writerGateBound)
-							}
-						}
-					case <-time.After(5 * time.Second):
-						t.Errorf("%s waited 5s while %s waited for the gate; want it to try the gate, not queue behind the arrival", writer.name, arrival.name)
-						_ = holder.Rollback(ctx)
-						<-locked
-						_ = tx.Rollback(ctx)
-						t.FailNow()
-					}
-					if mode := lastOwnerLockMode(); mode != ownerLockAdvisoryAndRow {
-						t.Errorf("%s while %s waited for the gate took the %s mode, want %s", writer.name, arrival.name, mode, ownerLockAdvisoryAndRow)
-					}
-					if !ownerRowHeld(t, s, writer.owner) {
-						t.Errorf("%s while %s waited for the gate holds no row of %s, want it held beside the advisory lock", writer.name, arrival.name, writer.owner.LockKey())
-					}
-					if gate, granted := gateLock(t, s, writerConn.Conn().PgConn().PID()); gate != "" {
-						t.Errorf("%s while %s waited for the gate holds it as %q (granted %t), want no gate", writer.name, arrival.name, gate, granted)
-					}
-					if err := tx.Rollback(ctx); err != nil {
-						t.Fatal(err)
-					}
+			writerPID := writerConn.Conn().PgConn().PID()
+			for _, writer := range writers {
+				tx, err := writerConn.Begin(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				locked := make(chan error, 1)
+				go func() { locked <- writer.lock(tx) }()
+				answer := awaitWriterAnswer(t, s, writerPID, locked, writer.name)
+				if !answer.answered {
+					t.Errorf("%s waited for backend(s) %v while %s (backend %d) waited for the gate; want it to try the gate, not queue behind the arrival",
+						writer.name, answer.blockers, arrival.name, arrivalPID)
+					_ = holder.Rollback(ctx)
+					testwait.Receive(t, writer.name+"'s owner lock once the transaction the arrival waited for ended", locked)
+					_ = tx.Rollback(ctx)
+					t.FailNow()
+				}
+				if answer.err != nil {
+					t.Fatalf("%s: %v", writer.name, answer.err)
+				}
+				if mode := lastOwnerLockMode(); mode != ownerLockAdvisoryAndRow {
+					t.Errorf("%s while %s waited for the gate took the %s mode, want %s", writer.name, arrival.name, mode, ownerLockAdvisoryAndRow)
+				}
+				if !ownerRowHeld(t, s, writer.owner) {
+					t.Errorf("%s while %s waited for the gate holds no row of %s, want it held beside the advisory lock", writer.name, arrival.name, writer.owner.LockKey())
+				}
+				if gate, granted := gateLock(t, s, writerPID); gate != "" {
+					t.Errorf("%s while %s waited for the gate holds it as %q (granted %t), want no gate", writer.name, arrival.name, gate, granted)
+				}
+				if err := tx.Rollback(ctx); err != nil {
+					t.Fatal(err)
 				}
 			}
 			if gate, granted := gateLock(t, s, arrivalPID); gate != "ExclusiveLock" || granted {
@@ -464,13 +481,8 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case err := <-arrived:
-				if err != nil {
-					t.Fatalf("%s after the transaction in flight committed: %v", arrival.name, err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatalf("%s did not end within 10s of the commit of the transaction it waited for", arrival.name)
+			if err := testwait.Receive(t, arrival.name+" to end once the transaction it waited for committed", arrived); err != nil {
+				t.Fatalf("%s after the transaction in flight committed: %v", arrival.name, err)
 			}
 		})
 	}
