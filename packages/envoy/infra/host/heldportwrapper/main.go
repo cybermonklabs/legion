@@ -90,11 +90,9 @@ func run(port string) error {
 // poller: inheritAsListenFD then replaces whatever descriptor 3 is, and that must never be the
 // poller's.
 //
-// The receive is bounded by SO_RCVTIMEO, and a recvmsg with a receive timeout fails with EINTR
-// when a signal handler interrupts it, SA_RESTART or not (signal(7)). The Go runtime interrupts
-// its threads with SIGURG to preempt goroutines, so the call is tried again on EINTR for the time
-// that remains of the bound. The connect needs no such loop: it is bounded by no timeout, so the
-// kernel restarts it after a handler with SA_RESTART, which every handler of the runtime has.
+// receiveBefore bounds the receive and tries it again after a signal. The connect needs no such
+// loop: no timeout bounds it, so the kernel restarts it after a signal handler with SA_RESTART,
+// which every handler of the Go runtime has.
 func receive(socket string, bound time.Duration) (int, error) {
 	conn, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -133,10 +131,13 @@ func receive(socket string, bound time.Duration) (int, error) {
 	return -1, fmt.Errorf("the server sent %d descriptors, want exactly one", len(fds))
 }
 
-// receiveBefore receives one message with its control data on conn by recvmsg before deadline,
-// trying again on EINTR. Each try bounds the wait by SO_RCVTIMEO to the time left, so the tries
-// together wait no longer than one receive would. A deadline that passes is EAGAIN, as the bound
-// of a single try is.
+// receiveBefore receives one message with its control data on conn by recvmsg before deadline.
+//
+// A recvmsg with a receive timeout fails with EINTR when a signal handler interrupts it,
+// SA_RESTART or not (signal(7)), and the Go runtime sends its own threads SIGURG to preempt
+// goroutines. So a try that EINTR ends is made again, and each try bounds its wait by SO_RCVTIMEO
+// to the time left: the tries together wait no longer than one receive would, and a deadline that
+// passes is EAGAIN, as the bound of a single try is.
 func receiveBefore(conn int, data, oob []byte, deadline time.Time) (oobn, flags int, err error) {
 	for {
 		left := time.Until(deadline)
