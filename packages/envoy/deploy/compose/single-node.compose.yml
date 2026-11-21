@@ -45,26 +45,26 @@ services:
       # hours of events, and the subscriptions and role claims of every session still running.
       - nats-data:/data
 
-  # The key-value buckets the listener keeps a copy of, made before it starts, as production makes
-  # them: with `envoy-infra buckets create` and its writer proof. No listener creates one, since a
-  # bucket deleted and created again under a running listener loses every write the deleted one
-  # acknowledged; a listener that finds one missing at its start waits, every route answering 503,
-  # until this command makes it (packages/envoy/infra/README.md, "envoy-infra buckets").
+  # The key-value buckets the listener keeps a copy of, made before it starts. No listener creates
+  # one, since a bucket deleted and created again under a running listener loses every write the
+  # deleted one acknowledged; a listener that finds one missing at its start waits, every route
+  # answering 503, until this command makes it (packages/envoy/infra/README.md, "envoy-infra
+  # buckets").
   #
   # The four buckets are the ones a listener that mounts no GitHub webhook route copies
   # (listenerCopiedBuckets(false) in packages/envoy/cmd/listener/missing_buckets.go), and this
-  # listener mounts none. Leaving out envoy_ci_state, which only that route opens, also keeps
-  # envoy-dispatch's names out of the proof's process list, since only that bucket has it as a
-  # writer.
+  # listener mounts none.
   #
-  # The proof is --this-machine: the command reads every process of this machine and refuses while
-  # one runs under a listener's name (envoy-listener, listener). pid: host is what lets it read the
-  # machine's processes rather than this container's alone. --connz adds the server's own census of
-  # open listener connections. Every `up` runs it again, so an upgrade (`up -d --wait`) runs it
-  # while the listener still serves: with every bucket there it changes nothing, takes no proof and
-  # exits 0. With one missing it refuses while the listener runs, naming its process, and `up`
-  # fails; stop the listener (`docker compose -f single-node.compose.yml stop listener`) and run
-  # `up -d --wait` again, which makes the bucket and starts the listener.
+  # One machine has no auth service, broker or writer hold, so the command runs as
+  # `create --break-glass`, a client of the server like the listener, with no credential: it only
+  # creates, deletes nothing, and creates only while the server's connection list (--connz) holds
+  # no client but its own. The first `up` passes that check, since compose starts the listener only
+  # once this service has completed.
+  # Every later `up`, an upgrade (`up -d --wait`) while the listener still serves, finds every
+  # bucket there, changes nothing and exits 0. With one bucket missing and the listener running, it
+  # refuses, naming the listener's connection, and `up` fails; stop the listener
+  # (`docker compose -f single-node.compose.yml stop listener`) and run `up -d --wait` again, which
+  # makes the bucket and starts the listener.
   #
   # envoy-infra is not in the published envoy image, so this image is built from the checkout
   # (buckets.Dockerfile), and pull_policy: build rebuilds it from the checkout on every `up`; the
@@ -75,7 +75,6 @@ services:
       dockerfile: packages/envoy/deploy/compose/buckets.Dockerfile
     pull_policy: build
     network_mode: host
-    pid: host
     restart: "no"
     depends_on:
       nats:
@@ -83,8 +82,9 @@ services:
     command:
       - buckets
       - create
+      - --break-glass
+      - --operator=single-node compose
       - --nats=nats://127.0.0.1:${NATS_PORT:-4222}
-      - --this-machine
       - --connz=http://127.0.0.1:${NATS_MONITOR_PORT:-8222}
       - --bucket=envoy_interests
       - --bucket=envoy_roles
