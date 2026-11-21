@@ -14,8 +14,8 @@ for an earlier one. The child's Conversation lists every version.
 Release a child a person created at once and as it is:
 `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`. The answer names
 `released`, `started` and `held`, each held child with what it waits on. Read
-`skill://legion-architect/references/decomposition-refusals.md` when `release_children`,
-`park_child` or `rerun_child` is refused.
+`skill://legion-architect/references/decomposition-refusals.md` when `release_children` or
+`rerun_child` is refused.
 
 Each child the daemon starts takes an admission slot of its own, so four started children can take
 four of the deployment's cap; when a child holds none,

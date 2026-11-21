@@ -25,9 +25,7 @@ to `implementing` or `testing`. When the merger reports:
 
 ## The close
 
-The merge closes the issue (`done`). One whose merge lands while an issue beneath it is still in
-the workflow stays in `merging` until the last of them is done or parked; one `pr-merged` notice
-names what it waits for. The production check after the close is not yours.
+The merge closes the issue (`done`). The production check after the close is not yours.
 
 - A child's close reaches you as `child-closed`. Where the project's `production_check` names the
   role that works the check (the tester, unless the setting is `off`), the daemon retires five of
@@ -43,16 +41,10 @@ names what it waits for. The production check after the close is not yours.
 
 ## Hand-over at a root's linger
 
-A root a person closed that stays `done` through its linger hands each child still in the
-workflow, a child that never started included, to Legion as a root of its own: `todo` with the
-`legion` label, its phase, gate, phase records and pull request carried into a new generation, and
-that phase's role started. A child that had its own architect keeps that architect's session: the
-root's architect start resumes the same claim, and its next launch gives it the root architect's
-prompt. A child that ran without one gets a new architect session. Only a finished, parked or
-never-released child stays. The hand-over runs by itself and needs no action from you. Ask the
-person whether a child's work must end with the root. A parked root hands over only a child in
-`merging` whose pull request is open; ask the person whether that child's merge must wait for the
-root.
+A child that had its own architect keeps that architect's session: the root's architect start
+resumes the same claim, and its next launch gives it the root architect's prompt. A child that ran
+without one gets a new architect session. The hand-over runs by itself and needs no action from
+you. Ask the person whether a child's work must end with the root.
 
 If you were that child's own architect, your session is the same, and your role prompt is now the
 root architect's: follow it from your next `catch-up`, which says `handed_over`. Your role prompt

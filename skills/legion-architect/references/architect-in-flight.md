@@ -1,26 +1,22 @@
 # Children and work in flight
 
-Read this before you set a child's `--blocked-by` links or park or rerun a child, on each
+Read this before you set a child's `--blocked-by` links or end or rerun a child, on each
 `child-closed`, and while the work is built (`skill://legion-architect`, sections 2 to 4).
 
-## Links, parks and reruns
+## Links, ends and reruns
 
 - Set a child's dependencies in one call: `dispatch issue-update --issue <child> --blocked-by <a>
   --blocked-by <b>`. It replaces the whole list, so read the existing links first (`dispatch read`).
-- On each `child-closed`, read the child's handoff, edit the specs of open children it changes,
-  and `park_child` each child it makes unneeded, and say why with `dispatch comment`.
-- Park a child only when a person asked for that move, or when the work is done, folded into
-  another issue or no longer needed, and say with `dispatch comment` which of those it is.
-- Before you park a child for good, take it off each sibling's `--blocked-by` list
-  (`--clear-blocked-by` where it was the only one), or park that sibling too: a parked child is
-  not `done`, and its dependents stay held with no notice.
-- A park followed by `rerun_child` keeps its dependents' links: they wait through the rerun and
-  start when the rerun's merge closes the child.
-- A child whose work has not ended is not parked to let its tree reach the end: you ask the person
-  whether its work must end with the root (a child's architect asks through the architect above
-  it, as "Every turn" in `skill://legion-architect` says), and the root's close hands such a child
-  to Legion as a root of its own (`skill://legion-architect/references/acceptance-close.md`,
-  "Hand-over at a root's linger").
+- On each `child-closed`, read the child's handoff, edit the specs of open children it changes.
+- A child moved to `backlog` or `icebox` is not `done`: its dependents stay held until it is `done`
+  or off their `--blocked-by` lists (`--clear-blocked-by` where it was the only one).
+- A restart (`backlog`, then `rerun_child`) keeps its dependents' links: they wait through the
+  rerun and start when the rerun's merge closes the child.
+- A child whose work has not ended is not moved out of the workflow to let its tree reach the
+  end: you ask the person whether its work must end with the root (a child's architect asks
+  through the architect above it, as "Every turn" in `skill://legion-architect` says), and the
+  root's close hands such a child to Legion as a root of its own
+  (`skill://legion-architect/references/acceptance-close.md`, "Hand-over at a root's linger").
 
 ## Who holds a child
 

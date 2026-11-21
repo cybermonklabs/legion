@@ -6,7 +6,7 @@ that section of `skill://legion-architect`.
 
 | Wake | What to do |
 | --- | --- |
-| `child-status` | A child left, re-entered, joined the tree or started. The daemon starts what runs. When a park leaves an issue in `accepting` waiting on no child, run its last round. |
+| `child-status` | A child left, re-entered, joined the tree or started. The daemon starts what runs. |
 | `child-closed` | Section 2. File any new child it calls for after the red-team check, and release it at once with `release_children`, blocked by what it builds on. When a worker waits on this child for a missing surface (see `phase-finished`), tell it to continue with `envoy_publish` to its role topic. The last child's close is not the end-game (section 3). When it was the last child an issue in `accepting` waits on, run that issue's last round. |
 | `child-release-stalled` | It comes to the architect whose `release_children` it was, with two exceptions: the notice the daemon writes when it recovers a repository GitHub did not answer, and the one it writes when it stops waiting for such a repository. Whoever ran the release, these two go to the architect that owns each child's parent where your tree records that parent, and to the tree root's architect for the rest. Read the parent's record (`read_record`), release the parent first when the reason says so, then release the child again. Tell the controller if the parent never records. |
 | `child-not-recorded` | Set the child's repository (`dispatch issue-update --repo owner/name`) or get the named App installed, then release it again; else tell the controller. |
@@ -26,7 +26,7 @@ that section of `skill://legion-architect`.
   tree's child does join yours: a member of a tree whose root the daemon's record says is `done`
   and whose linger has run out, standing at `admitted` with no slot of its own, which your release
   records in your tree with its repository kept and its generation raised by one — at `admitted`
-  when it is `todo`, and in any other status as a parked child at `done`, which a `todo` runs
+  when it is `todo`, and in any other status out of the workflow at `done`, which a `todo` runs
   again. `admission.held` reads `tree_closed` for more issues than a release takes: a member whose
   tree's linger still runs, and a member past `admitted`, read that word too and stay refused (the
   `tree_closed` row of the controller skill's `references/admission-held.md`). When the tree the
