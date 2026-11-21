@@ -384,6 +384,56 @@ func TestAWaitOnAPHandedToALockedThreadDecidesNothing(t *testing.T) {
 	}
 }
 
+// A reviewer's counterexample to the deduction 8a194a509e made and c9d41b9caa withdrew (Review round
+// 14, item 4): the runtime's handoff of a P to a locked thread does not prove the thread slept. Here
+// goroutine 1, locked to thread 7, goes runnable at 0.1 ms; thread 7 stops its P only at 10.1 ms -
+// queued for a CPU till then, which its run_delay counts - thread 8 starts that P and stops it at
+// 10.2 ms, handing it on, and thread 7 starts it and runs the goroutine at 10.3 ms; then the
+// goroutine sleeps 6 ms in a system call. Over the 16.5 ms gap the thread ran 0.3 ms, queued
+// 10.1 ms and slept 6.1 ms. Taking 0.1 to 10.2 ms out of the thread's sleep as the handoff's took
+// the queue out twice and the 6 ms sleep with it: 8a194a509e read 0.3 ms made, and the window
+// passed. The gap is the code's 6.3 ms, and the window breaks D6.
+func TestASleepAfterARuntimeHandoffIsNotErasedByIt(t *testing.T) {
+	RequireXidGapJudgment(t)
+	base := time.Now()
+	ms := func(v float64) time.Duration { return time.Duration(v * float64(time.Millisecond)) }
+	at := func(v float64) exptrace.Time { return exptrace.Time(ms(v)) }
+	reading := &xidTraceReading{
+		baseTime: base,
+		snapshot: exptrace.ClockSnapshot{Trace: 0, Mono: 0},
+		changes:  map[exptrace.GoID][]xidGoStateChange{},
+		runs:     map[int][]xidThreadRun{},
+	}
+	for _, event := range []struct {
+		change exptrace.StateTransition
+		at     float64
+		thread exptrace.ThreadID
+	}{
+		{exptrace.MakeProcStateTransition(0, exptrace.ProcUndetermined, exptrace.ProcRunning), 0, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoUndetermined, exptrace.GoRunning), 0, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoRunnable), 0.1, 7},
+		{exptrace.MakeProcStateTransition(0, exptrace.ProcRunning, exptrace.ProcIdle), 10.1, 7},
+		{exptrace.MakeProcStateTransition(0, exptrace.ProcIdle, exptrace.ProcRunning), 10.15, 8},
+		{exptrace.MakeProcStateTransition(0, exptrace.ProcRunning, exptrace.ProcIdle), 10.2, 8},
+		{exptrace.MakeProcStateTransition(0, exptrace.ProcIdle, exptrace.ProcRunning), 10.3, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoRunnable, exptrace.GoRunning), 10.3, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoSyscall), 10.4, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoSyscall, exptrace.GoRunning), 16.4, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoWaiting), 17, 7},
+	} {
+		reading.transition(event.change, at(event.at), event.thread)
+	}
+	gap := xidStretch(base, base.Add(ms(16.5)),
+		xidThreadClock{thread: 7, at: base},
+		xidThreadClock{thread: 7, at: base.Add(ms(16.5)), ran: ms(0.3), waited: ms(10.1)}, 7, reading)
+	window := xidOneGapWindow(gap)
+	broken := strings.Join(window.Violations(), "; ")
+	t.Logf("the gap made %s; violations: %s", gap.Made(), broken)
+	if !strings.Contains(broken, "a statement-free gap of 6.300 ms") {
+		t.Fatalf("a 6 ms sleep in a system call after a runtime handoff: violations %q, want a D6 violation of the 6.3 ms gap", broken)
+	}
+}
+
 // A COMMIT that begins before the capture ends and ends after it is inside the trace the rig judges
 // its window by: Measure copies the statements done by the capture's end before it stops the
 // tracer, and marks the trace after the copy. Here a goroutine of the operation sends a marked
