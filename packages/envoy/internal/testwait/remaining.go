@@ -41,7 +41,7 @@ func Left(t *testing.T, spare time.Duration) (time.Duration, error) {
 	left := time.Until(deadline)
 	if left <= spare {
 		timeout, known := binaryTimeout()
-		return 0, errors.New(oneLine.Replace("testwait: " + t.Name() + ": " + spent(left, spare, deadline, timeout, known)))
+		return 0, errors.New(oneLine.Replace("testwait: " + t.Name() + ": " + spent(left, spare, timeout, known)))
 	}
 	return left - spare, nil
 }
@@ -50,10 +50,10 @@ func Left(t *testing.T, spare time.Duration) (time.Duration, error) {
 // -timeout of spare or less leaves no test room to wait: the run asks too little, and the text says
 // to raise it. A longer one was used up before the wait began, by the tests the binary ran first or
 // by this test's own earlier waits: the run is not set up wrong, and the text says how long the
-// binary had been running its tests, from the -timeout it began with (testing.M sets the deadline
-// that long after the tests begin, M.startAlarm). known is false when that -timeout could not be
-// read.
-func spent(left, spare time.Duration, deadline time.Time, timeout time.Duration, known bool) string {
+// binary had been running its tests, the -timeout it began with less left (testing.M sets the
+// deadline that long after the tests begin, M.startAlarm). known is false when that -timeout could
+// not be read.
+func spent(left, spare, timeout time.Duration, known bool) string {
 	switch {
 	case !known:
 		return fmt.Sprintf("the test binary's deadline leaves %s, not more than the %s this wait must leave its test: what ran before this wait used up that deadline (the -timeout the binary began with could not be read)",
@@ -62,9 +62,8 @@ func spent(left, spare time.Duration, deadline time.Time, timeout time.Duration,
 		return fmt.Sprintf("the test binary's -timeout is %s, not more than the %s this wait must leave its test before the deadline, so no test has room to wait: raise -timeout",
 			timeout, spare)
 	default:
-		ran := time.Since(deadline.Add(-timeout))
 		return fmt.Sprintf("the test binary's deadline leaves %s, not more than the %s this wait must leave its test: the binary began its tests %s ago under -timeout %s, and what ran before this wait (an earlier test, or this test's own earlier waits) used up that deadline",
-			left.Round(time.Millisecond), spare, ran.Round(time.Millisecond), timeout)
+			left.Round(time.Millisecond), spare, (timeout - left).Round(time.Millisecond), timeout)
 	}
 }
 
