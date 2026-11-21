@@ -377,6 +377,9 @@ func TestRemoveLetsTheStoreLockGoBeforeItDeletesTheWorkspace(t *testing.T) {
 // parent is swapped as the store lock is let go, which is after the git worktree entry's removal
 // and before the aside's deletion.
 func TestRemoveAsideAnswersAParentSwappedForAFifo(t *testing.T) {
+	// The verdict needs the kernel's record of what each thread is asleep in; where it keeps
+	// none, as gVisor keeps none, the row fails under CI and skips elsewhere (fifotest.Require).
+	fifotest.Require(t)
 	run := newLocalRunner(t)
 	working, err := Provision(context.Background(), run, provisionRequest(t))
 	if err != nil {

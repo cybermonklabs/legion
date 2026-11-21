@@ -3114,8 +3114,20 @@ func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 			// A check that opened a planted named pipe plainly would wait there for a writer. The
 			// verdict comes from the kernel, not a clock: the row reads that wait between its own
 			// (fifotest.Watch). The correct check opens each file with O_NONBLOCK and holds it for
-			// a moment, which is no such wait. A check that is only slow is waited for, to 30 s
-			// before the test binary's deadline.
+			// a moment, which is no such wait. Only a case that planted a pipe needs the kernel's
+			// record, and where the kernel keeps none, as gVisor keeps none, such a case fails
+			// under CI and skips elsewhere (fifotest.Require). A check that is only slow is waited
+			// for, to 30 s before the test binary's deadline.
+			var watches []*fifotest.Watch
+			for _, name := range []string{ghconfig.HostsFile, ghconfig.ConfigFile} {
+				path := filepath.Join(dir, name)
+				if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeNamedPipe != 0 {
+					watches = append(watches, &fifotest.Watch{Path: path})
+				}
+			}
+			if len(watches) > 0 {
+				fifotest.Require(t)
+			}
 			bound := testwait.Bounded(t, 1<<60, 30*time.Second)
 			if bound <= 0 {
 				t.Fatalf("less than 30 s of the test binary's deadline was left when the case began: it has no time to wait for ghConfigShape")
@@ -3125,7 +3137,6 @@ func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 			giveUp := time.After(bound)
 			poll := time.NewTicker(testwait.Poll)
 			defer poll.Stop()
-			watches := []*fifotest.Watch{{Path: filepath.Join(dir, ghconfig.HostsFile)}, {Path: filepath.Join(dir, ghconfig.ConfigFile)}}
 			var err error
 		wait:
 			for {
