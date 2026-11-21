@@ -17,9 +17,10 @@
 // imported internal/testpg back would be a cycle. Keeping the schema-free half apart is what lets
 // internal/store's own tests take the same fixture every other package's tests take.
 //
-// DatabaseURL is the one rewrite of LEGION_TEST_PG_DSN a test binary of this module makes, and
-// its own comment says which callers make that rewrite and what it refuses. RandomName is
-// exported for internal/testpg alone, which names its template and each clone of it with it.
+// DatabaseURL, Delayed and PoolBounded are the rewrites of LEGION_TEST_PG_DSN a test binary of
+// this module makes, each through rewriteDSN; DatabaseURL's comment says which callers make them
+// and what the check refuses. RandomName is exported for internal/testpg alone, which names its
+// template and each clone of it with it.
 package testdb
 
 import (
@@ -206,18 +207,20 @@ func RandomName(prefix string) (string, error) {
 // same check (rewriteDSN below). dsn is what LEGION_TEST_PG_DSN holds, which every caller read
 // from that variable, and a refusal names it.
 //
-// A rewrite pgx reads another host, port or user from than dsn is refused, and so is one pgx
-// reads another database from than database. Go's net/url ends the user name at the last `@` and
+// A rewrite from which pgx reads anything other than dsn's reading with the change asked for is
+// refused: another host, port, user or database, and another password, run-time parameter or
+// connection setting (rewriteDSN's reading). Go's net/url ends the user name at the last `@` and
 // it starts the query at the first `?`. libpq and pgx do neither. So a DSN whose host libpq reads
 // as loopback, which is the only DSN the live proofs' shell guard admits
 // (scripts/e2e/lib/loopback-dsn.sh), can rewrite into a URL pgx connects to another machine with.
 //
-// A refusal names which of host, port, user and database pgx reads from the rewrite other than
-// the connection the rewrite was asked for. It prints no value and no text of either parser,
-// because the value it would print is the misreading itself: a password a parser reads as a
-// host, a port or a database is printed as that host, port or database, and the text a parser
-// quotes is the part of the string it stopped in. A string a parser refuses earns a fixed line
-// naming which string it was, the caller's DSN or the rewrite built from it, and nothing more.
+// A refusal names which of host, port, user, database, credential (the password), parameters and
+// connection settings pgx reads from the rewrite other than the connection the rewrite was asked
+// for. It prints no value and no text of either parser, because the value it would print is the
+// misreading itself: a password a parser reads as a host, a port or a database is printed as that
+// host, port or database, and the text a parser quotes is the part of the string it stopped in. A
+// string a parser refuses earns a fixed line naming which string it was, the caller's DSN or the
+// rewrite built from it, and nothing more.
 //
 // What that costs a reader of a refusal: they learn which fields moved, and not what they moved
 // to. The DSN is the caller's own, and the caller can read it.
