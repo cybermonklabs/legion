@@ -1,5 +1,6 @@
 import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path"
+import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
 import { processStarted } from "./codex-session-record"
 
 /**
@@ -15,14 +16,15 @@ import { processStarted } from "./codex-session-record"
  * name exists), so two live entries never hold one number, whatever the clock says. The owner is
  * the live entry with the lowest number. A server reads the directory before it links, and a
  * server that stops removes its entry, so a server held between the two can take a number freed
- * meanwhile, below an entry published after its read; its temporary file is there all that time,
- * and while a server that still runs has one there, no owner is decided above a free number, so
- * the order a decision reads is final and no server owns while another does. No server removes
- * another's entry, so a name a server judged dead and a name a later server took are never
- * confused, and an entry below the owner's, which is dead, stays; the `SessionStart` hook removes
- * a dead codex process's entries. Every server reads the same entries and reaches the same
- * answer. The others stand by, serving their thread's `dispatch` calls, until every server ahead
- * of them is gone.
+ * meanwhile, below an entry published after its read, even a number freed while another server
+ * was looking. Its temporary file is there all that time, and while a server that still runs has
+ * one there, no owner is decided unless every number below it is taken by an entry still there,
+ * unchanged, after the look found its server gone, which no server can remove any more
+ * (`currentOwner`). So, while every entry is readable, no server owns while another does. No
+ * server removes another's entry (`unregisterServer`), so a name a server judged dead and a name a
+ * later server took are never confused; the `SessionStart` hook removes a dead codex process's
+ * entries. Every server reads the same entries and reaches the same answer. The others stand by,
+ * serving their thread's `dispatch` calls, until every server ahead of them is gone.
  */
 export interface CodexServerEntry {
   /** The publication number: lower owns. */
@@ -55,21 +57,20 @@ function entryName(entry: { readonly seq: number }): string {
  * reader never sees a half-written entry. The temporary file is there from before the directory is
  * read until the entry is placed, so no owner is decided meanwhile above a number the server could
  * take (`currentOwner`). A listing that fails is no empty one: its failure stands, rather than a
- * number read off nothing. `beforePlace` runs between the read and the placing; nothing waits
- * there in production, and a test holds a server there to stand for one the scheduler stalls.
+ * number read off nothing. `list` reads the directory; production passes nothing, and a test wraps
+ * the read to hold a server right after it, as one the scheduler stalls there.
  */
 export async function registerServer(
   directory: string,
   pid: number,
   started: string | null,
-  beforePlace: () => Promise<void> = async () => undefined,
+  list: (directory: string) => Promise<string[]> = (path) => readdir(path),
 ): Promise<CodexServerEntry> {
   await mkdir(directory, { mode: 0o700, recursive: true })
   const temporary = join(directory, `.${pid}.${process.hrtime.bigint()}.tmp`)
   await writeFile(temporary, JSON.stringify({ pid, started }), { mode: 0o600 })
   try {
-    let seq = Math.max(0, ...numbered(await readdir(directory)).map(({ seq: taken }) => taken)) + 1
-    await beforePlace()
+    let seq = Math.max(0, ...numbered(await list(directory)).map(({ seq: taken }) => taken)) + 1
     for (;;) {
       try {
         await place(temporary, join(directory, entryName({ seq })), pid, started)
@@ -112,9 +113,14 @@ async function place(
   await writeFile(target, JSON.stringify({ pid, started }), { flag: "wx", mode: 0o600 })
 }
 
-/** Removes `self`'s entry. */
+/**
+ * Removes `self`'s entry, when the file at its number still names `self`. A server whose entry was
+ * removed, and whose number another server then took, so leaves that server's entry alone.
+ */
 export async function unregisterServer(directory: string, self: CodexServerEntry): Promise<void> {
-  await rm(join(directory, entryName(self)), { force: true })
+  const file = join(directory, entryName(self))
+  const named = await readFile(file, "utf8").then(serverOf, () => undefined)
+  if (named?.pid === self.pid && named.started === self.started) await rm(file, { force: true })
 }
 
 /** How a liveness check reads a process: `kill(pid, 0)` and its start. */
@@ -190,24 +196,31 @@ const UNREADABLE_ENTRY_MS = 5_000
  * yet: a numbered file that is still empty or half-written (placed by an exclusive create where
  * the file system has no hard links), which no look may decide past. Such a file older than
  * `UNREADABLE_ENTRY_MS` counts as dead, so a server killed in that write blocks no owner for long.
+ * A directory that is not there is an empty look; a listing that fails for any other reason
+ * rejects, since a look read off nothing would have a server publish again, or decide, on entries
+ * it never saw.
  *
  * `publishing` says a server that still runs is publishing: its whole temporary file is in the
  * listing, or was and is gone now, its entry placed after the listing. That server has read the
  * directory and not yet placed its entry, and the number it read may have been freed since. A
  * temporary file still empty or half-written says nothing: its server reads the directory only
  * once the file is whole, so it reads every entry placed by then and takes a number above them
- * all. `lowestFree` is the lowest number no file held in this look.
+ * all. `held` maps each number a file held in this look to the text read from it.
  */
 async function readEntries(
   directory: string,
   probe: ProcessProbe,
   now: () => number = Date.now,
-): Promise<{ entries: CodexServerEntry[]; publishing: boolean; lowestFree: number } | undefined> {
+): Promise<
+  | { entries: CodexServerEntry[]; publishing: boolean; held: ReadonlyMap<number, string> }
+  | undefined
+> {
   let names: string[]
   try {
     names = await readdir(directory)
-  } catch {
-    return { entries: [], publishing: false, lowestFree: 1 }
+  } catch (error) {
+    if (hasErrnoCode(error, "ENOENT")) return { entries: [], publishing: false, held: new Map() }
+    throw error
   }
   let publishing = false
   for (const name of names.filter((each) => TEMPORARY_NAME.test(each))) {
@@ -225,7 +238,7 @@ async function readEntries(
     }
   }
   const entries: CodexServerEntry[] = []
-  const held = new Set<number>()
+  const held = new Map<number, string>()
   for (const { name, seq } of numbered(names)) {
     let text: string
     try {
@@ -241,23 +254,26 @@ async function readEntries(
       )
       if (written === undefined) continue // Removed meanwhile.
       if (now() - written <= UNREADABLE_ENTRY_MS) return undefined
-      held.add(seq)
+      held.set(seq, text)
       continue
     }
-    held.add(seq)
+    held.set(seq, text)
     entries.push({ ...server, seq })
   }
-  let lowestFree = 1
-  while (held.has(lowestFree)) lowestFree++
-  return { entries, publishing, lowestFree }
+  return { entries, publishing, held }
 }
 
 /**
  * The live server that owns the session: the live entry with the lowest number; undefined when
- * there is none, or when an entry could not be read yet, and no answer can be given. Undefined too
- * while a server that still runs is publishing and a number below the owner's is free
- * (`readEntries`): that server may take it. Every entry below the owner's is dead and stays, so
- * with none free it can only take a number above the owner's.
+ * there is none, or when an entry could not be read yet, and no answer can be given. It rejects
+ * when the directory cannot be listed (`readEntries`).
+ *
+ * While a server that still runs is publishing (`readEntries`), it may take any number below the
+ * owner's that is free, so the answer is undefined unless every such number is taken by the file
+ * this look read, still there unchanged once the look has found that file's server gone. A server
+ * removes its own entry as it stops, so a file read before the look found its server gone may have
+ * gone since; one still there after that is a dead server's, which nothing removes while this
+ * codex process runs.
  */
 export async function currentOwner(
   directory: string,
@@ -268,7 +284,13 @@ export async function currentOwner(
   const live = seen.entries.filter((entry) => serverAlive(entry, probe))
   live.sort((a, b) => a.seq - b.seq)
   const owner = live[0]
-  if (owner !== undefined && seen.publishing && seen.lowestFree < owner.seq) return undefined
+  if (owner === undefined || !seen.publishing) return owner
+  for (let seq = 1; seq < owner.seq; seq++) {
+    const text = seen.held.get(seq)
+    if (text === undefined) return undefined // Free: the server publishing may take it.
+    const now = await readFile(join(directory, entryName({ seq })), "utf8").catch(() => undefined)
+    if (now !== text) return undefined // Freed, or taken, since this look read it.
+  }
   return owner
 }
 
@@ -276,8 +298,11 @@ export async function currentOwner(
  * Resolves with `self`'s entry once it owns the session, looking every `pollMs`, or undefined when
  * `signal` aborts. It publishes the entry first, and tells `published` each entry it publishes, so
  * a server that stops while it stands by removes its own. A look that finds the entry gone (a
- * failed write, or a directory someone removed) publishes it again, at the back of the order,
- * after removing the one it had. The server owns when the owner is any entry of its own pid.
+ * failed write, a directory someone removed, or another server's entry at its number) publishes it
+ * again, at the back of the order, after removing the one it had if that is still its own. The
+ * server owns when the owner is any entry of its own pid. A look that fails (a directory it cannot
+ * list, an entry it cannot write) changes nothing and is tried again at the next look; `warn` is
+ * told once when looks start to fail, and again only after one has succeeded.
  */
 export function waitForOwnership(
   directory: string,
@@ -287,45 +312,63 @@ export function waitForOwnership(
   published: (entry: CodexServerEntry) => void = () => undefined,
   pollMs = 1_000,
   probe: ProcessProbe = SYSTEM_PROBE,
+  warn: (text: string) => void = (text) => void process.stderr.write(`envoy-channel: ${text}\n`),
 ): Promise<CodexServerEntry | undefined> {
   return new Promise((done) => {
     let self: CodexServerEntry | undefined
     let timer: ReturnType<typeof setTimeout> | undefined
+    /** Whether the last look failed, so looks that keep failing are told once. */
+    let failing = false
     const look = async (): Promise<void> => {
       if (signal.aborted) return done(undefined)
       const seen = await readEntries(directory, probe)
+      const had = self
       if (
         seen !== undefined &&
-        (self === undefined || !seen.entries.some((entry) => entry.seq === self?.seq))
+        !seen.entries.some(
+          (entry) => entry.seq === had?.seq && entry.pid === pid && entry.started === started,
+        )
       ) {
-        if (self !== undefined) await unregisterServer(directory, self)
+        // Cleared first, so a publish that fails leaves no number this server no longer holds.
+        self = undefined
+        if (had !== undefined) await unregisterServer(directory, had)
         self = await registerServer(directory, pid, started)
         published(self)
       }
       const owner = await currentOwner(directory, probe)
+      failing = false
       if (owner?.pid === pid) done(self)
-      else timer = setTimeout(() => void look().catch(retry), pollMs)
+      else next()
     }
-    const retry = (): void => {
-      timer = setTimeout(() => void look().catch(retry), pollMs)
+    const next = (): void => {
+      timer = setTimeout(() => void look().catch(failed), pollMs)
+    }
+    const failed = (error: unknown): void => {
+      if (!failing) {
+        warn(
+          `this plugin server could not read or publish its entry in ${directory}, so it stands by and tries again: ${messageFor(error)}`,
+        )
+      }
+      failing = true
+      next()
     }
     signal.addEventListener("abort", () => {
       if (timer !== undefined) clearTimeout(timer)
       done(undefined)
     })
-    void look().catch(retry)
+    void look().catch(failed)
   })
 }
 
-/** Whether `self` still owns the session. The owner re-checks every few seconds and warns when it
- *  finds another owner, which the order of publication rules out while every entry is readable. */
+/** Whether `self` still owns the session: true too when no owner can be decided now. The owner
+ *  re-checks every few seconds and warns when it finds another owner, which the order of
+ *  publication rules out while every entry is readable. It rejects when the directory cannot be
+ *  listed. */
 export async function stillOwner(
   directory: string,
   self: CodexServerEntry,
   probe: ProcessProbe = SYSTEM_PROBE,
 ): Promise<boolean> {
-  const entries = await readEntries(directory, probe)
-  if (entries === undefined) return true
   const owner = await currentOwner(directory, probe)
   return owner === undefined || owner.pid === self.pid
 }

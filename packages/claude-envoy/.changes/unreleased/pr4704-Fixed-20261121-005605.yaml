@@ -2,9 +2,12 @@ kind: Fixed
 custom:
   Issue: pr4704
 body: |-
-  Codex: one plugin server of a `codex` process no longer takes the Envoy session from another
-  that already owns it. A server held between its read of the servers' directory and the link of
-  its entry could take a number that a stopped owner had freed, below the server that took over,
-  and both then ran the session's Envoy side. No owner is now decided above a free number while a
-  server that still runs is between those two steps, and a server whose listing of the directory
-  fails places no entry.
+  Codex: a plugin server of a `codex` process that stalls between its read of the servers'
+  directory and the link of its entry no longer takes the Envoy session from the server that took
+  over. It could take a number that a stopped owner had freed, below that server, also when the
+  owner stopped while the other server was looking, and both then ran the session's Envoy side.
+  While a running server is between those two steps, no owner is now decided unless every number
+  below it is held by an entry still there after its server was found gone. A server that cannot
+  list the directory no longer reads it as empty: it keeps its entry, places no new one, and says
+  so once on standard error until a look succeeds. A server whose number another server took
+  publishes again behind it and leaves that server's entry in place.
