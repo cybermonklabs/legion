@@ -46,7 +46,9 @@ func TestAStatusRowWritesNothingOverAnAcceptanceTheRecordHolds(t *testing.T) {
 
 // A status row of an issue whose acceptance holds its lock waits for the acceptance to end before
 // it reads or writes anything of Dispatch, so it never writes between the acceptance's own write
-// and its fact.
+// and its fact. The row is seen blocked on the issue's lock through issuelock.Locks.Waiting, so
+// the test times no window: either the row runs while the acceptance holds the lock, which fails
+// at once, or it is seen waiting on that lock.
 func TestAStatusRowWaitsForAnAcceptanceOfItsIssue(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -54,7 +56,8 @@ func TestAStatusRowWaitsForAnAcceptanceOfItsIssue(t *testing.T) {
 	putOutboxIssue(t, pool, records, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: key, Title: key, Phase: phase.Testing, Generation: 1, Status: "testing", DispatchStatus: "in_progress"})
 	client := &outboxDispatch{issue: dispatch.Issue{Key: key, Status: "in_progress", LastSeq: 4}}
-	locks := &issuelock.Locks{}
+	waiting := make(chan string, 1)
+	locks := &issuelock.Locks{Waiting: func(issue string) { waiting <- issue }}
 	runner := &outbox{pool: pool, records: records, dispatch: client, log: quietLogger(), issueLocks: locks}
 
 	accepted := locks.Accept(key)
@@ -66,7 +69,18 @@ func TestAStatusRowWaitsForAnAcceptanceOfItsIssue(t *testing.T) {
 	case err := <-done:
 		accepted()
 		t.Fatalf("the row ran while an acceptance of its issue held the lock: %v, writes %q", err, client.statuses)
-	case <-time.After(2 * time.Second):
+	case issue := <-waiting:
+		if issue != key {
+			accepted()
+			t.Fatalf("the row waited on the lock of %s, want %s", issue, key)
+		}
+	case <-time.After(time.Minute):
+		accepted()
+		t.Fatal("the row neither ran nor waited on its issue's lock within a minute")
+	}
+	if len(client.statuses) != 0 {
+		accepted()
+		t.Fatalf("the row wrote %q before it waited on its issue's lock", client.statuses)
 	}
 	accepted()
 	select {
@@ -74,8 +88,8 @@ func TestAStatusRowWaitsForAnAcceptanceOfItsIssue(t *testing.T) {
 		if err != nil {
 			t.Fatalf("execute the row: %v", err)
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the row did not run within 30 seconds of the acceptance's end")
+	case <-time.After(time.Minute):
+		t.Fatal("the row did not run within a minute of the acceptance's end")
 	}
 	if want := []string{"testing"}; !slices.Equal(client.statuses, want) {
 		t.Fatalf("Dispatch writes = %q, want %q once the acceptance ended", client.statuses, want)

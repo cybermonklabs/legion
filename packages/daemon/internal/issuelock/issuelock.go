@@ -17,6 +17,12 @@ import "sync"
 // once no writer holds it or waits on it, so the map keeps only the issues in use. The zero value
 // is ready, and a nil *Locks serializes nothing: a test's outbox or engine built without one.
 type Locks struct {
+	// Waiting, when not nil, is told the issue each time a writer (Lock, Accept) finds that issue's
+	// mutex held, on the writer's goroutine, just before the writer blocks on it: a test's seam
+	// alone, so a test sees a writer waiting on the lock as a fact instead of timing a window in
+	// which it did not write. nil, in production, tells no one.
+	Waiting func(issue string)
+
 	mu    sync.Mutex
 	locks map[string]*lock
 }
@@ -66,7 +72,14 @@ func (l *Locks) take(issue string, accepting bool) func() {
 	}
 	held.users++
 	l.mu.Unlock()
-	held.Lock()
+	// TryLock failing means another writer holds the mutex now, which is the one moment Waiting
+	// is told of: a writer that finds it free takes it without being reported.
+	if !held.TryLock() {
+		if l.Waiting != nil {
+			l.Waiting(issue)
+		}
+		held.Lock()
+	}
 	l.mu.Lock()
 	held.accepting = accepting
 	l.mu.Unlock()

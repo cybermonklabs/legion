@@ -1452,11 +1452,15 @@ func TestRegistrationIsRefusedOnceAnotherProjectsDaemonAcceptsTheAncestor(t *tes
 // OTHR's architect signs OTHR-1 off, and at the seam after the sign-off's retro write and before
 // its fact (afterSignOffStatusWrite) the proof waits for OTHR's record to hold the event of that
 // write, in accepting with Dispatch at retro, which the repair reads as a status to correct to
-// needs_review, and then runs one real controller tick. Dispatch must keep retro. Once the sign-off
-// has answered and OTHR's daemon records OTHR-1 in retro, Dispatch must still show retro and
-// LEGION's architect's registration on OTHR-1's approved version must be refused 409
-// BASIS_ACCEPTED. A retro row of OTHR's outbox is held at its seam (beforeOutboxStatusWrite) until
-// then, so the proof reads Dispatch as the acceptance left it, and not as a later row repaired it.
+// needs_review, and then runs one real controller tick. The tick must queue no status write of
+// OTHR-1 off retro, and Dispatch must keep retro. That is read as a fact, not timed: the tick's
+// writes are rows its own transaction queues, which has committed once the daemon counts the tick
+// applied, and each status row takes the issue's lock, which the sign-off holds here, before it
+// reads or writes Dispatch. Once the sign-off has answered and OTHR's daemon records OTHR-1 in
+// retro, Dispatch must still show retro and LEGION's architect's registration on OTHR-1's approved
+// version must be refused 409 BASIS_ACCEPTED. A retro row of OTHR's outbox is held at its seam
+// (beforeOutboxStatusWrite) until then, so the proof reads Dispatch as the acceptance left it, and
+// not as a later row repaired it.
 func TestARepairTickDuringASignOffWritesNothingOverItsAcceptance(t *testing.T) {
 	legion, other := crossProjectRigs(t, 2)
 	ticks := make(chan time.Time)
@@ -1492,9 +1496,23 @@ func TestARepairTickDuringASignOffWritesNothingOverItsAcceptance(t *testing.T) {
 			shown := other.record(parent.Key)
 			return shown.Phase == phase.Accepting && shown.DispatchStatus == "retro"
 		})
+		var before int64
+		if err := other.pool.QueryRow(t.Context(), `select coalesce(max(id), 0) from outbox`).Scan(&before); err != nil {
+			t.Errorf("read OTHR's last outbox row before the tick: %v", err)
+			return seamAnswer{}
+		}
 		other.controllerTick(ticks)
-		if testwait.Holds(5*time.Second, testwait.Poll, func() bool { return other.issue(parent.Key).Status != "retro" }) {
-			t.Errorf("the controller tick moved %s off its sign-off's retro to %s in Dispatch before the sign-off's fact", parent.Key, other.issue(parent.Key).Status)
+		var over int
+		if err := other.pool.QueryRow(t.Context(), `select count(*) from outbox where id > $1 and issue = $2 and kind = $3 and payload->>'status' <> 'retro'`,
+			before, parent.Key, string(record.OutboxKindDispatchStatus)).Scan(&over); err != nil {
+			t.Errorf("count the status rows of %s the tick queued: %v", parent.Key, err)
+			return seamAnswer{}
+		}
+		if over != 0 {
+			t.Errorf("the controller tick queued %d status writes of %s off its sign-off's retro before the sign-off's fact", over, parent.Key)
+		}
+		if shown := other.issue(parent.Key).Status; shown != "retro" {
+			t.Errorf("Dispatch shows %s %s after the controller tick and before the sign-off's fact, want its sign-off's retro", parent.Key, shown)
 		}
 		return seamAnswer{}
 	})

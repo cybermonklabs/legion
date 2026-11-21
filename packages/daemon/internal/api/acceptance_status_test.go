@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/issuelock"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -53,13 +54,20 @@ func (j *acceptanceJudge) CloseRootRefusal(_ context.Context, tx pgx.Tx, issue s
 // root LEGION-208 in needs_review at sequence 7.
 func newAcceptanceHarness(t *testing.T, judge AcceptanceJudge, written func(context.Context, string)) (*harness, *factRecorder, *statusRecorder) {
 	t.Helper()
+	return newAcceptanceHarnessOn(t, judge, written, nil)
+}
+
+// newAcceptanceHarnessOn is newAcceptanceHarness whose server takes locks as the daemon's issue
+// locks (Options.IssueLocks), nil for a set of the server's own.
+func newAcceptanceHarnessOn(t *testing.T, judge AcceptanceJudge, written func(context.Context, string), locks *issuelock.Locks) (*harness, *factRecorder, *statusRecorder) {
+	t.Helper()
 	h := newHarness(t)
 	facts := &factRecorder{}
 	statuses := &statusRecorder{issues: map[string]dispatch.Issue{"LEGION-208": {Key: "LEGION-208", Status: "needs_review", LastSeq: 7}}}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(), Handlers: []intake.Handler{facts}, Dispatch: statuses,
-		Acceptance: judge, AfterSignOffStatusWrite: written,
+		Acceptance: judge, AfterSignOffStatusWrite: written, IssueLocks: locks,
 	}).Handler
 	seedTree(t, h, "LEGION-208", "LEGION-209")
 	return h, facts, statuses
@@ -327,14 +335,19 @@ func TestARefusedSignOffWritesBackAfterItsCallerWentAway(t *testing.T) {
 
 // Two acceptances of one issue run one after the other: the second reads Dispatch, is judged and
 // writes only once the first has settled, so it never reads the first one's write as the status
-// to write back.
+// to write back. The second is seen blocked on the issue's lock through issuelock.Locks.Waiting
+// while the first stands between its own write and its fact, so the test times no window: either
+// the second writes or ends while the first holds the lock, which fails at once, or it is seen
+// waiting on that lock.
 func TestASecondAcceptanceOfAnIssueWaitsForTheFirstToSettle(t *testing.T) {
 	var calls atomic.Int32
 	overlapped := make(chan struct{}, 1)
 	second := make(chan *httptest.ResponseRecorder, 1)
+	waiting := make(chan string, 1)
+	locks := &issuelock.Locks{Waiting: func(issue string) { waiting <- issue }}
 	var h *harness
 	var grants [2]string
-	h, _, statuses := newAcceptanceHarness(t, &acceptanceJudge{}, func(context.Context, string) {
+	h, _, statuses := newAcceptanceHarnessOn(t, &acceptanceJudge{}, func(context.Context, string) {
 		if calls.Add(1) > 1 {
 			overlapped <- struct{}{}
 			return
@@ -345,9 +358,17 @@ func TestASecondAcceptanceOfAnIssueWaitsForTheFirstToSettle(t *testing.T) {
 		select {
 		case <-overlapped:
 			t.Error("the second sign-off wrote retro while the first stood between its own write and its fact")
-		case <-time.After(5 * time.Second):
+		case answer := <-second:
+			t.Errorf("the second sign-off ended %d %s while the first stood between its own write and its fact", answer.Code, answer.Body)
+			second <- answer
+		case issue := <-waiting:
+			if issue != "LEGION-208" {
+				t.Errorf("the second sign-off waited on the lock of %s, want LEGION-208", issue)
+			}
+		case <-time.After(time.Minute):
+			t.Error("the second sign-off neither wrote, ended nor waited on the issue's lock within a minute")
 		}
-	})
+	}, locks)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	grants = [2]string{architect.grant(t), architect.grant(t)}
 	if first := h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": grants[0], "issue": "LEGION-208"}, nil); first.Code != http.StatusOK {
@@ -358,8 +379,8 @@ func TestASecondAcceptanceOfAnIssueWaitsForTheFirstToSettle(t *testing.T) {
 		if answer.Code != http.StatusOK {
 			t.Fatalf("the second sign-off = %d %s, want 200", answer.Code, answer.Body)
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the second sign-off did not end within 30 seconds of the first")
+	case <-time.After(time.Minute):
+		t.Fatal("the second sign-off did not end within a minute of the first")
 	}
 	if want := []string{"LEGION-208=retro", "LEGION-208=retro"}; !reflect.DeepEqual(statuses.acceptances, want) {
 		t.Fatalf("acceptance writes = %q, want %q", statuses.acceptances, want)
