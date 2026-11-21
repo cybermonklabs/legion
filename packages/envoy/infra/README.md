@@ -412,7 +412,10 @@ How `/v1` admits a caller depends on who reaches the listener:
   without it, or with a wrong `<l>.oidcIssuer`, the pod becomes Ready, the rolling update replaces
   the old pod, and every `/v1` caller then gets that 503. `/healthz`'s `oidc` field reads `false`
   and `envoy_listener_oidc_issuer_discovered{issuer="cluster"}` reads `0` while the listener has
-  not read the issuer; neither probe below reads them, so an alert on that gauge is what shows it.
+  not read the issuer. None of the probes below reads either, and this component renders no scrape
+  of the listener's `/metrics` (its one `PodMonitoring` scrapes the hub's NATS pods), so the
+  deployment that runs the listener adds a scrape of the listener's `/metrics` on 9020, which takes
+  no credential, and an alert on that gauge reading `0`: without them nothing shows this state.
 
 Three probes read the pod's own loopback, two routes between them:
 

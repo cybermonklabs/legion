@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -592,57 +593,56 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // (roleOwnSessionVerdict) refuses to give a role away from its holder meanwhile, and GET
 // /v1/sessions keeps answering the copy, which it refuses only when the view cannot be served. The
 // answers writeDependencyHealth gives carry only status and error, as before: they report a fault
-// below the copy, not its freshness. main adds the identity token issuers' "oidc" and "google"
-// fields to every answer here (withIssuerHealth).
-func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
+// below the copy, not its freshness.
+//
+// Every answer, starting, healthy, degraded and unhealthy alike, also carries what issuers answers
+// (issuerHealthFields: the identity token issuers' "oidc" and "google"); nil adds nothing. Those
+// fields never decide the status (writeHealth).
+func healthzHandler(deps *atomic.Pointer[listenerDeps], issuers func() map[string]any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		d := deps.Load()
 		if d == nil {
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "starting"})
+			writeHealth(w, http.StatusOK, map[string]any{"status": "starting"}, issuers)
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), healthzBudget)
 		defer cancel()
 		if err := d.client.Conn.FlushWithContext(ctx); err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "nats unavailable"})
+			writeHealth(w, http.StatusServiceUnavailable, map[string]any{"status": "unhealthy", "error": "nats unavailable"}, issuers)
 			return
 		}
 		if !d.client.SubOK() {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "subscription inactive"})
+			writeHealth(w, http.StatusServiceUnavailable, map[string]any{"status": "unhealthy", "error": "subscription inactive"}, issuers)
 			return
 		}
 		if d.roleLane != nil && (!d.roleLane.Connected() || !d.roleLane.CoreSubOK()) {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "role lane subscription inactive"})
+			writeHealth(w, http.StatusServiceUnavailable, map[string]any{"status": "unhealthy", "error": "role lane subscription inactive"}, issuers)
 			return
 		}
 		for _, c := range d.caches {
 			if err := c.cache.WatchErr(); err != nil {
-				writeDependencyHealth(w, c.name+" KV watcher", err, true)
+				writeDependencyHealth(w, c.name+" KV watcher", err, true, issuers)
 				return
 			}
 		}
 		for _, c := range d.caches {
 			if answered, err := healthzPing(ctx, c.cache); err != nil {
-				writeDependencyHealth(w, c.name+" KV", err, !answered || c.cache.WatchErr() != nil || errors.Is(err, nats.ErrConnectionClosed))
+				writeDependencyHealth(w, c.name+" KV", err, !answered || c.cache.WatchErr() != nil || errors.Is(err, nats.ErrConnectionClosed), issuers)
 				return
 			}
 		}
 		consumerInfo, err := d.client.JS().ConsumerInfo(bus.Stream, d.consumer, nats.Context(ctx))
 		if err != nil {
 			// A read ctx ended did not answer, the info read's own form of healthzPing's unanswered.
-			writeDependencyHealth(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound))
+			writeDependencyHealth(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound), issuers)
 			return
 		}
 		// One read and no confirming second one, unlike durableProbe's: the endpoint reports the
 		// fault the moment a request finds it, and a request landing in a rebuild's own gap simply
 		// answers 503 until the next one.
 		if durableUnbound(consumerInfo, d.client) {
-			writeDependencyHealth(w, "durable consumer", errDurableUnbound, true)
+			writeDependencyHealth(w, "durable consumer", errDurableUnbound, true, issuers)
 			return
 		}
 		// Last, below every 503 check: "degraded" is the answer only when nothing worse holds.
@@ -654,7 +654,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 				// one, so then the stall is the whole report.
 				rebuild = fmt.Errorf("%w (%w)", hookErr, rebuild)
 			}
-			writeDependencyHealth(w, "KV watch rebuild", rebuild, false)
+			writeDependencyHealth(w, "KV watch rebuild", rebuild, false, issuers)
 			return
 		}
 		response := map[string]interface{}{"status": "healthy"}
@@ -682,8 +682,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 			response["status"] = "degraded"
 			response["error"] = dependencyUnavailable("role claim repair", err)
 		}
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(response)
+		writeHealth(w, http.StatusOK, response, issuers)
 	}
 }
 
@@ -735,18 +734,30 @@ func healthzPing(ctx context.Context, cache kvCache) (answered bool, err error) 
 	return answered, err
 }
 
-func writeDependencyHealth(w http.ResponseWriter, dependency string, err error, terminal bool) {
+func writeDependencyHealth(w http.ResponseWriter, dependency string, err error, terminal bool, issuers func() map[string]any) {
 	statusCode := http.StatusOK
 	status := "degraded"
 	if terminal {
 		statusCode = http.StatusServiceUnavailable
 		status = "unhealthy"
 	}
-	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	writeHealth(w, statusCode, map[string]any{
 		"status": status,
 		"error":  dependencyUnavailable(dependency, err),
-	})
+	}, issuers)
+}
+
+// writeHealth writes one /healthz answer: statusCode, and body with what issuers answers added
+// (nil adds nothing). The fields issuers adds are reports beside the answer and never decide its
+// status, which the caller has chosen before they are read: a listener whose issuer cannot be read
+// serves everything else, so a probe that failed on it would take that service away for an outage
+// the listener serves through, as Dispatch's service_tokens field does not.
+func writeHealth(w http.ResponseWriter, statusCode int, body map[string]any, issuers func() map[string]any) {
+	if issuers != nil {
+		maps.Copy(body, issuers())
+	}
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // dependencyUnavailable is the `error` field a /healthz answer gives for a dependency, so the
@@ -1034,8 +1045,9 @@ func main() {
 	// Neither issuer is read here. Each verifier reads its issuer's discovery document in the
 	// background from now on (oidc.LazyVerifier.Run: at once, then again 5 to 30 s after each
 	// failure, logging a failure at most once a minute) and when a token needs it, the request
-	// waiting for it at most discoveryWait. So a listener started while the cluster's issuer or
-	// Google's cannot be read serves everything that does not need that issuer, the shared token,
+	// waiting for it and then for the key set within identityBudget. So a listener started while
+	// the cluster's issuer or Google's cannot be read serves everything that does not need that
+	// issuer, the shared token,
 	// an open /v1, /healthz, /metrics and the webhooks, and answers a token of that issuer 503
 	// until it is read (refuseIdentityToken); /healthz's oidc and google fields and the
 	// envoy_listener_oidc_issuer_discovered gauge report which issuers it has read
@@ -1158,8 +1170,8 @@ func main() {
 	mux.Handle("/metrics", met.Handler())
 
 	// /healthz is always reachable, before NATS setup as well as after it. Every answer carries
-	// the identity token issuers' fields (withIssuerHealth), which never decide its status.
-	mux.Handle("/healthz", withIssuerHealth(healthzHandler(&deps), apiAuthConfig))
+	// the identity token issuers' fields (issuerHealthFields), which never decide its status.
+	mux.HandleFunc("/healthz", healthzHandler(&deps, func() map[string]any { return issuerHealthFields(apiAuthConfig) }))
 
 	// /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
 	// durable consumer. It says only that the process answers, for the startup and liveness

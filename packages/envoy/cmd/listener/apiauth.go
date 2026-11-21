@@ -110,9 +110,9 @@ type googleIdentities struct {
 // verdict was reached (refuseIdentityToken).
 func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.Logger) (string, error) {
 	var claims oidc.Claims
-	err := awaitDiscovery(r, g.verifier)
+	check, err := identityCheck(r, g.verifier)
 	if err == nil {
-		claims, err = g.verifier.VerifyGoogleIdentity(r.Context(), raw)
+		claims, err = g.verifier.VerifyGoogleIdentity(check, raw)
 	}
 	account := fold.ASCII(claims.Email)
 	var reason string
@@ -145,9 +145,9 @@ func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.L
 // (refuseIdentityToken).
 func (a listenerAPIAuth) admitsServiceAccount(r *http.Request, raw string) (string, error) {
 	var claims oidc.Claims
-	err := awaitDiscovery(r, a.verifier)
+	check, err := identityCheck(r, a.verifier)
 	if err == nil {
-		claims, err = a.verifier.Verify(r.Context(), raw)
+		claims, err = a.verifier.Verify(check, raw)
 	}
 	if err != nil {
 		a.logger.Warn("listener: service-account token rejected",
@@ -165,24 +165,35 @@ func (a listenerAPIAuth) admitsServiceAccount(r *http.Request, raw string) (stri
 	return claims.Subject, nil
 }
 
-// discoveryWait bounds how long a request waits for its issuer's discovery document, well inside
-// the 10 s newHTTPServer gives a route to write its answer. A discovery attempt itself may take
-// longer (an issuer that accepts the connection and never answers holds it to its own 10 s
-// bound), and a request that started or joined one would then be cut off by the write deadline
-// with no answer at all, rather than the 503 refuseIdentityToken gives it.
-const discoveryWait = 5 * time.Second
+// identityBudget bounds the whole of an identity token's check against its issuer, from the moment
+// the check begins, as the request arrives: the wait for the issuer's discovery document and then
+// the wait for its key set,
+// together. Each read can take longer on its own (an issuer that accepts the connection and never
+// answers holds a discovery attempt for 10 s and a key-set read for oidc.DefaultKeysFetchTimeout,
+// 10 s too), and one after the other they can pass the 10 s newHTTPServer gives a route to write
+// its answer, which would cut the request off with no answer at all rather than the 503
+// refuseIdentityToken gives. It is below the 5 s Dispatch's client gives a call to the listener,
+// so Dispatch reads the 503 rather than its own timeout. A read the budget cuts short carries on
+// in the background and is kept for the next request.
+const identityBudget = 4 * time.Second
 
-// awaitDiscovery waits, for at most discoveryWait, until verifier has read its issuer's discovery
-// document, reading it if no attempt is under way, and answers nil once it has; its error matches
-// oidc.ErrIssuerUnavailable. It bounds only this wait, never the context the token is then
-// verified on: a verification cut off by its context is oidc.ErrCancelled, which is a 401.
-func awaitDiscovery(r *http.Request, verifier *oidc.LazyVerifier) error {
-	if verifier.Discovered() {
-		return nil
+// identityCheck waits, until identityBudget after it begins at the latest, for verifier
+// to have read its issuer's discovery document, reading it if no attempt is under way, and answers
+// the context to verify the token on: the request's own, with the rest of that budget as its keys
+// deadline (oidc.WithKeysDeadline). Its error matches oidc.ErrIssuerUnavailable. The budget never
+// ends that context itself: a verification whose context ends is oidc.ErrCancelled, which is a
+// 401, while a key read cut short by the keys deadline is oidc.ErrIssuerUnavailable, the 503.
+func identityCheck(r *http.Request, verifier *oidc.LazyVerifier) (context.Context, error) {
+	deadline := time.Now().Add(identityBudget)
+	if !verifier.Discovered() {
+		wait, cancel := context.WithDeadline(r.Context(), deadline)
+		err := verifier.Discover(wait)
+		cancel()
+		if err != nil {
+			return nil, err
+		}
 	}
-	wait, cancel := context.WithTimeout(r.Context(), discoveryWait)
-	defer cancel()
-	return verifier.Discover(wait)
+	return oidc.WithKeysDeadline(r.Context(), deadline), nil
 }
 
 // identityRefusal is the error an identity token that was judged and not admitted reads as: the

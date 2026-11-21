@@ -1,11 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
-	"maps"
-	"net/http"
-
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
@@ -15,10 +10,17 @@ import (
 // so a roll completes while an issuer is unreadable: a wrong ENVOY_OIDC_ISSUER, an issuer that is
 // down, or a pod with no egress to it. Nothing in the pod's readiness shows that state, since a
 // listener in it serves everything else. The two reports below are what show it: /healthz's "oidc"
-// and "google" fields, and the envoy_listener_oidc_issuer_discovered gauge, which an alert reads.
-// Neither decides /healthz's status, for the reason Dispatch's service_tokens field does not: a
-// probe that failed on it would take every other service away for an outage the listener serves
-// through.
+// and "google" fields (healthzHandler adds them to every answer), and the
+// envoy_listener_oidc_issuer_discovered gauge, which an alert reads once the deployment scrapes the
+// listener's /metrics. Neither decides /healthz's status, for the reason Dispatch's service_tokens
+// field does not: a probe that failed on it would take every other service away for an outage the
+// listener serves through.
+//
+// The trade they make: /healthz and /metrics need no credential, so any caller that reaches the
+// listener's port learns from them which identity token pairs it takes (a pair that is not
+// configured is null and writes no series), the fact the 401 body keeps from an unauthenticated
+// caller (apiAuth). That leak is small: before an issuer is read, a JWT-shaped bearer's 503 shows
+// as much, and which issuers a listener takes decides nothing about who it admits.
 
 // The issuer label of envoy_listener_oidc_issuer_discovered: cluster is the ENVOY_OIDC_ISSUER
 // pair's issuer, google the Google pair's.
@@ -55,7 +57,8 @@ func registerIssuerGauge(met *metrics.Registry, auth listenerAPIAuth) {
 
 // issuerHealthFields is the "oidc" and "google" fields of a /healthz answer: whether the listener
 // has read the discovery document of the ENVOY_OIDC_ISSUER pair's issuer and of Google's, each
-// null when that pair is not configured.
+// null when that pair is not configured. healthzHandler adds them to every answer it writes
+// (writeHealth).
 func issuerHealthFields(auth listenerAPIAuth) map[string]any {
 	fields := map[string]any{"oidc": nil, "google": nil}
 	if auth.verifier != nil {
@@ -65,50 +68,4 @@ func issuerHealthFields(auth listenerAPIAuth) map[string]any {
 		fields["google"] = auth.google.verifier.Discovered()
 	}
 	return fields
-}
-
-// withIssuerHealth is next, the listener's /healthz (healthzHandler), with issuerHealthFields added
-// to every answer it gives: starting, healthy, degraded and unhealthy alike, with its status code
-// and every other field unchanged. The issuers are not among the bus dependencies healthzHandler
-// is built over, which open later; they are known from the start. An answer that is not a JSON
-// object passes through as it is.
-func withIssuerHealth(next http.Handler, auth listenerAPIAuth) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		answer := &bufferedAnswer{header: http.Header{}, status: http.StatusOK}
-		next.ServeHTTP(answer, r)
-		maps.Copy(w.Header(), answer.header)
-		decoder := json.NewDecoder(bytes.NewReader(answer.body.Bytes()))
-		decoder.UseNumber()
-		var body map[string]any
-		if err := decoder.Decode(&body); err != nil || body == nil {
-			w.WriteHeader(answer.status)
-			_, _ = w.Write(answer.body.Bytes())
-			return
-		}
-		maps.Copy(body, issuerHealthFields(auth))
-		w.WriteHeader(answer.status)
-		_ = json.NewEncoder(w).Encode(body)
-	})
-}
-
-// bufferedAnswer holds an answer a handler writes, for withIssuerHealth to add to before it is
-// sent.
-type bufferedAnswer struct {
-	header http.Header
-	status int
-	wrote  bool
-	body   bytes.Buffer
-}
-
-func (a *bufferedAnswer) Header() http.Header { return a.header }
-
-func (a *bufferedAnswer) WriteHeader(status int) {
-	if !a.wrote {
-		a.status, a.wrote = status, true
-	}
-}
-
-func (a *bufferedAnswer) Write(p []byte) (int, error) {
-	a.wrote = true
-	return a.body.Write(p)
 }

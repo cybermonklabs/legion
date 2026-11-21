@@ -194,23 +194,45 @@ func (k *Keys) openMissWindow() bool {
 // caller waiting on it, so a key set that is slow to answer costs the issuer one request however
 // many tokens arrive meanwhile; a caller whose own context ends first leaves with that error and
 // the read carries on for the others. A read that fails keeps the last good set.
+//
+// A caller whose context carries a keys deadline (WithKeysDeadline) waits for the read only until
+// that deadline, and leaves with ErrKeySet then, its context still live. The read it starts runs on
+// a context of its own, detached from the caller's (bounded by FetchTimeout alone), so a key set
+// slower than one caller's deadline is still read and kept for the next.
 func (k *Keys) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
+	deadline, budgeted := keysDeadline(ctx)
 	k.mu.Lock()
-	if inflight := k.inflight; inflight != nil {
+	inflight := k.inflight
+	if inflight == nil {
+		inflight = &keysFetch{done: make(chan struct{})}
+		k.inflight = inflight
 		k.mu.Unlock()
-		select {
-		case <-inflight.done:
+		if !budgeted {
+			k.complete(ctx, inflight)
 			return inflight.keys, inflight.err
-		case <-ctx.Done():
-			return nil, fmt.Errorf("%w: waiting on %s: %w", ErrKeySet, k.jwksURI, ctx.Err())
 		}
+		go k.complete(context.WithoutCancel(ctx), inflight)
+	} else {
+		k.mu.Unlock()
 	}
-	inflight := &keysFetch{done: make(chan struct{})}
-	k.inflight = inflight
-	k.mu.Unlock()
+	wait := ctx
+	if budgeted {
+		var cancel context.CancelFunc
+		wait, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
+	}
+	select {
+	case <-inflight.done:
+		return inflight.keys, inflight.err
+	case <-wait.Done():
+		return nil, fmt.Errorf("%w: waiting on %s: %w", ErrKeySet, k.jwksURI, wait.Err())
+	}
+}
 
+// complete runs inflight's read on ctx, keeps the set it read when it read one, and releases
+// every caller waiting on inflight.
+func (k *Keys) complete(ctx context.Context, inflight *keysFetch) {
 	inflight.keys, inflight.err = k.read(ctx)
-
 	k.mu.Lock()
 	k.inflight = nil
 	if inflight.err == nil {
@@ -218,7 +240,24 @@ func (k *Keys) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 	}
 	k.mu.Unlock()
 	close(inflight.done)
-	return inflight.keys, inflight.err
+}
+
+// keysDeadlineKey is the context key WithKeysDeadline stores its deadline under.
+type keysDeadlineKey struct{}
+
+// WithKeysDeadline returns ctx carrying deadline for every key-set read a verification under it
+// waits for: each wait ends by deadline and fails as ErrKeySet, which a verifier reports as
+// ErrIssuerUnavailable, while ctx itself goes on. That is the difference from a deadline on ctx,
+// whose end a verifier reports as ErrCancelled: a server that must answer within a window uses it
+// to bound the key read without turning a slow issuer into a refused token.
+func WithKeysDeadline(ctx context.Context, deadline time.Time) context.Context {
+	return context.WithValue(ctx, keysDeadlineKey{}, deadline)
+}
+
+// keysDeadline is the deadline WithKeysDeadline put on ctx, if any.
+func keysDeadline(ctx context.Context) (time.Time, bool) {
+	deadline, ok := ctx.Value(keysDeadlineKey{}).(time.Time)
+	return deadline, ok
 }
 
 // read fetches and parses the issuer's key set once, under FetchTimeout and the caller's context.
