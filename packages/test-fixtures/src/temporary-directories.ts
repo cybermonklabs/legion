@@ -10,12 +10,13 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  rmdirSync,
   rmSync,
   type Stats,
   statfsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /** What {@link temporaryDirectories} takes. */
 export type TemporaryDirectoriesOptions = {
@@ -72,11 +73,18 @@ export function memoryRoot(options: MemoryRootOptions = {}): string {
     return tmpdir();
   }
   // A line is the mount's id, its parent's, the device, the root, the mount point, its options,
-  // optional fields, `-`, then the filesystem type.
+  // optional fields, `-`, then the filesystem type. The kernel writes a space, a tab, a newline
+  // and a backslash in the mount point as `\` and three octal digits, so a line splits on spaces
+  // and its mount point reads as the path once those are decoded.
   const mount = text
     .split("\n")
     .map((line) => line.split(" "))
-    .filter((fields) => fields[4] === at)
+    .filter(
+      (fields) =>
+        (fields[4] ?? "").replace(/\\([0-7]{3})/g, (_, octal: string) =>
+          String.fromCharCode(Number.parseInt(octal, 8))
+        ) === at
+    )
     .at(-1);
   if (mount === undefined) return tmpdir();
   const flags = (mount[5] ?? "").split(",");
@@ -89,6 +97,87 @@ export function memoryRoot(options: MemoryRootOptions = {}): string {
   } catch {
     return tmpdir();
   }
+}
+
+/** The longest unix socket path Linux takes: its sun_path holds 108 bytes with the terminating
+ *  zero (the Go tests' testtmp.MaxSocketPath). */
+const MAX_SOCKET_PATH = 107;
+
+/** What {@link scratchWithout} takes. */
+export type ScratchWithoutOptions = {
+  /** The longest path, relative to the directory, that the test binds a unix socket at. */
+  readonly socket?: string | undefined;
+  /** Why a directory made under a base will not do (a hardlink that cannot reach it), or
+   *  undefined. */
+  readonly accept?: ((directory: string) => string | undefined) | undefined;
+};
+
+/**
+ * A fresh directory, made now with `prefix`, whose path holds no character `refuses` matches, for
+ * a path some tool cannot take a character of, however it is quoted: Bun loads no module from a
+ * path that holds a `?`, for one. `refuses` is a global pattern (`/\?/g`), so a refusal names
+ * every character it found. The directory is made under the first of `bases` that holds none,
+ * takes a directory (each but tmpdir() is made when it is missing), when `socket` names the
+ * longest path relative to the directory that the test binds a unix socket at, leaves that path
+ * within the 107 bytes Linux takes, and passes `accept`. With none, it throws naming what each
+ * base answered; it never skips. The caller removes the directory.
+ */
+export function scratchWithout(
+  refuses: RegExp,
+  bases: readonly string[],
+  prefix: string,
+  options: ScratchWithoutOptions = {}
+): string {
+  const answers: string[] = [];
+  for (const base of new Set(bases)) {
+    const held = [...new Set(base.match(refuses))];
+    if (held.length > 0) {
+      answers.push(`${base} holds ${held.map((char) => JSON.stringify(char)).join(" and ")}`);
+      continue;
+    }
+    let directory: string;
+    try {
+      if (base !== tmpdir()) mkdirSync(base, { recursive: true, mode: 0o700 });
+      directory = mkdtempSync(join(base, prefix));
+    } catch (error) {
+      answers.push(`${base} made no directory (${(error as Error).message})`);
+      continue;
+    }
+    if (options.socket !== undefined) {
+      const bytes = Buffer.byteLength(join(directory, options.socket));
+      if (bytes > MAX_SOCKET_PATH) {
+        rmdirSync(directory);
+        answers.push(`${base} gives ${options.socket} a path of ${bytes} bytes`);
+        continue;
+      }
+    }
+    const refusal = options.accept?.(directory);
+    if (refusal !== undefined) {
+      rmdirSync(directory);
+      answers.push(`${base} made a directory that will not do (${refusal})`);
+      continue;
+    }
+    return directory;
+  }
+  const fits =
+    options.socket === undefined
+      ? ""
+      : ` and leaves ${options.socket} within the ${MAX_SOCKET_PATH} bytes a unix socket path holds`;
+  throw new Error(
+    `no base gives a directory whose path holds no character of ${refuses.source}${fits}: ${answers.join("; ")}`
+  );
+}
+
+/** The base {@link scratchWithout} would make its directory under, found by making one there and
+ *  removing it at once: the `root` a {@link temporaryDirectories} maker takes. */
+export function baseWithout(
+  refuses: RegExp,
+  bases: readonly string[],
+  accept?: (directory: string) => string | undefined
+): string {
+  const probe = scratchWithout(refuses, bases, "probe-", { accept });
+  rmdirSync(probe);
+  return dirname(probe);
 }
 
 /**

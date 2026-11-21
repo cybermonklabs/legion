@@ -70,3 +70,8 @@ export function expectNoMissingHelpers(...outputs: string[]): void {
     );
   }
 }
+
+/** `text` as one single-quoted shell word: each `'` in it is closed, escaped and reopened. */
+export function shellQuote(text: string): string {
+  return `'${text.replaceAll("'", "'\\''")}'`;
+}

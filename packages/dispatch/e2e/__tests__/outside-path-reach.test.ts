@@ -12,6 +12,7 @@
 import { describe, expect } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { shellQuote } from "../local-instance-support";
 import {
   bash,
   blackhole,
@@ -203,7 +204,7 @@ describe.concurrent("outside-path-reach.sh", () => {
     try {
       const log = written("");
       const path = pathWithCurl(
-        `case "$*" in *telnet://does-not-exist.invalid:4222*) echo probe >>${log}; printf '0.000000 0.000000'; exit 6 ;; esac`
+        `case "$*" in *telnet://does-not-exist.invalid:4222*) echo probe >>${shellQuote(log)}; printf '0.000000 0.000000'; exit 6 ;; esac`
       );
       const run = await drive(
         {
@@ -252,7 +253,7 @@ describe.concurrent("outside-path-reach.sh", () => {
           {
             path: pathWithCurl(
               'case "$*" in\n' +
-                `  *http://${origin}/*) printf '%s\\n' "$*" >>${log} ;;\n` +
+                `  *http://${origin}/*) printf '%s\\n' "$*" >>${shellQuote(log)} ;;\n` +
                 "esac\n" +
                 'case "$*" in\n' +
                 `  *http://${origin}/healthz) printf 200; exit 0 ;;\n` +

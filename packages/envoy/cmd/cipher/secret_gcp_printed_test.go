@@ -268,7 +268,7 @@ func TestGCPPrintedCommandsCarryTheCredentialsFileItSignedInWith(t *testing.T) {
 			writeServiceAccountFile(t, filepath.Join(dir, "credentials.json"), "gac@example.iam.gserviceaccount.com", tokens.URL)
 			t.Chdir(dir)
 			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "credentials.json")
-			quoted := "'" + filepath.Join(dir, "credentials.json") + "'"
+			quoted := shellWord(filepath.Join(dir, "credentials.json"))
 			return "GOOGLE_APPLICATION_CREDENTIALS=" + quoted + " ", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + quoted + " "
 		}, []string{secret, "$GOOGLE_APPLICATION_CREDENTIALS"}},
 		{"control: the metadata server, no variable set", func(t *testing.T) (string, string) {

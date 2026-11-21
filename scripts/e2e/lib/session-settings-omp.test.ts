@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { shellQuote } from "./script-functions";
 import type { Rig } from "./session-settings-common";
 import { Omp } from "./session-settings-omp";
 
@@ -24,7 +25,7 @@ function rigOf(dir: string): Rig {
   const omp = join(dir, "omp");
   writeFileSync(
     omp,
-    `#!/bin/sh\nprintf '%s' "\${LEGION_E2E_RUN-unset}" >'${join(dir, "mark")}'\necho '{"type":"ready"}'\nexec sleep 60\n`,
+    `#!/bin/sh\nprintf '%s' "\${LEGION_E2E_RUN-unset}" >${shellQuote(join(dir, "mark"))}\necho '{"type":"ready"}'\nexec sleep 60\n`,
     { mode: 0o755 }
   );
   for (const sub of ["evidence/logs", "home", "agent", "cwd", "tmp"]) {
