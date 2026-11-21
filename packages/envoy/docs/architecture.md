@@ -132,7 +132,10 @@ instead. The one claim freed past a holder session that still answers is one a h
 (`handed_back`), and only once its own renewal has lapsed: the mark is the holder's own word that
 it gave the role up and no registration renews a marked claim, so a role an older client handed
 back comes free one live window plus up to one reap interval later — about ten minutes with the
-shipped defaults — while that client is still registering. A registration renews every unmarked
+shipped defaults — while that client is still registering. The mark lands only on the grant the
+hand-back read: every grant writes a `grant_id` it draws at random, which renewals and the
+adoption carry over, so a claim granted again before the mark's write, in the same millisecond
+or later, is left unmarked. A registration renews every unmarked
 claim its own process holds among the roles it weighs: the role topics of the interest record its
 own write read from the bucket, and the roles the listener's copy of the claims names for the
 session, each renewed as its own claim record says, whatever topics the registration carries. One
