@@ -3822,6 +3822,582 @@ func heaviestStepTwo(t *testing.T, state []byte) (frame []byte, structs int64) {
 	return frame, int64(chain) + 1
 }
 
+const (
+	// gateFoldSeed is the document the gate-fold drive's run is typed into, the one the docs
+	// package's copy-heap measurement types its run into (keystrokeRunStates).
+	gateFoldSeed = "# Title\n\nOne paragraph of ordinary prose.\n"
+	// gateFoldRun and gateFoldRunner are that run: gateFoldRun keystrokes of "a" under client
+	// gateFoldRunner, each typed after the one before it at the end of the seed's paragraph.
+	gateFoldRun    = 1_000_006
+	gateFoldRunner = 1_000
+	// gateFoldMeasuredState and gateFoldMeasuredFold are the measurement's figures for the run's
+	// state: its encoded bytes, and what a cold read's fold of it, the state and an update after
+	// it, held above the document it leaves - the heaviest whole-document decode measured
+	// (TestEveryFullStateDecodesTransientHeapIsWithinItsSlot,
+	// dispatch://INFRA-179/artifact/infra179-simplify-measured-md, section 4a).
+	gateFoldMeasuredState = 7_983_814
+	gateFoldMeasuredFold  = 320_762_656
+	// gateFoldRowsBatch is how many of the run's rows one insert stores.
+	gateFoldRowsBatch = 100_000
+	// gateFoldRunAhead is how far ahead of the database's clock the run's rows are dated until the
+	// drive's compaction folds them. No compaction the tail rule runs folds a row younger than
+	// compactTail, so neither the server's compaction queue, which a room's load notes, nor its
+	// sweep folds the run first, at the room's own cursor, into a row a later fold would merge.
+	gateFoldRunAhead = 24 * time.Hour
+	// gateFoldWriter is the client of the margin record another process writes past each room's
+	// cursor, and gateFoldWriter+1 that of the record written after the compaction.
+	gateFoldWriter = 0x6a7e0a17
+	// gateFoldTypist is the client each room's browser types its keystroke under: one a browser
+	// could draw for itself, which a socket that presents no id claims with its first write, as
+	// storeDecodeClient is. gateFoldTyped is the keystroke.
+	gateFoldTypist = 0x6a7ef01d
+	gateFoldTyped  = "k"
+	// compactTailForTest mirrors docs' compactTail: no compaction the tail rule runs folds a row
+	// created within it of the database's clock.
+	compactTailForTest = 2 * time.Minute
+	// gateFoldRowAge is how old the drive makes each room's two replaced rows as the keystrokes go,
+	// so the compaction its room's close runs folds them: half a minute past the tail, which
+	// leaves 12.5 minutes before the later of them, the document's row after its first, is older
+	// than docs' compactMaxTailAge of 15, past which the server's compaction queue takes the
+	// document as due and would fold them first.
+	gateFoldRowAge = compactTailForTest + 30*time.Second
+	// replacedCloseWithin bounds the drive's wait, once its keystrokes are answered, for the
+	// server to log each room's close (replacedCloseLine). A close returns once the room's
+	// persistence worker has exited, and the worker compacts the room as it exits, after a wait
+	// for one of the process's buffered folds where the cold reads hold them all.
+	replacedCloseWithin = 5 * time.Minute
+)
+
+// replacedCloseLine is the line the server logs once it has closed a room whose browser's update
+// it stored on a history replaced under the room (docs' Service.closeRoomOnReplacedHistory), the
+// room being the document's id. The close returns only once the room's persistence worker has
+// exited (ygo's CloseRoom waits for the worker's persistDone), and the worker runs the room's
+// compaction as it exits (servicePersistenceAdapter.Compact), so the line's time is past that
+// compaction.
+var replacedCloseLine = regexp.MustCompile(`time=(\S+) level=INFO msg="dispatch: closed a document room whose browser's update was stored on a history replaced under it" room=(\S+)`)
+
+// A room's persistence worker checks each browser update it stores against the stored history
+// when that history was replaced past the room's cursor (docs' gateAppend, storedHistoryHolds): it
+// folds the history the store holds now and decodes the update onto the document that fold
+// leaves. Neither may wait for the pod's load concurrency - the worker holds the document's lock
+// there, and is the one reader of the queue a heavy apply's commit hands its update over by - so
+// each takes its bytes where the pool has them free at once and otherwise runs beside the pool's
+// holders with nothing counting it (withFreeLoadOnly). So does the compaction the same worker
+// runs as its room closes (servicePersistenceAdapter.Compact). This drive weighs both at their
+// heaviest against the pod. Under the Go limit a 4 GiB pod gives the server, with the pool held
+// full by the heavy writers and the folds of TestStoreDecodesBesideAFullPoolStayUnderThePodsMemory,
+// as many rooms of the heaviest state measured as the budget holds, each on a history replaced
+// past its cursor, type one keystroke each at once, so every room's worker folds that history
+// beside the full pool, and then compacts it as the server closes the room.
+//
+// The state is the docs package's run of a million keystrokes (keystrokeRunStates): a paragraph
+// typed into 1,000,006 times, each keystroke after the one before it, which that package's
+// measurement stores as 7,983,814 bytes and whose fold by a cold read held 320,762,656 bytes above
+// the document it leaves, the heaviest whole-document decode measured
+// (TestEveryFullStateDecodesTransientHeapIsWithinItsSlot,
+// dispatch://INFRA-179/artifact/infra179-simplify-measured-md). It is that heavy only as a fold
+// of the run's own rows writes it. A fold applies the rows it folds one at a time, so a fold of
+// the run's rows leaves every keystroke an item of its own and encodes each one; a decode of that
+// state applies it whole, in one transaction, and its document holds the run merged into a handful
+// of structs once the decode ends. So a room that loads the run holds it merged and is charged by
+// its state's bytes, about a fifth of what a room of a million structs is charged
+// (roomWeightForTest), while every fold of its stored history decodes the million items again; and
+// a fold of a history whose first row is the state merges the run as it decodes that row, so a
+// compaction leaves the state that heavy only where it folds the run's rows. The drive therefore
+// stores the run as a room stores keystrokes, a row each (keystrokeRunDocument), the rooms load
+// those rows, and the replacement is the compaction that writes the state.
+//
+// The replacement is what a compaction makes of a history another process wrote past a room.
+// While each room holds every version through the head it loaded, the drive writes one margin
+// record above that head, as another process's write the room has not caught up on, announced to
+// no room (room sync), and compacts the document through a compaction's own code
+// (docs.PgVersioned.Compact, compactRoom: its read on the compaction pool, its fold, the fold's
+// read-back check and its write under the room's lock), with a keep of one, since the tail rule
+// would pass over the record's young row (compactTail). That folds every row the room holds into
+// the record's, so no row at or below the room's cursor remains (historyReplaced), and that row
+// holds the run's state as the measurement stored it. The drive then writes one more record after
+// it, so the history the gate folds is that state and an update after it: the measured fold's
+// shape. The run's rows are dated a day ahead until then, so no compaction of the server's own,
+// at the room's cursor, folds them first (gateFoldRunAhead); the two rows the replacement leaves
+// are dated just past the tail as the keystrokes go (gateFoldRowAge).
+//
+// How many rooms is the budget's own arithmetic: the rooms whose charge and a keystroke's fit what
+// the heavy writers' room at the state cap and its handoffs' words leave of the budget. The drive
+// logs that count beside A3's, the budget over a room of a mebibyte of prose that only loads
+// (TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays).
+//
+// The pool is held full as the store-decode drive holds it: three browsers of the room at the
+// state cap hand its whole state back with a few words typed, each apply granted its state's
+// weight, and four cold reads of documents at the decode cap each fold under a whole slot. The
+// keystrokes go, all at once, as soon as the server has given back a grant one of those waited
+// for (loadSlotLine). A keystroke is a one-character insert, which takes no grant, and its room
+// answers it applied only once its worker has stored it (docs' Server.AnswerOnceStored), past the
+// gate's fold. That fold is weighed at the whole pool - its rows declare a million structs
+// (copyWeightForTest) - so while any holder holds bytes of the pool or waits for them it takes
+// nothing and folds beside them. The drive fails unless, for every room, the server logged a grant
+// waited for or held through the whole of that room's keystroke's store (poolBusyThrough): every
+// room's gate folded beside a full pool.
+//
+// A keystroke stored on a replaced history closes its room (Service.closeRoomOnReplacedHistory);
+// the close returns once the room's worker has exited, and the worker compacts the room as it
+// exits, taking only free bytes as its gate did: a fold of the two replaced rows, which are older
+// than the tail by then, the same history its gate folded. Rows of this size are read into memory
+// (foldBufferBytes), so each of those folds first takes one of the process's bufferedFolds, which
+// the cold reads hold while they wait for the pool. So every room's close is a closing compaction
+// in the same window, and the window runs until the server has logged every room's close
+// (replacedCloseLine). The drive fails unless every room closed, and logs how many did and how
+// many of them closed while the pool was busy. They are as many as the rooms: no room loads while
+// the pool is full, so no more can close in the window than the budget holds at this state, and no
+// more of them fold at once than the bufferedFolds.
+//
+// E's heaviest step 2 (heaviestStepTwo) runs in no room of the window. Another room of A3's prose
+// with its step 2 does not fit what the fold rooms leave of the budget, which the drive computes,
+// and fails on should it ever fit; and trading a fold room for one would take a fold of hundreds of
+// MB out of the window to add a read-back of tens. A fold room's own step 2, whatever its caps and
+// the budget would take, declares more than unslottedApplyStructsForTest, so its apply takes a
+// grant and waits in the room's hook for as long as the pool is full: sent after the keystroke it
+// meets a room the keystroke's store closes, and sent before it, the socket's keystroke waits
+// behind it, so the gate would fold only once the pool's queue had reached the step 2.
+//
+// The window runs from the first of the heavy requests to the last room's close. The drive reads
+// its peak both ways A3 reads one (requireUnderThePod) - what a pod's kernel would charge, under
+// the pod's 4,096 MiB, and what the runtime held of what its Go limit bounds, within
+// podGoMemoryLimitMargin of that limit - and fails where either passes its bound. It fails too
+// unless every keystroke is stored past the replaced history's head, which only the gate's check
+// of that history admits, and reads as typed. It logs the rooms, the history each room's gate
+// folded and the weight that fold took none of, the measured figure for one such fold, the peak,
+// and how far each reading stood under its bound.
+//
+// No run is recorded here yet: the pod it was written in cannot run it. Its Job runs
+//
+//	go test -tags memory -count=1 -timeout 90m -run '^TestGateFoldsBesideAFullPoolStayUnderThePodsMemory$' ./cmd/dispatch
+func TestGateFoldsBesideAFullPoolStayUnderThePodsMemory(t *testing.T) {
+	const folds, handoffs = 4, 3
+	ctx := context.Background()
+	building := time.Now()
+	memory := newMemoryHarness(t)
+	memory.env = append(memory.env, podServerEnv()...)
+	// The heavy writers' room and the cold reads' documents, as the store-decode drive builds them.
+	stored := memory.storedStates(t, longEditedTypedTo(t, maxUpdateItemsForTest),
+		paddedToTheRoomsStateCap(t, longEditedTypedTo(t, nearTheStateCapStructs)))
+	longEdited := memory.storedShape(t, "the long-edited document at the decode cap", stored[0])
+	heaviest := memory.storedShape(t, "a document of few structs padded to the room's state cap", stored[1])
+	requireAtTheDecodeCap(t, longEdited)
+	if heaviest.stateBytes > maxRoomStateBytesForTest || heaviest.stateBytes+64<<10 < maxRoomStateBytesForTest {
+		t.Fatalf("the padded document stores %d bytes of state, want within 64 KiB under the room's state cap (%d)", heaviest.stateBytes, maxRoomStateBytesForTest)
+	}
+	// A3's document, for A3's count of rooms and E's heaviest step 2. No copy of it is opened.
+	fleet := memory.mebibyteFleet(t, func(int64) int { return 0 })
+	a3Rooms := int(roomBudgetBytesForTest / fleet.weight)
+	fleetStructs, err := docs.StateStructsForTest(fleet.state)
+	if err != nil {
+		t.Fatalf("walk the stored state of a mebibyte of prose: %v", err)
+	}
+	frame, chained := heaviestStepTwo(t, fleet.state)
+
+	// The run, a row a keystroke, and what a room that loads it is charged: the rows fold into the
+	// state the measurement stored, and that state decodes into few structs.
+	source, seed := memory.keystrokeRunDocument(t)
+	run := memory.storedShape(t, "a paragraph typed into a million times, a row a keystroke", source)
+	if gap := run.stateBytes - gateFoldMeasuredState; gap < -64<<10 || gap > 64<<10 {
+		t.Fatalf("the run's rows fold into %d bytes of state, want within 64 KiB of the %d the measurement stored: the fold no longer leaves each keystroke an item of its own",
+			run.stateBytes, gateFoldMeasuredState)
+	}
+	if foldWeight := copyWeightForTest(int64(run.stateBytes), gateFoldRun); foldWeight != worstCaseLoadSlotBytesForTest {
+		t.Fatalf("a fold of the run's state is weighed at %d bytes of the pod's %d-byte load pool, want the whole pool: only then does a holder of any of it leave the fold nothing (poolBusyThrough)",
+			foldWeight, int64(worstCaseLoadSlotBytesForTest))
+	}
+
+	// The budget's arithmetic: the rooms of the run whose charge and a keystroke's fit beside the
+	// room at the state cap and what its handoffs type.
+	handedGrowth := int64(handoffs) * keystrokeChargeForTest
+	roomCharge := run.weight + keystrokeChargeForTest
+	rooms := int((roomBudgetBytesForTest - heaviest.weight - handedGrowth) / roomCharge)
+	if rooms < 1 {
+		t.Fatalf("beside the room at the state cap (%d) and its handoffs' words (%d) the %d-byte budget holds no room of the run, which is charged %d with its keystroke",
+			heaviest.weight, handedGrowth, roomBudgetBytesForTest, roomCharge)
+	}
+	left := roomBudgetBytesForTest - heaviest.weight - handedGrowth - int64(rooms)*roomCharge
+	withStepTwo := roomWeightForTest(int64(len(fleet.state)+len(frame)), fleetStructs+chained)
+	if left >= withStepTwo {
+		t.Fatalf("beside the %d rooms of the run the budget leaves %d bytes, room for a room of a mebibyte of prose with E's heaviest step 2 (%d): this drive weighs the gate's folds without E's decodes because the budget held no such room beside them, and must now send them in the same window",
+			rooms, left, withStepTwo)
+	}
+	stepGrowth := roomWeightForTest(int64(run.stateBytes+len(frame)), run.structs+chained) - run.weight
+	folded := memory.cloneDocuments(t, longEdited.id, folds)
+	heavyRoom := memory.cloneDocuments(t, heaviest.id, 1)[0]
+	foldRooms := memory.cloneDocuments(t, source, rooms)
+	// A copy's rows take the database's clock as they are copied; they are dated ahead as the
+	// source's are.
+	if _, err := memory.database.Pool.Exec(ctx,
+		`update doc_updates set created_at = now() + make_interval(secs => $2) where artifact_id::text = any($1)`,
+		foldRooms, gateFoldRunAhead.Seconds()); err != nil {
+		t.Fatalf("date the copies' rows ahead: %v", err)
+	}
+	t.Logf("the budget: a room of the run (%d bytes of state, %d structs) is charged %d bytes and %d more for its keystroke; beside the room at the state cap (%d) and its handoffs' words (%d), the %d-byte budget holds %d such rooms, where A3's arithmetic holds %d rooms of a mebibyte of prose; the documents took %s to build",
+		run.stateBytes, run.structs, run.weight, int64(keystrokeChargeForTest), heaviest.weight, handedGrowth, roomBudgetBytesForTest, rooms, a3Rooms, time.Since(building).Round(time.Second))
+	t.Logf("E's heaviest step 2, %d bytes chaining %d structs, runs in no room of the window: the budget leaves %d bytes beside the %d rooms of the run, short of the %d a room of a mebibyte of prose (%d structs) is charged with it; in a room of the run it would add %d to the room's charge, which %d of them would have room for, but it is applied under a grant of %d bytes (copyWeightForTest), for which it waits while the pool is full",
+		len(frame), chained, left, rooms, withStepTwo, fleetStructs, stepGrowth, left/stepGrowth, copyWeightForTest(int64(len(frame)), chained))
+	t.Logf("the drive's %d documents owe the server no block index, so the only reads of them are the drive's own", memory.oweNoBlockIndex(t))
+
+	server := memory.start(t)
+	requirePodGoMemoryLimit(t, server)
+	var held []*browser
+	t.Cleanup(func() {
+		for _, opened := range held {
+			opened.leave()
+		}
+	})
+	open := func(t *testing.T, room string) *browser {
+		t.Helper()
+		opened := server.openBrowser(t, room)
+		held = append(held, opened)
+		return opened
+	}
+	step := time.Now()
+	var handing, typing []*browser
+	filledPeak := server.peakResident(t, func() {
+		for range handoffs {
+			handing = append(handing, open(t, heavyRoom))
+		}
+		for _, room := range foldRooms {
+			typing = append(typing, open(t, room))
+		}
+	})
+	t.Logf("the rooms are open: the room at the state cap held by %d browsers and %d rooms of the run, in %s; %d MiB resident now",
+		len(handing), len(typing), time.Since(step).Round(time.Second), server.resident(t, "VmRSS")>>20)
+
+	// Each room's history is replaced past its cursor: another process's record above the head
+	// the room loaded, the compaction that folds the room's rows into it, and a record after it.
+	versioned := docs.NewPgVersioned(memory.database)
+	writtenPast := marginFloodRecord(gateFoldWriter, "written-past-the-room", "A record another process wrote past the room.")
+	writtenAfter := marginFloodRecord(gateFoldWriter+1, "written-after-the-fold", "A record written after the compaction.")
+	replacedHeads := make([]int64, rooms)
+	foldedRows := make([]int, rooms)
+	step = time.Now()
+	for index, room := range foldRooms {
+		var head int64
+		if err := memory.database.Pool.QueryRow(ctx,
+			`select coalesce(max(version), 0) from doc_updates where artifact_id = $1`, room,
+		).Scan(&head); err != nil {
+			t.Fatalf("read the head room %d loaded at: %v", index, err)
+		}
+		if _, err := memory.database.Pool.Exec(ctx,
+			`insert into doc_updates (artifact_id, version, update, content_changed) values ($1, $2, $3, false)`, room, head+1, writtenPast,
+		); err != nil {
+			t.Fatalf("write room %d's document past its cursor: %v", index, err)
+		}
+		deleted, err := versioned.Compact(ctx, room, 1)
+		if err != nil || deleted < gateFoldRun {
+			t.Fatalf("the compaction of room %d's document deleted %d rows (%v), want the run's %d and the rows before them", index, deleted, err, gateFoldRun)
+		}
+		if _, err := memory.database.Pool.Exec(ctx,
+			`insert into doc_updates (artifact_id, version, update, content_changed) values ($1, $2, $3, false)`, room, head+2, writtenAfter,
+		); err != nil {
+			t.Fatalf("write room %d's document after the compaction: %v", index, err)
+		}
+		var oldest, rows int64
+		if err := memory.database.Pool.QueryRow(ctx, `
+			select min(version), count(*), coalesce(max(octet_length(update)) filter (where version = $2), 0)
+			from doc_updates where artifact_id = $1
+		`, room, head+1).Scan(&oldest, &rows, &foldedRows[index]); err != nil {
+			t.Fatalf("read room %d's replaced history: %v", index, err)
+		}
+		if oldest != head+1 || rows != 2 || foldedRows[index] < run.stateBytes || foldedRows[index] > run.stateBytes+4<<10 {
+			t.Fatalf("room %d holds every version through %d, and its stored history starts at %d in %d rows, the row at %d of %d bytes; want the compaction's row there holding the run's %d-byte state and the record, and the record after it",
+				index, head, oldest, rows, head+1, foldedRows[index], run.stateBytes)
+		}
+		replacedHeads[index] = head + 2
+		t.Logf("room %d holds every version through %d; the compaction deleted %d rows and left its row %d of %d bytes, declaring at least the run's %d structs, and the record after it at %d",
+			index, head, deleted, head+1, foldedRows[index], gateFoldRun, head+2)
+	}
+	t.Logf("the %d rooms' histories were replaced past their cursors in %s", rooms, time.Since(step).Round(time.Second))
+	handed := make([][]byte, len(handing))
+	for index, handingBack := range handing {
+		handed[index] = typedHandoff(t, handingBack.state(t))
+		if len(handed[index]) > maxRoomStateBytesForTest || len(handed[index])+64<<10 < maxRoomStateBytesForTest {
+			t.Fatalf("handoff %d is %d bytes, want within 64 KiB under the room's state cap (%d)", index, len(handed[index]), maxRoomStateBytesForTest)
+		}
+	}
+	// The keystroke, typed at the head of the document's first text: it builds on the seed's items
+	// alone, which every room holds and the replaced history keeps, so one update applies to each.
+	typist := newBrowserDocument(t, seed, crdt.WithClientID(gateFoldTypist))
+	heading := firstXMLText(typist.fragment)
+	if heading == nil {
+		t.Fatal("the seed holds no text to type into")
+	}
+	wantHeading := gateFoldTyped + heading.ToString()
+	var keystroke []byte
+	stopObserving := typist.doc.OnUpdate(func(made []byte, _ any) { keystroke = made })
+	typist.doc.Transact(func(txn *crdt.Transaction) { heading.Insert(txn, 0, gateFoldTyped, nil) })
+	stopObserving()
+	if _, err := memory.database.Pool.Exec(ctx,
+		`update doc_updates set created_at = now() - make_interval(secs => $2) where artifact_id::text = any($1)`,
+		foldRooms, gateFoldRowAge.Seconds()); err != nil {
+		t.Fatalf("age the rooms' replaced rows past the tail: %v", err)
+	}
+
+	type outcome struct {
+		sent, answered time.Time
+		applied        bool
+		closed         *gws.CloseError
+		err            error
+	}
+	handedBack := make([]outcome, len(handing))
+	read := make([]outcome, len(folded))
+	typed := make([]outcome, len(typing))
+	var closes map[string]time.Time
+	mark := len(server.output.String())
+	step = time.Now()
+	peak := server.peakResident(t, func() {
+		var group sync.WaitGroup
+		for index, handingBack := range handing {
+			group.Go(func() {
+				result := &handedBack[index]
+				result.sent = time.Now()
+				result.applied, result.closed, result.err = handingBack.send(handingBack.stateFrame(handed[index]))
+				result.answered = time.Now()
+			})
+		}
+		for index, room := range folded {
+			group.Go(func() {
+				result := &read[index]
+				result.sent = time.Now()
+				var answer response
+				answer, result.err = server.trySend(http.MethodGet, "/api/v1/artifacts/"+room+"/text", "", nil, http.Header{"X-Dispatch-User": {"alice"}})
+				var text struct{ Markdown string }
+				if result.err == nil && (answer.status != http.StatusOK || json.Unmarshal(answer.body, &text) != nil || text.Markdown == "") {
+					result.err = fmt.Errorf("status %d body %.300s, want 200 and the document's text", answer.status, answer.body)
+				}
+				result.answered = time.Now()
+			})
+		}
+		// The keystrokes go once the pool is full: once the server has given back a grant a holder
+		// waited for, the heavy writers and the folds are queuing for it.
+		for deadline := time.Now().Add(poolQueuedWithin); len(loadSlotHolds(t, server.output.String()[mark:])) == 0; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				group.Wait()
+				t.Fatalf("no holder of the pool waited for it within %s of the heavy writers and the folds starting: the pool was never full", poolQueuedWithin)
+			}
+		}
+		t.Logf("a holder of the pool had waited for it %s after the heavy writers and the folds started; the keystrokes go now", time.Since(step).Round(time.Millisecond))
+		for index, typingIn := range typing {
+			group.Go(func() {
+				result := &typed[index]
+				result.sent = time.Now()
+				result.applied, result.closed, result.err = typingIn.send(typingIn.updateFrame(keystroke))
+				result.answered = time.Now()
+			})
+		}
+		group.Wait()
+		closes = replacedCloses(t, server, mark, foldRooms)
+	})
+	took := time.Since(step)
+	window := server.output.String()[mark:]
+
+	for index, result := range handedBack {
+		t.Logf("handoff %d of %d bytes: applied %v, closed %v, answered %s into the window", index, len(handed[index]), result.applied, result.closed, result.answered.Sub(step).Round(time.Millisecond))
+		if result.err != nil || !result.applied || result.closed != nil {
+			t.Errorf("handoff %d of %d bytes at the state cap: applied %v, closed %v, %v; want it applied and the socket open", index, len(handed[index]), result.applied, result.closed, result.err)
+		}
+	}
+	// A cold read behind the heavy work waits for the pod's one slot and is answered 503
+	// DOC_SERVICE_UNAVAILABLE at its own deadline where the wait outlasts it, as in the
+	// heaviest-apply drive: the load concurrency working, not a failure.
+	coldRead, coldBusy := 0, 0
+	for index, result := range read {
+		t.Logf("cold read %d answered %s into the window (%v)", index, result.answered.Sub(step).Round(time.Millisecond), result.err)
+		switch {
+		case result.err == nil:
+			coldRead++
+		case strings.Contains(result.err.Error(), "DOC_SERVICE_UNAVAILABLE"):
+			coldBusy++
+		default:
+			t.Errorf("cold read %d of a document at the decode cap: %v", index, result.err)
+		}
+	}
+	t.Logf("%d of the %d cold reads folded their document and %d waited for one of the pod's %d load slots until their own deadline and were answered 503",
+		coldRead, len(read), coldBusy, loadSlotsForTest)
+
+	holds := loadSlotHolds(t, window)
+	logLoadSlots(t, "the gate folds and the closing compactions beside the full pool", holds)
+	besideFolds, closed, besideCloses := 0, 0, 0
+	for index, room := range foldRooms {
+		result := typed[index]
+		busy := poolBusyThrough(holds, result.sent, result.answered)
+		t.Logf("room %d's keystroke: applied %v, closed %v, stored in %s, the pool busy throughout %v; its gate folded a %d-byte row declaring at least %d structs and the record after it, weighed at %d bytes of the pool, of which it took none where the pool was busy",
+			index, result.applied, result.closed, result.answered.Sub(result.sent).Round(time.Millisecond), busy, foldedRows[index], gateFoldRun, copyWeightForTest(int64(foldedRows[index]), gateFoldRun))
+		if result.err != nil || !result.applied || result.closed != nil {
+			t.Errorf("room %d's keystroke: applied %v, closed %v, %v; want it applied, which its room answers once it is stored", index, result.applied, result.closed, result.err)
+		}
+		if busy {
+			besideFolds++
+		} else {
+			t.Errorf("room %d's keystroke was stored from %s to %s into the window, and no grant the server logged was waited for or held throughout: its gate's fold of the replaced history may have found the pool free, so it was not weighed beside a full pool",
+				index, result.sent.Sub(step).Round(time.Millisecond), result.answered.Sub(step).Round(time.Millisecond))
+		}
+		var past int64
+		if err := memory.database.Pool.QueryRow(ctx,
+			`select count(*) from doc_updates where artifact_id = $1 and version > $2`, room, replacedHeads[index],
+		).Scan(&past); err != nil {
+			t.Fatalf("read room %d's rows past its replaced history: %v", index, err)
+		}
+		storedHeading := firstXMLText(newBrowserDocument(t, memory.storedState(t, room)).fragment)
+		if past == 0 || storedHeading == nil || storedHeading.ToString() != wantHeading {
+			got := ""
+			if storedHeading != nil {
+				got = storedHeading.ToString()
+			}
+			t.Errorf("room %d's document holds %d rows past the replaced history's head %d and its first text reads %q, want the keystroke stored there and the text reading %q",
+				index, past, replacedHeads[index], got, wantHeading)
+		}
+		closedAt, logged := closes[room]
+		if !logged {
+			t.Errorf("the server logged no close of room %d within %s of its keystroke's answer: its persistence worker's compaction as it exits did not run in the window:\n%s",
+				index, replacedCloseWithin, server.output.tail())
+			continue
+		}
+		closed++
+		closingBusy := poolBusyThrough(holds, result.answered, closedAt)
+		if closingBusy {
+			besideCloses++
+		}
+		t.Logf("room %d was closed %s after its keystroke was stored, its compaction as it exits included, the pool busy throughout %v",
+			index, closedAt.Sub(result.answered).Round(time.Millisecond), closingBusy)
+	}
+	t.Logf("in %s: %d gate folds of the run's state beside a full pool and %d closing compactions of it, %d of them while the pool was busy throughout, in the %d rooms the budget holds; one such fold was measured holding %d bytes above the document it leaves, %d for every room at once",
+		took.Round(time.Second), besideFolds, closed, besideCloses, rooms, int64(gateFoldMeasuredFold), int64(rooms)*gateFoldMeasuredFold)
+
+	requireUnderThePod(t, filledPeak, "the rooms opened")
+	requireUnderThePod(t, peak, "the gate folds and the closing compactions beside the full pool")
+	if peak.samples > 0 {
+		t.Logf("the gate folds and the closing compactions beside the full pool: a pod's kernel would charge %d MiB, %d MiB under the pod's %d; the runtime held %d bytes, %d under the %d-byte limit and its %d-byte margin",
+			peak.charged>>20, (podMemory-peak.charged)>>20, podMemory>>20, peak.held, peak.limit+podGoMemoryLimitMargin-peak.held, peak.limit, podGoMemoryLimitMargin)
+	}
+}
+
+// keystrokeRunDocument is a stored document of gateFoldSeed whose history then took the run of
+// gateFoldRun keystrokes, a row each, as a room stores the browser updates it takes one at a time:
+// each the character "a" typed under gateFoldRunner at the end of the seed's paragraph, after the
+// one before it (keystrokeFrame), as the docs package's measurement types its run (chainedRun).
+// The rows are dated gateFoldRunAhead ahead of the database's clock. It answers the document and
+// the seed's stored state.
+func (h *memoryHarness) keystrokeRunDocument(t *testing.T) (string, []byte) {
+	t.Helper()
+	ctx := context.Background()
+	artifactID, seed := h.storedDocument(t, gateFoldSeed)
+	var head int64
+	if err := h.database.Pool.QueryRow(ctx,
+		`select coalesce(max(version), 0) from doc_updates where artifact_id = $1`, artifactID,
+	).Scan(&head); err != nil {
+		t.Fatalf("read the seed's head: %v", err)
+	}
+	origin := paragraphEnd(t, seed)
+	versions := make([]int64, 0, gateFoldRowsBatch)
+	updates := make([][]byte, 0, gateFoldRowsBatch)
+	store := func() {
+		if _, err := h.database.Pool.Exec(ctx, `
+			insert into doc_updates (artifact_id, version, update, content_changed, created_at)
+			select $1, version, update, false, now() + make_interval(secs => $4)
+			from unnest($2::bigint[], $3::bytea[]) as run(version, update)
+		`, artifactID, versions, updates, gateFoldRunAhead.Seconds()); err != nil {
+			t.Fatalf("store the run's rows through version %d: %v", versions[len(versions)-1], err)
+		}
+		versions, updates = versions[:0], updates[:0]
+	}
+	for clock := range uint64(gateFoldRun) {
+		left := origin
+		if clock > 0 {
+			left = crdt.ID{Client: gateFoldRunner, Clock: clock - 1}
+		}
+		versions = append(versions, head+1+int64(clock))
+		updates = append(updates, keystrokeFrame(gateFoldRunner, clock, left))
+		if len(versions) == gateFoldRowsBatch {
+			store()
+		}
+	}
+	if len(versions) > 0 {
+		store()
+	}
+	return artifactID, seed
+}
+
+// paragraphEnd is the ID of the last character of the first paragraph of the document state holds.
+func paragraphEnd(t *testing.T, state []byte) crdt.ID {
+	t.Helper()
+	for _, block := range newBrowserDocument(t, state).fragment.Children() {
+		paragraph, isParagraph := block.(*crdt.YXmlElement)
+		if !isParagraph || paragraph.NodeName != "paragraph" {
+			continue
+		}
+		if text := firstXMLText(paragraph); text != nil && text.Len() > 0 {
+			if end := crdt.CreateRelativePositionFromIndex(text, text.Len()-1, 0).Item; end != nil {
+				return *end
+			}
+		}
+	}
+	t.Fatal("the document holds no paragraph of text")
+	return crdt.ID{}
+}
+
+// keystrokeFrame is the update of one keystroke of client's at clock, the character "a" naming
+// origin as its left origin and no right origin (writeOriginText).
+func keystrokeFrame(client crdt.ClientID, clock uint64, origin crdt.ID) []byte {
+	return encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+		encoder.WriteVarUint(1)
+		encoder.WriteVarUint(1)
+		encoder.WriteVarUint(uint64(client))
+		encoder.WriteVarUint(clock)
+		writeOriginText(encoder, origin, "a")
+		encoder.WriteVarUint(0)
+	})
+}
+
+// replacedCloses is when the server logged, after the first from bytes of its output, the close
+// of each of rooms on a replaced history (replacedCloseLine), waiting up to replacedCloseWithin
+// for every one. A room missing from the answer was not closed so within that wait.
+func replacedCloses(t *testing.T, server *memoryServer, from int, rooms []string) map[string]time.Time {
+	t.Helper()
+	closes := map[string]time.Time{}
+	for deadline := time.Now().Add(replacedCloseWithin); ; time.Sleep(100 * time.Millisecond) {
+		for _, match := range replacedCloseLine.FindAllStringSubmatch(server.output.String()[from:], -1) {
+			if !slices.Contains(rooms, match[2]) {
+				continue
+			}
+			at, err := time.Parse(time.RFC3339Nano, match[1])
+			if err != nil {
+				t.Fatalf("parse %q: %v", match[0], err)
+			}
+			closes[match[2]] = at
+		}
+		if len(closes) == len(rooms) || time.Now().After(deadline) {
+			return closes
+		}
+	}
+}
+
+// poolBusyThrough reports whether, at every moment from from to to, a holder the server logged
+// (loadSlotHolds) was waiting for bytes of the pod's load pool or holding them: from the moment
+// it began to wait to the moment it gave them back. While one waits the pool admits no taker that
+// does not wait (semaphore.Weighted), and while one holds, a taker weighed at the whole pool finds
+// nothing free, so a decode that takes only free bytes at that weight takes none and runs beside
+// them. A holder that waited less than a tenth of a second leaves no line (loadSlotLine), so this
+// reads the pool busy for no longer than it was.
+func poolBusyThrough(holds []loadSlotHold, from, to time.Time) bool {
+	began := func(hold loadSlotHold) time.Time { return hold.from.Add(-hold.waited) }
+	spans := slices.SortedFunc(slices.Values(holds), func(a, b loadSlotHold) int { return began(a).Compare(began(b)) })
+	reached := from
+	for _, hold := range spans {
+		if !reached.Before(to) || began(hold).After(reached) {
+			break
+		}
+		if hold.to.After(reached) {
+			reached = hold.to
+		}
+	}
+	return !reached.Before(to)
+}
+
 // liveWriteDeadline is the deadline each write of the drive below runs under, which is the one a
 // real caller's write has. The server's own http.Server names ReadHeaderTimeout and IdleTimeout
 // and leaves WriteTimeout zero, deliberately, because the event stream is long-lived
