@@ -55,7 +55,7 @@ func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	err = sendCreate(t, "create stream "+config.Name, createSendWait, func() error {
+	err = sendCreate(t, conn, "create stream "+config.Name, createSendWait, []string{"$JS.API.STREAM.CREATE." + config.Name}, func() error {
 		_, err := js.AddStream(&config)
 		return err
 	})
