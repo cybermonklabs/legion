@@ -994,6 +994,40 @@ func TestAGrantTheReleaseChecksRefuseIsRefused(t *testing.T) {
 	}
 }
 
+// TestAProfilesRefusalOfTheGrantIsARefusalAtTheProxy: the two refusals a profile makes of a
+// grant's release — a target the live profile does not hold (requests.ErrTargetRefused), and a
+// scope its minter refuses (secrets.ErrMintNarrowingRefused: a cut that leaves no permission, a
+// repository GitHub refuses) — are the broker's answer about that grant, which no retry clears.
+// So the proxy answers each 403 in the broker's own words, under the code the API port answers
+// the same refusal of a release with, and never the 503 of a read that did not happen, which
+// tells a command to make the call again.
+func TestAProfilesRefusalOfTheGrantIsARefusalAtTheProxy(t *testing.T) {
+	for _, row := range []struct {
+		name       string
+		err        error
+		code, says string
+	}{
+		{"a target outside the live profile", fmt.Errorf("%w: PROOFS_READ: the target ada/site is outside the profile, which names the account ada and the repositories ada/lean", requests.ErrTargetRefused), "TARGET_REFUSED", "ada/site"},
+		{"a scope the minter refuses", fmt.Errorf("%w: github app 42: GitHub answered HTTP 422 to the profile's token for ada: likely a repository it names (missing) that the installation does not reach", secrets.ErrMintNarrowingRefused), "PROFILE_MINT_REFUSED", "(missing)"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t, Options{})
+			r.grants.valuesErr = row.err
+			client := r.client(workerPlaceholder)
+			answer, body := r.get(client, "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder)
+			if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, row.says) {
+				t.Fatalf("the call answered %d %q; want 403 naming %q", answer.StatusCode, body, row.says)
+			}
+			if records := r.logs.refusals(); len(records) != 1 || records[0].fields["code"] != row.code {
+				t.Fatalf("the refusal recorded %v; want one record coded %s", records, row.code)
+			}
+			if seen := r.requests(); len(seen) != 0 {
+				t.Fatalf("the service was sent %d requests; want none", len(seen))
+			}
+		})
+	}
+}
+
 // TestAGrantReadThatFailedIsNotTheGrantsOwnRefusal: a read of a grant that did not happen - the
 // store did not answer - is the broker's own 503 and not the grant's 407, on the CONNECT and on
 // a request of a connection already open alike. Two things hang on it. A 407 is what tells a

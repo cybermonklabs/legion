@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -271,24 +272,13 @@ var ErrGitHubOwnersComma = errors.New(`github-owners separates GitHub logins wit
 // underscores, is longer than 39 characters, or is the word none.
 var ErrGitHubOwnersLogin = errors.New("github-owners names GitHub logins: up to 39 ASCII letters, digits, hyphens and underscores, starting with a letter or digit")
 
-// gitHubLogin is what a GitHub login can be: an ASCII letter or digit, then ASCII letters, digits,
-// hyphens and underscores. It is matched against the entry as written, before it is lowercased,
-// since Unicode lowercasing maps some non-ASCII letters onto ASCII ones (U+212A KELVIN SIGN to `k`,
-// U+0130 to `i` with a combining dot). GitHub's sign-up rule today also refuses an underscore and
-// a trailing or doubled hyphen, but accounts made under its older rules keep their hyphens (`x-`
-// is an organization from 2011), and a managed user's login ends in `_<shortcode>`
-// (`mona-cat_octo`), so this refuses only what no login can hold. A login is at most 39
-// characters (maxGitHubLogin), which the pattern does not check.
-var gitHubLogin = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
-
-const maxGitHubLogin = 39
-
 // ParseGitHubLogin reads one GitHub account login, as written: up to 39 ASCII letters, digits,
-// hyphens and underscores, starting with a letter or digit, and not the word none
-// (ErrGitHubOwnersLogin). It answers it lowercased, since GitHub compares logins without regard to
-// case. White space is no part of a login, so "ada ada" is refused rather than read as one.
+// hyphens and underscores, starting with a letter or digit (githubname.ValidLogin), and not the
+// word none (ErrGitHubOwnersLogin). It answers it lowercased, since GitHub compares logins without
+// regard to case. White space is no part of a login, so "ada ada" is refused rather than read as
+// one.
 func ParseGitHubLogin(raw string) (string, error) {
-	if len(raw) > maxGitHubLogin || !gitHubLogin.MatchString(raw) {
+	if !githubname.ValidLogin(raw) {
 		return "", fmt.Errorf("%w, not %q", ErrGitHubOwnersLogin, raw)
 	}
 	login := strings.ToLower(raw)
@@ -651,53 +641,6 @@ func TagRules(t TagSet) string {
 	return ""
 }
 
-// gitHubRepositoryName is what a repository name GitHub creates can be: ASCII letters, digits,
-// '.', '-' and '_', at most 100 of them. The names . and .. are refused beside it.
-var gitHubRepositoryName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
-
-// NarrowingError is ParseGitHubNarrowing's refusal: Field is the narrowing's field it names,
-// "owner" or "repositories", so a caller can name it in its own terms (the API's
-// github_app.<field>, the CLI's flag), and Reason says what is wrong with it.
-type NarrowingError struct {
-	Field, Reason string
-}
-
-func (e *NarrowingError) Error() string {
-	return e.Field + " " + e.Reason
-}
-
-// ParseGitHubNarrowing checks one release's narrowing of its GitHub App tokens as a caller wrote it
-// and answers it in its canonical form: owner one GitHub login (ParseGitHubLogin, once white space
-// around it is trimmed), lowercased, and repositories names GitHub can hold, without the owner, at
-// most secrets.MaxNarrowedRepositories, sorted and each once. Repositories nil names none, so the
-// token reaches every repository of the installation; present but empty is refused, since a caller
-// that built it from a list that matched nothing would otherwise get that widest token. Nothing
-// else reaches GitHub: the permissions a narrowing can name are fixed, so a caller can only
-// narrow. It answers its refusal as a *NarrowingError, typed rather than error, so a caller names
-// the field without reading the text. The broker applies a narrowing in this form and names it back in
-// the release's answer, and the CLI builds its request with this function too, so the CLI's check
-// that the broker applied the narrowing it asked for compares like with like.
-func ParseGitHubNarrowing(owner string, repositories []string, readOnly bool) (secrets.GitHubNarrowing, *NarrowingError) {
-	login, err := ParseGitHubLogin(strings.TrimSpace(owner))
-	if err != nil {
-		return secrets.GitHubNarrowing{}, &NarrowingError{"owner", fmt.Sprintf("must name one GitHub login, not %q", owner)}
-	}
-	if repositories != nil && len(repositories) == 0 {
-		return secrets.GitHubNarrowing{}, &NarrowingError{"repositories", "is empty: name at least one repository, or leave it out for every repository of the installation"}
-	}
-	if len(repositories) > secrets.MaxNarrowedRepositories {
-		return secrets.GitHubNarrowing{}, &NarrowingError{"repositories", fmt.Sprintf("names %d repositories; the broker takes at most %d", len(repositories), secrets.MaxNarrowedRepositories)}
-	}
-	for _, name := range repositories {
-		if !gitHubRepositoryName.MatchString(name) || name == "." || name == ".." {
-			return secrets.GitHubNarrowing{}, &NarrowingError{"repositories", fmt.Sprintf("names %s's repositories by name alone, in ASCII letters, digits, '.', '-' and '_', not %q", login, name)}
-		}
-	}
-	sorted := slices.Clone(repositories)
-	slices.Sort(sorted)
-	return secrets.GitHubNarrowing{Owner: login, Repositories: slices.Compact(sorted), ReadOnly: readOnly}, nil
-}
-
 // TypeNeedsGitHubOwners reports whether a secret of type must carry a github-owners tag naming at
 // least one account. Only a github-app secret reads the tag.
 func TypeNeedsGitHubOwners(secretType string) bool {
@@ -749,6 +692,18 @@ var ErrUnknownSecret = errors.New("no agent secret has this name")
 // value. Unlike ErrUnknownSecret it is not final, so a request for it is refused with this, naming
 // the secret, never as unknown.
 var ErrPendingValue = errors.New("exists and awaits its first value; ask again after its owner stores it")
+
+// ErrServedOnlyAsProfiles is a request for a source by its own name while profiles of other names
+// use it (Set.ProfilesOf) and none holds that name: the source is served only through them, so no
+// caller gets the whole credential by the source's name. Evaluate's error names the profiles of it
+// the set serves, to ask for instead, or, where the set refuses each of them, says so and names
+// them.
+var ErrServedOnlyAsProfiles = errors.New("is served only through its profiles")
+
+// ErrProfileRefused is a request for a name the profiles file decides and the policy refuses: a
+// profile that failed against its source, or a github-app secret no profile names
+// (ReasonGitHubAppNoProfile). Evaluate's error gives the reason and its detail.
+var ErrProfileRefused = errors.New("is refused by the profiles file")
 
 // ReasonAbsent is LoadOne's answer for a name no secret carries: none exists under the prefix, or
 // the one that does is scheduled for deletion. It is not a refusal, so it is never in
@@ -803,18 +758,23 @@ type Secret struct {
 	// ProjectChannels is the secret's project-channels tag (TagProjectChannels), ProjectChannelsSlack
 	// or "" for a secret carrying none: a private project's credential may spend such a secret only
 	// where that project's owner allows, which the airlock's proxy is what enforces, so Evaluate
-	// refuses one that has no airlock entry (ReasonProjectChannelsNeedAirlock). It is in Version,
-	// so the airlock proxy reads again a value it read before the tag was added.
+	// refuses one that is not served as a profile with a proxy block
+	// (ReasonProjectChannelsNeedAirlock). It is in Version, so the airlock proxy reads again a
+	// value it read before the tag was added.
 	ProjectChannels string
 	// Admin is true when the secret carries admin: "true" (TagAdmin): its grant is an
 	// administrator's, which the rules hold to human tier, a requesters list and an hour's cap
 	// (TagRules).
 	Admin bool
-	// AirlockDigest is the fingerprint of this secret's entry in the airlock's rules file
-	// (proxyrules.Rules.Digest), and "" for a secret the rules do not name or a deployment with no
-	// rules file. A string, not a pointer, for the same reason as MaxGrant. It is in Version, so
-	// a change to one secret's entry moves the policy version and ends the grants of that name.
-	AirlockDigest string
+	// ProfileDigest is the fingerprint of the profile this secret is served as (Profiles.Digest),
+	// and "" for a stored secret served by its own name. A string, not a pointer, for the same
+	// reason as MaxGrant. It is in Version, so an edit of one profile's entry moves the policy
+	// version and ends the grants of that name (requests.Machine's checkRelease).
+	ProfileDigest string
+	// Profile is the profiles file's entry this secret is served as, and nil for a stored secret
+	// served by its own name. It points into the one Profiles the boot read, which never changes,
+	// so a Secret stays comparable and two publishes of one profile hold the same pointer.
+	Profile *Profile
 	// SessionDefault is true when the secret's default-grant tag is "session": a request naming
 	// no lifetime gets a grant that lasts until its session ends instead of DefaultGrantLifetime.
 	SessionDefault bool
@@ -900,9 +860,9 @@ func (secret Secret) approver() string {
 type Set struct {
 	// Version is the SHA-256 of every served secret's name, owner, tier, source, max-grant,
 	// github-owners, requesters, scopes, admin, project and project-channels, and of the
-	// fingerprint of each one's airlock entry: equal versions are equal policies. A request
-	// records the version it was decided under, so a live grant is re-evaluated only once the
-	// policy changed. The project-channels tag is in it because the airlock proxy holds a grant's
+	// fingerprint of each profile it serves: equal versions are equal policies. A request records
+	// the version it was decided under, so a live grant is re-evaluated only once the policy
+	// changed. The project-channels tag is in it because the airlock proxy holds a grant's
 	// released values per pod and reads them again only when one of the grant's names is reread
 	// or this version moves (internal/cipher/proxy/bound.go): a project-channels retag a
 	// console or an infra-applier made reaches a pod that already holds values by no other road,
@@ -912,7 +872,8 @@ type Set struct {
 	Version string
 	Secrets map[string]Secret
 	// Refused is every secret under the prefix the policy refuses to serve, keyed by its whole
-	// name in the store (the name its RefusedMessage line carries), with why. It is not in
+	// name in the store (the name its RefusedMessage line carries), and every profile it refuses,
+	// keyed "profile:" and the profile's name (profileKey), with why. It is not in
 	// Version: a refused secret is served to nobody, so a refusal that comes, goes or changes its
 	// reason re-evaluates no live grant the served secrets did not already move. Current compares
 	// it with the set before to write the state-change lines, and broker_unservable_secrets
@@ -928,7 +889,24 @@ type Set struct {
 	// each version and type it has not decoded, and refuses the secret only when the decoder does
 	// (ReasonValueMalformed).
 	versions map[string]string
+	// profiles is the profiles file applied to the set (Profiles.apply), and the zero Profiles for
+	// a set none were applied to. Every reading of a profile's source and of a source's profiles
+	// is its (Profiles.SourceOf, Profiles.Of), built once as the file was read.
+	profiles Profiles
+	// profileRefused is, for each name a request may ask for that the set refuses because of the
+	// profiles file, its refusal as Refused holds it: each failed profile's name, and each
+	// github-app secret no profile names (ReasonGitHubAppNoProfile). Evaluate answers it
+	// ErrProfileRefused. Refused itself is keyed by store id, which Evaluate, holding no prefix,
+	// cannot form.
+	profileRefused map[string]Refusal
 }
+
+// ProfilesOf is the names of the profiles of other names the set's profiles file makes from
+// source, in the file's order, whether they pass or fail (Profiles.Of): such a source is served
+// only through them, so Evaluate refuses its own name (ErrServedOnlyAsProfiles), naming those
+// that pass, unless a profile holds that name too. It is nil for a source no profile of another
+// name uses, and for every name of a set no profiles were applied to (Profiles.apply).
+func (s *Set) ProfilesOf(source string) []string { return s.profiles.Of(source) }
 
 // ValueVersion is the version of the type secret name's value as s lists it, and "" for a name s
 // lists no type secret's value for: what a mint the decoder refuses hands Current.RefuseValue, so
@@ -940,8 +918,14 @@ type Refusal struct {
 	// Reason is one of the Reason* refusal constants.
 	Reason string
 	// Owner is the secret's owner tag as the store holds it, and "" for ReasonOwnerTagMissing and
-	// ReasonOwnerTagMalformed, whose tag is the fault and names nobody the broker knows.
+	// ReasonOwnerTagMalformed, whose tag is the fault and names nobody the broker knows. A
+	// profile's is its source's, "" when the source is not one the store holds.
 	Owner string
+	// Detail says which part of a profile, or of the store's secret beside it, a profile reason
+	// is about (the source's own reason, the account a github block names that the source does
+	// not), and is "" for every reason that is a secret's own tag's. RefusedMessage writes it as
+	// detail.
+	Detail string
 }
 
 // Pending is one secret under the prefix waiting for its first value (ReasonPendingValue), as a
@@ -972,10 +956,10 @@ func setOf(secrets map[string]Secret, refused map[string]Refusal, pending map[st
 // those five it carries. The project and project-channels tags are written only by a secret
 // that carries one, so the secrets of a deployment that tags none write the bytes they wrote
 // before the tag existed and no deployed version shifts. A
-// secret the airlock's rules name adds one line more, "<Name>\tairlock=<digest>\n", rather than a
-// field of the line above it, so every line a deployment with no rules file writes is
-// byte-identical to the one it writes
-// today and its Version does not shift. Entries are ascending by the secret's name in the store
+// secret served as a profile adds one line more, "<Name>\tprofile=<digest>\n", rather than a
+// field of the line above it, so every line a stored secret served by its own name writes is
+// byte-identical to the one it wrote before profiles existed, and its Version does not shift.
+// Entries are ascending by the secret's name in the store
 // (the slug) — the exact order Load wrote before NewSet existed, so deployed plain-secret digests
 // do not shift. (Sorting by the uppercased Name would NOT be equivalent: '-' is 0x2D, '_' is
 // 0x5F, so "a-b" < "a0" as slugs but "A0" < "A_B" as Names.)
@@ -1020,8 +1004,8 @@ func NewSet(secrets map[string]Secret) *Set {
 		default:
 			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, projectTags)
 		}
-		if s.secret.AirlockDigest != "" {
-			fmt.Fprintf(digest, "%s\tairlock=%s\n", s.secret.Name, s.secret.AirlockDigest)
+		if s.secret.ProfileDigest != "" {
+			fmt.Fprintf(digest, "%s\tprofile=%s\n", s.secret.Name, s.secret.ProfileDigest)
 		}
 	}
 	return &Set{Version: hex.EncodeToString(digest.Sum(nil)), Secrets: secrets}
@@ -1041,8 +1025,8 @@ type Requester struct {
 	// account listed for another service, or for none, proves nothing here.
 	Service string
 	// Withheld is the names the session's operator withheld from it by revoking a grant of them
-	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each as
-	// a human-tier secret.
+	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each,
+	// and every other name served from the same source (Set.Withholds), as a human-tier secret.
 	Withheld []string
 	// Projects is the projects the credential names that its person may see, as the caller
 	// resolved them: a session's enrollment's list, or the project an operator's entry maps a
@@ -1104,10 +1088,11 @@ const ReasonProjectNotNamed = "project-not-named"
 const ReasonProjectMissing = "project-missing"
 
 // ReasonProjectChannelsNeedAirlock is the Reason of a Deny for a project-channels secret
-// (TagProjectChannels) with no airlock entry, asked for by a credential that names a private
-// project (Requester.ListsPrivate). Outside the airlock the release hands the session the real
-// token, which it could then spend anywhere; behind it the proxy holds each post to the channels
-// the project's owner named. A credential that names no private project is unchanged.
+// (TagProjectChannels) that no profile with a proxy block serves, asked for by a credential that
+// names a private project (Requester.ListsPrivate). Outside the airlock the release hands the
+// session the real token, which it could then spend anywhere; behind it the proxy holds each post
+// to the channels the project's owner named. A credential that names no private project is
+// unchanged.
 const ReasonProjectChannelsNeedAirlock = "project-channels-need-airlock"
 
 // ListsPrivate reports whether any project the credential names is private: the one predicate
@@ -1173,20 +1158,24 @@ func CallerReason(reason string) string {
 // policy's to see.
 const ReasonSignInOff = "a person must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)"
 
-// Evaluate answers r's ask for name. A name the set does not serve is ErrUnknownSecret. A secret
-// whose requesters are listed (Secret.Requesters) is denied, ReasonRequesterNotListed, to every
-// requester the list does not name, before owner and tier are read at all. A secret tagged with
-// a project (Secret.Project) is then read by ProjectRule: no state is ErrNoProjectState, a
-// project Dispatch does not hold is denied to everyone (ReasonProjectMissing), and a private
-// project is denied to a credential that does not name it (ReasonProjectNotNamed); a public
-// project, and a private one r names, go on to owner and tier unchanged. A name withheld from r
-// (Requester.Withheld) is decided as a human-tier secret: what r would have got at once is an
+// Evaluate answers r's ask for name. A name the set does not serve is ErrUnknownSecret, or, where
+// the profiles file says why, ErrProfileRefused for a profile that failed or a github-app secret
+// no profile names, and ErrServedOnlyAsProfiles for a source profiles of other names use, each
+// naming what the caller asks for instead or why (notServed). A secret whose requesters are
+// listed (Secret.Requesters) is denied, ReasonRequesterNotListed, to every requester the list
+// does not name, before owner and tier are read at all. A secret tagged with a project
+// (Secret.Project, which a profile holds from its source) is then read by ProjectRule: no state
+// is ErrNoProjectState, a project Dispatch does not hold is denied to everyone
+// (ReasonProjectMissing), and a private project is denied to a credential that does not name it
+// (ReasonProjectNotNamed); a public project, and a private one r names, go on to owner and tier
+// unchanged. A name withheld from r (Requester.Withheld), or served from the source of a name
+// that is (Set.Withholds), is decided as a human-tier secret: what r would have got at once is an
 // approval request to the owner, or to anyone for a shared secret, and a service's own secret,
 // which no person approves, is denied.
 func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	secret, ok := s.Secrets[name]
 	if !ok {
-		return Decision{}, ErrUnknownSecret
+		return Decision{}, s.unservedError(name)
 	}
 	if secret.Requesters != "" && !secret.lists(r) {
 		return Decision{Outcome: Deny, Reason: ReasonRequesterNotListed, Source: secret.Source}, nil
@@ -1199,12 +1188,12 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	}
 	// After the project rule: a secret whose use a private project's owner limits goes to such a
 	// credential only behind the airlock, where the proxy holds each post to the channels that
-	// owner named. Outside it the release hands over the real token, which the session could then
-	// spend anywhere.
-	if secret.ProjectChannels != "" && secret.AirlockDigest == "" && r.ListsPrivate() {
+	// owner named, which only a profile with a proxy block puts a name behind. Outside it the
+	// release hands over the real token, which the session could then spend anywhere.
+	if secret.ProjectChannels != "" && (secret.Profile == nil || secret.Profile.Proxy == nil) && r.ListsPrivate() {
 		return Decision{Outcome: Deny, Reason: ReasonProjectChannelsNeedAirlock, Source: secret.Source}, nil
 	}
-	withheld := slices.Contains(r.Withheld, name)
+	withheld := s.Withholds(r, name)
 	d := Decision{Source: secret.Source}
 	switch {
 	case secret.ownership == ownerService:

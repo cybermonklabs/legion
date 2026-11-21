@@ -217,7 +217,7 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   `--max-grant` of an hour or less, so a person approves every release, only someone it names may
   ask, and the grant is short enough to review while it is live. A person approves every release
   of one even where a deployment runs a model judge: the judge refuses an administrator's
-  secret, so no airlock rules entry can move one of its requests off the person who approves it
+  secret, so no proxy block's `judge` seconds can move one of its requests off the person who approves it
   ([The model judge](/legion/broker/concepts/#the-model-judge)). Any value but `true` is refused.
 - **`--project`** is optional. It names the one Dispatch project the secret belongs to, by its
   key as Dispatch writes it: `--project PRIV`. A secret of a **private** project goes only to a
@@ -242,7 +242,7 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   airlock ([The airlock](/legion/broker/concepts/#the-airlock)), and only to post with
   `POST /api/chat.postMessage`, carrying `channel`, `thread_ts` and `text`, to a channel id the
   owner of every private project it names allows; the proxy refuses every other call
-  `CHANNEL_NOT_ALLOWED`. Where the secret has no airlock entry, such a credential is denied it
+  `CHANNEL_NOT_ALLOWED`. Where no profile with a proxy block serves the secret, such a credential is denied it
   `project-channels-need-airlock`. A credential that names no private project gets the secret as
   before. Any other value, and on `create` the word `none`, is refused before anything is written.
 - **`--max-grant`** is optional, except with `--admin true` and with

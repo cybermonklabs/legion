@@ -253,6 +253,7 @@ on:
       - 'packages/envoy/internal/cipher/projectrepos/*'
       - 'packages/envoy/internal/cipher/proof/*'
       - 'packages/envoy/internal/cipher/record/*'
+      - 'packages/envoy/internal/cipher/githubname/*'
       - 'packages/envoy/internal/cipher/requests/*'
       - 'packages/envoy/internal/cipher/reread/*'
       - 'packages/envoy/internal/cipher/secrets/*'

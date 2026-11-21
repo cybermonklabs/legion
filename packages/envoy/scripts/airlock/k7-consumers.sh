@@ -38,19 +38,22 @@ k7_consumer_require_inputs() {
 	done
 }
 
-# k7_consumer_add_fixtures writes the extra rules and fake secrets for k7's consumers. Its caller
-# supplies add_fake_secret, AIRLOCK_RULES_FILE, STACK_SECRETS_PREFIX and K7_CONSUMER_WORK_DIR.
+# k7_consumer_add_fixtures writes the extra profiles and fake secrets for k7's consumers: one
+# profile per consumer, whose proxy block binds it to the real hosts that consumer calls, beside
+# the stack's own profiles, and a fake value for each. Each consumer is written as its name and its
+# hosts and made a profile of that name whose proxy block names those hosts. Its caller supplies
+# add_fake_secret, AIRLOCK_PROFILES_FILE, STACK_SECRETS_PREFIX and K7_CONSUMER_WORK_DIR.
 k7_consumer_add_fixtures() {
 	local d="${K7_CONSUMER_WORK_DIR:?}"
 	mkdir -p "$d"
-	jq --arg gcloud "$AIRLOCK_GCLOUD_SECRET" --arg read "$AIRLOCK_GWS_READ_SECRET" --arg admin "$AIRLOCK_GWS_ADMIN_SECRET" '.secrets += [
+	jq --arg gcloud "$AIRLOCK_GCLOUD_SECRET" --arg read "$AIRLOCK_GWS_READ_SECRET" --arg admin "$AIRLOCK_GWS_ADMIN_SECRET" '.profiles += ([
 	     {"name": "SLACK_BOT_TOKEN", "hosts": ["slack.com"]},
 	     {"name": "GITHUB_ADMIN_PAT", "hosts": ["api.github.com", "github.com"]},
 	     {"name": "TAILSCALE_API_KEY", "hosts": ["api.tailscale.com"]},
 	     {"name": $gcloud, "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"]},
 	     {"name": $read, "hosts": ["www.googleapis.com", "oauth2.googleapis.com"]},
 	     {"name": $admin, "hosts": ["admin.googleapis.com"]}
-	   ]' "$AIRLOCK_RULES_FILE" >"$d/rules.json"
+	   ] | map({name, proxy: {hosts}}))' "$AIRLOCK_PROFILES_FILE" >"$d/profiles.json"
 	K7_SLACK="$(printf '%s%s' xox "b-the-fake-slack-token-$RANDOM$RANDOM")"
 	K7_GITHUB="$(printf '%s%s' gh "p_thefakegithubadminpat$RANDOM$RANDOM")"
 	K7_TAILSCALE="$(printf '%s%s' tskey "-api-the-fake-tailscale-key-$RANDOM$RANDOM")"

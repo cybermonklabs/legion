@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // privProject is the private project of the page's project tests: ada owns it and its access
@@ -22,8 +23,8 @@ const privProject = "PRIV"
 // projectRig is newRig with a Dispatch stand-in holding PRIV, served to the request machine and
 // the enrollment, and two secrets of PRIV beside the rig's four: PRIV_SECRET, ada's and human
 // tier, which ada approves; PRIV_SHARED, shared and human tier, which anyone signed in may approve
-// by owner and tier.
-func projectRig(t *testing.T) (*rig, *projectaccesstest.Server) {
+// by owner and tier. profiles, each one entry's JSON, are the rig's profiles file, none for none.
+func projectRig(t *testing.T, profiles ...string) (*rig, *projectaccesstest.Server) {
 	t.Helper()
 	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
 		privProject: {Visibility: "private", Owner: ada, Listed: []string{ben}},
@@ -36,6 +37,9 @@ func projectRig(t *testing.T) (*rig, *projectaccesstest.Server) {
 	r := newRig(t, func(s *rigSetup) {
 		s.secrets = []secrets.LocalSecret{tagged("PRIV_SECRET", ada), tagged("PRIV_SHARED", policy.OwnerShared)}
 		s.projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
+		if len(profiles) > 0 {
+			s.profiles = policytest.ProfilesFile(profiles...)
+		}
 	})
 	return r, dispatch
 }
@@ -65,7 +69,7 @@ func (r *rig) requestSignedElsewhere(t *testing.T, enrollmentID string, key *ecd
 	}
 	current := r.machine.Audience
 	r.machine.Audience = elsewhere
-	created, err := r.machine.Create(t.Context(), enrollmentID, compact, "", nil)
+	created, err := r.machine.Create(t.Context(), enrollmentID, compact, "")
 	r.machine.Audience = current
 	if err != nil || created.RecordID == nil || created.State != "pending" {
 		t.Fatalf("Create under %s = %+v, %v; want a pending request on a record", elsewhere, created, err)
@@ -92,6 +96,33 @@ func TestTheApprovalPageShowsAPrivateSecretsProject(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("the page of %s does not say %q:\n%s", p.recordID, want, got)
 		}
+	}
+}
+
+// TestAPrivateProjectsProfileIsShownAndHiddenAsItsSource: PRIV_SHARED_READ, a profile of
+// PRIV_SHARED under a name of its own, belongs to PRIV as its source does. The page of a request
+// for it, from a session naming PRIV, says its project is PRIV, private and named by the session,
+// as TestTheApprovalPageShowsAPrivateSecretsProject's page says of PRIV_SECRET; and carol, outside
+// PRIV, who may approve the profile by owner and tier, gets the 404 an id no record has, as for
+// PRIV_SHARED (TestAnOutsiderSeesNoPrivateRequest).
+func TestAPrivateProjectsProfileIsShownAndHiddenAsItsSource(t *testing.T) {
+	r, _ := projectRig(t, `{"name": "PRIV_SHARED_READ", "source": "PRIV_SHARED", "proxy": {"hosts": ["api.example.com"]}}`)
+	enrollmentID, key := r.benSession(t, "ben-profile-box")
+	r.nameProjects(t, enrollmentID, privProject)
+	profiled := r.request(t, enrollmentID, key, "rotate the shared key", nil, "", "PRIV_SHARED_READ")
+	wikiSession, wikiKey := r.benSession(t, "ben-profile-wiki-box")
+	visible := r.request(t, wikiSession, wikiKey, "rotate the wiki key", nil, "", "SHARED_SECRET")
+
+	owner := r.browser(t)
+	owner.SignIn(t, profiled.recordID, person(ada))
+	if got, want := pageText(t, owner.Page(t, profiled.recordID).Body), "Project of PRIV_SHARED_READ PRIV, private, which the session names"; !strings.Contains(got, want) {
+		t.Errorf("the page of %s does not say %q:\n%s", profiled.recordID, want, got)
+	}
+
+	outsider := r.browser(t)
+	outsider.SignIn(t, visible.recordID, person(carol))
+	if res := outsider.Get(t, "/approve/"+profiled.recordID); res.Status != http.StatusNotFound || !strings.Contains(pageText(t, res.Body), "No such request") {
+		t.Errorf("carol's page of %s = %d:\n%s\nwant the 404 an id no record has", profiled.recordID, res.Status, pageText(t, res.Body))
 	}
 }
 
@@ -292,4 +323,69 @@ func TestADispatchOutageShowsOnlyItsRequestAsUnavailable(t *testing.T) {
 	if back := b.Page(t, keyed.recordID); back.Status != http.StatusOK || decisionForm(t, back.Body, keyed.recordID) == nil {
 		t.Fatalf("the INFRA-12 request's page once Dispatch answers = %d with no button; want it decidable again:\n%s", back.Status, pageText(t, back.Body))
 	}
+}
+
+// TestADispatchOutageLeavesATaggedRequestUnavailableAndDecidesTheRest: ben's page prints his
+// request for PRIV_SHARED, from a session naming PRIV, beside his request for the untagged
+// SHARED_SECRET while Dispatch answers. Dispatch then goes down and he approves all he was shown.
+// The profile check of the approval (approval.Page.profilesMoved) reads each record's names and
+// profiles without asking Dispatch, so the POST answers 303: the untagged request is granted, and
+// the PRIV_SHARED one is decided by nobody and stays pending, its outcome saying only that it is
+// unavailable, as TestADispatchOutageShowsOnlyItsRequestAsUnavailable's request naming an issue
+// does. An outage is no error of the broker's, so no line of the POST is an error line.
+func TestADispatchOutageLeavesATaggedRequestUnavailableAndDecidesTheRest(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	up := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+		privProject: {Visibility: "private", Owner: ada, Listed: []string{ben}},
+	}, nil)
+	access := &projectaccesstest.Swappable{}
+	access.Serve(up)
+	r := newRig(t, func(s *rigSetup) {
+		shared := policytest.Secret("PRIV_SHARED", policy.OwnerShared, policy.TierHuman, "priv-shared-not-a-secret")
+		shared.Tags[policy.TagProject] = privProject
+		s.secrets = []secrets.LocalSecret{shared}
+		s.projects = access
+	})
+	plainSession, plainKey := r.benSession(t, "ben-plain-box")
+	plain := r.request(t, plainSession, plainKey, "rotate the wiki key", nil, "", "SHARED_SECRET")
+	taggedSession, taggedKey := r.benSession(t, "ben-tagged-box")
+	r.nameProjects(t, taggedSession, privProject)
+	tagged := r.request(t, taggedSession, taggedKey, "rotate the shared key", nil, "", "PRIV_SHARED")
+
+	b := r.browser(t)
+	b.SignIn(t, plain.recordID, person(ben))
+	all, label := approveAll(t, b.Page(t, plain.recordID).Body)
+	if label != "Approve all 2 shown" {
+		t.Fatalf("ben's page offers %q; want both requests shown while Dispatch answers", label)
+	}
+	down := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	down.SetDown(true)
+	access.Serve(down)
+	logged := len(capture.Records())
+
+	res := b.FromPage(t, "/approve", all)
+	// Errorf, not Fatalf: a POST that answers otherwise is still checked for its error line below,
+	// and the page it lands on is read only when it answered the redirect.
+	if res.Status != http.StatusSeeOther {
+		t.Errorf("approve all while Dispatch is down = %d, want 303:\n%s", res.Status, pageText(t, res.Body))
+	}
+	if state := r.state(t, plain.recordID); state != "approved" {
+		t.Errorf("the untagged request = %s, want approved: Dispatch is asked nothing for it", state)
+	}
+	// Read from its rows: the rig's requirePending reads the record through ReadRecord, which asks
+	// the down Dispatch for PRIV_SHARED's project.
+	if pending, grants := r.count(t, `select count(*) from requests where record_id = $1 and state = 'pending'`, tagged.recordID), r.grants(t, tagged.recordID); pending != 1 || grants != 0 {
+		t.Errorf("the PRIV_SHARED request has %d pending request rows and %d grants; want it still pending with none", pending, grants)
+	}
+	if res.Status == http.StatusSeeOther {
+		landed := b.Get(t, res.Header.Get("Location"))
+		if text := pageText(t, landed.Body); landed.Status != http.StatusOK || !strings.Contains(text, tagged.recordID+": unavailable: "+unansweredNote) {
+			t.Errorf("the page approve all lands on = %d; want 200 with the PRIV_SHARED request's outcome %q:\n%s", landed.Status, unansweredNote, text)
+		}
+	}
+	if down.Calls() == 0 {
+		t.Fatal("the down Dispatch was never asked: the test is blind")
+	}
+	requireNoErrorLine(t, "approve all while Dispatch is down", capture.Records()[logged:])
 }

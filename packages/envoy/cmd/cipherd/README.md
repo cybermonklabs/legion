@@ -36,18 +36,22 @@ everything the broker depends on, and its generated configuration reference list
 with its default.
 
 `envoy-broker` with no argument serves.
-It takes two subcommands in place of serving.
+It takes three subcommands in place of serving; the third, `envoy-broker versions`, is in the
+operate page's "A migration recorded under another file".
 `envoy-broker end-sessions <login>` ends every browser session that login holds on the approval
 page and prints how many it ended;
 it reads the same configuration, binds no listener and applies no migration.
-`envoy-broker airlock-check <file> [--against <old file>]` reads an airlock rules file with the
-broker's own code and exits non-zero, naming the entry or the parse position, when the broker
-would not serve that file;
-on a file it would serve it prints the secrets, hosts and headers the file adds and removes
-against the file `--against` names, with a changed `allow`, `kind` or `judge` beside them, so
-that a pull request changing the deployment's `airlock.json` leaves a reviewer only the question
-of whether each host is the right one for its secret.
-`airlock-check` reads no configuration, opens no database and binds nothing.
+`envoy-broker profiles check <file> [--against <old file>]` reads a profiles file with the
+broker's own code and exits non-zero, naming the profile and the field or the parse position, when
+the broker would not serve that file;
+on a file it would serve it prints every field of each profile the file adds and removes against
+the file `--against` names, and each field a profile both files hold changes: its source, tier,
+requesters and `maxGrant`, its GitHub accounts, repositories, permissions and value, its Google
+scopes, and its proxy block's hosts, headers, `allow`, `kind`, `judge` and guidance.
+So a pull request changing the deployment's `profiles.json` leaves a reviewer only the question of
+whether each of those is right for its profile.
+`profiles check` reads no configuration, opens no database and binds nothing.
+The removed `envoy-broker airlock-check` exits 2 naming `profiles check`.
 
 For a local stack (Postgres in Docker, or one you run named by `DEV_BROKER_POSTGRES_URL`, a fake
 secrets file standing in for Secrets Manager, and the clients), run

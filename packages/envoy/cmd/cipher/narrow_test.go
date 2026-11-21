@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
@@ -294,8 +296,8 @@ func TestANarrowingTheBrokerAppliedOtherwiseRunsNothing(t *testing.T) {
 // and the refusal names the flag the caller gave: --github-token beside --github-repo names
 // --github-token, since a caller who asked for a token and named no account is told about the
 // flag they asked with. So is a --github-owner that names no account (an unset variable a helper
-// passed), which would otherwise send no narrowing at all, and any narrowing the broker's parser
-// refuses (policy.ParseGitHubNarrowing): the CLI runs that parser itself, so nothing reaches the
+// passed), which would otherwise send no narrowing at all, and any narrowing GitHub cannot hold
+// (parseGitHubNarrowing): the CLI checks it before it calls the broker, so nothing reaches the
 // broker, not even the request a person would approve.
 func TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo(t *testing.T) {
 	binary := buildAgentSecrets(t)
@@ -323,6 +325,67 @@ func TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo(t *testing.T) {
 		if requests, bodies := b.takeRequests(t), b.take(); len(requests) != 0 || len(bodies) != 0 {
 			t.Fatalf("%v: the broker was asked %d requests and %d releases, want none", tc.flags, len(requests), len(bodies))
 		}
+	}
+}
+
+// TestParseGitHubNarrowingAnswersTheOneCanonicalForm: a narrowing as a caller writes it is checked
+// and answered in the one form the exec form sends and narrowedAsAsked compares: the owner trimmed
+// and lowercased, the repositories sorted, each once, and none left none.
+func TestParseGitHubNarrowingAnswersTheOneCanonicalForm(t *testing.T) {
+	want := GitHubNarrowing{Owner: "ada", Repositories: []string{"proofs", "widgets"}, ReadOnly: true}
+	got, refusal := parseGitHubNarrowing(" Ada ", []string{"widgets", "proofs", "widgets"}, true)
+	if refusal != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseGitHubNarrowing = %+v, %v; want %+v", got, refusal, want)
+	}
+	if got, refusal := parseGitHubNarrowing("ada", nil, false); refusal != nil || got.Repositories != nil {
+		t.Fatalf("parseGitHubNarrowing with no repositories = %+v, %v; want no repositories", got, refusal)
+	}
+	atMost := repositoryNames(githubname.MaxNarrowedRepositories)
+	if got, refusal := parseGitHubNarrowing("ada", atMost, true); refusal != nil || len(got.Repositories) != githubname.MaxNarrowedRepositories {
+		t.Fatalf("parseGitHubNarrowing with %d repositories = %d repositories, %v; want all of them", len(atMost), len(got.Repositories), refusal)
+	}
+}
+
+// repositoryNames is n distinct repository names.
+func repositoryNames(n int) []string {
+	names := make([]string, n)
+	for i := range names {
+		names[i] = fmt.Sprintf("repo-%d", i)
+	}
+	return names
+}
+
+// TestParseGitHubNarrowingRefusesWhatGitHubCannotHold: the owner is one GitHub login and the
+// repositories, when present, at least one and at most githubname.MaxNarrowedRepositories names
+// GitHub can hold; each refusal names the field it refuses, so narrowingRules names it by the
+// flag that gave it. This table is the narrowing rules' one test;
+// TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo shows only how a refusal reaches the caller.
+func TestParseGitHubNarrowingRefusesWhatGitHubCannotHold(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		owner        string
+		repositories []string
+		field        string
+		mentions     string
+	}{
+		{"no owner", "", nil, "owner", `""`},
+		{"a blank owner", "   ", nil, "owner", `"   "`},
+		{"two owners", "ada acme", nil, "owner", "ada acme"},
+		{"one owner twice", "ada ada", nil, "owner", "ada ada"},
+		{"an owner no login can be", "-ada", nil, "owner", "-ada"},
+		{"a repository with its owner", "ada", []string{"ada/proofs"}, "repositories", "ada/proofs"},
+		{"a repository named .", "ada", []string{"."}, "repositories", `"."`},
+		{"a repository named ..", "ada", []string{".."}, "repositories", `".."`},
+		{"an empty repository name", "ada", []string{""}, "repositories", `""`},
+		{"an empty repository list", "ada", []string{}, "repositories", "is empty"},
+		{"one repository past the maximum", "ada", repositoryNames(githubname.MaxNarrowedRepositories + 1), "repositories", fmt.Sprint(githubname.MaxNarrowedRepositories)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, refusal := parseGitHubNarrowing(tc.owner, tc.repositories, true)
+			if refusal == nil || refusal.Field != tc.field || !strings.Contains(refusal.Reason, tc.mentions) {
+				t.Fatalf("parseGitHubNarrowing(%q, %d repositories) = %+v, %v; want a refusal of %s naming %q", tc.owner, len(tc.repositories), got, refusal, tc.field, tc.mentions)
+			}
+		})
 	}
 }
 

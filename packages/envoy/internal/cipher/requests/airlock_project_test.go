@@ -18,7 +18,7 @@ import (
 func TestTheAirlockRefusesAConnectionOfALostProject(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("TEAM_TOKEN", "")}}, publicTeam)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	placeholder := placeholderRows(t, m, grantID)["TEAM_TOKEN/"+SlotValue]
@@ -45,7 +45,7 @@ func TestTheAirlockStopsServingAPrivateSecretAfterAccessIsLost(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("TEAM_TOKEN", "")}}, privateTeam(fixtureOperator))
 	nameProjects(t, m, enr, teamProject)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	read := time.Now()
@@ -75,7 +75,7 @@ func TestTheAirlockOfAnUntaggedGrantKeepsItsValues(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}}, publicTeam)
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	placeholder := placeholderRows(t, m, grantID)["AUTO_TOKEN/"+SlotValue]

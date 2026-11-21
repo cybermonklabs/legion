@@ -1,6 +1,6 @@
-// packages/envoy/internal/cipher/requests/narrowing_trouble_test.go
-// Trouble that is no verdict on a narrowing — a GitHub that cannot be reached or answers no
-// verdict, a stored value that cannot be read, the check's own bounds — ends the check and
+// packages/envoy/internal/cipher/requests/profile_check_trouble_test.go
+// Trouble that is no verdict on a profile's scope — a GitHub that cannot be reached or answers no
+// verdict, a stored value that cannot be read, the check's own bounds — ends the check mint and
 // leaves the request on the path it took before the check existed: the person is asked, and the
 // release makes the refusal the check did not. An outage at GitHub must not stop every GitHub
 // App request of the fleet, which is a larger failure than the spent approval the check saves.
@@ -9,7 +9,7 @@
 // it, and the grant is released, which is where the refusal is read. The statuses named are the
 // ones the HTTP route maps those errors to (api/handlers_requests.go, grantValues); the rows read
 // the error rather than the status because the mapping is already pinned over real HTTP
-// (api_test.go's TestAFailedMintIs502MintFailed and api/narrowing_test.go), while which error one
+// (api_test.go's TestAFailedMintIs502MintFailed and api/profile_test.go), while which error one
 // kind of trouble earns is this file's own subject and the Machine's own answer.
 package requests_test
 
@@ -48,7 +48,7 @@ func (f failingSecretRead) Read(ctx context.Context, source string) (string, err
 // storeSourceOf is the Secrets Manager source name the broker reads name's stored value with,
 // read out of the policy snapshot it releases from, so a reader that fails this one fails
 // exactly the read the check and the release both make.
-func storeSourceOf(t *testing.T, f *narrowingFixture, name string) string {
+func storeSourceOf(t *testing.T, f *profileFixture, name string) string {
 	t.Helper()
 	_, source, minted, err := policy.ParseTypeSource(f.Policy.Get().Secrets[name].Source)
 	if err != nil || !minted {
@@ -94,13 +94,18 @@ func answersInstallationsWith(stand *gitHubStand, status int, body string) {
 // (docs/site/src/content/docs/broker/operate.md, the "narrowing check was skipped" row): each of
 // them leaves the request pending all the same, so the request's state cannot tell them apart.
 func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testing.T) {
-	narrowing := &secrets.GitHubNarrowing{Owner: standInOwner, Repositories: []string{standInRepository}}
+	// APP_KEY's profile names one repository; OTHER_APP_KEY's, one the stand-in refuses, which
+	// the spent-checks row asks for to spend the enrollment's checks.
+	profiles := map[string]string{
+		"APP_KEY":       `{"accounts": ["ada"], "repositories": ["ada/` + standInRepository + `"], "permissions": {"contents": "read", "metadata": "read"}}`,
+		"OTHER_APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/missing"], "permissions": {"contents": "read", "metadata": "read"}}`,
+	}
 	for _, tc := range []struct {
 		name string
 		// trouble arranges it, before the request under test is made.
-		trouble func(t *testing.T, f *narrowingFixture)
+		trouble func(t *testing.T, f *profileFixture)
 		// reason is the reason= of the one skipped line the check logs, word for word as
-		// narrowing_check.go writes it.
+		// profile_check.go writes it.
 		reason string
 		// releaseBound bounds the release as the broker bounds every call it serves
 		// (requestDeadline, cmd/cipherd/main.go); zero leaves it the test's own context.
@@ -114,7 +119,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 	}{
 		{
 			name: "GitHub cannot be reached at all",
-			trouble: func(_ *testing.T, f *narrowingFixture) {
+			trouble: func(_ *testing.T, f *profileFixture) {
 				f.stand.service.Close()
 			},
 			reason: "GitHub's answer decided nothing about the narrowing",
@@ -123,7 +128,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 		},
 		{
 			name: "GitHub answers 500",
-			trouble: func(_ *testing.T, f *narrowingFixture) {
+			trouble: func(_ *testing.T, f *profileFixture) {
 				f.stand.answersTokensWith(answerStatus(http.StatusInternalServerError, nil, `{"message":"Server Error"}`))
 			},
 			reason: "GitHub's answer decided nothing about the narrowing",
@@ -132,7 +137,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 		},
 		{
 			name: "the verdict mint answers after the check's own bound",
-			trouble: func(_ *testing.T, f *narrowingFixture) {
+			trouble: func(_ *testing.T, f *profileFixture) {
 				f.NarrowingCheckMint = 50 * time.Millisecond
 				f.stand.answersTokensWith(func(w http.ResponseWriter, _ int) bool {
 					time.Sleep(2 * time.Second)
@@ -147,10 +152,10 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 		},
 		{
 			name: "GitHub answers the 422 of a rate limit",
-			trouble: func(_ *testing.T, f *narrowingFixture) {
+			trouble: func(_ *testing.T, f *profileFixture) {
 				// A 422 carrying GitHub's primary rate-limit header is no verdict on the
-				// narrowing, though a 422 is what a refused narrowing reads as
-				// (secrets' mintStatusError.rateLimited).
+				// scope, though a 422 is what a refused scope reads as (secrets'
+				// mintStatusError.rateLimited).
 				f.stand.answersTokensWith(answerStatus(http.StatusUnprocessableEntity,
 					map[string]string{"X-RateLimit-Remaining": "0"}, `{"message":"API rate limit exceeded"}`))
 			},
@@ -161,10 +166,10 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 		{
 			// A 4xx that is no rate limit is refused by the minter (secrets' mintStatusError),
 			// and every refusal but the App with no installation on the account says nothing
-			// about the narrowing: this one says the App's own JWT was not accepted, which a
-			// rotated or wrong key and a clock far out both earn.
+			// about the scope: this one says the App's own JWT was not accepted, which a rotated
+			// or wrong key and a clock far out both earn.
 			name: "GitHub answers 401 to the App's installations call",
-			trouble: func(_ *testing.T, f *narrowingFixture) {
+			trouble: func(_ *testing.T, f *profileFixture) {
 				answersInstallationsWith(f.stand, http.StatusUnauthorized, `{"message":"A JSON web token could not be decoded"}`)
 			},
 			reason: "GitHub refused the App rather than the narrowing",
@@ -173,9 +178,9 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 		},
 		{
 			// The same for the token call: a 404 on access_tokens is GitHub refusing the call,
-			// not the narrowing it carried, so the caller is not told to fix its narrowing.
+			// not the scope it carried, so the caller is not told to fix its profile.
 			name: "GitHub answers 404 to the token request",
-			trouble: func(_ *testing.T, f *narrowingFixture) {
+			trouble: func(_ *testing.T, f *profileFixture) {
 				f.stand.answersTokensWith(answerStatus(http.StatusNotFound, nil, `{"message":"Not Found"}`))
 			},
 			reason: "GitHub refused the App rather than the narrowing",
@@ -185,10 +190,10 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 		{
 			// And for a 403 that carries no mark of a rate limit — no X-RateLimit-Remaining of 0
 			// and no rate limit named in its body (secrets' rateLimited) — on the token call:
-			// GitHub refused the App's call, not the narrowing it carried, so it too leaves the
-			// request to its approver and is no refusal of the narrowing.
+			// GitHub refused the App's call, not the scope it carried, so it too leaves the
+			// request to its approver and is no refusal of the scope.
 			name: "GitHub answers 403 to the token request",
-			trouble: func(_ *testing.T, f *narrowingFixture) {
+			trouble: func(_ *testing.T, f *profileFixture) {
 				f.stand.answersTokensWith(answerStatus(http.StatusForbidden, nil, `{"message":"Resource not accessible by integration"}`))
 			},
 			reason: "GitHub refused the App rather than the narrowing",
@@ -197,7 +202,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 		},
 		{
 			name: "the stored value cannot be read",
-			trouble: func(t *testing.T, f *narrowingFixture) {
+			trouble: func(t *testing.T, f *profileFixture) {
 				f.Secrets = failingSecretRead{Reader: f.Secrets, source: storeSourceOf(t, f, "APP_KEY"), err: errors.New("the secrets store could not be read")}
 			},
 			reason: "the stored value could not be read",
@@ -206,16 +211,15 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 		},
 		{
 			name: "the enrollment has spent its checks of the minute",
-			trouble: func(t *testing.T, f *narrowingFixture) {
+			trouble: func(t *testing.T, f *profileFixture) {
 				// The whole burst of refused checks, each of which writes no row and so leaves
 				// nothing behind but the one check it spent. The count is the bound itself, so
 				// a deployment default raised later spends it here too rather than leaving this
 				// row's request with checks to spare.
 				f.stand.Answers(proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensRefusedRepository, Repository: "missing"})
-				spent := &secrets.GitHubNarrowing{Owner: standInOwner, Repositories: []string{"missing"}}
 				for i := range requests.DefaultNarrowingChecks.Burst {
-					if _, err := f.create(t, spent, "APP_KEY"); !errors.Is(err, secrets.ErrMintNarrowingRefused) {
-						t.Fatalf("refused check %d = %v; want the narrowing refused, which writes no row and spends one check", i+1, err)
+					if _, err := f.create(t, "OTHER_APP_KEY"); !errors.Is(err, secrets.ErrMintNarrowingRefused) {
+						t.Fatalf("refused check %d = %v; want the scope refused, which writes no row and spends one check", i+1, err)
 					}
 				}
 				// The request under test never reaches GitHub, so the answer in force from here
@@ -224,17 +228,17 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 			},
 			reason: "this enrollment has reached GitHub for more checks than its bound allows",
 			want:   secrets.ErrMintNarrowingRefused,
-			status: "422 NARROWING_REFUSED",
+			status: "422 PROFILE_MINT_REFUSED",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logged := policytest.CaptureLog(t)
-			f := newNarrowingFixture(t, map[string]int64{standInOwner: 7})
+			f := newProfileFixture(t, map[string]int64{standInOwner: 7}, profiles)
 			tc.trouble(t, f)
 
-			request, err := f.create(t, narrowing, "APP_KEY")
+			request, err := f.create(t, "APP_KEY")
 			if err != nil || request.State != "pending" || request.RecordID == nil {
-				t.Fatalf("Create(APP_KEY) narrowed while %s = %+v, %v; want it pending, as it was before the check existed", tc.name, request, err)
+				t.Fatalf("Create(APP_KEY) while %s = %+v, %v; want it pending, as it was before the check existed", tc.name, request, err)
 			}
 			var skipped []string
 			for line := range strings.Lines(logged.String()) {
@@ -256,9 +260,9 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 				defer cancel()
 				ctx = bounded
 			}
-			release, err := f.Values(ctx, decision.GrantID, f.enrollmentID, narrowing, requests.ReleaseCall{})
+			release, err := f.Values(ctx, decision.GrantID, f.enrollmentID, requests.ReleaseCall{})
 			if release.Values != nil {
-				t.Fatalf("the release handed over %v; want no value: the narrowing it asked for was never served", release.Values)
+				t.Fatalf("the release handed over %v; want no value: the profile's token was never served", release.Values)
 			}
 			switch {
 			case tc.want != nil && !errors.Is(err, tc.want):
@@ -271,12 +275,14 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 }
 
 // TestNarrowingCheckTroubleInTheCauseSearchStillRefusesTheRequest: trouble inside the search for
-// the part GitHub refused is not the same as trouble reaching a verdict. GitHub has already said
-// it will not mint the narrowing, so the request is refused whatever the search finds, and only
-// the reason the caller reads is left: a search that runs out of budget or meets an answer that
-// is no verdict names the whole narrowing the caller asked for and says the cause was not found.
+// the repository GitHub refused is not the same as trouble reaching a verdict. GitHub has already
+// said it will not mint the profile's token, so the request is refused whatever the search finds,
+// and only the reason the caller reads is left: a search that runs out of budget or meets an
+// answer that is no verdict names the whole scope and says the cause was not found.
 func TestNarrowingCheckTroubleInTheCauseSearchStillRefusesTheRequest(t *testing.T) {
-	narrowing := &secrets.GitHubNarrowing{Owner: standInOwner, Repositories: []string{"missing", standInRepository}}
+	profiles := map[string]string{
+		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/missing", "ada/` + standInRepository + `"], "permissions": {"contents": "read", "metadata": "read"}}`,
+	}
 	for _, tc := range []struct {
 		name string
 		// refuseEveryToken puts the stand-in on its ordinary refusal instead of installing a
@@ -298,7 +304,7 @@ func TestNarrowingCheckTroubleInTheCauseSearchStillRefusesTheRequest(t *testing.
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				return true
 			},
-			mentions: []string{"the narrowing cannot be served", "APP_KEY", "did not find which part", "owner " + standInOwner, "missing", standInRepository},
+			mentions: []string{"the narrowing cannot be served", "APP_KEY", "did not find which one", "accounts " + standInOwner, "missing", standInRepository},
 		},
 		{
 			name: "the search meets a rate limit",
@@ -307,7 +313,7 @@ func TestNarrowingCheckTroubleInTheCauseSearchStillRefusesTheRequest(t *testing.
 				_, _ = w.Write([]byte(`{"message":"API rate limit exceeded"}`))
 				return true
 			},
-			mentions: []string{"the narrowing cannot be served", "APP_KEY", "did not find which part", "owner " + standInOwner, "missing", standInRepository},
+			mentions: []string{"the narrowing cannot be served", "APP_KEY", "did not find which one", "accounts " + standInOwner, "missing", standInRepository},
 		},
 		{
 			name:             "a stand-in that refuses the verdict mint and every probe",
@@ -316,7 +322,7 @@ func TestNarrowingCheckTroubleInTheCauseSearchStillRefusesTheRequest(t *testing.
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newNarrowingFixture(t, map[string]int64{standInOwner: 7})
+			f := newProfileFixture(t, map[string]int64{standInOwner: 7}, profiles)
 			f.NarrowingCheckBudget = tc.budget
 			if tc.refuseEveryToken {
 				f.stand.Answers(proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensRefused})
@@ -332,9 +338,9 @@ func TestNarrowingCheckTroubleInTheCauseSearchStillRefusesTheRequest(t *testing.
 				})
 			}
 
-			request, err := f.create(t, narrowing, "APP_KEY")
+			request, err := f.create(t, "APP_KEY")
 			if !errors.Is(err, secrets.ErrMintNarrowingRefused) || request.ID != "" {
-				t.Fatalf("Create(APP_KEY) narrowed to one GitHub refused = %+v, %v; want the narrowing refused", request, err)
+				t.Fatalf("Create(APP_KEY) of a scope GitHub refused = %+v, %v; want the scope refused", request, err)
 			}
 			for _, word := range tc.mentions {
 				if !strings.Contains(err.Error(), word) {

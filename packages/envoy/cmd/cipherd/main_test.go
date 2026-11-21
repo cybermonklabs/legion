@@ -1042,15 +1042,11 @@ func TestFakeSecretsFileServesUnderTheGCPStore(t *testing.T) {
 	}
 }
 
-// airlockRulesFile writes rules into a file of t's own and answers its path, the file
-// BROKER_AIRLOCK_RULES_FILE names.
-func airlockRulesFile(t *testing.T, rules string) string {
+// profilesFile writes profiles into a file of t's own and answers its path, the file
+// BROKER_PROFILES_FILE names.
+func profilesFile(t *testing.T, profiles string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "airlock.json")
-	if err := os.WriteFile(path, []byte(rules), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return writeTempFile(t, "profiles.json", []byte(profiles))
 }
 
 // airlockCAFiles writes a self-signed certificate authority and its key into files of t's own
@@ -1103,11 +1099,11 @@ func writeTempFile(t *testing.T, name string, content []byte) string {
 	return path
 }
 
-// airlockEnv is what a broker with an airlock is started with besides its rules file: the proxy
-// the release names, the certificate authority it hands over and the key behind it, without
-// which config.Load refuses a broker that reads rules it could not proxy, and an address of its
-// own for the proxy port, since a fixed one would be a port two rows of this package could not
-// both hold.
+// airlockEnv is what a broker with an airlock is started with besides its profiles file: the proxy
+// the release names, the certificate authority it hands over and the key behind it, without which
+// the boot refuses a broker whose profiles hold a proxy block it could not proxy
+// (config.Config.RequireAirlock), and an address of its own for the proxy port, since a fixed one
+// would be a port two rows of this package could not both hold.
 func airlockEnv(t *testing.T) []string {
 	t.Helper()
 	certFile, keyFile := airlockCAFiles(t)
@@ -1119,15 +1115,17 @@ func airlockEnv(t *testing.T) []string {
 	}
 }
 
-// TestMainRefusesAnAirlockRulesFileItCannotServe drives the real binary with each kind of rules
-// file it must refuse — one whose entry the airlock will not validate, one whose entry names a
-// secret by a name no session can ask for, one for each host spelling of ruleHostRows (the rows
-// TestAirlockCheckRefusesAHostTheProxyNeverCompares drives through airlock-check, which read that
-// the host the grammar reads is the host the file writes), one that is not JSON, and a path that
-// is not there — and asserts it exits non-zero naming the file and what is wrong with it, without
-// ever binding. The database it is given is unreachable, so a broker that read the file after
-// opening the store would fail on the host instead of on the file.
-func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
+// TestMainRefusesAProfilesFileItCannotServe drives the real binary with each kind of profiles
+// file it must refuse — one whose proxy block the airlock will not validate, one whose proxy block
+// names no host, one whose profile has a name no session can ask for, one naming a requester
+// service the deployment does not register (CheckRequesters, the boot's own read), one for each
+// host spelling of ruleHostRows (the rows TestProfilesCheckRefusesAHostTheProxyNeverCompares drives
+// through `profiles check`, which read that the host the grammar reads is the host the file
+// writes), today's airlock rules file, one that is not JSON, and a path that is not there — and
+// asserts it exits non-zero naming the setting and what is wrong with the file, without ever
+// binding. The database it is given is unreachable, so a broker that read the file after opening
+// the store would fail on the host instead of on the file.
+func TestMainRefusesAProfilesFileItCannotServe(t *testing.T) {
 	binary := buildBroker(t)
 	missing := filepath.Join(t.TempDir(), "absent.json")
 	refused := func(t *testing.T, path string, want, absent []string) {
@@ -1135,10 +1133,10 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 		out := runRefusedBroker(t, binary, append(airlockEnv(t),
 			"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 			"BROKER_PUBLIC_URL=https://secrets.internal.example",
-			"BROKER_AIRLOCK_RULES_FILE="+path,
+			"BROKER_PROFILES_FILE="+path,
 		)...)
-		if !strings.Contains(out, "BROKER_AIRLOCK_RULES_FILE") {
-			t.Fatalf("broker refused, but its output does not name BROKER_AIRLOCK_RULES_FILE: %s", out)
+		if !strings.Contains(out, "BROKER_PROFILES_FILE") {
+			t.Fatalf("broker refused, but its output does not name BROKER_PROFILES_FILE: %s", out)
 		}
 		// The refusal names the file, whose path is a temporary directory: it holds the test's or
 		// the subtest's name and whatever the temporary directory's own path holds, so every want
@@ -1166,22 +1164,40 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 	}{
 		// The broker logs a refusal as a JSON string in its error field, so a quotation mark
 		// inside it comes out escaped; these rows look for the parts around it.
-		"an entry the airlock refuses": {
-			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "judge": 1800}]}`),
-			want: []string{"secrets[0]", "DEEL_API_KEY", "1800", "900"},
+		"a proxy block the airlock refuses": {
+			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"], "judge": 1800}}]}`),
+			want: []string{"profiles[0]", "DEEL_API_KEY", "1800", "900"},
 		},
-		// An entry whose name is not of the policy's form matches no release, so the file
+		// A proxy block binds its credential to the hosts it names, so one that names none is
+		// refused, where today's rules file served a host-less entry that only named a judge.
+		"a proxy block with no host": {
+			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"judge": 600}}]}`),
+			want: []string{"profiles[0]", "DEEL_API_KEY", "proxy.hosts", "required"},
+		},
+		// A profile whose name is not of the policy's form matches no request, so the file
 		// would hold back nothing of the secret a reviewer read it as covering.
-		"an entry name in lower case": {
-			path: airlockRulesFile(t, `{"secrets": [{"name": "deel_api_key", "hosts": ["api.deel.com"]}]}`),
-			want: []string{"secrets[0]", "deel_api_key", "not an agent secret name", "holds nothing back"},
+		"a profile name in lower case": {
+			path: profilesFile(t, `{"profiles": [{"name": "deel_api_key", "proxy": {"hosts": ["api.deel.com"]}}]}`),
+			want: []string{"profiles[0]", "deel_api_key", "not an agent secret name", "no caller can ask for it"},
 		},
-		"an entry name written with hyphens": {
-			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL-API-KEY", "hosts": ["api.deel.com"]}]}`),
-			want: []string{"secrets[0]", "DEEL-API-KEY", "not an agent secret name", "holds nothing back"},
+		"a profile name written with hyphens": {
+			path: profilesFile(t, `{"profiles": [{"name": "DEEL-API-KEY", "proxy": {"hosts": ["api.deel.com"]}}]}`),
+			want: []string{"profiles[0]", "DEEL-API-KEY", "not an agent secret name", "no caller can ask for it"},
+		},
+		// `profiles check` holds a requester to its shape alone; the boot holds the services
+		// setting, and refuses a service it does not register.
+		"a requester service the deployment does not register": {
+			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "requesters": ["unregistered-service"], "proxy": {"hosts": ["api.deel.com"]}}]}`),
+			want: []string{"profiles[0]", "DEEL_API_KEY", "requesters", "unregistered-service", "no registered service"},
+		},
+		// A deployment that points the new setting at today's rules file is refused at its first
+		// field, rather than served with no profile.
+		"today's airlock rules file": {
+			path: profilesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com"]}]}`),
+			want: []string{"unknown field", "secrets"},
 		},
 		"a file that is not JSON": {
-			path: airlockRulesFile(t, "these are not the rules you are looking for\n"),
+			path: profilesFile(t, "these are not the profiles you are looking for\n"),
 			want: []string{"not JSON", "byte offset 2, line 1, column 2"},
 		},
 		"a path that cannot be read": {
@@ -1195,8 +1211,8 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 	// it comes out escaped; no row's want holds one.
 	for _, c := range ruleHostRows {
 		t.Run("a host: "+c.name, func(t *testing.T) {
-			path := airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", "api.deel.com", c.host))
-			refused(t, path, append([]string{"secrets[0]", "DEEL_API_KEY", "hosts[1]"}, c.want...), []string{c.absent})
+			path := profilesFile(t, profilesWithHosts(t, "DEEL_API_KEY", "api.deel.com", c.host))
+			refused(t, path, append([]string{"profiles[0]", "DEEL_API_KEY", "proxy.hosts[1]"}, c.want...), []string{c.absent})
 		})
 	}
 	// The binary's own log (setUpLogging, the first thing main does): a host the file writes in
@@ -1206,15 +1222,32 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 	// placeholder in it.
 	t.Run("a host made of a placeholder in upper case, which the broker's log masks", func(t *testing.T) {
 		placeholder := strings.ToUpper(requests.PlaceholderPrefix + "zzyyxxwwvvuuttssrrqqppoonnmmllkk")
-		path := airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", "api.deel.com", placeholder+".EXAMPLE."))
+		path := profilesFile(t, profilesWithHosts(t, "DEEL_API_KEY", "api.deel.com", placeholder+".EXAMPLE."))
 		refused(t, path, []string{`"severity":"ERROR"`, `"message":"broker: fatal"`, "write it as [placeholder].example"},
 			[]string{placeholder, strings.ToLower(placeholder)})
 	})
 }
 
-// TestMainStartsWithAnAirlockRulesFile: a file the airlock parses and validates is no obstacle to
-// the boot, and the broker goes on to serve.
-func TestMainStartsWithAnAirlockRulesFile(t *testing.T) {
+// TestTheBootRefusesTheRemovedRulesSetting: BROKER_AIRLOCK_RULES_FILE is gone, its entries now
+// the proxy blocks of BROKER_PROFILES_FILE, so a deployment that still sets it is refused by
+// config.Load before anything binds, naming the setting that replaces it, rather than started
+// with no proxy rules and every credential it named released as its value.
+func TestTheBootRefusesTheRemovedRulesSetting(t *testing.T) {
+	out := runRefusedBroker(t, buildBroker(t), append(airlockEnv(t),
+		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
+		"BROKER_PUBLIC_URL=https://secrets.internal.example",
+		"BROKER_AIRLOCK_RULES_FILE="+writeTempFile(t, "airlock.json", []byte(`{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com"]}]}`)),
+	)...)
+	for _, want := range []string{"BROKER_AIRLOCK_RULES_FILE is removed", "replaced by BROKER_PROFILES_FILE"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("broker refused, but its output does not say %q: %s", want, out)
+		}
+	}
+}
+
+// TestMainStartsWithAProfilesFile: a file the broker parses and validates is no obstacle to the
+// boot, and the broker goes on to serve.
+func TestMainStartsWithAProfilesFile(t *testing.T) {
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -1224,17 +1257,17 @@ func TestMainStartsWithAnAirlockRulesFile(t *testing.T) {
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
-		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, `{"secrets": [
-			{"name": "DEEL_API_KEY", "hosts": ["api.deel.com"], "allow": [{"method": "GET", "pathPrefix": "/rest/"}]}
+		"BROKER_PROFILES_FILE="+profilesFile(t, `{"profiles": [
+			{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"], "allow": [{"method": "GET", "pathPrefix": "/rest/"}]}}
 		]}`),
 	)})
 	requireHealthy(t, broker.Addr)
 }
 
-// TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt is the control of the host rows above:
+// TestMainStartsWithAProxyHostWrittenAsTheProxyReadsIt is the control of the host rows above:
 // hosts the one grammar a rules host is written in serves, in a case a reader of the file could
 // fold (foldedRuleHosts), are no obstacle to the boot, and the broker goes on to serve.
-func TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt(t *testing.T) {
+func TestMainStartsWithAProxyHostWrittenAsTheProxyReadsIt(t *testing.T) {
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -1244,7 +1277,7 @@ func TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt(t *testing.T) {
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
-		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", foldedRuleHosts...)),
+		"BROKER_PROFILES_FILE="+profilesFile(t, profilesWithHosts(t, "DEEL_API_KEY", foldedRuleHosts...)),
 	)})
 	requireHealthy(t, broker.Addr)
 }
@@ -1281,7 +1314,7 @@ func TestMainRefusesAnAirlockCertificateItCannotRead(t *testing.T) {
 			out := runRefusedBroker(t, binary,
 				"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 				"BROKER_PUBLIC_URL=https://secrets.internal.example",
-				"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com"]}]}`),
+				"BROKER_PROFILES_FILE="+profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"]}}]}`),
 				"BROKER_AIRLOCK_PROXY_URL=http://127.0.0.1:13381",
 				"BROKER_AIRLOCK_CA_CERT_FILE="+c.path,
 				"BROKER_AIRLOCK_CA_KEY_FILE="+keyFile,

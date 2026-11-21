@@ -19,6 +19,7 @@ import (
 	"github.com/aws/smithy-go"
 	"google.golang.org/grpc/codes"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -834,11 +835,14 @@ func refusedTypeValues(t *testing.T) []refusedTypeValue {
 }
 
 // mintRefusal is type's minter's answer to value, run as the broker runs it, with the stored
-// value the first thing it reads (the Azure minter on its own configured human-tier secret): the
-// words a client's refusal of the same value must carry.
+// value the first thing it reads (the Azure minter on its own configured human-tier secret, the
+// GitHub App minter under a profile's scope, which it refuses a mint without): the words a
+// client's refusal of the same value must carry.
 func mintRefusal(t *testing.T, secretType, value string) string {
 	t.Helper()
-	req := secrets.MintRequest{Name: "TYPE_KEY", HumanTier: true, Value: value, GitHubOwners: []string{"acme-org"}}
+	req := secrets.MintRequest{Name: "TYPE_KEY", Source: "TYPE_KEY", HumanTier: true, Value: value, GitHub: &secrets.GitHubScope{
+		Accounts: []string{"acme-org"}, Permissions: map[string]string{"metadata": "read"}, Value: githubname.ValueInstallations,
+	}}
 	var err error
 	switch secretType {
 	case policy.TypeGitHubApp:
@@ -848,7 +852,7 @@ func mintRefusal(t *testing.T, secretType, value string) string {
 	case policy.TypeGoogleServiceAccount:
 		_, err = (&secrets.GoogleServiceAccount{}).Mint(t.Context(), req)
 	case policy.TypeAzureLogin:
-		_, err = secrets.AzureLogin{SecretName: req.Name}.Mint(t.Context(), req)
+		_, err = secrets.AzureLogin{SecretName: req.Source}.Mint(t.Context(), req)
 	default:
 		t.Fatalf("no minter of type %q", secretType)
 	}

@@ -328,6 +328,9 @@ const (
 	codePageExpired = "PAGE_EXPIRED"
 	// A decision form naming a record its page did not print.
 	codeRecordNotPrinted = "RECORD_NOT_PRINTED"
+	// An approval whose form's profile fingerprints are not the live ones (profilesMoved): a
+	// profile it names changed since its page was made.
+	codeProfileChanged = "PROFILE_CHANGED"
 	// A POST from another origin than the broker's own (refuseOrigin).
 	codeOriginRefused = "ORIGIN_REFUSED"
 	// A request over the address bucket the page's routes spend (WriteRateLimited).

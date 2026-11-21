@@ -79,12 +79,13 @@ type GoogleServiceAccount struct {
 	Source oauth2.TokenSource
 
 	// Accounts is the deployment's binding of each google-service-account secret to the one
-	// account it may mint for, keyed by the secret's policy name as a session asks for it and
-	// MintRequest.Name carries it (DEV_PERSON, GCP_ADMIN), each value that secret's one account
-	// email. The broker fills it from BROKER_SERVICE_ACCOUNT_SECRETS. A nil or empty map binds
-	// nothing, so every mint of this type is refused with ErrMintNotBound, which is what a
-	// deployment that has not set the variable gets; that is deliberate, since the stored value
-	// alone may not choose the account a broker with Token Creator on it impersonates.
+	// account it may mint for, keyed by the stored secret's policy name (DEV_PERSON, GCP_ADMIN),
+	// which MintRequest.Source carries, so a profile of a bound secret mints under its source's
+	// binding whatever its own name; each value is that secret's one account email. The broker
+	// fills it from BROKER_SERVICE_ACCOUNT_SECRETS. A nil or empty map binds nothing, so every
+	// mint of this type is refused with ErrMintNotBound, which is what a deployment that has not
+	// set the variable gets; that is deliberate, since the stored value alone may not choose the
+	// account a broker with Token Creator on it impersonates.
 	Accounts map[string]string
 
 	// Retry is the policy the generateAccessToken call is retried under, and the process-wide
@@ -141,13 +142,14 @@ type googleServiceAccountRequest struct {
 	Lifetime string   `json:"lifetime"`
 }
 
-// Mint returns the bare Google access token for the account the deployment binds to the secret
-// req names, as GoogleLogin.Mint returns a login's, so a wrapper that exports it as a gcloud
-// access token reads it unchanged. A stored value that is not one service account email, and a
-// secret whose binding is missing or names a different account than the stored value, are both
-// refused before any credential is resolved and before any call is made. It never puts the
-// stored value, the broker's own token, the minted token or Google's answer in an error, and
-// every error wraps one of ErrMintStoredValue, ErrMintNotBound, ErrMintRefused or
+// Mint returns the bare Google access token for the account the deployment binds to the stored
+// secret req's value was read from (req.Source), as GoogleLogin.Mint returns a login's, so a
+// wrapper that exports it as a gcloud access token reads it unchanged. A stored value that is not
+// one service account email, and a secret whose binding is missing or names a different account
+// than the stored value, are both refused before any credential is resolved and before any call is
+// made; the refusal names the name asked for and, for a profile, the source whose binding it read.
+// It never puts the stored value, the broker's own token, the minted token or Google's answer in
+// an error, and every error wraps one of ErrMintStoredValue, ErrMintNotBound, ErrMintRefused or
 // ErrMintUpstream. The Minted it answers carries the expiry Google's own answer names, so the
 // airlock's proxy mints again five minutes before the token stops working rather than holding
 // one that has; an answer naming no expiry, or one this cannot read, carries none, which the
@@ -167,12 +169,12 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 	// Token Creator on every account it is bound to, so the deployment's binding, not the stored
 	// value, is what chooses the account. The bound account is safe to name in an error, since
 	// an operator reads it to fix BROKER_SERVICE_ACCOUNT_SECRETS; the stored value is not.
-	bound, ok := m.Accounts[req.Name]
+	bound, ok := m.Accounts[req.Source]
 	if !ok {
-		return Minted{}, fmt.Errorf("%w: secret %s: the deployment binds no Google service account to it", ErrMintNotBound, req.Name)
+		return Minted{}, fmt.Errorf("%w: secret %s: the deployment binds no Google service account to %s", ErrMintNotBound, req.named(), req.Source)
 	}
 	if bound != secret.ServiceAccount {
-		return Minted{}, fmt.Errorf("%w: secret %s: the deployment binds it to %s, which its stored value does not name", ErrMintNotBound, req.Name, bound)
+		return Minted{}, fmt.Errorf("%w: secret %s: the deployment binds %s to %s, which its stored value does not name", ErrMintNotBound, req.named(), req.Source, bound)
 	}
 	source, err := m.ownSource(ctx)
 	if err != nil {

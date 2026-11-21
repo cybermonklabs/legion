@@ -100,15 +100,15 @@ AIRLOCK_GCLOUD_SECRET=GCLOUD_EXAMPLE_LOGIN
 AIRLOCK_GWS_READ_SECRET=GWS_EXAMPLE_VIEW_2
 AIRLOCK_GWS_ADMIN_SECRET=GWS_EXAMPLE_ADMIN_2
 AIRLOCK_GWS_TIER_KEY="operator.with space's [key]"
-AIRLOCK_RULES_FILE="$work/k7-rules.json"
-printf '{"secrets":[]}\n' >"$AIRLOCK_RULES_FILE"
+AIRLOCK_PROFILES_FILE="$work/k7-profiles.json"
+printf '{"profiles":[]}\n' >"$AIRLOCK_PROFILES_FILE"
 STACK_SECRETS_PREFIX=k7-fixture-
 K7_CONSUMER_WORK_DIR="$work/k7"
 k7_consumer_add_fixtures
 jq -e --arg gcloud "$AIRLOCK_GCLOUD_SECRET" --arg read "$AIRLOCK_GWS_READ_SECRET" --arg admin "$AIRLOCK_GWS_ADMIN_SECRET" \
-  'any(.secrets[]; .name == $gcloud and .hosts == ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"])
-   and any(.secrets[]; .name == $read and .hosts == ["www.googleapis.com", "oauth2.googleapis.com"])
-   and any(.secrets[]; .name == $admin and .hosts == ["admin.googleapis.com"])' "$work/k7/rules.json" >/dev/null
+  'any(.profiles[]; .name == $gcloud and .proxy.hosts == ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"])
+   and any(.profiles[]; .name == $read and .proxy.hosts == ["www.googleapis.com", "oauth2.googleapis.com"])
+   and any(.profiles[]; .name == $admin and .proxy.hosts == ["admin.googleapis.com"])' "$work/k7/profiles.json" >/dev/null
 # Each login's fake secret is stored under policy.NameToSlug's slug of the operator's name.
 for slug in gcloud-example-login gws-example-view-2 gws-example-admin-2; do
   grep -qFx "k7-fixture-$slug" "$work/k7-names"
@@ -169,7 +169,7 @@ run_consumers() {
       cat "$K7_CONSUMER_WORK_DIR/out"' bash "$work/preamble.sh" "$@" 2>&1)" || status=$?
 }
 run_consumers
-label='operator inputs build matching rules, store names, prepare consumers and run valid commands'; check test "$status" -eq 0
+label='operator inputs build matching profiles, store names, prepare consumers and run valid commands'; check test "$status" -eq 0
 label='the gcloud login, selected tier and both Google Workspace logins reach the real consumer boundary'
 check test "$output" = $'kms=error: token gcloud-placeholder\ngcloud=ERROR: gcloud-placeholder\ngws_tier=secret-run GWS_EXAMPLE_VIEW_2\ngws=200\nadmin=200'
 

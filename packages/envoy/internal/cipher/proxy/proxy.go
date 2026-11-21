@@ -581,14 +581,16 @@ const grantUnreadable = "the broker could not read this grant just now; make the
 // the same refusal of a grant's release (api's grantValues), and one of this port's own for a
 // refusal the API port names no code for and for a read that did not happen.
 const (
-	codeGrantNotLive     = "GRANT_NOT_LIVE"
-	codeAirlockNoNames   = "AIRLOCK_NO_NAMES"
-	codeGrantChain       = "GRANT_CHAIN_INVALID"
-	codeSecretNotInStore = "SECRET_NOT_IN_STORE"
-	codeMintFailed       = "MINT_FAILED"
-	codeValueShape       = "AIRLOCK_VALUE_SHAPE"
-	codeGrantRefused     = "GRANT_REFUSED"
-	codeGrantUnreadable  = "GRANT_UNREADABLE"
+	codeGrantNotLive       = "GRANT_NOT_LIVE"
+	codeAirlockNoNames     = "AIRLOCK_NO_NAMES"
+	codeGrantChain         = "GRANT_CHAIN_INVALID"
+	codeSecretNotInStore   = "SECRET_NOT_IN_STORE"
+	codeMintFailed         = "MINT_FAILED"
+	codeProfileMintRefused = "PROFILE_MINT_REFUSED"
+	codeTargetRefused      = "TARGET_REFUSED"
+	codeValueShape         = "AIRLOCK_VALUE_SHAPE"
+	codeGrantRefused       = "GRANT_REFUSED"
+	codeGrantUnreadable    = "GRANT_UNREADABLE"
 )
 
 // grantRefusal is the status, the code and the words one failed grant read is answered with,
@@ -606,12 +608,14 @@ const (
 //     its upstream has a bad minute, and answering that 403 would tell a command no retry
 //     clears it and would close a WebSocket the grant still carries.
 //   - Every other refusal the broker made about this grant - a chain that no longer verifies, a
-//     secret the store no longer holds, a mint the secret's own minter refused, a value whose
-//     shape the airlock cannot take apart - is 403 in those words. No retry clears one of them,
-//     so telling a command to make the call again would be untrue, and none of them carries
-//     anything of the store the read went to. Which errors those are is the read's own package
-//     to say (requests.IsRefusal), since a sentinel added there would be missed by a list kept
-//     here; the four named here have a code of their own, and any other is GRANT_REFUSED.
+//     secret the store no longer holds, a mint the secret's own minter refused, a profile's scope
+//     that minter refused (secrets.ErrMintNarrowingRefused, which the release hands over as it
+//     is), a target the live profile does not hold, a value whose shape the airlock cannot take
+//     apart - is 403 in those words. No retry clears one of them, so telling a command to make
+//     the call again would be untrue, and none of them carries anything of the store the read
+//     went to. Which errors those are is the read's own package to say (requests.IsRefusal),
+//     since a sentinel added there would be missed by a list kept here; the six named here have
+//     a code of their own, and any other is GRANT_REFUSED.
 //   - Everything left is a read that did not happen - a database that did not answer, most of
 //     them - and is 503 and grantUnreadable, with the error itself in the log, where it is
 //     wanted: a failed read is no proof that a grant ended, and a database failover must not
@@ -633,6 +637,10 @@ func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 		return http.StatusForbidden, codeSecretNotInStore, err.Error()
 	case errors.Is(err, requests.ErrMintFailed):
 		return http.StatusForbidden, codeMintFailed, err.Error()
+	case errors.Is(err, secrets.ErrMintNarrowingRefused):
+		return http.StatusForbidden, codeProfileMintRefused, err.Error()
+	case errors.Is(err, requests.ErrTargetRefused):
+		return http.StatusForbidden, codeTargetRefused, err.Error()
 	case errors.Is(err, requests.ErrAirlockValueShape):
 		return http.StatusForbidden, codeValueShape, err.Error()
 	case requests.IsRefusal(err):

@@ -141,7 +141,9 @@ second time. On top it starts a `cmd/dev-proxy-stands` of its own (the stand-in
 services S and T, the GitHub, Google and Microsoft endpoints and the AWS service,
 and the certificate authority they are signed by), which is a second such process:
 `dev-broker.sh` starts one too, for the GitHub its own `github-app` secrets mint
-at, and this script points nothing at that one. It then writes a rules file and a
+at, and this script points nothing at that one. It then writes a profiles file
+(`BROKER_PROFILES_FILE`, each secret a profile of its own name with a proxy block,
+and `AIRLOCK_PLAIN_GITHUB`, the `github-app` secret's profile with none) and a
 fake Secrets Manager naming each other, starts **two** broker processes on a
 database of their own with the whole `BROKER_AIRLOCK_*` block, puts one TCP front
 over both brokers' API ports and one over both proxy ports (`dev-airlock-stands
@@ -269,7 +271,7 @@ git step reads the proxy from `GIT_CONFIG_*`. Each file is a `<(printf …)` pat
 
 Where a check needs a secret the stack does not hold, the run extends the stack's own
 fake Secrets Manager and makes every broker reread it. A control that needs other
-rules or another proxy setting — `k4`'s, which turns the refusal of a loopback address
+profiles or another proxy setting — `k4`'s, which turns the refusal of a loopback address
 off for one host — is a second broker process on the stack's own database, authority
 and stand-ins with that one setting changed, and the step's `HTTPS_PROXY` pointed at
 it. Every broker the run starts of its own — that control's, `k7`'s and the ones `k8a`
@@ -277,7 +279,7 @@ expects to refuse to start — takes its environment from the running stack brok
 (`/proc/<pid>/environ`) with the few variables it must change put in their place, so
 none of them can be missing a setting `dev-airlock.sh` gave the stack's. `k7` goes
 furthest with that device: its names are the consumers' own and its hosts are the real
-services, so its broker has the stack's whole environment with its rules file, its two
+services, so its broker has the stack's whole environment with its profiles file, its two
 ports and its public URL changed, and both `AGENT_SECRETS_URL` and the grant's proxy
 point at it. `k5`'s control is a second stack under `--keep-values`, `k6`'s a second
 stack under `--no-kind`, and `k9`'s a second stack under `--idle-seconds 60`.
@@ -302,62 +304,61 @@ and `k15` needs `lake` from the Lean toolchain the environment names. Each bound
 listens on one loopback address and port 443, so only one stack runs on a machine at a
 time.
 
-## github-narrowing-check.sh
+## github-profile-check.sh
 
-Runs the four checks of `agent-secrets`' GitHub App narrowing that need a broker, a
-GitHub and a session — `k1`, `k2` and `k4` of dispatch://INFRA-2687's verification
-document, and `k1` of dispatch://INFRA-3099's — end to end on a local stack of its
-own, and prints one `PASS` or `FAIL` line for each property they name, then `all <n>
-assertions passed` when every one passed, so a reader tells a complete run from a
-cut-off one.
+Runs the end-to-end checks of the broker's named GitHub profiles on a local stack of
+its own — `p1`, the profiles file served; `p2`, a GitHub profile's token asked for with
+its permissions cut to what the installation holds; `p3`, a proxied profile's token
+kept in the proxy and sent only where its block allows; and `p4`, a body carrying the
+removed `github_app` field refused `GITHUB_APP_FIELD_REMOVED` — and prints one `PASS`
+or `FAIL` line for each property they name, then `all <n> assertions passed` when every
+one passed, so a reader tells a complete run from a cut-off one.
 
 ```bash
-DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/github-narrowing-check.sh
+DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/github-profile-check.sh
 ```
 
-It starts `dev-broker.sh`, which holds the three `github-app` secrets and the
-stand-in GitHub they are minted against, and enrols one pod session of the service
-that owns two of them, as the Legion daemon enrols a worker pod, so each request for
-one of those is granted without asking. `k1` spends a narrowed token at the stand-in
-and reads back what the narrowed mint asked GitHub for; `k2` sets the stand-in to
-refuse the mint (HTTP 422) and then to answer wider than the narrowing asked, at the
-answer route the stack's banner names (`POST {"mode":
-"ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|"widen"|"fail-once",
-"repository": "<name>"}`), since one stack drives every answer this check needs;
-`k4` drives the secret whose
-release holds two installations, which no one token can be handed over for; and `k1`
-of INFRA-3099 drives the third secret, the one whose request reaches a person, with
-the stand-in refusing one repository, so that narrowing is refused before the
-approval request is opened: the command does not run, the refusal names the secret,
-that repository and the sentence it carries, its stderr names no page to approve
-anything on, the broker's own `credential_requests` gains no record, and the
-stand-in's records hold the search for the refused part and a revoke for every token
-it minted. Each check runs its own negative control — INFRA-3099's is the same
-request for a repository the stand-in reaches, approved on the broker's page as the
-person does, by `approve_record` and `approve_watch` copied from `airlock-check.sh`
-because each check script here stands alone — and every line names the exit status it
-read, because a property that failed and a command that never ran look alike in a
-transcript that holds neither.
+It starts `dev-broker.sh`, whose profiles file names its three `github-app` secrets and
+the two proxied profiles of `DEMO_GITHUB_APP` (`DEMO_GITHUB_READ` and
+`DEMO_GITHUB_ADMIN_READ`), with `DEV_BROKER_GITHUB_PERMISSIONS`, so the App's
+installations hold less than the profiles ask for, and `DEV_BROKER_PROXIED_GITHUB_IP`,
+so the stand-in GitHub is served over TLS on port 443 of a loopback address
+(`GITHUB_PROFILE_CHECK_GITHUB_IP`, 127.0.0.9 unless set), where the broker's proxy
+reaches it as `api.github.test`. It is the one driver that hands the stand-in an
+installation map (`dev-airlock-stands --installation-permissions`). It enrols one pod
+session of the service that owns the secrets, as the Legion daemon enrols a worker pod.
+`p1` reads the broker's `broker: profiles applied` line, runs `broker profiles check`
+on the stack's file, and adds a `github-app` secret no profile names to the store,
+which is refused `PROFILE_REFUSED` naming `github-app-no-profile`. `p2` reads the token
+request the stand-in recorded, the broker's left-out lines and the values answer's
+`github_left_out`, drives an empty cut (`PROFILE_MINT_REFUSED`, no token request) and a
+token wider than asked (`MINT_FAILED`, given back). `p3` runs a child under each proxied
+profile: its value, sent straight to the stand-in, is refused; its read through the
+proxy reaches the stand-in with a minted token; a `POST`, which the proxy blocks allow
+no profile, is refused by the proxy and reaches nothing; and the stand-in's deploy-key,
+organization-installations and commit-status routes answer by what the cut left in
+each token. `p4` posts a `github_app` body with `curl` to `POST /v1/requests` and
+`POST /v1/grants/{id}/values`.
 
-No line it prints is a credential: the child reads its token out of its own
-environment and prints the repository it asked for and the status it got, and a
-refusal is printed as `agent-secrets` wrote it, which names no part of any token. The
-child's `curl` calls carry no `--cacert` and no `--resolve`: the GitHub stand is
-served over plain http on `127.0.0.1`, because the broker mints a type's value with
-an HTTP client that trusts the host's own roots and nothing else.
+No line it prints is a credential: a child prints the status of each call and no part
+of any answer, a token read back from the stand-in is printed by its length, and a
+refusal is printed as `agent-secrets` wrote it. Every line names the exit or HTTP status
+it read. When the stack does not start, or the session cannot be enrolled, it prints one
+`UNKNOWN` line saying which and exits 3, since no property was read. It exits 0 when
+every property passed, 1 when one did not, and 2 on a usage error; `--keep-stack`
+leaves the stack and the run's work directory up to look at a failure with, and
+`--help` prints the usage.
 
-`--keep-stack` leaves the stack and the run's work directory up to look at a failure
-with, `--help` prints the usage, and a usage error exits 2.
-`DEV_BROKER_POSTGRES_URL` is required: the stack is driven against the server it
-names, and the record property is read from the broker's own database there, whose
-name the script takes from `dev-broker.sh`'s own log and puts in place of that URL's
-path, so no password is ever parsed out of a banner. It needs bash, curl, jq, go,
-psql and setsid, and takes a few minutes once Go's build cache holds the stack's
-binaries. On a cold cache `dev-broker.sh`'s six builds take longer than all the rest,
-so the script waits for them under a bound of their own, up to 30 minutes, and then
-for the stack's start under a short one. The stack runs in a session of its own and
-is stopped as one process group, so a stop during the build — the script's exit, a
-wait that ran out, Ctrl-C — ends that build with the stack.
+Its negative control swaps the broker alone: `DEV_BROKER_BROKER_BIN`, which it passes
+to `dev-broker.sh`, names a broker binary that script starts in place of the one it
+builds, and a broker built before the profile mint and the proxy's profile token fails
+`p2` and `p3`. It needs bash, curl, jq, go and setsid, and a machine that lets this
+user bind port 443 of a loopback address, as a Legion pod does; elsewhere the stand-in
+cannot bind it and the run is `UNKNOWN`. It takes a few minutes once Go's build cache
+holds the stack's binaries; on a cold cache it waits for `dev-broker.sh`'s six builds
+under a bound of their own, up to 30 minutes. The stack runs in a session of its own and
+is stopped as one process group, so a stop during the build ends that build with the
+stack.
 
 ## project-secrets-check.sh
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -215,13 +216,60 @@ func Current(t testing.TB, store *secrets.Local, services ...string) *policy.Cur
 	return current(t, Loader(store, services...))
 }
 
+// Profiles is file, a profiles file's text, as the broker's boot reads it: parsed by
+// policy.ParseProfiles and its requesters read against services (Profiles.CheckRequesters). A file
+// either refuses is a test bug.
+func Profiles(t testing.TB, file string, services ...string) policy.Profiles {
+	t.Helper()
+	profiles, err := policy.ParseProfiles([]byte(file))
+	if err != nil {
+		t.Fatalf("policy.ParseProfiles: %v", err)
+	}
+	if err := profiles.CheckRequesters(services); err != nil {
+		t.Fatalf("Profiles.CheckRequesters: %v", err)
+	}
+	return profiles
+}
+
+// ProfiledCurrent is Current with file as the deployment's profiles file (Profiles), so the
+// policy it loads serves those profiles and refuses each that fails against its source.
+func ProfiledCurrent(t testing.TB, store *secrets.Local, file string, services ...string) *policy.Current {
+	t.Helper()
+	loader := Loader(store, services...)
+	loader.Profiles = Profiles(t, file, services...)
+	return current(t, loader)
+}
+
+// AppProfile is the profile that serves the github-app secret name by its own name, as the
+// broker serves every App it releases (policy.ReasonGitHubAppNoProfile refuses one no profile
+// names): a github block on the accounts TypeSecret's github-owners tag names
+// (FixtureGitHubOwners), with the metadata read GitHub gives every App, and no proxy block.
+func AppProfile(name string) string {
+	return `{"name": "` + name + `", "github": {"accounts": ["acme", "ada"], "permissions": {"metadata": "read"}}}`
+}
+
+// ProfilesFile is the profiles file holding profiles, each one entry's JSON, in order.
+func ProfilesFile(profiles ...string) string {
+	return `{"profiles": [` + strings.Join(profiles, ", ") + `]}`
+}
+
 // MeteredCurrent is Current with the policy's two metrics on registry, as cmd/cipherd/main.go
 // registers them: broker_policy_store_reads_total counted from the first load on
 // (policy.NewStoreReads), and broker_unservable_secrets once that load answered
 // (policy.NewUnservableSecrets).
 func MeteredCurrent(t testing.TB, store *secrets.Local, registry *metrics.Registry, services ...string) *policy.Current {
 	t.Helper()
+	return MeteredProfiledCurrent(t, store, registry, "", services...)
+}
+
+// MeteredProfiledCurrent is MeteredCurrent with file as the deployment's profiles file (Profiles),
+// or none for "", as BROKER_PROFILES_FILE is set or not.
+func MeteredProfiledCurrent(t testing.TB, store *secrets.Local, registry *metrics.Registry, file string, services ...string) *policy.Current {
+	t.Helper()
 	loader := Loader(store, services...)
+	if file != "" {
+		loader.Profiles = Profiles(t, file, services...)
+	}
 	loader.StoreReads = policy.NewStoreReads(registry)
 	cur := current(t, loader)
 	policy.NewUnservableSecrets(registry, cur)

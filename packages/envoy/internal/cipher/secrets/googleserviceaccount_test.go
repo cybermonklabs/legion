@@ -17,6 +17,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
@@ -69,7 +70,7 @@ func TestGoogleServiceAccountMintImpersonatesTheStoredAccount(t *testing.T) {
 		BaseURL: server.URL, HTTP: server.Client(), Source: brokerSource(),
 		Accounts: map[string]string{"GCP_FLEET": serviceAccountEmail},
 	}
-	got, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Value: serviceAccountValue})
+	got, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Source: "GCP_FLEET", Value: serviceAccountValue})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -130,7 +131,7 @@ func TestGoogleServiceAccountMintNamesGooglesVerdict(t *testing.T) {
 				BaseURL: server.URL, HTTP: server.Client(), Source: brokerSource(),
 				Accounts: map[string]string{"GCP_FLEET": serviceAccountEmail}, Retry: retry,
 			}
-			_, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Value: serviceAccountValue})
+			_, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Source: "GCP_FLEET", Value: serviceAccountValue})
 			if err == nil || secrets.MintErrorClass(err) != tc.class {
 				t.Fatalf("Mint error = %v (class %s), want class %s", err, secrets.MintErrorClass(err), tc.class)
 			}
@@ -170,7 +171,7 @@ func TestGoogleServiceAccountMintErrorsQuoteNoToken(t *testing.T) {
 				BaseURL: server.URL, HTTP: server.Client(), Source: brokerSource(),
 				Accounts: map[string]string{"GCP_FLEET": serviceAccountEmail},
 			}
-			_, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Value: serviceAccountValue})
+			_, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Source: "GCP_FLEET", Value: serviceAccountValue})
 			if err == nil {
 				t.Fatal("Mint: want an error")
 			}
@@ -273,7 +274,7 @@ func TestGoogleServiceAccountResolvesItsOwnCredentialsOnce(t *testing.T) {
 		Accounts: map[string]string{"GCP_FLEET": serviceAccountEmail},
 	}
 	for mint := 1; mint <= 2; mint++ {
-		got, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Value: serviceAccountValue})
+		got, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Source: "GCP_FLEET", Value: serviceAccountValue})
 		if err != nil || got.Value != "impersonated-access-token" {
 			t.Fatalf("mint %d = %q, %v; want the bare access token", mint, got.Value, err)
 		}
@@ -329,7 +330,7 @@ func TestGoogleServiceAccountScopes(t *testing.T) {
 				Accounts: map[string]string{"GCP_FLEET": serviceAccountEmail},
 			}
 			if _, err := minter.Mint(t.Context(), secrets.MintRequest{
-				Name: "GCP_FLEET", Value: serviceAccountValue, GoogleScopes: secret.ScopeURLs(),
+				Name: "GCP_FLEET", Source: "GCP_FLEET", Value: serviceAccountValue, GoogleScopes: secret.ScopeURLs(),
 			}); err != nil {
 				t.Fatalf("Mint: %v", err)
 			}
@@ -343,6 +344,42 @@ func TestGoogleServiceAccountScopes(t *testing.T) {
 	}
 }
 
+// TestAGoogleProfileAsksForItsOwnScopes: a profile of a google-service-account source asks Google
+// for the scopes of its google block, which narrow the source's scopes tag, and never for the
+// source's. The release's scopes are built the way a release builds them: from the profile as the
+// policy serves it (policy.Secret.ScopeURLs), so what is pinned is the path a release takes. The
+// deployment binds the stored secret, GCP_FLEET, as BROKER_SERVICE_ACCOUNT_SECRETS names it, and
+// the profile mints under that binding by its source's name (MintRequest.Source), never its own.
+func TestAGoogleProfileAsksForItsOwnScopes(t *testing.T) {
+	source := policytest.TypeSecret("GCP_FLEET", "ada@example.com", policy.TierHuman, policy.TypeGoogleServiceAccount, serviceAccountValue)
+	source.Tags[policy.TagScopes] = "bigquery cloud-platform"
+	current := policytest.ProfiledCurrent(t, secrets.NewLocal(source),
+		policytest.ProfilesFile(`{"name": "GCP_FLEET_BIGQUERY", "source": "GCP_FLEET", "google": {"scopes": ["bigquery"]}}`))
+	served, ok := current.Get().Secrets["GCP_FLEET_BIGQUERY"]
+	if !ok {
+		t.Fatalf("the policy serves no GCP_FLEET_BIGQUERY: refused %v", current.Get().Refused)
+	}
+	var sent struct {
+		Scope []string `json:"scope"`
+	}
+	server, _ := iamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+			t.Errorf("the request body is no JSON object of its fields: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "imp" + "ersonated-access-token"})
+	})
+	minter := &secrets.GoogleServiceAccount{
+		BaseURL: server.URL, HTTP: server.Client(), Source: brokerSource(),
+		Accounts: map[string]string{"GCP_FLEET": serviceAccountEmail},
+	}
+	if _, err := minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET_BIGQUERY", Source: served.Profile.Source, Value: serviceAccountValue, GoogleScopes: served.ScopeURLs()}); err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	if want := []string{"https://www.googleapis.com/auth/bigquery"}; !slices.Equal(sent.Scope, want) {
+		t.Fatalf("the request named scope %v, want the profile's own, %v", sent.Scope, want)
+	}
+}
+
 // Which account the broker will impersonate is the deployment's binding of the secret, never the
 // account its stored value names on its own. Whoever may write a secret may store any account in
 // it, and the broker holds Token Creator on every account it is bound to, so a value rewritten
@@ -353,6 +390,9 @@ func TestGoogleServiceAccountScopes(t *testing.T) {
 // credential before it weighs the binding answers ErrMintUpstream and never the ErrMintNotBound
 // below, and the fake IAM endpoint sees no request of its own. The refusal names the secret and
 // the bound account, which an operator reads to fix the setting, and never the stored value.
+// The binding is the stored secret's (MintRequest.Source): a profile of a bound secret mints
+// under it whatever the profile is called, and a profile of an unbound one is refused even where
+// its own name is one the deployment binds, naming the profile and the source it is of.
 func TestGoogleServiceAccountBindingRefusesAnUnboundSecret(t *testing.T) {
 	const otherAccount = "dev-sami@example-identities.iam.gserviceaccount.com"
 	const otherValue = `{"service_account":"` + otherAccount + `"}`
@@ -364,12 +404,17 @@ func TestGoogleServiceAccountBindingRefusesAnUnboundSecret(t *testing.T) {
 		BaseURL: server.URL, HTTP: server.Client(), Source: brokerSource(), Accounts: accounts,
 	}
 
-	got, err := bound.Mint(t.Context(), secrets.MintRequest{Name: "DEV_PERSON", Value: serviceAccountValue})
-	if err != nil || got.Value != "impersonated-access-token" {
-		t.Fatalf("Mint of the bound secret = %q, %v; want the bare access token", got.Value, err)
+	for _, req := range []secrets.MintRequest{
+		{Name: "DEV_PERSON", Source: "DEV_PERSON", Value: serviceAccountValue},
+		{Name: "DEV_PERSON_READER", Source: "DEV_PERSON", Value: serviceAccountValue},
+	} {
+		got, err := bound.Mint(t.Context(), req)
+		if err != nil || got.Value != "impersonated-access-token" {
+			t.Fatalf("Mint of %s, of the bound secret %s = %q, %v; want the bare access token", req.Name, req.Source, got.Value, err)
+		}
 	}
-	if calls.Load() != 1 {
-		t.Fatalf("the bound mint made %d requests, want one", calls.Load())
+	if calls.Load() != 2 {
+		t.Fatalf("the bound mints made %d requests, want two", calls.Load())
 	}
 	for _, tc := range []struct {
 		name  string
@@ -377,11 +422,17 @@ func TestGoogleServiceAccountBindingRefusesAnUnboundSecret(t *testing.T) {
 		names []string
 	}{
 		{"a stored value naming another person's account",
-			secrets.MintRequest{Name: "DEV_PERSON", Value: otherValue},
+			secrets.MintRequest{Name: "DEV_PERSON", Source: "DEV_PERSON", Value: otherValue},
 			[]string{"DEV_PERSON", serviceAccountEmail}},
 		{"a secret the deployment binds to nothing",
-			secrets.MintRequest{Name: "GCP_ADMIN", Value: serviceAccountValue},
+			secrets.MintRequest{Name: "GCP_ADMIN", Source: "GCP_ADMIN", Value: serviceAccountValue},
 			[]string{"GCP_ADMIN"}},
+		{"a profile of a secret the deployment binds to nothing",
+			secrets.MintRequest{Name: "GCP_ADMIN_READER", Source: "GCP_ADMIN", Value: serviceAccountValue},
+			[]string{"GCP_ADMIN_READER", "GCP_ADMIN"}},
+		{"a profile whose own name the deployment binds, of a secret it does not",
+			secrets.MintRequest{Name: "DEV_PERSON", Source: "GCP_ADMIN", Value: serviceAccountValue},
+			[]string{"DEV_PERSON", "GCP_ADMIN"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "absent.json"))
@@ -402,8 +453,8 @@ func TestGoogleServiceAccountBindingRefusesAnUnboundSecret(t *testing.T) {
 					t.Errorf("Mint error %q quotes %q", err, withheld)
 				}
 			}
-			if calls.Load() != 1 {
-				t.Errorf("a refused mint left the IAM endpoint at %d requests, want the bound mint's one", calls.Load())
+			if calls.Load() != 2 {
+				t.Errorf("a refused mint left the IAM endpoint at %d requests, want the bound mints' two", calls.Load())
 			}
 		})
 	}

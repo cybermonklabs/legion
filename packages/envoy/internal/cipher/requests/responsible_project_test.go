@@ -42,7 +42,7 @@ func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
 	for i := range rows {
 		operator := fmt.Sprintf("op%02d@example.com", i)
 		enr, key := newEnrollment(t, m.Store, "session", fmt.Sprintf("box-slow-%02d", i), new(operator), nil)
-		if req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil); err != nil || req.State != "pending" {
+		if req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), ""); err != nil || req.State != "pending" {
 			t.Fatalf("Create = %+v, %v; want it pending", req, err)
 		}
 	}
@@ -105,7 +105,7 @@ func (f failForPerson) States(ctx context.Context, projects []string) (map[strin
 func strandedRow(t *testing.T) (*Machine, string) {
 	t.Helper()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+	req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "")
 	if err != nil || req.RecordID == nil || req.State != "pending" {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
 	}
@@ -210,14 +210,14 @@ func TestTheFallbackFailsClosed(t *testing.T) {
 func TestTheReadersOwnRowsAreNotCutByTheClock(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	mine, mineKey := newEnrollment(t, m.Store, "session", "box-own-row", new(insider), nil)
-	own, err := m.Create(t.Context(), mine, signRequest(t, m, mineKey, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+	own, err := m.Create(t.Context(), mine, signRequest(t, m, mineKey, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "")
 	if err != nil || own.RecordID == nil {
 		t.Fatalf("Create(own) = %+v, %v; want it pending", own, err)
 	}
 	var others []string
 	for i := range 20 {
 		enr, key := newEnrollment(t, m.Store, "session", fmt.Sprintf("box-other-%02d", i), new(fmt.Sprintf("op%02d@example.com", i)), nil)
-		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "")
 		if err != nil || req.RecordID == nil || req.State != "pending" {
 			t.Fatalf("Create = %+v, %v; want it pending", req, err)
 		}
@@ -244,7 +244,7 @@ func TestTheReadersOwnRowsAreNotCutByTheClock(t *testing.T) {
 // operator's own list holds the row and asks about the operator.
 func TestTheReadersMaySeeIsReadFirst(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+	req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "")
 	if err != nil || req.RecordID == nil || req.State != "pending" {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
 	}
@@ -279,7 +279,7 @@ func TestARequestWhoseResponsiblePersonMayNotSeeItWaitsForThoseWhoMay(t *testing
 	t.Run("an outsider's request naming a private project's issue", func(t *testing.T) {
 		m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 		out, outKey := newEnrollment(t, m.Store, "session", "box-r-outsider", new(outsider), nil)
-		req, err := m.Create(t.Context(), out, signRequest(t, m, outKey, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "", nil)
+		req, err := m.Create(t.Context(), out, signRequest(t, m, outKey, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "")
 		if err != nil || req.RecordID == nil || req.State != "pending" {
 			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
 		}
@@ -287,7 +287,7 @@ func TestARequestWhoseResponsiblePersonMayNotSeeItWaitsForThoseWhoMay(t *testing
 	})
 	t.Run("a project that turns private under its responsible person", func(t *testing.T) {
 		m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "")
 		if err != nil || req.RecordID == nil || req.State != "pending" {
 			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
 		}
@@ -297,7 +297,7 @@ func TestARequestWhoseResponsiblePersonMayNotSeeItWaitsForThoseWhoMay(t *testing
 	})
 	t.Run("a responsible person on the private project (control)", func(t *testing.T) {
 		m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "", nil)
+		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "")
 		if err != nil || req.RecordID == nil || req.State != "pending" {
 			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
 		}

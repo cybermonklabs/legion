@@ -201,7 +201,7 @@ func TestAnUntaggedGrantStaysWithItsOperatorOnceTheyLeaveItsProject(t *testing.T
 		privProject: {Visibility: "private", Owner: otherPerson, Listed: []string{insider}},
 		teamProject: publicTeam,
 	})
-	if released, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil || released.Values["AUTO_TOKEN"] == "" {
+	if released, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil || released.Values["AUTO_TOKEN"] == "" {
 		t.Fatalf("Values(the AUTO_TOKEN grant) once PRIV's list no longer names %s = %+v, %v; want it released: the grant lives on", fixtureOperator, released.Values, err)
 	}
 	listed := func(login string) bool {
@@ -228,7 +228,7 @@ func TestAnUntaggedGrantStaysWithItsOperatorOnceTheyLeaveItsProject(t *testing.T
 		if err := m.RevokeByApprover(t.Context(), grantID, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
 			t.Fatalf("RevokeByApprover(the AUTO_TOKEN grant, %s, its operator) = %v; want it ended", fixtureOperator, err)
 		}
-		if released, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+		if released, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 			t.Fatalf("Values(the AUTO_TOKEN grant) after its operator's revoke = %+v, %v; want ErrGrantNotLive", released.Values, err)
 		}
 	})

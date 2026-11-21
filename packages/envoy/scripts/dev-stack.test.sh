@@ -384,13 +384,15 @@ ISSUER
 echo "fake broker: database=${BROKER_DATABASE_URL:-} issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-}" >&2
 echo "fake broker: machine-login=${BROKER_MACHINE_LOGIN_URL:-} sign-in-client=${BROKER_SIGNIN_CLIENT_ID:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 echo "fake broker: service-logins=${BROKER_SERVICE_LOGINS:-} project-access=${BROKER_PROJECT_ACCESS_URL:-} project-access-token=${BROKER_PROJECT_ACCESS_TOKEN_FILE:-}" >&2
-echo "fake broker: airlock-rules=${BROKER_AIRLOCK_RULES_FILE:-} airlock-ca=${BROKER_AIRLOCK_CA_CERT_FILE:-} airlock-proxy=${BROKER_AIRLOCK_PROXY_URL:-} airlock-resolve=${BROKER_AIRLOCK_TEST_RESOLVE:-} airlock-dial=${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}" >&2
+echo "fake broker: profiles=${BROKER_PROFILES_FILE:-} airlock-ca=${BROKER_AIRLOCK_CA_CERT_FILE:-} airlock-proxy=${BROKER_AIRLOCK_PROXY_URL:-} airlock-resolve=${BROKER_AIRLOCK_TEST_RESOLVE:-} airlock-dial=${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}" >&2
 echo "fake broker: nats=${BROKER_NATS_URLS:-} seeds=${BROKER_NATS_SEED_FILE:-},${BROKER_NATS_ISSUER_SEED_FILE:-},${BROKER_NATS_XKEY_SEED_FILE:-} nats-audience=${BROKER_NATS_K8S_AUDIENCE:-} services=${BROKER_NATS_SERVICES:-}" >&2
 echo "fake broker: pod-registrars=${BROKER_POD_REGISTRARS:-}" >&2
-# The proxy binds the address it was given, as the real one does. dev-stack.sh starts every
+# The proxy binds the address it was given, as the real one does, and only when a profile of the
+# profiles file has a proxy block, as the real one binds it. dev-stack.sh starts every
 # process with env -i, so nothing of this test's environment reaches the stub: the control for a
 # lost port race bakes the other address in at build time, as DEV_STACK_TEST_BROKER_FAILS does.
-if [ -n "${BROKER_AIRLOCK_LISTEN_ADDR:-}" ]; then
+if [ -n "${BROKER_AIRLOCK_LISTEN_ADDR:-}" ] && [ -n "${BROKER_PROFILES_FILE:-}" ] &&
+  jq -e 'any(.profiles[]; .proxy != null)' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
   printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"%s"}\n' \
     "${AIRLOCK_BOUND_ADDR:-$BROKER_AIRLOCK_LISTEN_ADDR}" >&2
 fi

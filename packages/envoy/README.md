@@ -47,6 +47,7 @@ The secrets broker (`cmd/cipherd`) supports these types for `agent-secrets secre
 - `google-login`: stores an `authorized_user` credential; releases a Google access token, not the refresh token.
 - `azure-login`: stores `{"tenant_id":"<tenant>","client_id":"<client>"}`; releases JSON with `tenant_id`, `client_id`, `federated_token` and `expires_at` (RFC3339 UTC, from the token's JWT `exp`).
   Set `BROKER_AZURE_LOGIN_SECRET` to the one agent-secret name allowed to release that token; unset, every Azure release is refused.
+  It names the stored secret, and a profile of that secret releases the token under its own name too; a profile of another secret never does.
   The configured secret must be human tier in the policy snapshot checked for each release, and its grant decision must record a person's approval, never an automatic grant.
   Retagging another secret to `azure-login`, or retagging the configured secret to agent tier, releases no Azure token.
   Each release reads the broker pod's projected ServiceAccount token from `BROKER_AZURE_TOKEN_FILE`, default `/var/run/secrets/azure/tokens/azure-identity-token`.
@@ -55,6 +56,7 @@ The secrets broker (`cmd/cipherd`) supports these types for `agent-secrets secre
   Exactly one Entra identity may trust that ServiceAccount subject, since a released token can sign in to every identity that trusts it.
 - `google-service-account`: stores `{"service_account":"<id>@<project>.iam.gserviceaccount.com"}`; releases a bare Google access token for that account, minted by impersonating it with the broker's own credential, good for one hour.
   Set `BROKER_SERVICE_ACCOUNT_SECRETS` to whitespace-separated `<SECRET NAME>=<account email>` entries, such as `GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com`; it, and not the stored value, chooses the account the broker mints for, and a secret it does not bind releases nothing (`class=binding`).
+  Each entry names a stored secret, never a profile: a profile of a bound secret mints under its source's binding, whatever its own name.
   `--scopes "cloud-platform bigquery"` names the OAuth scopes the token carries, each the part of a Google scope after `https://www.googleapis.com/auth/`; without it the token carries `cloud-platform` alone, and the flag is refused on any other type.
   `--admin true` marks a secret whose grant is an administrator's: it is human tier, names its `--requesters`, and takes a `--max-grant` of an hour or less, as a `google-service-account` secret does whether or not it is marked.
   The secret's `--requesters` name its one person owner, and at human tier the registered services that may ask beside them.

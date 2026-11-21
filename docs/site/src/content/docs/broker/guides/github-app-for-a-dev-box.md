@@ -233,64 +233,38 @@ The token expires at the time in `expires_at`. Read the secret again after the t
 
 ## Give a narrowed token to another machine
 
-A token you give to another machine, such as a virtual machine that must only read one
-repository, must be narrowed. Use these flags on the `agent-secrets` command that reads the
-secret:
-
-- `--github-owner <owner>` gives a token for the installation on that account only. The account
-  must be in the `github-owners` tag of the secret.
-- `--github-repo <repository>` limits the token to that repository of the account. Use the flag
-  one time for each repository, at most 100 times. Give the repository name without the account.
-  The token keeps every permission the App holds, its organization permissions too, unless you
-  also give `--github-read-only`.
-- `--github-read-only` limits the token to `contents: read`, `metadata: read`,
-  `pull_requests: read`, `actions: read`, `checks: read` and `statuses: read`. An App whose
-  installation has not been granted Actions, checks or commit statuses does not get those. A
-  machine that must only read needs it, with or without `--github-repo`.
-- `--github-token` hands over that one installation's token alone, in place of the JSON object
-  of installations. A command that sends the token to GitHub in a header needs this form.
-
-`--github-repo`, `--github-read-only` and `--github-token` need `--github-owner`.
-`agent-secrets` checks the flags before it asks for the secret: a flag the broker would refuse
-exits 2, and nothing is sent.
+A token you give to another machine, such as a virtual machine that must only read one repository, comes from a profile.
+The deployment's profiles file names each profile with its source secret, its accounts, its repositories and its permissions, and you ask for the profile by its name, as for any secret:
 
 ```sh
-agent-secrets --reason "read <repository> on <machine>" GITHUB_APP_<PERSON> \
-  --github-owner <owner> --github-repo <repository> --github-read-only --github-token -- sh -ceu '
-printf %s "$GITHUB_APP_<PERSON>"
+agent-secrets --reason "read <repository> on <machine>" <PROFILE> -- sh -ceu '
+printf %s "$<PROFILE>"
 '
 ```
 
-With `--github-token` the variable holds that one account's token, so the example needs no `jq`
-and no account key. The case you type in `--github-owner` therefore does not matter to it.
-Without the flag the variable holds the JSON object of installations, which the examples
-earlier on this page read with `jq`.
+A profile whose `github` block holds `"value": "token"` puts one account's installation token in the variable, so a command can send it to GitHub in a header with no `jq`.
+Any other GitHub profile puts the JSON object of installations in it, which the examples earlier on this page read with `jq`.
+When the profile you need does not exist, ask whoever runs the deployment to add it to the profiles file.
 
-The broker sends the narrowing to GitHub. GitHub refuses a repository or a permission that the
-installation does not have, and `agent-secrets` then exits 1 with `NARROWING_REFUSED`. An
-account that the `github-owners` tag does not list exits 1 with `NARROWING_OWNER_NOT_LISTED`.
-An account that the tag lists but that the App is not installed on exits 1 with a message that
-says `has no installation on` that account: `NARROWING_REFUSED` when the broker refuses the
-request, and `MINT_FAILED` when the refusal comes as the broker reads the grant.
+The broker asks GitHub for the profile's permissions cut to what the App's installation holds, and names each permission it left out in the release (`github_left_out`).
+A profile that asks for more than `metadata` and whose permissions the installation holds none of but `metadata`, which every installation holds and which alone does nothing the profile is for, or that names a repository the installation does not reach, is refused `422 PROFILE_MINT_REFUSED`.
+An account the App is not installed on is refused with a message that says `has no installation on` that account: `422 PROFILE_MINT_REFUSED` when the broker refuses the request, and `502 MINT_FAILED` when the refusal comes as the broker reads the grant.
+When a person approves the request, the broker makes these refusals before the approval request: it makes the token that your read would get, reads GitHub's answer, and gives that token back to GitHub at once, so no request waits and the person is not asked.
+When GitHub does not answer the broker or refuses the App itself, or the check passes its time limit, the request goes to the approver as before, and the refusal comes when the broker reads the grant.
+The broker gives out a token only when GitHub's answer shows that it holds no more than the profile asked.
 
-When a person approves the request for this secret, the broker makes these refusals
-before the approval request. With `--github-repo` or `--github-read-only`, it makes the token
-that your read would get, reads GitHub's answer, and gives that token back to GitHub at once.
-With `--github-owner` alone, it reads only the list of the App's installations, and it makes no
-token. No token reaches your command, no request waits, and the person is not asked. A flag that
-you typed wrongly thus costs that person nothing, and you read the refusal at once. The refusal
-names the repository that the installation does not reach, or the read access that the App does
-not hold. The broker finds that part by asking GitHub again with less of the narrowing.
+Each read of a profile gives that profile's scope, and a read of another profile gives that one's.
+Keep a token you hand to another machine apart from your own, so that you do not use one in place of the other.
 
-When GitHub does not answer the broker or refuses the App itself, or the check passes its time
-limit, the request goes to the approver as before. The refusal then comes when the broker reads
-the grant.
+### The removed narrowing
 
-The broker gives out the token only when GitHub's answer shows
-that the token holds no more than you asked. The command runs only when the broker tells
-`agent-secrets` that it applied the narrowing. A broker that cannot narrow releases the token
-for all repositories, so `agent-secrets` runs nothing and exits 1.
+The broker no longer takes the narrowing that the `agent-secrets` flags `--github-owner`, `--github-repo`, `--github-read-only` and `--github-token` sent.
+An `agent-secrets` that still has them sends it as the `github_app` field of the request, and the broker refuses every body that carries that field with `400 GITHUB_APP_FIELD_REMOVED` before it writes anything or asks anyone, so `agent-secrets` exits 1 and runs nothing.
+On the local stack of [Run the broker locally](/legion/broker/guides/run-locally/) it reads:
 
-The narrowing applies to this read only. The next read without these flags gives the token for
-all repositories of each installation. Keep a narrowed token apart from the other tokens, so
-that you do not use one in place of the other.
+```console
+$ agent-secrets DEMO_GITHUB_APP --github-owner acme-org -- sh -c 'echo ran'
+agent-secrets: github_app was removed: name a profile and narrow it with --target ACCOUNT[/REPOSITORY] (GITHUB_APP_FIELD_REMOVED) (answer 7746a1139d9db026a4ec5e7dd4621df8); asked the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+```
+
+Ask for the profile that holds the scope the flags asked for, by its name.

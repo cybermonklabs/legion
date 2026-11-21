@@ -206,41 +206,43 @@ type Config struct {
 	// with automatic replication takes a global key). A secret under the prefix encrypted with any
 	// other key, the provider's default one included, is refused.
 	SecretsKMSKey string
-	// BROKER_AIRLOCK_RULES_FILE: the path of the airlock's rules file, airlock.json, which says
-	// for each secret which hosts its value may reach and in which headers. The broker reads it
-	// once at start, so a change to it rolls the pods; it refuses to start on a file it cannot
-	// read, cannot parse, or whose entries it refuses, naming the file and the entry. A secret
-	// the file names is never released as a value: a session is given a placeholder, and the
-	// broker swaps the real value into the headers the entry allows. Empty (the default) is a
-	// deployment with no airlock, where every granted secret is released as its value.
-	AirlockRulesFile string
+	// BROKER_PROFILES_FILE: the path of the profiles file, profiles.json, which names each
+	// profile a caller asks for: its source secret, its scope and, in its proxy block, which hosts
+	// its credential may reach and in which headers. The broker reads it once at start, so a
+	// change to it rolls the pods; it refuses to start on a file it cannot read, cannot parse, or
+	// whose profiles it refuses, naming the file, the profile and the field. A profile with a
+	// proxy block is never released as a value: a session is given a placeholder, and the broker
+	// swaps the real value into the headers the block allows. Empty (the default) is a deployment
+	// with no profiles and no proxy, where every granted secret is released as its value.
+	ProfilesFile string
 	// BROKER_AIRLOCK_LISTEN_ADDR: the address the airlock's proxy port binds, default
 	// 127.0.0.1:13381. It is a second port of the same process, so it is bound and drained with
-	// the API's. Read only when BROKER_AIRLOCK_RULES_FILE names a file; a deployment with no
-	// airlock binds no proxy port.
+	// the API's. Bound only when a profile of BROKER_PROFILES_FILE has a proxy block; a deployment
+	// with none, or with no profiles file, binds no proxy port.
 	AirlockListenAddr string
 	// BROKER_AIRLOCK_PROXY_URL: the URL a command reaches the airlock's proxy port at, which
 	// every release of a name behind the airlock carries, so the command points its HTTPS_PROXY
-	// at it. Required with BROKER_AIRLOCK_RULES_FILE, and refused at start unless it is an
-	// absolute http or https URL with a host: a value with no scheme or no host would boot and
-	// then fail every airlock run one command at a time. It is a setting of its own rather than
-	// BROKER_PUBLIC_URL with another port, because the Service port a pod dials need not be the
-	// container port the broker binds.
+	// at it. Required when a profile of BROKER_PROFILES_FILE has a proxy block. With
+	// BROKER_PROFILES_FILE set, a value given is refused at start unless it is an absolute http or
+	// https URL with a host: a value with no scheme or no host would boot and then fail every
+	// airlock run one command at a time. It is a setting of its own rather than BROKER_PUBLIC_URL
+	// with another port, because the Service port a pod dials need not be the container port the
+	// broker binds.
 	AirlockProxyURL string
 	// BROKER_AIRLOCK_CA_CERT_FILE: the PEM certificate of the airlock proxy's certificate
-	// authority, the one every release hands the command to trust. Required with
-	// BROKER_AIRLOCK_RULES_FILE, and read once at start as half of that authority, with
-	// BROKER_AIRLOCK_CA_KEY_FILE; a pair the authority refuses refuses the start. What a release
-	// carries is the authority's own certificate rather than this file's bytes, so a file that
-	// holds more than the certificate hands a command nothing more. Both broker pods mount the
-	// same file from one Kubernetes Secret, so a command's trust does not depend on which pod
-	// released its values.
+	// authority, the one every release hands the command to trust. Required when a profile of
+	// BROKER_PROFILES_FILE has a proxy block, and then read once at start as half of that
+	// authority, with BROKER_AIRLOCK_CA_KEY_FILE; a pair the authority refuses refuses the start.
+	// A deployment with no proxy block reads neither file. What a release carries is the
+	// authority's own certificate rather than this file's bytes, so a file that holds more than
+	// the certificate hands a command nothing more. Both broker pods mount the same file from one
+	// Kubernetes Secret, so a command's trust does not depend on which pod released its values.
 	AirlockCACertFile string
 	// BROKER_AIRLOCK_CA_KEY_FILE: the PEM private key of BROKER_AIRLOCK_CA_CERT_FILE's
 	// certificate authority, which the proxy port signs each host's certificate with. Required
-	// with BROKER_AIRLOCK_RULES_FILE, and mounted from the same Kubernetes Secret, which no
-	// container but the broker's mounts: it is the key that lets its holder be any host a
-	// command trusts.
+	// when a profile of BROKER_PROFILES_FILE has a proxy block, and mounted from the same
+	// Kubernetes Secret, which no container but the broker's mounts: it is the key that lets its
+	// holder be any host a command trusts.
 	AirlockCAKeyFile string
 	// BROKER_AIRLOCK_IDLE_SECONDS: how long one proxy connection may go with no byte in either
 	// direction before the proxy closes it, default 300, between 10 and 3600. A connection
@@ -255,13 +257,19 @@ type Config struct {
 	// unicast, so without this a command under an airlock grant could tunnel to a ClusterIP of the
 	// cluster the broker runs in. Each prefix is read as its network (34.118.230.7/20 is
 	// 34.118.224.0/20); an empty element, a prefix that does not parse and an IPv4-mapped IPv6
-	// prefix refuse the start, naming the element's position. With BROKER_AIRLOCK_RULES_FILE set
-	// and KUBERNETES_SERVICE_HOST set to a non-empty value, which Kubernetes sets in every
-	// container to the address of the cluster's kubernetes Service, it is required, and the start
-	// is refused unless KUBERNETES_SERVICE_HOST is an IP address inside one of the ranges, so a
-	// list that misses the cluster's Service range cannot pass silently. Outside a cluster
-	// (KUBERNETES_SERVICE_HOST empty or unset) it is optional.
+	// prefix refuse the start, naming the element's position. With a profile of
+	// BROKER_PROFILES_FILE that has a proxy block and KUBERNETES_SERVICE_HOST set to a non-empty
+	// value, which Kubernetes sets in every container to the address of the cluster's kubernetes
+	// Service, it is required, and the start is refused unless KUBERNETES_SERVICE_HOST is an IP
+	// address inside one of the ranges, so a list that misses the cluster's Service range cannot
+	// pass silently. Outside a cluster (KUBERNETES_SERVICE_HOST empty or unset), and with no proxy
+	// block, it is optional.
 	AirlockClusterRanges []netip.Prefix
+	// kubernetesServiceHost is KUBERNETES_SERVICE_HOST as Load read it, which Kubernetes sets in
+	// every container to the address of the cluster's kubernetes Service. It is no setting of the
+	// broker's, so the configuration reference leaves it out. RequireAirlock reads it once the boot
+	// knows whether any profile has a proxy block (requireClusterRanges).
+	kubernetesServiceHost string
 	// BROKER_AIRLOCK_TEST_GITHUB_API_BASE: the base URL a github-app secret is minted against,
 	// in place of https://api.github.com, so a release of one mints at a stand-in GitHub
 	// (internal/cipher/proxyrules/proxyrulestest, cmd/dev-proxy-stands). For the broker's local
@@ -411,16 +419,19 @@ type Config struct {
 	AzureTokenFile string
 	// BROKER_AZURE_LOGIN_SECRET: the one agent-secret name allowed to release the broker's Azure
 	// projected token, for example AZURE_LOGIN. Empty (the default) disables azure-login
-	// releases. Must be an uppercase agent-secret name, not its store id or slug. That secret
-	// must be human tier in the policy snapshot checked for each release, with a person's
-	// approval recorded for that name in its grant. Another secret with type=azure-login,
-	// the named secret retagged to agent tier, or an automatic grant releases no token.
+	// releases. Must be an uppercase agent-secret name, not its store id or slug. It names the
+	// stored secret, never a profile: a profile of that secret releases the token under its own
+	// name too. That secret or profile must be human tier in the policy snapshot checked for each
+	// release, with a person's approval recorded for that name in its grant. Another secret with
+	// type=azure-login, a profile of one, the named secret retagged to agent tier, or an automatic
+	// grant releases no token.
 	AzureLoginSecret string
 	// BROKER_SERVICE_ACCOUNT_SECRETS: the one Google service account each google-service-account
 	// agent secret mints a token for, whitespace-separated <SECRET NAME>=<account email>
 	// entries, such as GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com. The name is
-	// the uppercase agent-secret name a session asks for (DEV_PERSON, GCP_ADMIN), not that
-	// secret's store id or its slug, and each secret is named at most once; the account is a
+	// the stored secret's uppercase agent-secret name (DEV_PERSON, GCP_ADMIN), never a profile's:
+	// a profile of a bound secret mints under its source's binding, whatever its own name. It is
+	// not that secret's store id or its slug, and each secret is named at most once; the account is a
 	// user-managed Google service account, <account id>@<project id>.iam.gserviceaccount.com in
 	// lowercase, held to secrets.ValidServiceAccountEmail, the minter's own rule, so no binding
 	// can ever name an address the minter would refuse. A Google-managed service agent is
@@ -877,8 +888,8 @@ const (
 var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE")
 
 // airlockProxySettings are the settings the airlock's proxy port cannot run without, every one of
-// them required with BROKER_AIRLOCK_RULES_FILE. Every message that names them names them in this
-// order.
+// them required when a profile has a proxy block (Config.RequireAirlock). Every message that names
+// them names them in this order.
 var airlockProxySettings = []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE", "BROKER_AIRLOCK_CA_KEY_FILE"}
 
 // The five settings the broker's model judge needs, each read by its own name: the endpoint it
@@ -927,11 +938,11 @@ const noDispatchCredential = "the broker opens no Dispatch ask and issues nothin
 const noDatabasePassword = "the broker substitutes no password into BROKER_DATABASE_URL: on Amazon RDS it signs in by IAM token (https://cybermonklabs.github.io/legion/broker/operate/#signing-in-to-rds-by-iam-token), and any other database's password goes in the URL itself"
 
 // noRulesFile is why these three variables are gone. They named a file that said who owned each
-// secret and at what tier, which the secret's own tags say now. The broker does read a rules
-// file again, BROKER_AIRLOCK_RULES_FILE, but it answers another question — where a secret's
-// value may go — so the reason names it rather than letting a deployment point the old variables
-// at it.
-const noRulesFile = "the broker reads each secret's owner and tier from the secret's own tags under BROKER_SECRETS_PREFIX; where a secret's value may go is BROKER_AIRLOCK_RULES_FILE, the airlock's rules file, and no variable names any other rules file"
+// secret and at what tier, which the secret's own tags say now. The broker does read a file of
+// its own again, BROKER_PROFILES_FILE, but it answers other questions — which profiles a caller
+// may ask for and where each one's value may go — so the reason names it rather than letting a
+// deployment point the old variables at it.
+const noRulesFile = "the broker reads each secret's owner and tier from the secret's own tags under BROKER_SECRETS_PREFIX; the profiles a caller asks for, and where each one's value may go, are BROKER_PROFILES_FILE, and no variable names any other rules file"
 
 // noGrantCap is why BROKER_MAX_GRANT_SECONDS is gone: a request chooses its lifetime with --ttl;
 // with none its grant lasts 12 hours, or until the requesting session ends when every requested
@@ -962,6 +973,7 @@ var removedVars = []struct{ name, reason string }{
 	{"BROKER_SIGNIN_CLIENT_SECRET", "the broker reads its sign-in client's secret only from the file BROKER_SIGNIN_CLIENT_SECRET_FILE names, so the secret is never in its environment"},
 	{"BROKER_ENVOY_TOKEN", noSharedEnvoyBearer},
 	{"BROKER_ENVOY_TOKEN_FILE", noSharedEnvoyBearer},
+	{"BROKER_AIRLOCK_RULES_FILE", "replaced by BROKER_PROFILES_FILE"},
 }
 
 // NATSCallout is the NATS auth service's settings: Config.NATS documents each.
@@ -1774,6 +1786,35 @@ func parseAirlockClusterRanges(value string) ([]netip.Prefix, error) {
 	return ranges, nil
 }
 
+// RequireAirlock is the check of the airlock's settings against the profiles the boot read, proxied
+// naming each profile that has a proxy block, in the file's order. A broker whose profiles hold a
+// proxy block but that cannot proxy would hold back the value of every name such a block names and
+// release nothing in its place, so with any such profile the three settings the proxy cannot run
+// without are required, the refusal naming the ones missing and the profiles that need them, and,
+// in a cluster, so are the cluster's own ranges, which no fixed rule of the proxy covers
+// (requireClusterRanges). With none, there is no proxy and nothing is required: a deployment that
+// serves GitHub Apps through profiles with no proxy block runs no airlock.
+func (c Config) RequireAirlock(proxied []string) error {
+	if len(proxied) == 0 {
+		return nil
+	}
+	// One value per airlockProxySettings entry, read in that order, so the missing ones are named
+	// in the order the message naming them uses and one list is walked rather than two that could
+	// part.
+	values := []string{c.AirlockProxyURL, c.AirlockCACertFile, c.AirlockCAKeyFile}
+	var missing []string
+	for i, setting := range airlockProxySettings {
+		if values[i] == "" {
+			missing = append(missing, setting)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("BROKER_PROFILES_FILE gives %s a proxy block, so the broker runs the airlock's proxy for them and needs %s; missing %s",
+			strings.Join(proxied, ", "), strings.Join(airlockProxySettings, ", "), strings.Join(missing, ", "))
+	}
+	return requireClusterRanges(c.AirlockClusterRanges, c.kubernetesServiceHost)
+}
+
 // requireClusterRanges is the check of BROKER_AIRLOCK_CLUSTER_RANGES against the cluster a broker
 // with the airlock on runs in. KUBERNETES_SERVICE_HOST, which Kubernetes sets in every container
 // to the ClusterIP of the cluster's kubernetes Service, says the broker runs in a cluster; empty
@@ -1790,7 +1831,7 @@ func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
 	}
 	serviceHost = strings.TrimSpace(serviceHost)
 	if len(ranges) == 0 {
-		return errors.New("BROKER_AIRLOCK_CLUSTER_RANGES is required: BROKER_AIRLOCK_RULES_FILE turns the airlock on and KUBERNETES_SERVICE_HOST is set, so the broker runs in a cluster, and its proxy must refuse that cluster's own Service, pod and node ranges, which only this setting names")
+		return errors.New("BROKER_AIRLOCK_CLUSTER_RANGES is required: a proxy block of BROKER_PROFILES_FILE turns the airlock on and KUBERNETES_SERVICE_HOST is set, so the broker runs in a cluster, and its proxy must refuse that cluster's own Service, pod and node ranges, which only this setting names")
 	}
 	host, err := netip.ParseAddr(serviceHost)
 	if err != nil {
@@ -2003,7 +2044,7 @@ func Load(getenv func(string) string) (Config, error) {
 		MachineLoginURL:           strings.TrimSpace(getenv("BROKER_MACHINE_LOGIN_URL")),
 		SecretsStore:              orDefault(getenv("BROKER_SECRETS_STORE"), secrets.StoreAWS),
 		SecretsPrefix:             getenv("BROKER_SECRETS_PREFIX"),
-		AirlockRulesFile:          getenv("BROKER_AIRLOCK_RULES_FILE"),
+		ProfilesFile:              getenv("BROKER_PROFILES_FILE"),
 		AirlockListenAddr:         orDefault(getenv("BROKER_AIRLOCK_LISTEN_ADDR"), "127.0.0.1:13381"),
 		AirlockProxyURL:           strings.TrimSpace(getenv("BROKER_AIRLOCK_PROXY_URL")),
 		AirlockCACertFile:         strings.TrimSpace(getenv("BROKER_AIRLOCK_CA_CERT_FILE")),
@@ -2096,41 +2137,23 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, err
 		}
 	}
-	// The broker cluster's own ranges, read whatever the rules file says: a list the broker could
-	// not act on is a mistake in the deployment whether or not its airlock is on today.
+	// The broker cluster's own ranges, read whatever the profiles file says: a list the broker
+	// could not act on is a mistake in the deployment whether or not its airlock is on today.
 	if cfg.AirlockClusterRanges, err = parseAirlockClusterRanges(getenv("BROKER_AIRLOCK_CLUSTER_RANGES")); err != nil {
 		return Config{}, err
 	}
-	// A broker that reads the airlock's rules but cannot proxy would hold back the value of
-	// every name the file names and release nothing in its place, so the three settings the
-	// proxy cannot run without are required with the rules file, and the refusal names the ones
-	// missing. With no rules file there is no proxy and all four are ignored.
-	if cfg.AirlockRulesFile != "" {
-		// One value per airlockProxySettings entry, read in that order, so the missing ones
-		// are named in the order the message naming them uses and one list is walked rather
-		// than two that could part.
-		values := []string{cfg.AirlockProxyURL, cfg.AirlockCACertFile, cfg.AirlockCAKeyFile}
-		var missing []string
-		for i, setting := range airlockProxySettings {
-			if values[i] == "" {
-				missing = append(missing, setting)
-			}
-		}
-		if len(missing) > 0 {
-			return Config{}, fmt.Errorf("BROKER_AIRLOCK_RULES_FILE names a rules file, so the broker proxies every secret the file names and needs %s; missing %s",
-				strings.Join(airlockProxySettings, ", "), strings.Join(missing, ", "))
-		}
-		// And the proxy's URL held to its form, as BROKER_MACHINE_LOGIN_URL above is: every
-		// release of a name the rules hold back carries this string, and a command's own
-		// client reads it as the proxy to dial. A value with no scheme or no host
-		// ("proxy:13381") boots and then fails every airlock run one command at a time, with
-		// a refusal in the CLI rather than in the pod that was configured wrong.
+	// Whether the proxy's settings are required is up to the profiles file's contents, which Load
+	// does not read: RequireAirlock is that check, which the boot makes once it has read the file.
+	// The address that says whether the broker runs in a cluster is read here with the rest.
+	cfg.kubernetesServiceHost = getenv("KUBERNETES_SERVICE_HOST")
+	// The proxy's URL, when a deployment with a profiles file gives one, held to its form, as
+	// BROKER_MACHINE_LOGIN_URL above is: every release of a name a proxy block holds back carries
+	// this string, and a command's own client reads it as the proxy to dial. A value with no
+	// scheme or no host ("proxy:13381") boots and then fails every airlock run one command at a
+	// time, with a refusal in the CLI rather than in the pod that was configured wrong. With no
+	// profiles file there is no proxy and the value is ignored.
+	if cfg.ProfilesFile != "" && cfg.AirlockProxyURL != "" {
 		if err := httpURLSetting("BROKER_AIRLOCK_PROXY_URL", cfg.AirlockProxyURL); err != nil {
-			return Config{}, err
-		}
-		// And, in a cluster, the cluster's own ranges, which no fixed rule of the proxy covers
-		// (requireClusterRanges).
-		if err := requireClusterRanges(cfg.AirlockClusterRanges, getenv("KUBERNETES_SERVICE_HOST")); err != nil {
 			return Config{}, err
 		}
 	}

@@ -101,16 +101,24 @@ func everyonesPod(t *testing.T, m *Machine, name, project string) (string, *ecds
 }
 
 // newProjectFixture is newPlaceholderFixture on a broker that checks projects: its loader serves
-// projectSecrets (Loader.ProjectChecks), rules are in force, and Dispatch answers rows. The
-// enrollment is a session of the fixture's operator naming no project.
+// projectSecrets (Loader.ProjectChecks), rules are in force as the proxy blocks of profiles of
+// their own names (rulesProfiles), and Dispatch answers rows. The enrollment is a session of the
+// fixture's operator naming no project.
 func newProjectFixture(t *testing.T, rules proxyrules.Rules, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
+	t.Helper()
+	return newProfiledProjectFixture(t, rulesProfiles(t, rules), rules, team)
+}
+
+// newProfiledProjectFixture is newProjectFixture serving file, a profiles file, with rules, its
+// proxy blocks, in force.
+func newProfiledProjectFixture(t *testing.T, file string, rules proxyrules.Rules, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
 	t.Helper()
 	st := storetest.Open(t)
 	local := secrets.NewLocal(append(fixtureSecrets(), projectSecrets()...)...)
 	enrollmentID, key = newEnrollment(t, st, "session", "box-p-"+t.Name(), new(fixtureOperator), nil)
 	loader := policytest.Loader(local, fixtureService)
 	loader.ProjectChecks = true
-	loader.AirlockDigest = rules.Digest
+	loader.Profiles = policytest.Profiles(t, file, fixtureService)
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)
@@ -169,9 +177,9 @@ func deniedFor(t *testing.T, what string, request Request, err error, name, reas
 // hold is denied with the same words, so the session cannot tell the two apart.
 func TestARequestForAPrivateSecretFromASessionNamingNoProjectIsDenied(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_KEY"), "", nil)
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_KEY"), "")
 	deniedFor(t, "a request for PRIV_KEY from a session naming no project", request, err, "PRIV_KEY", policy.ReasonProjectNotNamed)
-	request, err = m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "GONE_KEY"), "", nil)
+	request, err = m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "GONE_KEY"), "")
 	deniedFor(t, "a request for GONE_KEY, tagged with a project Dispatch does not hold", request, err, "GONE_KEY", policy.ReasonProjectNotNamed)
 	if strings.Contains(*request.Detail, policy.ReasonProjectMissing) {
 		t.Fatalf("the session was told %q; want project-not-named alone, so a refusal never says whether a project exists", *request.Detail)
@@ -184,7 +192,7 @@ func TestASessionNamingThePrivateProjectGetsItsSecret(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
 	_, grantID := grantOf(t, m, enr, key, "read it", "PRIV_KEY")
-	release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 	if err != nil || release.Values["PRIV_KEY"] != "priv-v1" {
 		t.Fatalf("Values(PRIV_KEY) = %v, %v; want its value", release.Values, err)
 	}
@@ -209,7 +217,7 @@ func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
 		t.Fatal("the PRIV pod got no grant")
 	}
 	other, otherKey := newServiceEnrollment(t, m.Store, fixtureService, otherSubject, "pod-team-"+t.Name())
-	request, err := m.Create(t.Context(), other, signRequest(t, m, otherKey, "deploy", "PRIV_KEY"), "", nil)
+	request, err := m.Create(t.Context(), other, signRequest(t, m, otherKey, "deploy", "PRIV_KEY"), "")
 	deniedFor(t, "a request for PRIV_KEY from a pod mapped to TEAM", request, err, "PRIV_KEY", policy.ReasonProjectNotNamed)
 }
 
@@ -220,29 +228,29 @@ func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
 func TestAGrantOfAPrivateSecretEndsWhenTheSessionNoLongerNamesIt(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values while TEAM is public: %v", err)
 	}
 	answerFrom(t, m, dispatchRows(privateTeam(fixtureOperator)))
-	if release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+	if release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
 		t.Fatalf("Values of grant %s after TEAM turned private = %v, %v; want ErrGrantNotLive", grantID, release.Values, err)
 	}
 	if by, _ := endedForGood(t, m, grantID); by != GrantEndedActor {
 		t.Fatalf("grant %s revoked by %q, want %q", grantID, by, GrantEndedActor)
 	}
 	answerFrom(t, m, dispatchRows(publicTeam))
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values of grant %s after TEAM turned public again = %v; want it still ended", grantID, err)
 	}
 
 	answerFrom(t, m, dispatchRows(privateTeam(fixtureOperator)))
 	nameProjects(t, m, enr, teamProject)
 	_, named := grantOf(t, m, enr, key, "read it again", "TEAM_TOKEN")
-	if _, err := m.Values(t.Context(), named, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), named, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values while the session names private TEAM: %v", err)
 	}
 	answerFrom(t, m, dispatchRows(privateTeam()))
-	if _, err := m.Values(t.Context(), named, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.Values(t.Context(), named, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values of grant %s after its person left TEAM's list = %v; want ErrGrantNotLive", named, err)
 	}
 }
@@ -254,7 +262,7 @@ func TestAskingAgainAfterTheProjectIsLostSaysProjectNotNamed(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 	answerFrom(t, m, dispatchRows(privateTeam(fixtureOperator)))
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "TEAM_TOKEN"), "", nil)
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "TEAM_TOKEN"), "")
 	deniedFor(t, "asking again for TEAM_TOKEN after TEAM turned private", request, err, "TEAM_TOKEN", policy.ReasonProjectNotNamed)
 	if by, _ := endedForGood(t, m, grantID); by != GrantEndedActor {
 		t.Fatalf("grant %s revoked by %q, want %q: asking again ends the grant it would have reused", grantID, by, GrantEndedActor)
@@ -270,21 +278,21 @@ func TestK3OutageWithholdsOnlyTaggedSecrets(t *testing.T) {
 	_, tagged := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
 	dispatch.SetDown(true)
-	if request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_KEY"), "", nil); !errors.Is(err, ErrProjectAccessUnavailable) {
+	if request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_KEY"), ""); !errors.Is(err, ErrProjectAccessUnavailable) {
 		t.Fatalf("a request for PRIV_KEY while Dispatch is down = %+v, %v; want ErrProjectAccessUnavailable", request, err)
 	}
-	if release, err := m.Values(t.Context(), tagged, enr, nil, ReleaseCall{}); !errors.Is(err, ErrProjectAccessUnavailable) || release.Values != nil {
+	if release, err := m.Values(t.Context(), tagged, enr, ReleaseCall{}); !errors.Is(err, ErrProjectAccessUnavailable) || release.Values != nil {
 		t.Fatalf("Values of the TEAM grant while Dispatch is down = %v, %v; want ErrProjectAccessUnavailable", release.Values, err)
 	}
 	if by, _ := endedForGood(t, m, tagged); by != "" {
 		t.Fatalf("an outage ended grant %s (revoked by %q); want it live once Dispatch answers", tagged, by)
 	}
 	_, untagged := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	if release, err := m.Values(t.Context(), untagged, enr, nil, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] != "auto-v1" {
+	if release, err := m.Values(t.Context(), untagged, enr, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] != "auto-v1" {
 		t.Fatalf("Values(AUTO_TOKEN) while Dispatch is down = %v, %v; want its value", release.Values, err)
 	}
 	dispatch.SetDown(false)
-	if _, err := m.Values(t.Context(), tagged, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), tagged, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values of the TEAM grant once Dispatch answers: %v", err)
 	}
 }
@@ -297,7 +305,7 @@ func TestK3OutageWithholdsOnlyTaggedSecrets(t *testing.T) {
 func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "", nil)
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "")
 	if err != nil || request.RecordID == nil {
 		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v; want pending", request, err)
 	}
@@ -322,7 +330,7 @@ func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 func TestOnlyAPersonWhoSeesTheProjectDismissesItsExpiredRequest(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "", nil)
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "")
 	if err != nil || request.RecordID == nil {
 		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v; want pending", request, err)
 	}
@@ -350,17 +358,17 @@ func TestOnlyAPersonWhoSeesTheProjectDismissesItsExpiredRequest(t *testing.T) {
 func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	privPod, privKey := everyonesPod(t, m, "pod-t-priv", privProject)
-	tagged, err := m.Create(t.Context(), privPod, signRequest(t, m, privKey, "read it", "PRIV_HUMAN"), "", nil)
+	tagged, err := m.Create(t.Context(), privPod, signRequest(t, m, privKey, "read it", "PRIV_HUMAN"), "")
 	if err != nil || tagged.RecordID == nil {
 		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v", tagged, err)
 	}
 	plain, plainKey := everyonesPod(t, m, "pod-q-plain", "")
-	reasoned, err := m.Create(t.Context(), plain, signRequest(t, m, plainKey, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "", nil)
+	reasoned, err := m.Create(t.Context(), plain, signRequest(t, m, plainKey, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "")
 	if err != nil || reasoned.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v", reasoned, err)
 	}
 	hashed, hashedKey := everyonesPod(t, m, "pod-h-hashed", "")
-	hashedReason, err := m.Create(t.Context(), hashed, signRequest(t, m, hashedKey, "SHA-256 of the PRIV-12 bundle", "SHARED_KEY"), "", nil)
+	hashedReason, err := m.Create(t.Context(), hashed, signRequest(t, m, hashedKey, "SHA-256 of the PRIV-12 bundle", "SHARED_KEY"), "")
 	if err != nil || hashedReason.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v", hashedReason, err)
 	}
@@ -410,12 +418,12 @@ func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 	plainService, plainServiceKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-g-plain-"+t.Name())
 	_, plainGrant := grantOf(t, m, plainService, plainServiceKey, "no issue named", "SERVICE_KEY")
 	keyedPod, keyedKey := everyonesPod(t, m, "pod-o-keyed", "")
-	keyed, err := m.Create(t.Context(), keyedPod, signRequest(t, m, keyedKey, "INFRA-12: rotate the deploy key", "SHARED_KEY"), "", nil)
+	keyed, err := m.Create(t.Context(), keyedPod, signRequest(t, m, keyedKey, "INFRA-12: rotate the deploy key", "SHARED_KEY"), "")
 	if err != nil || keyed.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY, INFRA-12) = %+v, %v; want pending", keyed, err)
 	}
 	plainPod, plainKey := everyonesPod(t, m, "pod-o-plain", "")
-	plain, err := m.Create(t.Context(), plainPod, signRequest(t, m, plainKey, "no issue named", "SHARED_KEY"), "", nil)
+	plain, err := m.Create(t.Context(), plainPod, signRequest(t, m, plainKey, "no issue named", "SHARED_KEY"), "")
 	if err != nil || plain.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY, no issue) = %+v, %v; want pending", plain, err)
 	}
@@ -504,7 +512,7 @@ func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 				m.Projects = nil
 			}
 			_, grantID := grantOf(t, m, enr, key, reason, "AUTO_TOKEN")
-			if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+			if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 				t.Fatalf("Values: %v", err)
 			}
 			if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["AUTO_TOKEN/"+SlotValue]); err != nil {
@@ -513,7 +521,7 @@ func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 			if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {
 				t.Fatalf("AirlockValues: %v", err)
 			}
-			pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, reason, "SHARED_KEY"), "", nil)
+			pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, reason, "SHARED_KEY"), "")
 			if err != nil || pending.RecordID == nil {
 				t.Fatalf("Create(SHARED_KEY) = %+v, %v", pending, err)
 			}
@@ -647,7 +655,7 @@ func TestNoK3CallRunsInsideATransaction(t *testing.T) {
 	probe := &lockProbe{inner: m.Projects, t: t, m: m, enrollmentID: enr}
 	m.Projects = probe
 	_, grantID := grantOf(t, m, enr, key, "read it", "PRIV_KEY")
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["PRIV_KEY/"+SlotValue]); err != nil {
@@ -656,7 +664,7 @@ func TestNoK3CallRunsInsideATransaction(t *testing.T) {
 	if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {
 		t.Fatalf("AirlockValues: %v", err)
 	}
-	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "", nil)
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "")
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v", pending, err)
 	}

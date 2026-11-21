@@ -17,29 +17,28 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
-// narrowingRules is each field of a narrowing (policy.NarrowingError's Field) as its refusal says
-// it: the flag that gives it and the rule its value broke, and never the value, which
-// policy.ParseGitHubNarrowing's Reason quotes ("not %q"). A flag's value is where a person who
-// pasted a credential in the wrong place puts it (valueNotPrinted).
+// narrowingRules is each field of a narrowing (narrowingError's Field) as its refusal says it: the
+// flag that gives it and the rule its value broke, and never the value, which
+// parseGitHubNarrowing's Reason quotes ("not %q"). A flag's value is where a person who pasted a
+// credential in the wrong place puts it (valueNotPrinted).
 var narrowingRules = map[string]string{
 	"owner":        "--github-owner names one GitHub login " + valueNotPrinted,
-	"repositories": fmt.Sprintf("--github-repo names at least one and at most %d of the owner's repositories, each by its name alone, in ASCII letters, digits, '.', '-' and '_' %s", secrets.MaxNarrowedRepositories, valueNotPrinted),
+	"repositories": fmt.Sprintf("--github-repo names at least one and at most %d of the owner's repositories, each by its name alone, in ASCII letters, digits, '.', '-' and '_' %s", githubname.MaxNarrowedRepositories, valueNotPrinted),
 }
 
 // githubNarrowing is the narrowing the flags ask for, nil when they ask for none, checked and in
-// its canonical form by policy.ParseGitHubNarrowing, the broker's own parser, so a narrowing the
-// broker would refuse 400 INVALID_NARROWING exits 2 here before any request or approval wait, and
-// narrowedAsAsked compares like with like. ownerSet says whether --github-owner was given at all:
-// given with no account (an unset variable a caller passed) it is refused rather than read as no
-// narrowing, which would release the owner-wide tokens; and --github-repo or --github-read-only
-// without --github-owner is refused, since a narrowing names one account's token. tokenAlone says
-// whether --github-token was given: it hands over one account's token, so it is refused the same
-// way, and it is refused first, since a caller who asked for a token and named no account is told
-// about the flag they gave.
+// its canonical form by parseGitHubNarrowing, so a narrowing GitHub cannot hold exits 2 here
+// before any request or approval wait, and narrowedAsAsked compares like with like. ownerSet says
+// whether --github-owner was given at all: given with no account (an unset variable a caller
+// passed) it is refused rather than read as no narrowing, which would release the owner-wide
+// tokens; and --github-repo or --github-read-only without --github-owner is refused, since a
+// narrowing names one account's token. tokenAlone says whether --github-token was given: it hands
+// over one account's token, so it is refused the same way, and it is refused first, since a
+// caller who asked for a token and named no account is told about the flag they gave.
 func githubNarrowing(owner string, ownerSet bool, repositories []string, readOnly, tokenAlone bool) (*GitHubNarrowing, error) {
 	switch {
 	case !ownerSet && tokenAlone:
@@ -49,14 +48,60 @@ func githubNarrowing(owner string, ownerSet bool, repositories []string, readOnl
 	case !ownerSet:
 		return nil, nil
 	}
-	parsed, refusal := policy.ParseGitHubNarrowing(owner, repositories, readOnly)
+	parsed, refusal := parseGitHubNarrowing(owner, repositories, readOnly)
 	if refusal != nil {
 		if rule, ok := narrowingRules[refusal.Field]; ok {
 			return nil, errors.New(rule)
 		}
 		return nil, errors.New("the GitHub narrowing flags do not parse " + valueNotPrinted)
 	}
-	return &GitHubNarrowing{Owner: parsed.Owner, Repositories: parsed.Repositories, ReadOnly: parsed.ReadOnly}, nil
+	return &parsed, nil
+}
+
+// gitHubRepositoryName is what a repository name GitHub creates can be: ASCII letters, digits,
+// '.', '-' and '_', at most 100 of them. The names . and .. are refused beside it.
+var gitHubRepositoryName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+
+// narrowingError is parseGitHubNarrowing's refusal: Field is the narrowing's field it names,
+// "owner" or "repositories", so githubNarrowing names it by its flag and rule (narrowingRules),
+// and Reason says what is wrong with it.
+type narrowingError struct {
+	Field, Reason string
+}
+
+func (e *narrowingError) Error() string {
+	return e.Field + " " + e.Reason
+}
+
+// parseGitHubNarrowing checks one release's narrowing of its GitHub App tokens as a caller wrote
+// it and answers it in its canonical form: owner one GitHub login (policy.ParseGitHubLogin, once
+// white space around it is trimmed), lowercased, and repositories names GitHub can hold, without
+// the owner, at most githubname.MaxNarrowedRepositories, sorted and each once. Repositories nil names
+// none, so the token reaches every repository of the installation; present but empty is refused,
+// since a caller that built it from a list that matched nothing would otherwise get that widest
+// token. It answers its refusal as a *narrowingError, typed rather than error, so githubNarrowing
+// names the field without reading the text. The exec form sends a narrowing in this form, so its
+// check that the broker applied the narrowing it asked for (narrowedAsAsked) compares like with
+// like.
+func parseGitHubNarrowing(owner string, repositories []string, readOnly bool) (GitHubNarrowing, *narrowingError) {
+	login, err := policy.ParseGitHubLogin(strings.TrimSpace(owner))
+	if err != nil {
+		return GitHubNarrowing{}, &narrowingError{"owner", fmt.Sprintf("must name one GitHub login, not %q", owner)}
+	}
+	if repositories != nil && len(repositories) == 0 {
+		return GitHubNarrowing{}, &narrowingError{"repositories", "is empty: name at least one repository, or leave it out for every repository of the installation"}
+	}
+	if len(repositories) > githubname.MaxNarrowedRepositories {
+		return GitHubNarrowing{}, &narrowingError{"repositories", fmt.Sprintf("names %d repositories; the broker takes at most %d", len(repositories), githubname.MaxNarrowedRepositories)}
+	}
+	for _, name := range repositories {
+		if !gitHubRepositoryName.MatchString(name) || name == "." || name == ".." {
+			return GitHubNarrowing{}, &narrowingError{"repositories", fmt.Sprintf("names %s's repositories by name alone, in ASCII letters, digits, '.', '-' and '_', not %q", login, name)}
+		}
+	}
+	sorted := slices.Clone(repositories)
+	slices.Sort(sorted)
+	return GitHubNarrowing{Owner: login, Repositories: slices.Compact(sorted), ReadOnly: readOnly}, nil
 }
 
 // narrowedAsAsked checks that the broker applied asked to the release it answered with applied. A

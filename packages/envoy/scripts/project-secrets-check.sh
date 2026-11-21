@@ -21,7 +21,7 @@
 #     enrollment are both refused, with or without F's check.
 #   * carol's session naming nothing: PUB_KEY granted, PRIV_KEY denied project-not-named.
 #   * the machine's own session: PUB_KEY as today (granted: shared and agent tier), PRIV_KEY denied.
-#   * PRIV's pod behind the airlock: the stack's rules bind PRIV_KEY to the airlock's bound host,
+#   * PRIV's pod behind the airlock: the stack's profiles file binds PRIV_KEY to the airlock's bound host,
 #     so the pod's grant of it is spent through the proxy. A request through the proxy is served
 #     by the bound host (its own answer is read, not the stands' records: the stands run in a
 #     container); then carol, the person of the pod's exchange entry, is taken off PRIV, and the

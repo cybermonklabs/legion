@@ -271,12 +271,14 @@ def hostShapeOK (h : String) : Bool :=
 
 /-- Rules-file validation. This is the same answer as Go's `Validate` returning `nil`:
 the names are distinct, a judge lifetime is at most 900 s, a kind is `""`, `"aws"` or `"azure"`,
-and every host is one the airlock can bind. An entry may bind no host: it then says who decides
-a request for its key and binds the value nowhere, and `check` refuses every request for it
-("secret not behind airlock"). -/
+every entry names a host, and every host is one the airlock can bind. An entry is a proxy block,
+and one that binds its value to no host would hold the value back and carry it nowhere, so it is
+refused here (theorem `T4`); `check` still refuses every request for one
+("secret not behind airlock"), since a decision does not assume a validated file. -/
 def validate (rules : Rules) : Bool :=
   namesUnique (rules.secrets.map (·.name)) &&
-  rules.secrets.all fun s => judgeOK s.judge && kindOK s.kind && s.hosts.all hostShapeOK
+  rules.secrets.all fun s =>
+    judgeOK s.judge && kindOK s.kind && !s.hosts.isEmpty && s.hosts.all hostShapeOK
 
 /-! ## Decision and rewrite -/
 
