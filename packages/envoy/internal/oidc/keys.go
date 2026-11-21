@@ -37,7 +37,8 @@ const (
 	// the last good read. A caller whose keys deadline (WithKeysDeadline) ends first is answered
 	// from the cached set until that read lands, at most FetchTimeout later. While the issuer
 	// fails, the cached set answers the keys it holds. A caller whose own context has ended gets
-	// no answer from it.
+	// no answer from a set past Lifetime + MinRefresh; younger sets answer it as they answer any
+	// caller.
 	DefaultKeysLifetime = 15 * time.Minute
 	// DefaultKeysMinRefresh is the shortest interval between two fetches made because a token
 	// named a key id the cached set does not hold, while reads succeed; while they fail, it is one
@@ -167,12 +168,13 @@ func NewKeysAt(jwksURI string) *Keys {
 // Lifetime + MinRefresh after the last good read. A caller whose keys deadline passes during
 // that read is answered from the cached set where it holds the key, so for it the old set
 // answers until the read lands, at most FetchTimeout later; a caller whose own context has ended
-// is not. A kid the set does not hold is a rotation the cache has not seen yet, so it prompts one
-// more read, at most once per MinRefresh, or once FailureSpacing has passed since that read
-// failed. A read that fails leaves the last good set serving a caller still waiting, with no new
-// read for FailureSpacing, and is returned only when that set does not hold the key asked for —
-// an issuer that is down stops no verification it does not have to. A kid the
-// set does not hold while the read that would settle it has not (one is under way, or the last
+// is not answered from a set that old, while younger sets answer it as they answer any caller. A
+// kid the set does not hold is a rotation the cache has not seen yet, so it prompts one more read,
+// at most once per MinRefresh, or once FailureSpacing has passed since that read failed. A read
+// that fails leaves the last good set serving a caller still waiting, with no new read for
+// FailureSpacing, and is returned only when that set does not hold the key asked for — an issuer
+// that is down stops no verification it does not have to. A kid the set does not hold while the
+// read that would settle it has not (one is under way, or the last
 // one failed within MinRefresh) is ErrKeySet, not ErrNoKey: no verdict on that key has been
 // reached yet.
 //

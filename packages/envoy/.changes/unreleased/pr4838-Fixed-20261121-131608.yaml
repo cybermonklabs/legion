@@ -11,10 +11,11 @@ body: |-
   most 16 minutes after the last good read. A listener request whose 4-second wait ends before the
   read of an older set lands is answered from the cached set until that read lands, at most 10
   seconds later; Dispatch and the secrets broker set no such wait. A caller that has hung up or
-  half-closed gets no answer from the cached set. While the issuer fails, the cached set answers the
-  keys it holds. During a key rotation whose read failed, a token naming the new key is looked for
-  again 5 seconds after that failure, rather than a minute. For a key id the cache
-  lacks while that is unsettled (a read runs, or one failed less than 5 seconds ago): the listener
+  half-closed gets no answer from a set older than 16 minutes; younger sets answer it as they
+  answer any caller. While the issuer fails, the cached set answers the keys it holds. During a key
+  rotation whose read failed, a token naming the new key is looked for again 5 seconds after that
+  failure, rather than a minute. For a key id the cache lacks while that is unsettled (a read runs,
+  or one failed less than 5 seconds ago): the listener
   answers `503` with `Retry-After: 1` once its 4-second wait ends; Dispatch waits on the read under
   way and answers `503 OIDC_ISSUER_UNAVAILABLE` when it fails, and IAP sign-in
   `503 SIGNIN_UNAVAILABLE`; the secrets broker still refuses the token as unverified
