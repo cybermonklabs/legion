@@ -11,17 +11,12 @@
 
 import { expect, test } from "bun:test";
 import { brokerCredential } from "../broker-credential";
-import {
-  DispatchClient,
-  DispatchWriteUnsettledError,
-  forgetKeyedLayerMemory,
-} from "../dispatch-http";
+import { DispatchClient, DispatchWriteUnsettledError } from "../dispatch-http";
 import { brokerStandIns } from "./broker-stand-ins";
 
 const { podEnvironment, servers, stubBroker } = brokerStandIns("dispatch-write-identity");
 
 test("a write whose session switches after an attempt that may have landed ends unsettled and presents no other session's token", async () => {
-  forgetKeyedLayerMemory();
   let session = "implementer-g1";
   const asked: { readonly authorization: string; readonly key: string }[] = [];
   const dispatch = Bun.serve({

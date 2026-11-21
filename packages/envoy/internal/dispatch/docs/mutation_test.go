@@ -186,12 +186,15 @@ func TestReplaceTextUpdatesLiveDocumentAndSettlesVersion(t *testing.T) {
 	}
 }
 
-// Every replacement names the token of the version it replaces, so the write refuses one that
-// names none, on the tree it has already read and under its own lock, and leaves the document as
-// it was; one that names the live token is taken. A replacement of a document whose live tree is
-// outside the Proof schema names no token either, and is taken, since such a tree has none for
-// any caller to name (TestRepairingUploadNeedsNoToken in api).
-func TestReplaceTextRefusesAReplacementThatNamesNoToken(t *testing.T) {
+// A replacement that names no token is taken unchecked, as every replacement was before #3000,
+// since no deployed `dispatch` client can name one on `dispatch artifact` (INFRA-4980); the
+// refusal of a missing token comes back once every deployed client sends one. A replacement that
+// names a token is still checked, on the tree the write has already read and under its own lock:
+// one naming a token the document has moved past is refused and leaves the document as it was,
+// and one naming the live token is taken. A replacement of a document whose live tree is outside
+// the Proof schema names no token either, since such a tree has none for any caller to name
+// (TestRepairingUploadNeedsNoToken in api).
+func TestReplaceTextTakesAReplacementNamingNoTokenAndChecksANamedOne(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before\n")
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -202,16 +205,24 @@ func TestReplaceTextRefusesAReplacementThatNamesNoToken(t *testing.T) {
 		})
 	}
 
-	if err := replace("after\n", nil); !errors.Is(err, ErrPreconditionRequired) {
-		t.Fatalf("a replacement naming no token = %v, want ErrPreconditionRequired", err)
-	}
-	if text := documentText(t, service, artifactID); text != "before\n" {
-		t.Fatalf("the refused replacement left %q, want the text standing before it", text)
-	}
-	if err := replace("after\n", liveDocumentToken(t, service, artifactID)); err != nil {
-		t.Fatalf("a replacement naming the live token: %v", err)
+	stale := liveDocumentToken(t, service, artifactID)
+	if err := replace("after\n", nil); err != nil {
+		t.Fatalf("a replacement naming no token: %v, want it taken", err)
 	}
 	if text := documentText(t, service, artifactID); text != "after\n" {
+		t.Fatalf("the document reads %q after the replacement naming no token, want the replacement", text)
+	}
+	var failed *ErrPreconditionFailed
+	if err := replace("again\n", stale); !errors.As(err, &failed) {
+		t.Fatalf("a replacement naming a token the document moved past = %v, want ErrPreconditionFailed", err)
+	}
+	if text := documentText(t, service, artifactID); text != "after\n" {
+		t.Fatalf("the refused replacement left %q, want the text standing before it", text)
+	}
+	if err := replace("again\n", liveDocumentToken(t, service, artifactID)); err != nil {
+		t.Fatalf("a replacement naming the live token: %v", err)
+	}
+	if text := documentText(t, service, artifactID); text != "again\n" {
 		t.Fatalf("the document reads %q after the replacement that named its token, want the replacement", text)
 	}
 }
