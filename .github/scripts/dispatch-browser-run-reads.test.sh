@@ -127,26 +127,32 @@ real_strace=$(type -P strace) ||
 # The system calls that wait with a timeout, on x86_64 and on arm64 (which has no select, poll or
 # epoll_wait): a sleep binary and bash's sleep builtin make clock_nanosleep or nanosleep, `read -t`
 # makes pselect6, a thread or a helper waiting on a futex with a timeout makes futex, and the rest
-# are the other ways a process can wait out a clock in the kernel. A regex, so strace matches
-# only the calls the host's architecture has. What the trace establishes is that no listed call
-# waited with a timeout; a busy loop in user space, which spins on the clock without a system
-# call, is not seen by it, and no check here reads elapsed time to make up for that.
-TIMED_WAITS='/^(nanosleep|clock_nanosleep|select|pselect6|poll|ppoll|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait|futex|futex_waitv)$'
+# are the other ways a process can wait out a clock in the kernel. A 32-bit process makes the
+# i386 ABI's names instead: clock_nanosleep_time64, pselect6_time64, ppoll_time64,
+# rt_sigtimedwait_time64, futex_time64, and _newselect for select; nanosleep, poll, epoll_wait,
+# epoll_pwait, epoll_pwait2 and futex_waitv keep their names there. On 2026-11-21 a 32-bit helper
+# on this x86_64 box made each of the six; GitHub's arm64 runner was not tried with one. A regex,
+# so strace matches only the calls the host's architectures have. What the trace establishes is
+# that no listed call waited with a timeout; a busy loop in user space, which spins on the clock
+# without a system call, is not seen by it, and no check here reads elapsed time to make up for
+# that.
+TIMED_WAITS='/^(nanosleep|clock_nanosleep(_time64)?|select|_newselect|pselect6(_time64)?|poll|ppoll(_time64)?|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait(_time64)?|futex(_time64|_waitv)?)$'
 
 # timed_waits <trace>: the calls of a strace log that waited with a timeout, one per line. A call
 # begins a line `<pid> <name>(`, where strace pads a short pid with spaces (`4     futex(`, as in
 # a fresh PID namespace or on a runner whose pids are short), so the separator is any run of
 # blanks; one another process's call interrupted goes on in a `<... name resumed>` line, which is
-# no new call and is passed over. A futex or futex_waitv call waits on a clock only where its
-# timeout argument is a struct, `{tv_sec=`: a lock's FUTEX_WAIT has NULL there and FUTEX_WAKE has
-# no timeout at all. The drive at this file's head makes no timed wait: traced on 2026-11-21, it
-# made 0 of every listed call but futex, and 27 futex(FUTEX_WAKE_PRIVATE) calls, none of them
-# timed, in each of 3 runs. A `/usr/bin/sleep 1` after gh answered made clock_nanosleep, a
-# `read -t 1` on a FIFO pselect6, and a 1 s FUTEX_WAIT_PRIVATE futex with `{tv_sec=1, tv_nsec=0}`.
+# no new call and is passed over. A futex, futex_time64 or futex_waitv call waits on a clock only
+# where its timeout argument is a struct, `{tv_sec=`: a lock's FUTEX_WAIT has NULL there and
+# FUTEX_WAKE has no timeout at all. The drive at this file's head makes no timed wait: traced on
+# 2026-11-21, it made 0 of every listed call but futex, and 27 futex(FUTEX_WAKE_PRIVATE) calls,
+# none of them timed, in each of 3 runs. A `/usr/bin/sleep 1` after gh answered made
+# clock_nanosleep, a `read -t 1` on a FIFO pselect6, and a 1 s FUTEX_WAIT_PRIVATE futex with
+# `{tv_sec=1, tv_nsec=0}`.
 timed_waits() {
   { grep -E '^[0-9]+[[:space:]]+[a-z_0-9]+\(' "$1" || true; } |
-    { grep -Ev '^[0-9]+[[:space:]]+futex(_waitv)?\(' || true; }
-  grep -E '^[0-9]+[[:space:]]+futex(_waitv)?\(.*\{tv_sec=' "$1" || true
+    { grep -Ev '^[0-9]+[[:space:]]+futex(_time64|_waitv)?\(' || true; }
+  grep -E '^[0-9]+[[:space:]]+futex(_time64|_waitv)?\(.*\{tv_sec=' "$1" || true
 }
 
 # The stand-in `timeout`, beside the stand-in `gh` and opted into per call. It records the
@@ -612,12 +618,13 @@ waits=$(timed_waits "$work/waits")
 check "and makes no timed wait of any kind" "$(is "$(grep -c . <<<"$waits" || true)" 0)"
 [ -z "$waits" ] || sed 's/^/    traced: /' <<<"$waits"
 
-echo "case: timed_waits reads a trace line whatever the padding of its pid"
+echo "case: timed_waits reads a trace line whatever the padding of its pid and the ABI's names"
 # The parser of the control's trace, on lines in the shape strace 6.8 writes. The pid-4 and pid-5
-# clock_nanosleep and futex_waitv lines were written in a fresh PID namespace, where strace pads a
-# one-digit pid with blanks (`4     futex(`), and the seven-digit ones outside it, on 2026-11-21;
-# the others are those lines with the pid re-padded, or a lock's NULL-timeout wait and a resumed
-# call built in the same shape. Each `yes` line is a timed wait, each `no` line is not.
+# clock_nanosleep, futex_waitv and *_time64 / _newselect lines were written in a fresh PID
+# namespace, where strace pads a one-digit pid with blanks (`4     futex(`), the *_time64 ones by
+# a 32-bit helper, and the seven-digit ones outside it, on 2026-11-21; the others are those lines
+# with the pid re-padded, or a lock's NULL-timeout wait, a wake and a resumed call built in the
+# same shape. Each `yes` line is a timed wait, each `no` line is not.
 while IFS='|' read -r want line; do
   printf '%s\n' "$line" > "$work/trace-line"
   got=no
@@ -631,9 +638,18 @@ yes|5     clock_nanosleep(CLOCK_REALTIME, 0, {tv_sec=0, tv_nsec=10000000}, 0x7ff
 yes|3662081 clock_nanosleep(CLOCK_REALTIME, 0, {tv_sec=1, tv_nsec=0}, 0x7fff1f4bea20) = 0
 yes|27    pselect6(1, [0], NULL, NULL, {tv_sec=0, tv_nsec=999984000}, {sigmask=[CHLD], sigsetsize=8}) = 0 (Timeout)
 yes|4     futex_waitv([{val=0, uaddr=0x7fff242ac83c, flags=FUTEX2_SIZE_U32|FUTEX2_PRIVATE}], 1, 0, {tv_sec=1403474, tv_nsec=902920133}, CLOCK_MONOTONIC) = -1 ETIMEDOUT (Connection timed out)
+yes|4     clock_nanosleep_time64(CLOCK_MONOTONIC, 0, {tv_sec=0, tv_nsec=10000000}, NULL) = 0
+yes|4     pselect6_time64(0, NULL, NULL, NULL, {tv_sec=0, tv_nsec=10000000}, NULL) = 0 (Timeout)
+yes|4     ppoll_time64(NULL, 0, {tv_sec=0, tv_nsec=0}, NULL, 8) = 0 (Timeout)
+yes|4     rt_sigtimedwait_time64([USR1], NULL, {tv_sec=0, tv_nsec=0}, 8) = -1 EAGAIN (Resource temporarily unavailable)
+yes|4     futex_time64(0x804b010, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0}) = -1 ETIMEDOUT (Connection timed out)
+yes|3250631 futex_time64(0x804b010, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0}) = -1 ETIMEDOUT (Connection timed out)
+yes|4     _newselect(0, NULL, NULL, NULL, {tv_sec=0, tv_usec=10000}) = 0 (Timeout)
 no|4     futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 2, NULL) = 0
 no|2256817 futex(0x76abf580572c, FUTEX_WAKE_PRIVATE, 2147483647) = 0
 no|4     futex(0x76abf580572c, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+no|4     futex_time64(0x804b010, FUTEX_WAIT_PRIVATE, 2, NULL) = 0
+no|4     futex_time64(0x804b010, FUTEX_WAKE_PRIVATE, 2147483647) = 0
 no|4     <... futex resumed>) = -1 ETIMEDOUT (Connection timed out)
 no|3662081 <... clock_nanosleep resumed>0x7fff1f4bea20) = 0
 TRACE
